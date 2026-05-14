@@ -49,6 +49,7 @@ EXACT_MATCH: set[str] = {
     "lib/utils/fileProcessing.ts",
     "lib/utils/ids.ts",
     "lib/utils/todoTools.ts",
+    "lib/utils/toolSearch.ts",
 }
 
 # ── Files with documented platform-specific differences ──────────────

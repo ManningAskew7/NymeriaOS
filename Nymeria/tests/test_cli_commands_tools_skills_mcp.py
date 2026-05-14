@@ -106,6 +106,79 @@ class CapabilityFakeClient:
         self.calls.append(("get_optional_tools", {"user_id": user_id}))
         return [copy.deepcopy(self.unified_tools[1])]
 
+    async def search_tools(
+        self,
+        query: str,
+        *,
+        user_id: str = "default",
+        thread_id: str | None = None,
+        top_k: int = 15,
+        **_: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "search_tools",
+                {
+                    "query": query,
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "top_k": top_k,
+                },
+            )
+        )
+        normalized = query.casefold().replace("_", "")
+        results = []
+        for tool in self.unified_tools:
+            name = str(tool["name"])
+            haystack = " ".join(
+                str(part)
+                for part in (
+                    name,
+                    name.replace("_", ""),
+                    tool.get("description", ""),
+                    tool.get("category", ""),
+                    tool.get("tool_type", ""),
+                )
+            ).casefold()
+            if query.casefold() in haystack or normalized in haystack.replace("_", ""):
+                results.append(
+                    {
+                        "name": name,
+                        "description": tool.get("description", ""),
+                        "category": tool.get("category", "unknown"),
+                        "security_level": "safe",
+                        "tool_type": tool.get("tool_type", "builtin"),
+                        "is_default": name in self.default_tools,
+                        "status": (
+                            "default_enabled"
+                            if name in self.default_tools
+                            else "available"
+                        ),
+                        "score": 1.0,
+                        "enable_hint": f"/tools enable {name}",
+                    }
+                )
+        if not results and "websarch" in normalized:
+            results.append(
+                {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "category": "web",
+                    "security_level": "safe",
+                    "tool_type": "builtin",
+                    "is_default": False,
+                    "status": "available",
+                    "score": 0.7,
+                    "enable_hint": "/tools enable web_search",
+                }
+            )
+        return {
+            "query": query,
+            "mode": "fuzzy",
+            "warning": None,
+            "results": results[:top_k],
+        }
+
     async def get_thread_config(
         self,
         thread_id: str,
@@ -366,6 +439,53 @@ def test_tools_commands_use_api_client_methods() -> None:
         {"type": "tools_updated"},
     ]
     assert any("Default tools saved" in message.content for message in sink.messages)
+
+
+def test_tools_root_query_uses_backend_search() -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink)
+
+    result = run(registry.dispatch_async(ctx, "/tools browser"))
+
+    assert result.ok is True
+    assert (
+        "search_tools",
+        {
+            "query": "browser",
+            "user_id": "alice",
+            "thread_id": "thread-1",
+            "top_k": 10,
+        },
+    ) in client.calls
+    assert "Tool Search" in sink.messages[-1].content
+
+
+def test_tools_search_subcommand_uses_backend_search() -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink)
+
+    result = run(registry.dispatch_async(ctx, "/tools search web"))
+
+    assert result.ok is True
+    assert result.json_payload["query"] == "web"
+    assert "web_search" in sink.messages[-1].content
+
+
+def test_tools_enable_unknown_name_shows_ranked_suggestions() -> None:
+    client = CapabilityFakeClient()
+    registry = make_registry()
+    ctx = make_context(client)
+
+    result = run(registry.dispatch_async(ctx, "/tools enable websarch"))
+
+    assert result.ok is False
+    assert result.error_code == "unknown_tool"
+    assert "Unknown tool 'websarch'. Did you mean:" in result.messages[0].content
+    assert "/tools enable web_search" in result.messages[0].content
 
 
 def test_tools_default_alias_lists_only_configured_core_toolset() -> None:

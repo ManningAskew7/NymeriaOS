@@ -99,6 +99,7 @@ Both apps now use the same modular API service layout:
 | `services/api/credentials.ts` | EXACT_MATCH | Shared credential-vault API client. |
 | `services/api/*.ts` domain modules | KNOWN_DRIFT | Same module names and inheritance order, but the desktop API surface is still a superset in a few administrative areas. |
 | `stores/credentials.svelte.ts` | EXACT_MATCH | Shared credential-vault state and actions. |
+| `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 
 The shared module chain is:
@@ -272,6 +273,11 @@ full-screen overlays with a back chevron and touch-sized targets while desktop
 uses centered modal cards with an X close button. The underlying logic and API
 calls are identical.
 
+The Tools tab in both thread settings panels uses the shared
+`utils/toolSearch.ts` scorer for local filtering across default/core and
+optional sections. Keep the search behavior aligned even though the surrounding
+desktop modal and mobile full-screen layouts are different.
+
 #### `routes/+page.svelte` — Main Entry Point
 
 **Same core**: Setup wizard check, thread sync from backend, chat history loading, autonomous stream connection.
@@ -401,6 +407,11 @@ See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 2. Add any new types to `types/index.ts` in both apps
 3. If it needs a new store, add it to both platforms unless the feature is explicitly platform-specific
 4. Compare existing desktop/mobile implementations before copying because these files have already diverged
+
+For tool discovery endpoints, keep `services/api/tools.ts`,
+`types/index.ts`, and `utils/toolSearch.ts` in sync so global Tools panels,
+per-thread Tools tabs, and command surfaces continue to share the same result
+shape and local fuzzy-search behavior.
 
 ### Adding a new store
 

@@ -213,74 +213,67 @@ def _search(
     top_k: int = 15,
     include_status: bool = True,
 ) -> str:
-    catalog = _build_discovery_catalog(user_role)
-    enabled_perm, temp_map, disabled = _get_thread_status(thread_id)
-
-    candidates = list(catalog.values())
-    if category:
-        cat_key = category.lower().strip().replace("-", "_")
-        candidates = [c for c in candidates if c["category"] == cat_key]
-        if not candidates:
-            from .metadata import get_all_categories
-            cats = ", ".join(get_all_categories())
-            return f"[No results]: Unknown category '{category}'. Available: {cats}"
-
     if not query and not category:
         return "[Error]: Provide a query, a category, or both."
 
-    if not query:
-        results = [(0, c) for c in candidates]
-    else:
-        query_lower = query.lower().strip()
-        terms = query_lower.split()
-        results = []
-        for c in candidates:
-            name_lower = c["name"].lower()
-            desc_lower = c["description"].lower()
-            score = 0
-            if query_lower == name_lower:
-                score = 100
-            elif query_lower == name_lower.replace("_", ""):
-                score = 95
-            elif query_lower in name_lower:
-                score = 80
-            elif all(t in name_lower for t in terms):
-                score = 70
-            elif all(t in desc_lower for t in terms):
-                score = 50
-            elif any(t in name_lower for t in terms):
-                score = 40
-            elif any(t in desc_lower for t in terms):
-                score = 20
-            if score > 0:
-                results.append((score, c))
+    from ..core.agent import get_current_agent
+    from ..core.tool_search_index import search_tools
 
-    results.sort(key=lambda x: (-x[0], x[1]["name"]))
-    limit = max(1, min(int(top_k or 15), 50))
-    results = results[:limit]
+    agent = get_current_agent()
+    user_id = "default"
+    try:
+        if agent and thread_id:
+            user_id = agent.accounts_repo.get_thread_owner(thread_id) or "default"
+    except Exception:
+        user_id = "default"
 
-    if not results:
+    response = search_tools(
+        query,
+        category=category,
+        user_id=user_id,
+        user_role=user_role,
+        agent=agent,
+        thread_id=thread_id,
+        top_k=top_k,
+        include_status=include_status,
+    )
+
+    if not response.results:
+        if category:
+            cat_key = category.lower().strip().replace("-", "_")
+            try:
+                from .metadata import get_all_categories
+
+                known_categories = set(get_all_categories()) | {"callable"}
+                if cat_key not in known_categories:
+                    cats = ", ".join(sorted(known_categories))
+                    return f"[No results]: Unknown category '{category}'. Available: {cats}"
+            except Exception:
+                logger.debug("Failed to inspect tool categories", exc_info=True)
         return f"[No results]: No tools matched '{query}'." + (
             f" (category filter: {category})" if category else ""
         )
 
-    lines = [f"[Tool Search]: {len(results)} result(s)" + (
+    lines = [f"[Tool Search]: {len(response.results)} result(s)" + (
         f" in category '{category}'" if category else ""
-    )]
-    for _, c in results:
+    ) + f" ({response.mode})"]
+    if response.warning:
+        lines.append(f"[Warning]: {response.warning}")
+    for c in response.results:
         status = ""
         # disabled_tools is authoritative — check it first so a disabled
         # tool with a preserved enabled/TTL entry doesn't get labeled ENABLED.
-        if include_status:
-            if c["name"] in disabled:
+        if include_status and c.status:
+            if c.status == "disabled":
                 status = " [DISABLED]"
-            elif c["name"] in enabled_perm:
+            elif c.status == "enabled_permanent":
                 status = " [ENABLED permanent]"
-            elif c["name"] in temp_map:
-                status = f" [ENABLED {_format_remaining(temp_map[c['name']].expires_at)}]"
+            elif c.status.startswith("enabled_ttl:"):
+                status = f" [ENABLED {c.status.split(':', 1)[1]}]"
         lines.append(
-            f"  {c['name']} ({c['category']}, {c['security_level']}){status}"
-            f"\n    {c['description']}"
+            f"  {c.name} ({c.category}, {c.security_level}){status}"
+            f"\n    {c.description}"
+            f"\n    Enable hint: {c.enable_hint}"
         )
 
     return "\n".join(lines)

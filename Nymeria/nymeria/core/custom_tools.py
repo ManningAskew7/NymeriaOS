@@ -238,6 +238,7 @@ class CustomToolLoader:
         unregister_custom_tool_metadata(definition.id)
         self._load_tool_file(file_path)
 
+        _mark_tool_search_dirty_safely()
         logger.info(f"Saved tool definition: {definition.id}")
         return file_path
 
@@ -262,6 +263,7 @@ class CustomToolLoader:
         self._tools.pop(tool_id, None)
         unregister_custom_tool_metadata(tool_id)
 
+        _mark_tool_search_dirty_safely()
         logger.info(f"Deleted tool definition: {tool_id}")
         return True
 
@@ -589,7 +591,18 @@ def reload_custom_tools() -> int:
         Number of tools loaded.
     """
     tools = get_custom_tool_loader().load_all()
+    _mark_tool_search_dirty_safely()
     return len(tools)
+
+
+def _mark_tool_search_dirty_safely() -> None:
+    """Best-effort invalidation for the shared tool search catalog."""
+    try:
+        from .tool_search_index import mark_tool_search_dirty
+
+        mark_tool_search_dirty()
+    except Exception:
+        logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
 
 def shutdown_custom_tools() -> None:

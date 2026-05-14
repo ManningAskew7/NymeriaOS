@@ -314,6 +314,10 @@ def create_thread_config_router(
             or request.callable_max_iterations is not None
         ):
             agent.sync_agent_tools()
+        elif request.callable_team_id is not None or request.callable_team_name is not None:
+            from ...core.tool_search_index import mark_tool_search_dirty
+
+            mark_tool_search_dirty()
 
         if tc.callable and tc.callable_name:
             agent.thread_metadata_manager.upsert_thread(
@@ -340,6 +344,10 @@ def create_thread_config_router(
         agent.invalidate_thread_config_cache(thread_id)
         if was_agent:
             agent.sync_agent_tools()
+        else:
+            from ...core.tool_search_index import mark_tool_search_dirty
+
+            mark_tool_search_dirty()
         return {"status": "ok", "thread_id": thread_id}
 
     @router.get("/thread-teams")
@@ -376,6 +384,9 @@ def create_thread_config_router(
                 team_name=name,
             )
         _invalidate_user_team_graphs(agent, user_id)
+        from ...core.tool_search_index import mark_tool_search_dirty
+
+        mark_tool_search_dirty()
         team = _get_thread_team(agent, user_id, team_id)
         return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
 
@@ -428,6 +439,9 @@ def create_thread_config_router(
             )
 
         _invalidate_user_team_graphs(agent, user_id)
+        from ...core.tool_search_index import mark_tool_search_dirty
+
+        mark_tool_search_dirty()
         team = _get_thread_team(agent, user_id, team_id)
         return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
 
@@ -449,6 +463,9 @@ def create_thread_config_router(
                 team_name=None,
             )
         _invalidate_user_team_graphs(agent, user_id)
+        from ...core.tool_search_index import mark_tool_search_dirty
+
+        mark_tool_search_dirty()
         return {"status": "ok", "team_id": team_id}
 
     return router

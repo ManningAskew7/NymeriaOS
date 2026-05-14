@@ -955,7 +955,26 @@ export interface CustomToolTestResponse {
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
 export type ToolCategory = 'core' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'custom' | 'mcp_server';
-export type ToolType = 'builtin' | 'custom' | 'mcp_server';
+export type ToolType = 'builtin' | 'custom' | 'mcp_server' | 'callable_thread';
+
+export interface ToolSearchResult {
+  name: string;
+  description: string;
+  category: string;
+  securityLevel: ToolSecurityLevel | string;
+  toolType: ToolType | string;
+  isDefault: boolean;
+  status: string | null;
+  score: number;
+  enableHint: string;
+}
+
+export interface ToolSearchResponse {
+  query: string;
+  mode: 'semantic' | 'bm25' | 'fuzzy' | 'substring';
+  warning?: string | null;
+  results: ToolSearchResult[];
+}
 
 // Unified Tool Types
 

@@ -6,6 +6,7 @@ import type {
   CustomToolUpdateRequest,
   HTTPToolConfig,
   Tool,
+  ToolSearchResponse,
   UnifiedTool,
   UnifiedToolListResponse
 } from '$lib/types';
@@ -22,6 +23,55 @@ export class ToolsApi extends TodosApi {
     }
 
     return response.json();
+  }
+
+  private toolSearchFromResponse(data: Record<string, unknown>): ToolSearchResponse {
+    return {
+      query: (data.query as string) || '',
+      mode: (data.mode as ToolSearchResponse['mode']) || 'substring',
+      warning: data.warning as string | null | undefined,
+      results: ((data.results as Record<string, unknown>[]) || []).map((item) => ({
+        name: item.name as string,
+        description: (item.description as string) || '',
+        category: (item.category as string) || 'unknown',
+        securityLevel: (item.security_level as string) || 'moderate',
+        toolType: (item.tool_type as string) || 'builtin',
+        isDefault: Boolean(item.is_default),
+        status: (item.status as string | null | undefined) ?? null,
+        score: Number(item.score ?? 0),
+        enableHint: (item.enable_hint as string) || ''
+      }))
+    };
+  }
+
+  async searchTools(options: {
+    query?: string;
+    category?: string;
+    threadId?: string;
+    topK?: number;
+    includeStatus?: boolean;
+    userId?: string;
+  } = {}): Promise<ToolSearchResponse> {
+    const id = this.resolveUserId(options.userId);
+    const params = new URLSearchParams();
+    if (options.query !== undefined) params.set('query', options.query);
+    if (options.category) params.set('category', options.category);
+    if (options.threadId) params.set('thread_id', options.threadId);
+    if (options.topK !== undefined) params.set('top_k', String(options.topK));
+    if (options.includeStatus !== undefined) {
+      params.set('include_status', String(options.includeStatus));
+    }
+
+    const response = await fetch(
+      `${this.getBaseUrl()}/users/${id}/tools/search?${params}`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return this.toolSearchFromResponse(await response.json());
   }
 
   // =========================================================================

@@ -2478,6 +2478,12 @@ class NymeriaAgent:
         self._load_mcp_server_tools()
 
         self._rebuild_default_graphs()
+        try:
+            from .tool_search_index import mark_tool_search_dirty
+
+            mark_tool_search_dirty()
+        except Exception:
+            logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
         all_names = list(thread_tool_names)
         logger.info(f"Synced agent tools: {all_names} ({len(thread_tools)} callable threads, {len(combined)} total tools)")
@@ -2617,6 +2623,12 @@ class NymeriaAgent:
                 self.tool_registry.register_all(mcp_tools)
 
             self._rebuild_default_graphs()
+            try:
+                from .tool_search_index import mark_tool_search_dirty
+
+                mark_tool_search_dirty()
+            except Exception:
+                logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
             tool_names = [t.name for t in mcp_tools]
             logger.info(f"MCP server tools reloaded: {tool_names}")
@@ -2661,6 +2673,12 @@ class NymeriaAgent:
                 self.tool_registry.register_all(custom_tools)
 
             self._rebuild_default_graphs()
+            try:
+                from .tool_search_index import mark_tool_search_dirty
+
+                mark_tool_search_dirty()
+            except Exception:
+                logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
             tool_names = [t.name for t in custom_tools]
             logger.info(f"Custom tools reloaded: {tool_names}")
@@ -2748,6 +2766,12 @@ class NymeriaAgent:
         logger.info(f"Reloaded {custom_count} custom tool(s)")
 
         self._rebuild_default_graphs()
+        try:
+            from .tool_search_index import mark_tool_search_dirty
+
+            mark_tool_search_dirty()
+        except Exception:
+            logger.debug("Failed to mark tool search index dirty", exc_info=True)
 
         tool_list = self.tool_registry.list_tools()
         tool_names = [t["name"] for t in tool_list]

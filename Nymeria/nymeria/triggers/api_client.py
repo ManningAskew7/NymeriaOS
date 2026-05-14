@@ -726,6 +726,29 @@ class NymeriaAPIClient:
         data = await self._get(f"/users/{user_id}/tools", act_as=user_id)
         return data.get("tools", [])
 
+    async def search_tools(
+        self,
+        query: str,
+        *,
+        user_id: str = "default",
+        category: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        top_k: int = 15,
+        include_status: bool = True,
+    ) -> dict:
+        """Search visible tools with backend ranking."""
+        return await self._get(
+            f"/users/{_path_param(user_id)}/tools/search",
+            params=_clean_params(
+                query=query,
+                category=category,
+                thread_id=thread_id,
+                top_k=top_k,
+                include_status=str(include_status).lower(),
+            ),
+            act_as=user_id,
+        )
+
     async def get_tool_preferences(self, user_id: str = "default") -> dict:
         """Get user tool preferences."""
         return await self._get(

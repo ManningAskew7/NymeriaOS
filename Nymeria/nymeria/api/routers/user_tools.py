@@ -3,11 +3,12 @@
 from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ...core.accounts import AuthenticatedUser
 from ...core.time_utils import utc_now
+from ..schemas.tools import ToolSearchResponse
 
 
 class ToolConfigRequest(BaseModel):
@@ -96,6 +97,39 @@ def create_user_tools_router(
             "by_category": by_category,
             "total": len(tools_list),
         }
+
+    @router.get("/users/{user_id}/tools/search", response_model=ToolSearchResponse)
+    async def search_user_tools(
+        user_id: str,
+        query: str = Query(default=""),
+        category: str = Query(default=""),
+        thread_id: Optional[str] = Query(default=None),
+        top_k: int = Query(default=15, ge=1, le=50),
+        include_status: bool = Query(default=True),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Search the visible tool catalog with backend ranking."""
+        require_same_user_or_admin_fn(user, user_id)
+        agent = get_agent_fn()
+
+        if thread_id:
+            owner = agent.accounts_repo.get_thread_owner(thread_id)
+            if owner and owner != user_id and user.role != "admin":
+                raise HTTPException(status_code=404, detail="Thread not found")
+
+        from ...core.tool_search_index import search_tools
+
+        result = search_tools(
+            query,
+            category=category,
+            user_id=user_id,
+            user_role=user.role,
+            agent=agent,
+            thread_id=thread_id,
+            top_k=top_k,
+            include_status=include_status,
+        )
+        return result.to_json()
 
     @router.get("/users/{user_id}/tools/preferences", response_model=ToolPreferencesResponse)
     async def get_tool_preferences(

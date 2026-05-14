@@ -17,6 +17,7 @@
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import { platformAfterCallableChange } from '$lib/utils/threadPlatform';
+  import { filterToolSearch } from '$lib/utils/toolSearch';
   import MCPServerForm from '$lib/components/tools/MCPServerForm.svelte';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
@@ -125,7 +126,12 @@
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
       .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
-      .map(t => ({ name: t.name, description: t.description }));
+      .map(t => ({
+        name: t.name,
+        description: t.description,
+        category: t.category,
+        securityLevel: t.security_level,
+      }));
   });
 
   // MCP tools grouped by server. Default MCP tools can be disabled for this
@@ -229,15 +235,26 @@
 
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
-    if (!toolSearch.trim()) return allTools;
-    const q = toolSearch.toLowerCase();
-    return allTools.filter(
-      (t: UnifiedTool) =>
-        t.name.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.category.toLowerCase().includes(q)
-    );
+    return filterToolSearch(allTools, toolSearch, (tool: UnifiedTool) => ({
+      id: tool.id,
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      tags: tool.tags,
+      toolType: tool.toolType,
+      implementationType: tool.implementationType,
+    }));
   });
+
+  const filteredOptionalTools = $derived.by(() =>
+    filterToolSearch(optionalTools, toolSearch, (tool) => ({
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      tags: [tool.securityLevel, 'optional'],
+      toolType: 'optional',
+    }))
+  );
 
   const disabledToolCount = $derived([...disabledTools].filter((name) => !isMcpToolName(name)).length);
   const enabledToolCount = $derived([...enabledTools].filter((name) => !isMcpToolName(name)).length);
@@ -943,22 +960,28 @@
               <p class="hint">Not in your core set. Enable for this thread only.</p>
             </div>
             <div class="tools-list">
-              {#each optionalTools as tool (tool.name)}
-                <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
-                  <div class="tool-info">
-                    <span class="tool-name">{tool.name}</span>
-                    <span class="tool-desc">{tool.description}</span>
-                  </div>
-                  <button
-                    class="toggle-btn"
-                    class:off={!enabledTools.has(tool.name)}
-                    onclick={() => toggleOptionalTool(tool.name)}
-                    type="button"
-                  >
-                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                  </button>
+              {#if filteredOptionalTools.length === 0}
+                <div class="loading-state">
+                  {toolSearch.trim() ? 'No optional tools match your search.' : 'No optional tools available.'}
                 </div>
-              {/each}
+              {:else}
+                {#each filteredOptionalTools as tool (tool.name)}
+                  <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
+                    <div class="tool-info">
+                      <span class="tool-name">{tool.name}</span>
+                      <span class="tool-desc">{tool.description}</span>
+                    </div>
+                    <button
+                      class="toggle-btn"
+                      class:off={!enabledTools.has(tool.name)}
+                      onclick={() => toggleOptionalTool(tool.name)}
+                      type="button"
+                    >
+                      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    </button>
+                  </div>
+                {/each}
+              {/if}
             </div>
           {/if}
 

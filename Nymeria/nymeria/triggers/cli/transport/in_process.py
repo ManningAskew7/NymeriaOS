@@ -56,7 +56,7 @@ class InProcessAgentClient:
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, item)
             except RuntimeError:
-                pass
+                pass  # Event loop closed while worker was winding down.
 
         def worker() -> None:
             try:
