@@ -36,7 +36,7 @@ class WebhookSource(BaseTriggerSource):
         "Webhook triggers fire when an external service sends an HTTP POST to "
         "your trigger's unique URL.\n\n"
         "1. Create the trigger and copy the fire URL shown after creation.\n"
-        "2. Paste the URL into your external service (Tasker, IFTTT, Zapier, n8n, etc.).\n"
+        "2. Paste the URL into your external service, workflow tool, or local script.\n"
         "3. Send a JSON body — all keys become available as `{template_variables}` in your action template.\n\n"
         "Set a **shared secret** and include it as the `secret` query parameter."
     )

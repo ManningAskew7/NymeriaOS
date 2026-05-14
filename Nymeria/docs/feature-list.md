@@ -223,12 +223,12 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ---
 
-## 7. Event-Driven Triggers (N8N-Inspired)
+## 7. Event-Driven Triggers (Automation-Style)
 
 ### Trigger Sources (6 types, plugin auto-registration)
 | Source | Type | Description |
 |--------|------|-------------|
-| **Webhook** | Push | HTTP POST from external services (IFTTT, Zapier, n8n, Tasker) with optional secret |
+| **Webhook** | Push | HTTP POST from external services, workflow tools, or local scripts with optional secret |
 | **Outlook Email** | Poll | Microsoft 365 inbox monitoring with triple deduplication, folder/sender/subject/importance filters, attachment pass-through |
 | **RSS/Atom** | Poll | Feed monitoring (blogs, YouTube, GitHub, Reddit) |
 | **HTTP Poll** | Poll | URL monitoring with fire modes: change, status_code, contains, always |

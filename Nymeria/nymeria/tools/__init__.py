@@ -93,14 +93,14 @@ from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
 from .image_generation import image_generate, IMAGE_GENERATION_TOOLS
-from .n8n_langchain import (
+from .utility_integrations import (
     calculator,
     wikipedia_search,
     wolfram_alpha_query,
     searxng_search,
-    N8N_LANGCHAIN_TOOLS,
+    UTILITY_INTEGRATION_TOOLS,
 )
-from .n8n_public_info import (
+from .public_info_integrations import (
     coingecko_price,
     coingecko_coin_markets,
     hackernews_search,
@@ -114,7 +114,7 @@ from .n8n_public_info import (
     openweathermap_current,
     openweathermap_forecast,
     quickchart_create_url,
-    N8N_PUBLIC_INFO_TOOLS,
+    PUBLIC_INFO_TOOLS,
 )
 from ..core.self_agent import SELF_AGENT_TOOLS
 
@@ -162,8 +162,8 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
     + IMAGE_GENERATION_TOOLS
-    + N8N_LANGCHAIN_TOOLS
-    + N8N_PUBLIC_INFO_TOOLS
+    + UTILITY_INTEGRATION_TOOLS
+    + PUBLIC_INFO_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -278,7 +278,7 @@ __all__ = [
     "wikipedia_search",
     "wolfram_alpha_query",
     "searxng_search",
-    "N8N_LANGCHAIN_TOOLS",
+    "UTILITY_INTEGRATION_TOOLS",
     "coingecko_price",
     "coingecko_coin_markets",
     "hackernews_search",
@@ -292,7 +292,7 @@ __all__ = [
     "openweathermap_current",
     "openweathermap_forecast",
     "quickchart_create_url",
-    "N8N_PUBLIC_INFO_TOOLS",
+    "PUBLIC_INFO_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

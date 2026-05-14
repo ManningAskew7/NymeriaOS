@@ -47,7 +47,7 @@ def _use_repo(monkeypatch, repo: CredentialVaultRepo) -> None:
 
 
 def test_calculator_evaluates_safe_math():
-    from nymeria.tools.n8n_langchain import calculator
+    from nymeria.tools.utility_integrations import calculator
 
     assert calculator.func("2 + 3 * 4") == "14"
     assert calculator.func("sqrt(81) + round(pi, 2)") == "12.14"
@@ -55,7 +55,7 @@ def test_calculator_evaluates_safe_math():
 
 
 def test_wikipedia_search_uses_langchain_wrapper(monkeypatch):
-    from nymeria.tools.n8n_langchain import wikipedia_search
+    from nymeria.tools.utility_integrations import wikipedia_search
 
     captured = {}
 
@@ -101,7 +101,7 @@ def test_wikipedia_search_uses_langchain_wrapper(monkeypatch):
 
 
 def test_wolfram_alpha_query_uses_configured_app_id(monkeypatch):
-    from nymeria.tools.n8n_langchain import wolfram_alpha_query
+    from nymeria.tools.utility_integrations import wolfram_alpha_query
 
     captured = {}
 
@@ -139,7 +139,7 @@ def test_wolfram_alpha_query_uses_configured_app_id(monkeypatch):
 
 
 def test_wolfram_alpha_query_uses_vault_app_id(tmp_path, monkeypatch):
-    from nymeria.tools.n8n_langchain import wolfram_alpha_query
+    from nymeria.tools.utility_integrations import wolfram_alpha_query
 
     repo = _repo(tmp_path, monkeypatch)
     _use_repo(monkeypatch, repo)
@@ -190,7 +190,7 @@ def test_wolfram_alpha_query_uses_vault_app_id(tmp_path, monkeypatch):
 
 
 def test_searxng_search_uses_configured_base_url(monkeypatch):
-    from nymeria.tools.n8n_langchain import searxng_search
+    from nymeria.tools.utility_integrations import searxng_search
 
     captured = {}
 
@@ -242,7 +242,7 @@ def test_searxng_search_uses_configured_base_url(monkeypatch):
 
 
 def test_searxng_search_uses_vault_base_url(tmp_path, monkeypatch):
-    from nymeria.tools.n8n_langchain import searxng_search
+    from nymeria.tools.utility_integrations import searxng_search
 
     repo = _repo(tmp_path, monkeypatch)
     _use_repo(monkeypatch, repo)
@@ -281,7 +281,7 @@ def test_searxng_search_uses_vault_base_url(tmp_path, monkeypatch):
     assert captured["init"]["searx_host"] == "https://vault-searx.example/search"
 
 
-def test_n8n_langchain_tools_are_optional_integrations():
+def test_utility_integrations_tools_are_optional_integrations():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 

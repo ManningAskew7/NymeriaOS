@@ -31,7 +31,7 @@ def _use_repo(monkeypatch, repo: CredentialVaultRepo) -> None:
 
 
 def test_coingecko_price_builds_simple_price_request(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     captured = {}
 
@@ -55,7 +55,7 @@ def test_coingecko_price_builds_simple_price_request(monkeypatch):
 
 
 def test_hackernews_get_item_can_drop_comments(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     monkeypatch.setattr(
         tools,
@@ -69,7 +69,7 @@ def test_hackernews_get_item_can_drop_comments(monkeypatch):
 
 
 def test_npm_package_info_uses_configured_registry(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     captured = {}
 
@@ -87,7 +87,7 @@ def test_npm_package_info_uses_configured_registry(monkeypatch):
 
 
 def test_npm_package_info_uses_vault_registry_and_token(tmp_path, monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     repo = _repo(tmp_path, monkeypatch)
     _use_repo(monkeypatch, repo)
@@ -125,7 +125,7 @@ def test_npm_package_info_uses_vault_registry_and_token(tmp_path, monkeypatch):
 
 
 def test_open_thesaurus_synonyms_maps_options(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     captured = {}
 
@@ -155,7 +155,7 @@ def test_open_thesaurus_synonyms_maps_options(monkeypatch):
 
 
 def test_rss_feed_read_parses_feed(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     xml = """<?xml version="1.0"?>
     <rss version="2.0">
@@ -187,7 +187,7 @@ def test_rss_feed_read_parses_feed(monkeypatch):
 
 
 def test_nasa_apod_requires_key_and_sends_key(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     assert "NASA_API_KEY" in tools.nasa_apod.func()
 
@@ -212,7 +212,7 @@ def test_nasa_apod_requires_key_and_sends_key(monkeypatch):
 
 
 def test_nasa_apod_uses_vault_credential(tmp_path, monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     repo = _repo(tmp_path, monkeypatch)
     _use_repo(monkeypatch, repo)
@@ -246,7 +246,7 @@ def test_nasa_apod_uses_vault_credential(tmp_path, monkeypatch):
 
 
 def test_openweathermap_current_uses_city_location(monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     captured = {}
 
@@ -268,7 +268,7 @@ def test_openweathermap_current_uses_city_location(monkeypatch):
 
 
 def test_openweathermap_current_uses_vault_credential(tmp_path, monkeypatch):
-    from nymeria.tools import n8n_public_info as tools
+    from nymeria.tools import public_info_integrations as tools
 
     repo = _repo(tmp_path, monkeypatch)
     _use_repo(monkeypatch, repo)
@@ -302,7 +302,7 @@ def test_openweathermap_current_uses_vault_credential(tmp_path, monkeypatch):
 
 
 def test_quickchart_create_url_returns_encoded_chart():
-    from nymeria.tools.n8n_public_info import quickchart_create_url
+    from nymeria.tools.public_info_integrations import quickchart_create_url
 
     result = json.loads(
         quickchart_create_url.func(
