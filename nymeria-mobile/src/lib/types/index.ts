@@ -963,6 +963,15 @@ export interface ServerSettingsUpdate {
   harvest_access_token?: string | null;
   harvest_account_id?: string | null;
   harvest_base_url?: string | null;
+  oura_access_token?: string | null;
+  oura_base_url?: string | null;
+  strava_access_token?: string | null;
+  strava_base_url?: string | null;
+  homeassistant_access_token?: string | null;
+  homeassistant_base_url?: string | null;
+  philips_hue_access_token?: string | null;
+  philips_hue_username?: string | null;
+  philips_hue_base_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

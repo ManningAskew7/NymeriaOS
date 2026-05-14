@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (425)
+### Optional: Service Integration Tools (450)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -503,6 +503,31 @@ in the credential vault for provider-specific saved connections scoped to
 | 423 | `harvest_update_time_entry` | Integrations | MODERATE | Update a Harvest time entry |
 | 424 | `harvest_stop_time_entry` | Integrations | MODERATE | Stop a running Harvest time entry |
 | 425 | `harvest_delete_time_entry` | Integrations | MODERATE | Delete a Harvest time entry |
+| 426 | `oura_get_profile` | Integrations | SAFE | Get the authenticated Oura profile |
+| 427 | `oura_get_daily_activity` | Integrations | SAFE | Get Oura daily activity summaries |
+| 428 | `oura_get_daily_readiness` | Integrations | SAFE | Get Oura daily readiness summaries |
+| 429 | `oura_get_daily_sleep` | Integrations | SAFE | Get Oura daily sleep summaries |
+| 430 | `strava_list_activities` | Integrations | SAFE | List Strava activities |
+| 431 | `strava_get_activity` | Integrations | SAFE | Get a Strava activity |
+| 432 | `strava_create_activity` | Integrations | MODERATE | Create a manual Strava activity |
+| 433 | `strava_update_activity` | Integrations | MODERATE | Update a Strava activity |
+| 434 | `strava_list_activity_comments` | Integrations | SAFE | List Strava activity comments |
+| 435 | `strava_get_activity_streams` | Integrations | SAFE | Get Strava activity streams |
+| 436 | `homeassistant_get_config` | Integrations | SAFE | Get Home Assistant configuration metadata |
+| 437 | `homeassistant_check_config` | Integrations | MODERATE | Run Home Assistant config checks |
+| 438 | `homeassistant_list_states` | Integrations | SAFE | List Home Assistant states |
+| 439 | `homeassistant_get_state` | Integrations | SAFE | Get a Home Assistant state |
+| 440 | `homeassistant_set_state` | Integrations | MODERATE | Create or update a Home Assistant state |
+| 441 | `homeassistant_list_services` | Integrations | SAFE | List Home Assistant services |
+| 442 | `homeassistant_call_service` | Integrations | MODERATE | Call a Home Assistant service |
+| 443 | `homeassistant_list_events` | Integrations | SAFE | List Home Assistant event types |
+| 444 | `homeassistant_fire_event` | Integrations | MODERATE | Fire a Home Assistant event |
+| 445 | `homeassistant_render_template` | Integrations | MODERATE | Render a Home Assistant template |
+| 446 | `homeassistant_get_logbook` | Integrations | SAFE | Get Home Assistant logbook entries |
+| 447 | `philips_hue_list_lights` | Integrations | SAFE | List Philips Hue lights |
+| 448 | `philips_hue_get_light` | Integrations | SAFE | Get a Philips Hue light |
+| 449 | `philips_hue_update_light_state` | Integrations | MODERATE | Update Philips Hue light state |
+| 450 | `philips_hue_delete_light` | Integrations | MODERATE | Delete a Philips Hue light |
 
 ### Optional: Private B Tools (4)
 
@@ -1069,7 +1094,10 @@ connections in Settings > Connections with these provider names and fields:
 `reddit.refresh_token` plus app credentials, `discourse.base_url`,
 `medium.access_token`, `bamboohr.api_key` plus `bamboohr.subdomain`,
 `beeminder.auth_token`, `clockify.api_key`, and `harvest.access_token` plus
-`harvest.account_id`, plus `github.access_token` and `gitlab.access_token`. GitHub credentials can also
+`harvest.account_id`, `oura.access_token`, `strava.access_token`,
+`homeassistant.base_url` plus `homeassistant.access_token`, and
+`philips_hue.access_token` plus `philips_hue.username`, plus
+`github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
@@ -1187,6 +1215,20 @@ Credential providers and fallback env vars:
 - Beeminder: provider `beeminder`, fields `auth_token`, `access_token`, `api_key`, or `value`; env fallback `BEEMINDER_ACCESS_TOKEN`.
 - Clockify: provider `clockify`, fields `api_key` or `value`; env fallback `CLOCKIFY_API_KEY`.
 - Harvest: provider `harvest`, fields `access_token` and `account_id`, optional `base_url`; env fallbacks `HARVEST_ACCESS_TOKEN`, `HARVEST_ACCOUNT_ID`, and `HARVEST_BASE_URL`.
+
+### Personal Device Service Tools
+
+This batch includes:
+- `oura_get_profile()`, `oura_get_daily_activity(start_date?, end_date?, limit?)`, `oura_get_daily_readiness(start_date?, end_date?, limit?)`, and `oura_get_daily_sleep(start_date?, end_date?, limit?)`.
+- `strava_list_activities(before?, after?, limit?)`, `strava_get_activity(activity_id, include_all_efforts?)`, `strava_create_activity(...)`, `strava_update_activity(activity_id, fields_json)`, `strava_list_activity_comments(activity_id, limit?)`, and `strava_get_activity_streams(activity_id, keys?, key_by_type?)`.
+- `homeassistant_get_config()`, `homeassistant_check_config()`, `homeassistant_list_states(limit?)`, `homeassistant_get_state(entity_id)`, `homeassistant_set_state(entity_id, state, attributes_json?)`, `homeassistant_list_services(limit?)`, `homeassistant_call_service(domain, service, data_json?)`, `homeassistant_list_events(limit?)`, `homeassistant_fire_event(event_type, data_json?)`, `homeassistant_render_template(template)`, and `homeassistant_get_logbook(...)`.
+- `philips_hue_list_lights(limit?)`, `philips_hue_get_light(light_id)`, `philips_hue_update_light_state(...)`, and `philips_hue_delete_light(light_id)`. Hue tools require an existing bridge username; they do not press the bridge link button or create a Hue user implicitly.
+
+Credential providers and fallback env vars:
+- Oura: provider `oura`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `OURA_ACCESS_TOKEN`.
+- Strava: provider `strava`, fields `access_token`, `token`, or `value`; env fallback `STRAVA_ACCESS_TOKEN`.
+- Home Assistant: provider `homeassistant`, fields `base_url` and `access_token`; env fallbacks `HOMEASSISTANT_BASE_URL` and `HOMEASSISTANT_ACCESS_TOKEN`.
+- Philips Hue: provider `philips_hue`, fields `access_token` and `username`, optional `base_url`; env fallbacks `PHILIPS_HUE_ACCESS_TOKEN`, `PHILIPS_HUE_USERNAME`, and `PHILIPS_HUE_BASE_URL`.
 
 ### Developer Platform Tools
 
