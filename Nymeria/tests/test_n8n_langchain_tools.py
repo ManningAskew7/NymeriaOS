@@ -3,6 +3,10 @@ import sys
 import types
 
 import pytest
+from cryptography.fernet import Fernet
+
+from nymeria.core.accounts import AccountsRepo
+from nymeria.core.credential_vault import CredentialVaultRepo
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +30,20 @@ def _install_langchain_community_parents(monkeypatch):
     _module(monkeypatch, "langchain_community")
     _module(monkeypatch, "langchain_community.tools")
     _module(monkeypatch, "langchain_community.utilities")
+
+
+def _repo(tmp_path, monkeypatch) -> CredentialVaultRepo:
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    db_path = tmp_path / "accounts.db"
+    accounts = AccountsRepo(db_path)
+    accounts.create_user("alice", "alice@example.com", "Alice")
+    return CredentialVaultRepo(db_path)
+
+
+def _use_repo(monkeypatch, repo: CredentialVaultRepo) -> None:
+    import nymeria.core.credential_vault as credential_vault
+
+    monkeypatch.setattr(credential_vault, "get_credential_vault_repo", lambda: repo)
 
 
 def test_calculator_evaluates_safe_math():
@@ -120,6 +138,57 @@ def test_wolfram_alpha_query_uses_configured_app_id(monkeypatch):
     assert captured["query"] == "population of Sydney"
 
 
+def test_wolfram_alpha_query_uses_vault_app_id(tmp_path, monkeypatch):
+    from nymeria.tools.n8n_langchain import wolfram_alpha_query
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Wolfram Alpha",
+        provider="wolfram_alpha",
+        kind="api_key",
+        allowed_targets=["native_tool:wolfram_alpha_query"],
+        secret_fields={"app_id": "vault-app-id"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    class FakeWolframAlphaAPIWrapper:
+        def __init__(self, **kwargs):
+            captured["wrapper"] = kwargs
+
+    class FakeWolframAlphaQueryRun:
+        def __init__(self, *, api_wrapper):
+            captured["tool_wrapper"] = api_wrapper
+
+        def invoke(self, query):
+            captured["query"] = query
+            return "vault wolfram result"
+
+    _install_langchain_community_parents(monkeypatch)
+    _module(monkeypatch, "langchain_community.tools.wolfram_alpha")
+    _module(
+        monkeypatch,
+        "langchain_community.tools.wolfram_alpha.tool",
+        WolframAlphaQueryRun=FakeWolframAlphaQueryRun,
+    )
+    _module(
+        monkeypatch,
+        "langchain_community.utilities.wolfram_alpha",
+        WolframAlphaAPIWrapper=FakeWolframAlphaAPIWrapper,
+    )
+
+    result = wolfram_alpha_query.func(
+        "population of Sydney",
+        config={"configurable": {"user_id": "alice"}},
+    )
+
+    assert result == "vault wolfram result"
+    assert captured["wrapper"] == {"wolfram_alpha_appid": "vault-app-id"}
+
+
 def test_searxng_search_uses_configured_base_url(monkeypatch):
     from nymeria.tools.n8n_langchain import searxng_search
 
@@ -170,6 +239,46 @@ def test_searxng_search_uses_configured_base_url(monkeypatch):
         "engines": ["duckduckgo", "brave"],
         "pageno": 2,
     }
+
+
+def test_searxng_search_uses_vault_base_url(tmp_path, monkeypatch):
+    from nymeria.tools.n8n_langchain import searxng_search
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="SearXNG",
+        provider="searxng",
+        kind="api_key",
+        allowed_targets=["native_tool:searxng_search"],
+        secret_fields={"base_url": "https://vault-searx.example/search"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    class FakeSearxSearchWrapper:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        def results(self, query, num_results, categories, engines, **kwargs):
+            return [{"title": "Vault Result"}]
+
+    _install_langchain_community_parents(monkeypatch)
+    _module(
+        monkeypatch,
+        "langchain_community.utilities.searx_search",
+        SearxSearchWrapper=FakeSearxSearchWrapper,
+    )
+
+    result = searxng_search.func(
+        query="nymeria",
+        config={"configurable": {"user_id": "alice"}},
+    )
+
+    assert json.loads(result) == [{"title": "Vault Result"}]
+    assert captured["init"]["searx_host"] == "https://vault-searx.example/search"
 
 
 def test_n8n_langchain_tools_are_optional_integrations():

@@ -176,7 +176,7 @@
         </label>
         <label class="wide">
           <span>Allowed Target</span>
-          <input bind:value={formAllowedTarget} placeholder="mcp_server:gmail or custom_tool:linear_search" />
+          <input bind:value={formAllowedTarget} placeholder="native_tool:nasa_apod, mcp_server:gmail, or custom_tool:linear_search" />
         </label>
       </div>
       {#if formError}
