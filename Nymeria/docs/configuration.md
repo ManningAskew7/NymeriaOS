@@ -79,6 +79,13 @@ Set the API key for your chosen provider:
 | `GITHUB_API_BASE_URL` | GitHub | Optional GitHub API base URL; defaults to `https://api.github.com` |
 | `GITLAB_TOKEN` | GitLab | Optional env fallback for GitLab developer-platform tools; credential vault provider `gitlab` is preferred |
 | `GITLAB_BASE_URL` | GitLab | Optional GitLab API base URL or instance URL; defaults to `https://gitlab.com/api/v4` |
+| `CIRCLECI_API_TOKEN` | CircleCI | Optional env fallback for CircleCI build tools; credential vault provider `circleci` is preferred |
+| `CIRCLECI_BASE_URL` | CircleCI | Optional CircleCI API base URL override |
+| `TRAVISCI_API_TOKEN` | Travis CI | Optional env fallback for Travis CI build tools; credential vault provider `travisci` is preferred |
+| `TRAVISCI_BASE_URL` | Travis CI | Optional Travis CI API base URL override |
+| `JENKINS_BASE_URL` | Jenkins | Optional Jenkins instance URL fallback; credential vault provider `jenkins` is preferred |
+| `JENKINS_USERNAME` | Jenkins | Optional Jenkins username fallback |
+| `JENKINS_API_TOKEN` | Jenkins | Optional Jenkins API token fallback |
 | `BITLY_TOKEN` | Bitly | Optional env fallback for Bitly tools; credential vault provider `bitly` is preferred |
 | `BITLY_BASE_URL` | Bitly | Optional Bitly API base URL override |
 | `BRANDFETCH_API_KEY` | Brandfetch | Optional env fallback for Brandfetch tools; credential vault provider `brandfetch` is preferred |
@@ -483,6 +490,13 @@ reachable from the backend process.
 | `GITHUB_API_BASE_URL` | `https://api.github.com` | GitHub API base URL |
 | `GITLAB_TOKEN` | - | GitLab API token fallback for developer-platform tools |
 | `GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API base URL or instance URL |
+| `CIRCLECI_API_TOKEN` | - | CircleCI API token fallback |
+| `CIRCLECI_BASE_URL` | `https://circleci.com/api/v2` | CircleCI API base URL |
+| `TRAVISCI_API_TOKEN` | - | Travis CI API token fallback |
+| `TRAVISCI_BASE_URL` | `https://api.travis-ci.com` | Travis CI API base URL |
+| `JENKINS_BASE_URL` | - | Jenkins instance URL fallback |
+| `JENKINS_USERNAME` | - | Jenkins username fallback |
+| `JENKINS_API_TOKEN` | - | Jenkins API token fallback |
 | `BITLY_TOKEN` | - | Bitly API token fallback |
 | `BITLY_BASE_URL` | `https://api-ssl.bitly.com/v4` | Bitly API base URL |
 | `BRANDFETCH_API_KEY` | - | Brandfetch API key fallback |

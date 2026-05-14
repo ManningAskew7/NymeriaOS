@@ -12,7 +12,6 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 import httpx
 
@@ -28,13 +27,18 @@ from ..config.llm_providers import (
 from ..config.model_capabilities import register_model_metadata
 from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from .llm_credentials import get_llm_provider_credential
+from .llm_provider_utils import (
+    base_url_allows_no_api_key,
+    extract_model_metadata,
+    first_float,
+    http_error_detail,
+    redact_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
 StepStatus = Literal["passed", "failed", "warning", "skipped"]
 ApiMode = Literal["chat_completions", "responses"]
-
-_LOCAL_MODEL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 _OPENROUTER_HEADERS = {
     "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
     "X-Title": "Nymeria",
@@ -122,45 +126,6 @@ class ProviderTestSuiteReport:
         }
 
 
-def _redact_secrets(text: str, *secrets: str | None) -> str:
-    redacted = text
-    for secret in secrets:
-        if secret:
-            redacted = redacted.replace(secret, "[redacted]")
-    return redacted
-
-
-def _http_error_detail(response: httpx.Response, *secrets: str | None) -> str:
-    try:
-        body = response.json()
-    except ValueError:
-        text = response.text.strip()
-        return _redact_secrets(text, *secrets)[:300] or response.reason_phrase
-
-    message: str | None = None
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict):
-            candidate = error.get("message")
-            if isinstance(candidate, str) and candidate.strip():
-                message = candidate.strip()
-        if message is None:
-            candidate = body.get("message")
-            if isinstance(candidate, str) and candidate.strip():
-                message = candidate.strip()
-
-    return _redact_secrets(message or response.reason_phrase, *secrets)[:300]
-
-
-def _base_url_allows_no_api_key(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    parse_target = base_url if "://" in base_url else f"http://{base_url}"
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-    return (parsed.hostname or "").lower() in _LOCAL_MODEL_HOSTS
 
 
 def _normalize_openai_base_url(provider: str, base_url: str | None) -> str | None:
@@ -176,92 +141,6 @@ def _append_endpoint(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
 
-def _first_int(source: dict[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        value = source.get(key)
-        if value is None:
-            continue
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0:
-            return parsed
-    return None
-
-
-def _first_float(source: dict[str, Any], *keys: str) -> float | None:
-    for key in keys:
-        value = source.get(key)
-        if value is None:
-            continue
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed >= 0:
-            return parsed
-    return None
-
-
-def _model_metadata(model: dict[str, Any]) -> dict[str, Any]:
-    architecture = model.get("architecture") or {}
-    if not isinstance(architecture, dict):
-        architecture = {}
-    top_provider = model.get("top_provider") or {}
-    if not isinstance(top_provider, dict):
-        top_provider = {}
-    pricing = model.get("pricing") or {}
-    if not isinstance(pricing, dict):
-        pricing = {}
-    defaults = model.get("default_parameters") or model.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        defaults = {}
-
-    raw_supported = model.get("supported_parameters") or model.get("supported_params") or []
-    if not isinstance(raw_supported, (list, tuple, set)):
-        raw_supported = []
-    raw_modalities = (
-        model.get("input_modalities")
-        or architecture.get("input_modalities")
-        or model.get("modalities")
-        or []
-    )
-    if not isinstance(raw_modalities, (list, tuple, set)):
-        raw_modalities = []
-
-    return {
-        "context_length": (
-            _first_int(
-                model,
-                "context_length",
-                "context_window",
-                "context_size",
-                "max_context_length",
-                "max_context_tokens",
-                "input_token_limit",
-                "max_input_tokens",
-            )
-            or _first_int(top_provider, "context_length", "max_context_tokens")
-        ),
-        "max_completion_tokens": (
-            _first_int(
-                model,
-                "max_completion_tokens",
-                "max_output_tokens",
-                "output_token_limit",
-            )
-            or _first_int(top_provider, "max_completion_tokens", "max_output_tokens")
-        ),
-        "supported_parameters": [str(param) for param in raw_supported if param],
-        "input_modalities": [str(modality) for modality in raw_modalities if modality],
-        "tokenizer": architecture.get("tokenizer") or model.get("tokenizer"),
-        "default_temperature": _first_float(defaults, "temperature"),
-        "default_top_p": _first_float(defaults, "top_p"),
-        "default_frequency_penalty": _first_float(defaults, "frequency_penalty"),
-        "pricing_prompt": _first_float(pricing, "prompt"),
-        "pricing_completion": _first_float(pricing, "completion"),
-    }
 
 
 def _extract_models(body: Any) -> list[dict[str, Any]]:
@@ -301,8 +180,8 @@ def _is_free_model(model: dict[str, Any] | None, *, local_provider: bool) -> boo
     pricing = model.get("pricing")
     if not isinstance(pricing, dict):
         return None
-    prompt = _first_float(pricing, "prompt")
-    completion = _first_float(pricing, "completion")
+    prompt = first_float(pricing, "prompt")
+    completion = first_float(pricing, "completion")
     if prompt is None and completion is None:
         return None
     return (prompt or 0) == 0 and (completion or 0) == 0
@@ -435,7 +314,7 @@ async def _timed_get(
                 ProviderTestStep(
                     name="model_list",
                     status=status,
-                    message=f"Provider /models returned HTTP {response.status_code}: {_http_error_detail(response, *secrets)}",
+                    message=f"Provider /models returned HTTP {response.status_code}: {http_error_detail(response, *secrets)}",
                     url=url,
                     status_code=response.status_code,
                     latency_ms=latency_ms,
@@ -470,7 +349,7 @@ async def _timed_get(
             ProviderTestStep(
                 name="model_list",
                 status="warning",
-                message=_redact_secrets(str(exc), *secrets)[:300],
+                message=redact_secrets(str(exc), *secrets)[:300],
                 url=url,
                 error_type=type(exc).__name__,
             ),
@@ -498,7 +377,7 @@ async def _timed_post(
                 ProviderTestStep(
                     name=step_name,
                     status="failed",
-                    message=f"Provider returned HTTP {response.status_code}: {_http_error_detail(response, *secrets)}",
+                    message=f"Provider returned HTTP {response.status_code}: {http_error_detail(response, *secrets)}",
                     url=url,
                     status_code=response.status_code,
                     latency_ms=latency_ms,
@@ -547,7 +426,7 @@ async def _timed_post(
             ProviderTestStep(
                 name=step_name,
                 status="failed",
-                message=_redact_secrets(str(exc), *secrets)[:300],
+                message=redact_secrets(str(exc), *secrets)[:300],
                 url=url,
                 error_type=type(exc).__name__,
             ),
@@ -737,7 +616,7 @@ async def run_provider_test_suite(
             )
         clean_base_url = _normalize_openai_base_url(provider, base_url)
 
-    local_provider = _base_url_allows_no_api_key(clean_base_url)
+    local_provider = base_url_allows_no_api_key(clean_base_url)
     if not api_key and provider_requires_api_key(provider) and not local_provider:
         steps.append(
             ProviderTestStep(
@@ -835,7 +714,7 @@ async def run_provider_test_suite(
             local_provider=local_provider,
         )
         if selected_metadata:
-            metadata = _model_metadata(selected_metadata)
+            metadata = extract_model_metadata(selected_metadata)
             register_model_metadata(
                 model_id=selected_model or str(selected_metadata.get("id") or ""),
                 name=str(selected_metadata.get("name") or selected_model or ""),
@@ -861,7 +740,7 @@ async def run_provider_test_suite(
                     metadata={
                         "requested_model": bool(options.model),
                         "free_model": model_is_free,
-                        **(_model_metadata(selected_metadata) if selected_metadata else {}),
+                        **(extract_model_metadata(selected_metadata) if selected_metadata else {}),
                     },
                 )
             )
@@ -967,7 +846,7 @@ async def run_provider_test_suite(
                     )
                 )
             else:
-                supported_params = set(_model_metadata(selected_metadata or {}).get("supported_parameters") or [])
+                supported_params = set(extract_model_metadata(selected_metadata or {}).get("supported_parameters") or [])
                 if selected_metadata and supported_params and "tools" not in supported_params:
                     steps.append(
                         ProviderTestStep(

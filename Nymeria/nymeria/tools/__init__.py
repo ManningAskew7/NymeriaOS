@@ -258,6 +258,28 @@ from .developer_platform_integrations import (
     gitlab_list_user_projects,
     DEVELOPER_PLATFORM_TOOLS,
 )
+from .build_ci_service_integrations import (
+    circleci_list_pipelines,
+    circleci_get_pipeline,
+    circleci_trigger_pipeline,
+    travisci_list_builds,
+    travisci_get_build,
+    travisci_trigger_build,
+    travisci_restart_build,
+    travisci_cancel_build,
+    jenkins_get_instance,
+    jenkins_list_jobs,
+    jenkins_list_job_builds,
+    jenkins_trigger_job,
+    jenkins_trigger_job_with_parameters,
+    jenkins_copy_job,
+    jenkins_create_job,
+    jenkins_quiet_down,
+    jenkins_cancel_quiet_down,
+    jenkins_restart_instance,
+    jenkins_shutdown_instance,
+    BUILD_CI_SERVICE_TOOLS,
+)
 from .business_service_integrations import (
     bitly_get_bitlink,
     bitly_create_bitlink,
@@ -735,6 +757,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + PERSONAL_DEVICE_SERVICE_TOOLS
     + MARKETING_CONTACT_SERVICE_TOOLS
     + DEVELOPER_PLATFORM_TOOLS
+    + BUILD_CI_SERVICE_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
     + BOOKMARK_LINK_SERVICE_TOOLS
@@ -1012,6 +1035,26 @@ __all__ = [
     "gitlab_get_project_release",
     "gitlab_list_user_projects",
     "DEVELOPER_PLATFORM_TOOLS",
+    "circleci_list_pipelines",
+    "circleci_get_pipeline",
+    "circleci_trigger_pipeline",
+    "travisci_list_builds",
+    "travisci_get_build",
+    "travisci_trigger_build",
+    "travisci_restart_build",
+    "travisci_cancel_build",
+    "jenkins_get_instance",
+    "jenkins_list_jobs",
+    "jenkins_list_job_builds",
+    "jenkins_trigger_job",
+    "jenkins_trigger_job_with_parameters",
+    "jenkins_copy_job",
+    "jenkins_create_job",
+    "jenkins_quiet_down",
+    "jenkins_cancel_quiet_down",
+    "jenkins_restart_instance",
+    "jenkins_shutdown_instance",
+    "BUILD_CI_SERVICE_TOOLS",
     "bitly_get_bitlink",
     "bitly_create_bitlink",
     "bitly_update_bitlink",

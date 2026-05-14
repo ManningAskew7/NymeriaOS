@@ -6,6 +6,7 @@ Falls back to static lists if API is unavailable.
 
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
@@ -65,6 +66,7 @@ _live_model_cache: Dict[str, ModelInfo] = {}
 _cache_timestamp: float = 0
 _cache_populated: bool = False
 _CACHE_TTL_SECONDS = 3600  # Refresh cache every hour
+_cache_lock = threading.Lock()
 
 # Default context limits for common models (fallback when API unavailable)
 DEFAULT_CONTEXT_LIMITS = {
@@ -308,18 +310,15 @@ def _ensure_cache() -> Dict[str, ModelInfo]:
     global _model_cache, _cache_timestamp, _cache_populated
 
     now = time.time()
-    if not _cache_populated or (now - _cache_timestamp) > _CACHE_TTL_SECONDS:
-        result = _fetch_openrouter_models()
+    if _cache_populated and (now - _cache_timestamp) <= _CACHE_TTL_SECONDS:
+        return _model_cache
+
+    result = _fetch_openrouter_models()
+    with _cache_lock:
         if result:
-            # Preserve live provider metadata registered from /models endpoints.
-            # OpenRouter is a broad catalog; the active provider's own metadata
-            # is usually more authoritative for the exact ID it returned.
             _model_cache = {**result, **_model_cache}
-            _cache_timestamp = now
+            _cache_timestamp = time.time()
             _cache_populated = True
-        elif not _cache_populated:
-            # First fetch failed — allow retry on next call
-            pass
 
     return _model_cache
 
@@ -613,11 +612,13 @@ def refresh_capabilities_cache() -> int:
     """Force refresh the capabilities cache."""
     global _model_cache, _cache_timestamp, _cache_populated
 
-    _model_cache = _fetch_openrouter_models()
-    _cache_timestamp = time.time()
-    _cache_populated = True
+    result = _fetch_openrouter_models()
+    with _cache_lock:
+        _model_cache = result
+        _cache_timestamp = time.time()
+        _cache_populated = True
 
-    return len(_model_cache)
+    return len(result)
 
 
 def register_model_metadata(
@@ -646,55 +647,56 @@ def register_model_metadata(
         return
 
     key = model_id.lower()
-    existing = _model_cache.get(key)
-    info = ModelInfo(
-        id=model_id,
-        name=name or (existing.name if existing else model_id),
-        context_length=(
-            context_length
-            if context_length and context_length > 0
-            else (existing.context_length if existing else 0)
-        ),
-        max_completion_tokens=(
-            max_completion_tokens
-            if max_completion_tokens and max_completion_tokens > 0
-            else (existing.max_completion_tokens if existing else None)
-        ),
-        input_modalities=input_modalities
-        if input_modalities is not None
-        else (existing.input_modalities.copy() if existing else set()),
-        supported_parameters=supported_parameters
-        if supported_parameters is not None
-        else (existing.supported_parameters.copy() if existing else set()),
-        default_temperature=(
-            default_temperature
-            if default_temperature is not None
-            else (existing.default_temperature if existing else None)
-        ),
-        default_top_p=(
-            default_top_p
-            if default_top_p is not None
-            else (existing.default_top_p if existing else None)
-        ),
-        default_frequency_penalty=(
-            default_frequency_penalty
-            if default_frequency_penalty is not None
-            else (existing.default_frequency_penalty if existing else None)
-        ),
-        pricing_prompt=(
-            pricing_prompt
-            if pricing_prompt is not None
-            else (existing.pricing_prompt if existing else None)
-        ),
-        pricing_completion=(
-            pricing_completion
-            if pricing_completion is not None
-            else (existing.pricing_completion if existing else None)
-        ),
-        tokenizer=tokenizer or (existing.tokenizer if existing else None),
-    )
-    _live_model_cache[key] = info
-    _model_cache[key] = info
+    with _cache_lock:
+        existing = _model_cache.get(key)
+        info = ModelInfo(
+            id=model_id,
+            name=name or (existing.name if existing else model_id),
+            context_length=(
+                context_length
+                if context_length and context_length > 0
+                else (existing.context_length if existing else 0)
+            ),
+            max_completion_tokens=(
+                max_completion_tokens
+                if max_completion_tokens and max_completion_tokens > 0
+                else (existing.max_completion_tokens if existing else None)
+            ),
+            input_modalities=input_modalities
+            if input_modalities is not None
+            else (existing.input_modalities.copy() if existing else set()),
+            supported_parameters=supported_parameters
+            if supported_parameters is not None
+            else (existing.supported_parameters.copy() if existing else set()),
+            default_temperature=(
+                default_temperature
+                if default_temperature is not None
+                else (existing.default_temperature if existing else None)
+            ),
+            default_top_p=(
+                default_top_p
+                if default_top_p is not None
+                else (existing.default_top_p if existing else None)
+            ),
+            default_frequency_penalty=(
+                default_frequency_penalty
+                if default_frequency_penalty is not None
+                else (existing.default_frequency_penalty if existing else None)
+            ),
+            pricing_prompt=(
+                pricing_prompt
+                if pricing_prompt is not None
+                else (existing.pricing_prompt if existing else None)
+            ),
+            pricing_completion=(
+                pricing_completion
+                if pricing_completion is not None
+                else (existing.pricing_completion if existing else None)
+            ),
+            tokenizer=tokenizer or (existing.tokenizer if existing else None),
+        )
+        _live_model_cache[key] = info
+        _model_cache[key] = info
 
 
 def get_context_limit(model_id: str) -> int:
@@ -783,7 +785,8 @@ def get_model_info(model_id: str) -> Optional[ModelInfo]:
 def list_all_models() -> List[ModelInfo]:
     """Return all cached model metadata entries."""
     cache = _ensure_cache()
-    return list(cache.values())
+    merged = {**cache, **_live_model_cache}
+    return list(merged.values())
 
 
 def get_cache_timestamp() -> float:

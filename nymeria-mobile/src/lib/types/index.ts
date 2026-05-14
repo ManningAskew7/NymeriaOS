@@ -760,6 +760,13 @@ export interface ServerSettingsUpdate {
   github_api_base_url?: string | null;
   gitlab_token?: string | null;
   gitlab_base_url?: string | null;
+  circleci_api_token?: string | null;
+  circleci_base_url?: string | null;
+  travisci_api_token?: string | null;
+  travisci_base_url?: string | null;
+  jenkins_base_url?: string | null;
+  jenkins_username?: string | null;
+  jenkins_api_token?: string | null;
   bitly_token?: string | null;
   bitly_base_url?: string | null;
   brandfetch_api_key?: string | null;
@@ -1035,7 +1042,7 @@ export interface ServerSettingsUpdate {
 export interface LLMProviderTestRequest {
   llm_provider: LLMProvider;
   llm_model: string;
-  api_key: string;
+  api_key?: string | null;
   llm_base_url?: string | null;
   openai_api_mode?: OpenAIApiMode | null;
 }
