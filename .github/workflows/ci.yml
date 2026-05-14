@@ -41,6 +41,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Neutralize git-crypt encrypted files for CI
+        run: |
+          for f in Nymeria/.env.docker Nymeria/.env; do
+            if [ -f "$f" ] && head -c 10 "$f" 2>/dev/null | grep -aq GITCRYPT; then
+              printf '# Placeholder for CI (original is git-crypt encrypted)\n' > "$f"
+              echo "Neutralized encrypted file: $f"
+            fi
+          done
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
