@@ -262,6 +262,15 @@ class ServerSettingsUpdate(BaseModel):
     jina_reader_base_url: Optional[str] = None
     jina_search_base_url: Optional[str] = None
     jina_deepsearch_base_url: Optional[str] = None
+    baserow_api_token: Optional[str] = None
+    baserow_base_url: Optional[str] = None
+    nocodb_api_token: Optional[str] = None
+    nocodb_base_url: Optional[str] = None
+    nocodb_auth_header: Optional[str] = None
+    coda_api_token: Optional[str] = None
+    coda_base_url: Optional[str] = None
+    grist_api_key: Optional[str] = None
+    grist_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

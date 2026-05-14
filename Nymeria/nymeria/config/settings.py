@@ -550,6 +550,15 @@ class Settings(BaseSettings):
     jina_reader_base_url: str = Field(default="https://r.jina.ai", description="Jina Reader API base URL")
     jina_search_base_url: str = Field(default="https://s.jina.ai", description="Jina Search API base URL")
     jina_deepsearch_base_url: str = Field(default="https://deepsearch.jina.ai/v1", description="Jina DeepSearch API base URL")
+    baserow_api_token: Optional[str] = Field(default=None, description="Baserow API or database token fallback")
+    baserow_base_url: str = Field(default="https://api.baserow.io", description="Baserow API base URL")
+    nocodb_api_token: Optional[str] = Field(default=None, description="NocoDB API token fallback")
+    nocodb_base_url: str = Field(default="https://app.nocodb.com", description="NocoDB API base URL")
+    nocodb_auth_header: str = Field(default="xc-token", description="NocoDB auth header name: xc-token or xc-auth")
+    coda_api_token: Optional[str] = Field(default=None, description="Coda API token fallback")
+    coda_base_url: str = Field(default="https://coda.io/apis/v1", description="Coda API base URL")
+    grist_api_key: Optional[str] = Field(default=None, description="Grist API key fallback")
+    grist_base_url: str = Field(default="https://docs.getgrist.com/api", description="Grist API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (306)
+### Optional: Service Integration Tools (339)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -384,6 +384,39 @@ in the credential vault for provider-specific saved connections scoped to
 | 304 | `jina_reader_fetch_url` | Integrations | SAFE | Fetch a URL through Jina Reader |
 | 305 | `jina_search_web` | Integrations | SAFE | Search the web through Jina Search |
 | 306 | `jina_deep_research` | Integrations | MODERATE | Run a Jina DeepSearch research query |
+| 307 | `baserow_list_tables` | Integrations | SAFE | List Baserow tables |
+| 308 | `baserow_list_fields` | Integrations | SAFE | List Baserow table fields |
+| 309 | `baserow_list_rows` | Integrations | SAFE | List Baserow table rows |
+| 310 | `baserow_get_row` | Integrations | SAFE | Get a Baserow row |
+| 311 | `baserow_create_row` | Integrations | MODERATE | Create a Baserow row |
+| 312 | `baserow_update_row` | Integrations | MODERATE | Update a Baserow row |
+| 313 | `baserow_delete_row` | Integrations | MODERATE | Delete a Baserow row |
+| 314 | `nocodb_list_bases` | Integrations | SAFE | List NocoDB bases |
+| 315 | `nocodb_get_base` | Integrations | SAFE | Get NocoDB base metadata |
+| 316 | `nocodb_list_records` | Integrations | SAFE | List NocoDB records |
+| 317 | `nocodb_get_record` | Integrations | SAFE | Get a NocoDB record |
+| 318 | `nocodb_count_records` | Integrations | SAFE | Count NocoDB records |
+| 319 | `nocodb_create_record` | Integrations | MODERATE | Create a NocoDB record |
+| 320 | `nocodb_update_record` | Integrations | MODERATE | Update a NocoDB record |
+| 321 | `nocodb_delete_record` | Integrations | MODERATE | Delete a NocoDB record |
+| 322 | `coda_list_docs` | Integrations | SAFE | List Coda docs |
+| 323 | `coda_list_tables` | Integrations | SAFE | List Coda tables and views |
+| 324 | `coda_list_table_rows` | Integrations | SAFE | List Coda table rows |
+| 325 | `coda_get_table_row` | Integrations | SAFE | Get a Coda table row |
+| 326 | `coda_create_table_row` | Integrations | MODERATE | Create a Coda table row |
+| 327 | `coda_update_table_row` | Integrations | MODERATE | Update a Coda table row |
+| 328 | `coda_delete_table_row` | Integrations | MODERATE | Delete a Coda table row |
+| 329 | `coda_list_formulas` | Integrations | SAFE | List Coda formulas |
+| 330 | `coda_list_controls` | Integrations | SAFE | List Coda controls |
+| 331 | `grist_list_orgs` | Integrations | SAFE | List Grist organizations |
+| 332 | `grist_list_workspaces` | Integrations | SAFE | List Grist workspaces |
+| 333 | `grist_list_docs` | Integrations | SAFE | List Grist docs |
+| 334 | `grist_list_tables` | Integrations | SAFE | List Grist tables |
+| 335 | `grist_list_columns` | Integrations | SAFE | List Grist table columns |
+| 336 | `grist_list_records` | Integrations | SAFE | List Grist table records |
+| 337 | `grist_create_record` | Integrations | MODERATE | Create a Grist record |
+| 338 | `grist_update_record` | Integrations | MODERATE | Update a Grist record |
+| 339 | `grist_delete_records` | Integrations | MODERATE | Delete Grist records |
 
 ### Optional: Private B Tools (4)
 
@@ -1226,6 +1259,20 @@ Credential providers and fallback env vars:
 - Mailcheck: provider `mailcheck`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `MAILCHECK_API_KEY`. Use `base_url` / `url` or `MAILCHECK_BASE_URL` for non-default API roots.
 - Peekalink: provider `peekalink`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `PEEKALINK_API_KEY`. Use `base_url` / `url` or `PEEKALINK_BASE_URL` for non-default API roots.
 - Jina AI: provider `jina`, fields `api_key`, `apiKey`, `access_token`, `token`, or `value`; env fallback `JINA_API_KEY`. Reader/Search can run without a key where Jina allows anonymous usage; DeepSearch requires a saved credential or env key. Base URL overrides are `JINA_READER_BASE_URL`, `JINA_SEARCH_BASE_URL`, and `JINA_DEEPSEARCH_BASE_URL`.
+
+### Data Table Service Tools
+
+This batch includes:
+- `baserow_list_tables(...)`, `baserow_list_fields(table_id)`, `baserow_list_rows(table_id, ...)`, `baserow_get_row(table_id, row_id)`, `baserow_create_row(table_id, fields_json, ...)`, `baserow_update_row(table_id, row_id, fields_json, ...)`, and `baserow_delete_row(table_id, row_id)`. Reads are SAFE; create/update/delete are MODERATE because they change table data.
+- `nocodb_list_bases(...)`, `nocodb_get_base(base_id, ...)`, `nocodb_list_records(base_id, table_id, ...)`, `nocodb_get_record(base_id, table_id, record_id)`, `nocodb_count_records(base_id, table_id, ...)`, `nocodb_create_record(base_id, table_id, fields_json)`, `nocodb_update_record(base_id, table_id, record_id, fields_json)`, and `nocodb_delete_record(base_id, table_id, record_id)`. Reads are SAFE; create/update/delete are MODERATE.
+- `coda_list_docs(...)`, `coda_list_tables(doc_id, ...)`, `coda_list_table_rows(doc_id, table_id, ...)`, `coda_get_table_row(doc_id, table_id, row_id, ...)`, `coda_create_table_row(doc_id, table_id, cells_json, ...)`, `coda_update_table_row(doc_id, table_id, row_id, cells_json, ...)`, `coda_delete_table_row(doc_id, table_id, row_id)`, `coda_list_formulas(doc_id, ...)`, and `coda_list_controls(doc_id, ...)`. Reads are SAFE; row writes/deletes are MODERATE.
+- `grist_list_orgs()`, `grist_list_workspaces(org_id)`, `grist_list_docs(workspace_id)`, `grist_list_tables(doc_id)`, `grist_list_columns(doc_id, table_id)`, `grist_list_records(doc_id, table_id, ...)`, `grist_create_record(doc_id, table_id, fields_json)`, `grist_update_record(doc_id, table_id, record_id, fields_json)`, and `grist_delete_records(doc_id, table_id, row_ids)`. Reads are SAFE; record writes/deletes are MODERATE.
+
+Credential providers and fallback env vars:
+- Baserow: provider `baserow`, fields `token`, `api_token`, `apiKey`, `api_key`, `database_token`, or `value`; env fallback `BASEROW_API_TOKEN`. Use `base_url` / `host` / `url` or `BASEROW_BASE_URL` for self-hosted Baserow.
+- NocoDB: provider `nocodb`, fields `api_token`, `apiToken`, `token`, `access_token`, `api_key`, or `value`; env fallback `NOCODB_API_TOKEN`. Use `base_url` / `host` / `url` or `NOCODB_BASE_URL` for self-hosted NocoDB. `NOCODB_AUTH_HEADER` defaults to `xc-token`; set `xc-auth` when using a user token.
+- Coda: provider `coda`, fields `access_token`, `api_token`, `api_key`, `token`, or `value`; env fallback `CODA_API_TOKEN`. Use `base_url` / `url` or `CODA_BASE_URL` for non-default API roots.
+- Grist: provider `grist`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `GRIST_API_KEY`. Use `base_url` / `url` or `GRIST_BASE_URL` for paid-team or self-hosted API roots.
 
 ### tool_enable
 
