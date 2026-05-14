@@ -78,11 +78,6 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Debug auth
-        run: |
-          echo "Token length: ${#CLAUDE_CODE_OAUTH_TOKEN}"
-          env | grep -i 'ANTHROPIC\|CLAUDE_CODE' | sed 's/=.*/=***/' | sort
-
       - name: Review push to main
         run: |
           claude -p "CI just finished with result: ${{ github.event.workflow_run.conclusion }}
