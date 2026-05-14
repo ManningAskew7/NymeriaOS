@@ -821,6 +821,10 @@ export interface ServerSettingsUpdate {
   trello_api_key?: string | null;
   trello_api_token?: string | null;
   trello_base_url?: string | null;
+  asana_access_token?: string | null;
+  asana_base_url?: string | null;
+  linear_api_key?: string | null;
+  linear_api_url?: string | null;
   llm_stream_max_retries?: number;
   llm_stream_retry_initial_delay?: number;
   llm_stream_retry_max_delay?: number;

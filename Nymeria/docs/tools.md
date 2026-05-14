@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (58)
+### Optional: Service Integration Tools (80)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -136,6 +136,28 @@ in the credential vault for provider-specific saved connections scoped to
 | 56 | `trello_create_card` | Integrations | MODERATE | Create a Trello card |
 | 57 | `trello_update_card` | Integrations | MODERATE | Update a Trello card |
 | 58 | `trello_add_card_comment` | Integrations | MODERATE | Add a comment to a Trello card |
+| 59 | `asana_get_user` | Integrations | SAFE | Get an Asana user by ID or `me` |
+| 60 | `asana_list_users` | Integrations | SAFE | List Asana users in a workspace |
+| 61 | `asana_list_projects` | Integrations | SAFE | List Asana projects by workspace or team |
+| 62 | `asana_get_project` | Integrations | SAFE | Get an Asana project by GID |
+| 63 | `asana_create_project` | Integrations | MODERATE | Create an Asana project in a team |
+| 64 | `asana_update_project` | Integrations | MODERATE | Update an Asana project |
+| 65 | `asana_list_tasks` | Integrations | SAFE | List Asana tasks by project or workspace filters |
+| 66 | `asana_search_tasks` | Integrations | SAFE | Search Asana tasks in a workspace |
+| 67 | `asana_get_task` | Integrations | SAFE | Get an Asana task by GID |
+| 68 | `asana_create_task` | Integrations | MODERATE | Create an Asana task |
+| 69 | `asana_create_subtask` | Integrations | MODERATE | Create an Asana subtask |
+| 70 | `asana_update_task` | Integrations | MODERATE | Update an Asana task |
+| 71 | `asana_add_task_comment` | Integrations | MODERATE | Add a comment/story to an Asana task |
+| 72 | `linear_list_teams` | Integrations | SAFE | List Linear teams |
+| 73 | `linear_list_users` | Integrations | SAFE | List Linear users |
+| 74 | `linear_list_workflow_states` | Integrations | SAFE | List Linear workflow states |
+| 75 | `linear_list_issues` | Integrations | SAFE | List Linear issues |
+| 76 | `linear_get_issue` | Integrations | SAFE | Get a Linear issue by ID or identifier |
+| 77 | `linear_create_issue` | Integrations | MODERATE | Create a Linear issue |
+| 78 | `linear_update_issue` | Integrations | MODERATE | Update a Linear issue |
+| 79 | `linear_add_issue_comment` | Integrations | MODERATE | Add a comment to a Linear issue |
+| 80 | `linear_add_issue_link` | Integrations | MODERATE | Attach a URL link to a Linear issue |
 
 ### Optional: Private B Tools (4)
 
@@ -702,7 +724,8 @@ provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, and `deepl.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
-`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Scope a
+`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Work-tracking
+credentials use `asana.access_token` and `linear.api_key`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -815,6 +838,16 @@ This batch includes:
 Credential providers and fallback env vars:
 - Todoist: provider `todoist`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `TODOIST_API_KEY`. Use `base_url` / `url` or `TODOIST_BASE_URL` for non-default API roots.
 - Trello: provider `trello`, fields `api_key` / `key` and `api_token` / `token` / `value`; env fallback `TRELLO_API_KEY` plus `TRELLO_API_TOKEN`. Use `base_url` / `url` or `TRELLO_BASE_URL` for non-default API roots.
+
+### Work Tracking Service Tools
+
+This batch includes:
+- `asana_get_user(user_gid?)`, `asana_list_users(workspace_gid, limit?)`, `asana_list_projects(workspace_gid?, team_gid?, archived?, limit?)`, `asana_get_project(project_gid, opt_fields?)`, `asana_create_project(...)`, `asana_update_project(...)`, `asana_list_tasks(...)`, `asana_search_tasks(...)`, `asana_get_task(task_gid, opt_fields?)`, `asana_create_task(...)`, `asana_create_subtask(...)`, `asana_update_task(...)`, and `asana_add_task_comment(task_gid, text, is_html?)`. Create/update/comment operations are MODERATE because they change Asana state.
+- `linear_list_teams(limit?)`, `linear_list_users(limit?)`, `linear_list_workflow_states(team_id?, limit?)`, `linear_list_issues(team_id?, assignee_id?, state_id?, limit?)`, `linear_get_issue(issue_id)`, `linear_create_issue(...)`, `linear_update_issue(...)`, `linear_add_issue_comment(issue_id, body, parent_id?)`, and `linear_add_issue_link(issue_id, url)`. Create/update/comment/link operations are MODERATE because they change Linear state.
+
+Credential providers and fallback env vars:
+- Asana: provider `asana`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `ASANA_ACCESS_TOKEN`. Use `base_url` / `url` or `ASANA_BASE_URL` for non-default API roots.
+- Linear: provider `linear`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `LINEAR_API_KEY`. Use `api_url` / `graphql_url` / `base_url` / `url` or `LINEAR_API_URL` for non-default GraphQL endpoints.
 
 ### tool_enable
 
