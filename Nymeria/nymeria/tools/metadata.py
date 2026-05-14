@@ -143,6 +143,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "DEVELOPER_PLATFORM_TOOLS",
             "BUSINESS_SERVICE_TOOLS",
             "PRODUCTIVITY_SERVICE_TOOLS",
+            "WORK_TRACKING_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -271,6 +272,18 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "trello_list_board_lists",
         "trello_list_cards",
         "trello_get_card",
+        "asana_get_user",
+        "asana_list_users",
+        "asana_list_projects",
+        "asana_get_project",
+        "asana_list_tasks",
+        "asana_search_tasks",
+        "asana_get_task",
+        "linear_list_teams",
+        "linear_list_users",
+        "linear_list_workflow_states",
+        "linear_list_issues",
+        "linear_get_issue",
     }
 )
 

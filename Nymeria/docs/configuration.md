@@ -93,6 +93,10 @@ Set the API key for your chosen provider:
 | `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
 | `TRELLO_API_TOKEN` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
 | `TRELLO_BASE_URL` | Trello | Optional Trello API base URL override |
+| `ASANA_ACCESS_TOKEN` | Asana | Optional env fallback for Asana tools; credential vault provider `asana` is preferred |
+| `ASANA_BASE_URL` | Asana | Optional Asana API base URL override |
+| `LINEAR_API_KEY` | Linear | Optional env fallback for Linear tools; credential vault provider `linear` is preferred |
+| `LINEAR_API_URL` | Linear | Optional Linear GraphQL API URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -267,6 +271,10 @@ reachable from the backend process.
 | `TRELLO_API_KEY` | - | Trello API key fallback |
 | `TRELLO_API_TOKEN` | - | Trello API token fallback |
 | `TRELLO_BASE_URL` | `https://api.trello.com/1` | Trello API base URL |
+| `ASANA_ACCESS_TOKEN` | - | Asana personal access token fallback |
+| `ASANA_BASE_URL` | `https://app.asana.com/api/1.0` | Asana API base URL |
+| `LINEAR_API_KEY` | - | Linear API key fallback |
+| `LINEAR_API_URL` | `https://api.linear.app/graphql` | Linear GraphQL API URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

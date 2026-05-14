@@ -403,6 +403,10 @@ class Settings(BaseSettings):
     trello_api_key: Optional[str] = Field(default=None, description="Trello API key fallback")
     trello_api_token: Optional[str] = Field(default=None, description="Trello API token fallback")
     trello_base_url: str = Field(default="https://api.trello.com/1", description="Trello API base URL")
+    asana_access_token: Optional[str] = Field(default=None, description="Asana personal access token fallback")
+    asana_base_url: str = Field(default="https://app.asana.com/api/1.0", description="Asana API base URL")
+    linear_api_key: Optional[str] = Field(default=None, description="Linear API key fallback")
+    linear_api_url: str = Field(default="https://api.linear.app/graphql", description="Linear GraphQL API URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

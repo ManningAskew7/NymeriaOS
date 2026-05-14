@@ -166,6 +166,31 @@ from .productivity_service_integrations import (
     trello_add_card_comment,
     PRODUCTIVITY_SERVICE_TOOLS,
 )
+from .work_tracking_service_integrations import (
+    asana_get_user,
+    asana_list_users,
+    asana_list_projects,
+    asana_get_project,
+    asana_create_project,
+    asana_update_project,
+    asana_list_tasks,
+    asana_search_tasks,
+    asana_get_task,
+    asana_create_task,
+    asana_create_subtask,
+    asana_update_task,
+    asana_add_task_comment,
+    linear_list_teams,
+    linear_list_users,
+    linear_list_workflow_states,
+    linear_list_issues,
+    linear_get_issue,
+    linear_create_issue,
+    linear_update_issue,
+    linear_add_issue_comment,
+    linear_add_issue_link,
+    WORK_TRACKING_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -217,6 +242,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + DEVELOPER_PLATFORM_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
+    + WORK_TRACKING_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -390,6 +416,29 @@ __all__ = [
     "trello_update_card",
     "trello_add_card_comment",
     "PRODUCTIVITY_SERVICE_TOOLS",
+    "asana_get_user",
+    "asana_list_users",
+    "asana_list_projects",
+    "asana_get_project",
+    "asana_create_project",
+    "asana_update_project",
+    "asana_list_tasks",
+    "asana_search_tasks",
+    "asana_get_task",
+    "asana_create_task",
+    "asana_create_subtask",
+    "asana_update_task",
+    "asana_add_task_comment",
+    "linear_list_teams",
+    "linear_list_users",
+    "linear_list_workflow_states",
+    "linear_list_issues",
+    "linear_get_issue",
+    "linear_create_issue",
+    "linear_update_issue",
+    "linear_add_issue_comment",
+    "linear_add_issue_link",
+    "WORK_TRACKING_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
