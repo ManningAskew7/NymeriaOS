@@ -97,6 +97,12 @@ Set the API key for your chosen provider:
 | `ASANA_BASE_URL` | Asana | Optional Asana API base URL override |
 | `LINEAR_API_KEY` | Linear | Optional env fallback for Linear tools; credential vault provider `linear` is preferred |
 | `LINEAR_API_URL` | Linear | Optional Linear GraphQL API URL override |
+| `JIRA_EMAIL` | Jira | Optional env fallback email for Jira basic auth; credential vault provider `jira` is preferred |
+| `JIRA_API_TOKEN` | Jira | Optional env fallback token for Jira basic auth |
+| `JIRA_ACCESS_TOKEN` | Jira | Optional env fallback bearer token for Jira |
+| `JIRA_BASE_URL` | Jira | Jira Cloud site base URL, such as `https://example.atlassian.net` |
+| `CLICKUP_ACCESS_TOKEN` | ClickUp | Optional env fallback for ClickUp tools; credential vault provider `clickup` is preferred |
+| `CLICKUP_BASE_URL` | ClickUp | Optional ClickUp API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -275,6 +281,12 @@ reachable from the backend process.
 | `ASANA_BASE_URL` | `https://app.asana.com/api/1.0` | Asana API base URL |
 | `LINEAR_API_KEY` | - | Linear API key fallback |
 | `LINEAR_API_URL` | `https://api.linear.app/graphql` | Linear GraphQL API URL |
+| `JIRA_EMAIL` | - | Jira Cloud account email fallback |
+| `JIRA_API_TOKEN` | - | Jira Cloud API token fallback |
+| `JIRA_ACCESS_TOKEN` | - | Jira OAuth/bearer token fallback |
+| `JIRA_BASE_URL` | - | Jira Cloud site base URL |
+| `CLICKUP_ACCESS_TOKEN` | - | ClickUp access token fallback |
+| `CLICKUP_BASE_URL` | `https://api.clickup.com/api/v2` | ClickUp API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
