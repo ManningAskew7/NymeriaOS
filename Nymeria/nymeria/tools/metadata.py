@@ -152,6 +152,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "MESSAGING_DELIVERY_SERVICE_TOOLS",
             "COMMERCE_BILLING_SERVICE_TOOLS",
             "NOTIFICATION_SERVICE_TOOLS",
+            "CONTENT_MANAGEMENT_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -377,6 +378,16 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "chargebee_get_record",
         "pushbullet_list_pushes",
         "gotify_list_messages",
+        "wordpress_list_records",
+        "wordpress_get_record",
+        "strapi_list_entries",
+        "strapi_get_entry",
+        "contentful_list_records",
+        "contentful_get_record",
+        "ghost_list_posts",
+        "ghost_get_post",
+        "storyblok_list_stories",
+        "storyblok_get_story",
     }
 )
 

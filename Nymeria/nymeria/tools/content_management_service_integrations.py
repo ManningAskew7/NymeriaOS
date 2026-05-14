@@ -1,0 +1,1361 @@
+"""Content management and publishing service integration tools."""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import time
+from typing import Annotated, Any, Optional
+from urllib.parse import quote, urlparse
+
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
+
+logger = logging.getLogger(__name__)
+
+_HTTP_TIMEOUT = 30.0
+_MAX_JSON_CHARS = 80_000
+_CONTENTFUL_BASE_URL = "https://cdn.contentful.com"
+_CONTENTFUL_PREVIEW_BASE_URL = "https://preview.contentful.com"
+_GHOST_API_VERSION = "v5.0"
+_STORYBLOK_CONTENT_BASE_URL = "https://api.storyblok.com/v2/cdn"
+_STORYBLOK_MANAGEMENT_BASE_URL = "https://mapi.storyblok.com/v1"
+
+_WORDPRESS_RESOURCES = {
+    "post": "posts",
+    "posts": "posts",
+    "page": "pages",
+    "pages": "pages",
+    "user": "users",
+    "users": "users",
+}
+_CONTENTFUL_RESOURCES = {
+    "entry": "entries",
+    "entries": "entries",
+    "asset": "assets",
+    "assets": "assets",
+    "content_type": "content_types",
+    "content_types": "content_types",
+    "locale": "locales",
+    "locales": "locales",
+}
+
+
+def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
+    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+
+
+def _filtered(params: Optional[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (params or {}).items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def _limit(value: int, *, default: int = 25, max_value: int = 500) -> int:
+    try:
+        return max(1, min(max_value, int(value)))
+    except Exception:
+        return default
+
+
+def _base_url(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("base URL must be an absolute http(s) URL")
+    return value.strip().rstrip("/")
+
+
+def _parse_json(value: str, *, expected: type, label: str) -> Any:
+    if not value.strip():
+        return {} if expected is dict else []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{label} must be valid JSON: {e}") from e
+    if not isinstance(parsed, expected):
+        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
+    return parsed
+
+
+def _normal_resource(resource: str, mapping: dict[str, str]) -> str:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in mapping:
+        raise ValueError(f"Unsupported resource {resource!r}. Supported: {', '.join(sorted(mapping))}.")
+    return mapping[key]
+
+
+def _settings_value(name: str) -> Optional[str]:
+    from ..config import get_settings
+
+    return getattr(get_settings(), name)
+
+
+def _credential_value(
+    *,
+    provider: str,
+    field_names: tuple[str, ...],
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    provider_aliases: tuple[str, ...] = (),
+) -> Optional[str]:
+    from .native_credentials import get_native_credential_value
+
+    credential = get_native_credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    )
+    return credential.value if credential else None
+
+
+def _setup_hint(
+    *,
+    provider: str,
+    field_names: tuple[str, ...],
+    tool_name: str,
+    env_var: str,
+    display_name: str,
+) -> str:
+    from .native_credentials import native_credential_setup_hint
+
+    return native_credential_setup_hint(
+        provider=provider,
+        field_names=field_names,
+        tool_name=tool_name,
+        env_var=env_var,
+        display_name=display_name,
+    )
+
+
+def _request_json(
+    method: str,
+    url: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> Any:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.request(
+                method,
+                url,
+                params=_filtered(params) if params is not None else None,
+                json=json_body,
+                headers=headers,
+            )
+            response.raise_for_status()
+            if response.status_code == 204 or not response.content:
+                return {"status": "ok", "status_code": response.status_code}
+            try:
+                return response.json()
+            except ValueError:
+                return {"status": "ok", "status_code": response.status_code, "text": response.text}
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            body = e.response.json()
+            detail = (
+                body.get("message")
+                or body.get("error")
+                or body.get("error_description")
+                or body.get("detail")
+                or body.get("errorMessage")
+                or ""
+            )
+            if not detail and isinstance(body.get("errors"), list):
+                detail = "; ".join(str(item) for item in body["errors"][:3])
+        except Exception:
+            detail = e.response.text[:300]
+        raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
+
+
+def _auth_basic(username: str, password: str) -> str:
+    return base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
+def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="wordpress",
+            provider_aliases=("wordpress_api",),
+            field_names=("base_url", "url", "site_url", "wordpress_url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("wordpress_url")
+    )
+    username = _credential_value(
+        provider="wordpress",
+        provider_aliases=("wordpress_api",),
+        field_names=("username", "user", "email"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("wordpress_username")
+    password = _credential_value(
+        provider="wordpress",
+        provider_aliases=("wordpress_api",),
+        field_names=("password", "application_password", "applicationPassword", "app_password", "appPassword"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("wordpress_password")
+    if not base:
+        return "", (
+            "[Error]: No WordPress URL found. Save a WordPress credential with "
+            '"url" / "site_url", or set WORDPRESS_URL.'
+        )
+    base = _base_url(base)
+    if not base.endswith("/wp-json/wp/v2"):
+        base = f"{base}/wp-json/wp/v2"
+    if not username or not password:
+        return base, _setup_hint(
+            provider="wordpress",
+            field_names=("username", "password", "application_password"),
+            tool_name=tool_name,
+            env_var="WORDPRESS_USERNAME + WORDPRESS_PASSWORD",
+            display_name="WordPress",
+        )
+    return base, {
+        "Accept": "application/json",
+        "Authorization": f"Basic {_auth_basic(username, password)}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="strapi",
+            provider_aliases=("strapi_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("strapi_url")
+    )
+    version = (
+        _credential_value(
+            provider="strapi",
+            provider_aliases=("strapi_api",),
+            field_names=("api_version", "apiVersion", "version"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("strapi_api_version")
+        or "v4"
+    ).lower()
+    if not base:
+        return "", version, (
+            "[Error]: No Strapi URL found. Save a Strapi credential with "
+            '"url" / "base_url", or set STRAPI_URL.'
+        )
+    base = _base_url(base)
+    api_root = base if version == "v3" else (base if base.endswith("/api") else f"{base}/api")
+    token = _credential_value(
+        provider="strapi",
+        provider_aliases=("strapi_api",),
+        field_names=("api_token", "apiToken", "jwt", "access_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("strapi_api_token")
+    if not token:
+        email = _credential_value(
+            provider="strapi",
+            provider_aliases=("strapi_api",),
+            field_names=("email", "identifier", "username"),
+            tool_name=tool_name,
+            config=config,
+        ) or _settings_value("strapi_email")
+        password = _credential_value(
+            provider="strapi",
+            provider_aliases=("strapi_api",),
+            field_names=("password",),
+            tool_name=tool_name,
+            config=config,
+        ) or _settings_value("strapi_password")
+        if email and password:
+            login_url = f"{api_root}/auth/local"
+            login_data = _request_json(
+                "POST",
+                login_url,
+                json_body={"identifier": email, "password": password},
+                headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"},
+            )
+            token = login_data.get("jwt") if isinstance(login_data, dict) else None
+    if not token:
+        return api_root, version, _setup_hint(
+            provider="strapi",
+            field_names=("api_token", "jwt", "token", "value"),
+            tool_name=tool_name,
+            env_var="STRAPI_API_TOKEN or STRAPI_EMAIL + STRAPI_PASSWORD",
+            display_name="Strapi",
+        )
+    return api_root, version, {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _strapi_payload(fields: dict[str, Any], version: str) -> dict[str, Any]:
+    return fields if version == "v3" else {"data": fields}
+
+
+def _contentful_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    source: str,
+) -> tuple[str, str, dict[str, str] | str]:
+    space_id = _credential_value(
+        provider="contentful",
+        provider_aliases=("contentful_api",),
+        field_names=("space_id", "spaceId"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("contentful_space_id")
+    if source == "preview":
+        token = _credential_value(
+            provider="contentful",
+            provider_aliases=("contentful_api",),
+            field_names=("preview_token", "ContentPreviewaccessToken", "content_preview_access_token"),
+            tool_name=tool_name,
+            config=config,
+        ) or _settings_value("contentful_preview_token")
+        base = (
+            _credential_value(
+                provider="contentful",
+                provider_aliases=("contentful_api",),
+                field_names=("preview_base_url",),
+                tool_name=tool_name,
+                config=config,
+            )
+            or _settings_value("contentful_preview_base_url")
+            or _CONTENTFUL_PREVIEW_BASE_URL
+        )
+        env_var = "CONTENTFUL_PREVIEW_TOKEN"
+    else:
+        token = _credential_value(
+            provider="contentful",
+            provider_aliases=("contentful_api",),
+            field_names=("delivery_token", "ContentDeliveryaccessToken", "content_delivery_access_token", "token"),
+            tool_name=tool_name,
+            config=config,
+        ) or _settings_value("contentful_delivery_token")
+        base = (
+            _credential_value(
+                provider="contentful",
+                provider_aliases=("contentful_api",),
+                field_names=("base_url", "url"),
+                tool_name=tool_name,
+                config=config,
+            )
+            or _settings_value("contentful_base_url")
+            or _CONTENTFUL_BASE_URL
+        )
+        env_var = "CONTENTFUL_DELIVERY_TOKEN"
+    if not space_id:
+        return _base_url(base), "", (
+            "[Error]: No Contentful space ID found. Save a Contentful credential with "
+            '"space_id" / "spaceId", or set CONTENTFUL_SPACE_ID.'
+        )
+    if not token:
+        return _base_url(base), space_id, _setup_hint(
+            provider="contentful",
+            field_names=("delivery_token", "preview_token", "token"),
+            tool_name=tool_name,
+            env_var=env_var,
+            display_name="Contentful",
+        )
+    return _base_url(base), space_id, {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _ghost_site_url(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
+    value = (
+        _credential_value(
+            provider="ghost",
+            provider_aliases=("ghost_admin_api", "ghost_content_api"),
+            field_names=("url", "base_url", "site_url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("ghost_url")
+    )
+    return _base_url(value) if value else None
+
+
+def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
+    admin_key = _credential_value(
+        provider="ghost",
+        provider_aliases=("ghost_admin_api",),
+        field_names=("admin_api_key", "apiKey", "api_key", "key", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("ghost_admin_api_key")
+    if not admin_key:
+        return _setup_hint(
+            provider="ghost",
+            field_names=("admin_api_key", "api_key", "key", "value"),
+            tool_name=tool_name,
+            env_var="GHOST_ADMIN_API_KEY",
+            display_name="Ghost",
+        )
+    try:
+        import jwt
+
+        key_id, secret = admin_key.split(":", 1)
+        now = int(time.time())
+        token = jwt.encode(
+            {"iat": now, "exp": now + 300, "aud": "/admin/"},
+            bytes.fromhex(secret),
+            algorithm="HS256",
+            headers={"kid": key_id},
+        )
+    except Exception as e:
+        raise ValueError("Ghost admin API key must be formatted as key_id:hex_secret.") from e
+    return {
+        "Accept": "application/json",
+        "Accept-Version": _settings_value("ghost_api_version") or _GHOST_API_VERSION,
+        "Authorization": f"Ghost {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _ghost_content_key(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
+    return _credential_value(
+        provider="ghost",
+        provider_aliases=("ghost_content_api",),
+        field_names=("content_api_key", "contentApiKey", "api_key", "key", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("ghost_content_api_key")
+
+
+def _storyblok_content_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | dict[str, str]]:
+    base = (
+        _credential_value(
+            provider="storyblok",
+            provider_aliases=("storyblok_content_api",),
+            field_names=("base_url", "url", "content_base_url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("storyblok_content_base_url")
+        or _STORYBLOK_CONTENT_BASE_URL
+    )
+    token = _credential_value(
+        provider="storyblok",
+        provider_aliases=("storyblok_content_api",),
+        field_names=("content_token", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("storyblok_content_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="storyblok",
+            field_names=("content_token", "api_key", "token", "value"),
+            tool_name=tool_name,
+            env_var="STORYBLOK_CONTENT_TOKEN",
+            display_name="Storyblok",
+        )
+    return _base_url(base), {"token": token}
+
+
+def _storyblok_management_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="storyblok",
+            provider_aliases=("storyblok_management_api",),
+            field_names=("management_base_url", "base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("storyblok_management_base_url")
+        or _STORYBLOK_MANAGEMENT_BASE_URL
+    )
+    space_id = _credential_value(
+        provider="storyblok",
+        provider_aliases=("storyblok_management_api",),
+        field_names=("space_id", "spaceId"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("storyblok_space_id")
+    token = _credential_value(
+        provider="storyblok",
+        provider_aliases=("storyblok_management_api",),
+        field_names=("management_token", "accessToken", "access_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("storyblok_management_token")
+    if not space_id:
+        return _base_url(base), "", (
+            "[Error]: No Storyblok space ID found. Save a Storyblok credential with "
+            '"space_id" / "spaceId", or set STORYBLOK_SPACE_ID.'
+        )
+    if not token:
+        return _base_url(base), space_id, _setup_hint(
+            provider="storyblok",
+            field_names=("management_token", "access_token", "accessToken", "token", "value"),
+            tool_name=tool_name,
+            env_var="STORYBLOK_MANAGEMENT_TOKEN",
+            display_name="Storyblok",
+        )
+    return _base_url(base), space_id, {
+        "Accept": "application/json",
+        "Authorization": token,
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+@tool
+def wordpress_list_records(
+    resource: str,
+    per_page: int = 20,
+    page: int = 1,
+    search: str = "",
+    status: str = "",
+    context: str = "view",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List WordPress posts, pages, or users.
+
+    Args:
+        resource: One of posts, pages, or users.
+        per_page: Number of records to return, 1-100.
+        page: Page number.
+        search: Optional search term.
+        status: Optional post/page status filter.
+        context: WordPress REST context, usually view or edit.
+    """
+    try:
+        path = _normal_resource(resource, _WORDPRESS_RESOURCES)
+        base_url, headers_or_error = _wordpress_config("wordpress_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/{path}",
+            params={
+                "per_page": _limit(per_page, default=20, max_value=100),
+                "page": max(1, int(page)),
+                "search": search.strip(),
+                "status": status.strip(),
+                "context": context.strip() or "view",
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wordpress_list_records failed", exc_info=True)
+        return f"[Error]: WordPress list failed: {e}"
+
+
+@tool
+def wordpress_get_record(
+    resource: str,
+    record_id: str,
+    context: str = "view",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a WordPress post, page, or user by ID.
+
+    Args:
+        resource: One of posts, pages, or users.
+        record_id: WordPress record ID.
+        context: WordPress REST context, usually view or edit.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        path = _normal_resource(resource, _WORDPRESS_RESOURCES)
+        base_url, headers_or_error = _wordpress_config("wordpress_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/{path}/{quote(record_id.strip(), safe='')}",
+            params={"context": context.strip() or "view"},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wordpress_get_record failed", exc_info=True)
+        return f"[Error]: WordPress lookup failed: {e}"
+
+
+@tool
+def wordpress_create_record(
+    resource: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a WordPress post, page, or user.
+
+    Args:
+        resource: One of posts, pages, or users.
+        fields_json: WordPress REST fields as JSON.
+    """
+    if not fields_json.strip():
+        return "[Error]: fields_json is required."
+    try:
+        path = _normal_resource(resource, _WORDPRESS_RESOURCES)
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        base_url, headers_or_error = _wordpress_config("wordpress_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/{path}", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wordpress_create_record failed", exc_info=True)
+        return f"[Error]: WordPress create failed: {e}"
+
+
+@tool
+def wordpress_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a WordPress post, page, or user.
+
+    Args:
+        resource: One of posts, pages, or users.
+        record_id: WordPress record ID.
+        fields_json: WordPress REST fields as JSON.
+    """
+    if not record_id.strip() or not fields_json.strip():
+        return "[Error]: record_id and fields_json are required."
+    try:
+        path = _normal_resource(resource, _WORDPRESS_RESOURCES)
+        body = _parse_json(fields_json, expected=dict, label="fields_json")
+        base_url, headers_or_error = _wordpress_config("wordpress_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/{path}/{quote(record_id.strip(), safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wordpress_update_record failed", exc_info=True)
+        return f"[Error]: WordPress update failed: {e}"
+
+
+@tool
+def wordpress_delete_record(
+    resource: str,
+    record_id: str,
+    force: bool = False,
+    reassign_user_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a WordPress post, page, or user.
+
+    Args:
+        resource: One of posts, pages, or users.
+        record_id: WordPress record ID.
+        force: Whether to bypass trash where WordPress supports it.
+        reassign_user_id: Required by WordPress when deleting users with authored content.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        path = _normal_resource(resource, _WORDPRESS_RESOURCES)
+        base_url, headers_or_error = _wordpress_config("wordpress_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/{path}/{quote(record_id.strip(), safe='')}",
+            params={"force": "true" if force else "false", "reassign": reassign_user_id.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wordpress_delete_record failed", exc_info=True)
+        return f"[Error]: WordPress delete failed: {e}"
+
+
+@tool
+def strapi_list_entries(
+    collection: str,
+    page: int = 1,
+    page_size: int = 25,
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Strapi collection entries.
+
+    Args:
+        collection: Strapi collection API ID, such as articles.
+        page: Page number.
+        page_size: Entries per page.
+        query_json: Optional additional query parameters as JSON.
+    """
+    if not collection.strip():
+        return "[Error]: collection is required."
+    try:
+        api_root, _version, headers_or_error = _strapi_config("strapi_list_entries", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = _parse_json(query_json, expected=dict, label="query_json")
+        params.setdefault("pagination[page]", max(1, int(page)))
+        params.setdefault("pagination[pageSize]", _limit(page_size, default=25, max_value=100))
+        data = _request_json(
+            "GET",
+            f"{api_root}/{quote(collection.strip(), safe='')}",
+            params=params,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("strapi_list_entries failed", exc_info=True)
+        return f"[Error]: Strapi list failed: {e}"
+
+
+@tool
+def strapi_get_entry(
+    collection: str,
+    entry_id: str,
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Strapi entry by ID.
+
+    Args:
+        collection: Strapi collection API ID.
+        entry_id: Entry ID.
+        query_json: Optional additional query parameters as JSON.
+    """
+    if not collection.strip() or not entry_id.strip():
+        return "[Error]: collection and entry_id are required."
+    try:
+        api_root, _version, headers_or_error = _strapi_config("strapi_get_entry", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{api_root}/{quote(collection.strip(), safe='')}/{quote(entry_id.strip(), safe='')}",
+            params=_parse_json(query_json, expected=dict, label="query_json"),
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("strapi_get_entry failed", exc_info=True)
+        return f"[Error]: Strapi lookup failed: {e}"
+
+
+@tool
+def strapi_create_entry(
+    collection: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Strapi entry.
+
+    Args:
+        collection: Strapi collection API ID.
+        fields_json: Entry fields as JSON.
+    """
+    if not collection.strip() or not fields_json.strip():
+        return "[Error]: collection and fields_json are required."
+    try:
+        api_root, version, headers_or_error = _strapi_config("strapi_create_entry", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = _strapi_payload(_parse_json(fields_json, expected=dict, label="fields_json"), version)
+        data = _request_json(
+            "POST",
+            f"{api_root}/{quote(collection.strip(), safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("strapi_create_entry failed", exc_info=True)
+        return f"[Error]: Strapi create failed: {e}"
+
+
+@tool
+def strapi_update_entry(
+    collection: str,
+    entry_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Strapi entry.
+
+    Args:
+        collection: Strapi collection API ID.
+        entry_id: Entry ID.
+        fields_json: Entry fields as JSON.
+    """
+    if not collection.strip() or not entry_id.strip() or not fields_json.strip():
+        return "[Error]: collection, entry_id, and fields_json are required."
+    try:
+        api_root, version, headers_or_error = _strapi_config("strapi_update_entry", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = _strapi_payload(_parse_json(fields_json, expected=dict, label="fields_json"), version)
+        data = _request_json(
+            "PUT",
+            f"{api_root}/{quote(collection.strip(), safe='')}/{quote(entry_id.strip(), safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("strapi_update_entry failed", exc_info=True)
+        return f"[Error]: Strapi update failed: {e}"
+
+
+@tool
+def strapi_delete_entry(
+    collection: str,
+    entry_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Strapi entry.
+
+    Args:
+        collection: Strapi collection API ID.
+        entry_id: Entry ID.
+    """
+    if not collection.strip() or not entry_id.strip():
+        return "[Error]: collection and entry_id are required."
+    try:
+        api_root, _version, headers_or_error = _strapi_config("strapi_delete_entry", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{api_root}/{quote(collection.strip(), safe='')}/{quote(entry_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("strapi_delete_entry failed", exc_info=True)
+        return f"[Error]: Strapi delete failed: {e}"
+
+
+@tool
+def contentful_list_records(
+    resource: str,
+    environment: str = "master",
+    source: str = "delivery",
+    limit: int = 25,
+    skip: int = 0,
+    content_type: str = "",
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Contentful delivery or preview records.
+
+    Args:
+        resource: One of entries, assets, content_types, or locales.
+        environment: Contentful environment ID.
+        source: delivery or preview.
+        limit: Number of records to return.
+        skip: Number of records to skip.
+        content_type: Optional content type filter for entries.
+        query_json: Optional extra Contentful query parameters as JSON.
+    """
+    try:
+        path = _normal_resource(resource, _CONTENTFUL_RESOURCES)
+        source = "preview" if source.strip().lower() == "preview" else "delivery"
+        base_url, space_id, headers_or_error = _contentful_config("contentful_list_records", config, source)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = _parse_json(query_json, expected=dict, label="query_json")
+        params.update(
+            _filtered(
+                {
+                    "limit": _limit(limit, default=25, max_value=1000),
+                    "skip": max(0, int(skip)),
+                    "content_type": content_type.strip() if path == "entries" else "",
+                }
+            )
+        )
+        data = _request_json(
+            "GET",
+            f"{base_url}/spaces/{quote(space_id, safe='')}/environments/{quote(environment.strip() or 'master', safe='')}/{path}",
+            params=params,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("contentful_list_records failed", exc_info=True)
+        return f"[Error]: Contentful list failed: {e}"
+
+
+@tool
+def contentful_get_record(
+    resource: str,
+    record_id: str,
+    environment: str = "master",
+    source: str = "delivery",
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Contentful delivery or preview record.
+
+    Args:
+        resource: One of entries, assets, content_types, or locales.
+        record_id: Contentful record ID.
+        environment: Contentful environment ID.
+        source: delivery or preview.
+        query_json: Optional extra Contentful query parameters as JSON.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        path = _normal_resource(resource, _CONTENTFUL_RESOURCES)
+        source = "preview" if source.strip().lower() == "preview" else "delivery"
+        base_url, space_id, headers_or_error = _contentful_config("contentful_get_record", config, source)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            (
+                f"{base_url}/spaces/{quote(space_id, safe='')}/environments/"
+                f"{quote(environment.strip() or 'master', safe='')}/{path}/{quote(record_id.strip(), safe='')}"
+            ),
+            params=_parse_json(query_json, expected=dict, label="query_json"),
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("contentful_get_record failed", exc_info=True)
+        return f"[Error]: Contentful lookup failed: {e}"
+
+
+@tool
+def ghost_list_posts(
+    source: str = "content",
+    limit: int = 15,
+    page: int = 1,
+    filter_query: str = "",
+    include: str = "",
+    fields: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Ghost posts from the Content or Admin API.
+
+    Args:
+        source: content or admin.
+        limit: Number of posts to return.
+        page: Page number.
+        filter_query: Optional Ghost filter string.
+        include: Optional include selector, such as tags,authors.
+        fields: Optional comma-separated field selector.
+    """
+    try:
+        site = _ghost_site_url("ghost_list_posts", config)
+        if not site:
+            return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
+        params = _filtered(
+            {
+                "limit": _limit(limit, default=15, max_value=100),
+                "page": max(1, int(page)),
+                "filter": filter_query.strip(),
+                "include": include.strip(),
+                "fields": fields.strip(),
+            }
+        )
+        if source.strip().lower() == "admin":
+            headers_or_error = _ghost_admin_headers("ghost_list_posts", config)
+            if isinstance(headers_or_error, str):
+                return headers_or_error
+            data = _request_json("GET", f"{site}/ghost/api/admin/posts/", params=params, headers=headers_or_error)
+        else:
+            key = _ghost_content_key("ghost_list_posts", config)
+            if not key:
+                return _setup_hint(
+                    provider="ghost",
+                    field_names=("content_api_key", "api_key", "key", "token", "value"),
+                    tool_name="ghost_list_posts",
+                    env_var="GHOST_CONTENT_API_KEY",
+                    display_name="Ghost",
+                )
+            params["key"] = key
+            data = _request_json("GET", f"{site}/ghost/api/content/posts/", params=params)
+        return _dump_json(data.get("posts", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("ghost_list_posts failed", exc_info=True)
+        return f"[Error]: Ghost post list failed: {e}"
+
+
+@tool
+def ghost_get_post(
+    identifier: str,
+    identifier_type: str = "id",
+    source: str = "content",
+    include: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Ghost post by ID or slug.
+
+    Args:
+        identifier: Ghost post ID or slug.
+        identifier_type: id or slug.
+        source: content or admin.
+        include: Optional include selector, such as tags,authors.
+    """
+    if not identifier.strip():
+        return "[Error]: identifier is required."
+    try:
+        site = _ghost_site_url("ghost_get_post", config)
+        if not site:
+            return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
+        identifier_type = "slug" if identifier_type.strip().lower() == "slug" else "id"
+        suffix = f"slug/{quote(identifier.strip(), safe='')}/" if identifier_type == "slug" else f"{quote(identifier.strip(), safe='')}/"
+        params = _filtered({"include": include.strip()})
+        if source.strip().lower() == "admin":
+            headers_or_error = _ghost_admin_headers("ghost_get_post", config)
+            if isinstance(headers_or_error, str):
+                return headers_or_error
+            data = _request_json("GET", f"{site}/ghost/api/admin/posts/{suffix}", params=params, headers=headers_or_error)
+        else:
+            key = _ghost_content_key("ghost_get_post", config)
+            if not key:
+                return _setup_hint(
+                    provider="ghost",
+                    field_names=("content_api_key", "api_key", "key", "token", "value"),
+                    tool_name="ghost_get_post",
+                    env_var="GHOST_CONTENT_API_KEY",
+                    display_name="Ghost",
+                )
+            params["key"] = key
+            data = _request_json("GET", f"{site}/ghost/api/content/posts/{suffix}", params=params)
+        if isinstance(data, dict) and isinstance(data.get("posts"), list) and data["posts"]:
+            return _dump_json(data["posts"][0])
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("ghost_get_post failed", exc_info=True)
+        return f"[Error]: Ghost post lookup failed: {e}"
+
+
+@tool
+def ghost_create_post(
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Ghost post with the Admin API.
+
+    Args:
+        fields_json: Ghost post fields as JSON.
+    """
+    if not fields_json.strip():
+        return "[Error]: fields_json is required."
+    try:
+        site = _ghost_site_url("ghost_create_post", config)
+        if not site:
+            return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
+        headers_or_error = _ghost_admin_headers("ghost_create_post", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = {"posts": [_parse_json(fields_json, expected=dict, label="fields_json")]}
+        data = _request_json("POST", f"{site}/ghost/api/admin/posts/", json_body=body, headers=headers_or_error)
+        return _dump_json(data.get("posts", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("ghost_create_post failed", exc_info=True)
+        return f"[Error]: Ghost post create failed: {e}"
+
+
+@tool
+def ghost_update_post(
+    post_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Ghost post with the Admin API.
+
+    Args:
+        post_id: Ghost post ID.
+        fields_json: Ghost post fields as JSON. Include updated_at when Ghost requires conflict protection.
+    """
+    if not post_id.strip() or not fields_json.strip():
+        return "[Error]: post_id and fields_json are required."
+    try:
+        site = _ghost_site_url("ghost_update_post", config)
+        if not site:
+            return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
+        headers_or_error = _ghost_admin_headers("ghost_update_post", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = {"posts": [_parse_json(fields_json, expected=dict, label="fields_json")]}
+        data = _request_json(
+            "PUT",
+            f"{site}/ghost/api/admin/posts/{quote(post_id.strip(), safe='')}/",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("posts", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("ghost_update_post failed", exc_info=True)
+        return f"[Error]: Ghost post update failed: {e}"
+
+
+@tool
+def ghost_delete_post(
+    post_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Ghost post with the Admin API.
+
+    Args:
+        post_id: Ghost post ID.
+    """
+    if not post_id.strip():
+        return "[Error]: post_id is required."
+    try:
+        site = _ghost_site_url("ghost_delete_post", config)
+        if not site:
+            return "[Error]: No Ghost URL found. Save a Ghost credential with \"url\", or set GHOST_URL."
+        headers_or_error = _ghost_admin_headers("ghost_delete_post", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{site}/ghost/api/admin/posts/{quote(post_id.strip(), safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("ghost_delete_post failed", exc_info=True)
+        return f"[Error]: Ghost post delete failed: {e}"
+
+
+@tool
+def storyblok_list_stories(
+    source: str = "content",
+    limit: int = 25,
+    page: int = 1,
+    starts_with: str = "",
+    version: str = "published",
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Storyblok stories from the Content or Management API.
+
+    Args:
+        source: content or management.
+        limit: Number of stories to return.
+        page: Page number.
+        starts_with: Optional folder/path prefix filter.
+        version: Content API version, usually published or draft.
+        query_json: Optional extra query parameters as JSON.
+    """
+    try:
+        params = _parse_json(query_json, expected=dict, label="query_json")
+        params.update(
+            _filtered(
+                {
+                    "per_page": _limit(limit, default=25, max_value=100),
+                    "page": max(1, int(page)),
+                    "starts_with": starts_with.strip(),
+                    "version": version.strip() if source.strip().lower() != "management" else "",
+                }
+            )
+        )
+        if source.strip().lower() == "management":
+            base_url, space_id, headers_or_error = _storyblok_management_config("storyblok_list_stories", config)
+            if isinstance(headers_or_error, str):
+                return headers_or_error
+            data = _request_json(
+                "GET",
+                f"{base_url}/spaces/{quote(space_id, safe='')}/stories",
+                params=params,
+                headers=headers_or_error,
+            )
+        else:
+            base_url, token_or_error = _storyblok_content_config("storyblok_list_stories", config)
+            if isinstance(token_or_error, str):
+                return token_or_error
+            params["token"] = token_or_error["token"]
+            data = _request_json("GET", f"{base_url}/stories", params=params)
+        return _dump_json(data.get("stories", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("storyblok_list_stories failed", exc_info=True)
+        return f"[Error]: Storyblok story list failed: {e}"
+
+
+@tool
+def storyblok_get_story(
+    identifier: str,
+    source: str = "content",
+    version: str = "published",
+    query_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Storyblok story by slug/path or management story ID.
+
+    Args:
+        identifier: Content story slug/path, or management story ID.
+        source: content or management.
+        version: Content API version, usually published or draft.
+        query_json: Optional extra query parameters as JSON.
+    """
+    if not identifier.strip():
+        return "[Error]: identifier is required."
+    try:
+        params = _parse_json(query_json, expected=dict, label="query_json")
+        if source.strip().lower() == "management":
+            base_url, space_id, headers_or_error = _storyblok_management_config("storyblok_get_story", config)
+            if isinstance(headers_or_error, str):
+                return headers_or_error
+            data = _request_json(
+                "GET",
+                f"{base_url}/spaces/{quote(space_id, safe='')}/stories/{quote(identifier.strip(), safe='')}",
+                params=params,
+                headers=headers_or_error,
+            )
+        else:
+            base_url, token_or_error = _storyblok_content_config("storyblok_get_story", config)
+            if isinstance(token_or_error, str):
+                return token_or_error
+            params.update({"token": token_or_error["token"], "version": version.strip() or "published"})
+            data = _request_json(
+                "GET",
+                f"{base_url}/stories/{quote(identifier.strip(), safe='/')}",
+                params=params,
+            )
+        return _dump_json(data.get("story", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("storyblok_get_story failed", exc_info=True)
+        return f"[Error]: Storyblok story lookup failed: {e}"
+
+
+@tool
+def storyblok_publish_story(
+    story_id: str,
+    release_id: str = "",
+    language: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Publish a Storyblok story through the Management API.
+
+    Args:
+        story_id: Storyblok management story ID.
+        release_id: Optional release ID.
+        language: Optional language code.
+    """
+    if not story_id.strip():
+        return "[Error]: story_id is required."
+    try:
+        base_url, space_id, headers_or_error = _storyblok_management_config("storyblok_publish_story", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/spaces/{quote(space_id, safe='')}/stories/{quote(story_id.strip(), safe='')}/publish",
+            params={"release_id": release_id.strip(), "lang": language.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("story", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("storyblok_publish_story failed", exc_info=True)
+        return f"[Error]: Storyblok story publish failed: {e}"
+
+
+@tool
+def storyblok_unpublish_story(
+    story_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Unpublish a Storyblok story through the Management API.
+
+    Args:
+        story_id: Storyblok management story ID.
+    """
+    if not story_id.strip():
+        return "[Error]: story_id is required."
+    try:
+        base_url, space_id, headers_or_error = _storyblok_management_config("storyblok_unpublish_story", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/spaces/{quote(space_id, safe='')}/stories/{quote(story_id.strip(), safe='')}/unpublish",
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("story", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("storyblok_unpublish_story failed", exc_info=True)
+        return f"[Error]: Storyblok story unpublish failed: {e}"
+
+
+@tool
+def storyblok_delete_story(
+    story_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Storyblok story through the Management API.
+
+    Args:
+        story_id: Storyblok management story ID.
+    """
+    if not story_id.strip():
+        return "[Error]: story_id is required."
+    try:
+        base_url, space_id, headers_or_error = _storyblok_management_config("storyblok_delete_story", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/spaces/{quote(space_id, safe='')}/stories/{quote(story_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("story", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("storyblok_delete_story failed", exc_info=True)
+        return f"[Error]: Storyblok story delete failed: {e}"
+
+
+CONTENT_MANAGEMENT_SERVICE_TOOLS = [
+    wordpress_list_records,
+    wordpress_get_record,
+    wordpress_create_record,
+    wordpress_update_record,
+    wordpress_delete_record,
+    strapi_list_entries,
+    strapi_get_entry,
+    strapi_create_entry,
+    strapi_update_entry,
+    strapi_delete_entry,
+    contentful_list_records,
+    contentful_get_record,
+    ghost_list_posts,
+    ghost_get_post,
+    ghost_create_post,
+    ghost_update_post,
+    ghost_delete_post,
+    storyblok_list_stories,
+    storyblok_get_story,
+    storyblok_publish_story,
+    storyblok_unpublish_story,
+    storyblok_delete_story,
+]

@@ -186,6 +186,28 @@ Set the API key for your chosen provider:
 | `SIGNL4_TEAM_SECRET` | SIGNL4 | Optional SIGNL4 team secret fallback; credential vault provider `signl4` is preferred |
 | `SIGNL4_WEBHOOK_URL` | SIGNL4 | Optional full SIGNL4 webhook URL fallback |
 | `SIGNL4_BASE_URL` | SIGNL4 | Optional SIGNL4 webhook base URL override |
+| `WORDPRESS_URL` | WordPress | Optional WordPress site URL fallback; credential vault provider `wordpress` is preferred |
+| `WORDPRESS_USERNAME` | WordPress | Optional WordPress username fallback |
+| `WORDPRESS_PASSWORD` | WordPress | Optional WordPress application password fallback |
+| `STRAPI_URL` | Strapi | Optional Strapi API base URL fallback; credential vault provider `strapi` is preferred |
+| `STRAPI_API_TOKEN` | Strapi | Optional Strapi API token fallback |
+| `STRAPI_EMAIL` | Strapi | Optional Strapi local-auth email fallback |
+| `STRAPI_PASSWORD` | Strapi | Optional Strapi local-auth password fallback |
+| `STRAPI_API_VERSION` | Strapi | Optional Strapi REST API version hint |
+| `CONTENTFUL_SPACE_ID` | Contentful | Optional Contentful space ID fallback; credential vault provider `contentful` is preferred |
+| `CONTENTFUL_DELIVERY_TOKEN` | Contentful | Optional Contentful delivery access token fallback |
+| `CONTENTFUL_PREVIEW_TOKEN` | Contentful | Optional Contentful preview access token fallback |
+| `CONTENTFUL_BASE_URL` | Contentful | Optional Contentful Delivery API base URL override |
+| `CONTENTFUL_PREVIEW_BASE_URL` | Contentful | Optional Contentful Preview API base URL override |
+| `GHOST_URL` | Ghost | Optional Ghost site URL fallback; credential vault provider `ghost` is preferred |
+| `GHOST_CONTENT_API_KEY` | Ghost | Optional Ghost Content API key fallback |
+| `GHOST_ADMIN_API_KEY` | Ghost | Optional Ghost Admin API key fallback |
+| `GHOST_API_VERSION` | Ghost | Optional Ghost API version header override |
+| `STORYBLOK_CONTENT_TOKEN` | Storyblok | Optional Storyblok Content API token fallback; credential vault provider `storyblok` is preferred |
+| `STORYBLOK_MANAGEMENT_TOKEN` | Storyblok | Optional Storyblok Management API token fallback |
+| `STORYBLOK_SPACE_ID` | Storyblok | Optional Storyblok space ID fallback for Management API tools |
+| `STORYBLOK_CONTENT_BASE_URL` | Storyblok | Optional Storyblok Content API base URL override |
+| `STORYBLOK_MANAGEMENT_BASE_URL` | Storyblok | Optional Storyblok Management API base URL override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -453,6 +475,28 @@ reachable from the backend process.
 | `SIGNL4_TEAM_SECRET` | - | SIGNL4 team secret fallback |
 | `SIGNL4_WEBHOOK_URL` | - | SIGNL4 full webhook URL fallback |
 | `SIGNL4_BASE_URL` | `https://connect.signl4.com/webhook` | SIGNL4 webhook base URL |
+| `WORDPRESS_URL` | - | WordPress site URL fallback |
+| `WORDPRESS_USERNAME` | - | WordPress username fallback |
+| `WORDPRESS_PASSWORD` | - | WordPress application password fallback |
+| `STRAPI_URL` | - | Strapi API base URL fallback |
+| `STRAPI_API_TOKEN` | - | Strapi API token fallback |
+| `STRAPI_EMAIL` | - | Strapi local-auth email fallback |
+| `STRAPI_PASSWORD` | - | Strapi local-auth password fallback |
+| `STRAPI_API_VERSION` | `v4` | Strapi REST API version hint |
+| `CONTENTFUL_SPACE_ID` | - | Contentful space ID fallback |
+| `CONTENTFUL_DELIVERY_TOKEN` | - | Contentful delivery access token fallback |
+| `CONTENTFUL_PREVIEW_TOKEN` | - | Contentful preview access token fallback |
+| `CONTENTFUL_BASE_URL` | `https://cdn.contentful.com` | Contentful Delivery API base URL |
+| `CONTENTFUL_PREVIEW_BASE_URL` | `https://preview.contentful.com` | Contentful Preview API base URL |
+| `GHOST_URL` | - | Ghost site URL fallback |
+| `GHOST_CONTENT_API_KEY` | - | Ghost Content API key fallback |
+| `GHOST_ADMIN_API_KEY` | - | Ghost Admin API key fallback |
+| `GHOST_API_VERSION` | `v5.0` | Ghost API version header |
+| `STORYBLOK_CONTENT_TOKEN` | - | Storyblok Content API token fallback |
+| `STORYBLOK_MANAGEMENT_TOKEN` | - | Storyblok Management API token fallback |
+| `STORYBLOK_SPACE_ID` | - | Storyblok space ID fallback |
+| `STORYBLOK_CONTENT_BASE_URL` | `https://api.storyblok.com/v2/cdn` | Storyblok Content API base URL |
+| `STORYBLOK_MANAGEMENT_BASE_URL` | `https://mapi.storyblok.com/v1` | Storyblok Management API base URL |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

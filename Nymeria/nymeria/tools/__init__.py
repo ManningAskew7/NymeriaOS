@@ -371,6 +371,31 @@ from .notification_service_integrations import (
     signl4_resolve_alert,
     NOTIFICATION_SERVICE_TOOLS,
 )
+from .content_management_service_integrations import (
+    wordpress_list_records,
+    wordpress_get_record,
+    wordpress_create_record,
+    wordpress_update_record,
+    wordpress_delete_record,
+    strapi_list_entries,
+    strapi_get_entry,
+    strapi_create_entry,
+    strapi_update_entry,
+    strapi_delete_entry,
+    contentful_list_records,
+    contentful_get_record,
+    ghost_list_posts,
+    ghost_get_post,
+    ghost_create_post,
+    ghost_update_post,
+    ghost_delete_post,
+    storyblok_list_stories,
+    storyblok_get_story,
+    storyblok_publish_story,
+    storyblok_unpublish_story,
+    storyblok_delete_story,
+    CONTENT_MANAGEMENT_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -431,6 +456,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + MESSAGING_DELIVERY_SERVICE_TOOLS
     + COMMERCE_BILLING_SERVICE_TOOLS
     + NOTIFICATION_SERVICE_TOOLS
+    + CONTENT_MANAGEMENT_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -791,6 +817,29 @@ __all__ = [
     "signl4_send_alert",
     "signl4_resolve_alert",
     "NOTIFICATION_SERVICE_TOOLS",
+    "wordpress_list_records",
+    "wordpress_get_record",
+    "wordpress_create_record",
+    "wordpress_update_record",
+    "wordpress_delete_record",
+    "strapi_list_entries",
+    "strapi_get_entry",
+    "strapi_create_entry",
+    "strapi_update_entry",
+    "strapi_delete_entry",
+    "contentful_list_records",
+    "contentful_get_record",
+    "ghost_list_posts",
+    "ghost_get_post",
+    "ghost_create_post",
+    "ghost_update_post",
+    "ghost_delete_post",
+    "storyblok_list_stories",
+    "storyblok_get_story",
+    "storyblok_publish_story",
+    "storyblok_unpublish_story",
+    "storyblok_delete_story",
+    "CONTENT_MANAGEMENT_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
