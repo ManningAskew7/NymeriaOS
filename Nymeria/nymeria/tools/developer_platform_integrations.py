@@ -48,6 +48,16 @@ def _filtered_params(params: Optional[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _json_object(value: str, *, field_name: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return parsed
+
+
 def _require_absolute_base_url(base_url: str) -> str:
     parsed = urlparse(base_url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -140,6 +150,95 @@ def _gitlab_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     return _gitlab_api_base_url(base_url), headers
 
 
+def _graphql_endpoint(
+    tool_name: str,
+    endpoint: str,
+    config: Optional[RunnableConfig],
+) -> str | None:
+    return (
+        endpoint.strip()
+        or _credential_value(
+            provider="graphql",
+            provider_aliases=("graphql_api",),
+            field_names=("endpoint", "graphql_url", "api_url", "base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("graphql_endpoint")
+    )
+
+
+def _graphql_headers(
+    *,
+    tool_name: str,
+    headers_json: str,
+    config: Optional[RunnableConfig],
+) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+    stored_headers = (
+        _credential_value(
+            provider="graphql",
+            provider_aliases=("graphql_api",),
+            field_names=("headers_json", "headersJson", "headers"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("graphql_headers_json")
+        or "{}"
+    )
+    parsed_headers = _json_object(stored_headers, field_name="stored GraphQL headers")
+    request_headers = _json_object(headers_json, field_name="headers_json")
+    headers.update({str(key): str(value) for key, value in parsed_headers.items() if value is not None})
+    headers.update({str(key): str(value) for key, value in request_headers.items() if value is not None})
+
+    authorization = _credential_value(
+        provider="graphql",
+        provider_aliases=("graphql_api",),
+        field_names=("authorization", "auth_header", "authHeader"),
+        tool_name=tool_name,
+        config=config,
+    )
+    bearer_token = (
+        _credential_value(
+            provider="graphql",
+            provider_aliases=("graphql_api",),
+            field_names=("bearer_token", "bearerToken", "access_token", "accessToken", "token", "value"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("graphql_bearer_token")
+    )
+    api_key = _credential_value(
+        provider="graphql",
+        provider_aliases=("graphql_api",),
+        field_names=("api_key", "apiKey"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("graphql_api_key")
+    api_key_header = (
+        _credential_value(
+            provider="graphql",
+            provider_aliases=("graphql_api",),
+            field_names=("api_key_header", "apiKeyHeader"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("graphql_api_key_header")
+        or "x-api-key"
+    )
+    if authorization:
+        headers["Authorization"] = authorization
+    elif bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    if api_key:
+        headers[str(api_key_header)] = api_key
+    return headers
+
+
 def _request_json(
     method: str,
     url: str,
@@ -171,6 +270,38 @@ def _request_json(
                 or body.get("error_description")
                 or ""
             )
+        except Exception:
+            detail = e.response.text[:300]
+        raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
+
+
+def _request_json_body(
+    method: str,
+    url: str,
+    *,
+    json_body: Any = None,
+    headers: Optional[dict[str, str]] = None,
+) -> Any:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.request(method, url, json=json_body, headers=headers)
+            response.raise_for_status()
+            if response.status_code == 204 or not response.content:
+                return {"status": "ok", "status_code": response.status_code}
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            body = e.response.json()
+            if isinstance(body, dict):
+                detail = (
+                    body.get("message")
+                    or body.get("error")
+                    or body.get("error_description")
+                    or ""
+                )
         except Exception:
             detail = e.response.text[:300]
         raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
@@ -762,6 +893,56 @@ def gitlab_list_user_projects(
         return f"[Error]: GitLab user projects lookup failed: {e}"
 
 
+@tool
+def graphql_execute_query(
+    query: str,
+    variables_json: str = "{}",
+    operation_name: str = "",
+    endpoint: str = "",
+    headers_json: str = "{}",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Execute a GraphQL query or mutation over HTTP POST.
+
+    Args:
+        query: GraphQL query or mutation text.
+        variables_json: Optional GraphQL variables as a JSON object string.
+        operation_name: Optional GraphQL operation name.
+        endpoint: Optional absolute GraphQL endpoint URL. If omitted, uses a saved GraphQL connection or GRAPHQL_ENDPOINT.
+        headers_json: Optional non-secret HTTP headers as a JSON object string. Prefer saved credentials for auth.
+    """
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        resolved_endpoint = _graphql_endpoint("graphql_execute_query", endpoint, config)
+        if not resolved_endpoint:
+            return (
+                "[Error]: endpoint is required. Pass endpoint, save a GraphQL credential "
+                "with endpoint/url, or set GRAPHQL_ENDPOINT."
+            )
+        resolved_endpoint = _require_absolute_base_url(resolved_endpoint)
+        variables = _json_object(variables_json, field_name="variables_json")
+        body: dict[str, Any] = {"query": query}
+        if variables:
+            body["variables"] = variables
+        if operation_name.strip():
+            body["operationName"] = operation_name.strip()
+        data = _request_json_body(
+            "POST",
+            resolved_endpoint,
+            json_body=body,
+            headers=_graphql_headers(
+                tool_name="graphql_execute_query",
+                headers_json=headers_json,
+                config=config,
+            ),
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("graphql_execute_query failed", exc_info=True)
+        return f"[Error]: GraphQL request failed: {e}"
+
+
 DEVELOPER_PLATFORM_TOOLS = [
     github_get_repository,
     github_search_repositories,
@@ -777,4 +958,5 @@ DEVELOPER_PLATFORM_TOOLS = [
     gitlab_list_project_releases,
     gitlab_get_project_release,
     gitlab_list_user_projects,
+    graphql_execute_query,
 ]

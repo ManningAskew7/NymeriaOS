@@ -111,6 +111,8 @@ from .transform_utility_integrations import (
     crypto_hash_text,
     crypto_hmac_text,
     crypto_generate_random,
+    totp_generate_code,
+    totp_verify_code,
     crypto_sign_text,
     jwt_decode_token,
     jwt_sign_claims,
@@ -295,6 +297,7 @@ from .developer_platform_integrations import (
     gitlab_list_project_releases,
     gitlab_get_project_release,
     gitlab_list_user_projects,
+    graphql_execute_query,
     DEVELOPER_PLATFORM_TOOLS,
 )
 from .build_ci_service_integrations import (
@@ -1086,6 +1089,8 @@ __all__ = [
     "crypto_hash_text",
     "crypto_hmac_text",
     "crypto_generate_random",
+    "totp_generate_code",
+    "totp_verify_code",
     "crypto_sign_text",
     "jwt_decode_token",
     "jwt_sign_claims",
@@ -1256,6 +1261,7 @@ __all__ = [
     "gitlab_list_project_releases",
     "gitlab_get_project_release",
     "gitlab_list_user_projects",
+    "graphql_execute_query",
     "DEVELOPER_PLATFORM_TOOLS",
     "circleci_list_pipelines",
     "circleci_get_pipeline",

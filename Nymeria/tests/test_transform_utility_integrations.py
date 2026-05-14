@@ -80,6 +80,38 @@ def test_crypto_hash_and_random_are_local():
     assert random_value.isalnum()
 
 
+def test_totp_generate_and_verify_use_env_secret(monkeypatch):
+    from nymeria.tools import transform_utility_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("TOTP_SECRET", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+
+    generated = json.loads(
+        tools.totp_generate_code.func(
+            timestamp=59,
+            period=30,
+            digits=8,
+            algorithm="sha1",
+        )
+    )
+    verified = json.loads(
+        tools.totp_verify_code.func(
+            code="94287082",
+            timestamp=59,
+            period=30,
+            digits=8,
+            algorithm="sha1",
+            window=0,
+        )
+    )
+
+    assert generated["code"] == "94287082"
+    assert generated["valid_from"] == 30
+    assert generated["valid_until"] == 60
+    assert verified["valid"] is True
+    assert verified["counter_offset"] == 0
+
+
 def test_crypto_hmac_uses_vault_secret(tmp_path, monkeypatch):
     from nymeria.tools import transform_utility_integrations as tools
 
@@ -180,6 +212,8 @@ def test_transform_utility_tools_are_registered_with_metadata():
     }
     moderate_names = {
         "crypto_hmac_text",
+        "totp_generate_code",
+        "totp_verify_code",
         "crypto_sign_text",
         "jwt_sign_claims",
         "jwt_verify_token",
@@ -206,9 +240,13 @@ def test_transform_tool_schemas_hide_runtime_config():
         crypto_sign_text,
         jwt_sign_claims,
         jwt_verify_token,
+        totp_generate_code,
+        totp_verify_code,
     )
 
     assert "config" not in crypto_hmac_text.args_schema.model_json_schema()["properties"]
     assert "config" not in crypto_sign_text.args_schema.model_json_schema()["properties"]
     assert "config" not in jwt_sign_claims.args_schema.model_json_schema()["properties"]
     assert "config" not in jwt_verify_token.args_schema.model_json_schema()["properties"]
+    assert "config" not in totp_generate_code.args_schema.model_json_schema()["properties"]
+    assert "config" not in totp_verify_code.args_schema.model_json_schema()["properties"]

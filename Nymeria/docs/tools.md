@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (698)
+### Optional: Service Integration Tools (701)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -776,6 +776,9 @@ in the credential vault for provider-specific saved connections scoped to
 | 696 | `whatsapp_send_template_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud template message |
 | 697 | `whatsapp_get_media_url` | Integrations | SAFE | Get a WhatsApp Business Cloud media URL |
 | 698 | `whatsapp_delete_media` | Integrations | MODERATE | Delete WhatsApp Business Cloud media |
+| 699 | `graphql_execute_query` | Integrations | MODERATE | Execute a GraphQL query or mutation against an explicit or saved endpoint |
+| 700 | `totp_generate_code` | Integrations | MODERATE | Generate a TOTP code from a saved secret |
+| 701 | `totp_verify_code` | Integrations | MODERATE | Verify a TOTP code against a saved secret |
 
 ### Optional: Private B Tools (4)
 
@@ -1350,8 +1353,9 @@ connections in Settings > Connections with these provider names and fields:
 `mailerlite.api_key`, `customerio.tracking_site_id` plus
 `customerio.tracking_api_key` and optional `customerio.app_api_key`,
 `iterable.api_key`, `posthog.api_key`, and `segment.write_key`, plus
-`github.access_token` and `gitlab.access_token`. GitHub credentials can also
-provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
+`github.access_token`, `gitlab.access_token`, `graphql.endpoint` plus optional
+GraphQL auth fields, and `totp.secret`. GitHub credentials can also provide
+`base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Build/CI credentials use `circleci.api_key`,
 `travisci.api_token`, and `jenkins.base_url` plus `jenkins.username` and
 `jenkins.api_key`. File-storage credentials use `dropbox.access_token`,
@@ -1454,6 +1458,7 @@ This batch includes local transform tools that do not call external services:
 
 Secret-backed transform tools use the credential vault:
 - `crypto_hmac_text(...)` uses provider `crypto`, field `hmac_secret` / `hmacSecret` / `secret`; env fallback `CRYPTO_HMAC_SECRET`.
+- `totp_generate_code(...)` and `totp_verify_code(...)` use provider `totp`, field `secret` / `totp_secret` / `totpSecret` / `value`; env fallback `TOTP_SECRET`.
 - `crypto_sign_text(...)` uses provider `crypto`, field `sign_private_key` / `signPrivateKey` / `private_key` / `privateKey`; env fallbacks `CRYPTO_SIGN_PRIVATE_KEY` and optional `CRYPTO_SIGN_PRIVATE_KEY_PASSPHRASE`.
 - `jwt_sign_claims(...)` and `jwt_verify_token(...)` use provider `jwt`, fields `secret`, `private_key`, `public_key`, and optional `algorithm`; env fallbacks `JWT_SECRET`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, and `JWT_ALGORITHM`.
 
@@ -1551,6 +1556,7 @@ Credential providers and fallback env vars:
 The developer-platform batch includes:
 - `github_get_repository(owner, repo)`, `github_search_repositories(query, sort?, order?, limit?)`, `github_list_issues(owner, repo, state?, labels?, sort?, direction?, since?, limit?, include_pull_requests?)`, `github_get_issue(owner, repo, issue_number)`, `github_list_pull_requests(owner, repo, state?, sort?, direction?, limit?)`, `github_list_releases(owner, repo, limit?)`, and `github_get_release(owner, repo, tag_name)`.
 - `gitlab_get_project(project)`, `gitlab_search_projects(query, limit?, simple?)`, `gitlab_list_project_issues(project, state?, labels?, order_by?, sort?, search?, limit?)`, `gitlab_get_project_issue(project, issue_iid)`, `gitlab_list_project_releases(project, order_by?, sort?, limit?)`, `gitlab_get_project_release(project, tag_name)`, and `gitlab_list_user_projects(user_id, limit?)`.
+- `graphql_execute_query(query, variables_json?, operation_name?, endpoint?, headers_json?)` for generic GraphQL POST requests. It is MODERATE because it can hit arbitrary endpoints and can run mutations.
 
 GitHub tools use vault provider `github` fields `access_token`, `token`,
 `api_key`, or `value`, then `GITHUB_TOKEN`. GitHub Enterprise can be configured
@@ -1562,6 +1568,12 @@ GitLab tools use vault provider `gitlab` fields `access_token`,
 self-managed instances can be configured with vault field `base_url`, `server`,
 or env `GITLAB_BASE_URL`; plain instance URLs automatically get `/api/v4`
 appended.
+
+GraphQL uses vault provider `graphql` fields `endpoint` / `graphql_url` /
+`api_url` / `base_url` / `url`, optional `bearer_token` / `access_token` /
+`token`, optional `api_key` plus `api_key_header`, and optional `headers_json`.
+Env fallback supports `GRAPHQL_ENDPOINT`, `GRAPHQL_BEARER_TOKEN`,
+`GRAPHQL_API_KEY`, `GRAPHQL_API_KEY_HEADER`, and `GRAPHQL_HEADERS_JSON`.
 
 ### Build And CI Service Tools
 
