@@ -502,6 +502,31 @@ class Settings(BaseSettings):
     signl4_team_secret: Optional[str] = Field(default=None, description="SIGNL4 team secret fallback")
     signl4_webhook_url: Optional[str] = Field(default=None, description="SIGNL4 full webhook URL fallback")
     signl4_base_url: str = Field(default="https://connect.signl4.com/webhook", description="SIGNL4 webhook base URL")
+    wordpress_url: Optional[str] = Field(default=None, description="WordPress site URL fallback")
+    wordpress_username: Optional[str] = Field(default=None, description="WordPress username fallback")
+    wordpress_password: Optional[str] = Field(default=None, description="WordPress application password fallback")
+    strapi_url: Optional[str] = Field(default=None, description="Strapi API/site URL fallback")
+    strapi_api_token: Optional[str] = Field(default=None, description="Strapi API token fallback")
+    strapi_email: Optional[str] = Field(default=None, description="Strapi local auth email fallback")
+    strapi_password: Optional[str] = Field(default=None, description="Strapi local auth password fallback")
+    strapi_api_version: str = Field(default="v4", description="Strapi REST API version, v4 or v3")
+    contentful_space_id: Optional[str] = Field(default=None, description="Contentful space ID fallback")
+    contentful_delivery_token: Optional[str] = Field(default=None, description="Contentful delivery API token fallback")
+    contentful_preview_token: Optional[str] = Field(default=None, description="Contentful preview API token fallback")
+    contentful_base_url: str = Field(default="https://cdn.contentful.com", description="Contentful delivery API base URL")
+    contentful_preview_base_url: str = Field(
+        default="https://preview.contentful.com",
+        description="Contentful preview API base URL",
+    )
+    ghost_url: Optional[str] = Field(default=None, description="Ghost site URL fallback")
+    ghost_content_api_key: Optional[str] = Field(default=None, description="Ghost Content API key fallback")
+    ghost_admin_api_key: Optional[str] = Field(default=None, description="Ghost Admin API key fallback")
+    ghost_api_version: str = Field(default="v5.0", description="Ghost Admin API Accept-Version header")
+    storyblok_content_token: Optional[str] = Field(default=None, description="Storyblok Content API token fallback")
+    storyblok_management_token: Optional[str] = Field(default=None, description="Storyblok Management API token fallback")
+    storyblok_space_id: Optional[str] = Field(default=None, description="Storyblok space ID fallback")
+    storyblok_content_base_url: str = Field(default="https://api.storyblok.com/v2/cdn", description="Storyblok Content API base URL")
+    storyblok_management_base_url: str = Field(default="https://mapi.storyblok.com/v1", description="Storyblok Management API base URL")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

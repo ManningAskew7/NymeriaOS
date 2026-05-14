@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (236)
+### Optional: Service Integration Tools (258)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -314,6 +314,28 @@ in the credential vault for provider-specific saved connections scoped to
 | 234 | `pushover_send_message` | Integrations | MODERATE | Send a Pushover message |
 | 235 | `signl4_send_alert` | Integrations | MODERATE | Send a SIGNL4 alert |
 | 236 | `signl4_resolve_alert` | Integrations | MODERATE | Resolve a SIGNL4 alert by external ID |
+| 237 | `wordpress_list_records` | Integrations | SAFE | List WordPress posts, pages, users, or media |
+| 238 | `wordpress_get_record` | Integrations | SAFE | Get a WordPress post, page, user, or media item by ID |
+| 239 | `wordpress_create_record` | Integrations | MODERATE | Create a WordPress post, page, media item, or user |
+| 240 | `wordpress_update_record` | Integrations | MODERATE | Update a WordPress post, page, media item, or user |
+| 241 | `wordpress_delete_record` | Integrations | MODERATE | Delete a WordPress post, page, media item, or user |
+| 242 | `strapi_list_entries` | Integrations | SAFE | List Strapi entries in a collection |
+| 243 | `strapi_get_entry` | Integrations | SAFE | Get a Strapi entry by collection and ID |
+| 244 | `strapi_create_entry` | Integrations | MODERATE | Create a Strapi collection entry |
+| 245 | `strapi_update_entry` | Integrations | MODERATE | Update a Strapi collection entry |
+| 246 | `strapi_delete_entry` | Integrations | MODERATE | Delete a Strapi collection entry |
+| 247 | `contentful_list_records` | Integrations | SAFE | List Contentful entries or assets |
+| 248 | `contentful_get_record` | Integrations | SAFE | Get a Contentful entry or asset by ID |
+| 249 | `ghost_list_posts` | Integrations | SAFE | List Ghost posts through the Content API |
+| 250 | `ghost_get_post` | Integrations | SAFE | Get a Ghost post by ID or slug |
+| 251 | `ghost_create_post` | Integrations | MODERATE | Create a Ghost post through the Admin API |
+| 252 | `ghost_update_post` | Integrations | MODERATE | Update a Ghost post through the Admin API |
+| 253 | `ghost_delete_post` | Integrations | MODERATE | Delete a Ghost post through the Admin API |
+| 254 | `storyblok_list_stories` | Integrations | SAFE | List Storyblok stories through the Content API |
+| 255 | `storyblok_get_story` | Integrations | SAFE | Get a Storyblok story by path, UUID, or ID |
+| 256 | `storyblok_publish_story` | Integrations | MODERATE | Publish a Storyblok story through the Management API |
+| 257 | `storyblok_unpublish_story` | Integrations | MODERATE | Unpublish a Storyblok story through the Management API |
+| 258 | `storyblok_delete_story` | Integrations | MODERATE | Delete a Storyblok story through the Management API |
 
 ### Optional: Private B Tools (4)
 
@@ -1108,6 +1130,22 @@ Credential providers and fallback env vars:
 - Gotify: provider `gotify`, fields `base_url` / `url`, `app_token` / `appApiToken` for sending, and `client_token` / `clientApiToken` for list/delete operations. Env fallback supports `GOTIFY_BASE_URL`, `GOTIFY_APP_TOKEN`, and `GOTIFY_CLIENT_TOKEN`.
 - Pushover: provider `pushover`, fields `api_token` / `api_key` / `apiKey` / `token` plus `user_key` / `userKey` / `user`; env fallback `PUSHOVER_API_TOKEN` and `PUSHOVER_USER_KEY`. Use `base_url` / `url` or `PUSHOVER_BASE_URL` for non-default API roots.
 - SIGNL4: provider `signl4`, fields `team_secret` / `teamSecret` / `secret` or `webhook_url`; env fallback `SIGNL4_TEAM_SECRET` or `SIGNL4_WEBHOOK_URL`. Use `base_url` / `url` or `SIGNL4_BASE_URL` for non-default webhook roots.
+
+### Content Management Service Tools
+
+This batch includes:
+- `wordpress_list_records(resource, ...)`, `wordpress_get_record(resource, record_id)`, `wordpress_create_record(resource, ...)`, `wordpress_update_record(resource, record_id, ...)`, and `wordpress_delete_record(resource, record_id)`. Reads are SAFE; create/update/delete are MODERATE because they change site content or users.
+- `strapi_list_entries(collection, ...)`, `strapi_get_entry(collection, entry_id)`, `strapi_create_entry(collection, data)`, `strapi_update_entry(collection, entry_id, data)`, and `strapi_delete_entry(collection, entry_id)`. Reads are SAFE; mutations are MODERATE because they change CMS records.
+- `contentful_list_records(resource, ...)` and `contentful_get_record(resource, record_id, ...)` for Contentful Delivery/Preview API reads. Both are SAFE.
+- `ghost_list_posts(...)`, `ghost_get_post(...)`, `ghost_create_post(...)`, `ghost_update_post(post_id, ...)`, and `ghost_delete_post(post_id)`. Reads use the Content API and are SAFE; Admin API mutations are MODERATE.
+- `storyblok_list_stories(...)`, `storyblok_get_story(...)`, `storyblok_publish_story(story_id)`, `storyblok_unpublish_story(story_id)`, and `storyblok_delete_story(story_id)`. Reads are SAFE; publish/unpublish/delete are MODERATE because they change public content state or remove content.
+
+Credential providers and fallback env vars:
+- WordPress: provider `wordpress`, fields `url` / `site_url` / `base_url`, `username`, and `password` / `application_password`; env fallback `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`.
+- Strapi: provider `strapi`, fields `url` / `base_url`, `api_token` / `jwt` / `token`, or `email` plus `password` for local auth. Env fallback supports `STRAPI_URL`, `STRAPI_API_TOKEN`, `STRAPI_EMAIL`, `STRAPI_PASSWORD`, and `STRAPI_API_VERSION`.
+- Contentful: provider `contentful`, fields `space_id` / `spaceId`, delivery token (`access_token`, `delivery_token`, or Contentful-style names), and optional preview token. Env fallback supports `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_PREVIEW_TOKEN`, `CONTENTFUL_BASE_URL`, and `CONTENTFUL_PREVIEW_BASE_URL`.
+- Ghost: provider `ghost`, fields `url`, `content_api_key`, and `admin_api_key` (`key_id:hex_secret`). Env fallback supports `GHOST_URL`, `GHOST_CONTENT_API_KEY`, `GHOST_ADMIN_API_KEY`, and `GHOST_API_VERSION`.
+- Storyblok: provider `storyblok`, fields `content_token`, `management_token`, and `space_id` / `spaceId`; env fallback supports `STORYBLOK_CONTENT_TOKEN`, `STORYBLOK_MANAGEMENT_TOKEN`, `STORYBLOK_SPACE_ID`, `STORYBLOK_CONTENT_BASE_URL`, and `STORYBLOK_MANAGEMENT_BASE_URL`.
 
 ### tool_enable
 
