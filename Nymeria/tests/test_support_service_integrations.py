@@ -109,6 +109,133 @@ def test_freshdesk_search_tickets_uses_vault_key(tmp_path, monkeypatch):
     assert captured["headers"]["Authorization"].startswith("Basic ")
 
 
+def test_freshservice_create_ticket_uses_env_key_and_domain(monkeypatch):
+    from nymeria.tools import support_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("FRESHSERVICE_API_KEY", "freshservice-key")
+    monkeypatch.setenv("FRESHSERVICE_DOMAIN", "itdesk")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"ticket": {"id": 100, **json_body}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.freshservice_create_ticket.func(
+            subject="VPN down",
+            description="Cannot connect.",
+            email="ada@example.com",
+            priority=2,
+            status=2,
+            urgency=2,
+            impact=1,
+            category="Access",
+            custom_fields_json='{"asset_id": "laptop-1"}',
+        )
+    )
+
+    expected_auth = base64.b64encode(b"freshservice-key:X").decode()
+    assert result["ticket"]["id"] == 100
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://itdesk.freshservice.com/api/v2/tickets"
+    assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
+    assert captured["json_body"]["email"] == "ada@example.com"
+    assert captured["json_body"]["custom_fields"] == {"asset_id": "laptop-1"}
+
+
+def test_servicenow_table_tools_shape_requests(monkeypatch):
+    from nymeria.tools import support_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SERVICENOW_BASE_URL", "https://snow.example.com")
+    monkeypatch.setenv("SERVICENOW_ACCESS_TOKEN", "snow-token")
+    calls = []
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        calls.append(
+            {
+                "method": method,
+                "url": url,
+                "params": params,
+                "json_body": json_body,
+                "headers": headers,
+            }
+        )
+        if method == "GET":
+            return {"result": [{"sys_id": "abc", "short_description": "Broken"}]}
+        return {"result": {"sys_id": "abc", **(json_body or {})}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    listed = json.loads(
+        tools.servicenow_list_records.func(
+            table="incident",
+            query="active=true",
+            fields="sys_id,short_description",
+            limit=10,
+            display_value=True,
+        )
+    )
+    updated = json.loads(
+        tools.servicenow_update_record.func(
+            table="incident",
+            sys_id="abc",
+            fields_json='{"short_description": "Fixed"}',
+        )
+    )
+
+    assert listed[0]["sys_id"] == "abc"
+    assert updated["short_description"] == "Fixed"
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == "https://snow.example.com/api/now/table/incident"
+    assert calls[0]["params"]["sysparm_query"] == "active=true"
+    assert calls[0]["params"]["sysparm_display_value"] == "true"
+    assert calls[0]["headers"]["Authorization"] == "Bearer snow-token"
+    assert calls[1]["method"] == "PATCH"
+    assert calls[1]["url"] == "https://snow.example.com/api/now/table/incident/abc"
+
+
+def test_zammad_create_record_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import support_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Zammad",
+        provider="zammad",
+        kind="api_key",
+        allowed_targets=["native_tool:zammad_create_record"],
+        secret_fields={"token": "zammad-token", "base_url": "https://zammad.example.com"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": 7, **json_body}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.zammad_create_record.func(
+            resource="ticket",
+            fields_json='{"title": "Printer", "group": "Users"}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == 7
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://zammad.example.com/api/v1/tickets"
+    assert captured["headers"]["Authorization"] == "Token token=zammad-token"
+    assert captured["json_body"] == {"title": "Printer", "group": "Users"}
+
+
 def test_helpscout_create_conversation_uses_env_token(monkeypatch):
     from nymeria.tools import support_service_integrations as tools
 
@@ -273,11 +400,20 @@ def test_support_service_missing_credentials_return_setup_hints(monkeypatch):
     monkeypatch.setattr(tools, "_settings_value", lambda name: None)
 
     freshdesk_base = tools.freshdesk_get_ticket.func("1")
+    freshservice_base = tools.freshservice_get_ticket.func("1")
+    servicenow_base = tools.servicenow_get_record.func("incident", "abc")
+    zammad_base = tools.zammad_get_record.func("ticket", "1")
     helpscout = tools.helpscout_get_customer.func("1")
     intercom = tools.intercom_get_contact.func("1")
 
     assert "No Freshdesk base URL found" in freshdesk_base
     assert "FRESHDESK_DOMAIN" in freshdesk_base
+    assert "No Freshservice base URL found" in freshservice_base
+    assert "FRESHSERVICE_DOMAIN" in freshservice_base
+    assert "No ServiceNow base URL found" in servicenow_base
+    assert "SERVICENOW_INSTANCE" in servicenow_base
+    assert "No Zammad base URL found" in zammad_base
+    assert "ZAMMAD_BASE_URL" in zammad_base
     assert "No Help Scout credential found" in helpscout
     assert "HELPSCOUT_ACCESS_TOKEN" in helpscout
     assert "native_tool:helpscout_get_customer" in helpscout
@@ -296,6 +432,14 @@ def test_support_service_tools_are_registered_with_metadata():
         "freshdesk_get_ticket",
         "freshdesk_list_contacts",
         "freshdesk_get_contact",
+        "freshservice_list_tickets",
+        "freshservice_get_ticket",
+        "freshservice_list_requesters",
+        "freshservice_get_requester",
+        "servicenow_list_records",
+        "servicenow_get_record",
+        "zammad_list_records",
+        "zammad_get_record",
         "helpscout_list_mailboxes",
         "helpscout_get_mailbox",
         "helpscout_list_conversations",
@@ -314,6 +458,13 @@ def test_support_service_tools_are_registered_with_metadata():
         "freshdesk_delete_ticket",
         "freshdesk_create_contact",
         "freshdesk_update_contact",
+        "freshservice_create_ticket",
+        "freshservice_update_ticket",
+        "servicenow_create_record",
+        "servicenow_update_record",
+        "servicenow_delete_record",
+        "zammad_create_record",
+        "zammad_update_record",
         "helpscout_create_conversation",
         "helpscout_create_thread",
         "helpscout_create_customer",
@@ -342,10 +493,16 @@ def test_support_service_tools_are_registered_with_metadata():
 def test_support_service_tool_schemas_hide_runtime_config():
     from nymeria.tools.support_service_integrations import (
         freshdesk_create_ticket,
+        freshservice_create_ticket,
         helpscout_create_conversation,
         intercom_reply_conversation,
+        servicenow_update_record,
+        zammad_create_record,
     )
 
     assert "config" not in freshdesk_create_ticket.args_schema.model_json_schema()["properties"]
+    assert "config" not in freshservice_create_ticket.args_schema.model_json_schema()["properties"]
     assert "config" not in helpscout_create_conversation.args_schema.model_json_schema()["properties"]
     assert "config" not in intercom_reply_conversation.args_schema.model_json_schema()["properties"]
+    assert "config" not in servicenow_update_record.args_schema.model_json_schema()["properties"]
+    assert "config" not in zammad_create_record.args_schema.model_json_schema()["properties"]

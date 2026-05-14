@@ -174,6 +174,18 @@ Set the API key for your chosen provider:
 | `FRESHDESK_API_KEY` | Freshdesk | Optional env fallback for Freshdesk tools; credential vault provider `freshdesk` is preferred |
 | `FRESHDESK_DOMAIN` | Freshdesk | Optional Freshdesk subdomain fallback |
 | `FRESHDESK_BASE_URL` | Freshdesk | Optional Freshdesk API base URL override |
+| `FRESHSERVICE_API_KEY` | Freshservice | Optional env fallback for Freshservice tools; credential vault provider `freshservice` is preferred |
+| `FRESHSERVICE_DOMAIN` | Freshservice | Optional Freshservice subdomain fallback |
+| `FRESHSERVICE_BASE_URL` | Freshservice | Optional Freshservice API base URL override |
+| `SERVICENOW_BASE_URL` | ServiceNow | Optional ServiceNow API base URL override |
+| `SERVICENOW_INSTANCE` | ServiceNow | Optional ServiceNow instance subdomain fallback |
+| `SERVICENOW_ACCESS_TOKEN` | ServiceNow | Optional ServiceNow bearer token fallback |
+| `SERVICENOW_USERNAME` | ServiceNow | Optional ServiceNow basic-auth username fallback |
+| `SERVICENOW_PASSWORD` | ServiceNow | Optional ServiceNow basic-auth password fallback |
+| `ZAMMAD_BASE_URL` | Zammad | Optional Zammad API base URL fallback |
+| `ZAMMAD_TOKEN` | Zammad | Optional Zammad token fallback |
+| `ZAMMAD_USERNAME` | Zammad | Optional Zammad basic-auth username fallback |
+| `ZAMMAD_PASSWORD` | Zammad | Optional Zammad basic-auth password fallback |
 | `HELPSCOUT_ACCESS_TOKEN` | Help Scout | Optional env fallback for Help Scout tools; credential vault provider `helpscout` is preferred |
 | `HELPSCOUT_BASE_URL` | Help Scout | Optional Help Scout API base URL override |
 | `INTERCOM_ACCESS_TOKEN` | Intercom | Optional env fallback for Intercom tools; credential vault provider `intercom` is preferred |
@@ -620,6 +632,18 @@ reachable from the backend process.
 | `FRESHDESK_API_KEY` | - | Freshdesk API key fallback |
 | `FRESHDESK_DOMAIN` | - | Freshdesk account subdomain fallback |
 | `FRESHDESK_BASE_URL` | - | Freshdesk API base URL override |
+| `FRESHSERVICE_API_KEY` | - | Freshservice API key fallback |
+| `FRESHSERVICE_DOMAIN` | - | Freshservice account subdomain fallback |
+| `FRESHSERVICE_BASE_URL` | - | Freshservice API base URL override |
+| `SERVICENOW_BASE_URL` | - | ServiceNow API base URL override |
+| `SERVICENOW_INSTANCE` | - | ServiceNow instance subdomain fallback |
+| `SERVICENOW_ACCESS_TOKEN` | - | ServiceNow OAuth/bearer token fallback |
+| `SERVICENOW_USERNAME` | - | ServiceNow basic-auth username fallback |
+| `SERVICENOW_PASSWORD` | - | ServiceNow basic-auth password fallback |
+| `ZAMMAD_BASE_URL` | - | Zammad API base URL fallback |
+| `ZAMMAD_TOKEN` | - | Zammad token fallback |
+| `ZAMMAD_USERNAME` | - | Zammad basic-auth username fallback |
+| `ZAMMAD_PASSWORD` | - | Zammad basic-auth password fallback |
 | `HELPSCOUT_ACCESS_TOKEN` | - | Help Scout OAuth access token fallback |
 | `HELPSCOUT_BASE_URL` | `https://api.helpscout.net/v2` | Help Scout API base URL |
 | `INTERCOM_ACCESS_TOKEN` | - | Intercom access token fallback |

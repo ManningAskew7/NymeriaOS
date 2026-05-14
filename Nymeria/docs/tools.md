@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (609)
+### Optional: Service Integration Tools (624)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -687,6 +687,21 @@ in the credential vault for provider-specific saved connections scoped to
 | 607 | `aws_transcribe_get_job` | Integrations | SAFE | Get an Amazon Transcribe job |
 | 608 | `aws_transcribe_list_jobs` | Integrations | SAFE | List Amazon Transcribe jobs |
 | 609 | `aws_transcribe_delete_job` | Integrations | MODERATE | Delete an Amazon Transcribe job |
+| 610 | `freshservice_list_tickets` | Integrations | SAFE | List Freshservice tickets |
+| 611 | `freshservice_get_ticket` | Integrations | SAFE | Get a Freshservice ticket |
+| 612 | `freshservice_create_ticket` | Integrations | MODERATE | Create a Freshservice ticket |
+| 613 | `freshservice_update_ticket` | Integrations | MODERATE | Update a Freshservice ticket |
+| 614 | `freshservice_list_requesters` | Integrations | SAFE | List Freshservice requesters |
+| 615 | `freshservice_get_requester` | Integrations | SAFE | Get a Freshservice requester |
+| 616 | `servicenow_list_records` | Integrations | SAFE | List ServiceNow table records |
+| 617 | `servicenow_get_record` | Integrations | SAFE | Get a ServiceNow table record |
+| 618 | `servicenow_create_record` | Integrations | MODERATE | Create a ServiceNow table record |
+| 619 | `servicenow_update_record` | Integrations | MODERATE | Update a ServiceNow table record |
+| 620 | `servicenow_delete_record` | Integrations | MODERATE | Delete a ServiceNow table record |
+| 621 | `zammad_list_records` | Integrations | SAFE | List or search Zammad tickets, users, organizations, or groups |
+| 622 | `zammad_get_record` | Integrations | SAFE | Get a Zammad ticket, user, organization, or group |
+| 623 | `zammad_create_record` | Integrations | MODERATE | Create a Zammad ticket, user, organization, or group |
+| 624 | `zammad_update_record` | Integrations | MODERATE | Update a Zammad ticket, user, organization, or group |
 
 ### Optional: Private B Tools (4)
 
@@ -1274,7 +1289,10 @@ use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
 `yourls.signature` or `yourls.username` plus `yourls.password`. Work-tracking
-credentials use `asana.access_token` and `linear.api_key`. Relationship CRM
+credentials use `asana.access_token` and `linear.api_key`. IT support credentials
+use `freshservice.api_key` plus `freshservice.domain`, `servicenow.access_token`
+or `servicenow.username` plus `servicenow.password`, and `zammad.token` plus
+`zammad.base_url`. Relationship CRM
 credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
 `agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
 Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
@@ -1570,13 +1588,19 @@ Credential providers and fallback env vars:
 
 This batch includes:
 - `freshdesk_list_tickets(...)`, `freshdesk_search_tickets(...)`, `freshdesk_get_ticket(ticket_id)`, `freshdesk_create_ticket(...)`, `freshdesk_update_ticket(...)`, `freshdesk_delete_ticket(ticket_id)`, `freshdesk_list_contacts(...)`, `freshdesk_get_contact(contact_id)`, `freshdesk_create_contact(...)`, and `freshdesk_update_contact(...)`. Create/update/delete operations are MODERATE because they change Freshdesk support data.
+- `freshservice_list_tickets(...)`, `freshservice_get_ticket(ticket_id)`, `freshservice_create_ticket(...)`, `freshservice_update_ticket(...)`, `freshservice_list_requesters(...)`, and `freshservice_get_requester(requester_id)`. Create/update operations are MODERATE because they change Freshservice support data.
 - `helpscout_list_mailboxes(...)`, `helpscout_get_mailbox(mailbox_id)`, `helpscout_list_conversations(...)`, `helpscout_get_conversation(conversation_id)`, `helpscout_create_conversation(...)`, `helpscout_create_thread(...)`, `helpscout_list_customers(...)`, `helpscout_get_customer(customer_id)`, `helpscout_create_customer(...)`, and `helpscout_update_customer(...)`. Create/update/thread operations are MODERATE because they change Help Scout inbox data.
 - `intercom_list_contacts(...)`, `intercom_search_contacts(...)`, `intercom_get_contact(contact_id)`, `intercom_create_contact(...)`, `intercom_update_contact(...)`, `intercom_archive_contact(contact_id)`, `intercom_list_conversations(...)`, `intercom_get_conversation(conversation_id)`, and `intercom_reply_conversation(...)`. Create/update/archive/reply operations are MODERATE because they change Intercom workspace data or send customer-facing/admin messages.
+- `servicenow_list_records(table, ...)`, `servicenow_get_record(table, sys_id, ...)`, `servicenow_create_record(table, fields_json)`, `servicenow_update_record(table, sys_id, fields_json)`, and `servicenow_delete_record(table, sys_id)` for ServiceNow table records such as incidents and users. Create/update/delete operations are MODERATE.
+- `zammad_list_records(resource, ...)`, `zammad_get_record(resource, record_id)`, `zammad_create_record(resource, fields_json)`, and `zammad_update_record(resource, record_id, fields_json)` for Zammad tickets, users, organizations, and groups. Create/update operations are MODERATE.
 
 Credential providers and fallback env vars:
 - Freshdesk: provider `freshdesk`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `FRESHDESK_API_KEY`. Use `domain` / `subdomain` or `FRESHDESK_DOMAIN`, or `base_url` / `url` / `FRESHDESK_BASE_URL` for the full API root.
+- Freshservice: provider `freshservice`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `FRESHSERVICE_API_KEY`. Use `domain` / `subdomain` or `FRESHSERVICE_DOMAIN`, or `base_url` / `url` / `FRESHSERVICE_BASE_URL` for the full API root.
 - Help Scout: provider `helpscout`, fields `access_token`, `token`, or `value`; env fallback `HELPSCOUT_ACCESS_TOKEN`. Use `base_url` / `url` or `HELPSCOUT_BASE_URL` for non-default API roots.
 - Intercom: provider `intercom`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `INTERCOM_ACCESS_TOKEN`. Use `base_url` / `url` or `INTERCOM_BASE_URL` for regional API roots; `intercom_version` / `version` or `INTERCOM_VERSION` overrides the API version header.
+- ServiceNow: provider `servicenow`, fields `access_token`, `token`, or `value` for bearer auth; or `username` plus `password` for basic auth. Use `base_url` / `url` or `instance` / `subdomain`; env fallback supports `SERVICENOW_BASE_URL`, `SERVICENOW_INSTANCE`, `SERVICENOW_ACCESS_TOKEN`, `SERVICENOW_USERNAME`, and `SERVICENOW_PASSWORD`.
+- Zammad: provider `zammad`, fields `token`, `api_token`, or `value` for token auth; or `username` plus `password` for basic auth. Use `base_url` / `url`; env fallback supports `ZAMMAD_BASE_URL`, `ZAMMAD_TOKEN`, `ZAMMAD_USERNAME`, and `ZAMMAD_PASSWORD`.
 
 ### Sales CRM Service Tools
 
