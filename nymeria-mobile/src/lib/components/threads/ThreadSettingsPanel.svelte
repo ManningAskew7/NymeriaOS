@@ -8,6 +8,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
@@ -35,6 +36,31 @@
   type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
+  const hostedOpenAiCompatibleProviders = [
+    ['openrouter', 'OpenRouter'],
+    ['openai', 'OpenAI'],
+    ['xai', 'xAI'],
+    ['google', 'Google Gemini'],
+    ['groq', 'Groq'],
+    ['deepseek', 'DeepSeek'],
+    ['mistral', 'Mistral AI'],
+    ['togetherai', 'Together AI'],
+    ['fireworks-ai', 'Fireworks AI'],
+    ['perplexity', 'Perplexity'],
+    ['cerebras', 'Cerebras'],
+    ['moonshotai', 'Moonshot / Kimi'],
+    ['alibaba', 'Alibaba / Qwen'],
+    ['zai', 'Z.ai'],
+    ['vercel', 'Vercel AI Gateway'],
+  ];
+  const localOpenAiCompatibleProviders = [
+    ['ollama', 'Ollama local'],
+    ['lmstudio', 'LM Studio'],
+    ['llamacpp', 'llama.cpp server'],
+    ['vllm', 'vLLM'],
+    ['localai', 'LocalAI'],
+    ['litellm', 'LiteLLM proxy'],
+  ];
   let activeTab = $state<Tab>('instructions');
 
   // Config loaded from API
@@ -104,14 +130,25 @@
 
   // Model metadata (reactive)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
+  let availableModelsState = $state<AvailableModelsState>({
+    models: [],
+    provider: '',
+    loading: false,
+  });
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
   }
 
   function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
-    return provider === 'openai' || provider === 'openrouter';
+    return !!provider && provider !== 'anthropic';
   }
+
+  $effect(() => {
+    if (open) {
+      void loadAvailableModels(getEffectiveProvider(), availableModelsState, llmBaseUrl);
+    }
+  });
 
   // Effective tool count
   const effectiveToolCount = $derived.by(() => {
@@ -541,8 +578,12 @@
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         llm.provider = llmProvider || null;
-        llm.base_url = getEffectiveProvider() === 'openai' ? (llmBaseUrl || null) : null;
-        llm.api_key = getEffectiveProvider() === 'openai' ? (llmApiKey || null) : null;
+        llm.base_url = getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'
+          ? (llmBaseUrl || null)
+          : null;
+        llm.api_key = getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'
+          ? (llmApiKey || null)
+          : null;
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
@@ -784,9 +825,17 @@
           <label class="setting-label">Provider</label>
           <select class="setting-input" bind:value={llmProvider}>
             <option value="">Default (inherit global)</option>
-            <option value="openrouter">OpenRouter</option>
             <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
+            <optgroup label="Hosted OpenAI-compatible">
+              {#each hostedOpenAiCompatibleProviders as option}
+                <option value={option[0]}>{option[1]}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Local / self-hosted">
+              {#each localOpenAiCompatibleProviders as option}
+                <option value={option[0]}>{option[1]}</option>
+              {/each}
+            </optgroup>
           </select>
         </div>
 
@@ -802,7 +851,7 @@
           </div>
         {/if}
 
-        {#if getEffectiveProvider() === 'openai'}
+        {#if getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'}
           <div class="setting-group">
             <label class="setting-label" for="llm-base-url">API Base URL</label>
             <input
@@ -830,12 +879,27 @@
 
         <div class="setting-group">
           <label class="setting-label">Model</label>
+          {#if availableModelsState.models.length > 0}
+            <select class="setting-input" bind:value={llmModel}>
+              <option value="">Default (inherit global)</option>
+              {#each availableModelsState.models as model}
+                <option value={model.id}>{model.name || model.id}</option>
+              {/each}
+            </select>
+            <p class="hint">{availableModelsState.models.length} models available from provider</p>
+          {:else if availableModelsState.loading}
+            <select class="setting-input" disabled>
+              <option>Loading models...</option>
+            </select>
+            <p class="hint">Fetching available models from provider...</p>
+          {/if}
           <input
             type="text"
             class="setting-input"
             bind:value={llmModel}
             placeholder="Leave empty for global default"
           />
+          <p class="hint">Model lists come from the provider's models endpoint when available. You can still enter an exact model ID manually.</p>
           {#if threadModelMeta && llmModel}
             <div class="model-meta">
               <span class="meta-name">{threadModelMeta.name}</span>

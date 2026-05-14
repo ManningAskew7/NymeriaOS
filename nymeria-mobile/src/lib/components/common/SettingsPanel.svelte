@@ -6,6 +6,7 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel } from '$lib/types';
   import Icon from './Icon.svelte';
@@ -25,6 +26,31 @@
   type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
   type TabConfig = { id: Tab; label: string; disabled: boolean };
   const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
+  const hostedOpenAiCompatibleProviders = [
+    ['openrouter', 'OpenRouter'],
+    ['openai', 'OpenAI'],
+    ['xai', 'xAI'],
+    ['google', 'Google Gemini'],
+    ['groq', 'Groq'],
+    ['deepseek', 'DeepSeek'],
+    ['mistral', 'Mistral AI'],
+    ['togetherai', 'Together AI'],
+    ['fireworks-ai', 'Fireworks AI'],
+    ['perplexity', 'Perplexity'],
+    ['cerebras', 'Cerebras'],
+    ['moonshotai', 'Moonshot / Kimi'],
+    ['alibaba', 'Alibaba / Qwen'],
+    ['zai', 'Z.ai'],
+    ['vercel', 'Vercel AI Gateway'],
+  ];
+  const localOpenAiCompatibleProviders = [
+    ['ollama', 'Ollama local'],
+    ['lmstudio', 'LM Studio'],
+    ['llamacpp', 'llama.cpp server'],
+    ['vllm', 'vLLM'],
+    ['localai', 'LocalAI'],
+    ['litellm', 'LiteLLM proxy'],
+  ];
   let activeTab = $state<Tab>('connection');
   let isAdmin = $derived(configStore.identity?.role === 'admin');
 
@@ -134,6 +160,16 @@
   const currentModelMeta = $derived(
     llmProvider === 'openrouter' ? modelsStore.getById(llmModel) : undefined
   );
+
+  let availableModelsState = $state<AvailableModelsState>({
+    models: [],
+    provider: '',
+    loading: false,
+  });
+
+  $effect(() => {
+    void loadAvailableModels(llmProvider, availableModelsState, llmBaseUrl);
+  });
 
   // Load server settings
   async function loadServerSettings() {
@@ -379,19 +415,45 @@
             <label class="setting-label">Provider</label>
             <select class="setting-input" bind:value={llmProvider}>
               <option value="anthropic">Anthropic</option>
-              <option value="openai">OpenAI</option>
-              <option value="openrouter">OpenRouter</option>
+              <optgroup label="Hosted OpenAI-compatible">
+                {#each hostedOpenAiCompatibleProviders as option}
+                  <option value={option[0]}>{option[1]}</option>
+                {/each}
+              </optgroup>
+              <optgroup label="Local / self-hosted">
+                {#each localOpenAiCompatibleProviders as option}
+                  <option value={option[0]}>{option[1]}</option>
+                {/each}
+              </optgroup>
             </select>
-            <p class="hint">Requires API key in server .env</p>
+            <p class="hint">Save credentials in Connections or set the provider key in the server environment.</p>
           </div>
 
           <div class="setting-group">
             <label class="setting-label">Model</label>
-            <select class="setting-input" bind:value={llmModel}>
-              {#each modelOptions[llmProvider] as opt}
-                <option value={opt.value}>{opt.label}</option>
-              {/each}
-            </select>
+            {#if availableModelsState.models.length > 0}
+              <select class="setting-input" bind:value={llmModel}>
+                {#each availableModelsState.models as model}
+                  <option value={model.id}>{model.name || model.id}</option>
+                {/each}
+              </select>
+              <p class="hint">{availableModelsState.models.length} models available from provider</p>
+            {:else if availableModelsState.loading}
+              <select class="setting-input" disabled>
+                <option>Loading models...</option>
+              </select>
+              <p class="hint">Fetching available models from provider...</p>
+            {:else}
+              <select class="setting-input" bind:value={llmModel}>
+                {#if (modelOptions[llmProvider] ?? []).length > 0}
+                  {#each modelOptions[llmProvider] ?? [] as opt}
+                    <option value={opt.value}>{opt.label}</option>
+                  {/each}
+                {:else}
+                  <option value={llmModel}>{llmModel || 'Type a model ID below'}</option>
+                {/if}
+              </select>
+            {/if}
             <input
               type="text"
               class="setting-input setting-input-sm"
@@ -402,7 +464,7 @@
               {#if llmProvider === 'openrouter'}
                 Select above or paste a model ID from openrouter.ai/models
               {:else}
-                Select above or type a custom model name
+                Use the live model list when available, or type an exact model ID
               {/if}
             </p>
             {#if currentModelMeta}
@@ -463,7 +525,7 @@
             <p class="hint">Enable thinking tokens for compatible models</p>
           </div>
 
-          {#if llmProvider === 'openai' || llmProvider === 'openrouter'}
+          {#if llmProvider !== 'anthropic'}
             <div class="setting-group">
               <label class="setting-label" for="openai-api-mode">API Mode</label>
               <select id="openai-api-mode" class="setting-input" bind:value={openaiApiMode}>

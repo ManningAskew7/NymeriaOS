@@ -16,6 +16,7 @@ import re
 import threading
 import weakref
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from importlib import metadata as importlib_metadata
 from typing import Any, AsyncIterator, Iterator, List
 from urllib.parse import urlparse
@@ -29,6 +30,15 @@ from .cliproxy import (
     looks_like_cliproxy_url,
 )
 from .config import LLMConfig
+from nymeria.config.llm_providers import (
+    get_llm_provider_spec,
+    is_openai_compatible_provider,
+    normalize_llm_provider,
+    provider_requires_api_key,
+    provider_supports_responses,
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 
 try:
     from langchain_openai import ChatOpenAI as _LangChainChatOpenAI
@@ -1051,9 +1061,13 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
     if config.custom_llm is not None:
         return config.custom_llm
 
+    provider = normalize_llm_provider(config.provider)
+    if provider != config.provider:
+        config = dataclass_replace(config, provider=provider)
+
     if (
         config.openai_api_mode
-        and config.provider not in ("openai", "openrouter")
+        and not is_openai_compatible_provider(config.provider)
         and config.openai_api_mode != "responses"
     ):
         logger.warning(
@@ -1068,6 +1082,8 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         return _create_openai_llm(config)
     elif config.provider == "anthropic":
         return _create_anthropic_llm(config)
+    elif is_openai_compatible_provider(config.provider):
+        return _create_openai_compatible_llm(config)
     elif config.provider == "custom":
         if config.custom_llm is None:
             raise ValueError("Custom provider requires custom_llm to be set")
@@ -1316,6 +1332,90 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         kwargs,
         preserve_direct_stream_usage_default=preserve_stream_usage,
     )
+    return ChatOpenAIWithReasoning(**kwargs)
+
+
+def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
+    """Create a non-OpenAI provider that speaks the OpenAI chat API shape."""
+    provider = normalize_llm_provider(config.provider)
+    spec = get_llm_provider_spec(provider)
+    label = spec.label if spec else provider
+    api_key = config.api_key or resolve_provider_api_key(provider)
+    if not api_key and provider_requires_api_key(provider):
+        env_hint = ", ".join(spec.api_key_env_vars) if spec else f"{provider.upper()}_API_KEY"
+        raise ValueError(f"{label} requires an API key ({env_hint})")
+    if not api_key:
+        api_key = "not-needed"
+
+    base_url = resolve_provider_base_url(
+        provider,
+        configured_base_url=config.base_url,
+    )
+    if not base_url:
+        raise ValueError(f"{label} requires a base URL")
+
+    kwargs: dict[str, Any] = {
+        "model": config.model,
+        "api_key": api_key,
+        "base_url": _normalize_openai_base_url(base_url),
+        "max_retries": 0,
+    }
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
+    if config.max_tokens is not None:
+        kwargs["max_tokens"] = config.max_tokens
+    if config.top_p is not None:
+        kwargs["top_p"] = config.top_p
+    if config.frequency_penalty is not None:
+        kwargs["frequency_penalty"] = config.frequency_penalty
+    if config.presence_penalty is not None:
+        kwargs["presence_penalty"] = config.presence_penalty
+
+    if _should_disable_streaming_for_local_base_url(base_url):
+        kwargs["streaming"] = False
+        logger.info(
+            "[LLM] Local OpenAI-compatible base_url detected (%s); "
+            "streaming=False for reliable tool-call parsing",
+            base_url,
+        )
+
+    api_mode = config.openai_api_mode or (spec.default_api_mode if spec else "chat_completions")
+    if api_mode == "responses":
+        if provider_supports_responses(provider):
+            kwargs["use_responses_api"] = True
+            kwargs["output_version"] = "responses/v1"
+            kwargs["store"] = False
+            if config.extended_thinking or config.reasoning_effort is not None:
+                reasoning_config = {"summary": "auto"}
+                if config.reasoning_effort is not None:
+                    reasoning_config["effort"] = config.reasoning_effort
+                elif config.extended_thinking:
+                    reasoning_config["effort"] = "medium"
+                kwargs["reasoning"] = reasoning_config
+            logger.info(
+                "[LLM] %s Responses API mode enabled for %s",
+                label,
+                config.model,
+            )
+        else:
+            logger.info(
+                "[LLM] %s does not advertise Responses API support; using Chat Completions for %s",
+                label,
+                config.model,
+            )
+    elif config.reasoning_effort is not None and provider in {"azure-openai", "xai"}:
+        kwargs["model_kwargs"] = {"reasoning_effort": config.reasoning_effort}
+
+    model_kwargs = dict(kwargs.get("model_kwargs") or {})
+    if config.top_k is not None:
+        model_kwargs["top_k"] = config.top_k
+    if model_kwargs:
+        kwargs["model_kwargs"] = model_kwargs
+
+    _attach_loop_local_openai_async_http_client(kwargs)
     return ChatOpenAIWithReasoning(**kwargs)
 
 

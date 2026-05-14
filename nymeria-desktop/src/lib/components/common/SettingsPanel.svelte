@@ -17,11 +17,13 @@
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
-  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_LOCAL_BASE_URL,
     DEFAULT_OPENAI_CLIPROXY_BASE_URL,
+    HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
+    LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
     fromSettingsDisplayProvider as fromDisplayProvider,
     isLocalBaseUrl,
     isManagedBaseUrl,
@@ -106,17 +108,17 @@
     loading: false,
   });
 
-  // Sync llmProvider from displayProvider and fetch models
-  // (skip the model fetch for local/custom OpenAI — those endpoints may not
-  // be hosted OpenAI, and the user can type the model ID directly.)
+  // Sync llmProvider from displayProvider and fetch models from the provider
+  // catalog endpoint where available. Static model options are only fallback.
   $effect(() => {
     const { provider } = fromDisplayProvider(displayProvider);
     llmProvider = provider;
-    if (displayProvider === 'local_openai' || displayProvider === 'openai_custom') {
-      clearAvailableModels(availableModelsState);
-      return;
-    }
-    void loadAvailableModels(provider, availableModelsState);
+    const baseUrlOverride = (
+      displayProvider === 'local_openai'
+      || displayProvider === 'openai_custom'
+      || llmBaseUrl
+    ) ? llmBaseUrl : '';
+    void loadAvailableModels(provider, availableModelsState, baseUrlOverride);
   });
 
   // Auto-populate the base URL field when the user picks Local LLM,
@@ -148,10 +150,7 @@
   // Custom user-entered URLs are preserved until save, where the provider
   // mapping decides whether to clear them.
   $effect(() => {
-    if (
-      (displayProvider === 'openai' || displayProvider === 'anthropic_direct' || displayProvider === 'openrouter')
-      && isManagedBaseUrl(llmBaseUrl)
-    ) {
+    if (displayProvider !== 'anthropic_proxy' && displayProvider !== 'openai_custom' && displayProvider !== 'local_openai' && isManagedBaseUrl(llmBaseUrl)) {
       llmBaseUrl = '';
     }
   });
@@ -759,10 +758,18 @@
           <select id="llm-provider" bind:value={displayProvider}>
             <option value="anthropic_proxy">Anthropic (Subscription)</option>
             <option value="anthropic_direct">Anthropic (Direct API)</option>
-            <option value="openai">OpenAI</option>
             <option value="openai_custom">OpenAI (Custom base URL)</option>
-            <option value="openrouter">OpenRouter</option>
             <option value="local_openai">Local LLM (OpenAI-compatible)</option>
+            <optgroup label="Hosted OpenAI-compatible">
+              {#each HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Local / self-hosted">
+              {#each LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </optgroup>
           </select>
           <p class="hint">
             {#if displayProvider === 'anthropic_proxy'}
@@ -774,17 +781,14 @@
             {:else if displayProvider === 'openai_custom'}
               OpenAI-compatible endpoint such as CLIProxy Codex OAuth. Edit the API Base URL under Advanced Settings.
             {:else}
-              LLM provider (requires API key in server .env)
+              LLM provider. Save credentials in Connections or set the provider key in the server environment.
             {/if}
           </p>
         </div>
 
         <div class="field">
           <label for="llm-model">Model</label>
-          {#if displayProvider === 'local_openai'}
-            <!-- Local LLM model names are whatever the user --alias'd llama-server with;
-                 no dropdown — use the free-text input below. -->
-          {:else if availableModelsState.models.length > 0 && (llmProvider === 'anthropic' || llmProvider === 'openai')}
+          {#if availableModelsState.models.length > 0}
             <select id="llm-model" bind:value={llmModel}>
               {#each availableModelsState.models as model}
                 <option value={model.id}>{model.name || model.id}</option>
@@ -798,9 +802,13 @@
             <p class="hint">Fetching available models...</p>
           {:else}
             <select id="llm-model" bind:value={llmModel}>
-              {#each modelOptions[llmProvider] as model}
-                <option value={model.value}>{model.label}</option>
-              {/each}
+              {#if (modelOptions[llmProvider] ?? []).length > 0}
+                {#each modelOptions[llmProvider] ?? [] as model}
+                  <option value={model.value}>{model.label}</option>
+                {/each}
+              {:else}
+                <option value={llmModel}>{llmModel || 'Type a model ID below'}</option>
+              {/if}
             </select>
           {/if}
           <div class="model-custom-row">
@@ -829,9 +837,9 @@
             {:else if llmProvider === 'openrouter'}
               Use the dropdown or paste a model ID from <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>
             {:else if llmProvider === 'openai'}
-              Use the dropdown or enter an OpenAI model name
+              Use the live model list when available, or enter an OpenAI model name
             {:else}
-              Use the dropdown or enter an Anthropic model name
+              Use the live model list when available, or enter an exact model ID
             {/if}
           </p>
           {#if showModelHelp}
@@ -915,7 +923,7 @@
           <p class="hint">Enable/disable thinking tokens for compatible models</p>
         </div>
 
-        {#if llmProvider === 'openai' || llmProvider === 'openrouter'}
+        {#if llmProvider !== 'anthropic'}
           <div class="field">
             <label for="openai-api-mode">API Mode</label>
             <select id="openai-api-mode" bind:value={openaiApiMode}>

@@ -1,9 +1,11 @@
 <script lang="ts">
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
-  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
+    HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
+    LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
     fromThreadDisplayProvider,
     supportsOpenAiApiMode,
     type ThreadDisplayProvider,
@@ -52,12 +54,9 @@
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
-    if (threadDisplayProvider === 'openai_custom') {
-      clearAvailableModels(availableModelsState);
-      return;
-    }
     const ep = getEffectiveProvider();
-    void loadAvailableModels(ep, availableModelsState);
+    const baseUrlOverride = supportsOpenAiApiMode(ep) ? llmBaseUrl : '';
+    void loadAvailableModels(ep, availableModelsState, baseUrlOverride);
   });
 
   $effect(() => {
@@ -74,13 +73,21 @@
       <option value="">Default (inherit global)</option>
       <option value="anthropic_proxy">Anthropic (Subscription)</option>
       <option value="anthropic_direct">Anthropic (Direct API)</option>
-      <option value="openai">OpenAI</option>
-      <option value="openrouter">OpenRouter</option>
       <option value="openai_custom">OpenAI (Custom base URL)</option>
+      <optgroup label="Hosted OpenAI-compatible">
+        {#each HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </optgroup>
+      <optgroup label="Local / self-hosted">
+        {#each LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </optgroup>
     </select>
   </div>
 
-  {#if threadDisplayProvider === 'openai_custom'}
+  {#if getEffectiveProvider() && supportsOpenAiApiMode(getEffectiveProvider())}
     <div class="field-group">
       <label class="field-label" for="llm-base-url">API Base URL</label>
       <input
@@ -88,10 +95,10 @@
         class="field-input"
         type="text"
         bind:value={llmBaseUrl}
-        placeholder="http://cli-proxy-api-latest:8317/v1"
+        placeholder={threadDisplayProvider === 'openai_custom' ? 'http://cli-proxy-api-latest:8317/v1' : 'Provider default'}
       />
       <span class="field-hint">
-        Any OpenAI-compatible endpoint reachable from inside the Nymeria api container, such as a CLIProxy sidecar (e.g. <code>cli-proxy-api-latest:8317/v1</code>) or a local inference server (<code>host.docker.internal:8080/v1</code>).
+        Optional OpenAI-compatible endpoint override reachable from the Nymeria backend. Leave empty to inherit global settings, a saved credential base URL, or the provider default.
       </span>
     </div>
 
@@ -127,18 +134,7 @@
 
   <div class="field-group">
     <label class="field-label" for="llm-model">Model</label>
-    {#if threadDisplayProvider === 'openai_custom'}
-      <input
-        id="llm-model"
-        class="field-input"
-        type="text"
-        bind:value={llmModel}
-        placeholder="Model name (e.g. gpt-5.5, local-llm)"
-      />
-      <span class="field-hint">
-        The model name the endpoint reports (e.g. <code>gpt-5.5</code> for the CLIProxy sidecar, or the <code>--alias</code> flag value for a local server).
-      </span>
-    {:else if availableModelsState.models.length > 0}
+    {#if availableModelsState.models.length > 0}
       <select id="llm-model" class="field-select" bind:value={llmModel}>
         <option value="">Default (inherit global)</option>
         {#each availableModelsState.models as model}
@@ -159,6 +155,15 @@
         <span class="field-hint">Fetching available models from {getEffectiveProvider()}…</span>
       {/if}
     {/if}
+    <input
+      class="field-input model-text-input"
+      type="text"
+      bind:value={llmModel}
+      placeholder="Type an exact model ID"
+    />
+    <span class="field-hint">
+      Model lists come from the provider's models endpoint when available. You can still enter an exact model ID manually.
+    </span>
     {#if threadModelMeta && llmModel}
       <div class="model-meta-hint">
         <span class="meta-name">{threadModelMeta.name}</span>
@@ -293,6 +298,10 @@
 
   .field-select {
     cursor: pointer;
+  }
+
+  .model-text-input {
+    margin-top: var(--spacing-xs);
   }
 
   .model-meta-hint {

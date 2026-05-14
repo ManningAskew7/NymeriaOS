@@ -102,6 +102,7 @@ EXPECTED_ROUTES = [
     ("/settings/env/{key}", ("GET",)),
     ("/settings/global-skills", ("GET",)),
     ("/settings/global-skills", ("PUT",)),
+    ("/settings/llm/providers", ("GET",)),
     ("/settings/llm/runtime", ("GET",)),
     ("/settings/llm/test", ("POST",)),
     ("/skills", ("GET",)),

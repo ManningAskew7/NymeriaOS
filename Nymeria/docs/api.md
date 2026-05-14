@@ -943,6 +943,42 @@ itself as broken.
 
 ---
 
+### LLM Provider Catalog
+
+```http
+GET /settings/llm/providers
+Authorization: Bearer <token>
+```
+
+Returns Nymeria's provider registry: provider IDs, labels, default base URLs,
+API key env vars, aliases, Chat Completions support, and Responses support.
+Desktop/mobile use this metadata for provider setup and diagnostics; the
+authoritative implementation lives in `nymeria/config/llm_providers.py`.
+
+---
+
+### Available Provider Models
+
+```http
+GET /models/available?provider=groq&base_url=https://api.groq.com/openai/v1
+Authorization: Bearer <token>
+```
+
+Fetches models from the selected provider's live `/models` endpoint. `provider`
+defaults to the server's `LLM_PROVIDER`; `base_url` is optional and lets the UI
+test unsaved OpenAI-compatible endpoint overrides. The endpoint resolves auth
+from the credential vault first, then settings/env vars. Returned model objects
+include `id`, `name`, `owned_by`, `created`, and any normalized metadata the
+provider exposes, such as `context_length`, `max_completion_tokens`,
+`supported_parameters`, and `input_modalities`.
+
+Chat Completions responses standardize usage token fields, but model context
+window is not standardized. When `/models/available` sees context metadata,
+Nymeria caches it so `/threads/{thread_id}/context` can report frontend context
+percentage more accurately.
+
+---
+
 ### Update Settings
 
 ```http
@@ -982,7 +1018,7 @@ Authorization: Bearer <admin-token>
 
 | Field | Type | Range | Description |
 |-------|------|-------|-------------|
-| `llm_provider` | string | - | Provider: `anthropic`, `openai`, `openrouter` |
+| `llm_provider` | string | - | Provider ID. `anthropic` uses Anthropic Messages; OpenAI-compatible IDs are listed by `GET /settings/llm/providers`. |
 | `llm_model` | string | - | Model identifier |
 | `llm_fallback_models` | string[] / comma string on PATCH | - | Ordered backend model fallback chain. PATCH accepts a comma-separated string; entries may be `model-id` or `provider:model-id`. |
 | `llm_temperature` | float | 0.0-2.0 | Sampling temperature |
@@ -993,7 +1029,7 @@ Authorization: Bearer <admin-token>
 | `llm_presence_penalty` | float | -2.0-2.0 | Encourage new topics |
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
-| `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI provider API mode. `responses` is the default; `chat_completions` is a compatibility override and is not recommended if thinking is enabled. |
+| `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI-compatible API mode. `responses` is honored only for registry providers that advertise Responses support; Chat Completions is the compatibility baseline. |
 | `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
 | `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
 | `anthropic_direct_api_key` | string | - | Write-only direct Anthropic key used when the effective Anthropic base URL is empty |

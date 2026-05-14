@@ -18,10 +18,10 @@ These variables are deployment-wide server defaults, not per-user account prefer
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider: `openrouter`, `anthropic`, `openai` |
+| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native Anthropic uses `anthropic`; OpenAI-compatible IDs include `openai`, `openrouter`, `xai`, `google`, `groq`, `deepseek`, `mistral`, local providers such as `ollama`/`lmstudio`, and the full registry documented in [`chat_completions_providers.md`](chat_completions_providers.md). |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
-| `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend when the primary model fails with a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for `anthropic`, `openai`, or `openrouter`. CLI shortcut: `/fallback`. |
+| `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend when the primary model fails with a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry. CLI shortcut: `/fallback`. |
 | `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
 
 ### Advanced LLM Settings (Optional)
@@ -38,15 +38,15 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking); invalid values fail settings validation |
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
-| `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for `openrouter`, `openai`, or `anthropic` providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for `openai`/Codex CLIProxy, use the OpenAI-compatible `/v1` URL. Leave unset to use the provider's standard URL. |
-| `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers (`openai` and `openrouter`). `responses` is the default and recommended path for thinking/reasoning models; `chat_completions` is an explicit compatibility override and is not recommended if thinking is enabled. |
+| `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for native Anthropic or OpenAI-compatible providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for OpenAI-compatible endpoints, use the provider's documented base URL, usually ending in `/v1`. Leave unset to use the registry default or a credential-vault base URL. |
+| `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers. `responses` is used only for providers that advertise Responses support in the registry; unsupported providers fall back to Chat Completions. |
 | `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
 
-**Note:** For OpenRouter, Nymeria uses `supported_parameters` from model metadata to automatically skip unsupported params (e.g., reasoning config for non-reasoning models). This prevents silent failures.
+**Note:** For model dropdowns and context metadata, Nymeria asks the selected provider's `/models` endpoint through `GET /models/available`. Provider-returned context fields such as `context_length`, `context_window`, or `max_context_tokens` are cached for frontend context-window percentage calculations. Chat Completions itself standardizes usage token fields, not context-window limits.
 
-**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. Nymeria does not automatically fall back from Responses API to Chat Completions if a provider rejects the request; switch `OPENAI_API_MODE=chat_completions` explicitly when you need the older endpoint. OpenRouter Responses reasoning is displayed only when the provider emits plaintext reasoning fields; malformed inline `<think>` text that arrives as normal answer text is stripped from display and replay.
+**Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. OpenRouter Responses reasoning is displayed only when the provider emits plaintext reasoning fields; malformed inline `<think>` text that arrives as normal answer text is stripped from display and replay.
 
 `LLM_FALLBACK_MODELS` is backend-owned, so it applies to every chat surface:
 desktop, mobile, CLI, bots, triggers, scheduled TODOs, and callable-thread

@@ -1,20 +1,45 @@
 import type { LLMProvider } from '$lib/types';
 
-export type SettingsDisplayProvider =
-  | 'anthropic_proxy'
-  | 'anthropic_direct'
-  | 'openai'
-  | 'openai_custom'
-  | 'openrouter'
-  | 'local_openai';
+export type ProviderOption = { value: string; label: string };
+export type SettingsDisplayProvider = string;
+export type ThreadDisplayProvider = string;
 
-export type ThreadDisplayProvider =
-  | ''
-  | 'anthropic_proxy'
-  | 'anthropic_direct'
-  | 'openai'
-  | 'openrouter'
-  | 'openai_custom';
+export const HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS: ProviderOption[] = [
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'xai', label: 'xAI' },
+  { value: 'google', label: 'Google Gemini' },
+  { value: 'groq', label: 'Groq' },
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'mistral', label: 'Mistral AI' },
+  { value: 'togetherai', label: 'Together AI' },
+  { value: 'fireworks-ai', label: 'Fireworks AI' },
+  { value: 'perplexity', label: 'Perplexity' },
+  { value: 'cerebras', label: 'Cerebras' },
+  { value: 'sambanova', label: 'SambaNova' },
+  { value: 'nvidia', label: 'NVIDIA NIM' },
+  { value: 'huggingface', label: 'Hugging Face' },
+  { value: 'deepinfra', label: 'DeepInfra' },
+  { value: 'moonshotai', label: 'Moonshot / Kimi' },
+  { value: 'alibaba', label: 'Alibaba / Qwen' },
+  { value: 'zai', label: 'Z.ai' },
+  { value: 'zhipuai', label: 'Zhipu AI' },
+  { value: 'qianfan', label: 'Baidu Qianfan' },
+  { value: 'volcengine', label: 'Volcengine Ark' },
+  { value: 'vercel', label: 'Vercel AI Gateway' },
+  { value: 'github-models', label: 'GitHub Models' },
+  { value: 'ollama-cloud', label: 'Ollama Cloud' },
+];
+
+export const LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS: ProviderOption[] = [
+  { value: 'ollama', label: 'Ollama local' },
+  { value: 'lmstudio', label: 'LM Studio' },
+  { value: 'llamacpp', label: 'llama.cpp server' },
+  { value: 'vllm', label: 'vLLM' },
+  { value: 'localai', label: 'LocalAI' },
+  { value: 'litellm', label: 'LiteLLM proxy' },
+  { value: 'tgi', label: 'Hugging Face TGI' },
+];
 
 export const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'host.docker.internal'];
 export const DEFAULT_LOCAL_BASE_URL = 'http://host.docker.internal:8080/v1';
@@ -88,5 +113,5 @@ export function fromThreadDisplayProvider(
 }
 
 export function supportsOpenAiApiMode(provider: string): boolean {
-  return provider === 'openai' || provider === 'openrouter';
+  return !!provider && provider !== 'anthropic' && provider !== 'anthropic_proxy' && provider !== 'anthropic_direct';
 }

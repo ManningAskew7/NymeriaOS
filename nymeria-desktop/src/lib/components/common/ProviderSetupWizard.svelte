@@ -43,7 +43,7 @@
     cliproxy_codex_oauth: 'CLIProxy Codex OAuth',
   };
 
-  const providerLabels: Record<LLMProvider, string> = {
+  const providerLabels: Record<string, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
     openrouter: 'OpenRouter',
@@ -163,6 +163,10 @@
   function defaultModelFor(provider: LLMProvider): string {
     if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
     return modelOptions[provider]?.[0]?.value ?? '';
+  }
+
+  function providerLabel(provider: LLMProvider): string {
+    return providerLabels[provider] ?? provider;
   }
 
   function getNormalizedBaseUrl(): string {
@@ -391,7 +395,7 @@
         <div class="field">
           <label for="provider-setup-model">Model</label>
           <select id="provider-setup-model" bind:value={model}>
-            {#each modelOptions[effectiveProvider] as option}
+            {#each modelOptions[effectiveProvider] ?? [] as option}
               <option value={option.value}>{option.label}</option>
             {/each}
           </select>
@@ -408,7 +412,7 @@
       <div class="wizard-body">
         <div class="field">
           <label for="provider-setup-api-key">
-            {authMethod === 'api_key' ? `${providerLabels[effectiveProvider]} API Key` : 'CLIProxy Gatekeeper Key'}
+            {authMethod === 'api_key' ? `${providerLabel(effectiveProvider)} API Key` : 'CLIProxy Gatekeeper Key'}
           </label>
           <input
             id="provider-setup-api-key"
@@ -473,7 +477,7 @@
           </div>
           <div>
             <span>Provider</span>
-            <strong>{providerLabels[effectiveProvider]}</strong>
+            <strong>{providerLabel(effectiveProvider)}</strong>
           </div>
           <div>
             <span>Model</span>
