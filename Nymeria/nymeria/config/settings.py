@@ -474,6 +474,21 @@ class Settings(BaseSettings):
     mocean_base_url: str = Field(default="https://rest.moceanapi.com", description="Mocean API base URL")
     msg91_auth_key: Optional[str] = Field(default=None, description="MSG91 authentication key fallback")
     msg91_base_url: str = Field(default="https://api.msg91.com/api", description="MSG91 API base URL")
+    stripe_secret_key: Optional[str] = Field(default=None, description="Stripe secret key fallback")
+    stripe_base_url: str = Field(default="https://api.stripe.com/v1", description="Stripe API base URL")
+    shopify_shop: Optional[str] = Field(default=None, description="Shopify shop subdomain or myshopify.com host fallback")
+    shopify_access_token: Optional[str] = Field(default=None, description="Shopify Admin API access token fallback")
+    shopify_api_key: Optional[str] = Field(default=None, description="Legacy Shopify API key fallback")
+    shopify_password: Optional[str] = Field(default=None, description="Legacy Shopify Admin API password fallback")
+    shopify_api_version: str = Field(default="2026-01", description="Shopify Admin REST API version")
+    shopify_base_url: Optional[str] = Field(default=None, description="Shopify Admin REST API base URL override")
+    woocommerce_url: Optional[str] = Field(default=None, description="WooCommerce site URL fallback")
+    woocommerce_base_url: Optional[str] = Field(default=None, description="WooCommerce REST API base URL override")
+    woocommerce_consumer_key: Optional[str] = Field(default=None, description="WooCommerce consumer key fallback")
+    woocommerce_consumer_secret: Optional[str] = Field(default=None, description="WooCommerce consumer secret fallback")
+    chargebee_api_key: Optional[str] = Field(default=None, description="Chargebee API key fallback")
+    chargebee_site: Optional[str] = Field(default=None, description="Chargebee site subdomain fallback")
+    chargebee_base_url: Optional[str] = Field(default=None, description="Chargebee API base URL override")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

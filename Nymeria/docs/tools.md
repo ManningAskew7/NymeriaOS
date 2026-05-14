@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (207)
+### Optional: Service Integration Tools (225)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -285,6 +285,24 @@ in the credential vault for provider-specific saved connections scoped to
 | 205 | `mocean_send_voice` | Integrations | MODERATE | Start a Mocean text-to-speech voice call |
 | 206 | `mocean_get_balance` | Integrations | SAFE | Get Mocean account balance |
 | 207 | `msg91_send_sms` | Integrations | MODERATE | Send SMS with MSG91 |
+| 208 | `stripe_list_records` | Integrations | SAFE | List Stripe customers, charges, payment intents, invoices, subscriptions, products, or prices |
+| 209 | `stripe_search_records` | Integrations | SAFE | Search Stripe billing records with Stripe Search query syntax |
+| 210 | `stripe_get_record` | Integrations | SAFE | Get a Stripe billing record by ID |
+| 211 | `stripe_get_balance` | Integrations | SAFE | Get Stripe account balance details |
+| 212 | `stripe_create_customer` | Integrations | MODERATE | Create a Stripe customer |
+| 213 | `stripe_update_customer` | Integrations | MODERATE | Update a Stripe customer |
+| 214 | `shopify_list_records` | Integrations | SAFE | List Shopify products, orders, or customers |
+| 215 | `shopify_get_record` | Integrations | SAFE | Get a Shopify product, order, or customer by ID |
+| 216 | `shopify_create_product` | Integrations | MODERATE | Create a Shopify product |
+| 217 | `shopify_update_product` | Integrations | MODERATE | Update a Shopify product |
+| 218 | `woocommerce_list_records` | Integrations | SAFE | List WooCommerce products, orders, or customers |
+| 219 | `woocommerce_get_record` | Integrations | SAFE | Get a WooCommerce product, order, or customer by ID |
+| 220 | `woocommerce_create_record` | Integrations | MODERATE | Create a WooCommerce product, order, or customer |
+| 221 | `woocommerce_update_record` | Integrations | MODERATE | Update a WooCommerce product, order, or customer |
+| 222 | `chargebee_list_records` | Integrations | SAFE | List Chargebee customers, subscriptions, invoices, transactions, items, item prices, or plans |
+| 223 | `chargebee_get_record` | Integrations | SAFE | Get a Chargebee billing record by ID |
+| 224 | `chargebee_create_customer` | Integrations | MODERATE | Create a Chargebee customer |
+| 225 | `chargebee_update_customer` | Integrations | MODERATE | Update a Chargebee customer |
 
 ### Optional: Private B Tools (4)
 
@@ -1049,6 +1067,20 @@ Credential providers and fallback env vars:
 - MessageBird: provider `messagebird`, fields `access_key`, `accessKey`, `api_key`, `token`, or `value`; env fallback `MESSAGEBIRD_ACCESS_KEY`. Use `base_url` / `url` or `MESSAGEBIRD_BASE_URL` for non-default API roots.
 - Mocean: provider `mocean`, fields `api_key` / `mocean-api-key` plus `api_secret` / `mocean-api-secret`; env fallback `MOCEAN_API_KEY` and `MOCEAN_API_SECRET`. Use `base_url` / `url` or `MOCEAN_BASE_URL` for non-default API roots.
 - MSG91: provider `msg91`, fields `auth_key`, `authkey`, `api_key`, `token`, or `value`; env fallback `MSG91_AUTH_KEY`. Use `base_url` / `url` or `MSG91_BASE_URL` for non-default API roots.
+
+### Commerce Billing Service Tools
+
+This batch includes:
+- `stripe_list_records(resource, ...)`, `stripe_search_records(resource, query, ...)`, `stripe_get_record(resource, record_id)`, and `stripe_get_balance()` for SAFE read/search access across common Stripe billing records. `stripe_create_customer(...)` and `stripe_update_customer(...)` are MODERATE because they change customer data.
+- `shopify_list_records(resource, ...)` and `shopify_get_record(resource, record_id)` for SAFE Shopify Admin REST reads across products, orders, and customers. `shopify_create_product(...)` and `shopify_update_product(...)` are MODERATE because they change storefront catalog data.
+- `woocommerce_list_records(resource, ...)` and `woocommerce_get_record(resource, record_id)` for SAFE WooCommerce reads across products, orders, and customers. `woocommerce_create_record(...)` and `woocommerce_update_record(...)` are MODERATE because they change store data.
+- `chargebee_list_records(resource, ...)` and `chargebee_get_record(resource, record_id)` for SAFE Chargebee reads across customers, subscriptions, invoices, transactions, items, item prices, and plans. `chargebee_create_customer(...)` and `chargebee_update_customer(...)` are MODERATE because they change billing customer data.
+
+Credential providers and fallback env vars:
+- Stripe: provider `stripe`, fields `secret_key`, `secretKey`, `api_key`, `apiKey`, `token`, or `value`; env fallback `STRIPE_SECRET_KEY`. Use `base_url` / `url` or `STRIPE_BASE_URL` for non-default API roots.
+- Shopify: provider `shopify`, fields `shop_subdomain` / `shopSubdomain` / `shop` / `domain` plus `access_token` / `accessToken` / `token` / `value` for modern Admin API token auth. Legacy basic auth can use `api_key` / `apiKey` plus `password`. Env fallback supports `SHOPIFY_SHOP`, `SHOPIFY_ACCESS_TOKEN`, optional `SHOPIFY_API_VERSION`, legacy `SHOPIFY_API_KEY` and `SHOPIFY_PASSWORD`, and `SHOPIFY_BASE_URL` for a full Admin REST root.
+- WooCommerce: provider `woocommerce`, fields `url` / `site_url` / `base_url`, `consumer_key` / `consumerKey`, and `consumer_secret` / `consumerSecret`. Env fallback supports `WOOCOMMERCE_URL`, `WOOCOMMERCE_BASE_URL`, `WOOCOMMERCE_CONSUMER_KEY`, and `WOOCOMMERCE_CONSUMER_SECRET`.
+- Chargebee: provider `chargebee`, fields `site` / `account_name` / `accountName` / `subdomain` plus `api_key` / `apiKey` / `token` / `value`; env fallback `CHARGEBEE_SITE` and `CHARGEBEE_API_KEY`. Use `base_url` / `url` or `CHARGEBEE_BASE_URL` for non-default API roots.
 
 ### tool_enable
 

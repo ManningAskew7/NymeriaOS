@@ -336,6 +336,27 @@ from .messaging_delivery_service_integrations import (
     msg91_send_sms,
     MESSAGING_DELIVERY_SERVICE_TOOLS,
 )
+from .commerce_billing_service_integrations import (
+    stripe_list_records,
+    stripe_search_records,
+    stripe_get_record,
+    stripe_get_balance,
+    stripe_create_customer,
+    stripe_update_customer,
+    shopify_list_records,
+    shopify_get_record,
+    shopify_create_product,
+    shopify_update_product,
+    woocommerce_list_records,
+    woocommerce_get_record,
+    woocommerce_create_record,
+    woocommerce_update_record,
+    chargebee_list_records,
+    chargebee_get_record,
+    chargebee_create_customer,
+    chargebee_update_customer,
+    COMMERCE_BILLING_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -394,6 +415,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SUPPORT_SERVICE_TOOLS
     + SALES_CRM_SERVICE_TOOLS
     + MESSAGING_DELIVERY_SERVICE_TOOLS
+    + COMMERCE_BILLING_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -723,6 +745,25 @@ __all__ = [
     "mocean_get_balance",
     "msg91_send_sms",
     "MESSAGING_DELIVERY_SERVICE_TOOLS",
+    "stripe_list_records",
+    "stripe_search_records",
+    "stripe_get_record",
+    "stripe_get_balance",
+    "stripe_create_customer",
+    "stripe_update_customer",
+    "shopify_list_records",
+    "shopify_get_record",
+    "shopify_create_product",
+    "shopify_update_product",
+    "woocommerce_list_records",
+    "woocommerce_get_record",
+    "woocommerce_create_record",
+    "woocommerce_update_record",
+    "chargebee_list_records",
+    "chargebee_get_record",
+    "chargebee_create_customer",
+    "chargebee_update_customer",
+    "COMMERCE_BILLING_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
