@@ -1,6 +1,6 @@
 """Settings and model-catalog API schemas."""
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -154,6 +154,14 @@ class ServerSettingsUpdate(BaseModel):
     mailchimp_access_token: Optional[str] = None
     mailchimp_server_prefix: Optional[str] = None
     mailchimp_base_url: Optional[str] = None
+    freshdesk_api_key: Optional[str] = None
+    freshdesk_domain: Optional[str] = None
+    freshdesk_base_url: Optional[str] = None
+    helpscout_access_token: Optional[str] = None
+    helpscout_base_url: Optional[str] = None
+    intercom_access_token: Optional[str] = None
+    intercom_base_url: Optional[str] = None
+    intercom_version: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
@@ -219,6 +227,69 @@ class LLMProviderTestResponse(BaseModel):
     openai_api_mode: Optional[OpenAIApiMode] = None
     status_code: Optional[int] = None
     error_type: Optional[str] = None
+
+
+class LLMProviderTestSuiteRequest(BaseModel):
+    """Request model for the production-readiness provider test suite."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider: LLMProviderName
+    llm_model: Optional[str] = None
+    api_key: Optional[SecretStr] = None
+    llm_base_url: Optional[str] = None
+    openai_api_mode: Optional[OpenAIApiMode] = "chat_completions"
+    run_model_list: bool = True
+    run_chat_completion: bool = True
+    run_tool_call: bool = True
+    allow_billable: bool = False
+    prefer_free_model: bool = True
+    timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
+
+    @field_validator("llm_model")
+    @classmethod
+    def _strip_optional_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def _strip_optional_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip().rstrip("/")
+        return value or None
+
+
+class LLMProviderTestSuiteStepResponse(BaseModel):
+    """One step returned by the provider test suite."""
+
+    name: str
+    status: str
+    ok: bool
+    message: str
+    url: Optional[str] = None
+    status_code: Optional[int] = None
+    latency_ms: Optional[int] = None
+    error_type: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMProviderTestSuiteResponse(BaseModel):
+    """Sanitized production-readiness report for a provider setup."""
+
+    ok: bool
+    provider: LLMProviderName
+    requested_provider: LLMProviderName
+    model: Optional[str] = None
+    effective_base_url: Optional[str] = None
+    effective_api_mode: Optional[OpenAIApiMode] = None
+    credential_source: str
+    models_count: Optional[int] = None
+    message: str
+    steps: list[LLMProviderTestSuiteStepResponse]
 
 
 HIDDEN_CONFIG_SETTINGS = {
