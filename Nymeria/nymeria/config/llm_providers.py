@@ -840,21 +840,24 @@ def _read_env_files(project_root: Path | None = None) -> dict[str, str]:
     for path in paths:
         if not path.exists():
             continue
-        if dotenv_values is not None:
-            parsed = dotenv_values(path)
-            for key, value in parsed.items():
-                if key and value not in (None, ""):
-                    values[key] = str(value)
-            continue
-
-        for line in path.read_text(encoding="utf-8").splitlines():
-            clean = line.strip()
-            if not clean or clean.startswith("#") or "=" not in clean:
+        try:
+            if dotenv_values is not None:
+                parsed = dotenv_values(path)
+                for key, value in parsed.items():
+                    if key and value not in (None, ""):
+                        values[key] = str(value)
                 continue
-            key, value = clean.split("=", 1)
-            value = value.strip().strip("\"'")
-            if key.strip() and value:
-                values[key.strip()] = value
+
+            for line in path.read_text(encoding="utf-8").splitlines():
+                clean = line.strip()
+                if not clean or clean.startswith("#") or "=" not in clean:
+                    continue
+                key, value = clean.split("=", 1)
+                value = value.strip().strip("\"'")
+                if key.strip() and value:
+                    values[key.strip()] = value
+        except UnicodeDecodeError:
+            continue
 
     return values
 

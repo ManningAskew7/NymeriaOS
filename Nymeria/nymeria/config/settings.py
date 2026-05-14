@@ -81,27 +81,10 @@ DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
 ReasoningEffort = Literal["low", "medium", "high"]
 
 
-def _is_readable_text(path: Path) -> bool:
-    """Return False for missing files or git-crypt encrypted blobs."""
-    try:
-        with open(path, "rb") as f:
-            head = f.read(16)
-        return not head.startswith(b"\x00GITCRYPT")
-    except OSError:
-        return False
-
-
 def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
-    """Return environment files loaded for a runtime project root.
-
-    Excludes files that are git-crypt encrypted (unreadable as text).
-    """
+    """Return environment files loaded for a runtime project root."""
     root = project_root or PROJECT_ROOT
-    return tuple(
-        root / filename
-        for filename in ENV_FILENAMES
-        if _is_readable_text(root / filename)
-    )
+    return tuple(root / filename for filename in ENV_FILENAMES)
 
 
 def get_env_write_path(project_root: Path | None = None) -> Path:
