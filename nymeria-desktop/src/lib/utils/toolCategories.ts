@@ -65,6 +65,11 @@ export const CATEGORY_INFO: Record<string, ToolCategoryInfo> = {
     icon: 'file-text',
     description: 'Google Docs tools for reading, writing, and formatting documents',
   },
+  integrations: {
+    name: 'Integrations',
+    icon: 'plug',
+    description: 'Native service integrations inspired by n8n agent tool nodes',
+  },
   skills: {
     name: 'Agent Skills',
     icon: 'bolt',
@@ -92,6 +97,7 @@ export const CATEGORY_ORDER = [
   'browser',
   'image',
   'calendar',
+  'integrations',
   'skills',
   'self_modify',
   'subagent',

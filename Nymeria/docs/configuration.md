@@ -70,6 +70,8 @@ Set the API key for your chosen provider:
 | `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
 | `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
 | `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
+| `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Required for `wolfram_alpha_query` |
+| `SEARXNG_BASE_URL` | SearXNG | Required for `searxng_search` |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -221,6 +223,8 @@ reachable from the backend process.
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file |
 | `_PRV_A_SERVICE_ACCOUNT_FILE` | - | Path to a Google service account JSON file for _PRV_A reference Sheets |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
+| `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
+| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

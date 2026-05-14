@@ -74,6 +74,8 @@ def _env_mapping() -> dict[str, str]:
         "voice_default_thread_id": "VOICE_DEFAULT_THREAD_ID",
         "perplexity_api_key": "PERPLEXITY_API_KEY",
         "perplexity_search_model": "PERPLEXITY_SEARCH_MODEL",
+        "wolfram_alpha_app_id": "WOLFRAM_ALPHA_APP_ID",
+        "searxng_base_url": "SEARXNG_BASE_URL",
         "openai_api_key": "OPENAI_API_KEY",
         "anthropic_api_key": "ANTHROPIC_API_KEY",
         "anthropic_direct_api_key": "ANTHROPIC_DIRECT_API_KEY",
