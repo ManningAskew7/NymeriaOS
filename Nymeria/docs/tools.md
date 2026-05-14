@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (572)
+### Optional: Service Integration Tools (590)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -650,6 +650,24 @@ in the credential vault for provider-specific saved connections scoped to
 | 570 | `lonescale_add_company_item` | Integrations | MODERATE | Add a company to a prospecting list |
 | 571 | `uproc_get_profile` | Integrations | MODERATE | Get the saved enrichment account profile |
 | 572 | `uproc_process` | Integrations | MODERATE | Run an enrichment processor with explicit JSON parameters |
+| 573 | `datetime_current` | Integrations | SAFE | Get the current date or time |
+| 574 | `datetime_add` | Integrations | SAFE | Add a duration to a date/time |
+| 575 | `datetime_subtract` | Integrations | SAFE | Subtract a duration from a date/time |
+| 576 | `datetime_format` | Integrations | SAFE | Parse and format a date/time |
+| 577 | `datetime_between` | Integrations | SAFE | Get the time difference between two dates |
+| 578 | `datetime_extract` | Integrations | SAFE | Extract part of a date/time |
+| 579 | `datetime_round` | Integrations | SAFE | Round a date/time to a calendar boundary |
+| 580 | `crypto_hash_text` | Integrations | SAFE | Hash text locally |
+| 581 | `crypto_hmac_text` | Integrations | MODERATE | Create an HMAC with a saved secret |
+| 582 | `crypto_generate_random` | Integrations | SAFE | Generate a random UUID or string |
+| 583 | `crypto_sign_text` | Integrations | MODERATE | Sign text with a saved private key |
+| 584 | `jwt_decode_token` | Integrations | SAFE | Decode a JWT without verification |
+| 585 | `jwt_sign_claims` | Integrations | MODERATE | Sign JWT claims with saved credentials |
+| 586 | `jwt_verify_token` | Integrations | MODERATE | Verify a JWT with saved credentials |
+| 587 | `compression_gzip_text` | Integrations | SAFE | Gzip text and return base64 |
+| 588 | `compression_gunzip_text` | Integrations | SAFE | Decompress base64 gzip text |
+| 589 | `compression_zip_text_files` | Integrations | SAFE | Create a base64 zip from text files |
+| 590 | `compression_unzip_text_files` | Integrations | SAFE | Extract base64 zip text files |
 
 ### Optional: Private B Tools (4)
 
@@ -1239,7 +1257,9 @@ credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
 `agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
 Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
 `dropcontact.api_key`, `humantic.api_key`, `lonescale.api_key`, and
-`uproc.email` plus `uproc.api_key`. Scope a
+`uproc.email` plus `uproc.api_key`. Transform credentials use
+`crypto.hmac_secret`, `crypto.private_key`, `jwt.secret`, `jwt.private_key`,
+`jwt.public_key`, and optional `jwt.algorithm`. Scope a
 credential to one tool with `allowed target = native_tool:<tool_name>`, share it
 across native tools with `native_tool:*`, or leave the target blank when it is
 safe for any target. Tool responses never expose plaintext credential values.
@@ -1298,6 +1318,18 @@ searxng_search(
 Uses vault provider `searxng` fields `base_url`, `url`, or `value`, then falls
 back to `SEARXNG_BASE_URL`, pointing at the endpoint accepted by
 `langchain_community.utilities.SearxSearchWrapper`.
+
+### Transform Utility Tools
+
+This batch includes local transform tools that do not call external services:
+- `datetime_current(...)`, `datetime_add(...)`, `datetime_subtract(...)`, `datetime_format(...)`, `datetime_between(...)`, `datetime_extract(...)`, and `datetime_round(...)` for timezone-aware date/time work.
+- `crypto_hash_text(text, algorithm?, encoding?)` and `crypto_generate_random(kind?, length?, alphabet?)` for local hashing and random string generation.
+- `compression_gzip_text(text)`, `compression_gunzip_text(data_base64)`, `compression_zip_text_files(files_json)`, and `compression_unzip_text_files(archive_base64)` for bounded text/archive transforms.
+
+Secret-backed transform tools use the credential vault:
+- `crypto_hmac_text(...)` uses provider `crypto`, field `hmac_secret` / `hmacSecret` / `secret`; env fallback `CRYPTO_HMAC_SECRET`.
+- `crypto_sign_text(...)` uses provider `crypto`, field `sign_private_key` / `signPrivateKey` / `private_key` / `privateKey`; env fallbacks `CRYPTO_SIGN_PRIVATE_KEY` and optional `CRYPTO_SIGN_PRIVATE_KEY_PASSPHRASE`.
+- `jwt_sign_claims(...)` and `jwt_verify_token(...)` use provider `jwt`, fields `secret`, `private_key`, `public_key`, and optional `algorithm`; env fallbacks `JWT_SECRET`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, and `JWT_ALGORITHM`.
 
 ### Public Information Tools
 

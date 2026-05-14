@@ -106,6 +106,13 @@ class ServerSettingsUpdate(BaseModel):
     nasa_api_key: Optional[str] = None
     openweathermap_api_key: Optional[str] = None
     npm_registry_url: Optional[str] = None
+    crypto_hmac_secret: Optional[str] = None
+    crypto_sign_private_key: Optional[str] = None
+    crypto_sign_private_key_passphrase: Optional[str] = None
+    jwt_secret: Optional[str] = None
+    jwt_private_key: Optional[str] = None
+    jwt_public_key: Optional[str] = None
+    jwt_algorithm: Optional[str] = None
     github_token: Optional[str] = None
     github_api_base_url: Optional[str] = None
     gitlab_token: Optional[str] = None
