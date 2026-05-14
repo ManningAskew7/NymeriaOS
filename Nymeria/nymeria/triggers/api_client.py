@@ -1503,12 +1503,22 @@ class NymeriaAPIClient:
         )
 
     async def unbind_chatapp_by_chat(
-        self, *, provider: str, platform_chat_id: str
+        self,
+        *,
+        provider: str,
+        platform_chat_id: str,
+        user_id: Optional[str] = None,
+        user_telegram_bot_id: Optional[int] = None,
     ) -> dict:
         """Remove the binding for (provider, chat_id). Returns ``{unbound: bool, thread_id?}``."""
         return await self._delete(
             "/admin/chatapp/bindings/by-chat",
-            params={"provider": provider, "platform_chat_id": str(platform_chat_id)},
+            params=_clean_params(
+                provider=provider,
+                platform_chat_id=str(platform_chat_id),
+                user_id=user_id,
+                user_telegram_bot_id=user_telegram_bot_id,
+            ),
         )
 
     async def switch_chatapp_binding(
