@@ -291,6 +291,15 @@ Set the API key for your chosen provider:
 | `PHILIPS_HUE_ACCESS_TOKEN` | Philips Hue | Optional Philips Hue access token fallback; credential vault provider `philips_hue` is preferred |
 | `PHILIPS_HUE_USERNAME` | Philips Hue | Optional Philips Hue bridge username fallback |
 | `PHILIPS_HUE_BASE_URL` | Philips Hue | Optional Philips Hue routed API base URL override |
+| `ACTIVECAMPAIGN_API_KEY` | ActiveCampaign | Optional ActiveCampaign API key fallback; credential vault provider `activecampaign` is preferred |
+| `ACTIVECAMPAIGN_BASE_URL` | ActiveCampaign | ActiveCampaign account API URL, such as `https://account.api-us1.com` |
+| `CONVERTKIT_API_SECRET` | ConvertKit | Optional ConvertKit API secret fallback; credential vault provider `convertkit` is preferred |
+| `CONVERTKIT_BASE_URL` | ConvertKit | Optional ConvertKit API base URL override |
+| `GETRESPONSE_API_KEY` | GetResponse | Optional GetResponse API key fallback; credential vault provider `getresponse` is preferred |
+| `GETRESPONSE_BASE_URL` | GetResponse | Optional GetResponse API base URL override |
+| `MAILERLITE_API_KEY` | MailerLite | Optional MailerLite API key fallback; credential vault provider `mailerlite` is preferred |
+| `MAILERLITE_BASE_URL` | MailerLite | Optional MailerLite API base URL override |
+| `MAILERLITE_CLASSIC_API` | MailerLite | Use MailerLite Classic API authentication/header style |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -663,6 +672,15 @@ reachable from the backend process.
 | `PHILIPS_HUE_ACCESS_TOKEN` | - | Philips Hue access token fallback |
 | `PHILIPS_HUE_USERNAME` | - | Philips Hue bridge username fallback |
 | `PHILIPS_HUE_BASE_URL` | `https://api.meethue.com/route` | Philips Hue routed API base URL |
+| `ACTIVECAMPAIGN_API_KEY` | - | ActiveCampaign API key fallback |
+| `ACTIVECAMPAIGN_BASE_URL` | - | ActiveCampaign account API URL |
+| `CONVERTKIT_API_SECRET` | - | ConvertKit API secret fallback |
+| `CONVERTKIT_BASE_URL` | `https://api.convertkit.com/v3` | ConvertKit API base URL |
+| `GETRESPONSE_API_KEY` | - | GetResponse API key fallback |
+| `GETRESPONSE_BASE_URL` | `https://api.getresponse.com/v3` | GetResponse API base URL |
+| `MAILERLITE_API_KEY` | - | MailerLite API key fallback |
+| `MAILERLITE_BASE_URL` | `https://connect.mailerlite.com/api` | MailerLite API base URL |
+| `MAILERLITE_CLASSIC_API` | `false` | Use MailerLite Classic API authentication/header style |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

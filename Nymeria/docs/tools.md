@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (450)
+### Optional: Service Integration Tools (475)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -528,6 +528,31 @@ in the credential vault for provider-specific saved connections scoped to
 | 448 | `philips_hue_get_light` | Integrations | SAFE | Get a Philips Hue light |
 | 449 | `philips_hue_update_light_state` | Integrations | MODERATE | Update Philips Hue light state |
 | 450 | `philips_hue_delete_light` | Integrations | MODERATE | Delete a Philips Hue light |
+| 451 | `activecampaign_list_contacts` | Integrations | SAFE | List ActiveCampaign contacts |
+| 452 | `activecampaign_get_contact` | Integrations | SAFE | Get an ActiveCampaign contact |
+| 453 | `activecampaign_sync_contact` | Integrations | MODERATE | Create or update an ActiveCampaign contact |
+| 454 | `activecampaign_update_contact` | Integrations | MODERATE | Update an ActiveCampaign contact |
+| 455 | `activecampaign_list_lists` | Integrations | SAFE | List ActiveCampaign lists |
+| 456 | `activecampaign_list_tags` | Integrations | SAFE | List ActiveCampaign tags |
+| 457 | `activecampaign_add_contact_to_list` | Integrations | MODERATE | Subscribe or unsubscribe an ActiveCampaign contact to a list |
+| 458 | `activecampaign_add_contact_tag` | Integrations | MODERATE | Add an ActiveCampaign tag to a contact |
+| 459 | `convertkit_get_account` | Integrations | SAFE | Get ConvertKit account details |
+| 460 | `convertkit_list_forms` | Integrations | SAFE | List ConvertKit forms |
+| 461 | `convertkit_list_tags` | Integrations | SAFE | List ConvertKit tags |
+| 462 | `convertkit_list_subscribers` | Integrations | SAFE | List ConvertKit subscribers |
+| 463 | `convertkit_add_subscriber_to_form` | Integrations | MODERATE | Subscribe an email address to a ConvertKit form |
+| 464 | `convertkit_add_subscriber_to_tag` | Integrations | MODERATE | Subscribe an email address to a ConvertKit tag |
+| 465 | `getresponse_list_campaigns` | Integrations | SAFE | List GetResponse campaigns |
+| 466 | `getresponse_list_contacts` | Integrations | SAFE | List GetResponse contacts |
+| 467 | `getresponse_get_contact` | Integrations | SAFE | Get a GetResponse contact |
+| 468 | `getresponse_create_contact` | Integrations | MODERATE | Create a GetResponse contact |
+| 469 | `getresponse_update_contact` | Integrations | MODERATE | Update a GetResponse contact |
+| 470 | `getresponse_delete_contact` | Integrations | MODERATE | Delete a GetResponse contact |
+| 471 | `mailerlite_list_subscribers` | Integrations | SAFE | List MailerLite subscribers |
+| 472 | `mailerlite_get_subscriber` | Integrations | SAFE | Get a MailerLite subscriber |
+| 473 | `mailerlite_create_subscriber` | Integrations | MODERATE | Create a MailerLite subscriber |
+| 474 | `mailerlite_update_subscriber` | Integrations | MODERATE | Update a MailerLite subscriber |
+| 475 | `mailerlite_list_groups` | Integrations | SAFE | List MailerLite groups |
 
 ### Optional: Private B Tools (4)
 
@@ -1096,7 +1121,10 @@ connections in Settings > Connections with these provider names and fields:
 `beeminder.auth_token`, `clockify.api_key`, and `harvest.access_token` plus
 `harvest.account_id`, `oura.access_token`, `strava.access_token`,
 `homeassistant.base_url` plus `homeassistant.access_token`, and
-`philips_hue.access_token` plus `philips_hue.username`, plus
+`philips_hue.access_token` plus `philips_hue.username`,
+`activecampaign.api_key` plus `activecampaign.api_url`,
+`convertkit.api_secret`, `getresponse.api_key`, and
+`mailerlite.api_key`, plus
 `github.access_token` and `gitlab.access_token`. GitHub credentials can also
 provide `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Business-service credentials use `bitly.access_token`,
@@ -1229,6 +1257,20 @@ Credential providers and fallback env vars:
 - Strava: provider `strava`, fields `access_token`, `token`, or `value`; env fallback `STRAVA_ACCESS_TOKEN`.
 - Home Assistant: provider `homeassistant`, fields `base_url` and `access_token`; env fallbacks `HOMEASSISTANT_BASE_URL` and `HOMEASSISTANT_ACCESS_TOKEN`.
 - Philips Hue: provider `philips_hue`, fields `access_token` and `username`, optional `base_url`; env fallbacks `PHILIPS_HUE_ACCESS_TOKEN`, `PHILIPS_HUE_USERNAME`, and `PHILIPS_HUE_BASE_URL`.
+
+### Marketing Contact Service Tools
+
+This batch includes:
+- `activecampaign_list_contacts(...)`, `activecampaign_get_contact(contact_id)`, `activecampaign_sync_contact(...)`, `activecampaign_update_contact(contact_id, fields_json)`, `activecampaign_list_lists(limit?)`, `activecampaign_list_tags(...)`, `activecampaign_add_contact_to_list(...)`, and `activecampaign_add_contact_tag(contact_id, tag_id)`. Reads are SAFE; sync/update/list/tag membership changes are MODERATE.
+- `convertkit_get_account()`, `convertkit_list_forms()`, `convertkit_list_tags()`, `convertkit_list_subscribers(...)`, `convertkit_add_subscriber_to_form(...)`, and `convertkit_add_subscriber_to_tag(...)`. Reads are SAFE; subscription writes are MODERATE.
+- `getresponse_list_campaigns()`, `getresponse_list_contacts(...)`, `getresponse_get_contact(contact_id)`, `getresponse_create_contact(...)`, `getresponse_update_contact(...)`, and `getresponse_delete_contact(contact_id)`. Reads are SAFE; contact writes/deletes are MODERATE.
+- `mailerlite_list_subscribers(...)`, `mailerlite_get_subscriber(subscriber_id)`, `mailerlite_create_subscriber(...)`, `mailerlite_update_subscriber(...)`, and `mailerlite_list_groups(...)`. Reads are SAFE; subscriber writes are MODERATE.
+
+Credential providers and fallback env vars:
+- ActiveCampaign: provider `activecampaign`, fields `api_key` and `api_url` / `base_url`; env fallbacks `ACTIVECAMPAIGN_API_KEY` and `ACTIVECAMPAIGN_BASE_URL`.
+- ConvertKit: provider `convertkit`, fields `api_secret`, `api_key`, or `value`; env fallback `CONVERTKIT_API_SECRET`.
+- GetResponse: provider `getresponse`, fields `api_key`, `access_token`, or `value`; env fallback `GETRESPONSE_API_KEY`.
+- MailerLite: provider `mailerlite`, fields `api_key`, `access_token`, or `value`; env fallback `MAILERLITE_API_KEY`. Set `MAILERLITE_CLASSIC_API=true` or credential field `classic_api=true` for Classic API header style.
 
 ### Developer Platform Tools
 
