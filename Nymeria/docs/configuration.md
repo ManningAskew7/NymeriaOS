@@ -123,6 +123,14 @@ Set the API key for your chosen provider:
 | `MAILCHIMP_ACCESS_TOKEN` | Mailchimp | Optional Mailchimp OAuth token fallback |
 | `MAILCHIMP_SERVER_PREFIX` | Mailchimp | Optional Mailchimp server prefix such as `us21` |
 | `MAILCHIMP_BASE_URL` | Mailchimp | Optional Mailchimp Marketing API base URL override |
+| `FRESHDESK_API_KEY` | Freshdesk | Optional env fallback for Freshdesk tools; credential vault provider `freshdesk` is preferred |
+| `FRESHDESK_DOMAIN` | Freshdesk | Optional Freshdesk subdomain fallback |
+| `FRESHDESK_BASE_URL` | Freshdesk | Optional Freshdesk API base URL override |
+| `HELPSCOUT_ACCESS_TOKEN` | Help Scout | Optional env fallback for Help Scout tools; credential vault provider `helpscout` is preferred |
+| `HELPSCOUT_BASE_URL` | Help Scout | Optional Help Scout API base URL override |
+| `INTERCOM_ACCESS_TOKEN` | Intercom | Optional env fallback for Intercom tools; credential vault provider `intercom` is preferred |
+| `INTERCOM_BASE_URL` | Intercom | Optional Intercom API base URL override |
+| `INTERCOM_VERSION` | Intercom | Optional Intercom API version header override |
 
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
@@ -327,6 +335,14 @@ reachable from the backend process.
 | `MAILCHIMP_ACCESS_TOKEN` | - | Mailchimp OAuth access token fallback |
 | `MAILCHIMP_SERVER_PREFIX` | - | Mailchimp server prefix, e.g. `us21` |
 | `MAILCHIMP_BASE_URL` | - | Mailchimp Marketing API base URL override |
+| `FRESHDESK_API_KEY` | - | Freshdesk API key fallback |
+| `FRESHDESK_DOMAIN` | - | Freshdesk account subdomain fallback |
+| `FRESHDESK_BASE_URL` | - | Freshdesk API base URL override |
+| `HELPSCOUT_ACCESS_TOKEN` | - | Help Scout OAuth access token fallback |
+| `HELPSCOUT_BASE_URL` | `https://api.helpscout.net/v2` | Help Scout API base URL |
+| `INTERCOM_ACCESS_TOKEN` | - | Intercom access token fallback |
+| `INTERCOM_BASE_URL` | `https://api.intercom.io` | Intercom API base URL |
+| `INTERCOM_VERSION` | `2.11` | Intercom API version header |
 | `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |

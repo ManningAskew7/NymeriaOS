@@ -439,6 +439,14 @@ class Settings(BaseSettings):
     mailchimp_access_token: Optional[str] = Field(default=None, description="Mailchimp OAuth access token fallback")
     mailchimp_server_prefix: Optional[str] = Field(default=None, description="Mailchimp server prefix, e.g. us21")
     mailchimp_base_url: Optional[str] = Field(default=None, description="Mailchimp Marketing API base URL override")
+    freshdesk_api_key: Optional[str] = Field(default=None, description="Freshdesk API key fallback")
+    freshdesk_domain: Optional[str] = Field(default=None, description="Freshdesk account subdomain fallback")
+    freshdesk_base_url: Optional[str] = Field(default=None, description="Freshdesk API base URL override")
+    helpscout_access_token: Optional[str] = Field(default=None, description="Help Scout OAuth access token fallback")
+    helpscout_base_url: str = Field(default="https://api.helpscout.net/v2", description="Help Scout API base URL")
+    intercom_access_token: Optional[str] = Field(default=None, description="Intercom access token fallback")
+    intercom_base_url: str = Field(default="https://api.intercom.io", description="Intercom API base URL")
+    intercom_version: str = Field(default="2.11", description="Intercom API version")
     embedding_api_key: Optional[str] = Field(
         default=None,
         description="API key for semantic embeddings. Separate from OPENAI_API_KEY so CLIProxy gatekeeper keys do not break embeddings.",

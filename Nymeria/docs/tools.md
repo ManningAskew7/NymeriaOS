@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (141)
+### Optional: Service Integration Tools (170)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -219,6 +219,35 @@ in the credential vault for provider-specific saved connections scoped to
 | 139 | `mailchimp_add_or_update_member` | Integrations | MODERATE | Add or update a Mailchimp audience member |
 | 140 | `mailchimp_update_member_tags` | Integrations | MODERATE | Add or remove Mailchimp member tags |
 | 141 | `mailchimp_list_campaigns` | Integrations | SAFE | List Mailchimp campaigns |
+| 142 | `freshdesk_list_tickets` | Integrations | SAFE | List Freshdesk tickets |
+| 143 | `freshdesk_search_tickets` | Integrations | SAFE | Search Freshdesk tickets |
+| 144 | `freshdesk_get_ticket` | Integrations | SAFE | Get a Freshdesk ticket |
+| 145 | `freshdesk_create_ticket` | Integrations | MODERATE | Create a Freshdesk ticket |
+| 146 | `freshdesk_update_ticket` | Integrations | MODERATE | Update a Freshdesk ticket |
+| 147 | `freshdesk_delete_ticket` | Integrations | MODERATE | Delete a Freshdesk ticket |
+| 148 | `freshdesk_list_contacts` | Integrations | SAFE | List Freshdesk contacts |
+| 149 | `freshdesk_get_contact` | Integrations | SAFE | Get a Freshdesk contact |
+| 150 | `freshdesk_create_contact` | Integrations | MODERATE | Create a Freshdesk contact |
+| 151 | `freshdesk_update_contact` | Integrations | MODERATE | Update a Freshdesk contact |
+| 152 | `helpscout_list_mailboxes` | Integrations | SAFE | List Help Scout mailboxes |
+| 153 | `helpscout_get_mailbox` | Integrations | SAFE | Get a Help Scout mailbox |
+| 154 | `helpscout_list_conversations` | Integrations | SAFE | List Help Scout conversations |
+| 155 | `helpscout_get_conversation` | Integrations | SAFE | Get a Help Scout conversation |
+| 156 | `helpscout_create_conversation` | Integrations | MODERATE | Create a Help Scout conversation |
+| 157 | `helpscout_create_thread` | Integrations | MODERATE | Create a Help Scout conversation thread |
+| 158 | `helpscout_list_customers` | Integrations | SAFE | List Help Scout customers |
+| 159 | `helpscout_get_customer` | Integrations | SAFE | Get a Help Scout customer |
+| 160 | `helpscout_create_customer` | Integrations | MODERATE | Create a Help Scout customer |
+| 161 | `helpscout_update_customer` | Integrations | MODERATE | Update a Help Scout customer |
+| 162 | `intercom_list_contacts` | Integrations | SAFE | List Intercom contacts |
+| 163 | `intercom_search_contacts` | Integrations | SAFE | Search Intercom contacts |
+| 164 | `intercom_get_contact` | Integrations | SAFE | Get an Intercom contact |
+| 165 | `intercom_create_contact` | Integrations | MODERATE | Create an Intercom contact |
+| 166 | `intercom_update_contact` | Integrations | MODERATE | Update an Intercom contact |
+| 167 | `intercom_archive_contact` | Integrations | MODERATE | Archive an Intercom contact |
+| 168 | `intercom_list_conversations` | Integrations | SAFE | List Intercom conversations |
+| 169 | `intercom_get_conversation` | Integrations | SAFE | Get an Intercom conversation |
+| 170 | `intercom_reply_conversation` | Integrations | MODERATE | Reply to an Intercom conversation |
 
 ### Optional: Private B Tools (4)
 
@@ -943,6 +972,18 @@ Credential providers and fallback env vars:
 - HubSpot: provider `hubspot`, fields `private_app_token`, `app_token`, `access_token`, `token`, or `value`; env fallback `HUBSPOT_ACCESS_TOKEN`. Use `base_url` / `url` or `HUBSPOT_BASE_URL` for non-default API roots.
 - Zendesk: provider `zendesk`, fields `access_token`, `token`, or `value` for bearer auth; or `email` plus `api_token` / `apiToken` / `password` and `subdomain` / `base_url` for API-token auth. Env fallback supports `ZENDESK_ACCESS_TOKEN` or `ZENDESK_EMAIL` plus `ZENDESK_API_TOKEN` and `ZENDESK_SUBDOMAIN`.
 - Mailchimp: provider `mailchimp`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `MAILCHIMP_API_KEY` or `MAILCHIMP_ACCESS_TOKEN`. Use `server_prefix` / `dc` / `data_center` or `MAILCHIMP_SERVER_PREFIX`; API keys ending in `-usX` derive the server prefix automatically.
+
+### Support Service Tools
+
+This batch includes:
+- `freshdesk_list_tickets(...)`, `freshdesk_search_tickets(...)`, `freshdesk_get_ticket(ticket_id)`, `freshdesk_create_ticket(...)`, `freshdesk_update_ticket(...)`, `freshdesk_delete_ticket(ticket_id)`, `freshdesk_list_contacts(...)`, `freshdesk_get_contact(contact_id)`, `freshdesk_create_contact(...)`, and `freshdesk_update_contact(...)`. Create/update/delete operations are MODERATE because they change Freshdesk support data.
+- `helpscout_list_mailboxes(...)`, `helpscout_get_mailbox(mailbox_id)`, `helpscout_list_conversations(...)`, `helpscout_get_conversation(conversation_id)`, `helpscout_create_conversation(...)`, `helpscout_create_thread(...)`, `helpscout_list_customers(...)`, `helpscout_get_customer(customer_id)`, `helpscout_create_customer(...)`, and `helpscout_update_customer(...)`. Create/update/thread operations are MODERATE because they change Help Scout inbox data.
+- `intercom_list_contacts(...)`, `intercom_search_contacts(...)`, `intercom_get_contact(contact_id)`, `intercom_create_contact(...)`, `intercom_update_contact(...)`, `intercom_archive_contact(contact_id)`, `intercom_list_conversations(...)`, `intercom_get_conversation(conversation_id)`, and `intercom_reply_conversation(...)`. Create/update/archive/reply operations are MODERATE because they change Intercom workspace data or send customer-facing/admin messages.
+
+Credential providers and fallback env vars:
+- Freshdesk: provider `freshdesk`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `FRESHDESK_API_KEY`. Use `domain` / `subdomain` or `FRESHDESK_DOMAIN`, or `base_url` / `url` / `FRESHDESK_BASE_URL` for the full API root.
+- Help Scout: provider `helpscout`, fields `access_token`, `token`, or `value`; env fallback `HELPSCOUT_ACCESS_TOKEN`. Use `base_url` / `url` or `HELPSCOUT_BASE_URL` for non-default API roots.
+- Intercom: provider `intercom`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `INTERCOM_ACCESS_TOKEN`. Use `base_url` / `url` or `INTERCOM_BASE_URL` for regional API roots; `intercom_version` / `version` or `INTERCOM_VERSION` overrides the API version header.
 
 ### tool_enable
 

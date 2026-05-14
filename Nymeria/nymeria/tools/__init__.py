@@ -261,6 +261,38 @@ from .customer_engagement_service_integrations import (
     mailchimp_list_campaigns,
     CUSTOMER_ENGAGEMENT_SERVICE_TOOLS,
 )
+from .support_service_integrations import (
+    freshdesk_list_tickets,
+    freshdesk_search_tickets,
+    freshdesk_get_ticket,
+    freshdesk_create_ticket,
+    freshdesk_update_ticket,
+    freshdesk_delete_ticket,
+    freshdesk_list_contacts,
+    freshdesk_get_contact,
+    freshdesk_create_contact,
+    freshdesk_update_contact,
+    helpscout_list_mailboxes,
+    helpscout_get_mailbox,
+    helpscout_list_conversations,
+    helpscout_get_conversation,
+    helpscout_create_conversation,
+    helpscout_create_thread,
+    helpscout_list_customers,
+    helpscout_get_customer,
+    helpscout_create_customer,
+    helpscout_update_customer,
+    intercom_list_contacts,
+    intercom_search_contacts,
+    intercom_get_contact,
+    intercom_create_contact,
+    intercom_update_contact,
+    intercom_archive_contact,
+    intercom_list_conversations,
+    intercom_get_conversation,
+    intercom_reply_conversation,
+    SUPPORT_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -316,6 +348,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + PROJECT_MANAGEMENT_SERVICE_TOOLS
     + COLLABORATION_DATA_SERVICE_TOOLS
     + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
+    + SUPPORT_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -576,6 +609,36 @@ __all__ = [
     "mailchimp_update_member_tags",
     "mailchimp_list_campaigns",
     "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
+    "freshdesk_list_tickets",
+    "freshdesk_search_tickets",
+    "freshdesk_get_ticket",
+    "freshdesk_create_ticket",
+    "freshdesk_update_ticket",
+    "freshdesk_delete_ticket",
+    "freshdesk_list_contacts",
+    "freshdesk_get_contact",
+    "freshdesk_create_contact",
+    "freshdesk_update_contact",
+    "helpscout_list_mailboxes",
+    "helpscout_get_mailbox",
+    "helpscout_list_conversations",
+    "helpscout_get_conversation",
+    "helpscout_create_conversation",
+    "helpscout_create_thread",
+    "helpscout_list_customers",
+    "helpscout_get_customer",
+    "helpscout_create_customer",
+    "helpscout_update_customer",
+    "intercom_list_contacts",
+    "intercom_search_contacts",
+    "intercom_get_contact",
+    "intercom_create_contact",
+    "intercom_update_contact",
+    "intercom_archive_contact",
+    "intercom_list_conversations",
+    "intercom_get_conversation",
+    "intercom_reply_conversation",
+    "SUPPORT_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",
