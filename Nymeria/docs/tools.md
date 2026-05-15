@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (715)
+### Optional: Service Integration Tools (738)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -793,6 +793,29 @@ in the credential vault for provider-specific saved connections scoped to
 | 713 | `onesimple_validate_email` | Integrations | MODERATE | Validate an email address |
 | 714 | `onesimple_expand_url` | Integrations | MODERATE | Expand a shortened URL |
 | 715 | `onesimple_create_qr_code` | Integrations | MODERATE | Create a QR-code image URL |
+| 716 | `paddle_list_products` | Integrations | SAFE | List Paddle products |
+| 717 | `paddle_list_plans` | Integrations | SAFE | List Paddle subscription plans |
+| 718 | `paddle_list_subscription_users` | Integrations | SAFE | List Paddle subscription users |
+| 719 | `paddle_list_payments` | Integrations | SAFE | List Paddle subscription payments |
+| 720 | `paddle_get_order` | Integrations | SAFE | Get a Paddle order by checkout ID |
+| 721 | `paddle_list_coupons` | Integrations | SAFE | List Paddle coupons for a product |
+| 722 | `paddle_create_coupon` | Integrations | MODERATE | Create Paddle coupon codes |
+| 723 | `paddle_update_coupon` | Integrations | MODERATE | Update Paddle coupon metadata |
+| 724 | `paddle_reschedule_payment` | Integrations | MODERATE | Reschedule a Paddle subscription payment |
+| 725 | `profitwell_get_settings` | Integrations | SAFE | Get ProfitWell account settings |
+| 726 | `profitwell_get_metrics` | Integrations | SAFE | Get ProfitWell daily or monthly metrics |
+| 727 | `tapfiliate_list_affiliates` | Integrations | SAFE | List Tapfiliate affiliates |
+| 728 | `tapfiliate_get_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate |
+| 729 | `tapfiliate_create_affiliate` | Integrations | MODERATE | Create a Tapfiliate affiliate |
+| 730 | `tapfiliate_delete_affiliate` | Integrations | MODERATE | Delete a Tapfiliate affiliate |
+| 731 | `tapfiliate_add_affiliate_metadata` | Integrations | MODERATE | Add metadata fields to a Tapfiliate affiliate |
+| 732 | `tapfiliate_remove_affiliate_metadata` | Integrations | MODERATE | Remove a Tapfiliate affiliate metadata field |
+| 733 | `tapfiliate_update_affiliate_metadata` | Integrations | MODERATE | Update a Tapfiliate affiliate metadata field |
+| 734 | `tapfiliate_list_program_affiliates` | Integrations | SAFE | List affiliates in a Tapfiliate program |
+| 735 | `tapfiliate_get_program_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate in a program |
+| 736 | `tapfiliate_add_program_affiliate` | Integrations | MODERATE | Add a Tapfiliate affiliate to a program |
+| 737 | `tapfiliate_approve_program_affiliate` | Integrations | MODERATE | Approve a Tapfiliate affiliate for a program |
+| 738 | `tapfiliate_disapprove_program_affiliate` | Integrations | MODERATE | Disapprove a Tapfiliate affiliate for a program |
 
 ### Optional: Private B Tools (4)
 
@@ -1379,7 +1402,9 @@ GraphQL auth fields, and `totp.secret`. GitHub credentials can also provide
 `aws.session_token`, `aws.region`, and `aws.endpoint_url`; existing S3/AWS
 connections can also be reused for AWS service tools. Business-service credentials use `bitly.access_token`,
 `brandfetch.api_key`, `marketstack.api_key`, `deepl.api_key`,
-`lingvanex.api_key`, `apitemplate.api_key`, and `onesimple.api_token`; DeepL can also
+`lingvanex.api_key`, `apitemplate.api_key`, `onesimple.api_token`,
+`paddle.vendor_id` plus `paddle.vendor_auth_code`, `profitwell.access_token`,
+and `tapfiliate.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
@@ -1788,12 +1813,18 @@ This batch includes:
 - `shopify_list_records(resource, ...)` and `shopify_get_record(resource, record_id)` for SAFE Shopify Admin REST reads across products, orders, and customers. `shopify_create_product(...)` and `shopify_update_product(...)` are MODERATE because they change storefront catalog data.
 - `woocommerce_list_records(resource, ...)` and `woocommerce_get_record(resource, record_id)` for SAFE WooCommerce reads across products, orders, and customers. `woocommerce_create_record(...)` and `woocommerce_update_record(...)` are MODERATE because they change store data.
 - `chargebee_list_records(resource, ...)` and `chargebee_get_record(resource, record_id)` for SAFE Chargebee reads across customers, subscriptions, invoices, transactions, items, item prices, and plans. `chargebee_create_customer(...)` and `chargebee_update_customer(...)` are MODERATE because they change billing customer data.
+- `paddle_list_products(...)`, `paddle_list_plans(...)`, `paddle_list_subscription_users(...)`, `paddle_list_payments(...)`, `paddle_get_order(...)`, and `paddle_list_coupons(...)` for SAFE Paddle vendor reads. `paddle_create_coupon(...)`, `paddle_update_coupon(...)`, and `paddle_reschedule_payment(...)` are MODERATE because they change coupons or payment schedules.
+- `profitwell_get_settings()` and `profitwell_get_metrics(...)` for SAFE ProfitWell account and metrics reads.
+- `tapfiliate_list_affiliates(...)`, `tapfiliate_get_affiliate(...)`, `tapfiliate_list_program_affiliates(...)`, and `tapfiliate_get_program_affiliate(...)` for SAFE Tapfiliate affiliate reads. Create/delete/metadata/program-approval tools are MODERATE because they change affiliate or program state.
 
 Credential providers and fallback env vars:
 - Stripe: provider `stripe`, fields `secret_key`, `secretKey`, `api_key`, `apiKey`, `token`, or `value`; env fallback `STRIPE_SECRET_KEY`. Use `base_url` / `url` or `STRIPE_BASE_URL` for non-default API roots.
 - Shopify: provider `shopify`, fields `shop_subdomain` / `shopSubdomain` / `shop` / `domain` plus `access_token` / `accessToken` / `token` / `value` for modern Admin API token auth. Legacy basic auth can use `api_key` / `apiKey` plus `password`. Env fallback supports `SHOPIFY_SHOP`, `SHOPIFY_ACCESS_TOKEN`, optional `SHOPIFY_API_VERSION`, legacy `SHOPIFY_API_KEY` and `SHOPIFY_PASSWORD`, and `SHOPIFY_BASE_URL` for a full Admin REST root.
 - WooCommerce: provider `woocommerce`, fields `url` / `site_url` / `base_url`, `consumer_key` / `consumerKey`, and `consumer_secret` / `consumerSecret`. Env fallback supports `WOOCOMMERCE_URL`, `WOOCOMMERCE_BASE_URL`, `WOOCOMMERCE_CONSUMER_KEY`, and `WOOCOMMERCE_CONSUMER_SECRET`.
 - Chargebee: provider `chargebee`, fields `site` / `account_name` / `accountName` / `subdomain` plus `api_key` / `apiKey` / `token` / `value`; env fallback `CHARGEBEE_SITE` and `CHARGEBEE_API_KEY`. Use `base_url` / `url` or `CHARGEBEE_BASE_URL` for non-default API roots.
+- Paddle: provider `paddle`, fields `vendor_id` / `vendorId` plus `vendor_auth_code` / `vendorAuthCode`; env fallback `PADDLE_VENDOR_ID` and `PADDLE_VENDOR_AUTH_CODE`. Use `sandbox` / `use_sandbox`, `PADDLE_SANDBOX`, `base_url`, or `PADDLE_BASE_URL` for sandbox or non-default vendor API roots.
+- ProfitWell: provider `profitwell`, fields `access_token`, `api_token`, `token`, or `value`; env fallback `PROFITWELL_API_TOKEN`. Use `base_url` / `url` or `PROFITWELL_BASE_URL` for non-default API roots.
+- Tapfiliate: provider `tapfiliate`, fields `api_key`, `token`, or `value`; env fallback `TAPFILIATE_API_KEY`. Use `base_url` / `url` or `TAPFILIATE_BASE_URL` for non-default API roots.
 
 ### Notification Service Tools
 
