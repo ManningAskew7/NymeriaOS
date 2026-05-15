@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from typing import Annotated, Any, Optional
 from urllib.parse import quote, urlparse
 
@@ -18,6 +19,8 @@ _MAX_JSON_CHARS = 60_000
 _COPPER_BASE_URL = "https://api.copper.com/developer_api/v1"
 _AGILE_PLACEHOLDER_BASE_URL = "https://example.agilecrm.com/dev"
 _MONICA_BASE_URL = "https://app.monicahq.com/api"
+_AFFINITY_BASE_URL = "https://api.affinity.co"
+_KEAP_BASE_URL = "https://api.infusionsoft.com/crm/rest/v1"
 
 _COPPER_RESOURCES = {
     "companies": "companies",
@@ -70,6 +73,56 @@ _MONICA_RESOURCES = {
     "tasks": "tasks",
     "task": "tasks",
 }
+_AFFINITY_RESOURCES = {
+    "lists": "lists",
+    "list": "lists",
+    "organizations": "organizations",
+    "organization": "organizations",
+    "orgs": "organizations",
+    "org": "organizations",
+    "companies": "organizations",
+    "company": "organizations",
+    "persons": "persons",
+    "person": "persons",
+    "people": "persons",
+}
+_AFFINITY_ENTITY_RESOURCES = {
+    "organizations": "organizations",
+    "organization": "organizations",
+    "orgs": "organizations",
+    "org": "organizations",
+    "companies": "organizations",
+    "company": "organizations",
+    "persons": "persons",
+    "person": "persons",
+    "people": "persons",
+}
+_KEAP_RESOURCES = {
+    "companies": "companies",
+    "company": "companies",
+    "contacts": "contacts",
+    "contact": "contacts",
+    "notes": "notes",
+    "note": "notes",
+    "contact_notes": "notes",
+    "contact_note": "notes",
+    "orders": "orders",
+    "order": "orders",
+    "ecommerce_orders": "orders",
+    "ecommerce_order": "orders",
+    "products": "products",
+    "product": "products",
+    "ecommerce_products": "products",
+    "ecommerce_product": "products",
+    "emails": "emails",
+    "email": "emails",
+    "files": "files",
+    "file": "files",
+    "tags": "tags",
+    "tag": "tags",
+    "users": "users",
+    "user": "users",
+}
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -111,6 +164,34 @@ def _json_object(value: str, *, field_name: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"{field_name} must be a JSON object")
     return parsed
+
+
+def _csv_to_list(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _csv_to_ints(value: str, *, field_name: str) -> list[int]:
+    numbers: list[int] = []
+    for part in _csv_to_list(value):
+        try:
+            numbers.append(int(part))
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must contain comma-separated integer IDs") from exc
+    return numbers
+
+
+def _snake_key(key: str) -> str:
+    normalized = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", key)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    return normalized.replace("-", "_").replace(" ", "_").lower()
+
+
+def _snake_case_data(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {_snake_key(str(key)): _snake_case_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snake_case_data(item) for item in value]
+    return value
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -339,6 +420,76 @@ def _monica_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         "Accept": "application/json",
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="affinity",
+            provider_aliases=("affinity_api",),
+            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("affinity_base_url")
+        or _AFFINITY_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="affinity",
+        provider_aliases=("affinity_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("affinity_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="affinity",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="AFFINITY_API_KEY",
+            display_name="Affinity",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": _basic_auth("", api_key),
+        "User-Agent": "Nymeria",
+    }
+
+
+def _keap_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="keap",
+            provider_aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
+            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("keap_base_url")
+        or _KEAP_BASE_URL
+    )
+    access_token = _credential_value(
+        provider="keap",
+        provider_aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
+        field_names=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("keap_access_token")
+    if not access_token:
+        return _base_url(base), _setup_hint(
+            provider="keap",
+            field_names=("access_token", "value"),
+            tool_name=tool_name,
+            env_var="KEAP_ACCESS_TOKEN",
+            display_name="Keap",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
         "User-Agent": "Nymeria",
     }
 
@@ -592,6 +743,322 @@ def monica_delete_record(
     return _dump_json(_request_json("DELETE", f"{base}/{plural}/{quote(record_id, safe='')}", headers=auth))
 
 
+@tool
+def affinity_list_records(
+    resource: str,
+    term: str = "",
+    limit: int = 50,
+    page_token: str = "",
+    with_interaction_dates: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Affinity lists, people, or organizations."""
+    base, auth = _affinity_config("affinity_list_records", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _AFFINITY_RESOURCES, "Affinity")
+    params: dict[str, Any] = {}
+    if plural in {"persons", "organizations"}:
+        params["page_size"] = _limit(limit, max_value=500)
+        if term:
+            params["term"] = term
+        if page_token:
+            params["page_token"] = page_token
+        if with_interaction_dates:
+            params["with_interaction_dates"] = True
+    return _dump_json(_request_json("GET", f"{base}/{plural}", params=params, headers=auth))
+
+
+@tool
+def affinity_get_record(
+    resource: str,
+    record_id: str,
+    with_interaction_dates: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get one Affinity list, person, or organization by ID."""
+    base, auth = _affinity_config("affinity_get_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _AFFINITY_RESOURCES, "Affinity")
+    params = {"with_interaction_dates": True} if with_interaction_dates and plural in {"persons", "organizations"} else {}
+    return _dump_json(_request_json("GET", f"{base}/{plural}/{quote(record_id, safe='')}", params=params, headers=auth))
+
+
+@tool
+def affinity_create_person(
+    first_name: str,
+    last_name: str,
+    emails_csv: str,
+    organization_ids_csv: str = "",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Affinity person with one or more email addresses."""
+    base, auth = _affinity_config("affinity_create_person", config)
+    if isinstance(auth, str):
+        return auth
+    emails = _csv_to_list(emails_csv)
+    if not emails:
+        raise ValueError("emails_csv must contain at least one email address")
+    body = _json_object(fields_json, field_name="fields_json")
+    body.update({"first_name": first_name, "last_name": last_name, "emails": emails})
+    if organization_ids_csv:
+        body["organization_ids"] = _csv_to_ints(organization_ids_csv, field_name="organization_ids_csv")
+    return _dump_json(_request_json("POST", f"{base}/persons", json_body=body, headers=auth))
+
+
+@tool
+def affinity_create_organization(
+    name: str,
+    domain: str = "",
+    person_ids_csv: str = "",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Affinity organization."""
+    base, auth = _affinity_config("affinity_create_organization", config)
+    if isinstance(auth, str):
+        return auth
+    body = _json_object(fields_json, field_name="fields_json")
+    body["name"] = name
+    if domain:
+        body["domain"] = domain
+    if person_ids_csv:
+        body["person_ids"] = _csv_to_ints(person_ids_csv, field_name="person_ids_csv")
+    return _dump_json(_request_json("POST", f"{base}/organizations", json_body=body, headers=auth))
+
+
+@tool
+def affinity_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update an Affinity person or organization from a JSON object."""
+    base, auth = _affinity_config("affinity_update_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _AFFINITY_ENTITY_RESOURCES, "Affinity entity")
+    return _dump_json(
+        _request_json("PUT", f"{base}/{plural}/{quote(record_id, safe='')}", json_body=_json_object(fields_json, field_name="fields_json"), headers=auth)
+    )
+
+
+@tool
+def affinity_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete an Affinity person or organization by ID."""
+    base, auth = _affinity_config("affinity_delete_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _AFFINITY_ENTITY_RESOURCES, "Affinity entity")
+    return _dump_json(_request_json("DELETE", f"{base}/{plural}/{quote(record_id, safe='')}", headers=auth))
+
+
+@tool
+def affinity_list_entries(
+    list_id: str,
+    limit: int = 50,
+    page_token: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List entries in an Affinity list."""
+    base, auth = _affinity_config("affinity_list_entries", config)
+    if isinstance(auth, str):
+        return auth
+    params: dict[str, Any] = {"page_size": _limit(limit, max_value=500)}
+    if page_token:
+        params["page_token"] = page_token
+    return _dump_json(_request_json("GET", f"{base}/lists/{quote(list_id, safe='')}/list-entries", params=params, headers=auth))
+
+
+@tool
+def affinity_create_list_entry(
+    list_id: str,
+    entity_id: int,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Affinity list entry for a person, organization, or opportunity entity."""
+    base, auth = _affinity_config("affinity_create_list_entry", config)
+    if isinstance(auth, str):
+        return auth
+    body = _json_object(fields_json, field_name="fields_json")
+    body["entity_id"] = int(entity_id)
+    return _dump_json(_request_json("POST", f"{base}/lists/{quote(list_id, safe='')}/list-entries", json_body=body, headers=auth))
+
+
+@tool
+def affinity_delete_list_entry(
+    list_id: str,
+    list_entry_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete an Affinity list entry by ID."""
+    base, auth = _affinity_config("affinity_delete_list_entry", config)
+    if isinstance(auth, str):
+        return auth
+    return _dump_json(_request_json("DELETE", f"{base}/lists/{quote(list_id, safe='')}/list-entries/{quote(list_entry_id, safe='')}", headers=auth))
+
+
+@tool
+def keap_list_records(
+    resource: str,
+    filters_json: str = "",
+    limit: int = 50,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Keap records such as companies, contacts, notes, orders, products, emails, files, tags, or users."""
+    base, auth = _keap_config("keap_list_records", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _KEAP_RESOURCES, "Keap")
+    params = _snake_case_data(_json_object(filters_json, field_name="filters_json"))
+    params.setdefault("limit", _limit(limit))
+    return _dump_json(_request_json("GET", f"{base}/{plural}", params=params, headers=auth))
+
+
+@tool
+def keap_get_record(
+    resource: str,
+    record_id: str,
+    fields_csv: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get one Keap record by ID."""
+    base, auth = _keap_config("keap_get_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _KEAP_RESOURCES, "Keap")
+    params = {"optional_properties": ",".join(_csv_to_list(fields_csv))} if fields_csv else {}
+    return _dump_json(_request_json("GET", f"{base}/{plural}/{quote(record_id, safe='')}", params=params, headers=auth))
+
+
+@tool
+def keap_create_record(
+    resource: str,
+    fields_json: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create a Keap record from an API-shaped JSON object; contacts are upserted."""
+    base, auth = _keap_config("keap_create_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _KEAP_RESOURCES, "Keap")
+    body = _snake_case_data(_json_object(fields_json, field_name="fields_json"))
+    method = "PUT" if plural == "contacts" else "POST"
+    return _dump_json(_request_json(method, f"{base}/{plural}", json_body=body, headers=auth))
+
+
+@tool
+def keap_update_note(
+    note_id: str,
+    fields_json: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update a Keap contact note from a JSON object."""
+    base, auth = _keap_config("keap_update_note", config)
+    if isinstance(auth, str):
+        return auth
+    body = _snake_case_data(_json_object(fields_json, field_name="fields_json"))
+    return _dump_json(_request_json("PATCH", f"{base}/notes/{quote(note_id, safe='')}", json_body=body, headers=auth))
+
+
+@tool
+def keap_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete a Keap record by ID."""
+    base, auth = _keap_config("keap_delete_record", config)
+    if isinstance(auth, str):
+        return auth
+    plural = _resource(resource, _KEAP_RESOURCES, "Keap")
+    return _dump_json(_request_json("DELETE", f"{base}/{plural}/{quote(record_id, safe='')}", headers=auth))
+
+
+@tool
+def keap_list_contact_tags(
+    contact_id: str,
+    limit: int = 50,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List tags applied to a Keap contact."""
+    base, auth = _keap_config("keap_list_contact_tags", config)
+    if isinstance(auth, str):
+        return auth
+    return _dump_json(_request_json("GET", f"{base}/contacts/{quote(contact_id, safe='')}/tags", params={"limit": _limit(limit)}, headers=auth))
+
+
+@tool
+def keap_apply_tags(
+    contact_id: str,
+    tag_ids_csv: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Apply one or more Keap tags to a contact."""
+    base, auth = _keap_config("keap_apply_tags", config)
+    if isinstance(auth, str):
+        return auth
+    return _dump_json(
+        _request_json(
+            "POST",
+            f"{base}/contacts/{quote(contact_id, safe='')}/tags",
+            json_body={"tagIds": _csv_to_ints(tag_ids_csv, field_name="tag_ids_csv")},
+            headers=auth,
+        )
+    )
+
+
+@tool
+def keap_remove_tags(
+    contact_id: str,
+    tag_ids_csv: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove one or more Keap tags from a contact."""
+    base, auth = _keap_config("keap_remove_tags", config)
+    if isinstance(auth, str):
+        return auth
+    return _dump_json(
+        _request_json(
+            "DELETE",
+            f"{base}/contacts/{quote(contact_id, safe='')}/tags",
+            params={"ids": ",".join(str(item) for item in _csv_to_ints(tag_ids_csv, field_name="tag_ids_csv"))},
+            headers=auth,
+        )
+    )
+
+
+@tool
+def keap_send_email(
+    user_id: int,
+    contact_ids_csv: str,
+    subject: str,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Queue an email through Keap for one or more contacts."""
+    base, auth = _keap_config("keap_send_email", config)
+    if isinstance(auth, str):
+        return auth
+    body = _snake_case_data(_json_object(fields_json, field_name="fields_json"))
+    body.update(
+        {
+            "user_id": int(user_id),
+            "contacts": _csv_to_ints(contact_ids_csv, field_name="contact_ids_csv"),
+            "subject": subject,
+        }
+    )
+    return _dump_json(_request_json("POST", f"{base}/emails/queue", json_body=body, headers=auth))
+
+
 RELATIONSHIP_CRM_SERVICE_TOOLS = [
     copper_list_records,
     copper_get_record,
@@ -608,4 +1075,22 @@ RELATIONSHIP_CRM_SERVICE_TOOLS = [
     monica_create_record,
     monica_update_record,
     monica_delete_record,
+    affinity_list_records,
+    affinity_get_record,
+    affinity_create_person,
+    affinity_create_organization,
+    affinity_update_record,
+    affinity_delete_record,
+    affinity_list_entries,
+    affinity_create_list_entry,
+    affinity_delete_list_entry,
+    keap_list_records,
+    keap_get_record,
+    keap_create_record,
+    keap_update_note,
+    keap_delete_record,
+    keap_list_contact_tags,
+    keap_apply_tags,
+    keap_remove_tags,
+    keap_send_email,
 ]

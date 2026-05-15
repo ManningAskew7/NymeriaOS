@@ -285,6 +285,10 @@ class ServerSettingsUpdate(BaseModel):
     agilecrm_base_url: Optional[str] = None
     monica_access_token: Optional[str] = None
     monica_base_url: Optional[str] = None
+    affinity_api_key: Optional[str] = None
+    affinity_base_url: Optional[str] = None
+    keap_access_token: Optional[str] = None
+    keap_base_url: Optional[str] = None
     twilio_account_sid: Optional[str] = None
     twilio_auth_token: Optional[str] = None
     twilio_api_key_sid: Optional[str] = None
