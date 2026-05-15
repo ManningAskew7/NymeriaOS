@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich import box
 from rich.cells import cell_len
 from rich.console import Group
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.table import Table
 from rich.text import Text
 
 from ..header import CLIHeaderSnapshot
@@ -25,6 +24,53 @@ HEADER_INNER_RULE_STYLE = "grey37"
 HEADER_LABEL_STYLE = "bold white"
 HEADER_MAX_WIDTH = 79
 HEADER_VALUE_STYLE = "grey70"
+HEADER_LABEL_WIDTH = 11
+
+WolfArtStyle = Literal["transparent", "green"]
+WOLF_ART_STYLE: WolfArtStyle = "transparent"
+
+WOLF_ART_TRANSPARENT = (
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣇⠀⣠⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣼⠟⠀⣿⣼⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣤⣶⣾⣿⡟⣼⡄⠙⠙⠛⠿⣦⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⡛⠁⣿⡇⠛⠁⠀⠀⠀⠀⠈⠻⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢉⣽⡿⠛⠁⠠⠋⠀⠀⠀⠀⠀⠀⠙⢷⣆⠻⣧⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⠾⣿⣿⠆⠀⠀⣠⠂⢀⣴⠏⠀⠀⠀⠀⠀⠀⠀⠀⠉⠻⣶⣄⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣼⡟⠁⠀⠀⢰⡇⠐⣹⣏⣀⡄⠀⠀⠀⠀⣀⠀⠀⠀⢈⣿⠏⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⡿⠋⠀⢠⠀⠀⢿⡇⠀⡿⢻⡟⠀⠀⢠⣾⠟⠛⠛⠛⠛⠋⠁⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⢀⡠⠞⠋⠀⠀⠀⠘⣇⠀⠘⣿⡄⠀⠘⣧⠀⠀⣾⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣷⡀⠈⢿⣦⠀⠘⡆⠀⢹⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢻⣦⠀⢻⣧⠀⠙⠀⡈⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⠀⢿⡇⠀⢠⣷⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⢸⡿⢀⣼⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⣾⣧⡾⠃⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠃⣰⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+)
+
+WOLF_ART_GREEN = (
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⡇⠀⢀⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠏⠀⣿⣴⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣤⣴⣾⣿⡏⣸⡀⠘⠉⠛⠿⣦⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣴⣾⡋⠁⣿⡇⠋⠀⠀⠀⠀⠀⠀⠹⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢈⣭⡿⠋⠁⠠⠋⠀⠀⠀⠀⠀⠀⠘⠶⡄⠹⢦⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⠶⣿⣿⠂⠀⠀⣠⠀⢀⣴⠊⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⣦⣄⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠟⠁⠀⠀⢰⠇⠐⢹⡇⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣿⠋⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⡾⠋⠀⠀⠀⠀⢸⡄⠀⠿⢛⡟⠀⠀⢀⣾⠟⠛⠛⠛⠛⠋⠁⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⡠⠞⠋⠀⠀⠀⠀⣆⠀⠘⣷⡄⠀⠈⣧⠀⠀⣾⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢧⡀⠈⢿⣆⠀⠘⡆⠀⢸⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣦⠀⠻⣧⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⠀⢻⡇⠀⢀⣷⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢿⠀⢸⡇⠀⣼⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡼⠀⣼⣇⡾⠃⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⣰⠿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+)
+
+WOLF_ARTS: dict[WolfArtStyle, tuple[str, ...]] = {
+    "transparent": WOLF_ART_TRANSPARENT,
+    "green": WOLF_ART_GREEN,
+}
 
 
 def render_welcome(
@@ -46,13 +92,16 @@ def render_welcome(
         return
 
     model = state.get_effective_model()
-    # Shorten long model IDs for display
     model_display = model.split("/")[-1] if "/" in model else model
 
     thread_display = state.get_thread_title()
 
+    width = _header_width(state, capabilities)
     body = Text()
-    body.append("Nymeria\n", style="bold blue")
+    wolf = WOLF_ARTS.get(WOLF_ART_STYLE, WOLF_ART_TRANSPARENT)
+    for line in wolf:
+        body.append(_center(line, width - 4) + "\n", style="bold white")
+    body.append(_center("N Y M E R I A", width - 4) + "\n", style="bold white")
     body.append("\n")
     body.append("  Model   ", style="dim")
     body.append(f"{model_display}\n", style="white")
@@ -70,8 +119,8 @@ def render_welcome(
             body,
             box=box.SQUARE,
             border_style=HEADER_BORDER_STYLE,
-            padding=(0, 2),
-            width=_header_width(state, capabilities),
+            padding=(0, 1),
+            width=width,
         )
     )
     state.console.print()
@@ -87,28 +136,40 @@ def _render_header_snapshot(
     selected_theme = theme or DEFAULT_CLI_THEME
     width = _header_width(state, capabilities)
     body_width = max(28, width - 4)
-    columns = _section_columns(body_width)
-    column_specs = _section_column_specs(body_width, columns)
-    column_widths = tuple(width for width, _ratio in column_specs)
-    sections = _snapshot_sections(snapshot, selected_theme, column_widths)
-    table = _sections_table(sections, column_specs)
-    footers = _snapshot_footers(snapshot, selected_theme, body_width)
-    body = (
-        Group(table, Rule(style=HEADER_INNER_RULE_STYLE), *footers)
-        if footers
-        else Group(table)
-    )
 
-    title = Text(
-        "[ Nymeria ]",
-        style=HEADER_LABEL_STYLE,
-    )
+    wolf = WOLF_ARTS.get(WOLF_ART_STYLE, WOLF_ART_TRANSPARENT)
+    parts: list[Text | Rule] = []
+
+    wolf_text = Text()
+    for line in wolf:
+        wolf_text.append(_center(line, body_width) + "\n", style="bold white")
+    wolf_text.append(_center("N Y M E R I A", body_width), style="bold white")
+    parts.append(wolf_text)
+
+    parts.append(Rule(style=HEADER_INNER_RULE_STYLE))
+
+    info_lines = _snapshot_info_lines(snapshot, body_width)
+    info_text = Text()
+    for i, (label, value) in enumerate(info_lines):
+        if i > 0:
+            info_text.append("\n")
+        padded_label = f"  {label:<{HEADER_LABEL_WIDTH}}"
+        info_text.append(padded_label, style=HEADER_LABEL_STYLE)
+        info_text.append(
+            _fit(value, max(1, body_width - cell_len(padded_label))),
+            style=HEADER_VALUE_STYLE,
+        )
+    parts.append(info_text)
+
+    footers = _snapshot_footers(snapshot, selected_theme, body_width)
+    if footers:
+        parts.append(Rule(style=HEADER_INNER_RULE_STYLE))
+        parts.extend(footers)
+
     state.console.print()
     state.console.print(
         Panel(
-            body,
-            title=title,
-            title_align="center",
+            Group(*parts),
             box=box.SQUARE,
             border_style=HEADER_BORDER_STYLE,
             padding=(0, 1),
@@ -118,87 +179,51 @@ def _render_header_snapshot(
     state.console.print()
 
 
-def _snapshot_sections(
+def _snapshot_info_lines(
     snapshot: CLIHeaderSnapshot,
-    theme: CLITheme,
-    column_widths: tuple[int, ...],
-) -> list[Text]:
-    widths = _section_width_cycle(column_widths)
-    sections = [
-        _section(
-            "Thread",
-            (
-                snapshot.thread_title,
-                _join_parts(
-                    snapshot.short_thread_id,
-                    snapshot.platform,
-                    "pinned" if snapshot.pinned else "",
-                    _callable_status(snapshot),
-                ),
-            ),
-            slot="user_header",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Model",
-            (
-                _provider_api_line(snapshot),
-                _model_thinking_line(snapshot),
-            ),
-            slot="assistant_header",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Context",
-            _context_lines(snapshot),
-            slot="thinking",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Tools",
-            (
-                f"tools {snapshot.tool_count}  mcp {snapshot.mcp_tool_count}",
-                f"callable {snapshot.callable_tool_count}",
-            ),
-            slot="tool",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Skills",
-            (
-                f"skills {snapshot.skill_count}  kits {snapshot.skill_kit_count}",
-            ),
-            slot="artifact",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Autonomous",
-            (
-                _label_summary("Todos", snapshot.todo_labels, snapshot.todo_count),
-                _label_summary(
-                    "Triggers",
-                    snapshot.trigger_labels,
-                    snapshot.trigger_count,
-                ),
-            ),
-            slot="prompt_busy",
-            theme=theme,
-            width=next(widths),
-        ),
-        _section(
-            "Backend",
-            _backend_lines(snapshot),
-            slot="status_accent" if snapshot.health.status != "error" else "error",
-            theme=theme,
-            width=next(widths),
-        ),
-    ]
-    return sections
+    body_width: int,
+) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+
+    thread_parts = _join_parts(
+        snapshot.thread_title,
+        snapshot.short_thread_id,
+        snapshot.platform,
+        "pinned" if snapshot.pinned else "",
+        _callable_status(snapshot),
+        separator=" · ",
+    )
+    lines.append(("Thread", thread_parts))
+
+    lines.append(("Provider", _provider_api_line(snapshot)))
+    lines.append(("Model", _model_thinking_line(snapshot)))
+
+    context = _context_inline(snapshot)
+    lines.append(("Context", context))
+
+    tools = _join_parts(
+        f"{snapshot.tool_count} tools",
+        f"{snapshot.mcp_tool_count} mcp",
+        f"{snapshot.callable_tool_count} callable",
+        separator=" · ",
+    )
+    lines.append(("Tools", tools))
+
+    skills = f"{snapshot.skill_count} skills · {snapshot.skill_kit_count} kits"
+    lines.append(("Skills", skills))
+
+    lines.append(("Todos", _label_summary(snapshot.todo_labels, snapshot.todo_count)))
+    lines.append(("Triggers", _label_summary(snapshot.trigger_labels, snapshot.trigger_count)))
+
+    backend = _join_parts(
+        snapshot.backend_url or "local",
+        snapshot.health.label,
+        f"user {snapshot.user_id}",
+        separator=" · ",
+    )
+    lines.append(("Backend", backend))
+
+    return lines
 
 
 def _snapshot_footers(
@@ -207,7 +232,7 @@ def _snapshot_footers(
     body_width: int,
 ) -> list[Text]:
     footers: list[Text] = []
-    flags = _flags_text(snapshot.flags, max(1, body_width - 9))
+    flags = _flags_text(snapshot.flags, max(1, body_width - HEADER_LABEL_WIDTH - 4))
     if flags:
         footers.append(
             _footer(
@@ -231,55 +256,6 @@ def _snapshot_footers(
     return footers
 
 
-def _sections_table(
-    sections: list[Text],
-    column_specs: tuple[tuple[int, float], ...],
-) -> Table:
-    table = Table(
-        box=box.MINIMAL,
-        border_style=HEADER_INNER_RULE_STYLE,
-        expand=True,
-        padding=(0, 1),
-        show_edge=False,
-        show_header=False,
-        show_lines=True,
-    )
-    columns = len(column_specs)
-    for _width, ratio in column_specs:
-        table.add_column(
-            min_width=14,
-            no_wrap=True,
-            overflow="ellipsis",
-            ratio=round(ratio * 100),
-        )
-    for index in range(0, len(sections), columns):
-        row = list(sections[index : index + columns])
-        row.extend(Text("") for _ in range(columns - len(row)))
-        table.add_row(*row)
-    return table
-
-
-def _section(
-    title: str,
-    lines: tuple[str, ...],
-    *,
-    slot: str,
-    theme: CLITheme,
-    width: int,
-) -> Text:
-    text = Text()
-    text.append(
-        _fit(title.upper(), width),
-        style=_section_header_style(theme, fallback_slot=slot),
-    )
-    for line in lines:
-        if not line:
-            continue
-        text.append("\n")
-        text.append(_fit(line, width), style=HEADER_VALUE_STYLE)
-    return text
-
-
 def _footer(
     label: str,
     value: str,
@@ -288,7 +264,7 @@ def _footer(
     theme: CLITheme,
     width: int,
 ) -> Text:
-    label_text = f"{label.upper()}  "
+    label_text = f"  {label.upper():<{HEADER_LABEL_WIDTH}}"
     value_width = max(1, width - cell_len(label_text))
     text = Text()
     text.append(
@@ -309,46 +285,6 @@ def _section_header_style(
     return HEADER_LABEL_STYLE
 
 
-def _section_columns(body_width: int) -> int:
-    if body_width >= 116:
-        return 3
-    if body_width >= 56:
-        return 2
-    return 1
-
-
-def _section_column_specs(
-    body_width: int, columns: int
-) -> tuple[tuple[int, float], ...]:
-    ratios = _section_column_ratios(columns)
-    available = max(columns * 14, body_width - (columns * 2) - (columns - 1))
-    total_ratio = sum(ratios)
-    widths = [max(14, int(available * ratio / total_ratio)) for ratio in ratios]
-    while sum(widths) > available:
-        widest = max(range(columns), key=widths.__getitem__)
-        if widths[widest] <= 14:
-            break
-        widths[widest] -= 1
-    remainder = available - sum(widths)
-    for index in sorted(range(columns), key=ratios.__getitem__, reverse=True):
-        if remainder <= 0:
-            break
-        widths[index] += 1
-        remainder -= 1
-    return tuple((width, ratio) for width, ratio in zip(widths, ratios))
-
-
-def _section_column_ratios(columns: int) -> tuple[float, ...]:
-    if columns == 3:
-        return (1.05, 1.2, 1.05)
-    return tuple(1.0 for _ in range(columns))
-
-
-def _section_width_cycle(column_widths: tuple[int, ...]):
-    while True:
-        yield from column_widths
-
-
 def _callable_status(snapshot: CLIHeaderSnapshot) -> str:
     if not snapshot.callable:
         return ""
@@ -360,7 +296,7 @@ def _callable_status(snapshot: CLIHeaderSnapshot) -> str:
     return " ".join(parts)
 
 
-def _context_lines(snapshot: CLIHeaderSnapshot) -> tuple[str, ...]:
+def _context_inline(snapshot: CLIHeaderSnapshot) -> str:
     tokens = _count_text(snapshot.context_tokens)
     limit = _count_text(snapshot.context_limit)
     parts = []
@@ -370,10 +306,9 @@ def _context_lines(snapshot: CLIHeaderSnapshot) -> tuple[str, ...]:
         parts.append(tokens)
     if snapshot.context_percent is not None:
         parts.append(f"({snapshot.context_percent:.0f}%)")
-    lines = [" ".join(parts) if parts else "unknown"]
     if snapshot.compaction_count is not None:
-        lines.append(f"compactions {snapshot.compaction_count}")
-    return tuple(lines)
+        parts.append(f"· {snapshot.compaction_count} compactions")
+    return " ".join(parts) if parts else "unknown"
 
 
 def _flags_text(flags: tuple[str, ...], width: int) -> str:
@@ -388,25 +323,16 @@ def _flags_text(flags: tuple[str, ...], width: int) -> str:
     return ""
 
 
-def _label_summary(label: str, labels: tuple[str, ...], count: int) -> str:
+def _label_summary(labels: tuple[str, ...], count: int) -> str:
     if count <= 0:
-        return f"{label}: none"
+        return "none"
     parts = list(labels)
     remaining = count - len(parts)
     if remaining > 0:
         parts.append(f"+{remaining} more")
     if not parts:
         parts.append(f"{count} active")
-    return f"{label}: {', '.join(parts)}"
-
-
-def _backend_lines(snapshot: CLIHeaderSnapshot) -> tuple[str, ...]:
-    lines = [snapshot.backend_url or "local"]
-    parts = [snapshot.health.label, f"user {snapshot.user_id}"]
-    if snapshot.health.message:
-        parts.append(snapshot.health.message)
-    lines.append(_join_parts(*parts))
-    return tuple(line for line in lines if line)
+    return ", ".join(parts)
 
 
 def _provider_api_line(snapshot: CLIHeaderSnapshot) -> str:
@@ -447,6 +373,14 @@ def _count_text(value: int | None) -> str:
 
 def _fit(value: str, width: int) -> str:
     return truncate_cell_width(str(value or ""), max(1, width))
+
+
+def _center(text: str, width: int) -> str:
+    text_width = cell_len(text)
+    if text_width >= width:
+        return text
+    pad = (width - text_width) // 2
+    return " " * pad + text
 
 
 def _terminal_width(state: "CLIState", capabilities: Any | None) -> int:
