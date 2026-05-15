@@ -19,7 +19,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from . import auth_cache_utils as auth_utils
 from .google_docs_auth import (
     GOOGLE_DOCS_AUTH_TOOLS,
-    GOOGLE_SCOPES,
+    GOOGLE_DOCS_SCOPES as GOOGLE_SCOPES,
     PROVIDER,
 )
 from .utils import get_user_id
