@@ -21,6 +21,9 @@ _GRIST_BASE_URL = "https://docs.getgrist.com/api"
 _QUICKBASE_BASE_URL = "https://api.quickbase.com/v1"
 _SEATABLE_BASE_URL = "https://cloud.seatable.io"
 _STACKBY_BASE_URL = "https://stackby.com/api/betav1"
+_ADALO_BASE_URL = "https://api.adalo.com/v0"
+_BUBBLE_LIVE_SEGMENT = "/api/1.1"
+_BUBBLE_DEV_SEGMENT = "/version-test/api/1.1"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -223,6 +226,136 @@ def _bearer_headers(api_key: str) -> dict[str, str]:
     headers = _json_headers()
     headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def _adalo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("adalo_api", "adaloApi")
+    base = _credential_value(
+        provider="adalo",
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("adalo_base_url")
+    app_id = _credential_value(
+        provider="adalo",
+        provider_aliases=provider_aliases,
+        field_names=("app_id", "appId"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("adalo_app_id")
+    api_key = _credential_value(
+        provider="adalo",
+        provider_aliases=provider_aliases,
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("adalo_api_key")
+    if not api_key or not (base or app_id):
+        return _base_url(base or _ADALO_BASE_URL), _setup_hint(
+            provider="adalo",
+            field_names=("api_key", "app_id"),
+            tool_name=tool_name,
+            env_var="ADALO_API_KEY + ADALO_APP_ID",
+            display_name="Adalo",
+        )
+    api_base = base or f"{_ADALO_BASE_URL}/apps/{app_id}"
+    return _base_url(api_base), _bearer_headers(api_key)
+
+
+def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("bubble_api", "bubbleApi")
+    base = _credential_value(
+        provider="bubble",
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("bubble_base_url")
+    app_name = _credential_value(
+        provider="bubble",
+        provider_aliases=provider_aliases,
+        field_names=("app_name", "appName"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("bubble_app_name")
+    domain = _credential_value(
+        provider="bubble",
+        provider_aliases=provider_aliases,
+        field_names=("domain", "host"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("bubble_domain")
+    environment = (
+        _credential_value(
+            provider="bubble",
+            provider_aliases=provider_aliases,
+            field_names=("environment", "env"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("bubble_environment")
+        or "live"
+    )
+    api_token = _credential_value(
+        provider="bubble",
+        provider_aliases=provider_aliases,
+        field_names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("bubble_api_token")
+    if not api_token or not (base or app_name or domain):
+        return _base_url(base or "https://example.bubbleapps.io/api/1.1"), _setup_hint(
+            provider="bubble",
+            field_names=("api_token", "app_name"),
+            tool_name=tool_name,
+            env_var="BUBBLE_API_TOKEN + BUBBLE_APP_NAME",
+            display_name="Bubble",
+        )
+    if base:
+        api_base = base
+    else:
+        root = _base_url(domain if domain else f"https://{app_name}.bubbleapps.io")
+        segment = _BUBBLE_DEV_SEGMENT if str(environment).lower() in {"dev", "development", "version-test"} else _BUBBLE_LIVE_SEGMENT
+        api_base = f"{root}{segment}"
+    return _base_url(api_base), _bearer_headers(api_token)
+
+
+def _cockpit_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("cockpit_api", "cockpitApi")
+    base = _credential_value(
+        provider="cockpit",
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("cockpit_base_url")
+    token = _credential_value(
+        provider="cockpit",
+        provider_aliases=provider_aliases,
+        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("cockpit_access_token")
+    if not base or not token:
+        return _base_url(base or "https://example.com/api"), _setup_hint(
+            provider="cockpit",
+            field_names=("url", "access_token"),
+            tool_name=tool_name,
+            env_var="COCKPIT_BASE_URL + COCKPIT_ACCESS_TOKEN",
+            display_name="Cockpit",
+        )
+    api_base = _base_url(base)
+    if not api_base.endswith("/api"):
+        api_base = f"{api_base}/api"
+    return api_base, {"token": str(token), "headers": _json_headers()}
+
+
+def _bubble_type_name(value: str) -> str:
+    clean = value.strip().replace(" ", "").lower()
+    if not clean:
+        raise ValueError("type_name is required")
+    return quote(clean, safe="")
 
 
 def _baserow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -1895,6 +2028,399 @@ def grist_delete_records(
         return f"[Error]: Grist record deletion failed: {e}"
 
 
+@tool
+def adalo_list_records(
+    collection_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Adalo collection records."""
+    if not collection_id.strip():
+        return "[Error]: collection_id is required."
+    try:
+        base_url, headers_or_error = _adalo_config("adalo_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = f"/collections/{quote(collection_id.strip(), safe='')}"
+        data = _request_json(
+            "GET",
+            f"{base_url}{endpoint}",
+            params={"limit": _limit(limit, default=100, max_value=500), "offset": max(0, int(offset))},
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("records", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("adalo_list_records failed", exc_info=True)
+        return f"[Error]: Adalo record list failed: {e}"
+
+
+@tool
+def adalo_get_record(
+    collection_id: str,
+    row_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Adalo collection record."""
+    if not collection_id.strip() or not row_id.strip():
+        return "[Error]: collection_id and row_id are required."
+    try:
+        base_url, headers_or_error = _adalo_config("adalo_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = f"/collections/{quote(collection_id.strip(), safe='')}/{quote(row_id.strip(), safe='')}"
+        return _dump_json(_request_json("GET", f"{base_url}{endpoint}", headers=headers_or_error))
+    except Exception as e:
+        logger.error("adalo_get_record failed", exc_info=True)
+        return f"[Error]: Adalo record lookup failed: {e}"
+
+
+@tool
+def adalo_create_record(
+    collection_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an Adalo collection record from a JSON field mapping."""
+    if not collection_id.strip():
+        return "[Error]: collection_id is required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, headers_or_error = _adalo_config("adalo_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = f"/collections/{quote(collection_id.strip(), safe='')}"
+        return _dump_json(_request_json("POST", f"{base_url}{endpoint}", json_body=fields, headers=headers_or_error))
+    except Exception as e:
+        logger.error("adalo_create_record failed", exc_info=True)
+        return f"[Error]: Adalo record creation failed: {e}"
+
+
+@tool
+def adalo_update_record(
+    collection_id: str,
+    row_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update an Adalo collection record from a JSON field mapping."""
+    if not collection_id.strip() or not row_id.strip():
+        return "[Error]: collection_id and row_id are required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, headers_or_error = _adalo_config("adalo_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = f"/collections/{quote(collection_id.strip(), safe='')}/{quote(row_id.strip(), safe='')}"
+        return _dump_json(_request_json("PUT", f"{base_url}{endpoint}", json_body=fields, headers=headers_or_error))
+    except Exception as e:
+        logger.error("adalo_update_record failed", exc_info=True)
+        return f"[Error]: Adalo record update failed: {e}"
+
+
+@tool
+def adalo_delete_record(
+    collection_id: str,
+    row_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete an Adalo collection record."""
+    if not collection_id.strip() or not row_id.strip():
+        return "[Error]: collection_id and row_id are required."
+    try:
+        base_url, headers_or_error = _adalo_config("adalo_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = f"/collections/{quote(collection_id.strip(), safe='')}/{quote(row_id.strip(), safe='')}"
+        data = _request_json("DELETE", f"{base_url}{endpoint}", headers=headers_or_error)
+        return _dump_json({"success": True, "response": data})
+    except Exception as e:
+        logger.error("adalo_delete_record failed", exc_info=True)
+        return f"[Error]: Adalo record deletion failed: {e}"
+
+
+@tool
+def bubble_list_objects(
+    type_name: str,
+    constraints_json: str = "",
+    sort_field: str = "",
+    descending: bool = False,
+    limit: int = 100,
+    cursor: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Bubble Data API objects."""
+    try:
+        base_url, headers_or_error = _bubble_config("bubble_list_objects", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params: dict[str, Any] = {"limit": _limit(limit, default=100, max_value=100), "cursor": max(0, int(cursor))}
+        if constraints_json.strip():
+            params["constraints"] = json.dumps(_parse_json(constraints_json, expected=list, label="constraints_json"))
+        if sort_field.strip():
+            params["sort_field"] = sort_field.strip()
+            params["descending"] = "true" if descending else "false"
+        data = _request_json("GET", f"{base_url}/obj/{_bubble_type_name(type_name)}", params=params, headers=headers_or_error)
+        if isinstance(data, dict) and isinstance(data.get("response"), dict):
+            return _dump_json(data["response"].get("results", data["response"]))
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("bubble_list_objects failed", exc_info=True)
+        return f"[Error]: Bubble object list failed: {e}"
+
+
+@tool
+def bubble_get_object(
+    type_name: str,
+    object_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Bubble Data API object."""
+    if not object_id.strip():
+        return "[Error]: object_id is required."
+    try:
+        base_url, headers_or_error = _bubble_config("bubble_get_object", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/obj/{_bubble_type_name(type_name)}/{quote(object_id.strip(), safe='')}", headers=headers_or_error)
+        return _dump_json(data.get("response", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("bubble_get_object failed", exc_info=True)
+        return f"[Error]: Bubble object lookup failed: {e}"
+
+
+@tool
+def bubble_create_object(
+    type_name: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Bubble Data API object."""
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, headers_or_error = _bubble_config("bubble_create_object", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        return _dump_json(_request_json("POST", f"{base_url}/obj/{_bubble_type_name(type_name)}", json_body=fields, headers=headers_or_error))
+    except Exception as e:
+        logger.error("bubble_create_object failed", exc_info=True)
+        return f"[Error]: Bubble object creation failed: {e}"
+
+
+@tool
+def bubble_update_object(
+    type_name: str,
+    object_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Bubble Data API object."""
+    if not object_id.strip():
+        return "[Error]: object_id is required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must contain at least one field."
+        base_url, headers_or_error = _bubble_config("bubble_update_object", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("PATCH", f"{base_url}/obj/{_bubble_type_name(type_name)}/{quote(object_id.strip(), safe='')}", json_body=fields, headers=headers_or_error)
+        return _dump_json({"success": True, "response": data})
+    except Exception as e:
+        logger.error("bubble_update_object failed", exc_info=True)
+        return f"[Error]: Bubble object update failed: {e}"
+
+
+@tool
+def bubble_delete_object(
+    type_name: str,
+    object_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Bubble Data API object."""
+    if not object_id.strip():
+        return "[Error]: object_id is required."
+    try:
+        base_url, headers_or_error = _bubble_config("bubble_delete_object", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("DELETE", f"{base_url}/obj/{_bubble_type_name(type_name)}/{quote(object_id.strip(), safe='')}", headers=headers_or_error)
+        return _dump_json({"success": True, "response": data})
+    except Exception as e:
+        logger.error("bubble_delete_object failed", exc_info=True)
+        return f"[Error]: Bubble object deletion failed: {e}"
+
+
+def _cockpit_params(auth: dict[str, Any], extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    return {"token": auth["token"], **(extra or {})}
+
+
+@tool
+def cockpit_list_collections(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Cockpit collection names."""
+    try:
+        base_url, auth_or_error = _cockpit_config("cockpit_list_collections", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        return _dump_json(_request_json("GET", f"{base_url}/collections/listCollections", params=_cockpit_params(auth_or_error), headers=auth_or_error["headers"]))
+    except Exception as e:
+        logger.error("cockpit_list_collections failed", exc_info=True)
+        return f"[Error]: Cockpit collection list failed: {e}"
+
+
+@tool
+def cockpit_list_collection_entries(
+    collection: str,
+    filter_json: str = "",
+    fields: str = "",
+    sort_json: str = "",
+    limit: int = 100,
+    skip: int = 0,
+    populate: bool = False,
+    raw: bool = False,
+    language: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Cockpit collection entries."""
+    if not collection.strip():
+        return "[Error]: collection is required."
+    try:
+        body: dict[str, Any] = {
+            "limit": _limit(limit, default=100, max_value=1000),
+            "skip": max(0, int(skip)),
+            "populate": populate,
+            "simple": not raw,
+            "lang": language.strip(),
+        }
+        if filter_json.strip():
+            body["filter"] = _parse_json(filter_json, expected=dict, label="filter_json")
+        if fields.strip():
+            body["fields"] = {"_id": False, **{field: True for field in _csv_to_list(fields)}}
+        if sort_json.strip():
+            body["sort"] = _parse_json(sort_json, expected=dict, label="sort_json")
+        base_url, auth_or_error = _cockpit_config("cockpit_list_collection_entries", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/collections/get/{quote(collection.strip(), safe='')}",
+            params=_cockpit_params(auth_or_error),
+            json_body=_filtered(body),
+            headers=auth_or_error["headers"],
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("cockpit_list_collection_entries failed", exc_info=True)
+        return f"[Error]: Cockpit collection entry list failed: {e}"
+
+
+@tool
+def cockpit_save_collection_entry(
+    collection: str,
+    data_json: str,
+    entry_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create or update a Cockpit collection entry."""
+    if not collection.strip():
+        return "[Error]: collection is required."
+    try:
+        data = _parse_json(data_json, expected=dict, label="data_json")
+        if entry_id.strip():
+            data = {"_id": entry_id.strip(), **data}
+        base_url, auth_or_error = _cockpit_config("cockpit_save_collection_entry", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/collections/save/{quote(collection.strip(), safe='')}",
+                params=_cockpit_params(auth_or_error),
+                json_body={"data": data},
+                headers=auth_or_error["headers"],
+            )
+        )
+    except Exception as e:
+        logger.error("cockpit_save_collection_entry failed", exc_info=True)
+        return f"[Error]: Cockpit collection entry save failed: {e}"
+
+
+@tool
+def cockpit_list_singletons(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Cockpit singleton names."""
+    try:
+        base_url, auth_or_error = _cockpit_config("cockpit_list_singletons", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        return _dump_json(_request_json("GET", f"{base_url}/singletons/listSingletons", params=_cockpit_params(auth_or_error), headers=auth_or_error["headers"]))
+    except Exception as e:
+        logger.error("cockpit_list_singletons failed", exc_info=True)
+        return f"[Error]: Cockpit singleton list failed: {e}"
+
+
+@tool
+def cockpit_get_singleton(
+    singleton: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Cockpit singleton."""
+    if not singleton.strip():
+        return "[Error]: singleton is required."
+    try:
+        base_url, auth_or_error = _cockpit_config("cockpit_get_singleton", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        return _dump_json(
+            _request_json(
+                "GET",
+                f"{base_url}/singletons/get/{quote(singleton.strip(), safe='')}",
+                params=_cockpit_params(auth_or_error),
+                headers=auth_or_error["headers"],
+            )
+        )
+    except Exception as e:
+        logger.error("cockpit_get_singleton failed", exc_info=True)
+        return f"[Error]: Cockpit singleton lookup failed: {e}"
+
+
+@tool
+def cockpit_submit_form(
+    form: str,
+    data_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Submit a Cockpit form."""
+    if not form.strip():
+        return "[Error]: form is required."
+    try:
+        data = _parse_json(data_json, expected=dict, label="data_json")
+        base_url, auth_or_error = _cockpit_config("cockpit_submit_form", config)
+        if isinstance(auth_or_error, str):
+            return auth_or_error
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/forms/submit/{quote(form.strip(), safe='')}",
+                params=_cockpit_params(auth_or_error),
+                json_body={"form": data},
+                headers=auth_or_error["headers"],
+            )
+        )
+    except Exception as e:
+        logger.error("cockpit_submit_form failed", exc_info=True)
+        return f"[Error]: Cockpit form submission failed: {e}"
+
+
 DATA_TABLE_SERVICE_TOOLS = [
     supabase_list_rows,
     supabase_insert_rows,
@@ -1947,4 +2473,20 @@ DATA_TABLE_SERVICE_TOOLS = [
     grist_create_record,
     grist_update_record,
     grist_delete_records,
+    adalo_list_records,
+    adalo_get_record,
+    adalo_create_record,
+    adalo_update_record,
+    adalo_delete_record,
+    bubble_list_objects,
+    bubble_get_object,
+    bubble_create_object,
+    bubble_update_object,
+    bubble_delete_object,
+    cockpit_list_collections,
+    cockpit_list_collection_entries,
+    cockpit_save_collection_entry,
+    cockpit_list_singletons,
+    cockpit_get_singleton,
+    cockpit_submit_form,
 ]

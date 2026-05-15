@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (766)
+### Optional: Service Integration Tools (782)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -844,6 +844,22 @@ in the credential vault for provider-specific saved connections scoped to
 | 764 | `vero_update_user_subscription` | Integrations | MODERATE | Unsubscribe, resubscribe, or delete a Vero user |
 | 765 | `vero_update_user_tags` | Integrations | MODERATE | Add or remove Vero user tags |
 | 766 | `vero_track_event` | Integrations | MODERATE | Track a Vero event |
+| 767 | `adalo_list_records` | Integrations | SAFE | List Adalo collection records |
+| 768 | `adalo_get_record` | Integrations | SAFE | Get an Adalo collection record |
+| 769 | `adalo_create_record` | Integrations | MODERATE | Create an Adalo collection record |
+| 770 | `adalo_update_record` | Integrations | MODERATE | Update an Adalo collection record |
+| 771 | `adalo_delete_record` | Integrations | MODERATE | Delete an Adalo collection record |
+| 772 | `bubble_list_objects` | Integrations | SAFE | List Bubble Data API objects |
+| 773 | `bubble_get_object` | Integrations | SAFE | Get a Bubble Data API object |
+| 774 | `bubble_create_object` | Integrations | MODERATE | Create a Bubble Data API object |
+| 775 | `bubble_update_object` | Integrations | MODERATE | Update a Bubble Data API object |
+| 776 | `bubble_delete_object` | Integrations | MODERATE | Delete a Bubble Data API object |
+| 777 | `cockpit_list_collections` | Integrations | SAFE | List Cockpit collection names |
+| 778 | `cockpit_list_collection_entries` | Integrations | SAFE | List Cockpit collection entries |
+| 779 | `cockpit_save_collection_entry` | Integrations | MODERATE | Create or update a Cockpit collection entry |
+| 780 | `cockpit_list_singletons` | Integrations | SAFE | List Cockpit singleton names |
+| 781 | `cockpit_get_singleton` | Integrations | SAFE | Get a Cockpit singleton |
+| 782 | `cockpit_submit_form` | Integrations | MODERATE | Submit a Cockpit form |
 
 ### Optional: Private B Tools (4)
 
@@ -1424,7 +1440,9 @@ GraphQL auth fields, and `totp.secret`. GitHub credentials can also provide
 `base_url` / `api_base_url` / `server`; GitLab credentials can provide
 `base_url` / `server`. Build/CI credentials use `circleci.api_key`,
 `travisci.api_token`, and `jenkins.base_url` plus `jenkins.username` and
-`jenkins.api_key`. File-storage credentials use `dropbox.access_token`,
+`jenkins.api_key`. Data-table credentials include `adalo.api_key` plus
+`adalo.app_id`, `bubble.api_token` plus `bubble.app_name`, and
+`cockpit.base_url` plus `cockpit.access_token`. File-storage credentials use `dropbox.access_token`,
 `nextcloud.webdav_url` plus either basic auth or an access token, and
 `s3.access_key_id` plus `s3.secret_access_key`. AWS service credentials use
 `aws.access_key_id` plus `aws.secret_access_key`, with optional
@@ -1952,6 +1970,9 @@ This batch includes:
 - `nocodb_list_bases(...)`, `nocodb_get_base(base_id, ...)`, `nocodb_list_records(base_id, table_id, ...)`, `nocodb_get_record(base_id, table_id, record_id)`, `nocodb_count_records(base_id, table_id, ...)`, `nocodb_create_record(base_id, table_id, fields_json)`, `nocodb_update_record(base_id, table_id, record_id, fields_json)`, and `nocodb_delete_record(base_id, table_id, record_id)`. Reads are SAFE; create/update/delete are MODERATE.
 - `coda_list_docs(...)`, `coda_list_tables(doc_id, ...)`, `coda_list_table_rows(doc_id, table_id, ...)`, `coda_get_table_row(doc_id, table_id, row_id, ...)`, `coda_create_table_row(doc_id, table_id, cells_json, ...)`, `coda_update_table_row(doc_id, table_id, row_id, cells_json, ...)`, `coda_delete_table_row(doc_id, table_id, row_id)`, `coda_list_formulas(doc_id, ...)`, and `coda_list_controls(doc_id, ...)`. Reads are SAFE; row writes/deletes are MODERATE.
 - `grist_list_orgs()`, `grist_list_workspaces(org_id)`, `grist_list_docs(workspace_id)`, `grist_list_tables(doc_id)`, `grist_list_columns(doc_id, table_id)`, `grist_list_records(doc_id, table_id, ...)`, `grist_create_record(doc_id, table_id, fields_json)`, `grist_update_record(doc_id, table_id, record_id, fields_json)`, and `grist_delete_records(doc_id, table_id, row_ids)`. Reads are SAFE; record writes/deletes are MODERATE.
+- `adalo_list_records(collection_id, ...)`, `adalo_get_record(collection_id, row_id)`, `adalo_create_record(collection_id, fields_json)`, `adalo_update_record(collection_id, row_id, fields_json)`, and `adalo_delete_record(collection_id, row_id)`. Reads are SAFE; create/update/delete are MODERATE.
+- `bubble_list_objects(type_name, ...)`, `bubble_get_object(type_name, object_id)`, `bubble_create_object(type_name, fields_json)`, `bubble_update_object(type_name, object_id, fields_json)`, and `bubble_delete_object(type_name, object_id)`. Reads are SAFE; create/update/delete are MODERATE.
+- `cockpit_list_collections()`, `cockpit_list_collection_entries(collection, ...)`, `cockpit_save_collection_entry(collection, data_json, entry_id?)`, `cockpit_list_singletons()`, `cockpit_get_singleton(singleton)`, and `cockpit_submit_form(form, data_json)`. Reads are SAFE; collection saves and form submissions are MODERATE.
 - `supabase_list_rows(table, ...)`, `supabase_insert_rows(table, rows_json, ...)`, `supabase_update_rows(table, fields_json, filters_query, ...)`, and `supabase_delete_rows(table, filters_query, ...)`. Reads are SAFE; insert/update/delete are MODERATE.
 - `quickbase_list_fields(table_id)`, `quickbase_query_records(table_id, ...)`, `quickbase_upsert_records(table_id, records_json, ...)`, and `quickbase_delete_records(table_id, where)`. Reads are SAFE; upsert/delete are MODERATE.
 - `seatable_get_metadata()`, `seatable_list_rows(table_name, ...)`, `seatable_get_row(table_name, row_id)`, `seatable_create_row(table_name, fields_json)`, `seatable_update_row(table_name, row_id, fields_json)`, and `seatable_delete_row(table_name, row_id)`. Reads are SAFE; create/update/delete are MODERATE.
@@ -1962,6 +1983,9 @@ Credential providers and fallback env vars:
 - NocoDB: provider `nocodb`, fields `api_token`, `apiToken`, `token`, `access_token`, `api_key`, or `value`; env fallback `NOCODB_API_TOKEN`. Use `base_url` / `host` / `url` or `NOCODB_BASE_URL` for self-hosted NocoDB. `NOCODB_AUTH_HEADER` defaults to `xc-token`; set `xc-auth` when using a user token.
 - Coda: provider `coda`, fields `access_token`, `api_token`, `api_key`, `token`, or `value`; env fallback `CODA_API_TOKEN`. Use `base_url` / `url` or `CODA_BASE_URL` for non-default API roots.
 - Grist: provider `grist`, fields `api_key`, `apiKey`, `token`, or `value`; env fallback `GRIST_API_KEY`. Use `base_url` / `url` or `GRIST_BASE_URL` for paid-team or self-hosted API roots.
+- Adalo: provider `adalo`, fields `api_key` / `apiKey` plus `app_id` / `appId`, optional `base_url`; env fallbacks `ADALO_API_KEY`, `ADALO_APP_ID`, and `ADALO_BASE_URL`.
+- Bubble: provider `bubble`, fields `api_token` / `apiToken`, plus `app_name` / `appName` or `domain`, optional `environment` and `base_url`; env fallbacks `BUBBLE_API_TOKEN`, `BUBBLE_APP_NAME`, `BUBBLE_ENVIRONMENT`, `BUBBLE_DOMAIN`, and `BUBBLE_BASE_URL`.
+- Cockpit: provider `cockpit`, fields `url` / `base_url` plus `access_token` / `accessToken`; env fallbacks `COCKPIT_BASE_URL` and `COCKPIT_ACCESS_TOKEN`.
 - Supabase: provider `supabase`, fields `service_role`, `service_role_key`, `api_key`, `anon_key`, `token`, or `value`; env fallbacks `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_API_KEY`. Save `base_url` / `host` / `url` / `project_url` or set `SUPABASE_URL`; `SUPABASE_BASE_URL` can point directly at a REST API root.
 - Quickbase: provider `quickbase`, fields `user_token`, `api_key`, `token`, or `value`, plus `hostname`; env fallbacks `QUICKBASE_USER_TOKEN` and `QUICKBASE_HOSTNAME`. Use `base_url` / `url` or `QUICKBASE_BASE_URL` for non-default API roots.
 - SeaTable: provider `seatable`, fields `api_token`, `token`, or `value`; env fallback `SEATABLE_API_TOKEN`. Use `base_url` / `domain` / `url` or `SEATABLE_BASE_URL` for self-hosted SeaTable.
