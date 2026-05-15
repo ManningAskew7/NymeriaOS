@@ -380,6 +380,19 @@ Set the API key for your chosen provider:
 | `JINA_READER_BASE_URL` | Jina AI | Optional Jina Reader API base URL override |
 | `JINA_SEARCH_BASE_URL` | Jina AI | Optional Jina Search API base URL override |
 | `JINA_DEEPSEARCH_BASE_URL` | Jina AI | Optional Jina DeepSearch API base URL override |
+| `MISP_BASE_URL` | MISP | Optional MISP base URL fallback; credential vault provider `misp` is preferred |
+| `MISP_API_KEY` | MISP | Optional MISP API key fallback |
+| `MISP_ALLOW_UNAUTHORIZED_CERTS` | MISP | Optional flag to allow self-signed MISP certificates |
+| `THEHIVE_BASE_URL` | TheHive | Optional TheHive base URL fallback; credential vault provider `thehive` is preferred |
+| `THEHIVE_API_KEY` | TheHive | Optional TheHive API key fallback |
+| `THEHIVE_API_VERSION` | TheHive | Optional TheHive API version hint |
+| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | TheHive | Optional flag to allow self-signed TheHive certificates |
+| `SECURITYSCORECARD_API_KEY` | SecurityScorecard | Optional SecurityScorecard API key fallback; credential vault provider `securityscorecard` is preferred |
+| `SECURITYSCORECARD_BASE_URL` | SecurityScorecard | Optional SecurityScorecard API base URL override |
+| `ELASTIC_SECURITY_BASE_URL` | Elastic Security | Optional Elastic Security Kibana base URL fallback; credential vault provider `elastic_security` is preferred |
+| `ELASTIC_SECURITY_API_KEY` | Elastic Security | Optional Elastic Security API key fallback |
+| `ELASTIC_SECURITY_USERNAME` | Elastic Security | Optional Elastic Security basic-auth username fallback |
+| `ELASTIC_SECURITY_PASSWORD` | Elastic Security | Optional Elastic Security basic-auth password fallback |
 | `BASEROW_API_TOKEN` | Baserow | Optional Baserow API or database token fallback; credential vault provider `baserow` is preferred |
 | `BASEROW_BASE_URL` | Baserow | Optional Baserow API base URL override |
 | `SUPABASE_URL` | Supabase | Optional Supabase project URL fallback; credential vault provider `supabase` is preferred |
@@ -974,6 +987,19 @@ reachable from the backend process.
 | `JINA_READER_BASE_URL` | `https://r.jina.ai` | Jina Reader API base URL |
 | `JINA_SEARCH_BASE_URL` | `https://s.jina.ai` | Jina Search API base URL |
 | `JINA_DEEPSEARCH_BASE_URL` | `https://deepsearch.jina.ai/v1` | Jina DeepSearch API base URL |
+| `MISP_BASE_URL` | - | MISP base URL fallback |
+| `MISP_API_KEY` | - | MISP API key fallback |
+| `MISP_ALLOW_UNAUTHORIZED_CERTS` | `false` | Allow self-signed MISP certificates |
+| `THEHIVE_BASE_URL` | - | TheHive base URL fallback |
+| `THEHIVE_API_KEY` | - | TheHive API key fallback |
+| `THEHIVE_API_VERSION` | `v1` | TheHive API version hint |
+| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | `false` | Allow self-signed TheHive certificates |
+| `SECURITYSCORECARD_API_KEY` | - | SecurityScorecard API key fallback |
+| `SECURITYSCORECARD_BASE_URL` | `https://api.securityscorecard.io` | SecurityScorecard API base URL |
+| `ELASTIC_SECURITY_BASE_URL` | - | Elastic Security Kibana base URL fallback |
+| `ELASTIC_SECURITY_API_KEY` | - | Elastic Security API key fallback |
+| `ELASTIC_SECURITY_USERNAME` | - | Elastic Security basic-auth username fallback |
+| `ELASTIC_SECURITY_PASSWORD` | - | Elastic Security basic-auth password fallback |
 | `BASEROW_API_TOKEN` | - | Baserow API or database token fallback |
 | `BASEROW_BASE_URL` | `https://api.baserow.io` | Baserow API base URL |
 | `SUPABASE_URL` | - | Supabase project URL fallback |

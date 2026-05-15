@@ -241,6 +241,130 @@ def test_jina_reader_can_run_without_key(monkeypatch):
     assert captured["headers"]["X-With-Generated-Alt"] == "true"
 
 
+def test_misp_search_attributes_uses_vault_key_and_ssl_flag(tmp_path, monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="MISP",
+        provider="misp",
+        kind="api_key",
+        allowed_targets=["native_tool:misp_search_attributes"],
+        secret_fields={
+            "apiKey": "misp-key",
+            "base_url": "https://misp.example",
+            "allow_unauthorized_certs": "true",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers, "verify": verify})
+        return {"response": {"Attribute": [{"id": "attr-1"}]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.misp_search_attributes.func(
+            value="1.2.3.4",
+            tags="tlp:amber, osint",
+            limit=2,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == [{"id": "attr-1"}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://misp.example/attributes/restSearch"
+    assert captured["headers"]["Authorization"] == "misp-key"
+    assert captured["json_body"] == {"value": "1.2.3.4", "tags": ["tlp:amber", "osint"]}
+    assert captured["verify"] is False
+
+
+def test_thehive_list_cases_uses_env_key_and_api_root(monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("THEHIVE_BASE_URL", "https://thehive.example")
+    monkeypatch.setenv("THEHIVE_API_KEY", "thehive-key")
+    monkeypatch.setenv("THEHIVE_API_VERSION", "v1")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return [{"_id": "case-1"}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.thehive_list_cases.func(limit=3))
+
+    assert result == [{"_id": "case-1"}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://thehive.example/api/v1/query"
+    assert captured["params"] == {"name": "cases"}
+    assert captured["headers"]["Authorization"] == "Bearer thehive-key"
+    assert captured["json_body"]["query"][0] == {"_name": "listCase"}
+    assert captured["json_body"]["query"][1] == {"_name": "page", "from": 0, "to": 3}
+
+
+def test_securityscorecard_get_company_uses_env_token(monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("SECURITYSCORECARD_API_KEY", "ssc-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "headers": headers})
+        return {"domain": "example.com", "score": 91}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.securityscorecard_get_company_scorecard.func(scorecard_identifier="example.com"))
+
+    assert result["score"] == 91
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://api.securityscorecard.io/companies/example.com"
+    assert captured["headers"]["Authorization"] == "Token ssc-key"
+
+
+def test_elastic_security_list_cases_uses_env_basic_auth(monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("ELASTIC_SECURITY_BASE_URL", "https://kibana.example:9243")
+    monkeypatch.setenv("ELASTIC_SECURITY_USERNAME", "elastic")
+    monkeypatch.setenv("ELASTIC_SECURITY_PASSWORD", "secret")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers, "auth": auth})
+        return {"cases": [{"id": "case-1"}], "total": 1}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.elastic_security_list_cases.func(
+            status="open",
+            tags="incident, sev1",
+            limit=4,
+        )
+    )
+
+    assert result == [{"id": "case-1"}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://kibana.example:9243/api/cases/_find"
+    assert captured["auth"] == ("elastic", "secret")
+    assert captured["headers"]["kbn-xsrf"] == "true"
+    assert captured["params"]["status"] == "open"
+    assert captured["params"]["tags"] == "incident,sev1"
+    assert captured["params"]["perPage"] == 4
+
+
 def test_enrichment_security_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import enrichment_security_service_integrations as tools
 
@@ -251,6 +375,10 @@ def test_enrichment_security_missing_credentials_return_setup_hints(monkeypatch)
     mailcheck_result = tools.mailcheck_check_email.func(email="alice@example.com")
     peekalink_result = tools.peekalink_preview_url.func(url="https://example.com")
     jina_result = tools.jina_deep_research.func(query="test")
+    misp_result = tools.misp_search_events.func(value="example.com")
+    thehive_result = tools.thehive_list_cases.func()
+    securityscorecard_result = tools.securityscorecard_get_company_scorecard.func(scorecard_identifier="example.com")
+    elastic_result = tools.elastic_security_list_cases.func()
 
     assert 'provider "urlscan"' in urlscan_result
     assert "URLSCAN_API_KEY" in urlscan_result
@@ -262,6 +390,14 @@ def test_enrichment_security_missing_credentials_return_setup_hints(monkeypatch)
     assert "PEEKALINK_API_KEY" in peekalink_result
     assert 'provider "jina"' in jina_result
     assert "JINA_API_KEY" in jina_result
+    assert 'provider "misp"' in misp_result
+    assert "MISP_BASE_URL" in misp_result
+    assert 'provider "thehive"' in thehive_result
+    assert "THEHIVE_BASE_URL" in thehive_result
+    assert 'provider "securityscorecard"' in securityscorecard_result
+    assert "SECURITYSCORECARD_API_KEY" in securityscorecard_result
+    assert 'provider "elastic_security"' in elastic_result
+    assert "ELASTIC_SECURITY_BASE_URL" in elastic_result
 
 
 def test_enrichment_security_tools_are_registered_with_metadata():
@@ -279,8 +415,35 @@ def test_enrichment_security_tools_are_registered_with_metadata():
         "peekalink_check_availability",
         "jina_reader_fetch_url",
         "jina_search_web",
+        "misp_search_attributes",
+        "misp_search_events",
+        "misp_get_event",
+        "misp_list_tags",
+        "thehive_list_cases",
+        "thehive_get_case",
+        "thehive_list_alerts",
+        "thehive_get_alert",
+        "securityscorecard_get_company_scorecard",
+        "securityscorecard_list_company_factors",
+        "securityscorecard_get_company_history",
+        "securityscorecard_list_portfolios",
+        "elastic_security_list_cases",
+        "elastic_security_get_case",
+        "elastic_security_list_case_tags",
     ]
-    moderate_names = ["urlscan_submit_scan", "jina_deep_research"]
+    moderate_names = [
+        "urlscan_submit_scan",
+        "jina_deep_research",
+        "misp_create_event",
+        "misp_add_event_tag",
+        "misp_remove_event_tag",
+        "thehive_create_case",
+        "thehive_create_alert",
+        "securityscorecard_add_portfolio_company",
+        "securityscorecard_remove_portfolio_company",
+        "elastic_security_create_case",
+        "elastic_security_add_case_comment",
+    ]
 
     for name in safe_names:
         assert name in OPTIONAL_TOOLS
@@ -302,8 +465,12 @@ def test_enrichment_security_tool_schemas_hide_runtime_config():
         hunter_domain_search,
         jina_deep_research,
         mailcheck_check_email,
+        misp_search_attributes,
         peekalink_preview_url,
+        securityscorecard_get_company_scorecard,
+        thehive_list_cases,
         urlscan_search_scans,
+        elastic_security_list_cases,
     )
 
     assert "config" not in urlscan_search_scans.args_schema.model_json_schema()["properties"]
@@ -311,3 +478,7 @@ def test_enrichment_security_tool_schemas_hide_runtime_config():
     assert "config" not in mailcheck_check_email.args_schema.model_json_schema()["properties"]
     assert "config" not in peekalink_preview_url.args_schema.model_json_schema()["properties"]
     assert "config" not in jina_deep_research.args_schema.model_json_schema()["properties"]
+    assert "config" not in misp_search_attributes.args_schema.model_json_schema()["properties"]
+    assert "config" not in thehive_list_cases.args_schema.model_json_schema()["properties"]
+    assert "config" not in securityscorecard_get_company_scorecard.args_schema.model_json_schema()["properties"]
+    assert "config" not in elastic_security_list_cases.args_schema.model_json_schema()["properties"]
