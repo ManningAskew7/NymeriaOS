@@ -35,6 +35,8 @@ class UnifiedToolResponse(BaseModel):
     tags: list[str] = []
     editable: bool = False
     configurable: bool = False
+    live: bool = True
+    globally_disabled: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

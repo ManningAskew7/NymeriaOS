@@ -35,7 +35,7 @@ def _mcp_install_response(
     tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
     return {
         "status": status,
-        "server": registry.get_server(defn.id).model_dump(),
+        "server": registry.get_server(defn.id).model_dump(mode="json"),
         "parsed_summary": parsed_summary,
         "discovered_tools": len(discovered),
         "tool_names": tool_names,
@@ -43,6 +43,8 @@ def _mcp_install_response(
         "discovery_error": discovery_error,
         "install_logs": defn.install_logs,
         "missing_config": defn.missing_config,
+        "credential_requirements": defn.credential_requirements,
+        "registered_tool_names": defn.registered_tool_names,
         "requires_confirmation": bool(defn.confirmation_required and status != "ok"),
     }
 
@@ -104,32 +106,56 @@ async def _run_mcp_install(
     auto_enable: bool,
     thread_id: Optional[str],
     confirmed: bool,
+    confirmed_risk_ids: List[str],
     config_values: Dict[str, str],
+    credential_values: Dict[str, str],
+    credential_bindings: Dict[str, Any],
     get_agent_fn: Callable[[], Any],
     require_thread_access_fn: Callable[[AuthenticatedUser, str], None],
 ):
     from ...core.mcp_runtime import make_failed_draft, prepare_runtime
     from ...core.mcp_auth_bridge import apply_mcp_auth_presets
 
-    if plan.confirmation_required and not confirmed:
-        defn.install_status = "draft"
+    required_risks = {
+        str(signal.get("id"))
+        for signal in plan.risk_signals
+        if signal.get("requires_confirmation")
+    }
+    confirmed_risks = set(confirmed_risk_ids or [])
+    if plan.confirmation_required and not (confirmed or required_risks <= confirmed_risks):
         defn.enabled = False
-        registry.save_server(defn)
         raise HTTPException(
             status_code=409,
-                detail={
-                    "message": "This MCP install needs admin confirmation before Nymeria runs it.",
-                    "preview": plan.to_dict(),
-                    "server": registry.get_server(defn.id).model_dump(mode="json"),
-                },
-            )
+            detail={
+                "message": "This MCP install needs admin confirmation before Nymeria runs it.",
+                "preview": plan.to_dict(),
+                "server": defn.model_dump(mode="json"),
+            },
+        )
 
     logs: List[str] = []
+    defn.install_status = "approved"
+    defn.enabled = False
+    defn.install_logs = ["Install approved."]
+    registry.save_server(defn)
     try:
-        defn, logs = prepare_runtime(defn, plan, config_values=config_values, log_sink=logs)
+        defn.install_status = "preparing"
+        defn.install_logs = logs
+        registry.save_server(defn)
+        defn, logs = prepare_runtime(
+            defn,
+            plan,
+            config_values=config_values,
+            credential_values=credential_values,
+            credential_bindings=credential_bindings,
+            user_id=user.id,
+            log_sink=logs,
+        )
         defn = apply_mcp_auth_presets(defn, user_id=user.id, log_sink=logs)
     except Exception as e:
         failed = make_failed_draft(defn, plan, str(e), logs)
+        if failed.missing_config:
+            failed.install_status = "needs_config"
         registry.save_server(failed)
         return _mcp_install_response(
             registry=registry,
@@ -137,16 +163,18 @@ async def _run_mcp_install(
             parsed_summary=plan.parsed_summary,
             discovered=[],
             thread_id=thread_id,
-            status="draft",
+            status="needs_config" if failed.install_status == "needs_config" else "draft",
             discovery_error=str(e),
         )
 
     defn.enabled = bool(auto_enable)
-    defn.install_status = "ready"
+    defn.install_status = "discovering"
     defn.last_error = None
     defn.install_logs = logs
     defn.install_plan = plan.to_dict()
     defn.missing_config = []
+    defn.credential_requirements = plan.credential_requirements
+    defn.risk_signals = plan.risk_signals
     registry.save_server(defn)
 
     try:
@@ -164,6 +192,13 @@ async def _run_mcp_install(
             status="draft",
             discovery_error=str(e),
         )
+    defn = registry.get_server(defn.id)
+    defn.install_status = "ready"
+    defn.enabled = bool(auto_enable)
+    defn.last_error = None
+    defn.install_logs = logs
+    defn.registered_tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    registry.save_server(defn)
 
     agent = get_agent_fn()
     agent.reload_mcp_server_tools()
@@ -216,7 +251,7 @@ def create_mcp_servers_router(
         registry = get_mcp_server_registry()
         servers = registry.get_all_servers()
         return {
-            "servers": [s.model_dump() for s in servers],
+            "servers": [s.model_dump(mode="json") for s in servers],
             "total": len(servers),
         }
 
@@ -269,6 +304,10 @@ def create_mcp_servers_router(
             discovered = registry.discover_tools(request.id)
         except Exception as e:
             discovery_error = str(e)
+            defn.install_status = "failed"
+            defn.enabled = False
+            defn.last_error = discovery_error
+            registry.save_server(defn)
             logger.warning("Tool discovery failed for MCP server '%s': %s", request.id, e)
 
         # Reload agent tools so new MCP tools are available
@@ -297,7 +336,7 @@ def create_mcp_servers_router(
 
         result = {
             "status": "ok",
-            "server": registry.get_server(request.id).model_dump(),
+            "server": registry.get_server(request.id).model_dump(mode="json"),
             "discovered_tools": len(discovered),
         }
         if discovery_error:
@@ -318,7 +357,7 @@ def create_mcp_servers_router(
         defn = registry.get_server(server_id)
         if not defn:
             raise HTTPException(404, detail=f"MCP server '{server_id}' not found")
-        return defn.model_dump()
+        return defn.model_dump(mode="json")
 
     @router.put("/mcp-servers/{server_id}")
     async def update_mcp_server(
@@ -336,6 +375,11 @@ def create_mcp_servers_router(
         update_data = request.model_dump(exclude_none=True)
         for key, value in update_data.items():
             setattr(defn, key, value)
+        if "enabled" in update_data:
+            if not defn.enabled:
+                defn.install_status = "disabled"
+            elif defn.install_status == "disabled":
+                defn.install_status = "ready" if defn.discovered_tools else "needs_config"
 
         install_logs = list(defn.install_logs or [])
         from ...core.mcp_auth_bridge import apply_mcp_auth_presets
@@ -351,6 +395,10 @@ def create_mcp_servers_router(
             discovered = registry.discover_tools(server_id)
         except Exception as e:
             discovery_error = str(e)
+            defn.install_status = "failed"
+            defn.enabled = False
+            defn.last_error = discovery_error
+            registry.save_server(defn)
 
         # Reload agent tools
         agent = get_agent_fn()
@@ -358,7 +406,7 @@ def create_mcp_servers_router(
 
         result = {
             "status": "ok",
-            "server": registry.get_server(server_id).model_dump(),
+            "server": registry.get_server(server_id).model_dump(mode="json"),
             "discovered_tools": len(discovered),
         }
         if discovery_error:
@@ -394,6 +442,14 @@ def create_mcp_servers_router(
         try:
             discovered = registry.discover_tools(server_id)
         except Exception as e:
+            defn = registry.get_server(server_id)
+            if defn:
+                defn.install_status = "failed"
+                defn.enabled = False
+                defn.last_error = str(e)
+                registry.save_server(defn)
+            agent = get_agent_fn()
+            agent.reload_mcp_server_tools()
             raise HTTPException(500, detail=f"Discovery failed: {str(e)}")
 
         # Reload agent tools
@@ -427,11 +483,17 @@ def create_mcp_servers_router(
     ):
         """Parse an MCP install source and return a non-executing install plan."""
         from ...core.mcp_installer import MCPInstallError
-        from ...core.mcp_runtime import plan_text_source, save_preview
+        from ...core.mcp_runtime import analyze_text_source, save_preview
 
         try:
-            defn, plan = plan_text_source(request.source, name=request.name)
-            token = save_preview(defn, plan, source=request.source)
+            candidates = analyze_text_source(request.source, name=request.name)
+            first = candidates[0]
+            token = save_preview(
+                first.definition,
+                first.plan,
+                source=request.source,
+                candidates=candidates,
+            )
         except MCPInstallError as e:
             raise HTTPException(400, detail=str(e))
         except Exception as e:
@@ -440,8 +502,15 @@ def create_mcp_servers_router(
 
         return {
             "preview_token": token,
-            "server": defn.model_dump(),
-            "plan": plan.to_dict(),
+            "selected_candidate_id": first.id if len(candidates) == 1 else None,
+            "candidate_id": first.id if len(candidates) == 1 else None,
+            "server": first.definition.model_dump(mode="json"),
+            "plan": first.plan.to_dict(),
+            "candidates": [candidate.to_dict() for candidate in candidates],
+            "credential_requirements": first.plan.credential_requirements,
+            "risk_signals": first.plan.risk_signals,
+            "install_steps": first.plan.install_steps,
+            "can_install": first.plan.can_install,
         }
 
     @router.post("/mcp-servers/install/preview-upload")
@@ -476,8 +545,27 @@ def create_mcp_servers_router(
 
         return {
             "preview_token": token,
-            "server": defn.model_dump(),
+            "selected_candidate_id": "candidate-1",
+            "candidate_id": "candidate-1",
+            "server": defn.model_dump(mode="json"),
             "plan": plan.to_dict(),
+            "candidates": [
+                {
+                    "id": "candidate-1",
+                    "title": defn.name,
+                    "source": filename,
+                    "server": defn.model_dump(mode="json"),
+                    "plan": plan.to_dict(),
+                    "credential_requirements": plan.credential_requirements,
+                    "risk_signals": plan.risk_signals,
+                    "install_steps": plan.install_steps,
+                    "can_install": plan.can_install,
+                }
+            ],
+            "credential_requirements": plan.credential_requirements,
+            "risk_signals": plan.risk_signals,
+            "install_steps": plan.install_steps,
+            "can_install": plan.can_install,
         }
 
     @router.post("/mcp-servers/install")
@@ -499,14 +587,16 @@ def create_mcp_servers_router(
         from ...core.mcp_runtime import (
             consume_preview,
             load_preview,
-            plan_text_source,
         )
 
         try:
             if request.preview_token:
-                _, defn, plan = load_preview(request.preview_token)
+                _, defn, plan = load_preview(
+                    request.preview_token,
+                    candidate_id=request.candidate_id,
+                )
             else:
-                defn, plan = plan_text_source(request.source, name=request.name)
+                raise MCPInstallError("preview_token is required; preview the MCP source before installing")
         except MCPInstallError as e:
             raise HTTPException(400, detail=str(e))
         except Exception as e:
@@ -526,7 +616,10 @@ def create_mcp_servers_router(
             auto_enable=request.auto_enable,
             thread_id=request.thread_id,
             confirmed=request.confirmed,
+            confirmed_risk_ids=request.confirmed_risk_ids,
             config_values=request.config_values,
+            credential_values=request.credential_values,
+            credential_bindings=request.credential_bindings,
             get_agent_fn=get_agent_fn,
             require_thread_access_fn=require_thread_access_fn,
         )
@@ -559,7 +652,10 @@ def create_mcp_servers_router(
             auto_enable=True,
             thread_id=None,
             confirmed=request.confirmed,
+            confirmed_risk_ids=request.confirmed_risk_ids,
             config_values=request.config_values,
+            credential_values=request.credential_values,
+            credential_bindings=request.credential_bindings,
             get_agent_fn=get_agent_fn,
             require_thread_access_fn=require_thread_access_fn,
         )

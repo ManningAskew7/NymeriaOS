@@ -55,6 +55,9 @@ class ToolMetadata:
     description: str
     default_enabled: bool = True
     config_schema: Optional[Dict[str, Any]] = None
+    live: bool = True
+    enabled: bool = True
+    metadata: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.security_level == SecurityLevel.SENSITIVE:
@@ -1196,6 +1199,11 @@ MCP_SERVER_TOOL_METADATA: Dict[str, ToolMetadata] = {}
 def register_mcp_server_tool_metadata(
     tool_name: str,
     description: str,
+    *,
+    live: bool = True,
+    enabled: bool = True,
+    server_id: str = "",
+    install_status: str = "",
 ) -> ToolMetadata:
     """Register metadata for an MCP server tool."""
     metadata = ToolMetadata(
@@ -1204,6 +1212,12 @@ def register_mcp_server_tool_metadata(
         security_level=SecurityLevel.MODERATE,
         description=description,
         default_enabled=False,
+        live=live,
+        enabled=enabled,
+        metadata={
+            "server_id": server_id,
+            "install_status": install_status,
+        },
     )
     MCP_SERVER_TOOL_METADATA[tool_name] = metadata
     return metadata

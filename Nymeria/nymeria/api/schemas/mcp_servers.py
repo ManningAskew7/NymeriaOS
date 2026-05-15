@@ -1,6 +1,6 @@
 """MCP server API request schemas."""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -41,8 +41,12 @@ class MCPServerInstallRequest(BaseModel):
     )
     name: Optional[str] = None
     preview_token: Optional[str] = None
+    candidate_id: Optional[str] = None
     confirmed: bool = False
+    confirmed_risk_ids: List[str] = Field(default_factory=list)
     config_values: Dict[str, str] = Field(default_factory=dict)
+    credential_values: Dict[str, str] = Field(default_factory=dict)
+    credential_bindings: Dict[str, Any] = Field(default_factory=dict)
     auto_enable: bool = True
     thread_id: Optional[str] = None
 
@@ -54,4 +58,7 @@ class MCPServerInstallPreviewRequest(BaseModel):
 
 class MCPServerInstallRetryRequest(BaseModel):
     confirmed: bool = False
+    confirmed_risk_ids: List[str] = Field(default_factory=list)
     config_values: Dict[str, str] = Field(default_factory=dict)
+    credential_values: Dict[str, str] = Field(default_factory=dict)
+    credential_bindings: Dict[str, Any] = Field(default_factory=dict)

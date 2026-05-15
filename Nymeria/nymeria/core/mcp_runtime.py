@@ -24,7 +24,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..config import get_settings
@@ -45,6 +45,13 @@ logger = logging.getLogger(__name__)
 
 PREVIEW_TTL_SECONDS = 60 * 30
 SECRET_NAME_RE = re.compile(r"(api[_-]?key|token|secret|password|credential|auth)", re.I)
+SECRET_VALUE_RE = re.compile(
+    r"(?i)(bearer\s+[a-z0-9._~+/=-]{16,}|"
+    r"sk-[a-z0-9_-]{16,}|"
+    r"xox[baprs]-[a-z0-9-]{16,}|"
+    r"gh[pousr]_[a-z0-9_]{16,}|"
+    r"[a-z0-9_=-]{32,})"
+)
 SHELL_META_RE = re.compile(r"[;&|`$<>]")
 
 
@@ -64,6 +71,10 @@ class MCPInstallPlan:
     bundle_path: str = ""
     preview_token: str = ""
     can_install: bool = True
+    candidate_id: str = ""
+    credential_requirements: List[Dict[str, Any]] = field(default_factory=list)
+    risk_signals: List[Dict[str, Any]] = field(default_factory=list)
+    install_steps: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -81,6 +92,10 @@ class MCPInstallPlan:
             "bundle_path": self.bundle_path,
             "preview_token": self.preview_token,
             "can_install": self.can_install,
+            "candidate_id": self.candidate_id,
+            "credential_requirements": self.credential_requirements,
+            "risk_signals": self.risk_signals,
+            "install_steps": self.install_steps,
         }
 
     @classmethod
@@ -100,6 +115,47 @@ class MCPInstallPlan:
             bundle_path=data.get("bundle_path", ""),
             preview_token=data.get("preview_token", ""),
             can_install=bool(data.get("can_install", True)),
+            candidate_id=data.get("candidate_id", ""),
+            credential_requirements=list(data.get("credential_requirements") or []),
+            risk_signals=list(data.get("risk_signals") or []),
+            install_steps=list(data.get("install_steps") or []),
+        )
+
+
+@dataclass
+class MCPInstallCandidate:
+    """One non-executing MCP install candidate produced by preview analysis."""
+
+    id: str
+    title: str
+    source: str
+    definition: MCPServerDefinition
+    plan: MCPInstallPlan
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "source": self.source,
+            "server": self.definition.model_dump(mode="json"),
+            "plan": self.plan.to_dict(),
+            "credential_requirements": self.plan.credential_requirements,
+            "risk_signals": self.plan.risk_signals,
+            "install_steps": self.plan.install_steps,
+            "can_install": self.plan.can_install,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCPInstallCandidate":
+        plan = MCPInstallPlan.from_dict(data.get("plan") or {})
+        candidate_id = str(data.get("id") or plan.candidate_id or "")
+        plan.candidate_id = candidate_id
+        return cls(
+            id=candidate_id,
+            title=str(data.get("title") or candidate_id),
+            source=str(data.get("source") or ""),
+            definition=MCPServerDefinition(**(data.get("server") or data.get("definition") or {})),
+            plan=plan,
         )
 
 
@@ -135,21 +191,53 @@ def cleanup_expired_previews() -> None:
             pass  # file may already be removed
 
 
-def save_preview(defn: MCPServerDefinition, plan: MCPInstallPlan, *, source: str = "") -> str:
+def save_preview(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    *,
+    source: str = "",
+    candidates: Optional[List[MCPInstallCandidate]] = None,
+) -> str:
     cleanup_expired_previews()
     token = uuid.uuid4().hex
     plan.preview_token = token
+    if not plan.candidate_id:
+        plan.candidate_id = "candidate-1"
+    stored_source = _preview_source_for_definition(defn, source)
+    if candidates is None:
+        candidates = [
+            MCPInstallCandidate(
+                id=plan.candidate_id,
+                title=defn.name,
+                source=stored_source,
+                definition=defn,
+                plan=plan,
+            )
+        ]
+    else:
+        for candidate in candidates:
+            candidate.source = _preview_source_for_definition(candidate.definition, candidate.source)
+        stored_source = candidates[0].source if len(candidates) == 1 else ""
+    for candidate in candidates:
+        candidate.plan.preview_token = token
+        if not candidate.plan.candidate_id:
+            candidate.plan.candidate_id = candidate.id
     payload = {
-        "source": source,
+        "source": stored_source,
         "definition": defn.model_dump(mode="json"),
         "plan": plan.to_dict(),
+        "candidates": [candidate.to_dict() for candidate in candidates],
         "created_at": time.time(),
     }
     _preview_path(token).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return token
 
 
-def load_preview(token: str) -> Tuple[str, MCPServerDefinition, MCPInstallPlan]:
+def load_preview(
+    token: str,
+    *,
+    candidate_id: Optional[str] = None,
+) -> Tuple[str, MCPServerDefinition, MCPInstallPlan]:
     if not re.fullmatch(r"[a-f0-9]{32}", token or ""):
         raise MCPInstallError("invalid preview token")
     path = _preview_path(token)
@@ -159,10 +247,55 @@ def load_preview(token: str) -> Tuple[str, MCPServerDefinition, MCPInstallPlan]:
     if time.time() - float(payload.get("created_at", 0)) > PREVIEW_TTL_SECONDS:
         path.unlink(missing_ok=True)
         raise MCPInstallError("preview expired")
+    raw_candidates = payload.get("candidates") or []
+    if raw_candidates:
+        candidates = [MCPInstallCandidate.from_dict(item) for item in raw_candidates]
+        if candidate_id:
+            selected = next((item for item in candidates if item.id == candidate_id), None)
+            if selected is None:
+                raise MCPInstallError(f"preview candidate not found: {candidate_id}")
+        elif len(candidates) == 1:
+            selected = candidates[0]
+        else:
+            raise MCPInstallError("candidate_id is required when preview has multiple candidates")
+        defn = selected.definition
+        plan = selected.plan
+    else:
+        defn = MCPServerDefinition(**payload["definition"])
+        plan = MCPInstallPlan.from_dict(payload["plan"])
+    plan.preview_token = token
+    if candidate_id:
+        plan.candidate_id = candidate_id
+    return payload.get("source", ""), defn, plan
+
+
+def load_preview_candidates(token: str) -> List[MCPInstallCandidate]:
+    if not re.fullmatch(r"[a-f0-9]{32}", token or ""):
+        raise MCPInstallError("invalid preview token")
+    path = _preview_path(token)
+    if not path.exists():
+        raise MCPInstallError("preview expired or not found")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if time.time() - float(payload.get("created_at", 0)) > PREVIEW_TTL_SECONDS:
+        path.unlink(missing_ok=True)
+        raise MCPInstallError("preview expired")
+    raw_candidates = payload.get("candidates") or []
+    if raw_candidates:
+        return [MCPInstallCandidate.from_dict(item) for item in raw_candidates]
     defn = MCPServerDefinition(**payload["definition"])
     plan = MCPInstallPlan.from_dict(payload["plan"])
     plan.preview_token = token
-    return payload.get("source", ""), defn, plan
+    if not plan.candidate_id:
+        plan.candidate_id = "candidate-1"
+    return [
+        MCPInstallCandidate(
+            id=plan.candidate_id,
+            title=defn.name,
+            source=payload.get("source", ""),
+            definition=defn,
+            plan=plan,
+        )
+    ]
 
 
 def consume_preview(token: str) -> None:
@@ -172,6 +305,275 @@ def consume_preview(token: str) -> None:
 
 def _is_secret_name(name: str) -> bool:
     return bool(SECRET_NAME_RE.search(name or ""))
+
+
+def _is_secret_value(value: str) -> bool:
+    if not value or value.startswith("${credential:"):
+        return False
+    if _credential_ref(value):
+        return False
+    if value.startswith("${env:") and value.endswith("}"):
+        return _is_secret_name(value[6:-1])
+    return bool(SECRET_VALUE_RE.search(value.strip()))
+
+
+def _credential_ref(value: str) -> bool:
+    return isinstance(value, str) and re.search(r"\$\{credential:[^}]+\}", value) is not None
+
+
+def _redact_secret_like_text(text: str) -> str:
+    if not text:
+        return ""
+    redacted = SECRET_VALUE_RE.sub("${credential:redacted}", text)
+    env_assignment = re.compile(
+        r"(?i)\b([A-Z_][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)[A-Z0-9_]*)="
+        r"(\"[^\"]*\"|'[^']*'|[^\s,}]+)"
+    )
+    return env_assignment.sub(r"\1=${credential:redacted}", redacted)
+
+
+def _preview_source_for_definition(defn: MCPServerDefinition, fallback: str = "") -> str:
+    return _redact_secret_like_text(defn.original_source or fallback)
+
+
+def _credential_requirements_from_definition(
+    defn: MCPServerDefinition,
+    required_config: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    requirements: Dict[str, Dict[str, Any]] = {}
+
+    def add(source: str, key: str, value: str, *, required: bool, sensitive: bool) -> None:
+        if not sensitive and not required:
+            return
+        rid = f"{source}:{key}"
+        requirements[rid] = {
+            "id": rid,
+            "name": key,
+            "field": key,
+            "source": source,
+            "label": key,
+            "required": required,
+            "sensitive": sensitive,
+            "provided": bool(value) and not value.startswith("${env:"),
+            "uses_credential_ref": _credential_ref(value),
+        }
+
+    for key, value in (defn.env_vars or {}).items():
+        value_str = str(value or "")
+        add(
+            "env",
+            str(key),
+            value_str,
+            required=value_str == "" or (value_str.startswith("${env:") and _is_secret_name(str(key))),
+            sensitive=_is_secret_name(str(key)) or _is_secret_value(value_str),
+        )
+    for key, value in (defn.headers or {}).items():
+        value_str = str(value or "")
+        add(
+            "header",
+            str(key),
+            value_str,
+            required=value_str == "" or (value_str.startswith("${env:") and _is_secret_name(str(key))),
+            sensitive=_is_secret_name(str(key)) or _is_secret_value(value_str),
+        )
+    for field in required_config:
+        source = str(field.get("source") or "env")
+        key = str(field.get("header_name") or field.get("env_name") or field.get("name") or "")
+        if not key:
+            continue
+        rid = f"{source}:{key}"
+        requirements[rid] = {
+            **requirements.get(rid, {}),
+            "id": rid,
+            "name": str(field.get("name") or key),
+            "field": key,
+            "source": source,
+            "label": field.get("label") or key,
+            "description": field.get("description") or "",
+            "required": bool(field.get("required", True)),
+            "sensitive": bool(field.get("sensitive", False)) or _is_secret_name(key),
+            "provided": False,
+            "uses_credential_ref": False,
+        }
+    return list(requirements.values())
+
+
+def _risk_signal(
+    signal_id: str,
+    label: str,
+    severity: str,
+    description: str,
+    *,
+    requires_confirmation: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "id": signal_id,
+        "label": label,
+        "severity": severity,
+        "description": description,
+        "requires_confirmation": requires_confirmation,
+    }
+
+
+def _risk_signals_for_plan(
+    defn: MCPServerDefinition,
+    *,
+    source_type: str,
+    runtime_type: str,
+    warnings: Iterable[str],
+) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    parsed = urlparse(getattr(defn, "url", "") or getattr(defn, "original_source", "") or "")
+    host = parsed.hostname or ""
+    if source_type in {"npm", "pypi"} or runtime_type in {"npx", "uvx"}:
+        signals.append(_risk_signal(
+            "package_manager",
+            "Package manager runtime",
+            "medium",
+            "Install will run package code through npx or uvx.",
+            requires_confirmation=True,
+        ))
+    if source_type in {"git", "bundle_url", "bundle_upload"}:
+        signals.append(_risk_signal(
+            "downloaded_code",
+            "Downloaded code",
+            "medium",
+            "Install downloads or unpacks code before running an MCP server.",
+            requires_confirmation=True,
+        ))
+    if host:
+        signals.append(_risk_signal(
+            "source_host",
+            "Source host",
+            "low",
+            f"Source host: {host}",
+        ))
+    if defn.transport == "stdio":
+        basename = Path(defn.server_command).name.lower()
+        if defn.server_command:
+            known = basename in SAFE_STDIO_COMMANDS
+            signals.append(_risk_signal(
+                "known_launcher" if known else "unknown_launcher",
+                "Known launcher" if known else "Unknown launcher",
+                "low" if known else "high",
+                f"Command launcher: {defn.server_command}",
+                requires_confirmation=not known,
+            ))
+        if any(str(a).startswith(("/", "~", ".")) for a in defn.server_args):
+            signals.append(_risk_signal(
+                "local_path",
+                "Local path access",
+                "medium",
+                "Command references a local path on the Nymeria host.",
+                requires_confirmation=True,
+            ))
+    if any("shell metacharacters" in warning.lower() for warning in warnings):
+        signals.append(_risk_signal(
+            "shell_metacharacters",
+            "Shell metacharacters",
+            "high",
+            "Command contains shell metacharacters and needs manual review.",
+            requires_confirmation=True,
+        ))
+    return signals
+
+
+def _install_steps_for_plan(source_type: str, runtime_type: str) -> List[Dict[str, Any]]:
+    steps = [{"id": "approve", "label": "Approval recorded", "runs_code": False}]
+    if source_type in {"git", "bundle_url", "bundle_upload"}:
+        steps.append({"id": "prepare_source", "label": "Download or unpack source", "runs_code": True})
+    elif runtime_type in {"npx", "uvx"}:
+        steps.append({"id": "prepare_cache", "label": "Prepare isolated package cache", "runs_code": False})
+    else:
+        steps.append({"id": "prepare_runtime", "label": "Prepare runtime config", "runs_code": False})
+    steps.append({"id": "discover", "label": "Start server and discover tools", "runs_code": True})
+    return steps
+
+
+def _strip_plaintext_secrets_from_definition(
+    defn: MCPServerDefinition,
+) -> Tuple[MCPServerDefinition, List[Dict[str, Any]]]:
+    required: List[Dict[str, Any]] = []
+    redactions: List[str] = []
+
+    env_vars = dict(defn.env_vars or {})
+    for key, raw_value in list(env_vars.items()):
+        value = str(raw_value or "")
+        if _credential_ref(value):
+            continue
+        if _is_secret_name(key) or _is_secret_value(value):
+            if value and not (value.startswith("${env:") and value.endswith("}")):
+                redactions.append(value)
+            env_vars[key] = ""
+            required.append({
+                "name": key,
+                "env_name": key,
+                "label": key,
+                "description": f"Value for {key}",
+                "required": True,
+                "sensitive": True,
+                "source": "env",
+            })
+
+    headers = dict(defn.headers or {})
+    for key, raw_value in list(headers.items()):
+        value = str(raw_value or "")
+        if _credential_ref(value):
+            continue
+        if _is_secret_name(key) or _is_secret_value(value):
+            prefix, secret_value = _strip_auth_prefix(value)
+            if secret_value and not (secret_value.startswith("${env:") and secret_value.endswith("}")):
+                redactions.append(secret_value)
+            headers[key] = ""
+            required.append({
+                "name": key,
+                "header_name": key,
+                "label": key,
+                "description": f"HTTP header value for {key}",
+                "required": True,
+                "sensitive": True,
+                "source": "header",
+                "auth_prefix": prefix,
+            })
+
+    if redactions and defn.original_source:
+        redacted_source = defn.original_source
+        for literal in sorted(set(redactions), key=len, reverse=True):
+            redacted_source = redacted_source.replace(literal, "${credential:redacted}")
+        defn.original_source = redacted_source
+
+    defn.env_vars = env_vars
+    defn.headers = headers
+    return defn, required
+
+
+def _required_field_key(field: Dict[str, Any]) -> Tuple[str, str]:
+    source = str(field.get("source") or "env")
+    name = str(
+        field.get("header_name")
+        or field.get("env_name")
+        or field.get("name")
+        or ""
+    )
+    return source, name
+
+
+def _merge_required_config(
+    first: Iterable[Dict[str, Any]],
+    second: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    order: List[Tuple[str, str]] = []
+    for field in [*first, *second]:
+        key = _required_field_key(field)
+        if not key[1]:
+            continue
+        if key not in merged:
+            order.append(key)
+            merged[key] = dict(field)
+            continue
+        merged[key] = {**merged[key], **field}
+    return [merged[key] for key in order]
 
 
 def _command_preview(defn: MCPServerDefinition) -> str:
@@ -192,6 +594,9 @@ def _base_plan(
     source_url: str = "",
     bundle_path: str = "",
 ) -> Tuple[MCPServerDefinition, MCPInstallPlan]:
+    existing_required = list(required_config or [])
+    defn, secret_required = _strip_plaintext_secrets_from_definition(defn)
+    required_fields = _merge_required_config(existing_required, secret_required)
     plan = MCPInstallPlan(
         source_type=source_type,
         runtime_type=runtime_type,
@@ -200,19 +605,39 @@ def _base_plan(
         parsed_summary=describe_definition(defn),
         command_preview=_command_preview(defn),
         warnings=warnings or [],
-        required_config=required_config or [],
+        required_config=required_fields,
         missing_config=[],
         source_url=source_url,
         bundle_path=bundle_path,
     )
     plan.missing_config = [f for f in plan.required_config if f.get("required", True)]
+    plan.credential_requirements = _credential_requirements_from_definition(defn, plan.required_config)
+    plan.risk_signals = _risk_signals_for_plan(
+        defn,
+        source_type=source_type,
+        runtime_type=runtime_type,
+        warnings=plan.warnings,
+    )
+    if any(signal.get("requires_confirmation") for signal in plan.risk_signals):
+        plan.confirmation_required = True
+        severity_order = {"low": 0, "medium": 1, "high": 2}
+        highest = max(
+            (str(signal.get("severity") or "low") for signal in plan.risk_signals),
+            key=lambda level: severity_order.get(level, 0),
+            default=risk_level,
+        )
+        if severity_order.get(highest, 0) > severity_order.get(plan.risk_level, 0):
+            plan.risk_level = highest
+    plan.install_steps = _install_steps_for_plan(source_type, runtime_type)
     defn.source_type = source_type
     defn.runtime_type = runtime_type
     defn.parsed_summary = plan.parsed_summary
     defn.install_plan = plan.to_dict()
     defn.missing_config = plan.missing_config
-    defn.risk_level = risk_level
-    defn.confirmation_required = confirmation_required
+    defn.credential_requirements = plan.credential_requirements
+    defn.risk_signals = plan.risk_signals
+    defn.risk_level = plan.risk_level
+    defn.confirmation_required = plan.confirmation_required
     return defn, plan
 
 
@@ -238,6 +663,28 @@ def _required_config_from_env(env_vars: Dict[str, str]) -> List[Dict[str, Any]]:
     return fields
 
 
+def _required_config_from_headers(headers: Dict[str, str]) -> List[Dict[str, Any]]:
+    fields: List[Dict[str, Any]] = []
+    for key, value in headers.items():
+        missing = value == ""
+        header_ref = None
+        if isinstance(value, str) and value.startswith("${env:") and value.endswith("}"):
+            header_ref = value[6:-1]
+            missing = not bool(os.environ.get(header_ref))
+        if missing or (_is_secret_name(key) and isinstance(value, str) and value.startswith("${env:")):
+            field_name = header_ref or key
+            fields.append({
+                "name": field_name,
+                "header_name": key,
+                "label": field_name,
+                "description": f"HTTP header value for {key}",
+                "required": True,
+                "sensitive": _is_secret_name(field_name) or _is_secret_name(key),
+                "source": "header",
+            })
+    return fields
+
+
 def _risk_for_command(command: str, args: List[str]) -> Tuple[str, bool, List[str]]:
     warnings: List[str] = []
     basename = Path(command).name.lower()
@@ -257,6 +704,112 @@ def _risk_for_command(command: str, args: List[str]) -> Tuple[str, bool, List[st
         risk = "medium" if risk == "low" else risk
         warnings.append("Command references a local path; it must exist where Nymeria runs.")
     return risk, confirmation, warnings
+
+
+def _json_server_sources(blob: str, *, name: Optional[str] = None) -> List[Tuple[str, str]]:
+    try:
+        data = json.loads(blob)
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    server_maps: List[Tuple[str, Any]] = []
+    for key in ("mcpServers", "mcp_servers", "servers"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            server_maps.extend((str(server_name), entry) for server_name, entry in value.items())
+            break
+    if not server_maps and isinstance(data.get("server"), dict):
+        server_maps.append((name or data.get("name") or "pasted", data["server"]))
+    if not server_maps and ("command" in data or "url" in data):
+        server_maps.append((name or data.get("name") or "pasted", data))
+
+    out: List[Tuple[str, str]] = []
+    for server_name, entry in server_maps:
+        if not isinstance(entry, dict):
+            continue
+        display_name = name if name and len(server_maps) == 1 else server_name
+        out.append((
+            str(display_name),
+            json.dumps({"mcpServers": {str(display_name): entry}}, separators=(",", ":")),
+        ))
+    return out
+
+
+def _json_blobs_from_source(source: str) -> List[str]:
+    stripped = source.strip()
+    blobs: List[str] = []
+    if stripped.startswith("{"):
+        blobs.append(stripped)
+    for fence in re.finditer(r"```(?:json|javascript|js|toml|bash|sh)?\s*\n(.*?)```", source, re.S | re.I):
+        body = fence.group(1).strip()
+        if body.startswith("{"):
+            blobs.append(body)
+    if "{" in source and "}" in source:
+        candidate = source[source.find("{") : source.rfind("}") + 1].strip()
+        if candidate not in blobs:
+            blobs.append(candidate)
+    return blobs
+
+
+def _line_install_sources(source: str) -> List[str]:
+    candidates: List[str] = []
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("{"):
+            continue
+        if line.startswith("$"):
+            line = line[1:].strip()
+        try:
+            classification = classify_mcp_source(line)
+        except MCPInstallError:
+            continue
+        if classification.kind in {"stdio", "http", "npm", "pypi", "git", "bundle_url", "registry"}:
+            if classification.kind != "stdio" or any(
+                token in line.split() for token in SAFE_STDIO_COMMANDS
+            ):
+                candidates.append(line)
+    return candidates
+
+
+def analyze_text_source(source: str, *, name: Optional[str] = None) -> List[MCPInstallCandidate]:
+    """Return one or more non-executing install candidates for pasted source text."""
+    raw_candidates: List[Tuple[str, str]] = []
+
+    for blob in _json_blobs_from_source(source):
+        raw_candidates.extend(_json_server_sources(blob, name=name))
+
+    for line in _line_install_sources(source):
+        raw_candidates.append((name or "", line))
+
+    if not raw_candidates:
+        extracted = extract_install_source(source)
+        raw_candidates.append((name or "", extracted))
+
+    seen: set[str] = set()
+    candidates: List[MCPInstallCandidate] = []
+    for title, candidate_source in raw_candidates:
+        if candidate_source in seen:
+            continue
+        seen.add(candidate_source)
+        defn, plan = plan_text_source(candidate_source, name=title or name)
+        candidate_id = f"candidate-{len(candidates) + 1}"
+        plan.candidate_id = candidate_id
+        defn.install_plan = plan.to_dict()
+        candidates.append(
+            MCPInstallCandidate(
+                id=candidate_id,
+                title=title or defn.name,
+                source=candidate_source,
+                definition=defn,
+                plan=plan,
+            )
+        )
+
+    if not candidates:
+        raise MCPInstallError("no install candidates found")
+    return candidates
 
 
 def plan_text_source(source: str, *, name: Optional[str] = None) -> Tuple[MCPServerDefinition, MCPInstallPlan]:
@@ -321,7 +874,12 @@ def plan_text_source(source: str, *, name: Optional[str] = None) -> Tuple[MCPSer
     defn = parse_mcp_source(stripped, name=name)
     defn.original_source = stripped
     if defn.transport == "http":
-        return _base_plan(defn, source_type="http", runtime_type="http")
+        return _base_plan(
+            defn,
+            source_type="http",
+            runtime_type="http",
+            required_config=_required_config_from_headers(defn.headers),
+        )
 
     required = _required_config_from_env(defn.env_vars)
     basename = Path(defn.server_command).name.lower()
@@ -337,7 +895,7 @@ def plan_text_source(source: str, *, name: Optional[str] = None) -> Tuple[MCPSer
     risk, confirmation, warnings = _risk_for_command(defn.server_command, defn.server_args)
     return _base_plan(
         defn,
-        source_type="json" if stripped.startswith("{") else "stdio",
+        source_type="json" if stripped.startswith("{") else ("registry" if classification.kind == "registry" else "stdio"),
         runtime_type=runtime,
         risk_level=risk,
         confirmation_required=confirmation,
@@ -406,43 +964,272 @@ def _required_config_from_manifest(manifest: Dict[str, Any]) -> List[Dict[str, A
     return fields
 
 
+def _safe_credential_segment(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    return safe[:48] or "field"
+
+
+def _mcp_credential_id(server_id: str, source: str, field: str) -> str:
+    base = _safe_credential_segment(f"{server_id}_{source}_{field}")
+    return f"cred_mcp_{base}"[:120]
+
+
+def _credential_ref_for_secret(
+    *,
+    defn: MCPServerDefinition,
+    source: str,
+    field: str,
+    value: Optional[str],
+    user_id: Optional[str],
+    actor_user_id: Optional[str],
+    missing: List[Dict[str, Any]],
+    field_def: Optional[Dict[str, Any]] = None,
+) -> str:
+    from .credential_vault import get_credential_vault_repo
+
+    field_def = field_def or {}
+    credential_id = _mcp_credential_id(defn.id, source, field)
+    target = f"mcp_server:{defn.id}"
+    status = "active" if value else "pending_setup"
+    secret_fields = {"value": value} if value else {}
+    if value and not nymeria_secrets.has_secrets_key():
+        status = "pending_setup"
+        secret_fields = {}
+        missing.append({
+            **field_def,
+            "name": field_def.get("name") or field,
+            "source": source,
+            "credential_id": credential_id,
+            "error": "NYMERIA_SECRETS_KEY is required before Nymeria can store this secret",
+        })
+    elif not value:
+        missing.append({
+            **field_def,
+            "name": field_def.get("name") or field,
+            "source": source,
+            "credential_id": credential_id,
+        })
+
+    repo = get_credential_vault_repo()
+    repo.upsert_credential(
+        credential_id=credential_id,
+        owner_type="user" if user_id else "system",
+        owner_user_id=user_id,
+        name=f"{defn.name} {field}",
+        provider="mcp",
+        kind="secret",
+        secret_fields=secret_fields,
+        metadata={
+            "server_id": defn.id,
+            "server_name": defn.name,
+            "source": source,
+            "field": field,
+        },
+        allowed_targets=[target],
+        status=status,
+        actor_user_id=actor_user_id or user_id,
+    )
+    repo.bind_credential(
+        credential_id,
+        target_type="mcp_server",
+        target_id=defn.id,
+        binding_name=field,
+        actor_user_id=actor_user_id or user_id,
+    )
+    return f"${{credential:{credential_id}.value}}"
+
+
+def _binding_ref(
+    binding: Any,
+    *,
+    defn: MCPServerDefinition,
+    source: str,
+    field: str,
+    user_id: Optional[str],
+) -> Optional[str]:
+    if not binding:
+        return None
+    credential_id = binding.get("credential_id") if isinstance(binding, dict) else str(binding)
+    field_name = binding.get("field", "value") if isinstance(binding, dict) else "value"
+    if not credential_id:
+        return None
+    from .credential_vault import get_credential_vault_repo
+
+    repo = get_credential_vault_repo()
+    repo.bind_credential(
+        credential_id,
+        target_type="mcp_server",
+        target_id=defn.id,
+        binding_name=field,
+        actor_user_id=user_id,
+    )
+    return f"${{credential:{credential_id}.{field_name}}}"
+
+
+def _strip_auth_prefix(value: str) -> Tuple[str, str]:
+    match = re.match(r"(?i)^(bearer\s+)(.+)$", value.strip())
+    if match:
+        return match.group(1), match.group(2)
+    return "", value
+
+
 def apply_config_values(
     defn: MCPServerDefinition,
     plan: MCPInstallPlan,
     config_values: Optional[Dict[str, str]] = None,
+    *,
+    credential_values: Optional[Dict[str, str]] = None,
+    credential_bindings: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
 ) -> Tuple[MCPServerDefinition, List[Dict[str, Any]]]:
-    values = config_values or {}
+    values = config_values if config_values is not None else {}
+    secret_values = credential_values or {}
+    bindings = credential_bindings or {}
     missing: List[Dict[str, Any]] = []
     env_vars = dict(defn.env_vars or {})
-    encrypted = dict(defn.encrypted_env_vars or {})
+    headers = dict(defn.headers or {})
+    redacted_literals: List[str] = []
+
+    def supplied_value(*keys: str) -> Optional[str]:
+        for key in keys:
+            if key and key in secret_values:
+                return secret_values[key]
+            if key and key in values:
+                return values[key]
+        return None
+
+    def supplied_binding(*keys: str) -> Any:
+        for key in keys:
+            if key and key in bindings:
+                return bindings[key]
+        return None
 
     for required_field in plan.required_config:
         name = str(required_field.get("name") or "")
+        source = str(required_field.get("source") or "env")
         env_name = str(required_field.get("env_name") or name)
-        value = values.get(name)
+        header_name = str(required_field.get("header_name") or name)
+        target_name = header_name if source == "header" else env_name
+        auth_prefix = str(required_field.get("auth_prefix") or required_field.get("prefix") or "")
+        value = supplied_value(name, target_name, f"{source}:{target_name}")
         if (value is None or value == "") and required_field.get("default") is not None:
             value = str(required_field["default"])
-        if (value is None or value == "") and required_field.get("required", True):
-            missing.append(required_field)
+        if source == "header" and auth_prefix and isinstance(value, str):
+            if value.lower().startswith(auth_prefix.lower()):
+                value = value[len(auth_prefix):].strip()
+        if value == "":
+            value = None
+        if value is None and required_field.get("required", True):
+            if required_field.get("sensitive"):
+                ref = _credential_ref_for_secret(
+                    defn=defn,
+                    source=source,
+                    field=target_name,
+                    value=None,
+                    user_id=user_id,
+                    actor_user_id=user_id,
+                    missing=missing,
+                    field_def=required_field,
+                )
+                if source == "header":
+                    headers[target_name] = f"{auth_prefix}{ref}"
+                else:
+                    env_vars[target_name] = ref
+            else:
+                missing.append(required_field)
             continue
         if value is None:
             continue
         if required_field.get("sensitive"):
-            try:
-                encrypted[env_name] = nymeria_secrets.encrypt(value)
-                env_vars.pop(env_name, None)
-            except Exception:
-                missing.append({
-                    **required_field,
-                    "error": "NYMERIA_SECRETS_KEY is required to store this secret",
-                })
+            ref = _binding_ref(
+                supplied_binding(name, target_name, f"{source}:{target_name}"),
+                defn=defn,
+                source=source,
+                field=target_name,
+                user_id=user_id,
+            )
+            if ref is None:
+                ref = _credential_ref_for_secret(
+                    defn=defn,
+                    source=source,
+                    field=target_name,
+                    value=value,
+                    user_id=user_id,
+                    actor_user_id=user_id,
+                    missing=missing,
+                    field_def=required_field,
+                )
+                if value:
+                    redacted_literals.append(value)
+            values[name] = ref
+            if source == "header":
+                headers[target_name] = f"{auth_prefix}{ref}"
+            else:
+                env_vars[target_name] = ref
         else:
-            env_vars[env_name] = value
-            encrypted.pop(env_name, None)
+            if source == "header":
+                headers[target_name] = value
+            else:
+                env_vars[target_name] = value
+
+    for source, mapping in (("env", env_vars), ("header", headers)):
+        for key, raw_value in list(mapping.items()):
+            value = str(raw_value or "")
+            if _credential_ref(value):
+                continue
+            sensitive = _is_secret_name(key) or _is_secret_value(value)
+            if not sensitive:
+                continue
+            ref = _binding_ref(
+                supplied_binding(key, f"{source}:{key}"),
+                defn=defn,
+                source=source,
+                field=key,
+                user_id=user_id,
+            )
+            if ref is None:
+                secret_value: Optional[str] = value
+                prefix = ""
+                if value.startswith("${env:") and value.endswith("}"):
+                    secret_value = supplied_value(key, f"{source}:{key}")
+                    if not secret_value:
+                        secret_value = None
+                elif source == "header":
+                    prefix, secret_value = _strip_auth_prefix(value)
+                if secret_value:
+                    redacted_literals.append(secret_value)
+                ref = _credential_ref_for_secret(
+                    defn=defn,
+                    source=source,
+                    field=key,
+                    value=secret_value,
+                    user_id=user_id,
+                    actor_user_id=user_id,
+                    missing=missing,
+                    field_def={
+                        "name": key,
+                        "label": key,
+                        "source": source,
+                        "required": True,
+                        "sensitive": True,
+                    },
+                )
+                if source == "header" and prefix:
+                    ref = f"{prefix}{ref}"
+            mapping[key] = ref
 
     defn.env_vars = env_vars
-    defn.encrypted_env_vars = encrypted
+    defn.headers = headers
+    # New managed installs store credential references, not legacy encrypted env vars.
+    defn.encrypted_env_vars = {}
     defn.missing_config = missing
+    defn.credential_requirements = plan.credential_requirements
+    if defn.original_source and redacted_literals:
+        redacted_source = defn.original_source
+        for literal in sorted(set(redacted_literals), key=len, reverse=True):
+            if literal:
+                redacted_source = redacted_source.replace(literal, "${credential:redacted}")
+        defn.original_source = redacted_source
     return defn, missing
 
 
@@ -451,10 +1238,20 @@ def prepare_runtime(
     plan: MCPInstallPlan,
     *,
     config_values: Optional[Dict[str, str]] = None,
+    credential_values: Optional[Dict[str, str]] = None,
+    credential_bindings: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
     log_sink: Optional[List[str]] = None,
 ) -> Tuple[MCPServerDefinition, List[str]]:
     logs: List[str] = log_sink if log_sink is not None else []
-    defn, missing = apply_config_values(defn, plan, config_values)
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        config_values,
+        credential_values=credential_values,
+        credential_bindings=credential_bindings,
+        user_id=user_id,
+    )
     if missing:
         plan.missing_config = missing
         raise MCPInstallError("missing required MCP configuration")
@@ -634,7 +1431,6 @@ def _apply_bundle_env(
     source_dir: Path,
 ) -> MCPServerDefinition:
     env_vars = dict(defn.env_vars or {})
-    encrypted = dict(defn.encrypted_env_vars or {})
     sensitive_fields = {
         str(field.get("name")) for field in plan.required_config if field.get("sensitive")
     }
@@ -647,14 +1443,11 @@ def _apply_bundle_env(
         if match and match.group(1) in sensitive_fields:
             field_name = match.group(1)
             if field_name in config_values:
-                encrypted[env_key] = nymeria_secrets.encrypt(str(config_values[field_name]))
-                env_vars.pop(env_key, None)
+                env_vars[env_key] = str(config_values[field_name])
             continue
         env_vars[env_key] = _replace_config_string(value, config_values, source_dir)
-        encrypted.pop(env_key, None)
 
     defn.env_vars = env_vars
-    defn.encrypted_env_vars = encrypted
     return defn
 
 
@@ -766,4 +1559,6 @@ def make_failed_draft(
     defn.risk_level = plan.risk_level
     defn.confirmation_required = plan.confirmation_required
     defn.missing_config = plan.missing_config
+    defn.credential_requirements = plan.credential_requirements
+    defn.risk_signals = plan.risk_signals
     return defn

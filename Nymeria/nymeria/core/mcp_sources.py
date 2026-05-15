@@ -53,6 +53,8 @@ SAFE_STDIO_COMMANDS = {
     "bun",
 }
 
+ENV_ASSIGNMENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+
 
 def slugify_mcp_name(raw: str) -> str:
     slug = SLUG_PATTERN.sub("-", raw.strip().lower()).strip("-")
@@ -97,7 +99,10 @@ def first_install_candidate(text: str) -> Optional[str]:
             continue
         if line.startswith("$"):
             line = line[1:].strip()
-        first = line.split(maxsplit=1)[0] if line else ""
+        tokens = line.split()
+        while tokens and ENV_ASSIGNMENT_PATTERN.match(tokens[0]):
+            tokens.pop(0)
+        first = tokens[0] if tokens else ""
         if first in SAFE_STDIO_COMMANDS:
             return line
         if line.startswith(("http://", "https://")):

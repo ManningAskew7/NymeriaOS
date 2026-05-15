@@ -1,5 +1,14 @@
 import { api } from '$lib/services/api.svelte';
-import type { MCPServer, MCPServerCreateRequest, MCPServerUpdateRequest, MCPDiscoveredTool } from '$lib/types';
+import type {
+  MCPDiscoveredTool,
+  MCPInstallPreviewRequest,
+  MCPInstallPreviewResponse,
+  MCPInstallRequest,
+  MCPInstallResponse,
+  MCPServer,
+  MCPServerCreateRequest,
+  MCPServerUpdateRequest,
+} from '$lib/types';
 
 function createMCPServersStore() {
   let servers = $state<MCPServer[]>([]);
@@ -37,6 +46,27 @@ function createMCPServersStore() {
     async create(request: MCPServerCreateRequest, threadId?: string): Promise<{ server: MCPServer; discoveredTools: number; discoveryError?: string }> {
       const result = await api.createMCPServer(request, threadId);
       servers = [...servers, result.server];
+      return result;
+    },
+
+    async install(request: MCPInstallRequest): Promise<MCPInstallResponse> {
+      const result = await api.installMCPServer(request);
+      const existing = servers.findIndex(s => s.id === result.server.id);
+      if (existing >= 0) {
+        servers = servers.map(s => s.id === result.server.id ? result.server : s);
+      } else {
+        servers = [...servers, result.server];
+      }
+      return result;
+    },
+
+    async preview(request: MCPInstallPreviewRequest): Promise<MCPInstallPreviewResponse> {
+      return api.previewMCPServerInstall(request);
+    },
+
+    async retry(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'confirmed_risk_ids' | 'config_values' | 'credential_values' | 'credential_bindings'> = {}): Promise<MCPInstallResponse> {
+      const result = await api.retryMCPServerInstall(serverId, request);
+      servers = servers.map(s => s.id === serverId ? result.server : s);
       return result;
     },
 

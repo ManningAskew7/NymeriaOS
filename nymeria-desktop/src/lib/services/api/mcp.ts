@@ -36,6 +36,7 @@ export class MCPApi extends ToolsApi {
       serverCommand: item.server_command as string,
       serverArgs: (item.server_args as string[]) || [],
       url: (item.url as string) || '',
+      headers: (item.headers as Record<string, string>) || {},
       envVars: (item.env_vars as Record<string, string>) || {},
       workingDirectory: item.working_directory as string | undefined,
       idleTimeoutSeconds: (item.idle_timeout_seconds as number) || 300,
@@ -55,6 +56,9 @@ export class MCPApi extends ToolsApi {
       installLogs: (item.install_logs as string[]) || [],
       lastError: item.last_error as string | undefined,
       missingConfig: (item.missing_config as MCPInstallResponse['missingConfig']) || [],
+      credentialRequirements: (item.credential_requirements as MCPInstallResponse['credentialRequirements']) || [],
+      riskSignals: (item.risk_signals as MCPServer['riskSignals']) || [],
+      registeredToolNames: (item.registered_tool_names as string[]) || [],
       riskLevel: (item.risk_level as string) || 'low',
       confirmationRequired: item.confirmation_required === true,
       createdAt: item.created_at as string,
@@ -73,7 +77,23 @@ export class MCPApi extends ToolsApi {
       discoveryError: (data.discovery_error as string) ?? undefined,
       installLogs: (data.install_logs as string[]) || [],
       missingConfig: (data.missing_config as MCPInstallResponse['missingConfig']) || [],
+      credentialRequirements: (data.credential_requirements as MCPInstallResponse['credentialRequirements']) || [],
+      registeredToolNames: (data.registered_tool_names as string[]) || [],
       requiresConfirmation: data.requires_confirmation === true,
+    };
+  }
+
+  private mcpCandidateFromResponse(item: Record<string, unknown>) {
+    return {
+      id: item.id as string,
+      title: (item.title as string) || (item.id as string),
+      source: (item.source as string) || '',
+      server: this.mcpServerFromResponse(item.server as Record<string, unknown>),
+      plan: item.plan as import('$lib/types').MCPInstallPlan,
+      credential_requirements: (item.credential_requirements as import('$lib/types').MCPCredentialRequirement[]) || [],
+      risk_signals: (item.risk_signals as import('$lib/types').MCPRiskSignal[]) || [],
+      install_steps: (item.install_steps as import('$lib/types').MCPInstallStep[]) || [],
+      can_install: item.can_install !== false,
     };
   }
 
@@ -122,8 +142,15 @@ export class MCPApi extends ToolsApi {
     const data = await response.json() as Record<string, unknown>;
     return {
       previewToken: data.preview_token as string,
+      selectedCandidateId: (data.selected_candidate_id as string) ?? null,
+      candidateId: (data.candidate_id as string) ?? null,
       server: this.mcpServerFromResponse(data.server as Record<string, unknown>),
       plan: data.plan as MCPInstallPreviewResponse['plan'],
+      candidates: ((data.candidates as Array<Record<string, unknown>>) || []).map((item) => this.mcpCandidateFromResponse(item)),
+      credentialRequirements: (data.credential_requirements as MCPInstallPreviewResponse['credentialRequirements']) || [],
+      riskSignals: (data.risk_signals as MCPInstallPreviewResponse['riskSignals']) || [],
+      installSteps: (data.install_steps as MCPInstallPreviewResponse['installSteps']) || [],
+      canInstall: data.can_install !== false,
     };
   }
 
@@ -144,8 +171,15 @@ export class MCPApi extends ToolsApi {
     const data = await response.json() as Record<string, unknown>;
     return {
       previewToken: data.preview_token as string,
+      selectedCandidateId: (data.selected_candidate_id as string) ?? null,
+      candidateId: (data.candidate_id as string) ?? null,
       server: this.mcpServerFromResponse(data.server as Record<string, unknown>),
       plan: data.plan as MCPInstallPreviewResponse['plan'],
+      candidates: ((data.candidates as Array<Record<string, unknown>>) || []).map((item) => this.mcpCandidateFromResponse(item)),
+      credentialRequirements: (data.credential_requirements as MCPInstallPreviewResponse['credentialRequirements']) || [],
+      riskSignals: (data.risk_signals as MCPInstallPreviewResponse['riskSignals']) || [],
+      installSteps: (data.install_steps as MCPInstallPreviewResponse['installSteps']) || [],
+      canInstall: data.can_install !== false,
     };
   }
 
@@ -162,7 +196,7 @@ export class MCPApi extends ToolsApi {
     return this.mcpInstallResponseFromData(data);
   }
 
-  async retryMCPServerInstall(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'config_values'> = {}): Promise<MCPInstallResponse> {
+  async retryMCPServerInstall(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'confirmed_risk_ids' | 'config_values' | 'credential_values' | 'credential_bindings'> = {}): Promise<MCPInstallResponse> {
     const response = await fetch(`${this.getBaseUrl()}/mcp-servers/${serverId}/retry`, {
       method: 'POST',
       headers: this.getHeaders(),

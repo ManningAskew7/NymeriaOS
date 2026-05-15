@@ -1436,14 +1436,31 @@ export interface MCPServer {
   id: string;
   name: string;
   description: string;
+  transport: 'stdio' | 'http';
   serverCommand: string;
   serverArgs: string[];
+  url: string;
+  headers: Record<string, string>;
   envVars: Record<string, string>;
   workingDirectory?: string;
   idleTimeoutSeconds: number;
   startupTimeoutSeconds: number;
   enabled: boolean;
   discoveredTools: MCPDiscoveredTool[];
+  installStatus: 'previewed' | 'approved' | 'preparing' | 'discovering' | 'ready' | 'failed' | 'needs_config' | 'disabled' | 'draft';
+  sourceType: string;
+  runtimeType: string;
+  originalSource: string;
+  parsedSummary: string;
+  installPlan: Record<string, unknown>;
+  installLogs: string[];
+  lastError?: string;
+  missingConfig: MCPInstallConfigField[];
+  credentialRequirements: MCPCredentialRequirement[];
+  riskSignals: MCPRiskSignal[];
+  registeredToolNames: string[];
+  riskLevel: 'low' | 'medium' | 'high' | string;
+  confirmationRequired: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1476,6 +1493,128 @@ export interface MCPServerUpdateRequest {
 export interface MCPServerListResponse {
   servers: MCPServer[];
   total: number;
+}
+
+export interface MCPInstallConfigField {
+  name: string;
+  env_name?: string;
+  header_name?: string;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  type?: string;
+  default?: unknown;
+  source?: string;
+  error?: string;
+  credential_id?: string;
+}
+
+export interface MCPCredentialRequirement {
+  id: string;
+  name: string;
+  field?: string;
+  source: 'env' | 'header' | 'user_config' | string;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  provided?: boolean;
+  uses_credential_ref?: boolean;
+}
+
+export interface MCPRiskSignal {
+  id: string;
+  label: string;
+  severity: 'low' | 'medium' | 'high' | string;
+  description: string;
+  requires_confirmation?: boolean;
+}
+
+export interface MCPInstallStep {
+  id: string;
+  label: string;
+  runs_code?: boolean;
+}
+
+export interface MCPInstallPlan {
+  source_type: string;
+  runtime_type: string;
+  risk_level: 'low' | 'medium' | 'high' | string;
+  confirmation_required: boolean;
+  parsed_summary: string;
+  command_preview: string;
+  warnings: string[];
+  required_config: MCPInstallConfigField[];
+  missing_config: MCPInstallConfigField[];
+  setup_hint: string;
+  source_url: string;
+  bundle_path: string;
+  preview_token: string;
+  can_install: boolean;
+  candidate_id: string;
+  credential_requirements: MCPCredentialRequirement[];
+  risk_signals: MCPRiskSignal[];
+  install_steps: MCPInstallStep[];
+}
+
+export interface MCPInstallCandidate {
+  id: string;
+  title: string;
+  source: string;
+  server: MCPServer;
+  plan: MCPInstallPlan;
+  credential_requirements: MCPCredentialRequirement[];
+  risk_signals: MCPRiskSignal[];
+  install_steps: MCPInstallStep[];
+  can_install: boolean;
+}
+
+export interface MCPInstallPreviewRequest {
+  source: string;
+  name?: string;
+}
+
+export interface MCPInstallPreviewResponse {
+  previewToken: string;
+  selectedCandidateId?: string | null;
+  candidateId?: string | null;
+  server: MCPServer;
+  plan: MCPInstallPlan;
+  candidates: MCPInstallCandidate[];
+  credentialRequirements: MCPCredentialRequirement[];
+  riskSignals: MCPRiskSignal[];
+  installSteps: MCPInstallStep[];
+  canInstall: boolean;
+}
+
+export interface MCPInstallRequest {
+  source?: string;
+  name?: string;
+  preview_token?: string;
+  candidate_id?: string;
+  confirmed?: boolean;
+  confirmed_risk_ids?: string[];
+  config_values?: Record<string, string>;
+  credential_values?: Record<string, string>;
+  credential_bindings?: Record<string, unknown>;
+  auto_enable?: boolean;
+  thread_id?: string;
+}
+
+export interface MCPInstallResponse {
+  status: 'ok' | 'draft' | 'needs_config';
+  server: MCPServer;
+  parsedSummary: string;
+  discoveredTools: number;
+  toolNames: string[];
+  threadId?: string;
+  discoveryError?: string;
+  installLogs: string[];
+  missingConfig: MCPInstallConfigField[];
+  credentialRequirements: MCPCredentialRequirement[];
+  registeredToolNames: string[];
+  requiresConfirmation: boolean;
 }
 
 // Trigger Types

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
   import MCPServerForm from './MCPServerForm.svelte';
+  import MCPInstallModal from './MCPInstallModal.svelte';
 
   interface Props {
     threadId?: string;
@@ -12,12 +14,14 @@
   let { threadId }: Props = $props();
 
   let showAddForm = $state(false);
+  let showInstallModal = $state(false);
   let expandedServer = $state<string | null>(null);
   let editingServerId = $state<string | null>(null);
   let confirmDeleteId = $state<string | null>(null);
   let testingServer = $state<string | null>(null);
   let testResults = $state<Record<string, { status: string; error?: string; toolsCount?: number }>>({});
   let discoveringServer = $state<string | null>(null);
+  let retryingServer = $state<string | null>(null);
   let addLoading = $state(false);
   let addError = $state<string | null>(null);
   let editLoading = $state(false);
@@ -33,6 +37,7 @@
   });
 
   let enabledToolNames = $derived(new Set(defaultToolsStore.defaultToolNames));
+  let isAdmin = $derived(configStore.identity?.role === 'admin');
 
   function timeAgo(dateStr: string): string {
     const now = Date.now();
@@ -48,9 +53,21 @@
   }
 
   function getStatusColor(server: MCPServer): string {
+    if (server.installStatus === 'failed') return '#f44336';
+    if (server.installStatus === 'needs_config' || server.installStatus === 'draft') return '#f59e0b';
+    if (server.installStatus === 'disabled') return 'var(--text-secondary, #555)';
     if (!server.enabled) return 'var(--text-secondary, #555)';
     if (server.discoveredTools.length === 0) return '#f59e0b';
     return '#22c55e';
+  }
+
+  function getStatusLabel(server: MCPServer): string {
+    if (server.installStatus === 'failed') return 'failed';
+    if (server.installStatus === 'needs_config') return 'needs config';
+    if (server.installStatus === 'disabled' || !server.enabled) return 'disabled';
+    if (server.installStatus === 'draft') return 'draft';
+    if (server.discoveredTools.length === 0) return 'no tools';
+    return 'ready';
   }
 
   function getMcpToolName(serverId: string, toolName: string): string {
@@ -155,6 +172,32 @@
     }
   }
 
+  async function handleRetry(server: MCPServer) {
+    retryingServer = server.id;
+    try {
+      const result = await mcpServersStore.retry(server.id, {
+        confirmed: true,
+        confirmed_risk_ids: (server.riskSignals || [])
+          .filter((signal) => signal.requires_confirmation)
+          .map((signal) => signal.id),
+      });
+      testResults = {
+        ...testResults,
+        [server.id]: {
+          status: result.status === 'ok' ? 'ok' : 'error',
+          error: result.discoveryError || result.server.lastError,
+          toolsCount: result.discoveredTools,
+        },
+      };
+      defaultToolsStore.resetLoaded();
+      await defaultToolsStore.load();
+    } catch (e) {
+      testResults = { ...testResults, [server.id]: { status: 'error', error: e instanceof Error ? e.message : 'Retry failed' } };
+    } finally {
+      retryingServer = null;
+    }
+  }
+
   async function handleDelete(serverId: string) {
     try {
       await mcpServersStore.remove(serverId);
@@ -171,10 +214,23 @@
 <div class="mcp-panel">
   <div class="panel-header">
     <h4>MCP Servers</h4>
-    <button class="add-btn" onclick={() => { showAddForm = !showAddForm; addError = null; }}>
-      <Icon name={showAddForm ? 'x' : 'plus'} size={16} />
-    </button>
+    {#if isAdmin}
+      <div class="header-actions">
+        <button class="add-btn" onclick={() => { showInstallModal = true; }}>
+          <Icon name="bolt" size={16} />
+        </button>
+        <button class="add-btn" onclick={() => { showAddForm = !showAddForm; addError = null; }}>
+          <Icon name={showAddForm ? 'x' : 'plus'} size={16} />
+        </button>
+      </div>
+    {/if}
   </div>
+
+  <MCPInstallModal
+    isOpen={showInstallModal}
+    onClose={() => { showInstallModal = false; }}
+    {threadId}
+  />
 
   {#if showAddForm}
     <MCPServerForm
@@ -197,7 +253,7 @@
           <span class="status-dot" style="background: {getStatusColor(server)}"></span>
           <div class="server-meta">
             <span class="name">{server.name}</span>
-            <span class="server-id">{server.id}</span>
+            <span class="server-id">{server.id} · {getStatusLabel(server)}</span>
           </div>
           <span class="count">{server.discoveredTools.length} tools</span>
           <span class="updated">{timeAgo(server.updatedAt)}</span>
@@ -231,7 +287,11 @@
                 </label>
               </div>
 
-              <code>{server.serverCommand} {server.serverArgs.join(' ')}</code>
+              <code>{server.transport === 'http' ? server.url : `${server.serverCommand} ${server.serverArgs.join(' ')}`}</code>
+
+              {#if server.lastError}
+                <div class="test-banner test-fail">{server.lastError}</div>
+              {/if}
 
               {#if testResults[server.id]}
                 {@const result = testResults[server.id]}
@@ -273,6 +333,11 @@
                 <button class="action-btn" onclick={() => handleDiscover(server.id)} disabled={discoveringServer === server.id}>
                   {discoveringServer === server.id ? '...' : 'Rediscover'}
                 </button>
+                {#if server.installStatus === 'failed' || server.installStatus === 'needs_config' || server.installStatus === 'draft'}
+                  <button class="action-btn" onclick={() => handleRetry(server)} disabled={retryingServer === server.id}>
+                    {retryingServer === server.id ? 'Retrying...' : 'Retry'}
+                  </button>
+                {/if}
                 <button class="action-btn" onclick={() => { editingServerId = server.id; editError = null; }}>
                   Edit
                 </button>
@@ -304,6 +369,12 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 0.5rem;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
   }
 
   .panel-header h4 {
