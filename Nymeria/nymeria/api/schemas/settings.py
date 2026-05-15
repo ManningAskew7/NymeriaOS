@@ -448,6 +448,14 @@ class ServerSettingsUpdate(BaseModel):
     posthog_base_url: Optional[str] = None
     segment_write_key: Optional[str] = None
     segment_base_url: Optional[str] = None
+    actionnetwork_api_key: Optional[str] = None
+    actionnetwork_base_url: Optional[str] = None
+    autopilot_api_key: Optional[str] = None
+    autopilot_base_url: Optional[str] = None
+    egoi_api_key: Optional[str] = None
+    egoi_base_url: Optional[str] = None
+    vero_auth_token: Optional[str] = None
+    vero_base_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
