@@ -181,6 +181,8 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "DATA_TABLE_SERVICE_TOOLS",
             "CHAT_PLATFORM_SERVICE_TOOLS",
             "MICROSOFT_GRAPH_SERVICE_TOOLS",
+            "GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS",
+            "GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -857,6 +859,13 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "microsoft_excel_get_used_range",
         "microsoft_excel_read_range",
         "microsoft_excel_list_tables",
+        "google_business_profile_list_accounts",
+        "google_business_profile_list_profile_accounts",
+        "google_business_profile_list_locations",
+        "google_business_profile_list_reviews",
+        "google_business_profile_get_review",
+        "google_business_profile_list_posts",
+        "google_business_profile_get_post",
     }
 )
 
