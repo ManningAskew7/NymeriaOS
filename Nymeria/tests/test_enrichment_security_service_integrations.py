@@ -332,6 +332,97 @@ def test_securityscorecard_get_company_uses_env_token(monkeypatch):
     assert captured["headers"]["Authorization"] == "Token ssc-key"
 
 
+def test_okta_list_users_uses_env_token_and_domain(monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("OKTA_ACCESS_TOKEN", "okta-token")
+    monkeypatch.setenv("OKTA_DOMAIN", "dev-123456")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return [
+            {
+                "id": "00u1",
+                "status": "ACTIVE",
+                "profile": {
+                    "firstName": "Alice",
+                    "lastName": "Example",
+                    "login": "alice@example.com",
+                    "email": "alice@example.com",
+                },
+            }
+        ]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.okta_list_users.func(
+            search_query='profile.lastName sw "Ex"',
+            q="alice",
+            filter_query='status eq "ACTIVE"',
+            limit=5,
+        )
+    )
+
+    assert result[0]["id"] == "00u1"
+    assert result[0]["profile"]["email"] == "alice@example.com"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://dev-123456.okta.com/api/v1/users"
+    assert captured["headers"]["Authorization"] == "SSWS okta-token"
+    assert captured["params"]["search"] == 'profile.lastName sw "Ex"'
+    assert captured["params"]["q"] == "alice"
+    assert captured["params"]["filter"] == 'status eq "ACTIVE"'
+    assert captured["params"]["limit"] == 5
+
+
+def test_okta_create_user_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Okta",
+        provider="okta",
+        kind="api_key",
+        allowed_targets=["native_tool:okta_create_user"],
+        secret_fields={"accessToken": "okta-token", "base_url": "https://okta.example.com"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"id": "00u1", **json_body}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.okta_create_user.func(
+            first_name="Alice",
+            last_name="Example",
+            login="alice@example.com",
+            email="alice@example.com",
+            activate=False,
+            profile_json='{"department": "IT"}',
+            credentials_json='{"password": {"value": "temporary-secret"}}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "00u1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://okta.example.com/api/v1/users"
+    assert captured["params"] == {"activate": "false"}
+    assert captured["headers"]["Authorization"] == "SSWS okta-token"
+    assert captured["json_body"]["profile"]["firstName"] == "Alice"
+    assert captured["json_body"]["profile"]["department"] == "IT"
+    assert captured["json_body"]["credentials"]["password"]["value"] == "temporary-secret"
+
+
 def test_elastic_security_list_cases_uses_env_basic_auth(monkeypatch):
     from nymeria.tools import enrichment_security_service_integrations as tools
 
@@ -378,6 +469,7 @@ def test_enrichment_security_missing_credentials_return_setup_hints(monkeypatch)
     misp_result = tools.misp_search_events.func(value="example.com")
     thehive_result = tools.thehive_list_cases.func()
     securityscorecard_result = tools.securityscorecard_get_company_scorecard.func(scorecard_identifier="example.com")
+    okta_result = tools.okta_get_user.func(user_id="00u1")
     elastic_result = tools.elastic_security_list_cases.func()
 
     assert 'provider "urlscan"' in urlscan_result
@@ -396,6 +488,8 @@ def test_enrichment_security_missing_credentials_return_setup_hints(monkeypatch)
     assert "THEHIVE_BASE_URL" in thehive_result
     assert 'provider "securityscorecard"' in securityscorecard_result
     assert "SECURITYSCORECARD_API_KEY" in securityscorecard_result
+    assert "No Okta base URL found" in okta_result
+    assert "OKTA_BASE_URL" in okta_result
     assert 'provider "elastic_security"' in elastic_result
     assert "ELASTIC_SECURITY_BASE_URL" in elastic_result
 
@@ -427,6 +521,8 @@ def test_enrichment_security_tools_are_registered_with_metadata():
         "securityscorecard_list_company_factors",
         "securityscorecard_get_company_history",
         "securityscorecard_list_portfolios",
+        "okta_list_users",
+        "okta_get_user",
         "elastic_security_list_cases",
         "elastic_security_get_case",
         "elastic_security_list_case_tags",
@@ -441,6 +537,9 @@ def test_enrichment_security_tools_are_registered_with_metadata():
         "thehive_create_alert",
         "securityscorecard_add_portfolio_company",
         "securityscorecard_remove_portfolio_company",
+        "okta_create_user",
+        "okta_update_user",
+        "okta_delete_user",
         "elastic_security_create_case",
         "elastic_security_add_case_comment",
     ]
@@ -468,6 +567,7 @@ def test_enrichment_security_tool_schemas_hide_runtime_config():
         misp_search_attributes,
         peekalink_preview_url,
         securityscorecard_get_company_scorecard,
+        okta_create_user,
         thehive_list_cases,
         urlscan_search_scans,
         elastic_security_list_cases,
@@ -481,4 +581,5 @@ def test_enrichment_security_tool_schemas_hide_runtime_config():
     assert "config" not in misp_search_attributes.args_schema.model_json_schema()["properties"]
     assert "config" not in thehive_list_cases.args_schema.model_json_schema()["properties"]
     assert "config" not in securityscorecard_get_company_scorecard.args_schema.model_json_schema()["properties"]
+    assert "config" not in okta_create_user.args_schema.model_json_schema()["properties"]
     assert "config" not in elastic_security_list_cases.args_schema.model_json_schema()["properties"]

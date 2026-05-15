@@ -393,6 +393,74 @@ def test_intercom_reply_conversation_uses_vault_token(tmp_path, monkeypatch):
     assert captured["json_body"]["message_type"] == "note"
 
 
+def test_drift_create_contact_uses_env_token(monkeypatch):
+    from nymeria.tools import support_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("DRIFT_ACCESS_TOKEN", "drift-token")
+    monkeypatch.setenv("DRIFT_BASE_URL", "https://drift.example")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"data": {"id": "contact-1", "attributes": json_body["attributes"]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.drift_create_contact.func(
+            email="alice@example.com",
+            name="Alice",
+            phone="+15551234567",
+            attributes_json='{"company": "Example"}',
+        )
+    )
+
+    assert result["id"] == "contact-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://drift.example/contacts"
+    assert captured["headers"]["Authorization"] == "Bearer drift-token"
+    assert captured["json_body"]["attributes"] == {
+        "email": "alice@example.com",
+        "name": "Alice",
+        "phone": "+15551234567",
+        "company": "Example",
+    }
+
+
+def test_drift_list_contact_attributes_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import support_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Drift",
+        provider="drift",
+        kind="api_key",
+        allowed_targets=["native_tool:drift_list_contact_attributes"],
+        secret_fields={"accessToken": "drift-token", "base_url": "https://drift.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "headers": headers})
+        return {"data": {"properties": [{"name": "company"}]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.drift_list_contact_attributes.func(config={"configurable": {"user_id": "alice"}})
+    )
+
+    assert result == [{"name": "company"}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://drift.example/contacts/attributes"
+    assert captured["headers"]["Authorization"] == "Bearer drift-token"
+
+
 def test_support_service_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import support_service_integrations as tools
 
@@ -405,6 +473,7 @@ def test_support_service_missing_credentials_return_setup_hints(monkeypatch):
     zammad_base = tools.zammad_get_record.func("ticket", "1")
     helpscout = tools.helpscout_get_customer.func("1")
     intercom = tools.intercom_get_contact.func("1")
+    drift = tools.drift_get_contact.func("1")
 
     assert "No Freshdesk base URL found" in freshdesk_base
     assert "FRESHDESK_DOMAIN" in freshdesk_base
@@ -420,6 +489,9 @@ def test_support_service_missing_credentials_return_setup_hints(monkeypatch):
     assert "No Intercom credential found" in intercom
     assert "INTERCOM_ACCESS_TOKEN" in intercom
     assert "native_tool:intercom_get_contact" in intercom
+    assert "No Drift credential found" in drift
+    assert "DRIFT_ACCESS_TOKEN" in drift
+    assert "native_tool:drift_get_contact" in drift
 
 
 def test_support_service_tools_are_registered_with_metadata():
@@ -451,6 +523,8 @@ def test_support_service_tools_are_registered_with_metadata():
         "intercom_get_contact",
         "intercom_list_conversations",
         "intercom_get_conversation",
+        "drift_get_contact",
+        "drift_list_contact_attributes",
     }
     moderate_names = {
         "freshdesk_create_ticket",
@@ -473,6 +547,9 @@ def test_support_service_tools_are_registered_with_metadata():
         "intercom_update_contact",
         "intercom_archive_contact",
         "intercom_reply_conversation",
+        "drift_create_contact",
+        "drift_update_contact",
+        "drift_delete_contact",
     }
 
     for name in safe_names:
@@ -496,6 +573,7 @@ def test_support_service_tool_schemas_hide_runtime_config():
         freshservice_create_ticket,
         helpscout_create_conversation,
         intercom_reply_conversation,
+        drift_create_contact,
         servicenow_update_record,
         zammad_create_record,
     )
@@ -504,5 +582,6 @@ def test_support_service_tool_schemas_hide_runtime_config():
     assert "config" not in freshservice_create_ticket.args_schema.model_json_schema()["properties"]
     assert "config" not in helpscout_create_conversation.args_schema.model_json_schema()["properties"]
     assert "config" not in intercom_reply_conversation.args_schema.model_json_schema()["properties"]
+    assert "config" not in drift_create_contact.args_schema.model_json_schema()["properties"]
     assert "config" not in servicenow_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in zammad_create_record.args_schema.model_json_schema()["properties"]

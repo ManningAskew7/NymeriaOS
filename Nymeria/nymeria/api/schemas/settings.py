@@ -260,6 +260,8 @@ class ServerSettingsUpdate(BaseModel):
     intercom_access_token: Optional[str] = None
     intercom_base_url: Optional[str] = None
     intercom_version: Optional[str] = None
+    drift_access_token: Optional[str] = None
+    drift_base_url: Optional[str] = None
     salesforce_instance_url: Optional[str] = None
     salesforce_access_token: Optional[str] = None
     salesforce_base_url: Optional[str] = None
@@ -435,6 +437,9 @@ class ServerSettingsUpdate(BaseModel):
     thehive_allow_unauthorized_certs: Optional[bool] = None
     securityscorecard_api_key: Optional[str] = None
     securityscorecard_base_url: Optional[str] = None
+    okta_access_token: Optional[str] = None
+    okta_domain: Optional[str] = None
+    okta_base_url: Optional[str] = None
     elastic_security_base_url: Optional[str] = None
     elastic_security_api_key: Optional[str] = None
     elastic_security_username: Optional[str] = None
