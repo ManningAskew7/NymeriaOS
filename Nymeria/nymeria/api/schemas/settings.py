@@ -186,6 +186,15 @@ class ServerSettingsUpdate(BaseModel):
     invoiceninja_secret: Optional[str] = None
     invoiceninja_base_url: Optional[str] = None
     invoiceninja_api_version: Optional[str] = None
+    demio_api_key: Optional[str] = None
+    demio_api_secret: Optional[str] = None
+    demio_base_url: Optional[str] = None
+    zoom_access_token: Optional[str] = None
+    zoom_base_url: Optional[str] = None
+    gotowebinar_access_token: Optional[str] = None
+    gotowebinar_account_key: Optional[str] = None
+    gotowebinar_organizer_key: Optional[str] = None
+    gotowebinar_base_url: Optional[str] = None
     todoist_api_key: Optional[str] = None
     todoist_base_url: Optional[str] = None
     trello_api_key: Optional[str] = None
