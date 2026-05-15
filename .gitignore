@@ -99,5 +99,6 @@ CLIProxyAPI-main/auths-backup-20260418T054556Z/
 verify-output/
 verify-*.png
 verify-*.log
+job-log.txt
 notification-popover-fix.png
 initial-load.png
