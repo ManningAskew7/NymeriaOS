@@ -136,6 +136,19 @@ Set the API key for your chosen provider:
 | `APITEMPLATE_BASE_URL` | APITemplate | Optional APITemplate API base URL override |
 | `ONESIMPLE_API_TOKEN` | One Simple API | Optional env fallback for One Simple API tools; credential vault provider `onesimple` is preferred |
 | `ONESIMPLE_BASE_URL` | One Simple API | Optional One Simple API base URL override |
+| `ERPNEXT_API_KEY` | ERPNext | Optional ERPNext API key fallback; credential vault provider `erpnext` is preferred |
+| `ERPNEXT_API_SECRET` | ERPNext | Optional ERPNext API secret fallback |
+| `ERPNEXT_BASE_URL` | ERPNext | Optional ERPNext site base URL override |
+| `ERPNEXT_SUBDOMAIN` | ERPNext | Optional ERPNext cloud subdomain fallback |
+| `ERPNEXT_CLOUD_DOMAIN` | ERPNext | Optional ERPNext cloud domain fallback |
+| `ODOO_URL` | Odoo | Optional Odoo site URL fallback; credential vault provider `odoo` is preferred |
+| `ODOO_USERNAME` | Odoo | Optional Odoo username fallback |
+| `ODOO_PASSWORD` | Odoo | Optional Odoo password or API key fallback |
+| `ODOO_DATABASE` | Odoo | Optional Odoo database name fallback |
+| `INVOICENINJA_API_TOKEN` | Invoice Ninja | Optional Invoice Ninja API token fallback; credential vault provider `invoiceninja` is preferred |
+| `INVOICENINJA_SECRET` | Invoice Ninja | Optional Invoice Ninja v5 API secret fallback |
+| `INVOICENINJA_BASE_URL` | Invoice Ninja | Optional Invoice Ninja API base URL override |
+| `INVOICENINJA_API_VERSION` | Invoice Ninja | Optional Invoice Ninja API version, `v4` or `v5` |
 | `TODOIST_API_KEY` | Todoist | Optional env fallback for Todoist tools; credential vault provider `todoist` is preferred |
 | `TODOIST_BASE_URL` | Todoist | Optional Todoist API base URL override |
 | `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
@@ -692,6 +705,19 @@ reachable from the backend process.
 | `APITEMPLATE_BASE_URL` | `https://api.apitemplate.io/v1` | APITemplate API base URL |
 | `ONESIMPLE_API_TOKEN` | - | One Simple API token fallback |
 | `ONESIMPLE_BASE_URL` | `https://onesimpleapi.com/api` | One Simple API base URL |
+| `ERPNEXT_API_KEY` | - | ERPNext API key fallback |
+| `ERPNEXT_API_SECRET` | - | ERPNext API secret fallback |
+| `ERPNEXT_BASE_URL` | - | ERPNext site base URL |
+| `ERPNEXT_SUBDOMAIN` | - | ERPNext cloud site subdomain fallback |
+| `ERPNEXT_CLOUD_DOMAIN` | `erpnext.com` | ERPNext cloud domain |
+| `ODOO_URL` | - | Odoo site URL fallback |
+| `ODOO_USERNAME` | - | Odoo username fallback |
+| `ODOO_PASSWORD` | - | Odoo password or API key fallback |
+| `ODOO_DATABASE` | - | Odoo database name fallback |
+| `INVOICENINJA_API_TOKEN` | - | Invoice Ninja API token fallback |
+| `INVOICENINJA_SECRET` | - | Invoice Ninja v5 API secret fallback |
+| `INVOICENINJA_BASE_URL` | `https://invoicing.co` | Invoice Ninja API base URL |
+| `INVOICENINJA_API_VERSION` | `v5` | Invoice Ninja API version |
 | `TODOIST_API_KEY` | - | Todoist API key fallback |
 | `TODOIST_BASE_URL` | `https://api.todoist.com/api/v1` | Todoist API base URL |
 | `TRELLO_API_KEY` | - | Trello API key fallback |

@@ -898,6 +898,23 @@ in the credential vault for provider-specific saved connections scoped to
 | 818 | `wekan_delete_card` | Integrations | MODERATE | Delete a Wekan card |
 | 819 | `wekan_list_card_comments` | Integrations | SAFE | List comments on a Wekan card |
 | 820 | `wekan_add_card_comment` | Integrations | MODERATE | Add a comment to a Wekan card |
+| 821 | `erpnext_get_logged_user` | Integrations | SAFE | Get the current ERPNext user |
+| 822 | `erpnext_list_documents` | Integrations | SAFE | List ERPNext documents for a DocType |
+| 823 | `erpnext_get_document` | Integrations | SAFE | Get an ERPNext document by DocType and document name |
+| 824 | `erpnext_create_document` | Integrations | MODERATE | Create an ERPNext document |
+| 825 | `erpnext_update_document` | Integrations | MODERATE | Update an ERPNext document |
+| 826 | `erpnext_delete_document` | Integrations | MODERATE | Delete an ERPNext document |
+| 827 | `odoo_get_server_version` | Integrations | SAFE | Get the Odoo server version |
+| 828 | `odoo_list_records` | Integrations | SAFE | List Odoo records from a model |
+| 829 | `odoo_get_record` | Integrations | SAFE | Get an Odoo record by ID |
+| 830 | `odoo_create_record` | Integrations | MODERATE | Create an Odoo record |
+| 831 | `odoo_update_record` | Integrations | MODERATE | Update an Odoo record |
+| 832 | `odoo_delete_record` | Integrations | MODERATE | Delete an Odoo record |
+| 833 | `invoiceninja_list_records` | Integrations | SAFE | List Invoice Ninja records |
+| 834 | `invoiceninja_get_record` | Integrations | SAFE | Get an Invoice Ninja record by ID |
+| 835 | `invoiceninja_create_record` | Integrations | MODERATE | Create an Invoice Ninja record |
+| 836 | `invoiceninja_delete_record` | Integrations | MODERATE | Delete an Invoice Ninja record |
+| 837 | `invoiceninja_email_invoice_or_quote` | Integrations | MODERATE | Email an Invoice Ninja invoice or quote |
 
 ### Optional: Private B Tools (4)
 
@@ -1810,6 +1827,18 @@ Credential providers and fallback env vars:
 - Monday: provider `monday`, fields `api_token`, `apiToken`, `access_token`, `token`, or `value`; env fallback `MONDAY_API_TOKEN`. Use `api_url` / `graphql_url` / `base_url` / `url` or `MONDAY_API_URL` for non-default GraphQL endpoints.
 - Taiga: provider `taiga`, fields `auth_token`, `access_token`, `bearer_token`, `token`, or `value`; env fallback `TAIGA_AUTH_TOKEN`. Username/password login is also supported with `username` plus `password`, or `TAIGA_USERNAME` plus `TAIGA_PASSWORD`. Use `api_url` / `base_url` / `url` or `TAIGA_BASE_URL` for self-hosted instances.
 - Wekan: provider `wekan`, fields `session_token`, `token`, `access_token`, `bearer_token`, or `value`; env fallback `WEKAN_TOKEN`. Username/password login is also supported with `username` plus `password`, or `WEKAN_USERNAME` plus `WEKAN_PASSWORD`. Use `base_url` / `url` or `WEKAN_BASE_URL` for the Wekan instance root.
+
+### Enterprise Business Service Tools
+
+This batch includes:
+- `erpnext_get_logged_user()`, `erpnext_list_documents(doc_type, fields?, filters_json?, limit?)`, `erpnext_get_document(doc_type, document_name)`, `erpnext_create_document(doc_type, fields_json)`, `erpnext_update_document(doc_type, document_name, fields_json)`, and `erpnext_delete_document(doc_type, document_name)`. Create/update/delete operations are MODERATE because they change ERPNext records.
+- `odoo_get_server_version()`, `odoo_list_records(model, fields?, filters_json?, limit?)`, `odoo_get_record(model, record_id, fields?)`, `odoo_create_record(model, fields_json)`, `odoo_update_record(model, record_id, fields_json)`, and `odoo_delete_record(model, record_id)`. Create/update/delete operations are MODERATE because they change Odoo records.
+- `invoiceninja_list_records(resource, include?, status?, filters_json?, limit?)`, `invoiceninja_get_record(resource, record_id, include?)`, `invoiceninja_create_record(resource, fields_json, query_json?)`, `invoiceninja_delete_record(resource, record_id)`, and `invoiceninja_email_invoice_or_quote(resource, record_id)`. Create/delete/email operations are MODERATE because they change or send Invoice Ninja records.
+
+Credential providers and fallback env vars:
+- ERPNext: provider `erpnext`, fields `api_key` / `apiKey` plus `api_secret` / `apiSecret`; env fallbacks `ERPNEXT_API_KEY` and `ERPNEXT_API_SECRET`. Use `base_url` / `url` / `domain` or `ERPNEXT_BASE_URL`; cloud-hosted subdomain/domain fallback is also supported with `ERPNEXT_SUBDOMAIN` and `ERPNEXT_CLOUD_DOMAIN`.
+- Odoo: provider `odoo`, fields `url`, `username`, `password` / `api_key`, and `database` / `db`; env fallbacks `ODOO_URL`, `ODOO_USERNAME`, `ODOO_PASSWORD`, and `ODOO_DATABASE`.
+- Invoice Ninja: provider `invoiceninja`, fields `api_token` / `apiToken` / `token`, optional `secret`, and optional `base_url` / `url`; env fallbacks `INVOICENINJA_API_TOKEN`, `INVOICENINJA_SECRET`, `INVOICENINJA_BASE_URL`, and `INVOICENINJA_API_VERSION`.
 
 ### Collaboration And Data Service Tools
 
