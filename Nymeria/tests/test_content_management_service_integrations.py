@@ -209,6 +209,49 @@ def test_storyblok_publish_story_uses_vault_management_token(tmp_path, monkeypat
     assert captured["params"]["lang"] == "en"
 
 
+def test_webflow_update_item_uses_vault_token_and_live_path(tmp_path, monkeypatch):
+    from nymeria.tools import content_management_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Webflow",
+        provider="webflow",
+        kind="api_key",
+        allowed_targets=["native_tool:webflow_update_collection_item"],
+        secret_fields={
+            "accessToken": "webflow-token",
+            "base_url": "https://webflow.example/v2",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": "item-1", "fieldData": json_body["fieldData"]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.webflow_update_collection_item.func(
+            collection_id="collection-1",
+            item_id="item-1",
+            field_data_json='{"name":"Homepage"}',
+            live=True,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "item-1"
+    assert captured["method"] == "PATCH"
+    assert captured["url"] == "https://webflow.example/v2/collections/collection-1/items/item-1/live"
+    assert captured["json_body"] == {"fieldData": {"name": "Homepage"}}
+    assert captured["headers"]["Authorization"] == "Bearer webflow-token"
+
+
 def test_content_management_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import content_management_service_integrations as tools
 
@@ -224,6 +267,7 @@ def test_content_management_missing_credentials_return_setup_hints(monkeypatch):
     contentful_result = tools.contentful_list_records.func(resource="entries")
     ghost_result = tools.ghost_list_posts.func()
     storyblok_result = tools.storyblok_publish_story.func(story_id="123")
+    webflow_result = tools.webflow_list_sites.func()
 
     assert 'provider "wordpress"' in wordpress_result
     assert "WORDPRESS_USERNAME + WORDPRESS_PASSWORD" in wordpress_result
@@ -235,6 +279,8 @@ def test_content_management_missing_credentials_return_setup_hints(monkeypatch):
     assert "GHOST_CONTENT_API_KEY" in ghost_result
     assert 'provider "storyblok"' in storyblok_result
     assert "STORYBLOK_MANAGEMENT_TOKEN" in storyblok_result
+    assert 'provider "webflow"' in webflow_result
+    assert "WEBFLOW_ACCESS_TOKEN" in webflow_result
 
 
 def test_content_management_service_tools_are_registered_with_metadata():
@@ -252,6 +298,11 @@ def test_content_management_service_tools_are_registered_with_metadata():
         "ghost_get_post",
         "storyblok_list_stories",
         "storyblok_get_story",
+        "webflow_list_sites",
+        "webflow_list_site_collections",
+        "webflow_get_collection",
+        "webflow_list_collection_items",
+        "webflow_get_collection_item",
     ]
     moderate_names = [
         "wordpress_create_record",
@@ -266,6 +317,9 @@ def test_content_management_service_tools_are_registered_with_metadata():
         "storyblok_publish_story",
         "storyblok_unpublish_story",
         "storyblok_delete_story",
+        "webflow_create_collection_item",
+        "webflow_update_collection_item",
+        "webflow_delete_collection_item",
     ]
 
     for name in safe_names:
@@ -289,6 +343,7 @@ def test_content_management_tool_schemas_hide_runtime_config():
         ghost_create_post,
         storyblok_publish_story,
         strapi_create_entry,
+        webflow_create_collection_item,
         wordpress_create_record,
     )
 
@@ -297,3 +352,4 @@ def test_content_management_tool_schemas_hide_runtime_config():
     assert "config" not in contentful_list_records.args_schema.model_json_schema()["properties"]
     assert "config" not in ghost_create_post.args_schema.model_json_schema()["properties"]
     assert "config" not in storyblok_publish_story.args_schema.model_json_schema()["properties"]
+    assert "config" not in webflow_create_collection_item.args_schema.model_json_schema()["properties"]

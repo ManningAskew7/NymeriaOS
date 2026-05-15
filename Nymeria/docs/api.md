@@ -1141,6 +1141,8 @@ Authorization: Bearer <admin-token>
 
 **Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 
+Native optional tools prefer saved credentials from the user/system credential vault. The same settings endpoint can still manage deployment-wide fallback env fields for integrations, including `DHL_API_KEY`, `ONFLEET_API_KEY`, `PHANTOMBUSTER_API_KEY`, and `WEBFLOW_ACCESS_TOKEN`; see `docs/tools.md` for the exact provider and field names.
+
 ---
 
 ### List OpenRouter Models
