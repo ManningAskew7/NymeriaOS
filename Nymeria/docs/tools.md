@@ -62,7 +62,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (921)
+### Optional: Service Integration Tools (944)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -992,6 +992,29 @@ in the credential vault for provider-specific saved connections scoped to
 | 919 | `webflow_create_collection_item` | Integrations | MODERATE | Create a Webflow CMS collection item |
 | 920 | `webflow_update_collection_item` | Integrations | MODERATE | Update a Webflow CMS collection item |
 | 921 | `webflow_delete_collection_item` | Integrations | MODERATE | Delete a Webflow CMS collection item |
+| 922 | `lemlist_list_campaigns` | Integrations | SAFE | List Lemlist campaigns |
+| 923 | `lemlist_get_campaign_stats` | Integrations | SAFE | Get Lemlist campaign stats |
+| 924 | `lemlist_list_activities` | Integrations | SAFE | List Lemlist activities |
+| 925 | `lemlist_get_lead` | Integrations | SAFE | Get a Lemlist lead |
+| 926 | `lemlist_create_lead` | Integrations | MODERATE | Create or update a Lemlist campaign lead |
+| 927 | `lemlist_remove_lead` | Integrations | MODERATE | Remove or unsubscribe a Lemlist campaign lead |
+| 928 | `lemlist_get_team` | Integrations | SAFE | Get Lemlist team metadata |
+| 929 | `lemlist_get_team_credits` | Integrations | SAFE | Get Lemlist team credit balances |
+| 930 | `lemlist_list_unsubscribes` | Integrations | SAFE | List Lemlist global unsubscribes |
+| 931 | `lemlist_update_unsubscribe` | Integrations | MODERATE | Add or remove a Lemlist global unsubscribe |
+| 932 | `sendy_create_campaign` | Integrations | MODERATE | Create a Sendy campaign |
+| 933 | `sendy_add_subscriber` | Integrations | MODERATE | Add a Sendy subscriber to a list |
+| 934 | `sendy_get_subscriber_status` | Integrations | SAFE | Get a Sendy subscriber status |
+| 935 | `sendy_count_active_subscribers` | Integrations | SAFE | Count active Sendy subscribers |
+| 936 | `sendy_update_subscriber_subscription` | Integrations | MODERATE | Unsubscribe, remove, or delete a Sendy subscriber |
+| 937 | `emelia_list_campaigns` | Integrations | SAFE | List Emelia campaigns |
+| 938 | `emelia_get_campaign` | Integrations | SAFE | Get an Emelia campaign |
+| 939 | `emelia_create_campaign` | Integrations | MODERATE | Create an Emelia campaign |
+| 940 | `emelia_update_campaign_status` | Integrations | MODERATE | Start or pause an Emelia campaign |
+| 941 | `emelia_duplicate_campaign` | Integrations | MODERATE | Duplicate an Emelia campaign |
+| 942 | `emelia_add_contact_to_campaign` | Integrations | MODERATE | Add a contact to an Emelia campaign |
+| 943 | `emelia_list_contact_lists` | Integrations | SAFE | List Emelia contact lists |
+| 944 | `emelia_add_contact_to_list` | Integrations | MODERATE | Add a contact to an Emelia contact list |
 ### Optional: Private B Tools (4)
 
 Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
@@ -1762,6 +1785,9 @@ This batch includes:
 - `iterable_list_lists()`, `iterable_get_user(identifier, value)`, `iterable_upsert_user(...)`, `iterable_track_event(...)`, and `iterable_update_list_subscribers(...)`. List/user reads are SAFE; user, event, and list membership writes are MODERATE.
 - `posthog_capture_event(...)`, `posthog_identify(...)`, `posthog_create_alias(...)`, and `posthog_track_page_or_screen(...)`. All PostHog event writes are MODERATE.
 - `segment_identify(...)`, `segment_track(...)`, and `segment_group(...)`. All Segment calls are MODERATE because they emit analytics/customer data.
+- `lemlist_list_campaigns(...)`, `lemlist_get_campaign_stats(...)`, `lemlist_list_activities(...)`, `lemlist_get_lead(email)`, `lemlist_create_lead(...)`, `lemlist_remove_lead(...)`, `lemlist_get_team()`, `lemlist_get_team_credits()`, `lemlist_list_unsubscribes(...)`, and `lemlist_update_unsubscribe(...)`. Reads are SAFE; lead and unsubscribe changes are MODERATE.
+- `sendy_create_campaign(...)`, `sendy_add_subscriber(...)`, `sendy_get_subscriber_status(...)`, `sendy_count_active_subscribers(list_id)`, and `sendy_update_subscriber_subscription(...)`. Status/count reads are SAFE; campaign/subscriber writes are MODERATE.
+- `emelia_list_campaigns(...)`, `emelia_get_campaign(campaign_id)`, `emelia_create_campaign(name)`, `emelia_update_campaign_status(...)`, `emelia_duplicate_campaign(...)`, `emelia_add_contact_to_campaign(...)`, `emelia_list_contact_lists(...)`, and `emelia_add_contact_to_list(...)`. Reads are SAFE; campaign/contact writes are MODERATE.
 
 Credential providers and fallback env vars:
 - ActiveCampaign: provider `activecampaign`, fields `api_key` and `api_url` / `base_url`; env fallbacks `ACTIVECAMPAIGN_API_KEY` and `ACTIVECAMPAIGN_BASE_URL`.
@@ -1776,6 +1802,9 @@ Credential providers and fallback env vars:
 - Iterable: provider `iterable`, fields `api_key` and optional `base_url`; env fallbacks `ITERABLE_API_KEY` and `ITERABLE_BASE_URL`.
 - PostHog: provider `posthog`, fields `api_key` / `project_api_key` and optional `base_url`; env fallbacks `POSTHOG_API_KEY` and `POSTHOG_BASE_URL`.
 - Segment: provider `segment`, field `write_key`; env fallbacks `SEGMENT_WRITE_KEY` and `SEGMENT_BASE_URL`.
+- Lemlist: provider `lemlist`, fields `api_key` / `apiKey` / `token` / `value`, optional `base_url`; env fallbacks `LEMLIST_API_KEY` and `LEMLIST_BASE_URL`.
+- Sendy: provider `sendy`, fields `url` / `base_url` and `api_key` / `apiKey` / `value`; env fallbacks `SENDY_URL`, `SENDY_BASE_URL`, and `SENDY_API_KEY`.
+- Emelia: provider `emelia`, fields `api_key` / `apiKey` / `token` / `value`, optional `graphql_url`; env fallbacks `EMELIA_API_KEY` and `EMELIA_GRAPHQL_URL`.
 
 ### Developer Platform Tools
 

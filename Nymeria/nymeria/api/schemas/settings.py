@@ -535,6 +535,13 @@ class ServerSettingsUpdate(BaseModel):
     egoi_base_url: Optional[str] = None
     vero_auth_token: Optional[str] = None
     vero_base_url: Optional[str] = None
+    lemlist_api_key: Optional[str] = None
+    lemlist_base_url: Optional[str] = None
+    sendy_url: Optional[str] = None
+    sendy_base_url: Optional[str] = None
+    sendy_api_key: Optional[str] = None
+    emelia_api_key: Optional[str] = None
+    emelia_graphql_url: Optional[str] = None
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None

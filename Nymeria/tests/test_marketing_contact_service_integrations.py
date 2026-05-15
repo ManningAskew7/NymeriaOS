@@ -250,6 +250,105 @@ def test_segment_identify_uses_basic_write_key(monkeypatch):
     assert captured["json_body"]["traits"]["email"] == "ada@example.com"
 
 
+def test_lemlist_create_lead_uses_vault_basic_auth(tmp_path, monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Lemlist",
+        provider="lemlist",
+        kind="api_key",
+        allowed_targets=["native_tool:lemlist_create_lead"],
+        secret_fields={"apiKey": "lem-key", "base_url": "https://lem.example/api"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"email": "ada@example.com", "campaignId": "camp-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.lemlist_create_lead.func(
+            campaign_id="camp-1",
+            email="ada@example.com",
+            fields_json='{"firstName":"Ada"}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["email"] == "ada@example.com"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://lem.example/api/campaigns/camp-1/leads/ada%40example.com"
+    assert captured["json_body"] == {"firstName": "Ada"}
+    assert captured["params"] == {"deduplicate": True}
+    expected_basic = base64.b64encode(b":lem-key").decode()
+    assert captured["headers"]["Authorization"] == f"Basic {expected_basic}"
+
+
+def test_sendy_status_uses_form_key_and_url(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("SENDY_URL", "https://sendy.example")
+    monkeypatch.setenv("SENDY_API_KEY", "sendy-key")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return "Subscribed"
+
+    monkeypatch.setattr(tools, "_request_any", fake_request)
+
+    result = json.loads(tools.sendy_get_subscriber_status.func(email="ada@example.com", list_id="list-1"))
+
+    assert result == {"status": "Subscribed"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://sendy.example/api/subscribers/subscription-status.php"
+    assert captured["data"]["email"] == "ada@example.com"
+    assert captured["data"]["list_id"] == "list-1"
+    assert captured["data"]["api_key"] == "sendy-key"
+    assert captured["data"]["boolean"] == "true"
+
+
+def test_emelia_create_campaign_uses_graphql_auth(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("EMELIA_API_KEY", "emelia-key")
+    monkeypatch.setenv("EMELIA_GRAPHQL_URL", "https://emelia.example/graphql")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"data": {"createCampaign": {"_id": "camp-1", "name": "Outbound"}}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.emelia_create_campaign.func(name="Outbound"))
+
+    assert result == {"_id": "camp-1", "name": "Outbound"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://emelia.example/graphql"
+    assert captured["headers"]["Authorization"] == "emelia-key"
+    assert captured["json_body"]["operationName"] == "createCampaign"
+    assert captured["json_body"]["variables"] == {"name": "Outbound"}
+
+
+def test_marketing_new_services_return_setup_hints(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setattr(tools, "_settings_value", lambda name: None)
+
+    assert "LEMLIST_API_KEY" in tools.lemlist_list_campaigns.func()
+    assert "SENDY_URL" in tools.sendy_get_subscriber_status.func(email="ada@example.com", list_id="list-1")
+    assert "EMELIA_API_KEY" in tools.emelia_list_campaigns.func()
+
+
 def test_actionnetwork_create_person_uses_osdi_token(monkeypatch):
     from nymeria.tools import marketing_contact_service_integrations as tools
 
@@ -433,6 +532,18 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "egoi_list_lists",
         "egoi_list_contacts",
         "egoi_get_contact",
+        "lemlist_list_campaigns",
+        "lemlist_get_campaign_stats",
+        "lemlist_list_activities",
+        "lemlist_get_lead",
+        "lemlist_get_team",
+        "lemlist_get_team_credits",
+        "lemlist_list_unsubscribes",
+        "sendy_get_subscriber_status",
+        "sendy_count_active_subscribers",
+        "emelia_list_campaigns",
+        "emelia_get_campaign",
+        "emelia_list_contact_lists",
     ]
     moderate_names = [
         "activecampaign_sync_contact",
@@ -480,6 +591,17 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "vero_update_user_subscription",
         "vero_update_user_tags",
         "vero_track_event",
+        "lemlist_create_lead",
+        "lemlist_remove_lead",
+        "lemlist_update_unsubscribe",
+        "sendy_create_campaign",
+        "sendy_add_subscriber",
+        "sendy_update_subscriber_subscription",
+        "emelia_create_campaign",
+        "emelia_update_campaign_status",
+        "emelia_duplicate_campaign",
+        "emelia_add_contact_to_campaign",
+        "emelia_add_contact_to_list",
     ]
 
     for name in safe_names:
@@ -505,9 +627,12 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
         convertkit_add_subscriber_to_form,
         customerio_track_event,
         egoi_create_contact,
+        emelia_create_campaign,
+        lemlist_create_lead,
         mailerlite_create_subscriber,
         posthog_capture_event,
         segment_track,
+        sendy_add_subscriber,
         vero_track_event,
     )
 
@@ -517,7 +642,10 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
     assert "config" not in convertkit_add_subscriber_to_form.args
     assert "config" not in customerio_track_event.args
     assert "config" not in egoi_create_contact.args
+    assert "config" not in emelia_create_campaign.args
+    assert "config" not in lemlist_create_lead.args
     assert "config" not in mailerlite_create_subscriber.args
     assert "config" not in posthog_capture_event.args
     assert "config" not in segment_track.args
+    assert "config" not in sendy_add_subscriber.args
     assert "config" not in vero_track_event.args

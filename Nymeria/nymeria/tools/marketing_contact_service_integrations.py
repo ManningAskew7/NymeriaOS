@@ -31,6 +31,8 @@ _ACTIONNETWORK_BASE_URL = "https://actionnetwork.org/api/v2"
 _AUTOPILOT_BASE_URL = "https://api2.autopilothq.com/v1"
 _EGOI_BASE_URL = "https://api.egoiapp.com"
 _VERO_BASE_URL = "https://api.getvero.com/api/v2"
+_LEMLIST_BASE_URL = "https://api.lemlist.com/api"
+_EMELIA_GRAPHQL_URL = "https://graphql.emelia.io/graphql"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -89,6 +91,10 @@ def _json_array_or_object(value: str, *, field_name: str) -> list[dict[str, Any]
 
 def _csv_to_list(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _basic_auth(username: str, password: str = "") -> str:
+    return base64.b64encode(f"{username}:{password}".encode()).decode()
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -178,6 +184,51 @@ def _request_json(
         raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
 
 
+def _request_any(
+    method: str,
+    url: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    data: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> Any:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.request(
+                method,
+                url,
+                params=_filtered(params),
+                json=json_body,
+                data=_filtered(data) if data is not None else None,
+                headers=headers,
+            )
+            response.raise_for_status()
+            if response.status_code == 204 or not response.content:
+                return {"status": "ok", "status_code": response.status_code}
+            try:
+                return response.json()
+            except ValueError:
+                return response.text
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            body = e.response.json()
+            detail = (
+                body.get("message")
+                or body.get("detail")
+                or body.get("title")
+                or body.get("error_description")
+                or body.get("error")
+                or ""
+            )
+        except Exception:
+            detail = e.response.text[:300]
+        raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
+
+
 def _token_config(
     *,
     provider: str,
@@ -218,6 +269,149 @@ def _token_config(
             display_name=display_name,
         )
     return _base_url(base), str(token)
+
+
+def _lemlist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base, token_or_error = _token_config(
+        provider="lemlist",
+        provider_aliases=("lemlist_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        settings_token_name="lemlist_api_key",
+        settings_base_name="lemlist_base_url",
+        default_base=_LEMLIST_BASE_URL,
+        env_var="LEMLIST_API_KEY",
+        display_name="Lemlist",
+        tool_name=tool_name,
+        config=config,
+    )
+    if token_or_error.startswith("[Error]:"):
+        return base, token_or_error
+    return base, {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {_basic_auth('', token_or_error)}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _sendy_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
+    base = (
+        _credential_value(
+            provider="sendy",
+            provider_aliases=("sendy_api",),
+            field_names=("url", "base_url", "baseUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("sendy_url")
+        or _settings_value("sendy_base_url")
+    )
+    if not base:
+        return "", (
+            "[Error]: No Sendy URL found. Save a Sendy credential with "
+            '"url" / "base_url", or set SENDY_URL.'
+        )
+    api_key = _credential_value(
+        provider="sendy",
+        provider_aliases=("sendy_api",),
+        field_names=("api_key", "apiKey", "key", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("sendy_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="sendy",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="SENDY_API_KEY",
+            display_name="Sendy",
+        )
+    return _base_url(base), str(api_key)
+
+
+def _sendy_request(
+    tool_name: str,
+    path: str,
+    body: dict[str, Any],
+    config: Optional[RunnableConfig],
+) -> Any:
+    base, key_or_error = _sendy_config(tool_name, config)
+    if key_or_error is None or key_or_error.startswith("[Error]:"):
+        return key_or_error or "[Error]: No Sendy credential found."
+    return _request_any(
+        "POST",
+        f"{base}{path}",
+        data={**body, "api_key": key_or_error, "boolean": "true"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Nymeria"},
+    )
+
+
+def _emelia_graphql_url(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    url = (
+        _credential_value(
+            provider="emelia",
+            provider_aliases=("emelia_api",),
+            field_names=("graphql_url", "graphqlUrl", "base_url", "baseUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("emelia_graphql_url")
+        or _EMELIA_GRAPHQL_URL
+    )
+    token = _credential_value(
+        provider="emelia",
+        provider_aliases=("emelia_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("emelia_api_key")
+    if not token:
+        return _absolute_url_or_base_graphql(url), _setup_hint(
+            provider="emelia",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="EMELIA_API_KEY",
+            display_name="Emelia",
+        )
+    return _absolute_url_or_base_graphql(url), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": str(token),
+        "User-Agent": "Nymeria",
+    }
+
+
+def _absolute_url_or_base_graphql(value: str) -> str:
+    base = _base_url(value)
+    if base.endswith("/graphql"):
+        return base
+    return f"{base}/graphql"
+
+
+def _emelia_graphql(
+    tool_name: str,
+    query: str,
+    *,
+    operation_name: str = "",
+    variables: Optional[dict[str, Any]] = None,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    url, headers_or_error = _emelia_graphql_url(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    body = {"query": query}
+    if operation_name:
+        body["operationName"] = operation_name
+    if variables is not None:
+        body["variables"] = variables
+    data = _request_json("POST", url, json_body=body, headers=headers_or_error)
+    if isinstance(data, dict) and data.get("errors"):
+        raise RuntimeError(_dump_json(data["errors"], max_chars=1000))
+    return data
+
+
+def _json_or_text(data: Any) -> str:
+    return data if isinstance(data, str) else _dump_json(data)
 
 
 def _actionnetwork_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -2254,6 +2448,624 @@ def vero_track_event(
         return f"[Error]: Vero event tracking failed: {e}"
 
 
+@tool
+def lemlist_list_campaigns(
+    filters_json: str = "",
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Lemlist campaigns."""
+    try:
+        base, auth = _lemlist_config("lemlist_list_campaigns", config)
+        if isinstance(auth, str):
+            return auth
+        params = {**_json_object(filters_json, field_name="filters_json"), "limit": _limit(limit, default=100)}
+        data = _request_json("GET", f"{base}/campaigns", params=params, headers=auth)
+        return _dump_json(data[: _limit(limit, default=100)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("lemlist_list_campaigns failed", exc_info=True)
+        return f"[Error]: Lemlist campaign listing failed: {e}"
+
+
+@tool
+def lemlist_get_campaign_stats(
+    campaign_id: str,
+    start_date: str = "",
+    end_date: str = "",
+    timezone: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get Lemlist campaign stats."""
+    if not campaign_id.strip():
+        return "[Error]: campaign_id is required."
+    try:
+        base, auth = _lemlist_config("lemlist_get_campaign_stats", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "GET",
+            f"{base}/campaigns/{quote(campaign_id.strip(), safe='')}/stats",
+            params={"startDate": start_date.strip(), "endDate": end_date.strip(), "timezone": timezone.strip()},
+            headers=auth,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lemlist_get_campaign_stats failed", exc_info=True)
+        return f"[Error]: Lemlist campaign stats lookup failed: {e}"
+
+
+@tool
+def lemlist_list_activities(
+    filters_json: str = "",
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Lemlist activities."""
+    try:
+        base, auth = _lemlist_config("lemlist_list_activities", config)
+        if isinstance(auth, str):
+            return auth
+        params = {**_json_object(filters_json, field_name="filters_json"), "limit": _limit(limit, default=100)}
+        data = _request_json("GET", f"{base}/activities", params=params, headers=auth)
+        return _dump_json(data[: _limit(limit, default=100)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("lemlist_list_activities failed", exc_info=True)
+        return f"[Error]: Lemlist activity listing failed: {e}"
+
+
+@tool
+def lemlist_get_lead(
+    email: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get a Lemlist lead by email."""
+    if "@" not in email:
+        return "[Error]: email must look like an email address."
+    try:
+        base, auth = _lemlist_config("lemlist_get_lead", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json("GET", f"{base}/leads/{quote(email.strip(), safe='')}", headers=auth)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lemlist_get_lead failed", exc_info=True)
+        return f"[Error]: Lemlist lead lookup failed: {e}"
+
+
+@tool
+def lemlist_create_lead(
+    campaign_id: str,
+    email: str,
+    fields_json: str = "",
+    deduplicate: bool = True,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create or update a Lemlist campaign lead."""
+    if not campaign_id.strip() or "@" not in email:
+        return "[Error]: campaign_id and a valid email are required."
+    try:
+        base, auth = _lemlist_config("lemlist_create_lead", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "POST",
+            f"{base}/campaigns/{quote(campaign_id.strip(), safe='')}/leads/{quote(email.strip(), safe='')}",
+            params={"deduplicate": deduplicate},
+            json_body=_json_object(fields_json, field_name="fields_json"),
+            headers=auth,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lemlist_create_lead failed", exc_info=True)
+        return f"[Error]: Lemlist lead creation failed: {e}"
+
+
+@tool
+def lemlist_remove_lead(
+    campaign_id: str,
+    email: str,
+    unsubscribe: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove or unsubscribe a Lemlist lead from a campaign."""
+    if not campaign_id.strip() or "@" not in email:
+        return "[Error]: campaign_id and a valid email are required."
+    try:
+        base, auth = _lemlist_config("lemlist_remove_lead", config)
+        if isinstance(auth, str):
+            return auth
+        params = {} if unsubscribe else {"action": "remove"}
+        data = _request_json(
+            "DELETE",
+            f"{base}/campaigns/{quote(campaign_id.strip(), safe='')}/leads/{quote(email.strip(), safe='')}",
+            params=params,
+            headers=auth,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lemlist_remove_lead failed", exc_info=True)
+        return f"[Error]: Lemlist lead removal failed: {e}"
+
+
+@tool
+def lemlist_get_team(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+    """Get Lemlist team metadata."""
+    try:
+        base, auth = _lemlist_config("lemlist_get_team", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/team", headers=auth))
+    except Exception as e:
+        logger.error("lemlist_get_team failed", exc_info=True)
+        return f"[Error]: Lemlist team lookup failed: {e}"
+
+
+@tool
+def lemlist_get_team_credits(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
+    """Get Lemlist team credit balances."""
+    try:
+        base, auth = _lemlist_config("lemlist_get_team_credits", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/team/credits", headers=auth))
+    except Exception as e:
+        logger.error("lemlist_get_team_credits failed", exc_info=True)
+        return f"[Error]: Lemlist team credits lookup failed: {e}"
+
+
+@tool
+def lemlist_list_unsubscribes(
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Lemlist global unsubscribes."""
+    try:
+        base, auth = _lemlist_config("lemlist_list_unsubscribes", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json("GET", f"{base}/unsubscribes", params={"limit": _limit(limit, default=100)}, headers=auth)
+        return _dump_json(data[: _limit(limit, default=100)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("lemlist_list_unsubscribes failed", exc_info=True)
+        return f"[Error]: Lemlist unsubscribe listing failed: {e}"
+
+
+@tool
+def lemlist_update_unsubscribe(
+    email: str,
+    action: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add or remove a Lemlist global unsubscribe."""
+    normalized = action.strip().lower()
+    if normalized not in {"add", "delete", "remove"}:
+        return '[Error]: action must be "add", "delete", or "remove".'
+    if "@" not in email:
+        return "[Error]: email must look like an email address."
+    try:
+        base, auth = _lemlist_config("lemlist_update_unsubscribe", config)
+        if isinstance(auth, str):
+            return auth
+        method = "POST" if normalized == "add" else "DELETE"
+        data = _request_json(method, f"{base}/unsubscribes/{quote(email.strip(), safe='')}", headers=auth)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("lemlist_update_unsubscribe failed", exc_info=True)
+        return f"[Error]: Lemlist unsubscribe update failed: {e}"
+
+
+@tool
+def sendy_create_campaign(
+    from_name: str,
+    from_email: str,
+    reply_to: str,
+    title: str,
+    subject: str,
+    html_text: str,
+    send_campaign: bool = False,
+    brand_id: str = "",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create a Sendy campaign."""
+    required = [from_name, from_email, reply_to, title, subject, html_text]
+    if any(not value.strip() for value in required):
+        return "[Error]: from_name, from_email, reply_to, title, subject, and html_text are required."
+    try:
+        body = {
+            "from_name": from_name.strip(),
+            "from_email": from_email.strip(),
+            "reply_to": reply_to.strip(),
+            "title": title.strip(),
+            "subject": subject.strip(),
+            "html_text": html_text,
+            "send_campaign": 1 if send_campaign else 0,
+            **_json_object(fields_json, field_name="fields_json"),
+        }
+        if brand_id.strip():
+            body["brand_id"] = brand_id.strip()
+        data = _sendy_request("sendy_create_campaign", "/api/campaigns/create.php", body, config)
+        return _json_or_text({"message": data} if isinstance(data, str) else data)
+    except Exception as e:
+        logger.error("sendy_create_campaign failed", exc_info=True)
+        return f"[Error]: Sendy campaign creation failed: {e}"
+
+
+@tool
+def sendy_add_subscriber(
+    email: str,
+    list_id: str,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a Sendy subscriber to a list."""
+    if "@" not in email or not list_id.strip():
+        return "[Error]: email and list_id are required."
+    try:
+        data = _sendy_request(
+            "sendy_add_subscriber",
+            "/subscribe",
+            {"email": email.strip(), "list": list_id.strip(), **_json_object(fields_json, field_name="fields_json")},
+            config,
+        )
+        return _json_or_text({"success": True} if data == "1" else data)
+    except Exception as e:
+        logger.error("sendy_add_subscriber failed", exc_info=True)
+        return f"[Error]: Sendy subscriber add failed: {e}"
+
+
+@tool
+def sendy_get_subscriber_status(
+    email: str,
+    list_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get a Sendy subscriber status."""
+    if "@" not in email or not list_id.strip():
+        return "[Error]: email and list_id are required."
+    try:
+        data = _sendy_request(
+            "sendy_get_subscriber_status",
+            "/api/subscribers/subscription-status.php",
+            {"email": email.strip(), "list_id": list_id.strip()},
+            config,
+        )
+        return _json_or_text({"status": data} if isinstance(data, str) else data)
+    except Exception as e:
+        logger.error("sendy_get_subscriber_status failed", exc_info=True)
+        return f"[Error]: Sendy subscriber status lookup failed: {e}"
+
+
+@tool
+def sendy_count_active_subscribers(
+    list_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Count active Sendy subscribers in a list."""
+    if not list_id.strip():
+        return "[Error]: list_id is required."
+    try:
+        data = _sendy_request(
+            "sendy_count_active_subscribers",
+            "/api/subscribers/active-subscriber-count.php",
+            {"list_id": list_id.strip()},
+            config,
+        )
+        return _json_or_text({"count": data} if isinstance(data, str) else data)
+    except Exception as e:
+        logger.error("sendy_count_active_subscribers failed", exc_info=True)
+        return f"[Error]: Sendy subscriber count failed: {e}"
+
+
+@tool
+def sendy_update_subscriber_subscription(
+    email: str,
+    list_id: str,
+    action: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Unsubscribe, remove, or delete a Sendy subscriber."""
+    normalized = action.strip().lower()
+    if normalized not in {"unsubscribe", "remove", "delete"}:
+        return '[Error]: action must be "unsubscribe", "remove", or "delete".'
+    if "@" not in email or not list_id.strip():
+        return "[Error]: email and list_id are required."
+    path = "/api/subscribers/delete.php" if normalized == "delete" else "/unsubscribe"
+    key = "list_id" if normalized == "delete" else "list"
+    try:
+        data = _sendy_request(
+            "sendy_update_subscriber_subscription",
+            path,
+            {"email": email.strip(), key: list_id.strip()},
+            config,
+        )
+        return _json_or_text({"success": True} if data == "1" else data)
+    except Exception as e:
+        logger.error("sendy_update_subscriber_subscription failed", exc_info=True)
+        return f"[Error]: Sendy subscriber subscription update failed: {e}"
+
+
+@tool
+def emelia_list_campaigns(
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Emelia campaigns."""
+    try:
+        data = _emelia_graphql(
+            "emelia_list_campaigns",
+            """
+            query all_campaigns {
+              all_campaigns {
+                _id
+                name
+                status
+                createdAt
+                stats {
+                  mailsSent
+                  uniqueOpensPercent
+                  opens
+                  linkClickedPercent
+                  repliedPercent
+                  bouncedPercent
+                  unsubscribePercent
+                  progressPercent
+                }
+              }
+            }
+            """,
+            operation_name="all_campaigns",
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        campaigns = data.get("data", {}).get("all_campaigns", [])
+        return _dump_json(campaigns[: _limit(limit, default=100)])
+    except Exception as e:
+        logger.error("emelia_list_campaigns failed", exc_info=True)
+        return f"[Error]: Emelia campaign listing failed: {e}"
+
+
+@tool
+def emelia_get_campaign(
+    campaign_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get an Emelia campaign."""
+    if not campaign_id.strip():
+        return "[Error]: campaign_id is required."
+    try:
+        data = _emelia_graphql(
+            "emelia_get_campaign",
+            """
+            query campaign($id: ID!) {
+              campaign(id: $id) {
+                _id
+                name
+                status
+                createdAt
+                provider
+                startAt
+                estimatedEnd
+                recipients { total_count }
+              }
+            }
+            """,
+            operation_name="campaign",
+            variables={"id": campaign_id.strip()},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("data", {}).get("campaign", data))
+    except Exception as e:
+        logger.error("emelia_get_campaign failed", exc_info=True)
+        return f"[Error]: Emelia campaign lookup failed: {e}"
+
+
+@tool
+def emelia_create_campaign(
+    name: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Emelia campaign."""
+    if not name.strip():
+        return "[Error]: name is required."
+    try:
+        data = _emelia_graphql(
+            "emelia_create_campaign",
+            """
+            mutation createCampaign($name: String!) {
+              createCampaign(name: $name) {
+                _id
+                name
+                status
+                createdAt
+                provider
+                startAt
+                estimatedEnd
+              }
+            }
+            """,
+            operation_name="createCampaign",
+            variables={"name": name.strip()},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("data", {}).get("createCampaign", data))
+    except Exception as e:
+        logger.error("emelia_create_campaign failed", exc_info=True)
+        return f"[Error]: Emelia campaign creation failed: {e}"
+
+
+@tool
+def emelia_update_campaign_status(
+    campaign_id: str,
+    action: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Start or pause an Emelia campaign."""
+    normalized = action.strip().lower()
+    if normalized not in {"start", "pause"}:
+        return '[Error]: action must be "start" or "pause".'
+    if not campaign_id.strip():
+        return "[Error]: campaign_id is required."
+    operation = "startCampaign" if normalized == "start" else "pauseCampaign"
+    try:
+        data = _emelia_graphql(
+            "emelia_update_campaign_status",
+            f"mutation {operation}($id: ID!) {{ {operation}(id: $id) }}",
+            operation_name=operation,
+            variables={"id": campaign_id.strip()},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json({"success": True})
+    except Exception as e:
+        logger.error("emelia_update_campaign_status failed", exc_info=True)
+        return f"[Error]: Emelia campaign status update failed: {e}"
+
+
+@tool
+def emelia_duplicate_campaign(
+    campaign_id: str,
+    name: str,
+    options_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Duplicate an Emelia campaign."""
+    if not campaign_id.strip() or not name.strip():
+        return "[Error]: campaign_id and name are required."
+    variables = {
+        "fromId": campaign_id.strip(),
+        "name": name.strip(),
+        "copySettings": True,
+        "copyMails": True,
+        "copyContacts": False,
+        "copyProvider": True,
+        **_json_object(options_json, field_name="options_json"),
+    }
+    try:
+        data = _emelia_graphql(
+            "emelia_duplicate_campaign",
+            """
+            mutation duplicateCampaign(
+              $fromId: ID!
+              $name: String!
+              $copySettings: Boolean!
+              $copyMails: Boolean!
+              $copyContacts: Boolean!
+              $copyProvider: Boolean!
+            ) {
+              duplicateCampaign(
+                fromId: $fromId
+                name: $name
+                copySettings: $copySettings
+                copyMails: $copyMails
+                copyContacts: $copyContacts
+                copyProvider: $copyProvider
+              )
+            }
+            """,
+            operation_name="duplicateCampaign",
+            variables=variables,
+            config=config,
+        )
+        duplicate_id = data.get("data", {}).get("duplicateCampaign") if isinstance(data, dict) else None
+        return data if isinstance(data, str) else _dump_json({"_id": duplicate_id})
+    except Exception as e:
+        logger.error("emelia_duplicate_campaign failed", exc_info=True)
+        return f"[Error]: Emelia campaign duplication failed: {e}"
+
+
+@tool
+def emelia_add_contact_to_campaign(
+    campaign_id: str,
+    email: str,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a contact to an Emelia campaign."""
+    if not campaign_id.strip() or "@" not in email:
+        return "[Error]: campaign_id and a valid email are required."
+    contact = {"email": email.strip(), **_json_object(fields_json, field_name="fields_json")}
+    try:
+        data = _emelia_graphql(
+            "emelia_add_contact_to_campaign",
+            """
+            mutation AddContactToCampaignHook($id: ID!, $contact: JSON!) {
+              addContactToCampaignHook(id: $id, contact: $contact)
+            }
+            """,
+            operation_name="AddContactToCampaignHook",
+            variables={"id": campaign_id.strip(), "contact": contact},
+            config=config,
+        )
+        contact_id = data.get("data", {}).get("addContactToCampaignHook") if isinstance(data, dict) else None
+        return data if isinstance(data, str) else _dump_json({"contactId": contact_id})
+    except Exception as e:
+        logger.error("emelia_add_contact_to_campaign failed", exc_info=True)
+        return f"[Error]: Emelia campaign contact add failed: {e}"
+
+
+@tool
+def emelia_list_contact_lists(
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Emelia contact lists."""
+    try:
+        data = _emelia_graphql(
+            "emelia_list_contact_lists",
+            """
+            query contact_lists {
+              contact_lists {
+                _id
+                name
+                contactCount
+                fields
+                usedInCampaign
+              }
+            }
+            """,
+            operation_name="contact_lists",
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        lists = data.get("data", {}).get("contact_lists", [])
+        return _dump_json(lists[: _limit(limit, default=100)])
+    except Exception as e:
+        logger.error("emelia_list_contact_lists failed", exc_info=True)
+        return f"[Error]: Emelia contact-list listing failed: {e}"
+
+
+@tool
+def emelia_add_contact_to_list(
+    contact_list_id: str,
+    email: str,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a contact to an Emelia contact list."""
+    if not contact_list_id.strip() or "@" not in email:
+        return "[Error]: contact_list_id and a valid email are required."
+    contact = {"email": email.strip(), **_json_object(fields_json, field_name="fields_json")}
+    try:
+        data = _emelia_graphql(
+            "emelia_add_contact_to_list",
+            """
+            mutation AddContactsToListHook($id: ID!, $contact: JSON!) {
+              addContactsToListHook(id: $id, contact: $contact)
+            }
+            """,
+            operation_name="AddContactsToListHook",
+            variables={"id": contact_list_id.strip(), "contact": contact},
+            config=config,
+        )
+        contact_id = data.get("data", {}).get("addContactsToListHook") if isinstance(data, dict) else None
+        return data if isinstance(data, str) else _dump_json({"contactId": contact_id})
+    except Exception as e:
+        logger.error("emelia_add_contact_to_list failed", exc_info=True)
+        return f"[Error]: Emelia contact-list contact add failed: {e}"
+
+
 MARKETING_CONTACT_SERVICE_TOOLS = [
     customerio_list_campaigns,
     customerio_get_campaign,
@@ -2326,4 +3138,27 @@ MARKETING_CONTACT_SERVICE_TOOLS = [
     vero_update_user_subscription,
     vero_update_user_tags,
     vero_track_event,
+    lemlist_list_campaigns,
+    lemlist_get_campaign_stats,
+    lemlist_list_activities,
+    lemlist_get_lead,
+    lemlist_create_lead,
+    lemlist_remove_lead,
+    lemlist_get_team,
+    lemlist_get_team_credits,
+    lemlist_list_unsubscribes,
+    lemlist_update_unsubscribe,
+    sendy_create_campaign,
+    sendy_add_subscriber,
+    sendy_get_subscriber_status,
+    sendy_count_active_subscribers,
+    sendy_update_subscriber_subscription,
+    emelia_list_campaigns,
+    emelia_get_campaign,
+    emelia_create_campaign,
+    emelia_update_campaign_status,
+    emelia_duplicate_campaign,
+    emelia_add_contact_to_campaign,
+    emelia_list_contact_lists,
+    emelia_add_contact_to_list,
 ]
