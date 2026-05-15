@@ -431,6 +431,26 @@ from .business_service_integrations import (
     onesimple_create_qr_code,
     BUSINESS_SERVICE_TOOLS,
 )
+from .enterprise_business_service_integrations import (
+    erpnext_get_logged_user,
+    erpnext_list_documents,
+    erpnext_get_document,
+    erpnext_create_document,
+    erpnext_update_document,
+    erpnext_delete_document,
+    odoo_get_server_version,
+    odoo_list_records,
+    odoo_get_record,
+    odoo_create_record,
+    odoo_update_record,
+    odoo_delete_record,
+    invoiceninja_list_records,
+    invoiceninja_get_record,
+    invoiceninja_create_record,
+    invoiceninja_delete_record,
+    invoiceninja_email_invoice_or_quote,
+    ENTERPRISE_BUSINESS_SERVICE_TOOLS,
+)
 from .productivity_service_integrations import (
     todoist_list_tasks,
     todoist_get_task,
@@ -1065,6 +1085,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + FILE_STORAGE_SERVICE_TOOLS
     + AWS_SERVICE_TOOLS
     + BUSINESS_SERVICE_TOOLS
+    + ENTERPRISE_BUSINESS_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
     + BOOKMARK_LINK_SERVICE_TOOLS
     + WORK_TRACKING_SERVICE_TOOLS
@@ -1505,6 +1526,24 @@ __all__ = [
     "onesimple_expand_url",
     "onesimple_create_qr_code",
     "BUSINESS_SERVICE_TOOLS",
+    "erpnext_get_logged_user",
+    "erpnext_list_documents",
+    "erpnext_get_document",
+    "erpnext_create_document",
+    "erpnext_update_document",
+    "erpnext_delete_document",
+    "odoo_get_server_version",
+    "odoo_list_records",
+    "odoo_get_record",
+    "odoo_create_record",
+    "odoo_update_record",
+    "odoo_delete_record",
+    "invoiceninja_list_records",
+    "invoiceninja_get_record",
+    "invoiceninja_create_record",
+    "invoiceninja_delete_record",
+    "invoiceninja_email_invoice_or_quote",
+    "ENTERPRISE_BUSINESS_SERVICE_TOOLS",
     "todoist_list_tasks",
     "todoist_get_task",
     "todoist_create_task",
