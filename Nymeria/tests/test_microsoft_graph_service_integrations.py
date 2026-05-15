@@ -149,6 +149,64 @@ def test_microsoft_teams_send_channel_message_uses_env_token(monkeypatch):
     assert captured["json_body"] == {"body": {"contentType": "text", "content": "hello"}}
 
 
+def test_microsoft_sharepoint_create_item_uses_env_token(monkeypatch):
+    from nymeria.tools import microsoft_graph_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MICROSOFT_GRAPH_ACCESS_TOKEN", "graph-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, content=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": "item-1", "fields": json_body["fields"]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.microsoft_sharepoint_create_item.func(
+            site_id="site-1",
+            list_id="list-1",
+            fields_json='{"Title":"Roadmap","Status":"Open"}',
+        )
+    )
+
+    assert result["id"] == "item-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://graph.microsoft.com/v1.0/sites/site-1/lists/list-1/items"
+    assert captured["headers"]["Authorization"] == "Bearer graph-token"
+    assert captured["json_body"] == {"fields": {"Title": "Roadmap", "Status": "Open"}}
+
+
+def test_microsoft_excel_read_range_uses_workbook_path(monkeypatch):
+    from nymeria.tools import microsoft_graph_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MICROSOFT_GRAPH_ACCESS_TOKEN", "graph-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, content=None, headers=None):
+        captured.update({"method": method, "url": url, "headers": headers})
+        return {"address": "Sheet1!A1:B2", "values": [["Name", "Status"], ["Ada", "Open"]]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.microsoft_excel_read_range.func(
+            workbook_path="/Reports/status.xlsx",
+            worksheet_id_or_name="Sheet1",
+            address="A1:B2",
+        )
+    )
+
+    assert result["values"][1] == ["Ada", "Open"]
+    assert captured["method"] == "GET"
+    assert captured["url"] == (
+        "https://graph.microsoft.com/v1.0/"
+        "me/drive/root:/Reports/status.xlsx:/workbook/worksheets/Sheet1/range(address='A1%3AB2')"
+    )
+    assert captured["headers"]["Authorization"] == "Bearer graph-token"
+
+
 def test_microsoft_graph_missing_credentials_return_setup_hint(monkeypatch):
     from nymeria.tools import microsoft_graph_service_integrations as tools
 
@@ -176,12 +234,26 @@ def test_microsoft_graph_tools_registered_with_metadata():
         "microsoft_teams_list_joined_teams",
         "microsoft_teams_list_channels",
         "microsoft_teams_list_channel_messages",
+        "microsoft_sharepoint_search_sites",
+        "microsoft_sharepoint_get_site",
+        "microsoft_sharepoint_list_lists",
+        "microsoft_sharepoint_list_items",
+        "microsoft_sharepoint_get_item",
+        "microsoft_excel_list_worksheets",
+        "microsoft_excel_get_used_range",
+        "microsoft_excel_read_range",
+        "microsoft_excel_list_tables",
     ]
     moderate_names = [
         "microsoft_todo_create_task",
         "microsoft_todo_update_task",
         "microsoft_onedrive_upload_text_file",
         "microsoft_teams_send_channel_message",
+        "microsoft_sharepoint_create_item",
+        "microsoft_sharepoint_update_item_fields",
+        "microsoft_sharepoint_delete_item",
+        "microsoft_excel_update_range",
+        "microsoft_excel_add_table_row",
     ]
 
     for name in safe_names:
@@ -202,6 +274,8 @@ def test_microsoft_graph_tools_registered_with_metadata():
 def test_microsoft_graph_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         microsoft_onedrive_upload_text_file,
+        microsoft_sharepoint_create_item,
+        microsoft_excel_update_range,
         microsoft_teams_send_channel_message,
         microsoft_todo_create_task,
     )
@@ -209,3 +283,5 @@ def test_microsoft_graph_tool_schemas_hide_runtime_config():
     assert "config" not in microsoft_todo_create_task.args_schema.model_json_schema()["properties"]
     assert "config" not in microsoft_onedrive_upload_text_file.args_schema.model_json_schema()["properties"]
     assert "config" not in microsoft_teams_send_channel_message.args_schema.model_json_schema()["properties"]
+    assert "config" not in microsoft_sharepoint_create_item.args_schema.model_json_schema()["properties"]
+    assert "config" not in microsoft_excel_update_range.args_schema.model_json_schema()["properties"]
