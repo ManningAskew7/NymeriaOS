@@ -369,6 +369,16 @@ class ServerSettingsUpdate(BaseModel):
     coda_base_url: Optional[str] = None
     grist_api_key: Optional[str] = None
     grist_base_url: Optional[str] = None
+    adalo_api_key: Optional[str] = None
+    adalo_app_id: Optional[str] = None
+    adalo_base_url: Optional[str] = None
+    bubble_api_token: Optional[str] = None
+    bubble_app_name: Optional[str] = None
+    bubble_environment: Optional[str] = None
+    bubble_domain: Optional[str] = None
+    bubble_base_url: Optional[str] = None
+    cockpit_base_url: Optional[str] = None
+    cockpit_access_token: Optional[str] = None
     telegram_api_base_url: Optional[str] = None
     webex_access_token: Optional[str] = None
     webex_base_url: Optional[str] = None

@@ -352,6 +352,16 @@ Set the API key for your chosen provider:
 | `CODA_BASE_URL` | Coda | Optional Coda API base URL override |
 | `GRIST_API_KEY` | Grist | Optional Grist API key fallback; credential vault provider `grist` is preferred |
 | `GRIST_BASE_URL` | Grist | Optional Grist API base URL override |
+| `ADALO_API_KEY` | Adalo | Optional Adalo API key fallback; credential vault provider `adalo` is preferred |
+| `ADALO_APP_ID` | Adalo | Optional Adalo app ID fallback |
+| `ADALO_BASE_URL` | Adalo | Optional Adalo app API base URL override |
+| `BUBBLE_API_TOKEN` | Bubble | Optional Bubble Data API token fallback; credential vault provider `bubble` is preferred |
+| `BUBBLE_APP_NAME` | Bubble | Optional Bubble app name fallback |
+| `BUBBLE_ENVIRONMENT` | Bubble | Optional Bubble environment, `live` or `development` |
+| `BUBBLE_DOMAIN` | Bubble | Optional Bubble custom/self-hosted domain fallback |
+| `BUBBLE_BASE_URL` | Bubble | Optional Bubble API base URL override |
+| `COCKPIT_BASE_URL` | Cockpit | Cockpit site or API base URL fallback |
+| `COCKPIT_ACCESS_TOKEN` | Cockpit | Optional Cockpit access token fallback; credential vault provider `cockpit` is preferred |
 | `TELEGRAM_API_BASE_URL` | Telegram | Optional Telegram Bot API base URL override |
 | `WEBEX_ACCESS_TOKEN` | Webex | Optional Webex access token fallback; credential vault provider `webex` is preferred |
 | `WEBEX_BASE_URL` | Webex | Optional Webex API base URL override |
@@ -888,6 +898,16 @@ reachable from the backend process.
 | `CODA_BASE_URL` | `https://coda.io/apis/v1` | Coda API base URL |
 | `GRIST_API_KEY` | - | Grist API key fallback |
 | `GRIST_BASE_URL` | `https://docs.getgrist.com/api` | Grist API base URL |
+| `ADALO_API_KEY` | - | Adalo API key fallback |
+| `ADALO_APP_ID` | - | Adalo app ID fallback |
+| `ADALO_BASE_URL` | - | Adalo app API base URL override |
+| `BUBBLE_API_TOKEN` | - | Bubble Data API token fallback |
+| `BUBBLE_APP_NAME` | - | Bubble app name fallback |
+| `BUBBLE_ENVIRONMENT` | `live` | Bubble environment |
+| `BUBBLE_DOMAIN` | - | Bubble custom/self-hosted domain fallback |
+| `BUBBLE_BASE_URL` | - | Bubble API base URL override |
+| `COCKPIT_BASE_URL` | - | Cockpit site or API base URL fallback |
+| `COCKPIT_ACCESS_TOKEN` | - | Cockpit access token fallback |
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL |
 | `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback |
 | `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |

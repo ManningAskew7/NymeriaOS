@@ -408,6 +408,107 @@ def test_stackby_rows_use_api_key_header(monkeypatch):
     assert calls[1]["json_body"] == {"records": [{"field": {"Name": "Ada"}}]}
 
 
+def test_adalo_create_record_uses_app_credentials(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("ADALO_API_KEY", "adalo-key")
+    monkeypatch.setenv("ADALO_APP_ID", "app-1")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": "row-1", "Name": "Ada"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.adalo_create_record.func(
+            collection_id="collection-1",
+            fields_json='{"Name": "Ada"}',
+        )
+    )
+
+    assert result["id"] == "row-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.adalo.com/v0/apps/app-1/collections/collection-1"
+    assert captured["headers"]["Authorization"] == "Bearer adalo-key"
+    assert captured["json_body"] == {"Name": "Ada"}
+
+
+def test_bubble_list_objects_uses_vault_token_and_dev_base(tmp_path, monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Bubble",
+        provider="bubble",
+        kind="api_key",
+        allowed_targets=["native_tool:bubble_list_objects"],
+        secret_fields={"apiToken": "bubble-token", "appName": "myapp", "environment": "development"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"response": {"results": [{"_id": "obj-1", "Name": "Ada"}], "remaining": 0}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.bubble_list_objects.func(
+            type_name="Contact",
+            constraints_json='[{"key":"Name","constraint_type":"equals","value":"Ada"}]',
+            sort_field="Created Date",
+            descending=True,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result[0]["_id"] == "obj-1"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://myapp.bubbleapps.io/version-test/api/1.1/obj/contact"
+    assert captured["headers"]["Authorization"] == "Bearer bubble-token"
+    assert json.loads(captured["params"]["constraints"]) == [
+        {"key": "Name", "constraint_type": "equals", "value": "Ada"}
+    ]
+    assert captured["params"]["sort_field"] == "Created Date"
+    assert captured["params"]["descending"] == "true"
+
+
+def test_cockpit_save_collection_entry_uses_query_token(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("COCKPIT_BASE_URL", "https://cms.example")
+    monkeypatch.setenv("COCKPIT_ACCESS_TOKEN", "cockpit-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"_id": "entry-1", "title": "Ada"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.cockpit_save_collection_entry.func(
+            collection="people",
+            entry_id="entry-1",
+            data_json='{"title": "Ada"}',
+        )
+    )
+
+    assert result["_id"] == "entry-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://cms.example/api/collections/save/people"
+    assert captured["params"] == {"token": "cockpit-token"}
+    assert captured["json_body"] == {"data": {"_id": "entry-1", "title": "Ada"}}
+
+
 def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import data_table_service_integrations as tools
 
@@ -423,6 +524,9 @@ def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     quickbase_result = tools.quickbase_list_fields.func(table_id="bt123")
     seatable_result = tools.seatable_get_metadata.func()
     stackby_result = tools.stackby_list_rows.func(stack_id="stack-1", table="People")
+    adalo_result = tools.adalo_list_records.func(collection_id="collection-1")
+    bubble_result = tools.bubble_list_objects.func(type_name="Contact")
+    cockpit_result = tools.cockpit_list_collections.func()
 
     assert 'provider "baserow"' in baserow_result
     assert "BASEROW_API_TOKEN" in baserow_result
@@ -440,6 +544,12 @@ def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     assert "SEATABLE_API_TOKEN" in seatable_result
     assert 'provider "stackby"' in stackby_result
     assert "STACKBY_API_KEY" in stackby_result
+    assert 'provider "adalo"' in adalo_result
+    assert "ADALO_API_KEY + ADALO_APP_ID" in adalo_result
+    assert 'provider "bubble"' in bubble_result
+    assert "BUBBLE_API_TOKEN + BUBBLE_APP_NAME" in bubble_result
+    assert 'provider "cockpit"' in cockpit_result
+    assert "COCKPIT_BASE_URL + COCKPIT_ACCESS_TOKEN" in cockpit_result
 
 
 def test_data_table_tools_are_registered_with_metadata():
@@ -476,6 +586,14 @@ def test_data_table_tools_are_registered_with_metadata():
         "grist_list_tables",
         "grist_list_columns",
         "grist_list_records",
+        "adalo_list_records",
+        "adalo_get_record",
+        "bubble_list_objects",
+        "bubble_get_object",
+        "cockpit_list_collections",
+        "cockpit_list_collection_entries",
+        "cockpit_list_singletons",
+        "cockpit_get_singleton",
     ]
     moderate_names = [
         "supabase_insert_rows",
@@ -500,6 +618,14 @@ def test_data_table_tools_are_registered_with_metadata():
         "grist_create_record",
         "grist_update_record",
         "grist_delete_records",
+        "adalo_create_record",
+        "adalo_update_record",
+        "adalo_delete_record",
+        "bubble_create_object",
+        "bubble_update_object",
+        "bubble_delete_object",
+        "cockpit_save_collection_entry",
+        "cockpit_submit_form",
     ]
 
     for name in safe_names:
@@ -520,7 +646,10 @@ def test_data_table_tools_are_registered_with_metadata():
 def test_data_table_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         baserow_list_rows,
+        adalo_create_record,
+        bubble_create_object,
         coda_create_table_row,
+        cockpit_save_collection_entry,
         grist_list_records,
         nocodb_update_record,
         quickbase_query_records,
@@ -530,6 +659,9 @@ def test_data_table_tool_schemas_hide_runtime_config():
     )
 
     assert "config" not in baserow_list_rows.args_schema.model_json_schema()["properties"]
+    assert "config" not in adalo_create_record.args_schema.model_json_schema()["properties"]
+    assert "config" not in bubble_create_object.args_schema.model_json_schema()["properties"]
+    assert "config" not in cockpit_save_collection_entry.args_schema.model_json_schema()["properties"]
     assert "config" not in nocodb_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in coda_create_table_row.args_schema.model_json_schema()["properties"]
     assert "config" not in grist_list_records.args_schema.model_json_schema()["properties"]
