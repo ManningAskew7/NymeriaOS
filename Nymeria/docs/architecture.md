@@ -98,7 +98,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
 | `agent_history.py` | Conversation-history projection for API/frontend clients, including checkpoint timestamp recovery, internal-message filtering, reasoning/tool-step rendering, and attachment metadata |
 | `agent_streaming.py` | `GraphStreamProcessor` for converting LangGraph stream events into Nymeria SSE chunks, plus helpers for classifying streamed model chunks and deduplicating reasoning deltas |
-| `command_service.py` | Central slash-command registry and markdown dispatcher used by REST, desktop/mobile command input, bots, and the `slash_command` agent tool |
+| `command_service.py` | Central slash-command registry, path metadata catalog, alias resolver, direct backend adapter, and markdown dispatcher used by REST, desktop/mobile command input, bots, and the `slash_command` agent tool |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
@@ -534,7 +534,12 @@ Input interfaces and event-driven adapters that route messages to the agent:
 **CLI** (`cli.py`):
 - Interactive terminal interface
 - Rich formatting for responses
-- Special commands: `/history`, `/clear`, `/tools`, `/quit`
+- Slash-command registry merges local interactive commands with backend global
+  command proxies. Local commands include `/history`, `/clear`, `/exit`,
+  `/theme`, clipboard helpers, thread navigation, and chat-control flows such
+  as `/compact`; global paths such as `/memory save`, `/tools core`, `/context`,
+  `/status`, `/model`, `/config`, `/env`, `/todos`, and `/notepad` execute
+  through the backend command service.
 
 **API** (`api.py`):
 - FastAPI server with SSE streaming
@@ -561,7 +566,7 @@ Input interfaces and event-driven adapters that route messages to the agent:
 
 **Shared Bot Helpers** (`bot_helpers.py`):
 - Bot-neutral formatting for token counts and context usage bars
-- Shared slash-command value coercion and HTTP error-detail extraction
+- Shared bot formatting and identity helpers; global slash-command metadata and execution live in `core/command_service.py`
 - Cached platform-user resolution for Telegram and Discord thin clients
 
 **Discord Bot** (`discord_bot.py`):

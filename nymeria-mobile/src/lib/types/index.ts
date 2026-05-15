@@ -66,12 +66,26 @@ export interface SlashCommandInfo {
   usage: string;
   category: string;
   subcommands: string[];
+  id: string;
+  path: string[];
+  aliases: string[];
+  scope: 'global' | 'surface_local';
+  surfaces: string[];
+  agent_allowed: boolean;
+  requires_thread: boolean;
+  requires_admin: boolean;
+  mutates_state: boolean;
+  danger_level: 'safe' | 'normal' | 'dangerous';
+  execution_kind: 'command' | 'chat_stream' | 'surface_local';
+  note?: string | null;
 }
 
 export interface CommandExecuteResponse {
   success: boolean;
   markdown: string;
   command: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  data?: Record<string, unknown> | null;
 }
 
 export interface Message {

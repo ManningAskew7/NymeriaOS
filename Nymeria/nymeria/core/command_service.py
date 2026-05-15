@@ -1,9 +1,9 @@
 """Central markdown slash-command service.
 
-The service owns the command registry and parses a raw slash-command string
-once. Command bodies currently keep the working REST loopback behavior from
-the original trigger-layer dispatcher; future work can replace individual
-calls with direct service calls behind this same interface.
+The service owns the command registry, parses a raw slash-command string once,
+and executes command bodies against a small backend interface. In-process
+callers use :class:`CommandBackendClient`; the REST client remains only for
+out-of-process compatibility shims.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import os
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -23,6 +23,31 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 CommandSource = Literal["user", "agent", "cli"]
+CommandActor = Literal["user", "agent", "system"]
+CommandSurface = Literal[
+    "desktop",
+    "mobile",
+    "cli",
+    "discord",
+    "telegram",
+    "twitch",
+    "api",
+    "agent",
+]
+CommandScope = Literal["global", "surface_local"]
+CommandDangerLevel = Literal["safe", "normal", "dangerous"]
+CommandExecutionKind = Literal["command", "chat_stream", "surface_local"]
+CommandResultLevel = Literal["info", "success", "warning", "error"]
+
+DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
+    "desktop",
+    "mobile",
+    "cli",
+    "discord",
+    "telegram",
+    "api",
+    "agent",
+)
 
 GROUPED = {"config", "env", "tools", "memory", "notepad", "todos"}
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
@@ -33,6 +58,22 @@ class CommandContext:
     user_id: str
     thread_id: str | None = None
     source: CommandSource = "user"
+    actor: CommandActor | None = None
+    surface: CommandSurface | None = None
+    is_admin: bool | None = None
+    via_act_as: bool = False
+
+    @property
+    def effective_actor(self) -> CommandActor:
+        if self.actor is not None:
+            return self.actor
+        return _actor_from_source(self.source)
+
+    @property
+    def effective_surface(self) -> CommandSurface | None:
+        if self.surface is not None:
+            return self.surface
+        return _surface_from_source(self.source)
 
 
 @dataclass(frozen=True)
@@ -40,6 +81,8 @@ class CommandResult:
     success: bool
     markdown: str
     command: str
+    level: CommandResultLevel = "info"
+    data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -49,19 +92,58 @@ class CommandInfo:
     usage: str
     category: str
     subcommands: list[str] = field(default_factory=list)
+    id: str = ""
+    path: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+    scope: CommandScope = "global"
+    surfaces: list[str] = field(default_factory=list)
+    agent_allowed: bool = True
+    requires_thread: bool = False
+    requires_admin: bool = False
+    mutates_state: bool = False
+    danger_level: CommandDangerLevel = "safe"
+    execution_kind: CommandExecutionKind = "command"
+    level: CommandResultLevel = "info"
+    note: str | None = None
 
 
 @dataclass(frozen=True)
-class _CommandDefinition:
-    name: str
+class CommandDefinition:
+    id: str
+    path: tuple[str, ...]
     description: str
     usage: str
     category: str
-    aliases: tuple[str, ...] = ()
+    aliases: tuple[tuple[str, ...], ...] = ()
     subcommands: tuple[str, ...] = ()
+    scope: CommandScope = "global"
+    surfaces: tuple[CommandSurface, ...] = DEFAULT_GLOBAL_SURFACES
     agent_allowed: bool = True
-    executable: bool = True
+    requires_thread: bool = False
+    requires_admin: bool = False
+    mutates_state: bool = False
+    danger_level: CommandDangerLevel = "safe"
+    execution_kind: CommandExecutionKind = "command"
     note: str | None = None
+    hidden: bool = False
+
+    @property
+    def name(self) -> str:
+        return " ".join(self.path)
+
+    @property
+    def executable(self) -> bool:
+        return self.execution_kind == "command"
+
+
+@dataclass(frozen=True)
+class ParsedCommand:
+    tokens: tuple[str, ...]
+    path: tuple[str, ...]
+    args: list[str]
+    rest: str
+    definition: CommandDefinition | None
+    matched_input_len: int = 0
 
 
 def _path_param(value: Any) -> str:
@@ -119,6 +201,17 @@ def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> s
     return str(exc)
 
 
+def _raise_http_status(status_code: int, detail: str) -> None:
+    """Raise an HTTPStatusError compatible with the legacy command executor."""
+    request = httpx.Request("COMMAND", "nymeria://command-service")
+    response = httpx.Response(
+        status_code,
+        json={"detail": detail},
+        request=request,
+    )
+    raise httpx.HTTPStatusError(detail, request=request, response=response)
+
+
 def _resolve_base_url() -> str:
     explicit = os.environ.get("NYMERIA_API_URL")
     if explicit:
@@ -126,6 +219,72 @@ def _resolve_base_url() -> str:
     if Path("/.dockerenv").exists():
         return "http://api:8000"
     return "http://localhost:8000"
+
+
+def _actor_from_source(source: str | None) -> CommandActor:
+    if source == "agent":
+        return "agent"
+    return "user"
+
+
+def _surface_from_source(source: str | None) -> CommandSurface | None:
+    if source == "cli":
+        return "cli"
+    if source == "agent":
+        return "agent"
+    return None
+
+
+def _normalize_token(token: str) -> str:
+    return token.strip().lower().lstrip("/").replace("-", "_")
+
+
+def _normalize_path(value: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        cleaned = value.strip().lstrip("/")
+        if not cleaned:
+            return ()
+        try:
+            parts = shlex.split(cleaned, posix=True)
+        except ValueError:
+            parts = cleaned.split()
+    else:
+        parts = [str(part) for part in value]
+    return tuple(token for token in (_normalize_token(part) for part in parts) if token)
+
+
+def _display_path(path: tuple[str, ...] | list[str]) -> str:
+    return " ".join(path)
+
+
+def _usage_for_path(path: tuple[str, ...]) -> str:
+    return "/" + _display_path(path)
+
+
+def _id_for_path(path: tuple[str, ...]) -> str:
+    return ".".join(path)
+
+
+def _alias_display(path: tuple[str, ...]) -> str:
+    return "/" + _display_path(path)
+
+
+def _split_rest_after_tokens(command_text: str, token_count: int) -> str:
+    rest = command_text.strip().lstrip("/")
+    for _ in range(token_count):
+        rest = rest.lstrip()
+        _head, sep, tail = rest.partition(" ")
+        if not sep:
+            return ""
+        rest = tail
+    return rest.strip()
+
+
+def _split_args(rest: str) -> list[str]:
+    try:
+        return shlex.split(rest, posix=True) if rest else []
+    except ValueError:
+        return rest.split()
 
 
 def parse_command(raw: str) -> tuple[Optional[str], Optional[str], list[str], str]:
@@ -186,7 +345,7 @@ def _format_legacy_output(text: str) -> tuple[bool, str]:
 
 
 class CommandHttpClient:
-    """Small REST loopback client used by CommandService.
+    """Small REST compatibility client for out-of-process command callers.
 
     ``use_act_as`` is enabled for service-token callers. For direct user-token
     callers, the token itself is authoritative and no X-Nymeria-Act-As header
@@ -385,13 +544,824 @@ class CommandHttpClient:
         return await self._get("/models/available", params=params, act_as=user_id)
 
 
+@dataclass(frozen=True)
+class _CommandBackendUser:
+    id: str
+    role: Literal["user", "admin"] = "user"
+    email: str = ""
+    display_name: str = ""
+    via_act_as: bool = False
+
+
+class CommandBackendClient:
+    """In-process command backend adapter.
+
+    The command executor only needs a small API-shaped interface. This adapter
+    implements that interface by calling Nymeria managers directly instead of
+    sending HTTP requests back into the same API process.
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        user: _CommandBackendUser,
+        settings_fn: Callable[[], Any] = get_settings,
+    ) -> None:
+        self.agent = agent
+        self.user = user
+        self.settings_fn = settings_fn
+
+    @classmethod
+    def from_context(
+        cls,
+        ctx: CommandContext,
+        *,
+        agent: Any | None = None,
+        user: Any | None = None,
+        settings_fn: Callable[[], Any] | None = None,
+    ) -> "CommandBackendClient":
+        if agent is None:
+            from .agent import get_current_agent
+
+            agent = get_current_agent()
+        if agent is None:
+            raise RuntimeError("No current NymeriaAgent is available for command execution.")
+
+        if user is not None:
+            backend_user = _CommandBackendUser(
+                id=user.id,
+                role=user.role,
+                email=getattr(user, "email", ""),
+                display_name=getattr(user, "display_name", ""),
+                via_act_as=getattr(user, "via_act_as", False),
+            )
+        else:
+            role: Literal["user", "admin"] = "admin" if ctx.is_admin else "user"
+            email = ""
+            display_name = ctx.user_id
+            try:
+                record = agent.accounts_repo.get_user_by_id(ctx.user_id)
+            except Exception:  # noqa: BLE001
+                record = None
+            if record is not None:
+                role = record.role
+                email = record.email
+                display_name = record.display_name
+            backend_user = _CommandBackendUser(
+                id=ctx.user_id,
+                role=role,
+                email=email,
+                display_name=display_name,
+                via_act_as=ctx.via_act_as,
+            )
+        return cls(agent, user=backend_user, settings_fn=settings_fn or get_settings)
+
+    async def close(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+    def _settings(self) -> Any:
+        return self.settings_fn()
+
+    def _require_admin(self) -> None:
+        if self.user.role != "admin":
+            _raise_http_status(403, "Admin only")
+
+    def _require_same_user_or_admin(self, user_id: str) -> None:
+        if user_id != self.user.id and self.user.role != "admin":
+            _raise_http_status(404, "Not found")
+
+    def _require_thread_access(self, thread_id: str) -> None:
+        from .thread_classification import is_shared_channel
+
+        if self.user.role == "admin":
+            if is_shared_channel(thread_id):
+                return
+            self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+            return
+
+        if is_shared_channel(thread_id):
+            if self.user.via_act_as:
+                return
+            _raise_http_status(404, "Not found")
+
+        owner = self.agent.accounts_repo.claim_thread(thread_id, self.user.id)
+        if owner != self.user.id:
+            _raise_http_status(404, "Not found")
+
+    def _checked_user_id(self, user_id: str) -> str:
+        self._require_same_user_or_admin(user_id)
+        return user_id
+
+    async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        self._require_thread_access(thread_id)
+        stats = dict(self.agent.get_context_stats(thread_id) or {})
+        thread_locks = getattr(self.agent, "_thread_locks", None)
+        if thread_locks is not None:
+            try:
+                stats["processing"] = thread_locks.get_lock_info(thread_id) is not None
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to inspect processing state for %s: %s", thread_id, e)
+                stats["processing"] = False
+        return stats
+
+    async def get_thread_config(self, thread_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        self._require_thread_access(thread_id)
+        from ..api.routers.thread_config import (
+            _config_response,
+            _default_thread_config_response,
+        )
+
+        tc = self.agent.thread_config_manager.get_config(thread_id)
+        if tc:
+            return _config_response(tc)
+        return _default_thread_config_response(thread_id)
+
+    async def get_settings(self, user_id: Optional[str] = None) -> dict:
+        from ..api.routers.settings import _fallback_model_list
+
+        settings = self._settings()
+        return {
+            "llm_provider": settings.llm_provider,
+            "llm_model": settings.llm_model,
+            "llm_fast_model": settings.llm_fast_model,
+            "llm_fallback_models": _fallback_model_list(settings.llm_fallback_models),
+            "llm_temperature": settings.llm_temperature,
+            "llm_max_tokens": settings.llm_max_tokens,
+            "llm_top_p": settings.llm_top_p,
+            "llm_top_k": settings.llm_top_k,
+            "llm_frequency_penalty": settings.llm_frequency_penalty,
+            "llm_presence_penalty": settings.llm_presence_penalty,
+            "llm_reasoning_effort": settings.llm_reasoning_effort,
+            "llm_extended_thinking": settings.llm_extended_thinking,
+            "llm_use_model_defaults": settings.llm_use_model_defaults,
+            "llm_base_url": settings.llm_base_url,
+            "openai_api_mode": settings.openai_api_mode,
+            "llm_stream_max_retries": settings.llm_stream_max_retries,
+            "llm_stream_retry_initial_delay": settings.llm_stream_retry_initial_delay,
+            "llm_stream_retry_max_delay": settings.llm_stream_retry_max_delay,
+            "context_management": settings.context_management,
+            "compact_threshold": settings.compact_threshold,
+            "compact_keep_messages": settings.compact_keep_messages,
+            "compact_model": settings.compact_model,
+            "sliding_window_cycles": settings.sliding_window_cycles,
+            "tool_output_max_chars": settings.tool_output_max_chars,
+            "log_level": settings.log_level,
+            "watchdog_enabled": settings.watchdog_enabled,
+            "watchdog_interval_minutes": settings.watchdog_interval_minutes,
+            "todo_staleness_minutes": settings.todo_staleness_minutes,
+            "activity_retention_hours": settings.activity_retention_hours,
+            "tts_provider": settings.tts_provider,
+            "tts_base_url": settings.tts_base_url,
+            "tts_model": settings.tts_model,
+            "tts_voice": settings.tts_voice,
+            "tts_output_format": settings.tts_output_format,
+            "tts_speed": settings.tts_speed,
+            "stt_provider": settings.stt_provider,
+            "stt_base_url": settings.stt_base_url,
+            "stt_model": settings.stt_model,
+            "stt_language": settings.stt_language,
+            "voice_default_thread_id": settings.voice_default_thread_id,
+        }
+
+    async def get_default_tools(self, user_id: str = "default") -> dict:
+        from ..tools import (
+            ALL_TOOLS,
+            OPTIONAL_TOOLS,
+            filter_discoverable_optional_tool_names,
+        )
+        from ..tools.metadata import MCP_SERVER_TOOL_METADATA, get_tool_metadata
+
+        target_user_id = self._checked_user_id(user_id)
+        profile = self.agent.profile_manager.get_profile(target_user_id)
+        prefs = profile.tool_preferences
+        default_set = (
+            set(prefs.default_thread_tools)
+            if prefs.default_thread_tools is not None
+            else {t.name for t in ALL_TOOLS}
+        )
+
+        tools_out = []
+        seen = set()
+        visible_optional = filter_discoverable_optional_tool_names(
+            OPTIONAL_TOOLS.keys(),
+            self.user.role,
+        )
+        for t in ALL_TOOLS:
+            meta = get_tool_metadata(t.name)
+            tools_out.append({
+                "name": t.name,
+                "description": t.description,
+                "category": meta.category.value if meta else "core",
+                "security_level": meta.security_level.value if meta else "moderate",
+                "is_optional": False,
+                "is_default": t.name in default_set,
+            })
+            seen.add(t.name)
+        for name, tool in OPTIONAL_TOOLS.items():
+            if name in visible_optional and name not in seen:
+                meta = get_tool_metadata(name)
+                tools_out.append({
+                    "name": name,
+                    "description": tool.description,
+                    "category": meta.category.value if meta else "unknown",
+                    "security_level": meta.security_level.value if meta else "moderate",
+                    "is_optional": True,
+                    "is_default": name in default_set,
+                })
+                seen.add(name)
+        for name, meta in MCP_SERVER_TOOL_METADATA.items():
+            if name not in seen:
+                tools_out.append({
+                    "name": name,
+                    "description": meta.description,
+                    "category": "mcp_server",
+                    "security_level": "moderate",
+                    "is_optional": True,
+                    "is_default": name in default_set,
+                })
+                seen.add(name)
+
+        owned = set(self.agent.accounts_repo.list_threads_for_user(target_user_id))
+        callable_count = len(
+            self.agent.thread_config_manager.list_callable_threads(
+                owned_thread_ids=owned,
+            )
+        )
+        return {
+            "mode": "custom",
+            "default_tools": sorted(default_set),
+            "available_tools": tools_out,
+            "callable_thread_count": callable_count,
+        }
+
+    async def get_tool_categories(self) -> dict:
+        from ..tools import filter_discoverable_optional_tool_names
+        from ..tools.metadata import get_category_tools_summary
+
+        categories = get_category_tools_summary()
+        visible_names = filter_discoverable_optional_tool_names(
+            {name for names in categories.values() for name in names},
+            self.user.role,
+        )
+        return {
+            "categories": {
+                category: [name for name in names if name in visible_names]
+                for category, names in categories.items()
+            }
+        }
+
+    async def list_memories(self, user_id: str) -> list[dict]:
+        target_user_id = self._checked_user_id(user_id)
+        profile = self.agent.profile_manager.get_profile(target_user_id)
+        return [
+            {
+                "key": m.key,
+                "value": m.value,
+                "created_at": m.created_at.isoformat(),
+                "accessed_at": m.accessed_at.isoformat(),
+                "access_count": m.access_count,
+            }
+            for m in profile.memories
+        ]
+
+    def _upsert_memory_rag_chunk(self, user_id: str, key: str, value: str) -> None:
+        memory_index = self.agent._get_memory_index(user_id)
+        if not memory_index:
+            return
+        try:
+            memory_index.delete_memory_key(user_id, key)
+            memory_index.add_chunk(
+                content=f"{key}: {value}",
+                metadata={"key": key},
+                chunk_type="memory",
+                user_id=user_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to sync memory '%s' into RAG index: %s", key, e)
+
+    def _delete_memory_rag_chunk(self, user_id: str, key: str) -> None:
+        memory_index = self.agent._get_memory_index(user_id)
+        if not memory_index:
+            return
+        try:
+            memory_index.delete_memory_key(user_id, key)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to remove memory '%s' from RAG index: %s", key, e)
+
+    async def save_memory(self, user_id: str, key: str, value: str) -> dict:
+        target_user_id = self._checked_user_id(user_id)
+        with self.agent.profile_manager.atomic_update(target_user_id) as profile:
+            success = profile.add_memory(key, value)
+            max_memories = profile.MAX_MEMORIES
+        if not success:
+            _raise_http_status(400, f"Memory limit reached ({max_memories})")
+        self._upsert_memory_rag_chunk(target_user_id, key, value)
+        return {"status": "ok", "key": key}
+
+    async def forget_memory(self, user_id: str, key: str) -> dict:
+        target_user_id = self._checked_user_id(user_id)
+        with self.agent.profile_manager.atomic_update(target_user_id) as profile:
+            removed = profile.remove_memory(key)
+        if not removed:
+            _raise_http_status(404, f"No memory with key '{key}'")
+        self._delete_memory_rag_chunk(target_user_id, key)
+        return {"status": "ok", "key": key}
+
+    async def search_memories(self, user_id: str, query: str) -> list[dict]:
+        target_user_id = self._checked_user_id(user_id)
+        profile = self.agent.profile_manager.get_profile(target_user_id)
+        return [
+            {"key": m.key, "value": m.value, "access_count": m.access_count}
+            for m in profile.search_memories(query)
+        ]
+
+    async def list_todos(
+        self,
+        user_id: str,
+        *,
+        filter_status: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> list[dict]:
+        from ..api.routers.todos import STATUS_ORDER, _todo_to_response
+        from .todo_manager import TodoManager, TodoStatus
+
+        target_user_id = self._checked_user_id(user_id)
+        todo_list = TodoManager(self._settings().data_dir).get_todos(target_user_id)
+        if filter_status == "all":
+            items = todo_list.items
+        elif filter_status:
+            try:
+                status = TodoStatus(filter_status.lower())
+            except ValueError:
+                _raise_http_status(400, f"Invalid status filter '{filter_status}'")
+            items = [i for i in todo_list.items if i.status == status]
+        else:
+            items = todo_list.get_active_todos()
+        if thread_id:
+            items = [i for i in items if i.thread_id == thread_id]
+        sorted_items = sorted(
+            items,
+            key=lambda i: (STATUS_ORDER.get(i.status, 3), i.created_at),
+        )
+        return [_todo_to_response(item).model_dump(mode="json") for item in sorted_items]
+
+    async def add_todo(
+        self,
+        user_id: str,
+        task: str,
+        scheduled_for: str = "1d",
+        notes: Optional[str] = None,
+        recurrence: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> dict:
+        from ..api.routers.todos import (
+            VALID_RECURRENCES,
+            _get_todo_schedule_db,
+            _parse_scheduled_for,
+            _todo_to_response,
+        )
+        from .todo_manager import TodoManager
+
+        target_user_id = self._checked_user_id(user_id)
+        settings = self._settings()
+        todo_manager = TodoManager(settings.data_dir)
+        if recurrence and recurrence.lower() not in VALID_RECURRENCES:
+            _raise_http_status(
+                400,
+                f"Invalid recurrence: '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}",
+            )
+        try:
+            parsed_schedule = _parse_scheduled_for(scheduled_for)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(exc, "status_code", 400)
+            detail = getattr(exc, "detail", str(exc))
+            _raise_http_status(status, str(detail))
+        todo_thread_id = thread_id or f"default-{target_user_id}"
+        with todo_manager.atomic_update(target_user_id) as todo_list:
+            item = todo_list.add_item(
+                task=task,
+                notes=notes,
+                scheduled_for=parsed_schedule,
+                thread_id=todo_thread_id,
+                created_by="user",
+                recurrence=recurrence.lower() if recurrence else None,
+            )
+            if item is None:
+                _raise_http_status(400, "Cannot create TODO: maximum limit reached")
+            created_item = item
+        if created_item.scheduled_for:
+            schedule_db = _get_todo_schedule_db(settings)
+            todo_manager.sync_schedule_to_db(target_user_id, created_item.id, schedule_db)
+        return _todo_to_response(created_item).model_dump(mode="json")
+
+    async def complete_todo(self, user_id: str, todo_id: str) -> dict:
+        from ..api.routers.todos import (
+            _get_todo_schedule_db,
+            _raise_if_todo_executing,
+            _recurrence_anchor,
+            _todo_to_response,
+        )
+        from .todo_constants import calculate_next_recurrence_time
+        from .todo_manager import TodoManager, TodoStatus
+
+        target_user_id = self._checked_user_id(user_id)
+        settings = self._settings()
+        todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
+        existing = todo_manager.get_todos(target_user_id).get_item(todo_id)
+        if not existing:
+            _raise_http_status(404, f"TODO '{todo_id}' not found")
+        try:
+            _raise_if_todo_executing(schedule_db, todo_id, target_user_id)
+        except Exception as exc:  # noqa: BLE001
+            _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
+        with todo_manager.atomic_update(target_user_id) as todo_list:
+            item = todo_list.get_item(todo_id)
+            if not item:
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            has_recurrence = item.recurrence
+            if not todo_list.complete_item(todo_id):
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            if has_recurrence:
+                recurrence_anchor = _recurrence_anchor(item)
+                next_execution = calculate_next_recurrence_time(
+                    has_recurrence,
+                    recurrence_anchor,
+                )
+                if next_execution:
+                    todo_list.update_item(
+                        todo_id,
+                        scheduled_for=next_execution,
+                        status=TodoStatus.PENDING,
+                    )
+                    refreshed = todo_list.get_item(todo_id)
+                    if refreshed:
+                        refreshed.last_execution = recurrence_anchor
+            item = todo_list.get_item(todo_id)
+            if has_recurrence and item and item.scheduled_for:
+                todo_manager.sync_schedule_to_db(target_user_id, todo_id, schedule_db)
+            else:
+                schedule_db.remove_scheduled(todo_id)
+            return _todo_to_response(item).model_dump(mode="json")
+
+    async def delete_todo(self, user_id: str, todo_id: str) -> dict:
+        from ..api.routers.todos import _get_todo_schedule_db, _raise_if_todo_executing
+        from .todo_manager import TodoManager
+
+        target_user_id = self._checked_user_id(user_id)
+        settings = self._settings()
+        todo_manager = TodoManager(settings.data_dir)
+        schedule_db = _get_todo_schedule_db(settings)
+        existing = todo_manager.get_todos(target_user_id).get_item(todo_id)
+        if not existing:
+            _raise_http_status(404, f"TODO '{todo_id}' not found")
+        try:
+            _raise_if_todo_executing(schedule_db, todo_id, target_user_id)
+        except Exception as exc:  # noqa: BLE001
+            _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
+        with todo_manager.atomic_update(target_user_id) as todo_list:
+            if not todo_list.get_item(todo_id):
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            if not todo_list.delete_item(todo_id):
+                _raise_http_status(404, f"TODO '{todo_id}' not found")
+            schedule_db.remove_scheduled(todo_id)
+        return {"status": "ok", "deleted_id": todo_id}
+
+    async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
+        self._require_admin()
+        from ..api.routers.settings import (
+            _clear_settings_cache,
+            _env_mapping,
+            _restart_required_keys,
+            _sync_process_env,
+        )
+        from ..api.schemas.settings import ServerSettingsUpdate
+        from ..config.settings import get_env_write_path
+
+        settings = self._settings()
+        updates = ServerSettingsUpdate(**kwargs)
+        updates_dict = {
+            key: value for key, value in updates.model_dump().items() if value is not None
+        }
+        if not updates_dict:
+            return {"message": "No updates provided", "restart_required": False}
+
+        env_path = get_env_write_path(settings.project_root)
+        existing_lines = (
+            env_path.read_text(encoding="utf-8").splitlines()
+            if env_path.exists()
+            else []
+        )
+        env_mapping = _env_mapping()
+        updated_vars = set()
+        new_lines = []
+        for line in existing_lines:
+            updated = False
+            for setting_name, env_var in env_mapping.items():
+                if setting_name in updates_dict and line.startswith(f"{env_var}="):
+                    value = updates_dict[setting_name]
+                    if isinstance(value, bool):
+                        value = str(value).lower()
+                    new_lines.append(f"{env_var}={value}")
+                    updated_vars.add(setting_name)
+                    updated = True
+                    break
+            if not updated:
+                new_lines.append(line)
+
+        for setting_name, value in updates_dict.items():
+            if setting_name not in updated_vars:
+                env_var = env_mapping.get(setting_name)
+                if env_var:
+                    if isinstance(value, bool):
+                        value = str(value).lower()
+                    new_lines.append(f"{env_var}={value}")
+
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        _sync_process_env(new_lines, set(env_mapping.values()))
+        _clear_settings_cache(self.settings_fn)
+        new_settings = self.settings_fn()
+        self.agent.settings = new_settings
+
+        llm_fields = {
+            "llm_provider",
+            "llm_model",
+            "llm_fast_model",
+            "llm_fallback_models",
+            "llm_temperature",
+            "llm_max_tokens",
+            "llm_top_p",
+            "llm_top_k",
+            "llm_frequency_penalty",
+            "llm_presence_penalty",
+            "llm_reasoning_effort",
+            "llm_extended_thinking",
+            "llm_use_model_defaults",
+            "llm_base_url",
+            "openai_api_mode",
+            "llm_stream_max_retries",
+            "llm_stream_retry_initial_delay",
+            "llm_stream_retry_max_delay",
+        }
+        llm_credential_fields = {
+            "anthropic_api_key",
+            "anthropic_direct_api_key",
+            "openai_api_key",
+            "openrouter_api_key",
+        }
+        graph_fields = llm_fields | {"tool_output_max_chars"} | llm_credential_fields
+        if graph_fields & set(updates_dict):
+            with self.agent._graph_cache_lock:
+                self.agent._user_graphs.clear()
+                self.agent._async_user_graphs.clear()
+            self.agent._default_graph = self.agent._build_graph_with_prompt(
+                self.agent._base_system_prompt
+            )
+            self.agent._default_async_graph = self.agent._build_async_graph_with_prompt(
+                self.agent._base_system_prompt
+            )
+
+        needs_restart = bool(_restart_required_keys() & set(updates_dict))
+        return {
+            "message": "Settings updated and applied" + (
+                " (some changes require /restart api to take effect)"
+                if needs_restart
+                else ""
+            ),
+            "updated": list(updates_dict.keys()),
+            "restart_required": needs_restart,
+        }
+
+    async def update_thread_config(
+        self,
+        thread_id: str,
+        *,
+        user_id: Optional[str] = None,
+        **kwargs,
+    ) -> dict:
+        from .thread_config import ThreadConfig, ThreadLLMConfig
+
+        self._require_thread_access(thread_id)
+        if user_id is not None:
+            self._checked_user_id(user_id)
+
+        tc = self.agent.thread_config_manager.get_config(thread_id)
+        if tc is None:
+            tc = ThreadConfig(thread_id=thread_id)
+
+        if "enabled_tools" in kwargs and kwargs["enabled_tools"] is not None:
+            enabled_tools = list(kwargs["enabled_tools"])
+            if self.user.role != "admin":
+                from ..tools import (
+                    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+                    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+                )
+
+                blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(enabled_tools)
+                if blocked:
+                    _raise_http_status(
+                        403,
+                        "Admin-only tools cannot be enabled by this user: "
+                        f"{sorted(blocked)}",
+                    )
+                blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(enabled_tools)
+                if blocked:
+                    _raise_http_status(
+                        403,
+                        "Developer-only diagnostic tools cannot be enabled by this user: "
+                        f"{sorted(blocked)}",
+                    )
+            tc.enabled_tools = enabled_tools
+        if "disabled_tools" in kwargs and kwargs["disabled_tools"] is not None:
+            tc.disabled_tools = list(kwargs["disabled_tools"])
+        if "llm_config" in kwargs and kwargs["llm_config"] is not None:
+            llm_data = dict(kwargs["llm_config"])
+            if tc.llm_config is None:
+                tc.llm_config = ThreadLLMConfig(
+                    **{key: value for key, value in llm_data.items() if value is not None}
+                )
+            else:
+                for key, value in llm_data.items():
+                    setattr(tc.llm_config, key, value)
+
+        if not self.agent.thread_config_manager.save_config(tc):
+            _raise_http_status(500, "Failed to save thread config")
+        self.agent.invalidate_thread_config_cache(thread_id)
+        return tc.model_dump(mode="json") | {"has_customizations": tc.has_customizations()}
+
+    async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:
+        self._require_admin()
+        from ..api.routers.settings import _env_categories, _mask_value, _secret_keys
+        from ..api.schemas.settings import HIDDEN_CONFIG_SETTINGS
+
+        settings = self._settings()
+        entries = []
+        secret_keys = _secret_keys()
+        for category, keys in _env_categories().items():
+            for key in keys:
+                if key in HIDDEN_CONFIG_SETTINGS:
+                    continue
+                val = getattr(settings, key, None)
+                is_secret = key in secret_keys
+                display_val = None
+                if val is not None:
+                    display_val = _mask_value(str(val)) if is_secret else str(val)
+                entries.append({
+                    "name": key,
+                    "env_var": key.upper(),
+                    "value": display_val,
+                    "is_set": val is not None and str(val) != "",
+                    "is_secret": is_secret,
+                    "category": category,
+                })
+        return {"entries": entries}
+
+    async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
+        self._require_admin()
+        from ..api.schemas.settings import HIDDEN_CONFIG_SETTINGS
+
+        settings = self._settings()
+        key_lower = key.lower()
+        if key_lower in HIDDEN_CONFIG_SETTINGS:
+            _raise_http_status(404, f"Unknown setting: {key}")
+        val = getattr(settings, key, None)
+        if val is None:
+            val = getattr(settings, key_lower, None)
+            if val is None:
+                _raise_http_status(404, f"Unknown setting: {key}")
+            key = key_lower
+        return {
+            "name": key,
+            "env_var": key.upper(),
+            "value": str(val) if val is not None else None,
+        }
+
+    async def list_available_models(
+        self,
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> list[dict]:
+        from ..config.llm_providers import (
+            is_openai_compatible_provider,
+            normalize_llm_provider,
+            provider_requires_api_key,
+            resolve_provider_api_key,
+            resolve_provider_base_url,
+        )
+        from ..config.model_capabilities import register_model_metadata
+        from .llm_credentials import get_llm_provider_credential
+        from .llm_provider_utils import base_url_allows_no_api_key, extract_model_metadata
+
+        settings = self._settings()
+        effective_provider = normalize_llm_provider(provider or settings.llm_provider)
+        credential = get_llm_provider_credential(
+            effective_provider,
+            vault=getattr(self.agent, "credential_vault", None),
+            owner_user_id=self.user.id,
+        )
+        api_key = credential.api_key if credential else None
+        effective_base_url = None
+        if (
+            not effective_base_url
+            and effective_provider == normalize_llm_provider(settings.llm_provider)
+        ):
+            effective_base_url = settings.llm_base_url
+        if not effective_base_url and credential and credential.base_url:
+            effective_base_url = credential.base_url
+
+        if effective_provider == "anthropic":
+            api_key = api_key or (
+                settings.anthropic_direct_api_key or settings.anthropic_api_key
+            )
+            effective_base_url = effective_base_url or "https://api.anthropic.com"
+            clean_base = effective_base_url.rstrip("/")
+            models_url = (
+                f"{clean_base}/models"
+                if clean_base.endswith("/v1")
+                else f"{clean_base}/v1/models"
+            )
+        elif is_openai_compatible_provider(effective_provider):
+            api_key = api_key or resolve_provider_api_key(
+                effective_provider,
+                settings=settings,
+            )
+            effective_base_url = effective_base_url or resolve_provider_base_url(
+                effective_provider,
+                settings=settings,
+            )
+            if not effective_base_url:
+                return []
+            models_url = f"{effective_base_url.rstrip('/')}/models"
+        else:
+            return []
+
+        if (
+            not api_key
+            and provider_requires_api_key(effective_provider)
+            and not base_url_allows_no_api_key(effective_base_url)
+        ):
+            return []
+        if not api_key:
+            api_key = "not-needed"
+
+        headers = (
+            {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+            if effective_provider == "anthropic"
+            else {"Authorization": f"Bearer {api_key}"}
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(models_url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+            result = []
+            for model in sorted(data.get("data", []), key=lambda item: item.get("id", "")):
+                model_id = model.get("id", "")
+                if not model_id:
+                    continue
+                model_name = model.get("name") or model_id
+                metadata = extract_model_metadata(model)
+                register_model_metadata(
+                    model_id=model_id,
+                    name=model_name,
+                    context_length=metadata["context_length"],
+                    max_completion_tokens=metadata["max_completion_tokens"],
+                    input_modalities=set(metadata["input_modalities"]),
+                    supported_parameters=set(metadata["supported_parameters"]),
+                    default_temperature=metadata["default_temperature"],
+                    default_top_p=metadata["default_top_p"],
+                    default_frequency_penalty=metadata["default_frequency_penalty"],
+                    pricing_prompt=metadata["pricing_prompt"],
+                    pricing_completion=metadata["pricing_completion"],
+                    tokenizer=metadata["tokenizer"],
+                )
+                result.append({
+                    "id": model_id,
+                    "name": model_name,
+                    "owned_by": model.get("owned_by", ""),
+                    "created": model.get("created"),
+                    **metadata,
+                })
+            return result
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to fetch models from %s: %s", models_url, e)
+            return []
+
+
 class CommandService:
     """Registry and dispatcher for Nymeria slash commands."""
 
     def __init__(self) -> None:
-        self._commands: dict[str, _CommandDefinition] = {}
-        self._aliases: dict[str, str] = {}
+        self._commands: dict[str, CommandDefinition] = {}
+        self._path_index: dict[tuple[str, ...], str] = {}
+        self._aliases: dict[tuple[str, ...], str] = {}
         self._register_defaults()
+        self.validate_registry()
 
     def register(
         self,
@@ -400,72 +1370,440 @@ class CommandService:
         *,
         description: str,
         category: str,
+        id: str | None = None,
         usage: str | None = None,
-        aliases: tuple[str, ...] = (),
+        aliases: tuple[str | tuple[str, ...], ...] = (),
         subcommands: tuple[str, ...] = (),
+        scope: CommandScope = "global",
+        surfaces: tuple[CommandSurface, ...] = DEFAULT_GLOBAL_SURFACES,
         agent_allowed: bool = True,
-        executable: bool = True,
+        requires_thread: bool = False,
+        requires_admin: bool = False,
+        mutates_state: bool = False,
+        danger_level: CommandDangerLevel = "safe",
+        execution_kind: CommandExecutionKind = "command",
         note: str | None = None,
+        hidden: bool = False,
     ) -> None:
         del handler
-        normalized = name.lower().lstrip("/")
-        self._commands[normalized] = _CommandDefinition(
-            name=normalized,
+        path = _normalize_path(name)
+        if not path:
+            raise ValueError("Command path cannot be empty")
+        command_id = (id or _id_for_path(path)).lower()
+        if command_id in self._commands:
+            raise ValueError(f"Duplicate command id: {command_id}")
+        if path in self._path_index:
+            existing = self._path_index[path]
+            raise ValueError(
+                f"Duplicate command path: /{_display_path(path)} "
+                f"({existing} and {command_id})"
+            )
+
+        alias_paths = tuple(_normalize_path(alias) for alias in aliases)
+        for alias_path in alias_paths:
+            if not alias_path:
+                raise ValueError(f"Empty alias for command {command_id}")
+            existing_path_id = self._path_index.get(alias_path)
+            if existing_path_id and existing_path_id != command_id:
+                raise ValueError(
+                    f"Alias /{_display_path(alias_path)} for {command_id} "
+                    f"conflicts with command path {existing_path_id}"
+                )
+            existing_alias_id = self._aliases.get(alias_path)
+            if existing_alias_id and existing_alias_id != command_id:
+                raise ValueError(
+                    f"Alias /{_display_path(alias_path)} for {command_id} "
+                    f"already points to {existing_alias_id}"
+                )
+
+        definition = CommandDefinition(
+            id=command_id,
+            path=path,
             description=description,
-            usage=usage or f"/{normalized}",
+            usage=usage or _usage_for_path(path),
             category=category,
-            aliases=aliases,
+            aliases=alias_paths,
             subcommands=subcommands,
+            scope=scope,
+            surfaces=surfaces,
             agent_allowed=agent_allowed,
-            executable=executable,
+            requires_thread=requires_thread,
+            requires_admin=requires_admin,
+            mutates_state=mutates_state,
+            danger_level=danger_level,
+            execution_kind=execution_kind,
             note=note,
+            hidden=hidden,
         )
-        for alias in aliases:
-            self._aliases[alias.lower().lstrip("/")] = normalized
+        self._commands[command_id] = definition
+        self._path_index[path] = command_id
+        for alias_path in alias_paths:
+            self._aliases[alias_path] = command_id
 
     def _register_defaults(self) -> None:
         self.register("help", description="Show available commands", category="General", aliases=("h",))
-        self.register("status", description="Model, context, tools, and task summary", category="Status")
-        self.register("thread", description="Show active thread context usage", category="Status")
-        self.register("context", description="Detailed context and tool breakdown", category="Status")
-        self.register("tasks", description="Scheduled tasks overview", category="TODOs", usage="/tasks [active|pending|in_progress|done|all]")
-        self.register("model", description="Show or change the model", category="LLM", usage="/model [name] [global|thread]")
+        self.register(
+            "status",
+            description="Model, context, tools, and task summary",
+            category="Status",
+            requires_thread=True,
+        )
+        self.register(
+            "thread",
+            description="Show active thread context usage",
+            category="Status",
+            requires_thread=True,
+        )
+        self.register(
+            "context",
+            description="Detailed context and tool breakdown",
+            category="Status",
+            requires_thread=True,
+        )
+        self.register(
+            "tasks",
+            description="Scheduled tasks overview",
+            category="TODOs",
+            usage="/tasks [active|pending|in_progress|done|all]",
+        )
+        self.register(
+            "model",
+            description="Show or change the model",
+            category="LLM",
+            usage="/model [name] [global|thread]",
+            mutates_state=True,
+            danger_level="normal",
+        )
         self.register("models", description="List available provider models", category="LLM")
-        self.register("think", description="Show or change thinking mode", category="LLM", usage="/think [off|on|low|medium|high]")
-        self.register("config", description="Manage server settings", category="Settings", usage="/config <show|get|set> [args]", subcommands=("show", "get", "set"))
-        self.register("env", description="Manage environment variables", category="Settings", usage="/env <show|get|set> [args]", subcommands=("show", "get", "set"))
-        self.register("tools", description="Inspect or change thread tools", category="Tools", usage="/tools <core|optional|enabled|category|enable|disable> [args]", subcommands=("core", "optional", "enabled", "category", "enable", "disable"))
-        self.register("memory", description="Manage saved memories", category="Memory", usage="/memory <list|save|forget|search> [args]", subcommands=("list", "save", "forget", "search"))
-        self.register("todos", description="Manage TODOs", category="TODOs", usage="/todos <list|add|complete|delete> [args]", subcommands=("list", "add", "complete", "delete"))
-        self.register("notepad", description="Manage this thread's notepad", category="Thread", usage="/notepad <read|write|clear> [args]", subcommands=("read", "write", "clear"))
+        self.register(
+            "think",
+            description="Show or change thinking mode",
+            category="LLM",
+            usage="/think [off|on|low|medium|high]",
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "config show",
+            description="Show server settings",
+            category="Settings",
+            aliases=("config_show",),
+        )
+        self.register(
+            "config get",
+            description="Show one server setting",
+            category="Settings",
+            usage="/config get <key>",
+            aliases=("config_get",),
+        )
+        self.register(
+            "config set",
+            description="Change a server setting",
+            category="Settings",
+            usage="/config set <key> <value>",
+            aliases=("config_set",),
+            requires_admin=True,
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "env show",
+            description="Show environment variables",
+            category="Settings",
+            aliases=("env_show",),
+            requires_admin=True,
+        )
+        self.register(
+            "env get",
+            description="Show one unmasked environment variable",
+            category="Settings",
+            usage="/env get <key>",
+            aliases=("env_get",),
+            requires_admin=True,
+        )
+        self.register(
+            "env set",
+            description="Change an environment variable",
+            category="Settings",
+            usage="/env set <key> <value>",
+            aliases=("env_set",),
+            requires_admin=True,
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "tools core",
+            description="Show core tools",
+            category="Tools",
+            aliases=("tools_core", "tools list_core"),
+        )
+        self.register(
+            "tools optional",
+            description="Show optional tools",
+            category="Tools",
+            aliases=("tools_optional",),
+            requires_thread=True,
+        )
+        self.register(
+            "tools enabled",
+            description="Show enabled tools for this thread",
+            category="Tools",
+            aliases=("tools_enabled",),
+            requires_thread=True,
+        )
+        self.register(
+            "tools category",
+            description="Show tools in a category",
+            category="Tools",
+            usage="/tools category <name>",
+            aliases=("tools_category",),
+            requires_thread=True,
+        )
+        self.register(
+            "tools enable",
+            description="Enable a tool or category on this thread",
+            category="Tools",
+            usage="/tools enable <tool_or_category>",
+            aliases=("tools_enable",),
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "tools disable",
+            description="Disable a tool or category on this thread",
+            category="Tools",
+            usage="/tools disable <tool_or_category>",
+            aliases=("tools_disable",),
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "memory list",
+            description="List saved memories",
+            category="Memory",
+            aliases=("memory_list",),
+        )
+        self.register(
+            "memory save",
+            description="Save a memory",
+            category="Memory",
+            usage="/memory save <key> <value>",
+            aliases=("memory_save",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "memory forget",
+            description="Forget a memory",
+            category="Memory",
+            usage="/memory forget <key>",
+            aliases=("memory_forget",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "memory search",
+            description="Search saved memories",
+            category="Memory",
+            usage="/memory search <query>",
+            aliases=("memory_search",),
+        )
+        self.register(
+            "todos list",
+            description="List TODOs",
+            category="TODOs",
+            usage="/todos list [active|pending|in_progress|done|all]",
+            aliases=("todos_list",),
+        )
+        self.register(
+            "todos add",
+            description="Add a TODO",
+            category="TODOs",
+            usage="/todos add <task> [| <schedule>] [| <repeat>] [| <notes>]",
+            aliases=("todos_add",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "todos complete",
+            description="Complete a TODO",
+            category="TODOs",
+            usage="/todos complete <todo_id>",
+            aliases=("todos_complete",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "todos delete",
+            description="Delete a TODO",
+            category="TODOs",
+            usage="/todos delete <todo_id>",
+            aliases=("todos_delete",),
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "notepad read",
+            description="Read this thread's notepad",
+            category="Thread",
+            aliases=("notepad_read",),
+            requires_thread=True,
+        )
+        self.register(
+            "notepad write",
+            description="Write this thread's notepad",
+            category="Thread",
+            usage="/notepad write [append:|replace:]<content>",
+            aliases=("notepad_write",),
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "notepad clear",
+            description="Clear this thread's notepad",
+            category="Thread",
+            aliases=("notepad_clear",),
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="dangerous",
+        )
         self.register(
             "compact",
             description="Compact the active chat context",
             category="Thread",
             usage="/compact",
             agent_allowed=False,
-            executable=False,
+            requires_thread=True,
+            execution_kind="chat_stream",
             note="Handled by the chat stream endpoint.",
         )
 
-    def list_commands(self, source: str = "user") -> list[CommandInfo]:
+    def validate_registry(self) -> None:
+        seen_ids: set[str] = set()
+        seen_paths: dict[tuple[str, ...], str] = {}
+        seen_aliases: dict[tuple[str, ...], str] = {}
+        for command_id, cmd in self._commands.items():
+            if command_id in seen_ids:
+                raise ValueError(f"Duplicate command id: {command_id}")
+            seen_ids.add(command_id)
+            existing_path = seen_paths.get(cmd.path)
+            if existing_path and existing_path != command_id:
+                raise ValueError(
+                    f"Duplicate command path: /{cmd.name} "
+                    f"({existing_path} and {command_id})"
+                )
+            seen_paths[cmd.path] = command_id
+            if cmd.path[0] in AGENT_BLOCKED and cmd.agent_allowed:
+                raise ValueError(f"Agent-blocked command is agent-allowed: {command_id}")
+            if cmd.requires_admin and cmd.danger_level == "dangerous" and not cmd.mutates_state:
+                raise ValueError(f"Dangerous admin command must declare mutates_state: {command_id}")
+            for alias_path in cmd.aliases:
+                path_conflict = seen_paths.get(alias_path)
+                if path_conflict and path_conflict != command_id:
+                    raise ValueError(
+                        f"Alias /{_display_path(alias_path)} for {command_id} "
+                        f"conflicts with command path {path_conflict}"
+                    )
+                alias_conflict = seen_aliases.get(alias_path)
+                if alias_conflict and alias_conflict != command_id:
+                    raise ValueError(
+                        f"Alias /{_display_path(alias_path)} for {command_id} "
+                        f"conflicts with alias for {alias_conflict}"
+                    )
+                seen_aliases[alias_path] = command_id
+
+    def list_commands(
+        self,
+        source: str | None = "user",
+        *,
+        actor: str | None = None,
+        surface: str | None = None,
+        is_admin: bool | None = None,
+        include_hidden: bool = False,
+    ) -> list[CommandInfo]:
+        effective_actor = (actor or _actor_from_source(source)).lower()
+        effective_surface = surface or _surface_from_source(source)
         return [
-            CommandInfo(
-                name=cmd.name,
-                description=cmd.description,
-                usage=cmd.usage,
-                category=cmd.category,
-                subcommands=list(cmd.subcommands),
-            )
+            self._to_info(cmd)
             for cmd in sorted(self._commands.values(), key=lambda c: (c.category, c.name))
-            if source != "agent" or cmd.agent_allowed
+            if self._is_visible(
+                cmd,
+                actor=effective_actor,
+                surface=effective_surface,
+                is_admin=is_admin,
+                include_hidden=include_hidden,
+            )
         ]
 
-    def _resolve_name(self, name: str) -> str:
-        return self._aliases.get(name, name)
+    def _is_visible(
+        self,
+        cmd: CommandDefinition,
+        *,
+        actor: str,
+        surface: str | None,
+        is_admin: bool | None,
+        include_hidden: bool,
+    ) -> bool:
+        if cmd.hidden and not include_hidden:
+            return False
+        if actor == "agent" and not cmd.agent_allowed:
+            return False
+        if surface and surface not in cmd.surfaces:
+            return False
+        if cmd.requires_admin and is_admin is False:
+            return False
+        return True
 
-    def _help_markdown(self, source: str) -> str:
-        commands = self.list_commands(source)
+    def _to_info(self, cmd: CommandDefinition) -> CommandInfo:
+        return CommandInfo(
+            name=cmd.name,
+            description=cmd.description,
+            usage=cmd.usage,
+            category=cmd.category,
+            subcommands=list(cmd.subcommands or self._subcommands_for_path(cmd.path)),
+            id=cmd.id,
+            path=list(cmd.path),
+            aliases=[_alias_display(alias) for alias in cmd.aliases],
+            scope=cmd.scope,
+            surfaces=list(cmd.surfaces),
+            agent_allowed=cmd.agent_allowed,
+            requires_thread=cmd.requires_thread,
+            requires_admin=cmd.requires_admin,
+            mutates_state=cmd.mutates_state,
+            danger_level=cmd.danger_level,
+            execution_kind=cmd.execution_kind,
+            note=cmd.note,
+        )
+
+    def _subcommands_for_path(self, path: tuple[str, ...]) -> list[str]:
+        if len(path) != 1:
+            return []
+        prefix = path[0]
+        return sorted(
+            {
+                cmd.path[1]
+                for cmd in self._commands.values()
+                if len(cmd.path) > 1 and cmd.path[0] == prefix
+            }
+        )
+
+    def _help_markdown(
+        self,
+        source: str | None,
+        *,
+        actor: str | None = None,
+        surface: str | None = None,
+        is_admin: bool | None = None,
+    ) -> str:
+        commands = self.list_commands(
+            source,
+            actor=actor,
+            surface=surface,
+            is_admin=is_admin,
+        )
         lines = ["## Nymeria Slash Commands", ""]
         categories = sorted({cmd.category for cmd in commands})
         for category in categories:
@@ -475,13 +1813,96 @@ class CommandService:
             lines.append("| --- | --- | --- |")
             for cmd in [c for c in commands if c.category == category]:
                 desc = cmd.description
-                definition = self._commands.get(cmd.name)
-                if definition and definition.note:
-                    desc = f"{desc}. {definition.note}"
+                if cmd.aliases:
+                    desc = f"{desc}. Alias: {cmd.aliases[0]}"
+                if cmd.note:
+                    desc = f"{desc}. {cmd.note}"
                 lines.append(f"| `/{cmd.name}` | `{cmd.usage}` | {desc} |")
             lines.append("")
         lines.append("Values with spaces can be quoted, for example `/memory save color \"deep blue\"`.")
         return "\n".join(lines).strip()
+
+    def _parse_for_registry(self, raw: str) -> ParsedCommand:
+        command_text = raw.strip()
+        if command_text.startswith("/"):
+            command_text = command_text[1:].lstrip()
+        if not command_text:
+            return ParsedCommand((), (), [], "", None)
+
+        try:
+            parts = shlex.split(command_text, posix=True)
+        except ValueError:
+            parts = command_text.split()
+        tokens = tuple(_normalize_token(part) for part in parts if _normalize_token(part))
+        if not tokens:
+            return ParsedCommand((), (), [], "", None)
+
+        max_len = min(len(tokens), max((len(path) for path in self._path_index), default=1))
+        for prefix_len in range(max_len, 0, -1):
+            candidate = tokens[:prefix_len]
+            command_id = self._path_index.get(candidate) or self._aliases.get(candidate)
+            if command_id is None:
+                continue
+            definition = self._commands[command_id]
+            rest = _split_rest_after_tokens(command_text, prefix_len)
+            return ParsedCommand(
+                tokens=tokens,
+                path=definition.path,
+                args=_split_args(rest),
+                rest=rest,
+                definition=definition,
+                matched_input_len=prefix_len,
+            )
+
+        rest = _split_rest_after_tokens(command_text, 1)
+        return ParsedCommand(
+            tokens=tokens,
+            path=(tokens[0],),
+            args=_split_args(rest),
+            rest=rest,
+            definition=None,
+            matched_input_len=1,
+        )
+
+    def _prefix_subcommands(self, prefix: str) -> list[str]:
+        return sorted(
+            {
+                path[1]
+                for path in self._path_index
+                if len(path) > 1 and path[0] == prefix
+            }
+        )
+
+    def _unknown_or_group_error(self, parsed: ParsedCommand) -> CommandResult:
+        if not parsed.tokens:
+            return CommandResult(False, "**Error:** Empty command. Try `/help`.", "", level="error")
+
+        root = parsed.tokens[0]
+        valid_subcommands = self._prefix_subcommands(root)
+        if valid_subcommands and len(parsed.tokens) == 1:
+            valid = ", ".join(valid_subcommands)
+            return CommandResult(
+                False,
+                f"**Error:** `/{root}` requires a subcommand. Valid: {valid}.",
+                root,
+                level="error",
+            )
+        if valid_subcommands and len(parsed.tokens) > 1:
+            valid = ", ".join(valid_subcommands)
+            command_label = f"{root} {parsed.tokens[1]}".strip()
+            return CommandResult(
+                False,
+                f"**Error:** Unknown subcommand `{parsed.tokens[1]}` for `/{root}`. Valid: {valid}.",
+                command_label,
+                level="error",
+            )
+
+        return CommandResult(
+            False,
+            f"**Error:** Unknown command `/{root}`. Use `/help`.",
+            root,
+            level="error",
+        )
 
     async def execute(
         self,
@@ -490,79 +1911,108 @@ class CommandService:
         *,
         api: Any | None = None,
     ) -> CommandResult:
-        command, subcommand, args, rest = parse_command(raw_command)
-        if command is None:
-            return CommandResult(False, "**Error:** Empty command. Try `/help`.", "")
+        parsed = self._parse_for_registry(raw_command)
+        if parsed.definition is None:
+            return self._unknown_or_group_error(parsed)
 
-        command = self._resolve_name(command)
-        command_label = f"{command} {subcommand}".strip() if subcommand else command
+        definition = parsed.definition
+        command_label = definition.name
+        actor = ctx.effective_actor
 
-        if ctx.source == "agent" and command in AGENT_BLOCKED:
+        if actor == "agent" and definition.path[0] in AGENT_BLOCKED:
             return CommandResult(
                 False,
                 (
-                    f"**Error:** Command `/{command}` is disabled for the agent "
+                    f"**Error:** Command `/{definition.path[0]}` is disabled for the agent "
                     "because it would interrupt or destroy the current conversation."
                 ),
                 command_label,
+                level="error",
             )
 
-        definition = self._commands.get(command)
-        if definition is None:
-            return CommandResult(False, f"**Error:** Unknown command `/{command}`. Use `/help`.", command_label)
-        if ctx.source == "agent" and not definition.agent_allowed:
-            return CommandResult(False, f"**Error:** Command `/{command}` is not available to the agent.", command_label)
+        if actor == "agent" and not definition.agent_allowed:
+            return CommandResult(
+                False,
+                f"**Error:** Command `/{definition.name}` is not available to the agent.",
+                command_label,
+                level="error",
+            )
+        if definition.requires_admin and ctx.is_admin is False:
+            return CommandResult(
+                False,
+                f"**Error:** Command `/{definition.name}` requires an admin user.",
+                command_label,
+                level="error",
+            )
+        if definition.requires_thread and not ctx.thread_id:
+            return CommandResult(
+                False,
+                "**Error:** This command requires an active thread. Send a message first.",
+                command_label,
+                level="error",
+            )
         if not definition.executable:
             return CommandResult(
                 False,
-                f"**Error:** `/{command}` is handled outside the command service. {definition.note or ''}".strip(),
+                (
+                    f"**Error:** `/{definition.name}` is handled outside the command service. "
+                    f"{definition.note or ''}"
+                ).strip(),
                 command_label,
+                level="error",
             )
 
-        if command == "help":
-            return CommandResult(True, self._help_markdown(ctx.source), command_label)
+        if definition.id == "help":
+            return CommandResult(
+                True,
+                self._help_markdown(
+                    ctx.source,
+                    actor=actor,
+                    surface=ctx.effective_surface,
+                    is_admin=ctx.is_admin,
+                ),
+                command_label,
+                level="info",
+            )
 
         owns_api = api is None
         client = api
         if client is None:
             try:
-                client = CommandHttpClient.from_service_token()
-            except RuntimeError as exc:
-                return CommandResult(False, f"**Error:** {exc}", command_label)
+                client = CommandBackendClient.from_context(ctx)
+            except RuntimeError:
+                try:
+                    client = CommandHttpClient.from_service_token()
+                except RuntimeError as exc:
+                    return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
 
         executor = _CommandExecutor(api=client, thread_id=ctx.thread_id, user_id=ctx.user_id)
 
-        method_name = f"_cmd_{command}"
-        if subcommand:
-            method_name += f"_{subcommand}"
+        method_name = "_cmd_" + "_".join(definition.path)
         method = getattr(executor, method_name, None)
 
         if method is None:
-            if definition.subcommands and subcommand:
-                valid = ", ".join(definition.subcommands)
-                return CommandResult(
-                    False,
-                    f"**Error:** Unknown subcommand `{subcommand}` for `/{command}`. Valid: {valid}.",
-                    command_label,
-                )
-            if definition.subcommands and not subcommand:
-                valid = ", ".join(definition.subcommands)
-                return CommandResult(
-                    False,
-                    f"**Error:** `/{command}` requires a subcommand. Valid: {valid}.",
-                    command_label,
-                )
-            return CommandResult(False, f"**Error:** Unknown command `/{command}`. Use `/help`.", command_label)
+            return CommandResult(
+                False,
+                f"**Error:** Command `/{definition.name}` is registered but has no executor.",
+                command_label,
+                level="error",
+            )
 
         try:
-            raw_output = await method(args, rest)
+            raw_output = await method(parsed.args, parsed.rest)
             success, markdown = _format_legacy_output(raw_output)
-            return CommandResult(success, _truncate(markdown), command_label)
+            return CommandResult(
+                success,
+                _truncate(markdown),
+                command_label,
+                level="success" if success else "error",
+            )
         except httpx.HTTPStatusError as e:
-            return CommandResult(False, f"**Error:** {http_error_detail(e)}", command_label)
+            return CommandResult(False, f"**Error:** {http_error_detail(e)}", command_label, level="error")
         except Exception as e:
-            logger.exception("command dispatch failed for /%s %s", command, subcommand)
-            return CommandResult(False, f"**Error:** {e}", command_label)
+            logger.exception("command dispatch failed for /%s", definition.name)
+            return CommandResult(False, f"**Error:** {e}", command_label, level="error")
         finally:
             if owns_api and hasattr(client, "close"):
                 await client.close()

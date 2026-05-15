@@ -1246,6 +1246,7 @@ class CLIApp:
             account,
             activity,
             artifacts,
+            backend,
             clipboard,
             connection,
             context,
@@ -1293,6 +1294,7 @@ class CLIApp:
         conversation.register(self.registry)
         reasoning.register(self.registry)
         usage.register(self.registry)
+        backend.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""

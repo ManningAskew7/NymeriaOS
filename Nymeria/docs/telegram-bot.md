@@ -106,6 +106,19 @@ Or use the `/thread` command — it shows the full thread ID including the chat 
 
 You can also send plain text in DMs without any command prefix.
 
+Most global command families are thin adapters over the backend command
+registry. Telegram's flat commands (`/tools_core`, `/memory_save`,
+`/todo_add`, `/notepad_write`, `/config_show`, etc.) are translated to
+canonical backend paths such as `/tools core`, `/memory save`, `/todos add`,
+`/notepad write`, and executed through `POST /commands/execute`. Telegram-only
+commands such as `/bind`, `/switch`, `/new`, `/showtools`, and chat-control
+commands remain local to the bot.
+
+The Telegram command menu and `/help` output are generated from the merged
+catalog of backend global commands plus Telegram-local commands. Backend grouped
+paths are displayed as Telegram-safe flat command names, for example
+`/tools_core` and `/todo_add`, without duplicating their canonical backend rows.
+
 During streamed replies, Telegram surfaces compaction events instead of hiding them: `compacting` sends a short italic status, `compacted` sends a compact "Context compacted" HTML notice with a summary preview, and resumed assistant output continues in normal response bubbles after the notice.
 
 ### Model & Thinking
@@ -122,7 +135,7 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | Command | Description |
 |---------|-------------|
 | `/todo_list [status]` | List TODOs. Filter: active (default), pending, in_progress, done, all |
-| `/todo_add <task> \| <schedule> \| <repeat> \| <notes>` | Create a TODO. Schedule: "30m", "2h", "1d". Repeat: 5min, hourly, daily, etc. Pipe-delimited. |
+| `/todo_add <task> \| <schedule> \| <repeat> \| <notes>` | Create a TODO. Schedule: any relative duration such as "45s", "17m", "2h", "1w", or an absolute/ISO datetime. Repeat: 5min, hourly, daily, etc. Pipe-delimited. |
 | `/todo_complete <id>` | Mark a TODO as done (first 8 chars of ID) |
 | `/todo_delete <id>` | Delete a TODO permanently |
 

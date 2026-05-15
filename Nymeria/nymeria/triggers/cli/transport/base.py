@@ -125,5 +125,27 @@ class AgentClient(Protocol):
     ) -> Mapping[str, Any]:
         """Create a branch thread from an existing thread."""
 
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "cli",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Execute a backend global slash command."""
+
+    async def list_commands(
+        self,
+        *,
+        source: str | None = None,
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """List backend global slash commands visible to this transport."""
+
 
 __all__ = ["AgentClient", "Attachment"]

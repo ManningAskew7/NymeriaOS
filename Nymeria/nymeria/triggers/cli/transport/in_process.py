@@ -406,6 +406,68 @@ class InProcessAgentClient:
             from_message_index=from_message_index,
         )
 
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "cli",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Execute a backend slash command against the local agent."""
+
+        from ....core.command_service import (
+            CommandBackendClient,
+            CommandContext as BackendCommandContext,
+            get_command_service,
+        )
+
+        selected_user_id = user_id or self.default_user_id
+        ctx = BackendCommandContext(
+            user_id=selected_user_id,
+            thread_id=thread_id,
+            source=source,
+            actor=actor,
+            surface=surface,
+            is_admin=True,
+        )
+        api = CommandBackendClient.from_context(ctx, agent=self.agent)
+        result = await get_command_service().execute(ctx, command, api=api)
+        return {
+            "success": result.success,
+            "markdown": result.markdown,
+            "command": result.command,
+            "level": result.level,
+            "data": copy.deepcopy(result.data),
+        }
+
+    async def list_commands(
+        self,
+        *,
+        source: str | None = None,
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Return the local backend slash-command catalog."""
+
+        from dataclasses import asdict
+
+        from ....core.command_service import get_command_service
+
+        del user_id
+        return [
+            asdict(info)
+            for info in get_command_service().list_commands(
+                source=source,
+                actor=actor,
+                surface=surface,
+                is_admin=True,
+            )
+        ]
+
 
 def _astream_kwargs(
     *,

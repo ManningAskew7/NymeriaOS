@@ -316,6 +316,41 @@ class APIAgentClient:
             user_id=self._selected_user_id(user_id),
         )
 
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "cli",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        selected_user_id = self._selected_user_id(user_id)
+        return await self.api.execute_command(
+            command,
+            thread_id=thread_id,
+            source=source,
+            actor=actor,
+            surface=surface,
+            user_id=selected_user_id,
+        )
+
+    async def list_commands(
+        self,
+        *,
+        source: str | None = None,
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        return await self.api.list_commands(
+            source=source,
+            actor=actor,
+            surface=surface,
+            user_id=self._selected_user_id(user_id),
+        )
+
     def _selected_user_id(self, user_id: str | None) -> str:
         if user_id and (user_id != "default" or self.default_user_id == "default"):
             return user_id

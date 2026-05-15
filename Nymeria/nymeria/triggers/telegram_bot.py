@@ -18,7 +18,7 @@ import re
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -46,7 +46,7 @@ from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATI
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver, coerce_value, context_bar, fmt_tokens, http_error_detail
+from .bot_helpers import UserResolver, http_error_detail
 from .message_splitter import split_telegram_message as split_message
 from .sse_consumer import consume_sse_stream, parse_attach_paths as _parse_attach_paths
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -279,6 +279,94 @@ TELEGRAM_COMMAND_ACCESS: Mapping[str, str] = {
     "env_set": COMMAND_ACCESS_ADMIN,
     # Everything else requires a linked Telegram identity.
 }
+
+TELEGRAM_LOCAL_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    ("Chat", "ask", "Send a message to Nymeria"),
+    ("Chat", "stop", "Abort current operation"),
+    ("Chat", "clear", "Clear conversation history"),
+    ("Chat", "compact", "Compress conversation context"),
+    ("Chat", "export", "Export conversation history"),
+    ("Chat", "restart", "Restart bot or API"),
+    ("Chat", "showtools", "Toggle tool call display"),
+    ("Chat", "help", "Show all commands"),
+    ("Thread Binding", "bind", "Bind this chat to a desktop thread"),
+    ("Thread Binding", "threads", "List switchable threads"),
+    ("Thread Binding", "switch", "Switch this chat to a thread"),
+    ("Thread Binding", "new", "Start a fresh thread"),
+    ("Thread Binding", "unbind", "Remove this chat's thread binding"),
+    ("Tools", "tools_search", "Search tools"),
+)
+
+
+def _service_command_catalog(*, is_admin: bool = True) -> list[dict[str, Any]]:
+    from ..core.command_service import get_command_service
+
+    return [
+        asdict(info)
+        for info in get_command_service().list_commands(
+            actor="user",
+            surface="telegram",
+            is_admin=is_admin,
+        )
+    ]
+
+
+def _telegram_command_name(info: Mapping[str, Any]) -> str:
+    path_value = info.get("path")
+    if isinstance(path_value, Sequence) and not isinstance(path_value, (str, bytes)):
+        path = [str(part).strip().lower() for part in path_value if str(part).strip()]
+    else:
+        path = [part for part in str(info.get("name") or "").lower().split() if part]
+    if not path:
+        return ""
+    if len(path) == 1:
+        return path[0]
+    if path[0] == "todos":
+        return f"todo_{path[1]}"
+
+    aliases = info.get("aliases") or []
+    if isinstance(aliases, Sequence) and not isinstance(aliases, (str, bytes)):
+        for alias in aliases:
+            normalized = str(alias).strip().lstrip("/")
+            if normalized and " " not in normalized:
+                return normalized
+    return "_".join(path)
+
+
+def _telegram_global_catalog_entries(
+    commands: Sequence[Mapping[str, Any]],
+) -> list[tuple[str, str, str]]:
+    entries: list[tuple[str, str, str]] = []
+    for info in commands:
+        if str(info.get("execution_kind") or "command") != "command":
+            continue
+        name = _telegram_command_name(info)
+        if not name or name in {"help"}:
+            continue
+        description = str(info.get("description") or "")
+        category = str(info.get("category") or "Global")
+        entries.append((category, name, description))
+    return entries
+
+
+def _merged_telegram_catalog(
+    commands: Sequence[Mapping[str, Any]],
+) -> list[tuple[str, str, str]]:
+    entries: dict[str, tuple[str, str, str]] = {}
+    for category, name, description in _telegram_global_catalog_entries(commands):
+        entries[name] = (category, name, description)
+    for category, name, description in TELEGRAM_LOCAL_COMMANDS:
+        entries[name] = (category, name, description)
+    return sorted(entries.values(), key=lambda item: (item[0].casefold(), item[1]))
+
+
+def _telegram_bot_commands_from_catalog(
+    commands: Sequence[Mapping[str, Any]],
+) -> list[BotCommand]:
+    return [
+        BotCommand(name, description[:256] or "Nymeria command")
+        for _category, name, description in _merged_telegram_catalog(commands)
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -835,52 +923,7 @@ class NymeriaTelegramBot:
 
     async def _post_init(self, application) -> None:
         """Register command menu with Telegram and start SSE listener."""
-        commands = [
-            BotCommand("ask", "Send a message to Nymeria"),
-            BotCommand("stop", "Abort current operation"),
-            BotCommand("clear", "Clear conversation history"),
-            BotCommand("compact", "Compress conversation context"),
-            BotCommand("thread", "Show thread info"),
-            BotCommand("status", "System status dashboard"),
-            BotCommand("model", "Show or change LLM model"),
-            BotCommand("models", "List available models"),
-            BotCommand("think", "Set thinking mode"),
-            BotCommand("context", "Detailed context breakdown"),
-            BotCommand("tasks", "View scheduled tasks"),
-            BotCommand("export", "Export conversation history"),
-            BotCommand("restart", "Restart bot or API"),
-            BotCommand("showtools", "Toggle tool call display"),
-            BotCommand("help", "Show all commands"),
-            BotCommand("todo_add", "Create a scheduled task"),
-            BotCommand("todo_list", "List TODOs"),
-            BotCommand("todo_complete", "Mark TODO as done"),
-            BotCommand("todo_delete", "Delete a TODO"),
-            BotCommand("config_show", "Show all settings"),
-            BotCommand("config_get", "Get a setting value"),
-            BotCommand("config_set", "Update a setting"),
-            BotCommand("env_show", "Show env vars (secrets masked)"),
-            BotCommand("env_get", "Get env var (unmasked)"),
-            BotCommand("env_set", "Set an env variable"),
-            BotCommand("tools_core", "List core tools"),
-            BotCommand("tools_optional", "List optional tools"),
-            BotCommand("tools_enabled", "List enabled tools"),
-            BotCommand("tools_search", "Search tools"),
-            BotCommand("tools_category", "Tools in a category"),
-            BotCommand("tools_enable", "Enable a tool or category"),
-            BotCommand("tools_disable", "Disable a tool or category"),
-            BotCommand("memory_list", "List saved memories"),
-            BotCommand("memory_save", "Save a memory"),
-            BotCommand("memory_forget", "Remove a memory"),
-            BotCommand("memory_search", "Search memories"),
-            BotCommand("notepad_read", "Read channel notepad"),
-            BotCommand("notepad_write", "Write to notepad"),
-            BotCommand("notepad_clear", "Clear notepad"),
-            BotCommand("bind", "Bind this chat to a desktop thread"),
-            BotCommand("threads", "List switchable threads"),
-            BotCommand("switch", "Switch this chat to a thread"),
-            BotCommand("new", "Start a fresh thread"),
-            BotCommand("unbind", "Remove this chat's thread binding"),
-        ]
+        commands = _telegram_bot_commands_from_catalog(_service_command_catalog())
         await application.bot.set_my_commands(commands)
         logger.info(
             "Registered %d bot commands with Telegram (bot=%s)",
@@ -1098,6 +1141,53 @@ class NymeriaTelegramBot:
     def _parse_args(self, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Get the text after the command."""
         return " ".join(context.args) if context.args else ""
+
+    async def _send_backend_command(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        command_path: str,
+        *,
+        require_admin: bool = False,
+    ) -> None:
+        """Execute a global backend command and relay its markdown result."""
+        user_id = await self._resolve_or_reject_update(
+            update,
+            require_admin=require_admin,
+        )
+        if user_id is None:
+            return
+        chat_id = update.effective_chat.id
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
+        args = self._parse_args(context)
+        raw_command = f"/{command_path}"
+        if args:
+            raw_command += f" {args}"
+
+        try:
+            result = await self.api.execute_command(
+                raw_command,
+                thread_id=thread_id,
+                source="user",
+                actor="user",
+                surface="telegram",
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Backend command failed for Telegram /%s: %s",
+                command_path,
+                e,
+                exc_info=True,
+            )
+            await update.message.reply_text(f"Error: {e}")
+            return
+
+        text = str(result.get("markdown") or "").strip()
+        if not text:
+            text = "Done." if result.get("success") else "Command returned no output."
+        for chunk in split_message(text, TELEGRAM_TEXT_LIMIT):
+            await context.bot.send_message(chat_id=chat_id, text=chunk)
 
     def _set_local_binding(self, chat_id: int, thread_id: str) -> None:
         """Update this bot's in-memory chat<->thread maps after an API move."""
@@ -1903,393 +1993,36 @@ class NymeriaTelegramBot:
 
     async def _cmd_thread(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /thread."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            stats = await self.api.get_context_stats(thread_id, user_id=user_id)
-            text = (
-                f"<b>Thread Info</b>\n\n"
-                f"<b>Thread ID</b>\n<code>{escape_html(thread_id)}</code>\n\n"
-                f"<b>Context Usage</b>\n"
-                f"{stats.get('usage_percentage', 0)}% "
-                f"({stats.get('total_tokens', 0):,} / {stats.get('context_limit', 0):,} tokens)\n\n"
-                f"<b>Compactions:</b> {stats.get('compaction_count', 0)}\n"
-                f"<b>Context Mode:</b> {stats.get('context_management', 'unknown')}"
-            )
-            await self._send_html(chat_id, text, context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "thread")
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            settings, ctx, tools_data, todos = await asyncio.gather(
-                self.api.get_settings(),
-                self.api.get_context_stats(thread_id, user_id=user_id),
-                self.api.get_default_tools(),
-                self.api.list_todos(user_id),
-                return_exceptions=True,
-            )
-            if isinstance(settings, Exception):
-                settings = {}
-            if isinstance(ctx, Exception):
-                ctx = {}
-            if isinstance(tools_data, Exception):
-                tools_data = {}
-            if isinstance(todos, Exception):
-                todos = []
-
-            # Uptime
-            up = int(time.time() - self._start_time)
-            h, rem = divmod(up, 3600)
-            m, s = divmod(rem, 60)
-            uptime = f"{h}h {m}m" if h else f"{m}m {s}s" if m else f"{s}s"
-
-            # Model
-            model = settings.get("llm_model", "?")
-            provider = settings.get("llm_provider", "?")
-            base_url = settings.get("llm_base_url")
-            if base_url and "cli-proxy" in base_url:
-                provider = f"{provider} (via CLIProxy)"
-            thinking = settings.get("llm_extended_thinking", False)
-            effort = settings.get("llm_reasoning_effort")
-            think_str = "off"
-            if thinking:
-                think_str = f"on ({effort})" if effort else "on"
-
-            # Context
-            total_tokens = ctx.get("total_tokens", 0)
-            context_limit = ctx.get("context_limit", 0)
-            usage_pct = ctx.get("usage_percentage", 0)
-            compactions = ctx.get("compaction_count", 0)
-            ctx_mode = ctx.get("context_management", settings.get("context_management", "?"))
-
-            # Tools
-            default_count = len(tools_data.get("default_tools", []))
-            available_count = len(tools_data.get("available_tools", []))
-
-            # Tasks
-            task_parts = []
-            if todos:
-                t_pending = sum(1 for t in todos if t.get("status") == "pending")
-                t_in_prog = sum(1 for t in todos if t.get("status") == "in_progress")
-                if t_pending:
-                    task_parts.append(f"{t_pending} pending")
-                if t_in_prog:
-                    task_parts.append(f"{t_in_prog} in progress")
-            tasks_str = " / ".join(task_parts) if task_parts else "none"
-
-            show_tools = self._show_tool_calls.get(chat_id, False)
-
-            text = (
-                f"<b>Nymeria Status</b>\n\n"
-                f"<b>Model</b>\n"
-                f"<code>{escape_html(model)}</code> | {escape_html(provider)} | thinking: {think_str}\n\n"
-                f"<b>Context</b>\n"
-                f"{context_bar(usage_pct)}\n"
-                f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens\n"
-                f"mode: {ctx_mode}"
-            )
-            if compactions:
-                text += f" | {compactions} compaction{'s' if compactions != 1 else ''}"
-            text += (
-                f"\n\n<b>Tools &amp; System</b>\n"
-                f"{default_count} core / {available_count} available\n"
-                f"uptime: {uptime}\n\n"
-                f"<b>Tasks</b>\n{tasks_str}\n\n"
-                f"<b>Telegram</b>\n"
-                f"show tools: {'on' if show_tools else 'off'}\n\n"
-                f"<i>thread: {escape_html(thread_id)}</i>"
-            )
-            await self._send_html(chat_id, text, context)
-        except Exception as e:
-            logger.error(f"Error getting status: {e}", exc_info=True)
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "status")
 
     async def _cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /model [name] [scope]."""
-        chat_id = update.effective_chat.id
-        args = context.args or []
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            if not args:
-                settings = await self.api.get_settings()
-                tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-                llm_cfg = (tc or {}).get("llm_config") or {}
-                thread_model = llm_cfg.get("model")
-                lines = [f"<b>Global:</b> <code>{escape_html(settings.get('llm_model', '?'))}</code> ({escape_html(settings.get('llm_provider', '?'))})"]
-                if thread_model:
-                    lines.append(f"<b>This chat:</b> <code>{escape_html(thread_model)}</code> (override)")
-                else:
-                    lines.append("<b>This chat:</b> using global default")
-                await self._send_html(chat_id, "\n".join(lines), context)
-            else:
-                name = args[0]
-                scope = args[1] if len(args) > 1 else "global"
-                if scope == "thread":
-                    await self.api.update_thread_config(
-                        thread_id, user_id=user_id, llm_config={"model": name}
-                    )
-                    await update.message.reply_text(f"Model for this chat set to {name}.")
-                else:
-                    # Global model change — admin only.
-                    if await self._resolve_or_reject_update(update, require_admin=True) is None:
-                        return
-                    await self.api.update_settings(llm_model=name)
-                    await update.message.reply_text(f"Global model set to {name}.")
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-            await update.message.reply_text(f"Error: {detail}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "model")
 
     async def _cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /models."""
-        chat_id = update.effective_chat.id
-        try:
-            models = await self.api.list_available_models()
-            settings = await self.api.get_settings()
-            current = settings.get("llm_model", "")
-
-            if not models:
-                await update.message.reply_text("No models returned from provider.")
-                return
-
-            lines = [
-                "<b>Available Models</b>",
-                f"{len(models)} models from {escape_html(settings.get('llm_provider', '?'))}\n",
-            ]
-            for m in models[:25]:
-                model_id = m.get("id") or m.get("name", "?")
-                ctx_len = m.get("context_length") or m.get("context_window")
-                ctx_str = f" | {fmt_tokens(ctx_len)} ctx" if ctx_len else ""
-                marker = " <b>(current)</b>" if model_id == current else ""
-                lines.append(f"<code>{escape_html(model_id)}</code>{marker}{ctx_str}")
-
-            if len(models) > 25:
-                lines.append(f"\n<i>Showing 25 of {len(models)}</i>")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "models")
 
     async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /think [off|on|low|medium|high]."""
-        # /think mutates global settings via update_settings(); admin-only,
-        # otherwise any chat member could toggle reasoning effort for every
-        # Nymeria user via the bot's admin service token.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        args = context.args or []
-        try:
-            if not args:
-                settings = await self.api.get_settings()
-                thinking = settings.get("llm_extended_thinking", False)
-                effort = settings.get("llm_reasoning_effort")
-                if not thinking:
-                    status = "off"
-                elif effort:
-                    status = f"on (effort: {effort})"
-                else:
-                    status = "on"
-                await update.message.reply_text(f"Thinking is currently {status}.")
-                return
-
-            value = args[0].lower()
-            if value == "off":
-                await self.api.update_settings(
-                    llm_extended_thinking=False, llm_reasoning_effort=None
-                )
-                await update.message.reply_text("Thinking disabled.")
-            elif value == "on":
-                await self.api.update_settings(llm_extended_thinking=True)
-                await update.message.reply_text("Thinking enabled.")
-            elif value in ("low", "medium", "high"):
-                await self.api.update_settings(
-                    llm_extended_thinking=True, llm_reasoning_effort=value
-                )
-                await update.message.reply_text(f"Thinking enabled, effort: {value}.")
-            else:
-                await update.message.reply_text(
-                    "Usage: /think [off|on|low|medium|high]"
-                )
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "think",
+            require_admin=True,
+        )
 
     async def _cmd_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /context — detailed context breakdown."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            ctx, thread_cfg, settings, categories, tools_data = await asyncio.gather(
-                self.api.get_context_stats(thread_id, user_id=user_id),
-                self.api.get_thread_config(thread_id, user_id=user_id),
-                self.api.get_settings(),
-                self.api.get_tool_categories(),
-                self.api.get_default_tools(),
-                return_exceptions=True,
-            )
-            if isinstance(ctx, Exception):
-                ctx = {}
-            if isinstance(thread_cfg, Exception):
-                thread_cfg = None
-            if isinstance(settings, Exception):
-                settings = {}
-            if isinstance(categories, Exception):
-                categories = {}
-            if isinstance(tools_data, Exception):
-                tools_data = {}
-
-            # Model
-            effective_model = ctx.get("model") or settings.get("llm_model", "?")
-            provider = settings.get("llm_provider", "?")
-            base_url = settings.get("llm_base_url")
-            if base_url and "cli-proxy" in base_url:
-                provider = f"{provider} (via CLIProxy)"
-
-            lines = [
-                "<b>Context Breakdown</b>\n",
-                "<b>Model</b>",
-                f"<code>{escape_html(effective_model)}</code> | {escape_html(provider)}",
-            ]
-            if thread_cfg:
-                llm_cfg = thread_cfg.get("llm_config") or {}
-                thread_model = llm_cfg.get("model")
-                if thread_model and thread_model != settings.get("llm_model"):
-                    lines.append(f"\u26a0\ufe0f thread override: model=<code>{escape_html(thread_model)}</code>")
-
-            # Context window
-            total_tokens = ctx.get("total_tokens", 0)
-            context_limit = ctx.get("context_limit", 0)
-            usage_pct = ctx.get("usage_percentage", 0)
-            compactions = ctx.get("compaction_count", 0)
-            ctx_mode = ctx.get("context_management", settings.get("context_management", "?"))
-
-            lines.append("\n<b>Context Window</b>")
-            lines.append(context_bar(usage_pct))
-            token_line = f"{fmt_tokens(total_tokens)} / {fmt_tokens(context_limit)} tokens"
-            cumulative = ctx.get("cumulative_tokens", 0)
-            if cumulative:
-                token_line += f" (cumulative: {fmt_tokens(cumulative)})"
-            lines.append(token_line)
-            if compactions:
-                lines.append(f"{compactions} compaction{'s' if compactions != 1 else ''}")
-            mode_str = f"mode: {ctx_mode}"
-            threshold = settings.get("compact_threshold")
-            if threshold and ctx_mode == "auto_compact":
-                mode_str += f" (threshold {int(threshold * 100)}%)"
-            lines.append(mode_str)
-
-            # Tools
-            default_tools = set(tools_data.get("default_tools", []))
-            available_tools = tools_data.get("available_tools", [])
-            cats = categories.get("categories", {}) if isinstance(categories, dict) else {}
-            disabled = set()
-            extra_enabled = set()
-            if thread_cfg:
-                disabled = set(thread_cfg.get("disabled_tools") or [])
-                extra_enabled = set(thread_cfg.get("enabled_tools") or [])
-            effective = (default_tools - disabled) | extra_enabled
-
-            lines.append("\n<b>Tools</b>")
-            lines.append(f"{len(effective)} enabled (of {len(available_tools)} available)")
-            cat_parts = []
-            for cat_name in sorted(cats.keys()):
-                cat_tools = set(cats[cat_name])
-                enabled_in_cat = len(cat_tools & effective)
-                total_in_cat = len(cat_tools)
-                if enabled_in_cat == total_in_cat:
-                    cat_parts.append(f"{cat_name}: {total_in_cat}")
-                else:
-                    cat_parts.append(f"{cat_name}: {enabled_in_cat}/{total_in_cat}")
-            if cat_parts:
-                # 3 per line
-                while cat_parts:
-                    chunk = cat_parts[:3]
-                    cat_parts = cat_parts[3:]
-                    lines.append(" | ".join(chunk))
-
-            # Thread overrides
-            lines.append("\n<b>Thread Overrides</b>")
-            override_lines = []
-            if thread_cfg:
-                instructions = thread_cfg.get("instructions")
-                if instructions:
-                    override_lines.append(f"instructions: {len(instructions)} chars")
-                if disabled:
-                    d_list = ", ".join(sorted(disabled)[:8])
-                    if len(disabled) > 8:
-                        d_list += f" (+{len(disabled) - 8} more)"
-                    override_lines.append(f"disabled: {d_list}")
-                if extra_enabled:
-                    e_list = ", ".join(sorted(extra_enabled)[:8])
-                    if len(extra_enabled) > 8:
-                        e_list += f" (+{len(extra_enabled) - 8} more)"
-                    override_lines.append(f"enabled: {e_list}")
-            if not override_lines:
-                override_lines.append("None \u2014 using global defaults")
-            lines.extend(override_lines)
-
-            lines.append(f"\n<i>thread: {escape_html(thread_id)}</i>")
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            logger.error(f"Error getting context: {e}", exc_info=True)
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "context")
 
     async def _cmd_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tasks [status]."""
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        filter_val = (context.args[0].lower() if context.args else "active")
-        try:
-            items = await self.api.list_todos(user_id)
-            if filter_val == "active":
-                items = [i for i in items if i.get("status") != "done"]
-            elif filter_val != "all":
-                items = [i for i in items if i.get("status") == filter_val]
-
-            if not items:
-                await update.message.reply_text(f"No {filter_val} tasks.")
-                return
-
-            status_icons = {"pending": "\u23f3", "in_progress": "\u25b6", "done": "\u2705"}
-            lines = [f"<b>Scheduled Tasks</b> ({len(items)} {filter_val})\n"]
-            for item in items[:15]:
-                st = item.get("status", "pending")
-                icon = status_icons.get(st, "?")
-                task = escape_html(item.get("task", "")[:60])
-                detail = []
-                scheduled = item.get("scheduled_for")
-                if scheduled:
-                    detail.append(f"fires: {scheduled[:16]}")
-                recurrence = item.get("recurrence")
-                if recurrence:
-                    detail.append(f"repeat: {recurrence}")
-                detail_str = " | ".join(detail) if detail else "no schedule"
-                lines.append(f"{icon} {task}\n    {detail_str}")
-
-            if len(items) > 15:
-                lines.append(f"\n<i>Showing 15 of {len(items)}</i>")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tasks")
 
     async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export [markdown|json|txt]."""
@@ -2445,65 +2178,43 @@ class NymeriaTelegramBot:
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help."""
         chat_id = update.effective_chat.id
-        text = (
-            "<b>Nymeria Bot Commands</b>\n\n"
-            "<b>Chat</b>\n"
-            "/ask &lt;message&gt;: Send a message\n"
-            "/stop: Abort current operation\n"
-            "/clear: Clear conversation history\n"
-            "/compact: Compress context\n"
-            "/export [format]: Export history (markdown/json/txt)\n"
-            "/restart [bot|api]: Restart a service\n"
-            "/showtools: Toggle tool call display\n"
-            "/help: This message\n\n"
-            "<b>Model &amp; Info</b>\n"
-            "/model [name] [scope]: Show/change model\n"
-            "/models: List available models\n"
-            "/think [off|on|low|medium|high]: Thinking mode\n"
-            "/status: System dashboard\n"
-            "/thread: Thread info\n"
-            "/context: Context breakdown\n"
-            "/tasks [status]: Scheduled tasks\n\n"
-            "<b>Thread Binding</b>\n"
-            "/bind &lt;code&gt;: Bind this chat to a desktop thread\n"
-            "/threads [query]: List switchable threads\n"
-            "/switch &lt;title|number|id&gt;: Switch this chat to a thread\n"
-            "/new [title]: Start a fresh thread\n"
-            "/unbind: Remove this chat's thread binding\n\n"
-            "<b>TODOs</b>\n"
-            "/todo_add &lt;task&gt; | &lt;schedule&gt; | &lt;repeat&gt;\n"
-            "/todo_list [status]: List TODOs\n"
-            "/todo_complete &lt;id&gt;: Mark done\n"
-            "/todo_delete &lt;id&gt;: Delete\n\n"
-            "<b>Config</b>\n"
-            "/config_show: Show all settings\n"
-            "/config_get &lt;key&gt;: Get a setting\n"
-            "/config_set &lt;key&gt; &lt;value&gt;: Update setting\n\n"
-            "<b>Environment</b>\n"
-            "/env_show: All env vars (secrets masked)\n"
-            "/env_get &lt;key&gt;: Get unmasked value\n"
-            "/env_set &lt;key&gt; &lt;value&gt;: Set env variable\n\n"
-            "<b>Tools</b>\n"
-            "/tools_core: Core tools\n"
-            "/tools_optional: Optional categories\n"
-            "/tools_enabled: Active tools\n"
-            "/tools_search &lt;query&gt;: Search tools\n"
-            "/tools_category &lt;name&gt;: Category tools\n"
-            "/tools_enable &lt;name&gt;: Enable tool/category\n"
-            "/tools_disable &lt;name&gt;: Disable tool/category\n\n"
-            "<b>Memory</b>\n"
-            "/memory_list: List memories\n"
-            "/memory_save &lt;key&gt; &lt;value&gt;\n"
-            "/memory_forget &lt;key&gt;\n"
-            "/memory_search &lt;query&gt;\n\n"
-            "<b>Notepad</b>\n"
-            "/notepad_read: Read notepad\n"
-            "/notepad_write &lt;content&gt;: Append to notepad\n"
-            "/notepad_clear: Clear notepad\n\n"
-            "<i>You can also send plain text in DMs or reply to me in groups.</i>\n"
-            "<i>Prefix a message with @ThreadTitle or @\"Thread With Spaces\" "
-            "to route one turn to another owned thread.</i>"
+        user_id = None
+        if update.effective_user is not None:
+            user_id = await self.resolve_user_id(update.effective_user.id)
+
+        try:
+            if user_id:
+                commands = await self.api.list_commands(
+                    actor="user",
+                    surface="telegram",
+                    user_id=user_id,
+                )
+            else:
+                commands = _service_command_catalog(is_admin=False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not fetch Telegram command catalog: %s", e)
+            commands = _service_command_catalog(is_admin=False)
+
+        by_category: dict[str, list[tuple[str, str]]] = {}
+        for category, name, description in _merged_telegram_catalog(commands):
+            by_category.setdefault(category, []).append((name, description))
+
+        lines = ["<b>Nymeria Bot Commands</b>"]
+        for category in sorted(by_category):
+            lines.append("")
+            lines.append(f"<b>{escape_html(category)}</b>")
+            for name, description in by_category[category]:
+                desc = escape_html(description.rstrip(".") or "Nymeria command")
+                lines.append(f"/{escape_html(name)}: {desc}")
+        lines.extend(
+            [
+                "",
+                "<i>You can also send plain text in DMs or reply to me in groups.</i>",
+                "<i>Prefix a message with @ThreadTitle or @\"Thread With Spaces\" "
+                "to route one turn to another owned thread.</i>",
+            ]
         )
+        text = "\n".join(lines)
         await self._send_html(chat_id, text, context)
 
     # =========================================================================
@@ -2520,76 +2231,11 @@ class NymeriaTelegramBot:
             )
             return
 
-        parts = [p.strip() for p in raw.split("|")]
-        task = parts[0]
-        schedule = parts[1] if len(parts) > 1 and parts[1] else "1d"
-        recurrence = parts[2] if len(parts) > 2 and parts[2] else None
-        notes = parts[3] if len(parts) > 3 and parts[3] else None
-
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        try:
-            result = await self.api.add_todo(
-                user_id=user_id, task=task, scheduled_for=schedule,
-                notes=notes, recurrence=recurrence, thread_id=thread_id,
-            )
-            todo_id = result.get("id", "")[:8]
-            scheduled = result.get("scheduled_for", "")
-            lines = [f"Created TODO {todo_id}: {task}"]
-            if scheduled:
-                lines.append(f"Fires: {scheduled[:16]}")
-            if recurrence:
-                lines.append(f"Repeats: {recurrence}")
-            await update.message.reply_text("\n".join(lines))
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-            await update.message.reply_text(f"Error: {detail}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "todos add")
 
     async def _cmd_todo_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_list [active|pending|in_progress|done|all]."""
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        filter_val = (context.args[0].lower() if context.args else "active")
-        try:
-            items = await self.api.list_todos(user_id)
-            if filter_val == "active":
-                items = [i for i in items if i.get("status") != "done"]
-            elif filter_val != "all":
-                items = [i for i in items if i.get("status") == filter_val]
-
-            if not items:
-                await update.message.reply_text(f"No {filter_val} TODOs found.")
-                return
-
-            status_icons = {"pending": "\u23f3", "in_progress": "\u25b6", "done": "\u2705"}
-            lines = [f"<b>TODOs ({filter_val})</b>: {len(items)} items\n"]
-            for item in items[:25]:
-                st = item.get("status", "pending")
-                icon = status_icons.get(st, "?")
-                task = escape_html(item.get("task", "")[:80])
-                todo_id = item.get("id", "")[:8]
-                parts = [f"ID: <code>{todo_id}</code>"]
-                scheduled = item.get("scheduled_for")
-                if scheduled:
-                    parts.append(f"fires: {scheduled[:16]}")
-                recurrence = item.get("recurrence")
-                if recurrence:
-                    parts.append(f"repeat: {recurrence}")
-                lines.append(f"{icon} {task}\n    {' | '.join(parts)}")
-
-            if len(items) > 25:
-                lines.append(f"\n<i>Showing 25 of {len(items)}</i>")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "todos list")
 
     async def _cmd_todo_complete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_complete <id>."""
@@ -2598,30 +2244,7 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /todo_complete <todo_id>")
             return
 
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            items = await self.api.list_todos(user_id)
-            match = next(
-                (i for i in items if i.get("id", "").startswith(todo_id)), None
-            )
-            if not match:
-                await update.message.reply_text(f"No TODO found matching {todo_id}.")
-                return
-
-            result = await self.api.complete_todo(user_id, match["id"])
-            task = match.get("task", "")
-            recurrence = result.get("recurrence")
-            if recurrence and result.get("status") == "pending":
-                next_fire = result.get("scheduled_for", "")[:16]
-                await update.message.reply_text(
-                    f"Completed: {task}\nRescheduled ({recurrence}): next fire {next_fire}"
-                )
-            else:
-                await update.message.reply_text(f"Completed: {task}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "todos complete")
 
     async def _cmd_todo_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_delete <id>."""
@@ -2630,22 +2253,7 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /todo_delete <todo_id>")
             return
 
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            items = await self.api.list_todos(user_id)
-            match = next(
-                (i for i in items if i.get("id", "").startswith(todo_id)), None
-            )
-            if not match:
-                await update.message.reply_text(f"No TODO found matching {todo_id}.")
-                return
-
-            await self.api.delete_todo(user_id, match["id"])
-            await update.message.reply_text(f"Deleted: {match.get('task', '')}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "todos delete")
 
     # =========================================================================
     # Config Commands
@@ -2653,133 +2261,35 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_show."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        chat_id = update.effective_chat.id
-        try:
-            settings = await self.api.get_settings()
-            effort = settings.get("llm_reasoning_effort")
-            base_url = settings.get("llm_base_url")
-
-            lines = [
-                "<b>Settings</b>\n",
-                "<b>LLM</b>",
-                f"provider: <code>{escape_html(settings.get('llm_provider', '?'))}</code>",
-                f"model: <code>{escape_html(settings.get('llm_model', '?'))}</code>",
-                f"temperature: {settings.get('llm_temperature', '?')}",
-                f"thinking: {'on' if settings.get('llm_extended_thinking') else 'off'}",
-            ]
-            if effort:
-                lines.append(f"reasoning effort: {effort}")
-            if base_url:
-                lines.append(f"base url: <code>{escape_html(base_url)}</code>")
-
-            lines.append("\n<b>Context</b>")
-            lines.append(f"mode: {settings.get('context_management', '?')}")
-            threshold = settings.get("compact_threshold", 0) or 0
-            lines.append(f"compact threshold: {int(threshold * 100)}%")
-            lines.append(f"keep messages: {settings.get('compact_keep_messages', '?')}")
-            compact_model = settings.get("compact_model")
-            if compact_model:
-                lines.append(f"compact model: <code>{escape_html(compact_model)}</code>")
-
-            lines.append("\n<b>System</b>")
-            lines.append(f"log level: {settings.get('log_level', '?')}")
-            lines.append(f"watchdog: {'on' if settings.get('watchdog_enabled') else 'off'}")
-            if settings.get("watchdog_enabled"):
-                lines.append(f"watchdog interval: {settings.get('watchdog_interval_minutes', '?')}m")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "config show",
+            require_admin=True,
+        )
 
     async def _cmd_config_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_get <key>."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        key = self._parse_args(context)
-        if not key:
+        if not self._parse_args(context):
             await update.message.reply_text("Usage: /config_get <key>")
             return
-        try:
-            settings = await self.api.get_settings()
-            if key in settings:
-                await update.message.reply_text(f"{key} = {settings[key]}")
-            else:
-                available = ", ".join(sorted(settings.keys())[:30])
-                await update.message.reply_text(f"Unknown setting '{key}'. Available: {available}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "config get",
+            require_admin=True,
+        )
 
     async def _cmd_config_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_set <key> <value>."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        args = context.args or []
-        if len(args) < 2:
+        if len(context.args or []) < 2:
             await update.message.reply_text("Usage: /config_set <key> <value>")
             return
-        key = args[0]
-        value_str = " ".join(args[1:])
-
-        parsed = coerce_value(value_str)
-
-        try:
-            result = await self.api.update_settings(**{key: parsed})
-            msg = f"{key} set to {parsed}."
-            if result.get("restart_required"):
-                msg += "\nThis change requires /restart api to take effect."
-            await update.message.reply_text(msg)
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-            await update.message.reply_text(f"Error: {detail}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
-
-    # =========================================================================
-    # Tools Commands
-    # =========================================================================
-
-    async def _resolve_tool_names(
-        self,
-        name: str,
-        *,
-        user_id: str = "default",
-        thread_id: str | None = None,
-    ):
-        """Resolve a name to tool names — could be category or individual tool.
-
-        Returns (tool_names, is_category, category_name, error_msg).
-        """
-        name_key = name.lower().strip().replace("-", "_")
-        cat_data = await self.api.get_tool_categories()
-        categories = cat_data.get("categories", {})
-
-        if name_key in categories:
-            return (categories[name_key], True, name_key, None)
-
-        data = await self.api.search_tools(
-            name,
-            user_id=user_id,
-            thread_id=thread_id,
-            top_k=5,
-        )
-        results = _mapping_sequence(data.get("results", []))
-        for result in results:
-            result_name = _tool_result_name(result)
-            if name_key == result_name.lower().strip().replace("-", "_"):
-                return ([result_name], False, None, None)
-
-        cat_list = ", ".join(sorted(categories))
-        suggestions = format_tool_search_html(data, limit=3)
-        return (
-            [],
-            False,
-            None,
-            f"Unknown tool or category '{name}'. Categories: {cat_list}\n\n{suggestions}",
+        await self._send_backend_command(
+            update,
+            context,
+            "config set",
+            require_admin=True,
         )
 
     # =========================================================================
@@ -2788,99 +2298,36 @@ class NymeriaTelegramBot:
 
     async def _cmd_env_show(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_show — show all env vars with masked secrets."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        chat_id = update.effective_chat.id
-        try:
-            data = await self.api.get_env_vars()
-            entries = data.get("entries", [])
-
-            by_cat: Dict[str, list] = {}
-            for e in entries:
-                by_cat.setdefault(e["category"], []).append(e)
-
-            lines = [
-                "<b>Environment Variables</b>",
-                f"{len(entries)} variables ({sum(1 for e in entries if e['is_set'])} set)\n",
-            ]
-
-            for cat, items in by_cat.items():
-                lines.append(f"<b>{escape_html(cat)}</b>")
-                for e in items:
-                    if e["is_set"]:
-                        val = escape_html(str(e["value"]))
-                        if e["is_secret"]:
-                            lines.append(f"\U0001f512 <code>{e['name']}</code> = <code>{val}</code>")
-                        else:
-                            lines.append(f"\u2705 <code>{e['name']}</code> = <code>{val}</code>")
-                    else:
-                        lines.append(f"\u274c <code>{e['name']}</code>")
-                lines.append("")
-
-            lines.append("<i>Use /env_get &lt;key&gt; for unmasked values</i>")
-
-            text = "\n".join(lines)
-            # Split if too long
-            if len(text) > 4000:
-                for chunk in split_message(text, 4000):
-                    await self._send_html(chat_id, chunk, context)
-            else:
-                await self._send_html(chat_id, text, context)
-        except Exception as e:
-            logger.error(f"Error showing env vars: {e}", exc_info=True)
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "env show",
+            require_admin=True,
+        )
 
     async def _cmd_env_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_get <key> — get unmasked value."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        key = self._parse_args(context)
-        if not key:
+        if not self._parse_args(context):
             await update.message.reply_text("Usage: /env_get <key>")
             return
-        try:
-            data = await self.api.get_env_var(key)
-            val = data.get("value")
-            name = data.get("name", key)
-            if val:
-                await update.message.reply_text(f"{name} = {val}")
-            else:
-                await update.message.reply_text(f"{name} is not set.")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                await update.message.reply_text(f"Unknown variable '{key}'.")
-            else:
-                await update.message.reply_text(f"Error: {e}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "env get",
+            require_admin=True,
+        )
 
     async def _cmd_env_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_set <key> <value>."""
-        # Admin-gated: /config_* and /env_* touch global settings/secrets.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
-            return
-        args = context.args or []
-        if len(args) < 2:
+        if len(context.args or []) < 2:
             await update.message.reply_text("Usage: /env_set <key> <value>")
             return
-        key = args[0]
-        value_str = " ".join(args[1:])
-
-        parsed = coerce_value(value_str)
-
-        try:
-            result = await self.api.update_settings(**{key: parsed})
-            msg = f"{key} set to {parsed}."
-            if result.get("restart_required"):
-                msg += "\nThis change requires /restart api to take effect."
-            await update.message.reply_text(msg)
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-            await update.message.reply_text(f"Error: {detail}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(
+            update,
+            context,
+            "env set",
+            require_admin=True,
+        )
 
     # =========================================================================
     # Tools Commands
@@ -2888,100 +2335,15 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_core(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_core."""
-        chat_id = update.effective_chat.id
-        try:
-            data = await self.api.get_default_tools()
-            default_names = set(data.get("default_tools", []))
-            available = data.get("available_tools", [])
-
-            lines = [f"<b>Core Tools</b> ({len(default_names)} tools)\n"]
-            for t in available:
-                if t.get("name") in default_names:
-                    desc = (t.get("description") or "").split("\n")[0][:60]
-                    lines.append(f"<code>{escape_html(t['name'])}</code> \u2014 {escape_html(desc)}" if desc else f"<code>{escape_html(t['name'])}</code>")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools core")
 
     async def _cmd_tools_optional(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_optional."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            data = await self.api.get_default_tools()
-            default_names = set(data.get("default_tools", []))
-            available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-            thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
-
-            cats: Dict[str, list] = {}
-            for t in available:
-                if t.get("name") not in default_names:
-                    cat = t.get("category", "other")
-                    cats.setdefault(cat, []).append(t)
-
-            total = sum(len(v) for v in cats.values())
-            lines = [f"<b>Optional Tools</b> ({total} tools, {len(cats)} categories)\n"]
-            for cat_name in sorted(cats):
-                entries = cats[cat_name]
-                active = sum(1 for t in entries if t["name"] in thread_extras)
-                tool_names = ", ".join(f"<code>{escape_html(t['name'])}</code>" for t in entries)
-                if len(tool_names) > 300:
-                    tool_names = tool_names[:297] + "..."
-                status = f" ({active} enabled)" if active else ""
-                lines.append(f"<b>{escape_html(cat_name)}</b> ({len(entries)}){status}")
-                lines.append(tool_names)
-                lines.append("")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools optional")
 
     async def _cmd_tools_enabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enabled."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            data = await self.api.get_default_tools()
-            default_names = set(data.get("default_tools", []))
-            available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-            thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
-            thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
-            all_enabled = (default_names | thread_extras) - thread_disabled
-
-            lines = [f"<b>Enabled Tools</b> ({len(all_enabled)} active)\n"]
-
-            core_active = sorted(n for n in all_enabled if n in default_names)
-            lines.append(f"<b>Core ({len(core_active)})</b>")
-            lines.append(", ".join(f"<code>{n}</code>" for n in core_active) or "None")
-
-            disabled_core = sorted(thread_disabled & default_names)
-            if disabled_core:
-                lines.append(f"\n<b>Core \u2014 disabled here ({len(disabled_core)})</b>")
-                lines.append(", ".join(f"<s><code>{n}</code></s>" for n in disabled_core))
-
-            optional_active = sorted(n for n in all_enabled if n not in default_names)
-            if optional_active:
-                avail_by_name = {t["name"]: t for t in available}
-                lines.append(f"\n<b>Optional \u2014 enabled ({len(optional_active)})</b>")
-                for name in optional_active:
-                    t = avail_by_name.get(name, {})
-                    desc = (t.get("description") or "").split("\n")[0][:50]
-                    lines.append(f"<code>{escape_html(name)}</code> \u2014 {escape_html(desc)}" if desc else f"<code>{escape_html(name)}</code>")
-            else:
-                lines.append("\n<b>Optional</b>\nNo optional tools enabled.")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools enabled")
 
     async def _cmd_tools_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_search <query>."""
@@ -3012,137 +2374,25 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /tools_category <name>")
             return
 
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            data = await self.api.get_default_tools()
-            default_names = set(data.get("default_tools", []))
-            available = data.get("available_tools", [])
-            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-            thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
-            thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
-            all_enabled = (default_names | thread_extras) - thread_disabled
-
-            cat_key = cat_name.lower().strip().replace("-", "_")
-            cats: Dict[str, list] = {}
-            for t in available:
-                cat = t.get("category", "other")
-                cats.setdefault(cat, []).append(t)
-
-            if cat_key not in cats:
-                avail_cats = ", ".join(sorted(cats))
-                await update.message.reply_text(
-                    f"Unknown category '{cat_name}'. Available: {avail_cats}"
-                )
-                return
-
-            entries = cats[cat_key]
-            lines = [f"<b>Tools: {escape_html(cat_key)}</b> ({len(entries)} tools)\n"]
-            for t in entries:
-                tool_name = t["name"]
-                enabled = tool_name in all_enabled
-                is_default = tool_name in default_names
-                icon = "\u2705" if enabled else "\u274c"
-                desc = (t.get("description") or "").split("\n")[0][:60]
-                tag = " (core)" if is_default else ""
-                lines.append(f"{icon} <code>{escape_html(tool_name)}</code>{tag}")
-                if desc:
-                    lines.append(f"    {escape_html(desc)}")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools category")
 
     async def _cmd_tools_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enable <name>."""
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_enable <tool_or_category>")
             return
 
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        try:
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
-                name,
-                user_id=user_id,
-                thread_id=thread_id,
-            )
-            if error:
-                await self._send_html(chat_id, error, context)
-                return
-
-            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-            current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
-            current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
-            new_enabled = current_enabled | set(tool_names)
-            new_disabled = current_disabled - set(tool_names)
-
-            await self.api.update_thread_config(
-                thread_id,
-                user_id=user_id,
-                enabled_tools=sorted(new_enabled),
-                disabled_tools=sorted(new_disabled),
-            )
-
-            if is_category:
-                await update.message.reply_text(
-                    f"Enabled category {cat_name}: {len(tool_names)} tools."
-                )
-            else:
-                await update.message.reply_text(f"Enabled: {tool_names[0]}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools enable")
 
     async def _cmd_tools_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_disable <name>."""
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_disable <tool_or_category>")
             return
 
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        try:
-            tool_names, is_category, cat_name, error = await self._resolve_tool_names(
-                name,
-                user_id=user_id,
-                thread_id=thread_id,
-            )
-            if error:
-                await self._send_html(chat_id, error, context)
-                return
-
-            tc = await self.api.get_thread_config(thread_id, user_id=user_id)
-            current_enabled = set(tc.get("enabled_tools", [])) if tc else set()
-            current_disabled = set(tc.get("disabled_tools", [])) if tc else set()
-            new_enabled = current_enabled - set(tool_names)
-            new_disabled = current_disabled | set(tool_names)
-
-            await self.api.update_thread_config(
-                thread_id,
-                user_id=user_id,
-                enabled_tools=sorted(new_enabled),
-                disabled_tools=sorted(new_disabled),
-            )
-
-            if is_category:
-                await update.message.reply_text(
-                    f"Disabled category {cat_name}: {len(tool_names)} tools."
-                )
-            else:
-                await update.message.reply_text(f"Disabled: {tool_names[0]}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "tools disable")
 
     # =========================================================================
     # Memory Commands
@@ -3150,30 +2400,7 @@ class NymeriaTelegramBot:
 
     async def _cmd_memory_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_list."""
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            memories = await self.api.list_memories(user_id)
-            if not memories:
-                await update.message.reply_text("No memories saved yet.")
-                return
-
-            lines = [f"<b>Your Memories</b> ({len(memories)} stored)\n"]
-            for mem in memories[:25]:
-                value = mem.get("value", "")
-                preview = escape_html(value[:200] + "..." if len(value) > 200 else value)
-                lines.append(f"<b>{escape_html(mem.get('key', '?'))}</b>")
-                lines.append(preview)
-                lines.append("")
-
-            if len(memories) > 25:
-                lines.append(f"<i>Showing 25 of {len(memories)}</i>")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "memory list")
 
     async def _cmd_memory_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_save <key> <value>."""
@@ -3181,19 +2408,7 @@ class NymeriaTelegramBot:
         if len(args) < 2:
             await update.message.reply_text("Usage: /memory_save <key> <value>")
             return
-        key = args[0]
-        value = " ".join(args[1:])
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            await self.api.save_memory(user_id, key, value)
-            await update.message.reply_text(f"Saved memory: {key}")
-        except httpx.HTTPStatusError as e:
-            detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-            await update.message.reply_text(f"Error: {detail}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "memory save")
 
     async def _cmd_memory_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_forget <key>."""
@@ -3201,19 +2416,7 @@ class NymeriaTelegramBot:
         if not key:
             await update.message.reply_text("Usage: /memory_forget <key>")
             return
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            await self.api.forget_memory(user_id, key)
-            await update.message.reply_text(f"Forgot memory: {key}")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                await update.message.reply_text(f"No memory found with key '{key}'.")
-            else:
-                await update.message.reply_text(f"Error: {e}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "memory forget")
 
     async def _cmd_memory_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_search <query>."""
@@ -3222,27 +2425,7 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /memory_search <query>")
             return
 
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            results = await self.api.search_memories(user_id, query)
-            if not results:
-                await update.message.reply_text(f"No memories matching '{query}'.")
-                return
-
-            lines = [f"<b>Memory Search: {escape_html(query)}</b> ({len(results)} results)\n"]
-            for mem in results[:25]:
-                value = mem.get("value", "")
-                preview = escape_html(value[:200] + "..." if len(value) > 200 else value)
-                lines.append(f"<b>{escape_html(mem.get('key', '?'))}</b>")
-                lines.append(preview)
-                lines.append("")
-
-            await self._send_html(chat_id, "\n".join(lines), context)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "memory search")
 
     # =========================================================================
     # Notepad Commands
@@ -3250,28 +2433,7 @@ class NymeriaTelegramBot:
 
     async def _cmd_notepad_read(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_read."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            await self.api.get_thread_config(thread_id, user_id=user_id)
-            from ..tools.thread_notes import read_notepad
-            content = read_notepad(thread_id)
-            if content:
-                if len(content) > 3800:
-                    content = content[:3797] + "..."
-                text = (
-                    f"<b>Notepad</b>\n\n"
-                    f"{escape_html(content)}\n\n"
-                    f"<i>{len(content)} chars | thread: {escape_html(thread_id)}</i>"
-                )
-                await self._send_html(chat_id, text, context)
-            else:
-                await update.message.reply_text("Notepad is empty.")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "notepad read")
 
     async def _cmd_notepad_write(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_write <content>.
@@ -3283,61 +2445,11 @@ class NymeriaTelegramBot:
             await update.message.reply_text("Usage: /notepad_write <content>")
             return
 
-        thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-
-        # Check for replace: prefix
-        if raw.lower().startswith("replace:"):
-            write_mode = "replace"
-            content = raw[8:].strip()
-        else:
-            write_mode = "append"
-            content = raw
-
-        try:
-            await self.api.get_thread_config(thread_id, user_id=user_id)
-            from ..tools.thread_notes import _notepad_path, MAX_NOTEPAD_SIZE
-            path = _notepad_path(thread_id)
-
-            if write_mode == "append":
-                existing = path.read_text(encoding="utf-8") if path.exists() else ""
-                if existing:
-                    new_content = existing.rstrip() + "\n\n" + content
-                else:
-                    new_content = content
-            else:
-                new_content = content
-
-            if len(new_content.encode("utf-8")) > MAX_NOTEPAD_SIZE:
-                await update.message.reply_text(
-                    f"Notepad would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit."
-                )
-                return
-
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(new_content, encoding="utf-8")
-            size = len(new_content.encode("utf-8"))
-            await update.message.reply_text(f"Notepad updated ({write_mode}): {size} bytes.")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "notepad write")
 
     async def _cmd_notepad_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /notepad_clear."""
-        thread_id = self.resolve_thread_id_for_chat(update.effective_chat.id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            await self.api.get_thread_config(thread_id, user_id=user_id)
-            from ..tools.thread_notes import delete_notepad
-            if delete_notepad(thread_id):
-                await update.message.reply_text("Notepad cleared.")
-            else:
-                await update.message.reply_text("Notepad was already empty.")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "notepad clear")
 
     # =========================================================================
     # Callback Query Handlers

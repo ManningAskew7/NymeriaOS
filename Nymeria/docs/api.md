@@ -685,27 +685,44 @@ All events include `thread_id` for correlation.
 
 ### Command Service
 
-Most slash commands are handled by the stateless command service and return
-markdown. Desktop, mobile, bots, and the agent `slash_command` tool can use the
-same registry.
+Most slash commands are handled by the central command service and return
+markdown. Desktop, mobile, bots, and the agent `slash_command` tool use the
+same registry. In-process callers execute through the direct backend adapter;
+out-of-process surfaces call `POST /commands/execute`.
 
 ```http
-GET /commands?source=user
+GET /commands?actor=user&surface=desktop
 ```
 
-`source` may be `user`, `agent`, or `cli`. Agent source hides commands whose
-metadata marks them unavailable to agents.
+`actor` may be `user`, `agent`, or `system`. `surface` may be `desktop`,
+`mobile`, `cli`, `discord`, `telegram`, `api`, or `agent` (`twitch` is still
+accepted for compatibility, but the Twitch bot is deprecated). The legacy
+`source=user|agent|cli` query parameter still works; `actor` and `surface`
+are preferred for new callers. Agent actor hides commands whose metadata marks
+them unavailable to agents. Non-admin users do not see admin-only commands.
 
 **Response:**
 
 ```json
 [
   {
-    "name": "tools",
+    "id": "tools.core",
+    "path": ["tools", "core"],
+    "name": "tools core",
     "description": "Inspect or change thread tools",
-    "usage": "/tools <core|optional|enabled|category|enable|disable> [args]",
+    "usage": "/tools core",
     "category": "Tools",
-    "subcommands": ["core", "optional", "enabled", "category", "enable", "disable"]
+    "subcommands": [],
+    "aliases": ["/tools_core"],
+    "scope": "global",
+    "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "api", "agent"],
+    "agent_allowed": true,
+    "requires_thread": false,
+    "requires_admin": false,
+    "mutates_state": false,
+    "danger_level": "safe",
+    "execution_kind": "command",
+    "note": null
   }
 ]
 ```
@@ -717,17 +734,31 @@ POST /commands/execute
 **Request:**
 
 ```json
-{"command": "/tools core", "thread_id": "abc123", "source": "user"}
+{
+  "command": "/tools core",
+  "thread_id": "abc123",
+  "source": "user",
+  "actor": "user",
+  "surface": "desktop"
+}
 ```
 
 **Response:**
 
 ```json
-{"success": true, "markdown": "### Core Tools\n\n...", "command": "tools core"}
+{
+  "success": true,
+  "markdown": "### Core Tools\n\n...",
+  "command": "tools core",
+  "level": "success",
+  "data": null
+}
 ```
 
 Commands that require an active thread return a markdown error if `thread_id`
-is omitted.
+is omitted. `/compact` appears in discovery with `execution_kind:
+"chat_stream"`, but `POST /commands/execute` returns a markdown error telling
+the caller to route it through chat streaming instead.
 
 ### Chat Slash Commands
 
@@ -1461,7 +1492,7 @@ Authorization: Bearer <token>
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `task` | string | Yes | Task description |
-| `scheduled_for` | string | No | Relative (`30s`, `5m`, `2h`, `1d`, `1w`) or absolute datetime |
+| `scheduled_for` | string | No | Relative (`45s`, `17m`, `2h`, `1w`) or absolute/ISO datetime |
 | `recurrence` | string | No | Valid recurrence pattern |
 | `thread_id` | string | No | Thread for autonomous output, defaults to a user-scoped default thread |
 | `notes` | string | No | Additional context |

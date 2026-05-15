@@ -109,6 +109,8 @@ class _CaptureAPI:
         self.context_calls: list[tuple[str, str | None]] = []
         self.thread_config_calls: list[tuple[str, str | None]] = []
         self.history_calls: list[tuple[str, str | None]] = []
+        self.command_calls: list[dict] = []
+        self.list_command_calls: list[dict] = []
 
     async def resolve_platform_user(self, platform: str, platform_user_id: str):
         assert platform == "telegram"
@@ -161,6 +163,47 @@ class _CaptureAPI:
             }
         )
         return {"response": "", "tool_call_count": 0}
+
+    async def execute_command(self, command: str, **kwargs):
+        self.command_calls.append({"command": command, **kwargs})
+        return {
+            "success": True,
+            "markdown": f"backend result for {command}",
+            "command": command.lstrip("/"),
+            "level": "success",
+            "data": None,
+        }
+
+    async def list_commands(self, **kwargs):
+        self.list_command_calls.append(kwargs)
+        return [
+            {
+                "name": "compact",
+                "path": ["compact"],
+                "usage": "/compact",
+                "description": "Compact the active chat context",
+                "category": "Thread",
+                "execution_kind": "chat_stream",
+            },
+            {
+                "name": "tools core",
+                "path": ["tools", "core"],
+                "usage": "/tools core",
+                "description": "Show core tools",
+                "category": "Tools",
+                "aliases": ["/tools_core"],
+                "execution_kind": "command",
+            },
+            {
+                "name": "todos add",
+                "path": ["todos", "add"],
+                "usage": "/todos add",
+                "description": "Add a TODO",
+                "category": "TODOs",
+                "aliases": ["/todos_add"],
+                "execution_kind": "command",
+            },
+        ]
 
 
 class _FakeCallbackQuery:
@@ -412,15 +455,128 @@ def test_telegram_public_command_policy_does_not_require_linked_user():
     assert update.message.replies == []
 
 
-def test_telegram_thread_command_reads_thread_as_linked_user():
+def test_telegram_help_merges_backend_catalog_with_local_commands():
     api = _CaptureAPI(user_map={"42": "user-1"})
     bot = NymeriaTelegramBot(api=api, bot_token="test-token")
     update = _fake_update(telegram_user_id=42)
-    context = SimpleNamespace(bot=_FakeBot(), args=[])
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=[])
+
+    asyncio.run(bot._cmd_help(update, context))
+
+    assert api.list_command_calls == [
+        {"actor": "user", "surface": "telegram", "user_id": "user-1"}
+    ]
+    text = fake_bot.messages[0].text
+    assert "/tools_core: Show core tools" in text
+    assert "/todo_add: Add a TODO" in text
+    assert "/tools_search: Search tools" in text
+    assert text.count("/compact:") == 1
+
+
+def test_telegram_thread_command_uses_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=[])
 
     asyncio.run(bot._cmd_thread(update, context))
 
-    assert api.context_calls == [("telegram_123", "user-1")]
+    assert api.command_calls == [
+        {
+            "command": "/thread",
+            "thread_id": "telegram_123",
+            "source": "user",
+            "actor": "user",
+            "surface": "telegram",
+            "user_id": "user-1",
+        }
+    ]
+    assert [msg.text for msg in fake_bot.messages] == ["backend result for /thread"]
+
+
+def test_telegram_global_tool_command_uses_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=[])
+
+    asyncio.run(bot._cmd_tools_core(update, context))
+
+    assert api.command_calls == [
+        {
+            "command": "/tools core",
+            "thread_id": "telegram_123",
+            "source": "user",
+            "actor": "user",
+            "surface": "telegram",
+            "user_id": "user-1",
+        }
+    ]
+    assert [msg.text for msg in fake_bot.messages] == [
+        "backend result for /tools core"
+    ]
+
+
+def test_telegram_global_memory_command_passes_arguments_to_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=["search", "term"])
+
+    asyncio.run(bot._cmd_memory_search(update, context))
+
+    assert api.command_calls[0]["command"] == "/memory search search term"
+    assert api.command_calls[0]["surface"] == "telegram"
+    assert api.command_calls[0]["user_id"] == "user-1"
+
+
+def test_telegram_global_todo_command_passes_arguments_to_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=["Check", "logs", "|", "2h"])
+
+    asyncio.run(bot._cmd_todo_add(update, context))
+
+    assert api.command_calls[0]["command"] == "/todos add Check logs | 2h"
+    assert api.command_calls[0]["thread_id"] == "telegram_123"
+    assert api.command_calls[0]["surface"] == "telegram"
+    assert api.command_calls[0]["user_id"] == "user-1"
+
+
+def test_telegram_thread_tool_mutation_uses_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=["browser"])
+
+    asyncio.run(bot._cmd_tools_enable(update, context))
+
+    assert api.command_calls[0]["command"] == "/tools enable browser"
+    assert api.command_calls[0]["thread_id"] == "telegram_123"
+    assert api.command_calls[0]["surface"] == "telegram"
+    assert api.command_calls[0]["user_id"] == "user-1"
+
+
+def test_telegram_notepad_command_uses_backend_command_service():
+    api = _CaptureAPI(user_map={"42": "user-1"})
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=["replace:project", "notes"])
+
+    asyncio.run(bot._cmd_notepad_write(update, context))
+
+    assert api.command_calls[0]["command"] == "/notepad write replace:project notes"
+    assert api.command_calls[0]["thread_id"] == "telegram_123"
+    assert api.command_calls[0]["surface"] == "telegram"
+    assert api.command_calls[0]["user_id"] == "user-1"
 
 
 def test_telegram_export_command_reads_history_as_linked_user():
