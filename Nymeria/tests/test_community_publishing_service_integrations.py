@@ -253,6 +253,124 @@ def test_medium_create_publication_post_sends_body(monkeypatch):
     assert captured["json_body"]["canonicalUrl"] == "https://example.com/hello"
 
 
+def test_twitter_create_post_uses_env_token(monkeypatch):
+    from nymeria.tools import community_publishing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("TWITTER_BEARER_TOKEN", "twitter-token")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"data": {"id": "tweet-1", "text": kwargs["json_body"]["text"]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.twitter_create_post.func(
+            text="Launch update",
+            reply_to_tweet_id="https://x.com/me/status/123",
+            quote_tweet_id="456",
+            media_ids="m1,m2",
+        )
+    )
+
+    assert result["data"]["id"] == "tweet-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.twitter.com/2/tweets"
+    assert captured["headers"]["Authorization"] == "Bearer twitter-token"
+    assert captured["json_body"]["text"] == "Launch update"
+    assert captured["json_body"]["reply"] == {"in_reply_to_tweet_id": "123"}
+    assert captured["json_body"]["quote_tweet_id"] == "456"
+    assert captured["json_body"]["media"] == {"media_ids": ["m1", "m2"]}
+
+
+def test_twitter_like_post_resolves_current_user(monkeypatch):
+    from nymeria.tools import community_publishing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "user-token")
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/users/me"):
+            return {"data": {"id": "user-1"}}
+        return {"data": {"liked": True}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.twitter_like_post.func(tweet_id="tweet-1"))
+
+    assert result["data"]["liked"] is True
+    assert calls[0]["url"] == "https://api.twitter.com/2/users/me"
+    assert calls[1]["url"] == "https://api.twitter.com/2/users/user-1/likes"
+    assert calls[1]["json_body"] == {"tweet_id": "tweet-1"}
+
+
+def test_linkedin_create_post_uses_rest_headers(monkeypatch):
+    from nymeria.tools import community_publishing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "linkedin-token")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"status": "ok", "id": "urn:li:share:1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.linkedin_create_post.func(
+            text="New article",
+            person_id="person-1",
+            visibility="CONNECTIONS",
+            article_url="https://example.com/article",
+            article_title="Article",
+        )
+    )
+
+    assert result["id"] == "urn:li:share:1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.linkedin.com/rest/posts"
+    assert captured["headers"]["Authorization"] == "Bearer linkedin-token"
+    assert captured["headers"]["X-Restli-Protocol-Version"] == "2.0.0"
+    assert captured["json_body"]["author"] == "urn:li:person:person-1"
+    assert captured["json_body"]["visibility"] == "CONNECTIONS"
+    assert captured["json_body"]["content"]["article"]["source"] == "https://example.com/article"
+
+
+def test_facebook_page_create_post_adds_appsecret_proof(monkeypatch):
+    from nymeria.tools import community_publishing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("FACEBOOK_ACCESS_TOKEN", "facebook-token")
+    monkeypatch.setenv("FACEBOOK_APP_SECRET", "secret")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"id": "page-1_post-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.facebook_page_create_post.func(
+            page_id="page-1",
+            message="hello",
+            link="https://example.com",
+        )
+    )
+
+    assert result["id"] == "page-1_post-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://graph.facebook.com/v23.0/page-1/feed"
+    assert captured["headers"]["Authorization"] == "Bearer facebook-token"
+    assert captured["form_data"] == {"message": "hello", "link": "https://example.com"}
+    assert len(captured["params"]["appsecret_proof"]) == 64
+
+
 def test_community_publishing_registration_and_metadata():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.community_publishing_service_integrations import COMMUNITY_PUBLISHING_SERVICE_TOOLS
@@ -266,14 +384,26 @@ def test_community_publishing_registration_and_metadata():
         "discourse_create_topic",
         "medium_get_me",
         "medium_create_post",
+        "twitter_search_recent",
+        "twitter_create_post",
+        "linkedin_get_me",
+        "linkedin_create_post",
+        "facebook_graph_get_node",
+        "facebook_page_create_post",
     } <= names
     assert names <= set(OPTIONAL_TOOLS)
     assert get_tool_metadata("reddit_search_posts").category == ToolCategory.INTEGRATIONS
     assert get_tool_metadata("reddit_search_posts").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("discourse_search").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("medium_get_me").security_level == SecurityLevel.SAFE
+    assert get_tool_metadata("twitter_search_recent").security_level == SecurityLevel.SAFE
+    assert get_tool_metadata("linkedin_get_me").security_level == SecurityLevel.SAFE
+    assert get_tool_metadata("facebook_graph_get_node").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("reddit_create_post").security_level == SecurityLevel.MODERATE
     assert get_tool_metadata("medium_create_post").security_level == SecurityLevel.MODERATE
+    assert get_tool_metadata("twitter_create_post").security_level == SecurityLevel.MODERATE
+    assert get_tool_metadata("linkedin_create_post").security_level == SecurityLevel.MODERATE
+    assert get_tool_metadata("facebook_page_create_post").security_level == SecurityLevel.MODERATE
 
 
 def test_community_publishing_tool_schemas_hide_config():

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -20,6 +22,9 @@ _REDDIT_BASE_URL = "https://oauth.reddit.com"
 _REDDIT_PUBLIC_BASE_URL = "https://www.reddit.com"
 _REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 _MEDIUM_BASE_URL = "https://api.medium.com/v1"
+_LINKEDIN_BASE_URL = "https://api.linkedin.com"
+_TWITTER_BASE_URL = "https://api.twitter.com/2"
+_FACEBOOK_GRAPH_BASE_URL = "https://graph.facebook.com/v23.0"
 _REDDIT_TOKEN_CACHE: dict[tuple[str, str, str, str], tuple[str, float]] = {}
 
 
@@ -59,6 +64,18 @@ def _csv_to_list(value: str, *, max_items: int | None = None) -> list[str]:
 
 def _csv(value: str) -> str:
     return ",".join(_csv_to_list(value))
+
+
+def _parse_json(value: str, *, expected: type, label: str) -> Any:
+    if not value.strip():
+        return {} if expected is dict else []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{label} must be valid JSON: {e}") from e
+    if not isinstance(parsed, expected):
+        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
+    return parsed
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -163,6 +180,135 @@ def _json_headers() -> dict[str, str]:
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+
+
+def _bearer_service_config(
+    *,
+    provider: str,
+    provider_aliases: tuple[str, ...],
+    token_fields: tuple[str, ...],
+    token_settings: tuple[str, ...],
+    base_settings: tuple[str, ...],
+    default_base_url: str,
+    env_var: str,
+    display_name: str,
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, dict[str, str]] | str:
+    token = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=token_fields,
+        tool_name=tool_name,
+        config=config,
+    )
+    for setting_name in token_settings:
+        if token:
+            break
+        token = _settings_value(setting_name)
+    if not token:
+        return _setup_hint(
+            provider=provider,
+            field_names=token_fields,
+            tool_name=tool_name,
+            env_var=env_var,
+            display_name=display_name,
+        )
+
+    base_url = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        tool_name=tool_name,
+        config=config,
+    )
+    for setting_name in base_settings:
+        if base_url:
+            break
+        base_url = _settings_value(setting_name)
+    return _base_url(base_url or default_base_url), {
+        **_json_headers(),
+        "Authorization": f"Bearer {token}",
+    }
+
+
+def _linkedin_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]] | str:
+    resolved = _bearer_service_config(
+        provider="linkedin",
+        provider_aliases=("linkedin_oauth2", "linkedin_oauth2_api", "linkedin_community_management"),
+        token_fields=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+        token_settings=("linkedin_access_token",),
+        base_settings=("linkedin_base_url",),
+        default_base_url=_LINKEDIN_BASE_URL,
+        env_var="LINKEDIN_ACCESS_TOKEN",
+        display_name="LinkedIn",
+        tool_name=tool_name,
+        config=config,
+    )
+    if isinstance(resolved, str):
+        return resolved
+    base_url, headers = resolved
+    headers["X-Restli-Protocol-Version"] = "2.0.0"
+    headers["LinkedIn-Version"] = str(_settings_value("linkedin_api_version") or "202604")
+    return base_url, headers
+
+
+def _twitter_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]] | str:
+    return _bearer_service_config(
+        provider="twitter",
+        provider_aliases=("x", "x_twitter", "twitter_oauth2", "twitter_oauth2_api"),
+        token_fields=(
+            "bearer_token",
+            "bearerToken",
+            "access_token",
+            "accessToken",
+            "api_key",
+            "apiKey",
+            "token",
+            "value",
+        ),
+        token_settings=("twitter_bearer_token", "twitter_access_token"),
+        base_settings=("twitter_api_base_url",),
+        default_base_url=_TWITTER_BASE_URL,
+        env_var="TWITTER_BEARER_TOKEN",
+        display_name="X/Twitter",
+        tool_name=tool_name,
+        config=config,
+    )
+
+
+def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str], dict[str, str]] | str:
+    resolved = _bearer_service_config(
+        provider="facebook",
+        provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
+        token_fields=("access_token", "accessToken", "page_access_token", "pageAccessToken", "token", "value"),
+        token_settings=("facebook_access_token",),
+        base_settings=("facebook_graph_base_url",),
+        default_base_url=_FACEBOOK_GRAPH_BASE_URL,
+        env_var="FACEBOOK_ACCESS_TOKEN",
+        display_name="Facebook Graph",
+        tool_name=tool_name,
+        config=config,
+    )
+    if isinstance(resolved, str):
+        return resolved
+    base_url, headers = resolved
+    app_secret = _credential_value(
+        provider="facebook",
+        provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
+        field_names=("app_secret", "appSecret", "client_secret", "clientSecret"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("facebook_app_secret")
+    params: dict[str, str] = {}
+    if app_secret:
+        token = headers["Authorization"].removeprefix("Bearer ").strip()
+        params["appsecret_proof"] = hmac.new(
+            app_secret.encode("utf-8"),
+            token.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+    return base_url, headers, params
 
 
 def _reddit_token_url(tool_name: str, config: Optional[RunnableConfig]) -> str:
@@ -1154,6 +1300,502 @@ def medium_create_publication_post(
         return f"[Error]: Medium publication post creation failed: {e}"
 
 
+def _twitter_tweet_id(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("tweet_id is required.")
+    if cleaned.startswith("http://") or cleaned.startswith("https://"):
+        parsed = urlparse(cleaned)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 3 and parts[-2] == "status":
+            return parts[-1]
+        raise ValueError("tweet URL must include /status/<id>.")
+    return cleaned
+
+
+def _twitter_user_id_from_username(base_url: str, headers: dict[str, str], username: str) -> str:
+    cleaned = username.strip().lstrip("@")
+    if not cleaned:
+        raise ValueError("username is required.")
+    data = _request_json(
+        "GET",
+        f"{base_url}/users/by/username/{quote(cleaned, safe='')}",
+        headers=headers,
+    )
+    if isinstance(data, dict):
+        user_id = data.get("id") or data.get("data", {}).get("id")
+        if user_id:
+            return str(user_id)
+    raise RuntimeError("X/Twitter user lookup did not return an id.")
+
+
+def _twitter_current_user_id(base_url: str, headers: dict[str, str]) -> str:
+    data = _request_json("GET", f"{base_url}/users/me", headers=headers)
+    if isinstance(data, dict):
+        user_id = data.get("id") or data.get("data", {}).get("id")
+        if user_id:
+            return str(user_id)
+    raise RuntimeError("X/Twitter /users/me did not return an id.")
+
+
+@tool
+def twitter_get_me(
+    user_fields: str = "id,name,username,verified,profile_image_url",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the authenticated X/Twitter user."""
+    try:
+        resolved = _twitter_config("twitter_get_me", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        data = _request_json(
+            "GET",
+            f"{base_url}/users/me",
+            params={"user.fields": _csv(user_fields)},
+            headers=headers,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("twitter_get_me failed", exc_info=True)
+        return f"[Error]: X/Twitter profile lookup failed: {e}"
+
+
+@tool
+def twitter_get_user(
+    user_id: str = "",
+    username: str = "",
+    user_fields: str = "id,name,username,description,verified,profile_image_url,public_metrics",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an X/Twitter user by ID or username."""
+    try:
+        resolved = _twitter_config("twitter_get_user", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        params = {"user.fields": _csv(user_fields)}
+        if user_id.strip():
+            url = f"{base_url}/users/{quote(user_id.strip(), safe='')}"
+        elif username.strip():
+            url = f"{base_url}/users/by/username/{quote(username.strip().lstrip('@'), safe='')}"
+        else:
+            return "[Error]: user_id or username is required."
+        return _dump_json(_request_json("GET", url, params=params, headers=headers))
+    except Exception as e:
+        logger.error("twitter_get_user failed", exc_info=True)
+        return f"[Error]: X/Twitter user lookup failed: {e}"
+
+
+@tool
+def twitter_search_recent(
+    query: str,
+    limit: int = 10,
+    sort_order: str = "recency",
+    start_time: str = "",
+    end_time: str = "",
+    tweet_fields: str = "id,text,author_id,created_at,public_metrics,lang",
+    expansions: str = "author_id",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search recent X/Twitter posts."""
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        resolved = _twitter_config("twitter_search_recent", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        params = {
+            "query": query.strip(),
+            "max_results": _limit(limit, default=10, max_value=100),
+            "sort_order": sort_order.strip() or "recency",
+            "tweet.fields": _csv(tweet_fields),
+            "expansions": _csv(expansions),
+        }
+        if start_time.strip():
+            params["start_time"] = start_time.strip()
+        if end_time.strip():
+            params["end_time"] = end_time.strip()
+        return _dump_json(
+            _request_json("GET", f"{base_url}/tweets/search/recent", params=params, headers=headers)
+        )
+    except Exception as e:
+        logger.error("twitter_search_recent failed", exc_info=True)
+        return f"[Error]: X/Twitter recent search failed: {e}"
+
+
+@tool
+def twitter_create_post(
+    text: str,
+    reply_to_tweet_id: str = "",
+    quote_tweet_id: str = "",
+    media_ids: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an X/Twitter post, reply, or quote post."""
+    if not text.strip():
+        return "[Error]: text is required."
+    try:
+        resolved = _twitter_config("twitter_create_post", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        body: dict[str, Any] = {"text": text}
+        if reply_to_tweet_id.strip():
+            body["reply"] = {"in_reply_to_tweet_id": _twitter_tweet_id(reply_to_tweet_id)}
+        if quote_tweet_id.strip():
+            body["quote_tweet_id"] = _twitter_tweet_id(quote_tweet_id)
+        media = _csv_to_list(media_ids, max_items=4)
+        if media:
+            body["media"] = {"media_ids": media}
+        return _dump_json(_request_json("POST", f"{base_url}/tweets", json_body=body, headers=headers))
+    except Exception as e:
+        logger.error("twitter_create_post failed", exc_info=True)
+        return f"[Error]: X/Twitter post creation failed: {e}"
+
+
+@tool
+def twitter_delete_post(
+    tweet_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete an X/Twitter post by ID or URL."""
+    try:
+        resolved = _twitter_config("twitter_delete_post", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        return _dump_json(
+            _request_json(
+                "DELETE",
+                f"{base_url}/tweets/{quote(_twitter_tweet_id(tweet_id), safe='')}",
+                headers=headers,
+            )
+        )
+    except Exception as e:
+        logger.error("twitter_delete_post failed", exc_info=True)
+        return f"[Error]: X/Twitter post deletion failed: {e}"
+
+
+@tool
+def twitter_like_post(
+    tweet_id: str,
+    user_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Like an X/Twitter post as the authenticated user."""
+    try:
+        resolved = _twitter_config("twitter_like_post", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        acting_user_id = user_id.strip() or _twitter_current_user_id(base_url, headers)
+        body = {"tweet_id": _twitter_tweet_id(tweet_id)}
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/users/{quote(acting_user_id, safe='')}/likes",
+                json_body=body,
+                headers=headers,
+            )
+        )
+    except Exception as e:
+        logger.error("twitter_like_post failed", exc_info=True)
+        return f"[Error]: X/Twitter like failed: {e}"
+
+
+@tool
+def twitter_repost(
+    tweet_id: str,
+    user_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Repost an X/Twitter post as the authenticated user."""
+    try:
+        resolved = _twitter_config("twitter_repost", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        acting_user_id = user_id.strip() or _twitter_current_user_id(base_url, headers)
+        body = {"tweet_id": _twitter_tweet_id(tweet_id)}
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/users/{quote(acting_user_id, safe='')}/retweets",
+                json_body=body,
+                headers=headers,
+            )
+        )
+    except Exception as e:
+        logger.error("twitter_repost failed", exc_info=True)
+        return f"[Error]: X/Twitter repost failed: {e}"
+
+
+@tool
+def twitter_send_direct_message(
+    text: str,
+    recipient_user_id: str = "",
+    recipient_username: str = "",
+    media_ids: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Send an X/Twitter direct message to a user."""
+    if not text.strip():
+        return "[Error]: text is required."
+    try:
+        resolved = _twitter_config("twitter_send_direct_message", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        user_id = recipient_user_id.strip()
+        if not user_id and recipient_username.strip():
+            user_id = _twitter_user_id_from_username(base_url, headers, recipient_username)
+        if not user_id:
+            return "[Error]: recipient_user_id or recipient_username is required."
+        body: dict[str, Any] = {"text": text}
+        media = _csv_to_list(media_ids, max_items=4)
+        if media:
+            body["attachments"] = [{"media_id": item} for item in media]
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/dm_conversations/with/{quote(user_id, safe='')}/messages",
+                json_body=body,
+                headers=headers,
+            )
+        )
+    except Exception as e:
+        logger.error("twitter_send_direct_message failed", exc_info=True)
+        return f"[Error]: X/Twitter direct message failed: {e}"
+
+
+def _linkedin_author_urn(
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    author_urn: str,
+    person_id: str,
+    organization_id: str,
+) -> str:
+    if author_urn.strip():
+        return author_urn.strip()
+    if person_id.strip():
+        return f"urn:li:person:{person_id.strip()}"
+    if organization_id.strip():
+        return f"urn:li:organization:{organization_id.strip()}"
+    profile = _request_json("GET", f"{base_url}/v2/userinfo", headers=headers)
+    if isinstance(profile, dict):
+        profile_id = profile.get("sub") or profile.get("id")
+        if profile_id:
+            return f"urn:li:person:{profile_id}"
+    raise RuntimeError("LinkedIn profile lookup did not return a person id. Pass author_urn or person_id.")
+
+
+@tool
+def linkedin_get_me(
+    use_userinfo: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the authenticated LinkedIn member profile."""
+    try:
+        resolved = _linkedin_config("linkedin_get_me", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        path = "/v2/userinfo" if use_userinfo else "/v2/me"
+        return _dump_json(_request_json("GET", f"{base_url}{path}", headers=headers))
+    except Exception as e:
+        logger.error("linkedin_get_me failed", exc_info=True)
+        return f"[Error]: LinkedIn profile lookup failed: {e}"
+
+
+@tool
+def linkedin_create_post(
+    text: str,
+    author_urn: str = "",
+    person_id: str = "",
+    organization_id: str = "",
+    visibility: str = "PUBLIC",
+    article_url: str = "",
+    article_title: str = "",
+    article_description: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a LinkedIn text or article post."""
+    if not text.strip():
+        return "[Error]: text is required."
+    try:
+        resolved = _linkedin_config("linkedin_create_post", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers = resolved
+        author = _linkedin_author_urn(
+            base_url,
+            headers,
+            author_urn=author_urn,
+            person_id=person_id,
+            organization_id=organization_id,
+        )
+        body: dict[str, Any] = {
+            "author": author,
+            "commentary": text,
+            "lifecycleState": "PUBLISHED",
+            "visibility": visibility.strip().upper() or "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "thirdPartyDistributionChannels": [],
+            },
+        }
+        if article_url.strip():
+            article: dict[str, Any] = {"source": article_url.strip()}
+            if article_title.strip():
+                article["title"] = article_title.strip()
+            if article_description.strip():
+                article["description"] = article_description.strip()
+            body["content"] = {"article": article}
+        return _dump_json(_request_json("POST", f"{base_url}/rest/posts", json_body=body, headers=headers))
+    except Exception as e:
+        logger.error("linkedin_create_post failed", exc_info=True)
+        return f"[Error]: LinkedIn post creation failed: {e}"
+
+
+@tool
+def facebook_graph_get_me(
+    fields: str = "id,name",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the authenticated Facebook Graph profile."""
+    try:
+        resolved = _facebook_config("facebook_graph_get_me", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers, auth_params = resolved
+        params = {**auth_params, "fields": _csv(fields)}
+        return _dump_json(_request_json("GET", f"{base_url}/me", params=params, headers=headers))
+    except Exception as e:
+        logger.error("facebook_graph_get_me failed", exc_info=True)
+        return f"[Error]: Facebook Graph profile lookup failed: {e}"
+
+
+@tool
+def facebook_graph_get_node(
+    node_id: str,
+    edge: str = "",
+    fields: str = "",
+    query_json: str = "",
+    limit: int = 25,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Facebook Graph node or list one of its edges."""
+    if not node_id.strip():
+        return "[Error]: node_id is required."
+    try:
+        resolved = _facebook_config("facebook_graph_get_node", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers, auth_params = resolved
+        params = {**auth_params, **_parse_json(query_json, expected=dict, label="query_json")}
+        if fields.strip():
+            params["fields"] = _csv(fields)
+        if edge.strip():
+            params.setdefault("limit", _limit(limit, default=25, max_value=100))
+            path = f"/{quote(node_id.strip(), safe='')}/{quote(edge.strip().strip('/'), safe='')}"
+        else:
+            path = f"/{quote(node_id.strip(), safe='')}"
+        return _dump_json(_request_json("GET", f"{base_url}{path}", params=params, headers=headers))
+    except Exception as e:
+        logger.error("facebook_graph_get_node failed", exc_info=True)
+        return f"[Error]: Facebook Graph lookup failed: {e}"
+
+
+@tool
+def facebook_page_list_accounts(
+    fields: str = "id,name,category,tasks",
+    include_access_tokens: bool = False,
+    limit: int = 25,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Facebook pages/accounts available to the authenticated user."""
+    try:
+        resolved = _facebook_config("facebook_page_list_accounts", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers, auth_params = resolved
+        requested_fields = _csv(fields)
+        if include_access_tokens and "access_token" not in requested_fields.split(","):
+            requested_fields = f"{requested_fields},access_token" if requested_fields else "access_token"
+        params = {
+            **auth_params,
+            "fields": requested_fields,
+            "limit": _limit(limit, default=25, max_value=100),
+        }
+        return _dump_json(_request_json("GET", f"{base_url}/me/accounts", params=params, headers=headers))
+    except Exception as e:
+        logger.error("facebook_page_list_accounts failed", exc_info=True)
+        return f"[Error]: Facebook page account list failed: {e}"
+
+
+@tool
+def facebook_page_create_post(
+    page_id: str,
+    message: str,
+    link: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Facebook Page feed post."""
+    if not page_id.strip():
+        return "[Error]: page_id is required."
+    if not message.strip() and not link.strip():
+        return "[Error]: message or link is required."
+    try:
+        resolved = _facebook_config("facebook_page_create_post", config)
+        if isinstance(resolved, str):
+            return resolved
+        base_url, headers, auth_params = resolved
+        body: dict[str, Any] = {}
+        if message.strip():
+            body["message"] = message
+        if link.strip():
+            body["link"] = link.strip()
+        request_headers = dict(headers)
+        params = dict(auth_params)
+        page_access_token = _credential_value(
+            provider="facebook",
+            provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
+            field_names=("page_access_token", "pageAccessToken"),
+            tool_name="facebook_page_create_post",
+            config=config,
+        )
+        if page_access_token:
+            request_headers["Authorization"] = f"Bearer {page_access_token}"
+            app_secret = _credential_value(
+                provider="facebook",
+                provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
+                field_names=("app_secret", "appSecret", "client_secret", "clientSecret"),
+                tool_name="facebook_page_create_post",
+                config=config,
+            ) or _settings_value("facebook_app_secret")
+            if app_secret:
+                params["appsecret_proof"] = hmac.new(
+                    app_secret.encode("utf-8"),
+                    page_access_token.encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base_url}/{quote(page_id.strip(), safe='')}/feed",
+                params=params,
+                form_data=body,
+                headers=request_headers,
+            )
+        )
+    except Exception as e:
+        logger.error("facebook_page_create_post failed", exc_info=True)
+        return f"[Error]: Facebook Page post creation failed: {e}"
+
+
 COMMUNITY_PUBLISHING_SERVICE_TOOLS = [
     reddit_search_posts,
     reddit_list_subreddit_posts,
@@ -1174,4 +1816,18 @@ COMMUNITY_PUBLISHING_SERVICE_TOOLS = [
     medium_list_publications,
     medium_create_post,
     medium_create_publication_post,
+    twitter_get_me,
+    twitter_get_user,
+    twitter_search_recent,
+    twitter_create_post,
+    twitter_delete_post,
+    twitter_like_post,
+    twitter_repost,
+    twitter_send_direct_message,
+    linkedin_get_me,
+    linkedin_create_post,
+    facebook_graph_get_me,
+    facebook_graph_get_node,
+    facebook_page_list_accounts,
+    facebook_page_create_post,
 ]
