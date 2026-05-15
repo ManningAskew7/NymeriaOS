@@ -419,6 +419,14 @@ Set the API key for your chosen provider:
 | `MAILERLITE_API_KEY` | MailerLite | Optional MailerLite API key fallback; credential vault provider `mailerlite` is preferred |
 | `MAILERLITE_BASE_URL` | MailerLite | Optional MailerLite API base URL override |
 | `MAILERLITE_CLASSIC_API` | MailerLite | Use MailerLite Classic API authentication/header style |
+| `ACTIONNETWORK_API_KEY` | Action Network | Optional Action Network API key fallback; credential vault provider `actionnetwork` is preferred |
+| `ACTIONNETWORK_BASE_URL` | Action Network | Optional Action Network API base URL override |
+| `AUTOPILOT_API_KEY` | Autopilot | Optional Autopilot API key fallback; credential vault provider `autopilot` is preferred |
+| `AUTOPILOT_BASE_URL` | Autopilot | Optional Autopilot API base URL override |
+| `EGOI_API_KEY` | E-goi | Optional E-goi API key fallback; credential vault provider `egoi` is preferred |
+| `EGOI_BASE_URL` | E-goi | Optional E-goi API base URL override |
+| `VERO_AUTH_TOKEN` | Vero | Optional Vero auth token fallback; credential vault provider `vero` is preferred |
+| `VERO_BASE_URL` | Vero | Optional Vero API base URL override |
 | `CUSTOMERIO_TRACKING_SITE_ID` | Customer.io | Optional Customer.io tracking site ID fallback; credential vault provider `customerio` is preferred |
 | `CUSTOMERIO_TRACKING_API_KEY` | Customer.io | Optional Customer.io tracking API key fallback |
 | `CUSTOMERIO_APP_API_KEY` | Customer.io | Optional Customer.io app API key fallback for campaign reads |
@@ -947,6 +955,14 @@ reachable from the backend process.
 | `MAILERLITE_API_KEY` | - | MailerLite API key fallback |
 | `MAILERLITE_BASE_URL` | `https://connect.mailerlite.com/api` | MailerLite API base URL |
 | `MAILERLITE_CLASSIC_API` | `false` | Use MailerLite Classic API authentication/header style |
+| `ACTIONNETWORK_API_KEY` | - | Action Network API key fallback |
+| `ACTIONNETWORK_BASE_URL` | `https://actionnetwork.org/api/v2` | Action Network API base URL |
+| `AUTOPILOT_API_KEY` | - | Autopilot API key fallback |
+| `AUTOPILOT_BASE_URL` | `https://api2.autopilothq.com/v1` | Autopilot API base URL |
+| `EGOI_API_KEY` | - | E-goi API key fallback |
+| `EGOI_BASE_URL` | `https://api.egoiapp.com` | E-goi API base URL |
+| `VERO_AUTH_TOKEN` | - | Vero auth token fallback |
+| `VERO_BASE_URL` | `https://api.getvero.com/api/v2` | Vero API base URL |
 | `CUSTOMERIO_TRACKING_SITE_ID` | - | Customer.io tracking site ID fallback |
 | `CUSTOMERIO_TRACKING_API_KEY` | - | Customer.io tracking API key fallback |
 | `CUSTOMERIO_APP_API_KEY` | - | Customer.io app API key fallback |

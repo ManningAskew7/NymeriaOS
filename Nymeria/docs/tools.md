@@ -69,7 +69,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (738)
+### Optional: Service Integration Tools (766)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -816,6 +816,34 @@ in the credential vault for provider-specific saved connections scoped to
 | 736 | `tapfiliate_add_program_affiliate` | Integrations | MODERATE | Add a Tapfiliate affiliate to a program |
 | 737 | `tapfiliate_approve_program_affiliate` | Integrations | MODERATE | Approve a Tapfiliate affiliate for a program |
 | 738 | `tapfiliate_disapprove_program_affiliate` | Integrations | MODERATE | Disapprove a Tapfiliate affiliate for a program |
+| 739 | `actionnetwork_list_records` | Integrations | SAFE | List Action Network events, people, petitions, tags, attendances, signatures, or taggings |
+| 740 | `actionnetwork_get_record` | Integrations | SAFE | Get an Action Network record by ID |
+| 741 | `actionnetwork_create_person` | Integrations | MODERATE | Create an Action Network person |
+| 742 | `actionnetwork_update_person` | Integrations | MODERATE | Update an Action Network person |
+| 743 | `actionnetwork_create_event` | Integrations | MODERATE | Create an Action Network event |
+| 744 | `actionnetwork_create_petition` | Integrations | MODERATE | Create an Action Network petition |
+| 745 | `actionnetwork_create_attendance` | Integrations | MODERATE | Create an Action Network attendance |
+| 746 | `actionnetwork_create_signature` | Integrations | MODERATE | Create an Action Network petition signature |
+| 747 | `actionnetwork_add_person_tag` | Integrations | MODERATE | Tag an Action Network person |
+| 748 | `actionnetwork_remove_person_tag` | Integrations | MODERATE | Remove an Action Network person tag |
+| 749 | `autopilot_list_contacts` | Integrations | SAFE | List Autopilot contacts |
+| 750 | `autopilot_get_contact` | Integrations | SAFE | Get an Autopilot contact |
+| 751 | `autopilot_upsert_contact` | Integrations | MODERATE | Create or update an Autopilot contact |
+| 752 | `autopilot_delete_contact` | Integrations | MODERATE | Delete an Autopilot contact |
+| 753 | `autopilot_list_lists` | Integrations | SAFE | List Autopilot lists |
+| 754 | `autopilot_create_list` | Integrations | MODERATE | Create an Autopilot list |
+| 755 | `autopilot_update_contact_list_membership` | Integrations | MODERATE | Add, remove, or check Autopilot list membership |
+| 756 | `autopilot_add_contact_to_journey` | Integrations | MODERATE | Add an Autopilot contact to a journey trigger |
+| 757 | `egoi_list_lists` | Integrations | SAFE | List E-goi lists |
+| 758 | `egoi_list_contacts` | Integrations | SAFE | List E-goi contacts |
+| 759 | `egoi_get_contact` | Integrations | SAFE | Get an E-goi contact |
+| 760 | `egoi_create_contact` | Integrations | MODERATE | Create an E-goi contact |
+| 761 | `egoi_update_contact` | Integrations | MODERATE | Update an E-goi contact |
+| 762 | `vero_identify_user` | Integrations | MODERATE | Create or update a Vero user profile |
+| 763 | `vero_alias_user` | Integrations | MODERATE | Alias a Vero user ID |
+| 764 | `vero_update_user_subscription` | Integrations | MODERATE | Unsubscribe, resubscribe, or delete a Vero user |
+| 765 | `vero_update_user_tags` | Integrations | MODERATE | Add or remove Vero user tags |
+| 766 | `vero_track_event` | Integrations | MODERATE | Track a Vero event |
 
 ### Optional: Private B Tools (4)
 
@@ -1387,7 +1415,8 @@ connections in Settings > Connections with these provider names and fields:
 `philips_hue.access_token` plus `philips_hue.username`,
 `activecampaign.api_key` plus `activecampaign.api_url`,
 `convertkit.api_secret`, `getresponse.api_key`, and
-`mailerlite.api_key`, `customerio.tracking_site_id` plus
+`mailerlite.api_key`, `actionnetwork.api_key`, `autopilot.api_key`,
+`egoi.api_key`, `vero.auth_token`, `customerio.tracking_site_id` plus
 `customerio.tracking_api_key` and optional `customerio.app_api_key`,
 `iterable.api_key`, `posthog.api_key`, and `segment.write_key`, plus
 `github.access_token`, `gitlab.access_token`, `graphql.endpoint` plus optional
@@ -1576,6 +1605,10 @@ This batch includes:
 - `convertkit_get_account()`, `convertkit_list_forms()`, `convertkit_list_tags()`, `convertkit_list_subscribers(...)`, `convertkit_add_subscriber_to_form(...)`, and `convertkit_add_subscriber_to_tag(...)`. Reads are SAFE; subscription writes are MODERATE.
 - `getresponse_list_campaigns()`, `getresponse_list_contacts(...)`, `getresponse_get_contact(contact_id)`, `getresponse_create_contact(...)`, `getresponse_update_contact(...)`, and `getresponse_delete_contact(contact_id)`. Reads are SAFE; contact writes/deletes are MODERATE.
 - `mailerlite_list_subscribers(...)`, `mailerlite_get_subscriber(subscriber_id)`, `mailerlite_create_subscriber(...)`, `mailerlite_update_subscriber(...)`, and `mailerlite_list_groups(...)`. Reads are SAFE; subscriber writes are MODERATE.
+- `actionnetwork_list_records(...)`, `actionnetwork_get_record(...)`, `actionnetwork_create_person(...)`, `actionnetwork_update_person(...)`, `actionnetwork_create_event(...)`, `actionnetwork_create_petition(...)`, `actionnetwork_create_attendance(...)`, `actionnetwork_create_signature(...)`, `actionnetwork_add_person_tag(...)`, and `actionnetwork_remove_person_tag(...)`. Reads are SAFE; person/event/petition/signature/tag changes are MODERATE.
+- `autopilot_list_contacts(...)`, `autopilot_get_contact(contact_id)`, `autopilot_upsert_contact(...)`, `autopilot_delete_contact(contact_id)`, `autopilot_list_lists(...)`, `autopilot_create_list(name)`, `autopilot_update_contact_list_membership(...)`, and `autopilot_add_contact_to_journey(...)`. Reads are SAFE; contact/list/journey writes are MODERATE.
+- `egoi_list_lists(...)`, `egoi_list_contacts(list_id, ...)`, `egoi_get_contact(...)`, `egoi_create_contact(...)`, and `egoi_update_contact(...)`. Reads are SAFE; contact writes are MODERATE.
+- `vero_identify_user(...)`, `vero_alias_user(...)`, `vero_update_user_subscription(...)`, `vero_update_user_tags(...)`, and `vero_track_event(...)`. These are MODERATE because they write Vero user or event data.
 - `customerio_list_campaigns()`, `customerio_get_campaign(campaign_id)`, `customerio_upsert_customer(...)`, `customerio_track_event(...)`, `customerio_track_anonymous_event(...)`, and `customerio_update_segment(...)`. Campaign reads are SAFE; customer, event, and segment writes are MODERATE.
 - `iterable_list_lists()`, `iterable_get_user(identifier, value)`, `iterable_upsert_user(...)`, `iterable_track_event(...)`, and `iterable_update_list_subscribers(...)`. List/user reads are SAFE; user, event, and list membership writes are MODERATE.
 - `posthog_capture_event(...)`, `posthog_identify(...)`, `posthog_create_alias(...)`, and `posthog_track_page_or_screen(...)`. All PostHog event writes are MODERATE.
@@ -1586,6 +1619,10 @@ Credential providers and fallback env vars:
 - ConvertKit: provider `convertkit`, fields `api_secret`, `api_key`, or `value`; env fallback `CONVERTKIT_API_SECRET`.
 - GetResponse: provider `getresponse`, fields `api_key`, `access_token`, or `value`; env fallback `GETRESPONSE_API_KEY`.
 - MailerLite: provider `mailerlite`, fields `api_key`, `access_token`, or `value`; env fallback `MAILERLITE_API_KEY`. Set `MAILERLITE_CLASSIC_API=true` or credential field `classic_api=true` for Classic API header style.
+- Action Network: provider `actionnetwork`, fields `api_key`, `token`, or `value`, optional `base_url`; aliases `action_network`, `actionnetwork_api`, and `action_network_api`; env fallbacks `ACTIONNETWORK_API_KEY` and `ACTIONNETWORK_BASE_URL`.
+- Autopilot: provider `autopilot`, field `api_key`, `token`, or `value`, optional `base_url`; env fallbacks `AUTOPILOT_API_KEY` and `AUTOPILOT_BASE_URL`.
+- E-goi: provider `egoi`, field `api_key`, `token`, or `value`, optional `base_url`; aliases `e_goi`, `egoi_api`, and `e_goi_api`; env fallbacks `EGOI_API_KEY` and `EGOI_BASE_URL`.
+- Vero: provider `vero`, field `auth_token`, `api_key`, `token`, or `value`, optional `base_url`; env fallbacks `VERO_AUTH_TOKEN` and `VERO_BASE_URL`.
 - Customer.io: provider `customerio`, fields `tracking_site_id`, `tracking_api_key`, optional `app_api_key`, and optional `region` / base URLs; env fallbacks `CUSTOMERIO_TRACKING_SITE_ID`, `CUSTOMERIO_TRACKING_API_KEY`, `CUSTOMERIO_APP_API_KEY`, `CUSTOMERIO_REGION`, `CUSTOMERIO_TRACKING_BASE_URL`, and `CUSTOMERIO_APP_BASE_URL`.
 - Iterable: provider `iterable`, fields `api_key` and optional `base_url`; env fallbacks `ITERABLE_API_KEY` and `ITERABLE_BASE_URL`.
 - PostHog: provider `posthog`, fields `api_key` / `project_api_key` and optional `base_url`; env fallbacks `POSTHOG_API_KEY` and `POSTHOG_BASE_URL`.

@@ -27,6 +27,10 @@ _CUSTOMERIO_APP_EU_BASE_URL = "https://api-eu.customer.io/v1"
 _ITERABLE_BASE_URL = "https://api.iterable.com/api"
 _POSTHOG_BASE_URL = "https://app.posthog.com"
 _SEGMENT_BASE_URL = "https://api.segment.io/v1"
+_ACTIONNETWORK_BASE_URL = "https://actionnetwork.org/api/v2"
+_AUTOPILOT_BASE_URL = "https://api2.autopilothq.com/v1"
+_EGOI_BASE_URL = "https://api.egoiapp.com"
+_VERO_BASE_URL = "https://api.getvero.com/api/v2"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -138,6 +142,7 @@ def _request_json(
     *,
     params: Optional[dict[str, Any]] = None,
     json_body: Optional[dict[str, Any]] = None,
+    data: Optional[dict[str, Any]] = None,
     headers: Optional[dict[str, str]] = None,
 ) -> Any:
     import httpx
@@ -149,6 +154,7 @@ def _request_json(
                 url,
                 params=_filtered(params),
                 json=json_body,
+                data=_filtered(data) if data is not None else None,
                 headers=headers,
             )
             response.raise_for_status()
@@ -170,6 +176,200 @@ def _request_json(
         except Exception:
             detail = e.response.text[:300]
         raise RuntimeError(f"HTTP {e.response.status_code}: {detail}".strip()) from e
+
+
+def _token_config(
+    *,
+    provider: str,
+    provider_aliases: tuple[str, ...],
+    field_names: tuple[str, ...],
+    settings_token_name: str,
+    settings_base_name: str,
+    default_base: str,
+    env_var: str,
+    display_name: str,
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, str | None]:
+    base = (
+        _credential_value(
+            provider=provider,
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value(settings_base_name)
+        or default_base
+    )
+    token = _credential_value(
+        provider=provider,
+        provider_aliases=provider_aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value(settings_token_name)
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider=provider,
+            field_names=field_names,
+            tool_name=tool_name,
+            env_var=env_var,
+            display_name=display_name,
+        )
+    return _base_url(base), str(token)
+
+
+def _actionnetwork_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base, token_or_error = _token_config(
+        provider="actionnetwork",
+        provider_aliases=("action_network", "actionnetwork_api", "action_network_api"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        settings_token_name="actionnetwork_api_key",
+        settings_base_name="actionnetwork_base_url",
+        default_base=_ACTIONNETWORK_BASE_URL,
+        env_var="ACTIONNETWORK_API_KEY",
+        display_name="Action Network",
+        tool_name=tool_name,
+        config=config,
+    )
+    if token_or_error.startswith("[Error]:"):
+        return base, token_or_error
+    return base, {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "OSDI-API-Token": token_or_error,
+        "User-Agent": "Nymeria",
+    }
+
+
+def _actionnetwork_person_link(base: str, person_id: str) -> dict[str, Any]:
+    return {"_links": {"osdi:person": {"href": f"{base}/people/{quote(person_id.strip(), safe='')}"}}}
+
+
+def _actionnetwork_endpoint(resource: str, record_id: str = "", parent_id: str = "") -> tuple[str, str]:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "event": ("events", "/events"),
+        "events": ("events", "/events"),
+        "person": ("people", "/people"),
+        "people": ("people", "/people"),
+        "petition": ("petitions", "/petitions"),
+        "petitions": ("petitions", "/petitions"),
+        "tag": ("tags", "/tags"),
+        "tags": ("tags", "/tags"),
+    }
+    if key in mapping:
+        embedded_key, endpoint = mapping[key]
+    elif key in {"attendance", "attendances"}:
+        if not parent_id.strip():
+            raise ValueError("parent_id must be the event ID for attendance records")
+        embedded_key = "attendances"
+        endpoint = f"/events/{quote(parent_id.strip(), safe='')}/attendances"
+    elif key in {"signature", "signatures"}:
+        if not parent_id.strip():
+            raise ValueError("parent_id must be the petition ID for signature records")
+        embedded_key = "signatures"
+        endpoint = f"/petitions/{quote(parent_id.strip(), safe='')}/signatures"
+    elif key in {"person_tag", "person_tags", "tagging", "taggings"}:
+        if not parent_id.strip():
+            raise ValueError("parent_id must be the tag ID for person tag records")
+        embedded_key = "taggings"
+        endpoint = f"/tags/{quote(parent_id.strip(), safe='')}/taggings"
+    else:
+        raise ValueError("resource must be event, person, petition, tag, attendance, signature, or person_tag")
+    if record_id.strip():
+        endpoint = f"{endpoint}/{quote(record_id.strip(), safe='')}"
+    return embedded_key, endpoint
+
+
+def _actionnetwork_list_items(data: Any, embedded_key: str) -> list[Any]:
+    if not isinstance(data, dict):
+        return []
+    embedded = data.get("_embedded")
+    if not isinstance(embedded, dict):
+        return []
+    return list(embedded.get(f"osdi:{embedded_key}") or [])
+
+
+def _autopilot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base, key_or_error = _token_config(
+        provider="autopilot",
+        provider_aliases=("autopilot_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        settings_token_name="autopilot_api_key",
+        settings_base_name="autopilot_base_url",
+        default_base=_AUTOPILOT_BASE_URL,
+        env_var="AUTOPILOT_API_KEY",
+        display_name="Autopilot",
+        tool_name=tool_name,
+        config=config,
+    )
+    if key_or_error.startswith("[Error]:"):
+        return base, key_or_error
+    return base, {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+        "autopilotapikey": key_or_error,
+    }
+
+
+def _egoi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base, key_or_error = _token_config(
+        provider="egoi",
+        provider_aliases=("e_goi", "egoi_api", "e_goi_api"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        settings_token_name="egoi_api_key",
+        settings_base_name="egoi_base_url",
+        default_base=_EGOI_BASE_URL,
+        env_var="EGOI_API_KEY",
+        display_name="E-goi",
+        tool_name=tool_name,
+        config=config,
+    )
+    if key_or_error.startswith("[Error]:"):
+        return base, key_or_error
+    return base, {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Apikey": key_or_error,
+        "User-Agent": "Nymeria",
+    }
+
+
+def _vero_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
+    return _token_config(
+        provider="vero",
+        provider_aliases=("vero_api",),
+        field_names=("auth_token", "authToken", "api_key", "apiKey", "token", "value"),
+        settings_token_name="vero_auth_token",
+        settings_base_name="vero_base_url",
+        default_base=_VERO_BASE_URL,
+        env_var="VERO_AUTH_TOKEN",
+        display_name="Vero",
+        tool_name=tool_name,
+        config=config,
+    )
+
+
+def _vero_request(
+    tool_name: str,
+    method: str,
+    endpoint: str,
+    body: Optional[dict[str, Any]] = None,
+    *,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base, token_or_error = _vero_config(tool_name, config)
+    if token_or_error is None or token_or_error.startswith("[Error]:"):
+        return token_or_error or ""
+    return _request_json(
+        method,
+        f"{base}{endpoint}",
+        data={"auth_token": token_or_error, **(body or {})},
+        headers={"Accept": "application/json", "User-Agent": "Nymeria"},
+    )
 
 
 def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[dict[str, Any], str | None]:
@@ -1342,6 +1542,718 @@ def mailerlite_list_groups(
     return _dump_json(_request_json("GET", f"{base}/groups", params={"limit": _limit(limit, max_value=100)}, headers=auth))
 
 
+@tool
+def actionnetwork_list_records(
+    resource: str,
+    parent_id: str = "",
+    limit: int = 25,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Action Network records.
+
+    Args:
+        resource: One of event, person, petition, tag, attendance, signature, or person_tag.
+        parent_id: Event ID for attendances, petition ID for signatures, or tag ID for person_tag records.
+        limit: Number of records to return, 1-100.
+    """
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_list_records", config)
+        if isinstance(auth, str):
+            return auth
+        embedded_key, endpoint = _actionnetwork_endpoint(resource, parent_id=parent_id)
+        page = 1
+        items: list[Any] = []
+        max_items = _limit(limit, default=25, max_value=100)
+        while len(items) < max_items:
+            data = _request_json("GET", f"{base}{endpoint}", params={"per_page": 25, "page": page}, headers=auth)
+            chunk = _actionnetwork_list_items(data, embedded_key)
+            items.extend(chunk)
+            if len(items) >= max_items or not (isinstance(data, dict) and data.get("_links", {}).get("next")):
+                break
+            page += 1
+        return _dump_json(items[:max_items])
+    except Exception as e:
+        logger.error("actionnetwork_list_records failed", exc_info=True)
+        return f"[Error]: Action Network list failed: {e}"
+
+
+@tool
+def actionnetwork_get_record(
+    resource: str,
+    record_id: str,
+    parent_id: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get an Action Network record by ID.
+
+    Args:
+        resource: One of event, person, petition, tag, attendance, signature, or person_tag.
+        record_id: Record ID.
+        parent_id: Event ID for attendances, petition ID for signatures, or tag ID for person_tag records.
+    """
+    try:
+        if not record_id.strip():
+            return "[Error]: record_id is required."
+        base, auth = _actionnetwork_config("actionnetwork_get_record", config)
+        if isinstance(auth, str):
+            return auth
+        _, endpoint = _actionnetwork_endpoint(resource, record_id=record_id, parent_id=parent_id)
+        return _dump_json(_request_json("GET", f"{base}{endpoint}", headers=auth))
+    except Exception as e:
+        logger.error("actionnetwork_get_record failed", exc_info=True)
+        return f"[Error]: Action Network lookup failed: {e}"
+
+
+@tool
+def actionnetwork_create_person(
+    email: str,
+    given_name: str = "",
+    family_name: str = "",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Action Network person.
+
+    Args:
+        email: Primary email address.
+        given_name: Optional given name.
+        family_name: Optional family name.
+        fields_json: Optional extra person fields as JSON.
+    """
+    if not email.strip():
+        return "[Error]: email is required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_create_person", config)
+        if isinstance(auth, str):
+            return auth
+        person = {
+            **_json_object(fields_json, field_name="fields_json"),
+            "given_name": given_name.strip(),
+            "family_name": family_name.strip(),
+            "email_addresses": [{"address": email.strip(), "primary": True}],
+        }
+        return _dump_json(_request_json("POST", f"{base}/people", json_body={"person": _filtered(person)}, headers=auth))
+    except Exception as e:
+        logger.error("actionnetwork_create_person failed", exc_info=True)
+        return f"[Error]: Action Network person creation failed: {e}"
+
+
+@tool
+def actionnetwork_update_person(
+    person_id: str,
+    fields_json: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update an Action Network person with a JSON object of fields."""
+    if not person_id.strip():
+        return "[Error]: person_id is required."
+    try:
+        fields = _json_object(fields_json, field_name="fields_json",)
+        if not fields:
+            return "[Error]: fields_json cannot be empty."
+        base, auth = _actionnetwork_config("actionnetwork_update_person", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json("PUT", f"{base}/people/{quote(person_id.strip(), safe='')}", json_body=fields, headers=auth)
+        )
+    except Exception as e:
+        logger.error("actionnetwork_update_person failed", exc_info=True)
+        return f"[Error]: Action Network person update failed: {e}"
+
+
+@tool
+def actionnetwork_create_event(
+    title: str,
+    origin_system: str = "nymeria",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Action Network event."""
+    if not title.strip():
+        return "[Error]: title is required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_create_event", config)
+        if isinstance(auth, str):
+            return auth
+        body = {"origin_system": origin_system.strip() or "nymeria", "title": title.strip()}
+        body.update(_json_object(fields_json, field_name="fields_json"))
+        return _dump_json(_request_json("POST", f"{base}/events", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("actionnetwork_create_event failed", exc_info=True)
+        return f"[Error]: Action Network event creation failed: {e}"
+
+
+@tool
+def actionnetwork_create_petition(
+    title: str,
+    origin_system: str = "nymeria",
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Action Network petition."""
+    if not title.strip():
+        return "[Error]: title is required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_create_petition", config)
+        if isinstance(auth, str):
+            return auth
+        body = {"origin_system": origin_system.strip() or "nymeria", "title": title.strip()}
+        body.update(_json_object(fields_json, field_name="fields_json"))
+        return _dump_json(_request_json("POST", f"{base}/petitions", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("actionnetwork_create_petition failed", exc_info=True)
+        return f"[Error]: Action Network petition creation failed: {e}"
+
+
+@tool
+def actionnetwork_create_attendance(
+    event_id: str,
+    person_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Action Network attendance for an event and person."""
+    if not event_id.strip() or not person_id.strip():
+        return "[Error]: event_id and person_id are required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_create_attendance", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base}/events/{quote(event_id.strip(), safe='')}/attendances",
+                json_body=_actionnetwork_person_link(base, person_id),
+                headers=auth,
+            )
+        )
+    except Exception as e:
+        logger.error("actionnetwork_create_attendance failed", exc_info=True)
+        return f"[Error]: Action Network attendance creation failed: {e}"
+
+
+@tool
+def actionnetwork_create_signature(
+    petition_id: str,
+    person_id: str,
+    fields_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Action Network petition signature for a person."""
+    if not petition_id.strip() or not person_id.strip():
+        return "[Error]: petition_id and person_id are required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_create_signature", config)
+        if isinstance(auth, str):
+            return auth
+        body = _actionnetwork_person_link(base, person_id)
+        body.update(_json_object(fields_json, field_name="fields_json"))
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base}/petitions/{quote(petition_id.strip(), safe='')}/signatures",
+                json_body=body,
+                headers=auth,
+            )
+        )
+    except Exception as e:
+        logger.error("actionnetwork_create_signature failed", exc_info=True)
+        return f"[Error]: Action Network signature creation failed: {e}"
+
+
+@tool
+def actionnetwork_add_person_tag(
+    tag_id: str,
+    person_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Tag an Action Network person."""
+    if not tag_id.strip() or not person_id.strip():
+        return "[Error]: tag_id and person_id are required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_add_person_tag", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{base}/tags/{quote(tag_id.strip(), safe='')}/taggings",
+                json_body=_actionnetwork_person_link(base, person_id),
+                headers=auth,
+            )
+        )
+    except Exception as e:
+        logger.error("actionnetwork_add_person_tag failed", exc_info=True)
+        return f"[Error]: Action Network tag add failed: {e}"
+
+
+@tool
+def actionnetwork_remove_person_tag(
+    tag_id: str,
+    tagging_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove an Action Network person tag by tagging ID."""
+    if not tag_id.strip() or not tagging_id.strip():
+        return "[Error]: tag_id and tagging_id are required."
+    try:
+        base, auth = _actionnetwork_config("actionnetwork_remove_person_tag", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json(
+                "DELETE",
+                f"{base}/tags/{quote(tag_id.strip(), safe='')}/taggings/{quote(tagging_id.strip(), safe='')}",
+                headers=auth,
+            )
+        )
+    except Exception as e:
+        logger.error("actionnetwork_remove_person_tag failed", exc_info=True)
+        return f"[Error]: Action Network tag removal failed: {e}"
+
+
+@tool
+def autopilot_list_contacts(
+    list_id: str = "",
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Autopilot contacts, optionally scoped to a list."""
+    try:
+        base, auth = _autopilot_config("autopilot_list_contacts", config)
+        if isinstance(auth, str):
+            return auth
+        endpoint = f"/list/{quote(list_id.strip(), safe='')}/contacts" if list_id.strip() else "/contacts"
+        data = _request_json("GET", f"{base}{endpoint}", params={"limit": _limit(limit, default=100, max_value=500)}, headers=auth)
+        contacts = data.get("contacts", data) if isinstance(data, dict) else data
+        if isinstance(contacts, list):
+            contacts = contacts[: _limit(limit, default=100, max_value=500)]
+        return _dump_json(contacts)
+    except Exception as e:
+        logger.error("autopilot_list_contacts failed", exc_info=True)
+        return f"[Error]: Autopilot contact list failed: {e}"
+
+
+@tool
+def autopilot_get_contact(
+    contact_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get an Autopilot contact by ID."""
+    if not contact_id.strip():
+        return "[Error]: contact_id is required."
+    try:
+        base, auth = _autopilot_config("autopilot_get_contact", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/contact/{quote(contact_id.strip(), safe='')}", headers=auth))
+    except Exception as e:
+        logger.error("autopilot_get_contact failed", exc_info=True)
+        return f"[Error]: Autopilot contact lookup failed: {e}"
+
+
+@tool
+def autopilot_upsert_contact(
+    email: str,
+    fields_json: str = "",
+    list_id: str = "",
+    session_id: str = "",
+    new_email: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create or update an Autopilot contact."""
+    if not email.strip():
+        return "[Error]: email is required."
+    try:
+        base, auth = _autopilot_config("autopilot_upsert_contact", config)
+        if isinstance(auth, str):
+            return auth
+        contact = {"Email": email.strip(), **_json_object(fields_json, field_name="fields_json")}
+        if list_id.strip():
+            contact["_autopilot_list"] = list_id.strip()
+        if session_id.strip():
+            contact["_autopilot_session_id"] = session_id.strip()
+        if new_email.strip():
+            contact["_NewEmail"] = new_email.strip()
+        return _dump_json(_request_json("POST", f"{base}/contact", json_body={"contact": contact}, headers=auth))
+    except Exception as e:
+        logger.error("autopilot_upsert_contact failed", exc_info=True)
+        return f"[Error]: Autopilot contact upsert failed: {e}"
+
+
+@tool
+def autopilot_delete_contact(
+    contact_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete an Autopilot contact."""
+    if not contact_id.strip():
+        return "[Error]: contact_id is required."
+    try:
+        base, auth = _autopilot_config("autopilot_delete_contact", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json("DELETE", f"{base}/contact/{quote(contact_id.strip(), safe='')}", headers=auth)
+        return _dump_json(data or {"success": True})
+    except Exception as e:
+        logger.error("autopilot_delete_contact failed", exc_info=True)
+        return f"[Error]: Autopilot contact delete failed: {e}"
+
+
+@tool
+def autopilot_list_lists(
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Autopilot lists."""
+    try:
+        base, auth = _autopilot_config("autopilot_list_lists", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json("GET", f"{base}/lists", headers=auth)
+        lists = data.get("lists", data) if isinstance(data, dict) else data
+        if isinstance(lists, list):
+            lists = lists[: _limit(limit, default=100, max_value=500)]
+        return _dump_json(lists)
+    except Exception as e:
+        logger.error("autopilot_list_lists failed", exc_info=True)
+        return f"[Error]: Autopilot list lookup failed: {e}"
+
+
+@tool
+def autopilot_create_list(
+    name: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an Autopilot list."""
+    if not name.strip():
+        return "[Error]: name is required."
+    try:
+        base, auth = _autopilot_config("autopilot_create_list", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("POST", f"{base}/list", json_body={"name": name.strip()}, headers=auth))
+    except Exception as e:
+        logger.error("autopilot_create_list failed", exc_info=True)
+        return f"[Error]: Autopilot list creation failed: {e}"
+
+
+@tool
+def autopilot_update_contact_list_membership(
+    list_id: str,
+    contact_id: str,
+    action: str = "add",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add, remove, or check an Autopilot contact's list membership."""
+    normalized = action.strip().lower()
+    if normalized not in {"add", "remove", "check"}:
+        return '[Error]: action must be "add", "remove", or "check".'
+    if not list_id.strip() or not contact_id.strip():
+        return "[Error]: list_id and contact_id are required."
+    try:
+        base, auth = _autopilot_config("autopilot_update_contact_list_membership", config)
+        if isinstance(auth, str):
+            return auth
+        method = {"add": "POST", "remove": "DELETE", "check": "GET"}[normalized]
+        data = _request_json(
+            method,
+            f"{base}/list/{quote(list_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}",
+            headers=auth,
+        )
+        if normalized == "check":
+            return _dump_json({"exists": True, "response": data})
+        return _dump_json(data or {"success": True})
+    except Exception as e:
+        if normalized == "check":
+            return _dump_json({"exists": False, "error": str(e)})
+        logger.error("autopilot_update_contact_list_membership failed", exc_info=True)
+        return f"[Error]: Autopilot list membership update failed: {e}"
+
+
+@tool
+def autopilot_add_contact_to_journey(
+    trigger_id: str,
+    contact_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add an Autopilot contact to a journey trigger."""
+    if not trigger_id.strip() or not contact_id.strip():
+        return "[Error]: trigger_id and contact_id are required."
+    try:
+        base, auth = _autopilot_config("autopilot_add_contact_to_journey", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "POST",
+            f"{base}/trigger/{quote(trigger_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}",
+            headers=auth,
+        )
+        return _dump_json(data or {"success": True})
+    except Exception as e:
+        logger.error("autopilot_add_contact_to_journey failed", exc_info=True)
+        return f"[Error]: Autopilot journey update failed: {e}"
+
+
+@tool
+def egoi_list_lists(
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List E-goi lists."""
+    try:
+        base, auth = _egoi_config("egoi_list_lists", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json("GET", f"{base}/lists", params={"offset": 0, "count": _limit(limit, default=100, max_value=500)}, headers=auth)
+        return _dump_json(data.get("items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("egoi_list_lists failed", exc_info=True)
+        return f"[Error]: E-goi list lookup failed: {e}"
+
+
+@tool
+def egoi_list_contacts(
+    list_id: str,
+    limit: int = 100,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List contacts in an E-goi list."""
+    if not list_id.strip():
+        return "[Error]: list_id is required."
+    try:
+        base, auth = _egoi_config("egoi_list_contacts", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "GET",
+            f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts",
+            params={"offset": 0, "count": _limit(limit, default=100, max_value=500)},
+            headers=auth,
+        )
+        return _dump_json(data.get("items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("egoi_list_contacts failed", exc_info=True)
+        return f"[Error]: E-goi contact list failed: {e}"
+
+
+@tool
+def egoi_get_contact(
+    list_id: str,
+    contact_id: str = "",
+    email: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get an E-goi contact by contact ID or email."""
+    if not list_id.strip() or not (contact_id.strip() or email.strip()):
+        return "[Error]: list_id and one of contact_id or email are required."
+    try:
+        base, auth = _egoi_config("egoi_get_contact", config)
+        if isinstance(auth, str):
+            return auth
+        if contact_id.strip():
+            url = f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts/{quote(contact_id.strip(), safe='')}"
+            data = _request_json("GET", url, headers=auth)
+        else:
+            url = f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts"
+            data = _request_json("GET", url, params={"email": email.strip()}, headers=auth)
+        return _dump_json(data.get("items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("egoi_get_contact failed", exc_info=True)
+        return f"[Error]: E-goi contact lookup failed: {e}"
+
+
+def _egoi_contact_body(email: str = "", fields_json: str = "") -> dict[str, Any]:
+    fields = _json_object(fields_json, field_name="fields_json")
+    base_fields = fields.pop("base", fields)
+    extra_fields = fields.pop("extra", [])
+    body = {"base": _filtered({"email": email.strip(), **base_fields}), "extra": extra_fields}
+    return body
+
+
+def _egoi_attach_tags(base: str, auth: dict[str, str], list_id: str, contact_id: Any, tag_ids: str) -> None:
+    for tag_id in _csv_to_list(tag_ids):
+        _request_json(
+            "POST",
+            f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts/actions/attach-tag",
+            json_body={"tag_id": tag_id, "contacts": [contact_id]},
+            headers=auth,
+        )
+
+
+@tool
+def egoi_create_contact(
+    list_id: str,
+    email: str,
+    fields_json: str = "",
+    tag_ids: str = "",
+    resolve: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create an E-goi contact."""
+    if not list_id.strip() or not email.strip():
+        return "[Error]: list_id and email are required."
+    try:
+        base, auth = _egoi_config("egoi_create_contact", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "POST",
+            f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts",
+            json_body=_egoi_contact_body(email, fields_json),
+            headers=auth,
+        )
+        contact_id = data.get("contact_id") if isinstance(data, dict) else None
+        if contact_id and tag_ids.strip():
+            _egoi_attach_tags(base, auth, list_id, contact_id, tag_ids)
+        if resolve and contact_id:
+            data = _request_json("GET", f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts/{quote(str(contact_id), safe='')}", headers=auth)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("egoi_create_contact failed", exc_info=True)
+        return f"[Error]: E-goi contact creation failed: {e}"
+
+
+@tool
+def egoi_update_contact(
+    list_id: str,
+    contact_id: str,
+    fields_json: str,
+    tag_ids: str = "",
+    resolve: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update an E-goi contact."""
+    if not list_id.strip() or not contact_id.strip():
+        return "[Error]: list_id and contact_id are required."
+    try:
+        base, auth = _egoi_config("egoi_update_contact", config)
+        if isinstance(auth, str):
+            return auth
+        data = _request_json(
+            "PATCH",
+            f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts/{quote(contact_id.strip(), safe='')}",
+            json_body=_egoi_contact_body("", fields_json),
+            headers=auth,
+        )
+        if tag_ids.strip():
+            _egoi_attach_tags(base, auth, list_id, contact_id, tag_ids)
+        if resolve:
+            data = _request_json("GET", f"{base}/lists/{quote(list_id.strip(), safe='')}/contacts/{quote(contact_id.strip(), safe='')}", headers=auth)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("egoi_update_contact failed", exc_info=True)
+        return f"[Error]: E-goi contact update failed: {e}"
+
+
+@tool
+def vero_identify_user(
+    user_id: str,
+    email: str = "",
+    data_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create or update a Vero user profile."""
+    if not user_id.strip():
+        return "[Error]: user_id is required."
+    try:
+        body = {"id": user_id.strip(), "email": email.strip(), "data": json.dumps(_json_object(data_json, field_name="data_json")) if data_json.strip() else ""}
+        data = _vero_request("vero_identify_user", "POST", "/users/track", body, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("vero_identify_user failed", exc_info=True)
+        return f"[Error]: Vero user identify failed: {e}"
+
+
+@tool
+def vero_alias_user(
+    user_id: str,
+    new_user_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Alias a Vero user ID to a new user ID."""
+    if not user_id.strip() or not new_user_id.strip():
+        return "[Error]: user_id and new_user_id are required."
+    try:
+        data = _vero_request("vero_alias_user", "PUT", "/users/reidentify", {"id": user_id.strip(), "new_id": new_user_id.strip()}, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("vero_alias_user failed", exc_info=True)
+        return f"[Error]: Vero user alias failed: {e}"
+
+
+@tool
+def vero_update_user_subscription(
+    user_id: str,
+    action: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Unsubscribe, resubscribe, or delete a Vero user."""
+    normalized = action.strip().lower()
+    if normalized not in {"unsubscribe", "resubscribe", "delete"}:
+        return '[Error]: action must be "unsubscribe", "resubscribe", or "delete".'
+    if not user_id.strip():
+        return "[Error]: user_id is required."
+    try:
+        data = _vero_request("vero_update_user_subscription", "POST", f"/users/{normalized}", {"id": user_id.strip()}, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("vero_update_user_subscription failed", exc_info=True)
+        return f"[Error]: Vero user subscription update failed: {e}"
+
+
+@tool
+def vero_update_user_tags(
+    user_id: str,
+    add_tags: str = "",
+    remove_tags: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add or remove Vero user tags."""
+    if not user_id.strip():
+        return "[Error]: user_id is required."
+    if not add_tags.strip() and not remove_tags.strip():
+        return "[Error]: add_tags or remove_tags is required."
+    try:
+        body: dict[str, Any] = {"id": user_id.strip()}
+        if add_tags.strip():
+            body["add"] = json.dumps(_csv_to_list(add_tags))
+        if remove_tags.strip():
+            body["remove"] = json.dumps(_csv_to_list(remove_tags))
+        data = _vero_request("vero_update_user_tags", "PUT", "/users/tags/edit", body, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("vero_update_user_tags failed", exc_info=True)
+        return f"[Error]: Vero user tag update failed: {e}"
+
+
+@tool
+def vero_track_event(
+    user_id: str,
+    email: str,
+    event_name: str,
+    data_json: str = "",
+    extras_json: str = "",
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Track a Vero event for a user."""
+    if not user_id.strip() or not email.strip() or not event_name.strip():
+        return "[Error]: user_id, email, and event_name are required."
+    try:
+        body = {
+            "identity": json.dumps({"id": user_id.strip(), "email": email.strip()}),
+            "email": email.strip(),
+            "event_name": event_name.strip(),
+            "data": json.dumps(_json_object(data_json, field_name="data_json")) if data_json.strip() else "",
+            "extras": json.dumps(_json_object(extras_json, field_name="extras_json")) if extras_json.strip() else "",
+        }
+        data = _vero_request("vero_track_event", "POST", "/events/track", body, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("vero_track_event failed", exc_info=True)
+        return f"[Error]: Vero event tracking failed: {e}"
+
+
 MARKETING_CONTACT_SERVICE_TOOLS = [
     customerio_list_campaigns,
     customerio_get_campaign,
@@ -1386,4 +2298,32 @@ MARKETING_CONTACT_SERVICE_TOOLS = [
     mailerlite_create_subscriber,
     mailerlite_update_subscriber,
     mailerlite_list_groups,
+    actionnetwork_list_records,
+    actionnetwork_get_record,
+    actionnetwork_create_person,
+    actionnetwork_update_person,
+    actionnetwork_create_event,
+    actionnetwork_create_petition,
+    actionnetwork_create_attendance,
+    actionnetwork_create_signature,
+    actionnetwork_add_person_tag,
+    actionnetwork_remove_person_tag,
+    autopilot_list_contacts,
+    autopilot_get_contact,
+    autopilot_upsert_contact,
+    autopilot_delete_contact,
+    autopilot_list_lists,
+    autopilot_create_list,
+    autopilot_update_contact_list_membership,
+    autopilot_add_contact_to_journey,
+    egoi_list_lists,
+    egoi_list_contacts,
+    egoi_get_contact,
+    egoi_create_contact,
+    egoi_update_contact,
+    vero_identify_user,
+    vero_alias_user,
+    vero_update_user_subscription,
+    vero_update_user_tags,
+    vero_track_event,
 ]

@@ -250,6 +250,141 @@ def test_segment_identify_uses_basic_write_key(monkeypatch):
     assert captured["json_body"]["traits"]["email"] == "ada@example.com"
 
 
+def test_actionnetwork_create_person_uses_osdi_token(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("ACTIONNETWORK_API_KEY", "action-key")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"_links": {"self": {"href": "https://actionnetwork.org/api/v2/people/person-1"}}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.actionnetwork_create_person.func(
+            email="ada@example.com",
+            given_name="Ada",
+            family_name="Lovelace",
+            fields_json='{"languages_spoken": ["en"]}',
+        )
+    )
+
+    assert result["_links"]["self"]["href"].endswith("/person-1")
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://actionnetwork.org/api/v2/people"
+    assert captured["headers"]["OSDI-API-Token"] == "action-key"
+    assert captured["json_body"]["person"]["email_addresses"][0]["address"] == "ada@example.com"
+    assert captured["json_body"]["person"]["given_name"] == "Ada"
+    assert captured["json_body"]["person"]["languages_spoken"] == ["en"]
+
+
+def test_autopilot_upsert_contact_uses_vault_key(tmp_path, monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Autopilot",
+        provider="autopilot",
+        kind="api_key",
+        allowed_targets=["native_tool:autopilot_upsert_contact"],
+        secret_fields={"apiKey": "auto-key", "baseUrl": "https://auto.example/v1"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"contact_id": "contact-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.autopilot_upsert_contact.func(
+            email="ada@example.com",
+            fields_json='{"FirstName": "Ada"}',
+            list_id="list-1",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["contact_id"] == "contact-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://auto.example/v1/contact"
+    assert captured["headers"]["autopilotapikey"] == "auto-key"
+    assert captured["json_body"]["contact"]["Email"] == "ada@example.com"
+    assert captured["json_body"]["contact"]["_autopilot_list"] == "list-1"
+
+
+def test_egoi_create_contact_attaches_tags(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("EGOI_API_KEY", "egoi-key")
+    captured = []
+
+    def fake_request(method, url, **kwargs):
+        captured.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/contacts"):
+            return {"contact_id": "contact-1"}
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.egoi_create_contact.func(
+            list_id="list-1",
+            email="ada@example.com",
+            fields_json='{"base": {"first_name": "Ada"}, "extra": [{"field_id": "x", "value": "y"}]}',
+            tag_ids="tag-1,tag-2",
+        )
+    )
+
+    assert result["contact_id"] == "contact-1"
+    assert captured[0]["method"] == "POST"
+    assert captured[0]["url"] == "https://api.egoiapp.com/lists/list-1/contacts"
+    assert captured[0]["headers"]["Apikey"] == "egoi-key"
+    assert captured[0]["json_body"]["base"]["email"] == "ada@example.com"
+    assert captured[0]["json_body"]["base"]["first_name"] == "Ada"
+    assert captured[0]["json_body"]["extra"] == [{"field_id": "x", "value": "y"}]
+    assert captured[1]["json_body"] == {"tag_id": "tag-1", "contacts": ["contact-1"]}
+    assert captured[2]["json_body"] == {"tag_id": "tag-2", "contacts": ["contact-1"]}
+
+
+def test_vero_track_event_uses_form_auth(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("VERO_AUTH_TOKEN", "vero-token")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {"status": "ok"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.vero_track_event.func(
+            user_id="user-1",
+            email="ada@example.com",
+            event_name="signed_up",
+            data_json='{"plan": "pro"}',
+            extras_json='{"source": "cli"}',
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.getvero.com/api/v2/events/track"
+    assert captured["data"]["auth_token"] == "vero-token"
+    assert captured["data"]["event_name"] == "signed_up"
+    assert json.loads(captured["data"]["data"]) == {"plan": "pro"}
+    assert json.loads(captured["data"]["extras"]) == {"source": "cli"}
+
+
 def test_new_marketing_missing_keys_return_setup_hints(monkeypatch):
     from nymeria.tools import marketing_contact_service_integrations as tools
 
@@ -261,6 +396,10 @@ def test_new_marketing_missing_keys_return_setup_hints(monkeypatch):
     assert "ITERABLE_API_KEY" in tools.iterable_list_lists.func()
     assert "POSTHOG_API_KEY" in tools.posthog_capture_event.func("signed_up", "user-1")
     assert "SEGMENT_WRITE_KEY" in tools.segment_identify.func(user_id="user-1")
+    assert "ACTIONNETWORK_API_KEY" in tools.actionnetwork_list_records.func("person")
+    assert "AUTOPILOT_API_KEY" in tools.autopilot_list_contacts.func()
+    assert "EGOI_API_KEY" in tools.egoi_list_lists.func()
+    assert "VERO_AUTH_TOKEN" in tools.vero_identify_user.func(user_id="user-1")
 
 
 def test_marketing_contact_tools_are_registered_with_metadata():
@@ -286,6 +425,14 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "mailerlite_list_subscribers",
         "mailerlite_get_subscriber",
         "mailerlite_list_groups",
+        "actionnetwork_list_records",
+        "actionnetwork_get_record",
+        "autopilot_list_contacts",
+        "autopilot_get_contact",
+        "autopilot_list_lists",
+        "egoi_list_lists",
+        "egoi_list_contacts",
+        "egoi_get_contact",
     ]
     moderate_names = [
         "activecampaign_sync_contact",
@@ -313,6 +460,26 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "segment_identify",
         "segment_track",
         "segment_group",
+        "actionnetwork_create_person",
+        "actionnetwork_update_person",
+        "actionnetwork_create_event",
+        "actionnetwork_create_petition",
+        "actionnetwork_create_attendance",
+        "actionnetwork_create_signature",
+        "actionnetwork_add_person_tag",
+        "actionnetwork_remove_person_tag",
+        "autopilot_upsert_contact",
+        "autopilot_delete_contact",
+        "autopilot_create_list",
+        "autopilot_update_contact_list_membership",
+        "autopilot_add_contact_to_journey",
+        "egoi_create_contact",
+        "egoi_update_contact",
+        "vero_identify_user",
+        "vero_alias_user",
+        "vero_update_user_subscription",
+        "vero_update_user_tags",
+        "vero_track_event",
     ]
 
     for name in safe_names:
@@ -333,16 +500,24 @@ def test_marketing_contact_tools_are_registered_with_metadata():
 def test_marketing_contact_tool_schemas_hide_runtime_config():
     from nymeria.tools.marketing_contact_service_integrations import (
         activecampaign_sync_contact,
+        actionnetwork_create_person,
+        autopilot_upsert_contact,
         convertkit_add_subscriber_to_form,
         customerio_track_event,
+        egoi_create_contact,
         mailerlite_create_subscriber,
         posthog_capture_event,
         segment_track,
+        vero_track_event,
     )
 
     assert "config" not in activecampaign_sync_contact.args
+    assert "config" not in actionnetwork_create_person.args
+    assert "config" not in autopilot_upsert_contact.args
     assert "config" not in convertkit_add_subscriber_to_form.args
     assert "config" not in customerio_track_event.args
+    assert "config" not in egoi_create_contact.args
     assert "config" not in mailerlite_create_subscriber.args
     assert "config" not in posthog_capture_event.args
     assert "config" not in segment_track.args
+    assert "config" not in vero_track_event.args
