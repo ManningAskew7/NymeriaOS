@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -14,7 +15,9 @@ from .transport.disconnected import is_disconnected_client
 
 HeaderHealthStatus = Literal["ok", "error", "local", "disconnected", "unknown"]
 
-DEFAULT_HEADER_FETCH_TIMEOUT_SECONDS = 1.0
+DEFAULT_HEADER_FETCH_TIMEOUT_SECONDS = float(
+    os.environ.get("NYMERIA_HEADER_TIMEOUT", "5.0")
+)
 _MISSING = object()
 
 
@@ -47,6 +50,8 @@ class CLIHeaderSnapshot:
 
     thread_id: str
     user_id: str
+    user_display_name: str = ""
+    user_role: str = ""
     thread_title: str = "New Chat"
     platform: str = "cli"
     pinned: bool = False
@@ -159,6 +164,12 @@ async def build_header_snapshot(
             timeout_seconds=timeout_seconds,
             thread_id=thread_id,
         ),
+        "me": _optional_client_call(
+            client,
+            "get_me",
+            timeout_seconds=timeout_seconds,
+            act_as=user_id,
+        ),
         "health": build_health_snapshot(
             client,
             runtime_config=runtime_config,
@@ -191,6 +202,7 @@ async def build_header_snapshot(
     )
     triggers = _sequence_or(results["triggers"], local_data.get("triggers", ()))
     todos = _sequence_or(results["todos"], local_data.get("todos", ()))
+    me = _mapping_or(results["me"], {})
     health = results["health"]
     if not isinstance(health, HeaderHealthSnapshot):
         health = HeaderHealthSnapshot(status="unknown")
@@ -213,6 +225,8 @@ async def build_header_snapshot(
     return CLIHeaderSnapshot(
         thread_id=thread_id,
         user_id=user_id,
+        user_display_name=str(me.get("display_name") or me.get("email") or ""),
+        user_role=str(me.get("role") or ""),
         thread_title=_thread_title(thread, thread_config, thread_id),
         platform=str(_mapping_get(thread, "platform", "") or _classify_platform(thread_id)),
         pinned=bool(_mapping_get(thread, "pinned", False)),

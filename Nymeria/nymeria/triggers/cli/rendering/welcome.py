@@ -215,10 +215,19 @@ def _snapshot_info_lines(
     lines.append(("Todos", _label_summary(snapshot.todo_labels, snapshot.todo_count)))
     lines.append(("Triggers", _label_summary(snapshot.trigger_labels, snapshot.trigger_count)))
 
+    if snapshot.callable_team:
+        lines.append(("Team", snapshot.callable_team))
+
+    user_parts = _join_parts(
+        snapshot.user_display_name or snapshot.user_id,
+        snapshot.user_role if snapshot.user_role else "",
+        separator=" · ",
+    )
+    lines.append(("User", user_parts))
+
     backend = _join_parts(
         snapshot.backend_url or "local",
         snapshot.health.label,
-        f"user {snapshot.user_id}",
         separator=" · ",
     )
     lines.append(("Backend", backend))
@@ -246,8 +255,8 @@ def _snapshot_footers(
     if snapshot.failures:
         footers.append(
             _footer(
-                "Header",
-                f"partial: {', '.join(snapshot.failures)}",
+                "Warning",
+                f"fetch timed out: {', '.join(snapshot.failures)}",
                 slot="error",
                 theme=theme,
                 width=body_width,
