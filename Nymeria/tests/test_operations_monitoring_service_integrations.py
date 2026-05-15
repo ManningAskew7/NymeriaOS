@@ -224,6 +224,147 @@ def test_cloudflare_create_dns_record_uses_vault_token(tmp_path, monkeypatch):
     }
 
 
+def test_grafana_search_dashboards_uses_vault_token_and_api_root(tmp_path, monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Grafana",
+        provider="grafana",
+        kind="api_key",
+        allowed_targets=["native_tool:grafana_search_dashboards"],
+        secret_fields={"api_key": "grafana-token", "base_url": "https://grafana.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return [{"uid": "dash-1"}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.grafana_search_dashboards.func(
+            query="ops",
+            limit=4,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == [{"uid": "dash-1"}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://grafana.example/api/search"
+    assert captured["params"]["query"] == "ops"
+    assert captured["params"]["limit"] == 4
+    assert captured["headers"]["Authorization"] == "Bearer grafana-token"
+
+
+def test_metabase_query_question_uses_env_session_token(monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("METABASE_BASE_URL", "https://metabase.example")
+    monkeypatch.setenv("METABASE_SESSION_TOKEN", "metabase-session")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return [{"count": 2}]
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.metabase_query_question.func(
+            question_id="42",
+            parameters_json='[{"type":"category","value":"api"}]',
+        )
+    )
+
+    assert result == [{"count": 2}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://metabase.example/api/card/42/query/json"
+    assert captured["headers"]["X-Metabase-Session"] == "metabase-session"
+    assert captured["json_body"] == {"parameters": [{"type": "category", "value": "api"}]}
+
+
+def test_elasticsearch_search_uses_env_basic_auth(monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("ELASTICSEARCH_BASE_URL", "https://elastic.example")
+    monkeypatch.setenv("ELASTICSEARCH_USERNAME", "elastic")
+    monkeypatch.setenv("ELASTICSEARCH_PASSWORD", "secret")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers, "auth": auth})
+        return {"hits": {"hits": [{"_id": "doc-1"}]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.elasticsearch_search.func(
+            index="logs-*",
+            limit=7,
+        )
+    )
+
+    assert result["hits"]["hits"][0]["_id"] == "doc-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://elastic.example/logs-*/_search"
+    assert captured["auth"] == ("elastic", "secret")
+    assert captured["json_body"]["size"] == 7
+    assert "Authorization" not in captured["headers"]
+
+
+def test_splunk_create_search_job_uses_vault_token_and_ssl_flag(tmp_path, monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Splunk",
+        provider="splunk",
+        kind="api_key",
+        allowed_targets=["native_tool:*"],
+        secret_fields={
+            "auth_token": "splunk-token",
+            "base_url": "https://splunk.example:8089",
+            "allow_unauthorized_certs": "true",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "form_data": form_data, "headers": headers, "verify": verify})
+        return {"sid": "search-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.splunk_create_search_job.func(
+            search_query="search index=main error",
+            earliest_time="-15m",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == {"sid": "search-1"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://splunk.example:8089/services/search/jobs"
+    assert captured["headers"]["Authorization"] == "Bearer splunk-token"
+    assert captured["form_data"]["search"] == "search index=main error"
+    assert captured["form_data"]["earliest_time"] == "-15m"
+    assert captured["verify"] is False
+
+
 def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import operations_monitoring_service_integrations as tools
 
@@ -234,6 +375,10 @@ def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatc
     pagerduty_result = tools.pagerduty_list_incidents.func()
     sentry_result = tools.sentry_list_organizations.func()
     cloudflare_result = tools.cloudflare_list_zones.func()
+    grafana_result = tools.grafana_search_dashboards.func()
+    metabase_result = tools.metabase_list_questions.func()
+    elasticsearch_result = tools.elasticsearch_list_indices.func()
+    splunk_result = tools.splunk_list_saved_searches.func()
 
     assert 'provider "netlify"' in netlify_result
     assert "NETLIFY_ACCESS_TOKEN" in netlify_result
@@ -245,6 +390,14 @@ def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatc
     assert "SENTRY_AUTH_TOKEN" in sentry_result
     assert 'provider "cloudflare"' in cloudflare_result
     assert "CLOUDFLARE_API_TOKEN" in cloudflare_result
+    assert 'provider "grafana"' in grafana_result
+    assert "GRAFANA_BASE_URL" in grafana_result
+    assert 'provider "metabase"' in metabase_result
+    assert "METABASE_BASE_URL" in metabase_result
+    assert 'provider "elasticsearch"' in elasticsearch_result
+    assert "ELASTICSEARCH_BASE_URL" in elasticsearch_result
+    assert 'provider "splunk"' in splunk_result
+    assert "SPLUNK_BASE_URL" in splunk_result
 
 
 def test_operations_monitoring_tools_are_registered_with_metadata():
@@ -273,6 +426,20 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
         "cloudflare_list_dns_records",
         "cloudflare_list_origin_certificates",
         "cloudflare_get_origin_certificate",
+        "grafana_search_dashboards",
+        "grafana_get_dashboard",
+        "grafana_list_teams",
+        "metabase_list_questions",
+        "metabase_get_question",
+        "metabase_query_question",
+        "metabase_list_dashboards",
+        "metabase_get_dashboard",
+        "elasticsearch_list_indices",
+        "elasticsearch_search",
+        "elasticsearch_get_document",
+        "splunk_list_saved_searches",
+        "splunk_get_search_job",
+        "splunk_get_search_results",
     ]
     moderate_names = [
         "netlify_cancel_deploy",
@@ -290,6 +457,11 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
         "cloudflare_delete_dns_record",
         "cloudflare_upload_origin_certificate",
         "cloudflare_delete_origin_certificate",
+        "grafana_create_dashboard",
+        "grafana_delete_dashboard",
+        "elasticsearch_index_document",
+        "elasticsearch_delete_document",
+        "splunk_create_search_job",
     ]
 
     for name in safe_names:
@@ -310,9 +482,13 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
 def test_operations_monitoring_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         cloudflare_create_dns_record,
+        elasticsearch_search,
+        grafana_search_dashboards,
+        metabase_query_question,
         netlify_list_sites,
         pagerduty_create_incident,
         sentry_update_issue,
+        splunk_create_search_job,
         uptimerobot_list_monitors,
     )
 
@@ -321,3 +497,7 @@ def test_operations_monitoring_tool_schemas_hide_runtime_config():
     assert "config" not in pagerduty_create_incident.args_schema.model_json_schema()["properties"]
     assert "config" not in sentry_update_issue.args_schema.model_json_schema()["properties"]
     assert "config" not in cloudflare_create_dns_record.args_schema.model_json_schema()["properties"]
+    assert "config" not in grafana_search_dashboards.args_schema.model_json_schema()["properties"]
+    assert "config" not in metabase_query_question.args_schema.model_json_schema()["properties"]
+    assert "config" not in elasticsearch_search.args_schema.model_json_schema()["properties"]
+    assert "config" not in splunk_create_search_job.args_schema.model_json_schema()["properties"]

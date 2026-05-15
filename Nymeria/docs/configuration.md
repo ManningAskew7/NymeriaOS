@@ -352,6 +352,22 @@ Set the API key for your chosen provider:
 | `SENTRY_BASE_URL` | Sentry | Optional Sentry API base URL override |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare | Optional Cloudflare API token fallback; credential vault provider `cloudflare` is preferred |
 | `CLOUDFLARE_BASE_URL` | Cloudflare | Optional Cloudflare API base URL override |
+| `GRAFANA_API_TOKEN` | Grafana | Optional Grafana API token fallback; credential vault provider `grafana` is preferred |
+| `GRAFANA_BASE_URL` | Grafana | Optional Grafana base URL fallback |
+| `METABASE_BASE_URL` | Metabase | Optional Metabase base URL fallback; credential vault provider `metabase` is preferred |
+| `METABASE_SESSION_TOKEN` | Metabase | Optional Metabase session token fallback |
+| `METABASE_API_KEY` | Metabase | Optional Metabase API key fallback |
+| `METABASE_USERNAME` | Metabase | Optional Metabase username fallback |
+| `METABASE_PASSWORD` | Metabase | Optional Metabase password fallback |
+| `ELASTICSEARCH_BASE_URL` | Elasticsearch | Optional Elasticsearch base URL fallback; credential vault provider `elasticsearch` is preferred |
+| `ELASTICSEARCH_API_KEY` | Elasticsearch | Optional Elasticsearch API key fallback |
+| `ELASTICSEARCH_BEARER_TOKEN` | Elasticsearch | Optional Elasticsearch bearer token fallback |
+| `ELASTICSEARCH_USERNAME` | Elasticsearch | Optional Elasticsearch username fallback |
+| `ELASTICSEARCH_PASSWORD` | Elasticsearch | Optional Elasticsearch password fallback |
+| `ELASTICSEARCH_IGNORE_SSL_ISSUES` | Elasticsearch | Optional flag to skip Elasticsearch SSL verification |
+| `SPLUNK_BASE_URL` | Splunk | Optional Splunk management API base URL fallback; credential vault provider `splunk` is preferred |
+| `SPLUNK_AUTH_TOKEN` | Splunk | Optional Splunk auth token fallback |
+| `SPLUNK_ALLOW_UNAUTHORIZED_CERTS` | Splunk | Optional flag to allow self-signed Splunk certificates |
 | `URLSCAN_API_KEY` | urlscan.io | Optional urlscan.io API key fallback; credential vault provider `urlscan` is preferred |
 | `URLSCAN_BASE_URL` | urlscan.io | Optional urlscan.io API base URL override |
 | `HUNTER_API_KEY` | Hunter | Optional Hunter API key fallback; credential vault provider `hunter` is preferred |
@@ -930,6 +946,22 @@ reachable from the backend process.
 | `SENTRY_BASE_URL` | `https://sentry.io` | Sentry API base URL |
 | `CLOUDFLARE_API_TOKEN` | - | Cloudflare API token fallback |
 | `CLOUDFLARE_BASE_URL` | `https://api.cloudflare.com/client/v4` | Cloudflare API base URL |
+| `GRAFANA_API_TOKEN` | - | Grafana API token fallback |
+| `GRAFANA_BASE_URL` | - | Grafana base URL fallback |
+| `METABASE_BASE_URL` | - | Metabase base URL fallback |
+| `METABASE_SESSION_TOKEN` | - | Metabase session token fallback |
+| `METABASE_API_KEY` | - | Metabase API key fallback |
+| `METABASE_USERNAME` | - | Metabase username fallback |
+| `METABASE_PASSWORD` | - | Metabase password fallback |
+| `ELASTICSEARCH_BASE_URL` | - | Elasticsearch base URL fallback |
+| `ELASTICSEARCH_API_KEY` | - | Elasticsearch API key fallback |
+| `ELASTICSEARCH_BEARER_TOKEN` | - | Elasticsearch bearer token fallback |
+| `ELASTICSEARCH_USERNAME` | - | Elasticsearch username fallback |
+| `ELASTICSEARCH_PASSWORD` | - | Elasticsearch password fallback |
+| `ELASTICSEARCH_IGNORE_SSL_ISSUES` | `false` | Skip Elasticsearch SSL verification |
+| `SPLUNK_BASE_URL` | - | Splunk management API base URL fallback |
+| `SPLUNK_AUTH_TOKEN` | - | Splunk auth token fallback |
+| `SPLUNK_ALLOW_UNAUTHORIZED_CERTS` | `false` | Allow self-signed Splunk certificates |
 | `URLSCAN_API_KEY` | - | urlscan.io API key fallback |
 | `URLSCAN_BASE_URL` | `https://urlscan.io/api/v1` | urlscan.io API base URL |
 | `HUNTER_API_KEY` | - | Hunter API key fallback |
