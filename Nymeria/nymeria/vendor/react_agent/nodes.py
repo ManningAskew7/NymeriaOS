@@ -25,8 +25,6 @@ from .cliproxy import CLIPROXY_BILLING_SYSTEM_BLOCK, looks_like_cliproxy_url
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
-from ...core.tool_reload import latest_tool_batch_queued_reload
-from ...core.generated_image_context import hydrate_generated_images_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +67,7 @@ _RETRYABLE_ERROR_MARKERS = (
     "timed out",
     "timeout",
 )
-_NON_RETRYABLE_ERROR_MARKERS = (
+_CONTEXT_OVERFLOW_ERROR_MARKERS = (
     "context_length_exceeded",
     "context window",
     "maximum context length",
@@ -78,6 +76,9 @@ _NON_RETRYABLE_ERROR_MARKERS = (
     "input is too long",
     "prompt is too long",
     "reduce the length",
+)
+_NON_RETRYABLE_ERROR_MARKERS = (
+    *_CONTEXT_OVERFLOW_ERROR_MARKERS,
     "bad request",
     "invalid_request_error",
     "invalid request",
@@ -220,6 +221,12 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
         return True
 
     return any(marker in text for marker in _RETRYABLE_ERROR_MARKERS)
+
+
+def is_context_overflow_error(exc: BaseException) -> bool:
+    """Return True when a provider error means the request exceeded context."""
+    text = _llm_exception_text(exc)
+    return any(marker in text for marker in _CONTEXT_OVERFLOW_ERROR_MARKERS)
 
 
 def _llm_retry_delay(llm_config: Optional[LLMConfig], retry_index: int) -> float:
@@ -702,6 +709,15 @@ def _sanitize_messages_for_anthropic(
     return sanitized
 
 
+def _hydrate_generated_images_for_llm(
+    messages: List[BaseMessage],
+    llm_config: Optional[LLMConfig],
+) -> List[BaseMessage]:
+    from ...core.generated_image_context import hydrate_generated_images_for_llm
+
+    return hydrate_generated_images_for_llm(messages, llm_config)
+
+
 def create_agent_node(
     llm_with_tools: BaseChatModel,
     system_prompt: str,
@@ -719,7 +735,7 @@ def create_agent_node(
         Agent node function compatible with LangGraph
     """
     def _prepare_messages(state: AgentState) -> List[BaseMessage]:
-        messages = hydrate_generated_images_for_llm(state["messages"], llm_config)
+        messages = _hydrate_generated_images_for_llm(state["messages"], llm_config)
         messages = _sanitize_messages_for_anthropic(messages, llm_config)
 
         # Summary line at INFO (always visible)
@@ -1204,9 +1220,15 @@ def simple_should_continue(state: AgentState) -> str:
     return "end"
 
 
+def _latest_tool_batch_queued_reload(messages: List[BaseMessage]) -> bool:
+    from ...core.tool_reload import latest_tool_batch_queued_reload
+
+    return latest_tool_batch_queued_reload(messages)
+
+
 def route_after_tools(state: AgentState) -> str:
     """Route after tool execution, stopping immediately for queued reloads."""
-    if latest_tool_batch_queued_reload(state["messages"]):
+    if _latest_tool_batch_queued_reload(state["messages"]):
         return "end"
     return "agent"
 

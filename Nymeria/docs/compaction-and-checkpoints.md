@@ -22,12 +22,17 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
 
 ```
 1. compact_now()  (or _do_auto_compact() / _do_compact_sync())
-2.   _generate_summary()          — LLM produces a prose summary of the conversation
-3.   _pre_trim_memory_flush()     — full pre-compact message list is indexed into
+2.   _pre_trim_memory_flush()     — full pre-compact message list is indexed into
                                     the per-user RAG store (sqlite-vec + FTS5 at
                                     data/users/{uid}/memory.db). Defensive backup
                                     of the per-turn indexer; failures are logged
                                     and never block compaction.
+3.   _generate_summary()          — LLM produces a structured summary of the
+                                    untouched conversation, including 3-5 quoted
+                                    RAG search queries for the resuming agent.
+                                    Summary generation is capped at 15 minutes;
+                                    timeout returns a failed compaction result
+                                    without clearing messages.
 4.   _clear_and_reset()           — RemoveMessage commands wipe all messages from state,
                                     then one HumanMessage with internal_type='compaction_marker'
                                     is written as a single-message placeholder with
@@ -43,7 +48,35 @@ Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when tok
 
 The compaction_marker exists because LangGraph's router accesses `messages[-1]` — an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary. It also serves as the durable recovery source for pending summaries lost to process restart (see step 7).
 
-The pre-compact RAG flush (step 3) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
+The pre-compact RAG flush (step 2) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
+
+The summary prompt requires these exact sections:
+
+- `## Active Goal`
+- `## Progress`
+- `## Pending Work`
+- `## Key Context`
+- `## Files & Resources`
+- `## RAG Search Queries`
+- `## Persistent Memory`
+
+The `RAG Search Queries` section should contain 3-5 quoted search strings that target important decisions, findings, file paths, and task state from the compacted thread. These are hints for the next agent turn to retrieve the full preserved conversation from RAG when the summary alone is not enough.
+
+### Overflow rewind recovery
+
+If a provider rejects a turn because the request is already over the context window, normal compaction may also be impossible: the summary call would see the same oversized state. Nymeria now treats context overflow as a recoverable `auto_compact` condition:
+
+```
+1. Detect context-overflow provider errors such as context_length_exceeded,
+   maximum context length, too many tokens, input is too long, or prompt is too long.
+2. Flush the full current oversized state to RAG before mutating checkpoints.
+3. Walk up to 50 checkpoints back and select a checkpoint roughly four user turns earlier.
+4. Fork the active thread state from that checkpoint and add an internal context_rewind marker.
+5. Run the normal compact_now() / _do_compact_sync() flow on the shorter state.
+6. If no suitable checkpoint exists, RemoveMessage trims the oldest prefix until the state is below a conservative target, then compacts.
+```
+
+For async `/chat` streaming, the client receives `compacting` with `Context too large — rewinding and compacting...`, then `compacted` on success. For sync `chat()` callers, recovery stores the compacted summary as pending and returns a short instruction to send the message again; the next prompt resumes from the compacted state.
 
 ### Checkpoint pruning and deletion
 

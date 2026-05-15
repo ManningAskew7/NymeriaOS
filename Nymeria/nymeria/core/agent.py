@@ -29,6 +29,7 @@ from ..vendor.react_agent.nodes import (
     TURN_SAFETY_REASON_REPEATED_TOOL_RESULT,
     TurnSafetyResult,
     analyze_turn_safety,
+    is_context_overflow_error,
 )
 
 from ..config import Settings, get_settings
@@ -3060,6 +3061,34 @@ class NymeriaAgent:
                 return response
 
             except Exception as e:
+                if (
+                    self.settings.context_management == "auto_compact"
+                    and is_context_overflow_error(e)
+                ):
+                    logger.warning(
+                        "Thread %s: Context overflow in chat(); rewinding and compacting",
+                        thread_id,
+                    )
+                    compact_result = self._compaction.rewind_and_compact_sync(
+                        thread_id,
+                        user_id,
+                    )
+                    if compact_result.get("success"):
+                        logger.info(
+                            "Thread %s: Context overflow recovery compacted %s messages",
+                            thread_id,
+                            compact_result.get("messages_removed", 0),
+                        )
+                        return (
+                            "Context was too large, so I rewound and compacted "
+                            "the thread. Send your message again to continue "
+                            "from the compacted state."
+                        )
+                    logger.warning(
+                        "Thread %s: Context overflow recovery failed in chat(): %s",
+                        thread_id,
+                        compact_result.get("reason", compact_result),
+                    )
                 logger.error(f"Error in chat: {e}", exc_info=True)
                 error_event = self._classify_stream_exception(e)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
@@ -3529,6 +3558,33 @@ class NymeriaAgent:
             except Exception as e:
                 _elapsed = time.monotonic() - _stream_start
                 logger.error(f"[ASTREAM] === ERROR === thread={thread_id}, elapsed={_elapsed:.1f}s: {e}", exc_info=True)
+                if (
+                    self.settings.context_management == "auto_compact"
+                    and is_context_overflow_error(e)
+                ):
+                    yield {
+                        "type": "compacting",
+                        "message": "Context too large — rewinding and compacting...",
+                    }
+                    compact_result = await self._compaction.rewind_and_compact(
+                        thread_id,
+                        user_id,
+                    )
+                    if compact_result.get("success"):
+                        yield {
+                            "type": "compacted",
+                            "messages_removed": compact_result.get("messages_removed", 0),
+                            "auto_resumed": False,
+                            "summary": compact_result.get("summary"),
+                            "overflow_recovery": True,
+                            "rewound": compact_result.get("rewound", False),
+                        }
+                        return
+                    logger.warning(
+                        "Thread %s: Context overflow recovery failed in astream(): %s",
+                        thread_id,
+                        compact_result.get("reason", compact_result),
+                    )
                 yield self._classify_stream_exception(e)
 
                 # Try to track tokens even after error so status bar stays alive
