@@ -136,6 +136,22 @@ def _slides_request(
     )
 
 
+def _chat_request(
+    user_id: str,
+    operation: Callable[[Any], Any],
+    *,
+    account_id: Optional[str],
+) -> tuple[bool, Any]:
+    return _workspace_request(
+        user_id,
+        "chat",
+        "v1",
+        operation,
+        account_id=account_id,
+        api_label="Google Chat",
+    )
+
+
 def _resource_name(contact_id_or_resource: str) -> str:
     value = contact_id_or_resource.strip()
     if not value:
@@ -276,6 +292,23 @@ def _summarize_slides(slides: list[dict[str, Any]], *, include_text: bool) -> li
             item["text"] = _slide_text(slide)
         summarized.append(item)
     return summarized
+
+
+def _chat_resource_name(value: str, *, label: str, prefix: str) -> str:
+    cleaned = value.strip().strip("/")
+    if not cleaned:
+        raise ValueError(f"{label} is required.")
+    if cleaned.startswith(prefix):
+        return cleaned
+    return f"{prefix}{cleaned}"
+
+
+def _chat_message_body(*, text: str, message_json: str, label: str = "message_json") -> dict[str, Any]:
+    if message_json.strip():
+        return _parse_json(message_json, expected=dict, label=label)
+    if text.strip():
+        return {"text": text}
+    raise ValueError("text or message_json is required.")
 
 
 @tool
@@ -1051,6 +1084,238 @@ def google_slides_batch_update(
         return f"[Error]: Google Slides batch update failed: {e}"
 
 
+@tool
+def google_chat_list_spaces(
+    filter_query: str = "",
+    page_size: int = 50,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Google Chat spaces visible to the authenticated account."""
+    user_id = get_user_id(config)
+    try:
+        params: dict[str, Any] = {"pageSize": _limit(page_size, default=50, max_value=1000)}
+        if filter_query.strip():
+            params["filter"] = filter_query.strip()
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().list(**params).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result.get("spaces", result) if success and isinstance(result, dict) else result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_list_spaces failed", exc_info=True)
+        return f"[Error]: Google Chat space list failed: {e}"
+
+
+@tool
+def google_chat_get_space(
+    space_name: str,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Google Chat space by resource name."""
+    user_id = get_user_id(config)
+    try:
+        name = _chat_resource_name(space_name, label="space_name", prefix="spaces/")
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().get(name=name).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_get_space failed", exc_info=True)
+        return f"[Error]: Google Chat space lookup failed: {e}"
+
+
+@tool
+def google_chat_list_members(
+    space_name: str,
+    page_size: int = 50,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List memberships in a Google Chat space."""
+    user_id = get_user_id(config)
+    try:
+        parent = _chat_resource_name(space_name, label="space_name", prefix="spaces/")
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().members().list(
+                parent=parent,
+                pageSize=_limit(page_size, default=50, max_value=1000),
+            ).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result.get("memberships", result) if success and isinstance(result, dict) else result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_list_members failed", exc_info=True)
+        return f"[Error]: Google Chat member list failed: {e}"
+
+
+@tool
+def google_chat_get_member(
+    member_name: str,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Google Chat membership by resource name."""
+    user_id = get_user_id(config)
+    if not member_name.strip():
+        return "[Error]: member_name is required, e.g. spaces/AAA/members/BBB."
+    try:
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().members().get(name=member_name.strip()).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_get_member failed", exc_info=True)
+        return f"[Error]: Google Chat member lookup failed: {e}"
+
+
+@tool
+def google_chat_list_messages(
+    space_name: str,
+    page_size: int = 50,
+    filter_query: str = "",
+    order_by: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List recent Google Chat messages in a space."""
+    user_id = get_user_id(config)
+    try:
+        parent = _chat_resource_name(space_name, label="space_name", prefix="spaces/")
+        params: dict[str, Any] = {
+            "parent": parent,
+            "pageSize": _limit(page_size, default=50, max_value=1000),
+        }
+        if filter_query.strip():
+            params["filter"] = filter_query.strip()
+        if order_by.strip():
+            params["orderBy"] = order_by.strip()
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().messages().list(**params).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result.get("messages", result) if success and isinstance(result, dict) else result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_list_messages failed", exc_info=True)
+        return f"[Error]: Google Chat message list failed: {e}"
+
+
+@tool
+def google_chat_get_message(
+    message_name: str,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Google Chat message by resource name."""
+    user_id = get_user_id(config)
+    if not message_name.strip():
+        return "[Error]: message_name is required, e.g. spaces/AAA/messages/BBB."
+    try:
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().messages().get(name=message_name.strip()).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_get_message failed", exc_info=True)
+        return f"[Error]: Google Chat message lookup failed: {e}"
+
+
+@tool
+def google_chat_send_message(
+    space_name: str,
+    text: str = "",
+    message_json: str = "",
+    thread_key: str = "",
+    request_id: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Send a Google Chat message to a space."""
+    user_id = get_user_id(config)
+    try:
+        parent = _chat_resource_name(space_name, label="space_name", prefix="spaces/")
+        body = _chat_message_body(text=text, message_json=message_json)
+        kwargs: dict[str, Any] = {"parent": parent, "body": body}
+        if thread_key.strip():
+            kwargs["threadKey"] = thread_key.strip()
+        if request_id.strip():
+            kwargs["requestId"] = request_id.strip()
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().messages().create(**kwargs).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_send_message failed", exc_info=True)
+        return f"[Error]: Google Chat message send failed: {e}"
+
+
+@tool
+def google_chat_update_message(
+    message_name: str,
+    text: str = "",
+    message_json: str = "",
+    update_mask: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Google Chat message."""
+    user_id = get_user_id(config)
+    if not message_name.strip():
+        return "[Error]: message_name is required, e.g. spaces/AAA/messages/BBB."
+    try:
+        body = _chat_message_body(text=text, message_json=message_json, label="message_json")
+        mask = update_mask.strip()
+        if not mask:
+            mask = ",".join(key for key in ("text", "cardsV2", "cards") if key in body) or "text"
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().messages().patch(
+                name=message_name.strip(),
+                updateMask=mask,
+                body=body,
+            ).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_update_message failed", exc_info=True)
+        return f"[Error]: Google Chat message update failed: {e}"
+
+
+@tool
+def google_chat_delete_message(
+    message_name: str,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Google Chat message."""
+    user_id = get_user_id(config)
+    if not message_name.strip():
+        return "[Error]: message_name is required, e.g. spaces/AAA/messages/BBB."
+    try:
+        success, result = _chat_request(
+            user_id,
+            lambda s: s.spaces().messages().delete(name=message_name.strip()).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_chat_delete_message failed", exc_info=True)
+        return f"[Error]: Google Chat message deletion failed: {e}"
+
+
 GOOGLE_WORKSPACE_SERVICE_TOOLS = [
     google_tasks_list_tasklists,
     google_tasks_list_tasks,
@@ -1077,4 +1342,13 @@ GOOGLE_WORKSPACE_SERVICE_TOOLS = [
     google_slides_create_slide,
     google_slides_replace_text,
     google_slides_batch_update,
+    google_chat_list_spaces,
+    google_chat_get_space,
+    google_chat_list_members,
+    google_chat_get_member,
+    google_chat_list_messages,
+    google_chat_get_message,
+    google_chat_send_message,
+    google_chat_update_message,
+    google_chat_delete_message,
 ]

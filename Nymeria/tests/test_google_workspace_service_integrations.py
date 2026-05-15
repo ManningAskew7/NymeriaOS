@@ -236,6 +236,74 @@ def test_google_slides_list_slides_summarizes_text(monkeypatch):
     }
 
 
+def test_google_chat_send_message_calls_chat_api(monkeypatch):
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    captured = {}
+
+    class MessagesResource:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Executable({"name": "spaces/AAA/messages/BBB", "text": kwargs["body"]["text"]})
+
+    class SpacesResource:
+        def messages(self):
+            return MessagesResource()
+
+    class ChatService:
+        def spaces(self):
+            return SpacesResource()
+
+    calls = _patch_google_request(monkeypatch, ChatService())
+
+    result = json.loads(
+        tools.google_chat_send_message.func(
+            space_name="AAA",
+            text="hello",
+            thread_key="thread-1",
+            request_id="request-1",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == {"name": "spaces/AAA/messages/BBB", "text": "hello"}
+    assert captured["parent"] == "spaces/AAA"
+    assert captured["body"] == {"text": "hello"}
+    assert captured["threadKey"] == "thread-1"
+    assert captured["requestId"] == "request-1"
+    assert calls[0]["kwargs"]["service_name"] == "chat"
+    assert "https://www.googleapis.com/auth/chat.messages" in calls[0]["scopes"]
+
+
+def test_google_chat_list_spaces_calls_chat_api(monkeypatch):
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    captured = {}
+
+    class SpacesResource:
+        def list(self, **kwargs):
+            captured.update(kwargs)
+            return _Executable({"spaces": [{"name": "spaces/AAA", "displayName": "Team"}]})
+
+    class ChatService:
+        def spaces(self):
+            return SpacesResource()
+
+    _patch_google_request(monkeypatch, ChatService())
+
+    result = json.loads(
+        tools.google_chat_list_spaces.func(
+            filter_query='spaceType = "SPACE"',
+            page_size=3,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == [{"name": "spaces/AAA", "displayName": "Team"}]
+    assert captured["pageSize"] == 3
+    assert captured["filter"] == 'spaceType = "SPACE"'
+
+
 def test_google_workspace_missing_auth_returns_error(monkeypatch):
     from nymeria.tools import google_workspace_service_integrations as tools
 
@@ -265,6 +333,12 @@ def test_google_workspace_tools_registered_with_metadata():
         "google_slides_get_presentation",
         "google_slides_list_slides",
         "google_slides_get_page_thumbnail",
+        "google_chat_list_spaces",
+        "google_chat_get_space",
+        "google_chat_list_members",
+        "google_chat_get_member",
+        "google_chat_list_messages",
+        "google_chat_get_message",
     ]
     moderate_names = [
         "google_tasks_create_task",
@@ -281,6 +355,9 @@ def test_google_workspace_tools_registered_with_metadata():
         "google_slides_create_slide",
         "google_slides_replace_text",
         "google_slides_batch_update",
+        "google_chat_send_message",
+        "google_chat_update_message",
+        "google_chat_delete_message",
     ]
 
     for name in safe_names:
@@ -301,6 +378,7 @@ def test_google_workspace_tools_registered_with_metadata():
 def test_google_workspace_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         google_contacts_create_contact,
+        google_chat_send_message,
         google_drive_upload_text_file,
         google_slides_create_presentation,
         google_tasks_create_task,
@@ -310,3 +388,4 @@ def test_google_workspace_tool_schemas_hide_runtime_config():
     assert "config" not in google_contacts_create_contact.args_schema.model_json_schema()["properties"]
     assert "config" not in google_drive_upload_text_file.args_schema.model_json_schema()["properties"]
     assert "config" not in google_slides_create_presentation.args_schema.model_json_schema()["properties"]
+    assert "config" not in google_chat_send_message.args_schema.model_json_schema()["properties"]
