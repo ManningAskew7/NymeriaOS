@@ -1,8 +1,9 @@
 <script lang="ts">
   import { Button, Icon } from '$lib/components/common';
+  import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { FileAttachment } from '$lib/types';
+  import type { FileAttachment, SlashCommandInfo } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
   import {
@@ -35,11 +36,70 @@
   let pendingFiles = $state<FileAttachment[]>([]);
   let modalFile = $state<FileAttachment | null>(null);
   let errorMessage = $state<string | null>(null);
+  let commands = $state<SlashCommandInfo[]>([]);
+  let commandsLoaded = $state(false);
+  let commandsLoading = $state(false);
+  let highlightedCommandIndex = $state(0);
 
   let isStreaming = $derived(chatStore.isStreaming);
   let canSend = $derived(
     (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled && !isStreaming
   );
+  let isCommandNameEntry = $derived(inputValue.startsWith('/') && !/\s/.test(inputValue.slice(1)));
+  let slashQuery = $derived(
+    isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
+  );
+  let filteredCommands = $derived(
+    isCommandNameEntry
+      ? commands
+          .filter((command) => (
+            command.name.includes(slashQuery) ||
+            command.description.toLowerCase().includes(slashQuery)
+          ))
+          .slice(0, 8)
+      : []
+  );
+  let showCommandPalette = $derived(
+    isCommandNameEntry &&
+    filteredCommands.length > 0 &&
+    !disabled &&
+    !isStreaming
+  );
+
+  $effect(() => {
+    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
+      void loadCommands();
+    }
+  });
+
+  $effect(() => {
+    if (highlightedCommandIndex >= filteredCommands.length) {
+      highlightedCommandIndex = 0;
+    }
+  });
+
+  async function loadCommands() {
+    commandsLoading = true;
+    try {
+      commands = await api.listCommands();
+      commandsLoaded = true;
+    } catch (error) {
+      console.warn('[InputBar] Failed to load slash commands:', error);
+    } finally {
+      commandsLoading = false;
+    }
+  }
+
+  function insertCommand(command: SlashCommandInfo) {
+    inputValue = `/${command.name} `;
+    highlightedCommandIndex = 0;
+    requestAnimationFrame(() => {
+      if (!textareaRef) return;
+      textareaRef.style.height = 'auto';
+      textareaRef.style.height = Math.min(textareaRef.scrollHeight, 120) + 'px';
+      textareaRef.focus();
+    });
+  }
 
   function handleSubmit() {
     if ((inputValue.trim() || pendingFiles.length > 0) && !disabled && !isStreaming) {
@@ -62,6 +122,30 @@
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    if (showCommandPalette) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        highlightedCommandIndex = (highlightedCommandIndex + 1) % filteredCommands.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        highlightedCommandIndex =
+          (highlightedCommandIndex - 1 + filteredCommands.length) % filteredCommands.length;
+        return;
+      }
+      if (event.key === 'Tab' || event.key === 'Enter') {
+        event.preventDefault();
+        insertCommand(filteredCommands[highlightedCommandIndex]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        commands = [];
+        commandsLoaded = false;
+        return;
+      }
+    }
+
     // Mobile: Enter sends, Shift+Enter for newline
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -70,6 +154,9 @@
   }
 
   function handleInput() {
+    if (isCommandNameEntry && !commandsLoaded && !commandsLoading) {
+      void loadCommands();
+    }
     if (textareaRef) {
       textareaRef.style.height = 'auto';
       textareaRef.style.height = Math.min(textareaRef.scrollHeight, 120) + 'px';
@@ -183,6 +270,24 @@
 
   <FilePreview files={pendingFiles} onRemove={removeFile} onFileClick={openFileModal} />
 
+  {#if showCommandPalette}
+    <div class="command-palette">
+      {#each filteredCommands as command, index (command.name)}
+        <button
+          type="button"
+          class="command-option"
+          class:active={index === highlightedCommandIndex}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => insertCommand(command)}
+        >
+          <span class="command-name">/{command.name}</span>
+          <span class="command-description">{command.description}</span>
+          <code class="command-usage">{command.usage}</code>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="input-bar">
     {#if filesEnabled}
       <input
@@ -242,6 +347,7 @@
 
 <style>
   .input-container {
+    position: relative;
     border-top: 1px solid var(--border-subtle);
     background: var(--bg-elevated);
     padding: var(--spacing-sm) var(--spacing-md);
@@ -254,6 +360,65 @@
     display: flex;
     align-items: flex-end;
     gap: var(--spacing-sm);
+  }
+
+  .command-palette {
+    position: absolute;
+    left: var(--spacing-sm);
+    right: var(--spacing-sm);
+    bottom: calc(100% + var(--spacing-xs));
+    z-index: 20;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: var(--spacing-xs);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .command-option {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 2px var(--spacing-sm);
+    width: 100%;
+    min-height: 48px;
+    padding: var(--spacing-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+  }
+
+  .command-option:hover,
+  .command-option.active {
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  }
+
+  .command-name {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--accent-primary);
+  }
+
+  .command-description {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .command-usage {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
   .attach-btn {

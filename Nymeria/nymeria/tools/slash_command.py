@@ -1,127 +1,27 @@
-"""Single-dispatch tool that lets the agent invoke backend slash commands.
-
-The agent passes a natural command string (e.g. "/config set llm_model
-claude-opus-4-6", "/memory save color blue", "/help") and the tool routes
-it through the same REST endpoints the Discord/Telegram bots use. Tell
-the agent to call `/help` first to see the full command list.
-"""
+"""Single-dispatch tool that lets the agent invoke backend slash commands."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
-import shlex
 import threading
-from pathlib import Path
-from typing import Annotated, Awaitable, Callable, Optional
+from typing import Annotated, Awaitable, Callable
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, StructuredTool
 
+from ..core.command_service import CommandContext, get_command_service
 from .utils import get_thread_id, get_user_id
-
-# NymeriaAPIClient and SlashCommandDispatcher are imported lazily inside
-# slash_command() — their parent package (nymeria.triggers) imports from
-# nymeria.tools, which would otherwise cause a circular import at module
-# load time.
-
-logger = logging.getLogger(__name__)
-
-# Commands that take a subcommand as the second token.
-GROUPED = {"config", "env", "tools", "memory", "notepad", "todos"}
-
-
-def _resolve_base_url() -> str:
-    """Pick the right local API URL for the current environment."""
-    explicit = os.environ.get("NYMERIA_API_URL")
-    if explicit:
-        return explicit.rstrip("/")
-    if Path("/.dockerenv").exists():
-        return "http://api:8000"
-    return "http://localhost:8000"
-
-
-def _parse(raw: str) -> tuple[Optional[str], Optional[str], list[str], str]:
-    """Parse a command string.
-
-    Returns (command, subcommand, args, rest) where:
-      command:    lowercased primary command (no slash), e.g. "config"
-      subcommand: lowercased subcommand for grouped commands, else None
-      args:       shlex-split argument tokens after the subcommand
-      rest:       raw remainder after the subcommand (preserves pipes)
-    """
-    s = raw.strip()
-    if not s:
-        return None, None, [], ""
-    if s.startswith("/"):
-        s = s[1:].lstrip()
-    if not s:
-        return None, None, [], ""
-
-    head, _, tail = s.partition(" ")
-    command = head.lower()
-
-    if command in GROUPED:
-        tail = tail.strip()
-        if not tail:
-            return command, None, [], ""
-        sub_head, _, sub_tail = tail.partition(" ")
-        subcommand = sub_head.lower()
-        rest = sub_tail.strip()
-    else:
-        subcommand = None
-        rest = tail.strip()
-
-    try:
-        args = shlex.split(rest, posix=True) if rest else []
-    except ValueError:
-        # Unbalanced quotes etc — fall back to whitespace split.
-        args = rest.split()
-
-    return command, subcommand, args, rest
 
 
 async def _dispatch_command(command: str, config: RunnableConfig) -> str:
     """Shared slash-command execution logic for sync and async tool paths."""
-    cmd, sub, args, rest = _parse(command)
-    if cmd is None:
-        return "[Error]: Empty command. Try /help."
-
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
-
-    # Lazy imports — see module docstring.
-    from ..triggers.api_client import NymeriaAPIClient
-    from ..triggers.slash_dispatcher import SlashCommandDispatcher
-    from ..config import get_settings
-
-    settings = get_settings()
-    # Use the admin-role service token for internal API calls — slash
-    # commands run on behalf of the current thread's user, so we act-as
-    # that user via headers inside NymeriaAPIClient on each call.
-    api_key = settings.nymeria_service_token
-    if not api_key:
-        return (
-            "[Error]: slash_command requires NYMERIA_SERVICE_TOKEN to be set "
-            "(it authenticates as the admin service account and acts-as the "
-            "current user). Ask an administrator to provision the bot-service "
-            "admin and paste its token into the server's environment."
-        )
-    base_url = _resolve_base_url()
-
-    client = NymeriaAPIClient(base_url=base_url, api_key=api_key)
-    dispatcher = SlashCommandDispatcher(api=client, thread_id=thread_id, user_id=user_id)
-
-    logger.info(
-        "slash_command: cmd=%s sub=%s args=%s thread=%s",
-        cmd, sub, args, thread_id,
+    result = await get_command_service().execute(
+        CommandContext(user_id=user_id, thread_id=thread_id, source="agent"),
+        command,
     )
-
-    try:
-        return await dispatcher.dispatch(cmd, sub, args, rest)
-    finally:
-        await client.close()
+    return result.markdown
 
 
 def _run_async_from_sync(coro_factory: Callable[[], Awaitable[str]]) -> str:
@@ -192,7 +92,7 @@ def _slash_command_sync(
         command: The slash command string.
 
     Returns:
-        Plain-text result prefixed with [Success], [Error], or [Info].
+        Markdown command result.
     """
     return _run_async_from_sync(lambda: _dispatch_command(command, config))
 

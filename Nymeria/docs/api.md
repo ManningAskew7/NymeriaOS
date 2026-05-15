@@ -8,8 +8,9 @@ The API is being split incrementally; the System slice (`/health`,
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
 callable routes, unified tools, MCP server management, settings/model catalog,
-thread config/callable-team routes, chat-app/BYO Telegram routes, and Chat SSE
-routes now live under `Nymeria/nymeria/api/routers/`, while the rest of the
+thread config/callable-team routes, chat-app/BYO Telegram routes, command
+routes, and Chat SSE routes now live under `Nymeria/nymeria/api/routers/`,
+while the rest of the
 surface still lives in `Nymeria/nymeria/triggers/api.py` during the migration.
 
 ## Authentication
@@ -682,9 +683,56 @@ Returns the callable thread tools actually available from that caller thread aft
 
 All events include `thread_id` for correlation.
 
-### Slash Commands
+### Command Service
 
-The `/chat` endpoint supports slash commands. Send the command as the message:
+Most slash commands are handled by the stateless command service and return
+markdown. Desktop, mobile, bots, and the agent `slash_command` tool can use the
+same registry.
+
+```http
+GET /commands?source=user
+```
+
+`source` may be `user`, `agent`, or `cli`. Agent source hides commands whose
+metadata marks them unavailable to agents.
+
+**Response:**
+
+```json
+[
+  {
+    "name": "tools",
+    "description": "Inspect or change thread tools",
+    "usage": "/tools <core|optional|enabled|category|enable|disable> [args]",
+    "category": "Tools",
+    "subcommands": ["core", "optional", "enabled", "category", "enable", "disable"]
+  }
+]
+```
+
+```http
+POST /commands/execute
+```
+
+**Request:**
+
+```json
+{"command": "/tools core", "thread_id": "abc123", "source": "user"}
+```
+
+**Response:**
+
+```json
+{"success": true, "markdown": "### Core Tools\n\n...", "command": "tools core"}
+```
+
+Commands that require an active thread return a markdown error if `thread_id`
+is omitted.
+
+### Chat Slash Commands
+
+The `/chat` endpoint keeps streaming slash commands that are not simple
+request/response commands. Send the command as the message:
 
 | Command | Description |
 |---------|-------------|

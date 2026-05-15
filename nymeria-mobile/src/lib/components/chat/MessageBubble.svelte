@@ -223,7 +223,21 @@
   );
 </script>
 
-{#if message.kind === 'compaction_notice'}
+{#if message.kind === 'command_result'}
+<div class="command-result">
+  <div class="command-icon">
+    <Icon name="terminal" size={18} />
+  </div>
+  <div class="command-body">
+    {#if message.commandInput}
+      <div class="command-input"><code>{message.commandInput}</code></div>
+    {/if}
+    <div class="command-output">
+      {@html renderMarkdown(message.content)}
+    </div>
+  </div>
+</div>
+{:else if message.kind === 'compaction_notice'}
 <div class="compaction-notice">
   <div class="compaction-icon">
     <Icon name="info" size={18} />
@@ -413,6 +427,55 @@
     background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-primary));
     color: var(--text-primary);
     animation: slideUp var(--transition-normal);
+  }
+
+  .command-result {
+    align-self: center;
+    display: flex;
+    gap: var(--spacing-sm);
+    width: min(100%, 720px);
+    margin: var(--spacing-md) 0;
+    padding: var(--spacing-md);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    animation: slideUp var(--transition-normal);
+  }
+
+  .command-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    flex-shrink: 0;
+  }
+
+  .command-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .command-input {
+    margin-bottom: var(--spacing-sm);
+    color: var(--text-muted);
+  }
+
+  .command-input code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+  }
+
+  .command-output :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .command-output :global(:last-child) {
+    margin-bottom: 0;
   }
 
   .compaction-icon {

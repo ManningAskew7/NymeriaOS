@@ -178,6 +178,26 @@
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
+    const trimmed = message.trim();
+    if (trimmed.startsWith('/') && trimmed !== '/compact' && (!attachments || attachments.length === 0)) {
+      if (!threadsStore.currentThreadId) {
+        const thread = threadsStore.createThread();
+        threadsStore.selectThread(thread.id);
+      }
+      const threadId = threadsStore.currentThreadId || undefined;
+      try {
+        const result = await api.executeCommand(trimmed, threadId);
+        chatStore.addCommandResult(trimmed, result.markdown, result.success);
+      } catch (error) {
+        chatStore.addCommandResult(
+          trimmed,
+          `**Error:** ${error instanceof Error ? error.message : 'Command failed'}`,
+          false
+        );
+      }
+      return;
+    }
+
     // Create thread if needed
     if (!threadsStore.currentThreadId) {
       const thread = threadsStore.createThread();

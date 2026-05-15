@@ -67,10 +67,24 @@ export interface DispatchInfo {
   matchedRef?: string;
 }
 
+export interface SlashCommandInfo {
+  name: string;
+  description: string;
+  usage: string;
+  category: string;
+  subcommands: string[];
+}
+
+export interface CommandExecuteResponse {
+  success: boolean;
+  markdown: string;
+  command: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
-  kind?: 'compaction_notice';
+  kind?: 'compaction_notice' | 'command_result';
   content: string;
   steps?: MessageStep[];          // Ordered list of thinking/tool_call steps
   intermediateContent?: string;   // Legacy: concatenated thinking (computed from steps)
@@ -86,6 +100,7 @@ export interface Message {
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
   toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
   dispatchInfo?: DispatchInfo;    // Present on responses routed to another thread
+  commandInput?: string;          // Raw slash command typed by the user
 }
 
 export interface ToolCall {

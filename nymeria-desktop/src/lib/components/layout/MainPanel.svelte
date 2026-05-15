@@ -151,6 +151,25 @@
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
+    const trimmed = message.trim();
+    if (trimmed.startsWith('/') && trimmed !== '/compact' && (!attachments || attachments.length === 0)) {
+      if (!threadsStore.currentThreadId) {
+        threadsStore.createThread();
+      }
+      const threadId = threadsStore.currentThreadId || undefined;
+      try {
+        const result = await api.executeCommand(trimmed, threadId);
+        chatStore.addCommandResult(trimmed, result.markdown, result.success);
+      } catch (error) {
+        chatStore.addCommandResult(
+          trimmed,
+          `**Error:** ${error instanceof Error ? error.message : 'Command failed'}`,
+          false
+        );
+      }
+      return;
+    }
+
     if (attachments && attachments.length > 0) {
       if (configStore.suppressAttachmentWarnings) {
         await streamMessage(message, attachments, true);

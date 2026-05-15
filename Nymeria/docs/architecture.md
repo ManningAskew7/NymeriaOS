@@ -98,6 +98,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
 | `agent_history.py` | Conversation-history projection for API/frontend clients, including checkpoint timestamp recovery, internal-message filtering, reasoning/tool-step rendering, and attachment metadata |
 | `agent_streaming.py` | `GraphStreamProcessor` for converting LangGraph stream events into Nymeria SSE chunks, plus helpers for classifying streamed model chunks and deduplicating reasoning deltas |
+| `command_service.py` | Central slash-command registry and markdown dispatcher used by REST, desktop/mobile command input, bots, and the `slash_command` agent tool |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
 | `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
@@ -455,7 +456,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 
 | Category | Tools |
 |----------|-------|
-| Core System | bash_execute, file_read, file_write, web_search, consult, claude_code |
+| Core System | bash_execute, file_read, file_write, web_search, consult, slash_command |
 | Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
 | Runtime / utility | consult, notify and other currently registered core utilities |
@@ -544,8 +545,9 @@ Input interfaces and event-driven adapters that route messages to the agent:
   user tool preferences, Skills, voice, Agent Threads, activity/notifications,
   TODO dashboard, autonomous stream, custom tools, classic tool
   discovery/default/callable routes, unified tools, MCP server management,
-  settings/model catalog, thread config/callable-team routes, and Chat SSE.
-- Key endpoints: `/chat` (SSE), `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
+  settings/model catalog, thread config/callable-team routes, command routes,
+  and Chat SSE.
+- Key endpoints: `/chat` (SSE), `/commands`, `/commands/execute`, `/autonomous/stream`, `/threads`, `/todos`, `/tools`, `/agents/threads`, `/triggers`
 - Thread metadata management: `PATCH /threads/{id}/metadata` syncs titles, pins, and platform across surfaces. Renaming a callable thread also updates its `callable_name` and rebuilds the tool registry.
 - CRUD for threads, TODOs, custom tools, callable threads, and triggers
 - Hot-reload settings via `PATCH /settings` (clears `@lru_cache`, rebuilds agent graphs)
