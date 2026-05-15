@@ -1741,11 +1741,17 @@ This batch includes:
 - `discourse_search(query, page?)`, `discourse_list_latest_topics(page?)`, `discourse_get_topic(topic_id, include_raw?)`, and `discourse_get_post(post_id)`. Public forums can be read with only `base_url`; private forums can add an API key and username.
 - `discourse_create_topic(title, raw, category_id?, tags?)`, `discourse_create_post(topic_id, raw)`, and `discourse_update_post(post_id, raw, edit_reason?)`; these require a Discourse API key plus API username.
 - `medium_get_me()`, `medium_list_publications(user_id?)`, `medium_create_post(...)`, and `medium_create_publication_post(...)`. Medium's official API is archived upstream, but the token-based endpoints remain implemented for compatibility with existing accounts that still use them.
+- X/Twitter: `twitter_get_me`, `twitter_get_user`, `twitter_search_recent`, `twitter_create_post`, `twitter_delete_post`, `twitter_like_post`, `twitter_repost`, and `twitter_send_direct_message`. Reads/search are SAFE; posting, deleting, liking, reposting, and DMs are MODERATE.
+- LinkedIn: `linkedin_get_me` and `linkedin_create_post`. Profile lookup is SAFE; posting is MODERATE.
+- Facebook Graph/Page tools: `facebook_graph_get_me`, `facebook_graph_get_node`, `facebook_page_list_accounts`, and `facebook_page_create_post`. Graph reads are SAFE; Page posting is MODERATE.
 
 Credential providers and fallback env vars:
 - Reddit: provider `reddit`, fields `access_token`, `refresh_token`, `client_id`, `client_secret`, and optional `base_url` / `public_base_url` / `token_url`; env fallbacks `REDDIT_ACCESS_TOKEN`, `REDDIT_REFRESH_TOKEN`, `REDDIT_CLIENT_ID`, and `REDDIT_CLIENT_SECRET`.
 - Discourse: provider `discourse`, fields `base_url`, `api_key`, and `api_username`; env fallbacks `DISCOURSE_BASE_URL`, `DISCOURSE_API_KEY`, and `DISCOURSE_API_USERNAME`.
 - Medium: provider `medium`, fields `access_token`, `token`, or `value`; env fallback `MEDIUM_ACCESS_TOKEN`.
+- X/Twitter: provider `twitter` (aliases `x`, `x_twitter`, `twitter_oauth2`), fields `bearer_token`, `access_token`, `api_key`, `token`, or `value`; env fallbacks `TWITTER_BEARER_TOKEN` or `TWITTER_ACCESS_TOKEN`.
+- LinkedIn: provider `linkedin`, fields `access_token`, `bearer_token`, `token`, or `value`; env fallback `LINKEDIN_ACCESS_TOKEN`.
+- Facebook: provider `facebook` (aliases `facebook_graph`, `facebook_graph_api`, `meta_graph`), fields `access_token`, optional `page_access_token`, and optional `app_secret`; env fallbacks `FACEBOOK_ACCESS_TOKEN` and `FACEBOOK_APP_SECRET`.
 
 ### Time And HR Service Tools
 
