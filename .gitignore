@@ -43,6 +43,11 @@ venv/
 dist/
 build/
 *.whl
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # === Node / Frontend ===
 node_modules/
@@ -72,6 +77,7 @@ nymeria-watch/local.properties
 .idea/
 *.swp
 *.swo
+*~
 .DS_Store
 Thumbs.db
 desktop.ini
@@ -80,6 +86,10 @@ desktop.ini
 .claude/
 .claude-backup/
 .playwright-mcp/
+
+# === Cleanup artifacts ===
+debug-artifacts/
+*.local.txt
 
 # === Project-specific exclusions ===
 Plans-fixes.txt
