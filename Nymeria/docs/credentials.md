@@ -1,91 +1,244 @@
 # Credential Vault
 
-Nymeria stores reusable tool credentials in an encrypted server-side vault. The
-vault is backed by `data/accounts.db` and encrypts secret fields with
-`NYMERIA_SECRETS_KEY` via `nymeria/core/secrets.py`.
+Nymeria stores reusable tool credentials in an encrypted server-side vault
+backed by `data/accounts.db`. Secret fields are Fernet-encrypted using the
+`NYMERIA_SECRETS_KEY` environment variable via `nymeria/core/secrets.py`.
 
-## Model
+This document covers the full surface of the credential vault: data model,
+how secrets enter the vault, how tools automatically receive their
+credentials at runtime, access control, and the agent-facing tool.
 
-Credentials have public metadata and separate encrypted secret fields:
+## Data Model
+
+The vault uses four SQLite tables:
+
+| Table | Purpose |
+|-------|---------|
+| `credentials` | Public metadata: name, provider, kind, status, allowed targets, ownership |
+| `credential_secret_fields` | Actual secrets — each is a named field (e.g. `api_key`, `token`) stored as Fernet ciphertext, fully separate from metadata |
+| `credential_bindings` | Explicit links between a credential and a consumer (e.g. "this Todoist key is for the `todoist_tasks` tool") |
+| `credential_audit_events` | Immutable log of every action: created, used, bound, tested, disabled, decrypt failures |
+
+### Credential Fields
 
 - `owner_type`: `user` or `system`
 - `owner_user_id`: set for user-owned credentials
-- `provider` / `kind`: examples include `google_calendar`, `microsoft`,
-  `api_key`, `env_var`, and `legacy_token_cache`
-- `metadata`, `scopes`, `expires_at`, `status`, `allowed_targets`
-- secret field names only, never plaintext or ciphertext in API responses
+- `provider` / `kind`: examples include `todoist` / `api_key`, `google_calendar` / `legacy_token_cache`, `mcp` / `env_var`
+- `metadata`: arbitrary JSON (account info, source tracking)
+- `scopes`: OAuth scope list (for OAuth-based credentials)
+- `allowed_targets`: list of target strings that controls who can decrypt (see Access Control)
+- `status`: `active`, `pending_setup`, or `disabled`
+- `secret_fields`: list of field names only — plaintext and ciphertext are never exposed in API responses
 
-`allowed_targets` scopes runtime injection. Supported target strings include
-`mcp_server:<server_id>`, `custom_tool:<tool_id>`, wildcard forms like
-`mcp_server:*`, `llm_provider:<provider-id>`, `llm_provider:*`, or `*`.
+## How Secrets Enter the Vault
 
-## APIs
+There are three paths:
 
-Primary routes:
+### 1. Settings > Connections UI (Primary)
 
-- `GET /credentials?scope=visible|mine|system|all`
-- `POST /credentials`
-- `GET /credentials/{credential_id}`
-- `PATCH /credentials/{credential_id}`
-- `DELETE /credentials/{credential_id}`
-- `POST /credentials/{credential_id}/test`
-- `GET /credentials/{credential_id}/bindings`
-- `POST /credentials/{credential_id}/bindings`
-- `DELETE /credential-bindings/{binding_id}`
-- `POST /credential-setup-sessions`
+The user types their secret into the desktop or mobile app. The frontend calls
+`POST /credentials` with plaintext `secret_fields`. The API encrypts them with
+Fernet and stores the ciphertext. The plaintext is never persisted.
 
-Writes accept `secret_fields` as plaintext request fields. Responses only return
-metadata and the list of stored secret field names.
+### 2. Agent-Initiated Setup
 
-## Agent Access
-
-The optional `auth_manager` tool is metadata-only. It can list credentials,
-create pending setup records, and manage user-owned bindings/tests/disables.
-It cannot manage system credentials or retrieve plaintext secret fields.
-
-Agents should use `auth_manager(action="request_setup", ...)` when the user
-needs to enter a key. The frontend Settings -> Connections panel completes the
-pending setup record through an authenticated API call, keeping secret material
+The agent (via the `auth_manager` tool) calls `request_setup` to create a
+placeholder credential with `status: pending_setup`. The agent never handles
+actual secrets. The user completes the setup in the UI, which fills in the
+secret fields through an authenticated API call. This keeps secret material
 out of chat history.
 
-## Runtime Injection
+### 3. Auto-Migration at Startup
 
-Custom HTTP tools and MCP server env/header config can reference stored secrets:
+When the agent boots (`agent.py`), two migration functions run automatically:
 
-```text
-${credential:cred_abc123.value}
+- `migrate_auth_token_files()` — finds old per-user JSON files in
+  `data/auth_tokens/<user_id>/` and moves them into the vault as
+  `legacy_token_cache` credentials. Provider-specific files under `mcp/`
+  subdirectories are left in place because third-party MCP servers still read
+  those files directly.
+- `migrate_mcp_encrypted_env_vars()` — converts legacy `encrypted_env_vars`
+  in MCP server configs into vault credentials. The original server definition
+  is rewritten to use `${credential:id.value}` references. If decryption or
+  import fails, the original value is left untouched and a warning is logged.
+
+## How Tools Automatically Get Their Credentials
+
+Tools never hardcode API keys. There are four resolution paths depending on
+tool type.
+
+### Path 1: Native Tools
+
+There are ~34 service integration files (e.g. `productivity_service_integrations.py`,
+`project_management_service_integrations.py`). Each tool has a helper that
+calls:
+
+```python
+get_native_credential_value(
+    provider="todoist",
+    field_names=("api_key", "token"),
+    tool_name="todoist_tasks",
+    config=config,
+)
 ```
 
-The backend resolves this only during execution, checks the credential's
-allowed target, records the credential ID in audit metadata, and redacts
-resolved secret values in HTTP audit logs and request metadata. Tool results
-and API responses do not include the secret value.
+The resolver (`native_credentials.py`):
 
-LLM providers also use the credential vault. Save a credential with
-`provider=<LLM provider ID>` such as `openai`, `openrouter`, `groq`, or
-`lmstudio`; `kind=api_key` or `llm_provider`; secret field `api_key`; and
-allowed target `llm_provider:<provider-id>` or `llm_provider:*`. A credential
-may also include a secret or metadata `base_url` field for custom endpoints.
-Bindings improve selection order, but the allowed target is still what permits
-secret access.
+1. Lists all active vault credentials matching that provider name
+2. Checks for explicit **bindings** (highest priority, score 0)
+3. Checks **allowed_targets** for `native_tool:<tool_name>` (score 1)
+4. Falls back to wildcard `native_tool:*` or `*` targets (score 2)
+5. Falls back to unscoped credentials with no targets (score 3)
+6. At the same priority level, prefers user-owned over system-owned
+7. Decrypts the first matching secret field, logs an audit event, returns it
 
-## Migration
+If no credential matches, the tool returns a human-readable setup hint:
 
-On backend startup, Nymeria imports existing first-level per-user auth caches
-from `data/auth_tokens/<user_id>/*.json` into `legacy_token_cache` credentials.
-Provider-specific exported MCP files under `data/auth_tokens/<user_id>/mcp/`
-are left in place because third-party MCP servers still need those files.
+> No Todoist credential found. Save one in Settings > Connections with
+> provider "todoist", required field(s) "api_key", and allowed target
+> "native_tool:todoist_tasks" or "native_tool:*".
 
-Legacy managed MCP `encrypted_env_vars` are migrated to system credentials and
-the server definition is rewritten to use `${credential:...}` env references.
-If decryption or import fails, the original value is left untouched and a
-non-fatal warning is logged.
+### Path 2: Custom HTTP Tools
+
+When a custom tool's URL, headers, or body contains `${credential:my_cred.api_key}`,
+the custom tool executor (`custom_tools.py`) calls `vault.resolve_references()`
+at runtime. This regex-matches every `${credential:X.Y}` placeholder, decrypts
+field `Y` from credential `X`, and substitutes the plaintext inline. It also
+tracks resolved values so tool output can be **redacted** (secrets scrubbed
+from responses).
+
+### Path 3: MCP Server Environment and Headers
+
+Same `${credential:id.field}` pattern. When an MCP server starts, the MCP
+manager (`mcp_manager.py`) resolves these references in env vars and HTTP
+headers before spawning the process.
+
+### Path 4: LLM Provider Keys
+
+`llm_credentials.py` handles this path separately from native tools. When
+building an LLM graph, it searches for vault credentials with:
+
+- `kind` in `{api_key, llm_provider, llm_connection, provider_connection, openai_compatible, connection}`
+- `provider` matching the target LLM provider (normalized)
+
+The scoring also considers **thread-level targeting** — you can store one
+OpenAI key scoped to `thread:<thread-id>` and a different one as the global
+fallback. The resolver also reads `base_url` from secret fields or metadata,
+supporting custom endpoints per credential.
+
+Save a credential with `provider=<LLM provider ID>` (e.g. `openai`,
+`openrouter`, `anthropic`), `kind=api_key`, secret field `api_key`, and
+allowed target `llm_provider:<provider>` or `llm_provider:*`.
+
+## Access Control
+
+- **Ownership**: Each credential is `user`-owned (scoped to one user) or
+  `system`-owned (shared). User credentials are only visible to their owner.
+- **Allowed targets**: A list like `["native_tool:todoist_tasks", "mcp_server:my-server"]`
+  restricts which consumers can decrypt. `"*"` or empty list = unrestricted.
+  Supported target strings include `native_tool:<name>`, `mcp_server:<id>`,
+  `custom_tool:<id>`, `llm_provider:<provider>`, `thread:<id>`, and wildcard
+  forms like `native_tool:*`.
+- **Bindings**: Explicit credential-to-target links stored in the
+  `credential_bindings` table. Bindings override the scoring system (highest
+  priority).
+- **Status**: `active`, `pending_setup`, `disabled`. Disabled credentials
+  are never returned by the resolution functions.
+- **Agent safety**: The `auth_manager` tool that the agent uses never returns
+  plaintext secrets, ciphertext, or partial keys. It can list metadata, create
+  placeholders, bind credentials, and disable them — but actual secret entry
+  must happen through the UI or authenticated API.
+
+## Agent Access — `auth_manager` Tool
+
+The optional `auth_manager` tool provides metadata-only credential management
+from within chat. It supports these actions:
+
+| Action | What it does |
+|--------|-------------|
+| `list` | List the current user's credentials plus system credential metadata |
+| `status` | Show metadata and bindings for one credential |
+| `request_setup` | Create a pending setup record for the user to complete in the UI |
+| `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) |
+| `unbind` | Remove a binding by binding ID |
+| `test` | Run a vault health check (confirms secret fields exist, no plaintext) |
+| `disable` | Disable a credential |
+
+The agent cannot manage system credentials or retrieve plaintext secrets.
+
+## REST API
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/credentials` | GET | List credentials (`scope=visible\|mine\|system\|all`) |
+| `/credentials` | POST | Create credential (accepts `secret_fields` as plaintext) |
+| `/credentials/{id}` | GET | Get one credential's metadata |
+| `/credentials/{id}` | PATCH | Update credential metadata or secret fields |
+| `/credentials/{id}` | DELETE | Delete credential and all bindings |
+| `/credentials/{id}/test` | POST | Test credential (provider-specific health check) |
+| `/credentials/{id}/bindings` | GET | List bindings for a credential |
+| `/credentials/{id}/bindings` | POST | Create a new binding |
+| `/credential-bindings/{id}` | DELETE | Remove a binding |
+| `/credential-setup-sessions` | POST | Create a setup session (agent workflow) |
+
+Writes accept `secret_fields` as plaintext. Responses only return metadata
+and the list of stored secret field names — never plaintext or ciphertext.
+
+## Example End-to-End Flow
+
+Using the Todoist tool as an example:
+
+1. You go to **Settings > Connections** in the desktop/mobile app
+2. You add a credential: provider = `todoist`, field = `api_key`, value = your
+   Todoist API key, allowed target = `native_tool:*`
+3. The UI calls `POST /credentials` — the vault encrypts the key with Fernet
+   and stores the ciphertext
+4. Later, in chat, the agent calls the `todoist_tasks` tool
+5. Inside the tool, `get_native_credential_value(provider="todoist", ...)`
+   fires
+6. The vault finds your credential, confirms it is active and allowed for
+   `native_tool:todoist_tasks`, decrypts the key, logs an audit event, and
+   returns the plaintext to the tool internals
+7. The tool uses the key to call Todoist's API
+8. Secret values are redacted from any tool output shown to the user
 
 ## Operational Notes
 
-If `NYMERIA_SECRETS_KEY` is missing, new vault secret writes fail for vault APIs.
-Existing auth-cache helpers fall back to legacy file storage so local dev flows
-do not break abruptly, but production deployments should configure the key.
+- If `NYMERIA_SECRETS_KEY` is missing, new vault secret writes fail. Auth-cache
+  helpers fall back to legacy file storage so local dev flows do not break
+  abruptly, but production deployments must configure the key.
+- Fernet key rotation requires decrypting and re-encrypting all stored values.
+  There is no automated rotation command yet.
+- Audit events are append-only and include the credential ID, actor, event
+  type, target, and timestamp. They are never pruned automatically.
 
-Fernet key rotation still requires decrypting and re-encrypting stored values;
-there is no automated rotation command yet.
+## Planned: Password Guard for Token Operations
+
+The credential vault itself is properly gated — all API endpoints require a
+valid bearer token. However, the CLI (`python run.py users rotate-token`)
+bypasses the API and writes directly to SQLite with no authentication. On
+shared or bare-metal production installs, this means any local user could
+mint an admin token and access all vault credentials.
+
+The mitigation is an optional account password (the `password_hash` column
+already exists in the `users` table). When set, token-issuing operations
+(CLI `rotate-token`, API `POST /me/tokens`) require the password. An email
+reset flow covers the lockout scenario. A `REQUIRE_ACCOUNT_PASSWORD` setting
+lets production admins enforce this while solo installs stay frictionless.
+
+Full details in [`accounts.md`](accounts.md).
+
+## Key Source Files
+
+| File | Role |
+|------|------|
+| `nymeria/core/credential_vault.py` | Vault repo, schema, encrypt/decrypt, reference resolution, migrations |
+| `nymeria/core/llm_credentials.py` | LLM provider credential resolution from the vault |
+| `nymeria/tools/native_credentials.py` | Native tool credential resolution |
+| `nymeria/tools/auth_manager.py` | Agent-facing metadata-only tool |
+| `nymeria/tools/auth_cache_utils.py` | OAuth token cache I/O (vault-first, file fallback) |
+| `nymeria/core/custom_tools.py` | `${credential:...}` resolution in custom HTTP tools |
+| `nymeria/core/mcp_manager.py` | `${credential:...}` resolution in MCP server config |
+| `nymeria/api/routers/credentials.py` | REST API router |
+| `nymeria/api/schemas/credentials.py` | Pydantic request/response schemas |
+| `tests/test_credential_vault.py` | Vault unit tests |
