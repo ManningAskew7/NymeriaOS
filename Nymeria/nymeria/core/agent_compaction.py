@@ -7,6 +7,8 @@ delegates all compaction work here via self._compaction.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
 import uuid as _uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -22,49 +24,72 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+COMPACTION_TIMEOUT_SECONDS = 900
+
 # ---------------------------------------------------------------------------
 # Prompt templates
 # ---------------------------------------------------------------------------
 
 COMPACT_PROMPT = """**System Request: Context Compaction**
 
-The conversation is getting long and needs to be summarized. After your response, older messages will be removed and only your summary will remain.
+The conversation is getting long and needs to be summarized. After your
+response, older messages will be removed and only your summary will remain.
+This summary will be the ONLY context for continuing the conversation.
 
-**Your summary must include:**
+You have full tool access. Use memory_add, file writes, or any tool needed
+to persist important information before the conversation is wiped.
 
-1. **What we were just doing** - Be specific about the last few turns:
-   - What did the user ask for most recently?
-   - What action were you in the middle of?
-   - Any pending questions or decisions?
+**Structure your summary using EXACTLY these sections:**
 
-2. **Key context** - Important facts from the conversation:
-   - User info, project details, preferences established
-   - Decisions made and their reasoning
-   - Significant outcomes from tool operations
+## Active Goal
+What is the user's current objective? Be specific — the exact request,
+not a paraphrase. Include any constraints or preferences stated.
 
-3. **Files to read** - If continuing work, list specific files I should read to get back up to speed:
-   - Code files being worked on
-   - Config files referenced
-   - Any notes or checklists created during this session
+## Progress
+Concrete outcomes so far:
+- Completed steps with results
+- Decisions made and their reasoning
+- Tool operations and their outcomes
+- Errors encountered and how they were resolved
 
-4. **Save persistent facts** - Use `memory_add(scope="global", key=..., content=...)` for anything that should be remembered across ALL future conversations:
-   - User's name, role, occupation
-   - Project names and key technical details
-   - Strong preferences or constraints
+## Pending Work
+What remains? What was the next step when compaction triggered?
+- Immediate next action
+- Outstanding questions or decisions
+- Blockers or dependencies
 
-5. **Save thread context** - Use `memory_add(scope="thread", content=...)` for thread-specific context that should survive compaction:
-   - Current project state, file paths being worked on
-   - Decisions made and their reasoning
-   - Key findings or intermediate results
-   - Anything you'll need to continue this specific thread's work
+## Key Context
+Facts and state that must survive:
+- User preferences and constraints established
+- Project/technical details referenced
+- Configuration or environment details
+- Tracked variables or temporary state
 
-**Keep it concise but complete** - this summary will be my only context for continuing the conversation.
+## Files & Resources
+Specific paths, URLs, or resources for continuing work:
+- Files being actively edited
+- Config files referenced
+- Artifacts created during this session
+- External resources consulted
 
-**Do NOT include:**
-- Routine greetings or small talk
-- Failed attempts that were later corrected
-- Verbose tool outputs (just summarize outcomes)
-- Information already saved to memory or notepad"""
+## RAG Search Queries
+3-5 search queries the resuming agent should run against the conversation
+memory store. Target key concepts, decisions, and findings from this thread.
+Format as a bulleted list of quoted strings.
+
+## Persistent Memory
+Use memory_add(scope="global", key=..., content=...) for facts that
+should persist across ALL conversations (user identity, preferences,
+project names, technical constraints).
+
+Use memory_add(scope="thread", content=...) for thread-specific context
+(current task state, intermediate results, file paths).
+
+**Rules:**
+- Be specific — exact file paths, variable names, error messages
+- Omit greetings, failed-then-corrected attempts, verbose tool outputs
+- Skip anything already in memory or notepad
+- Aim for under 1500 words total"""
 
 AUTO_RESUME_MESSAGE = """[Auto-compact: Context limit reached, conversation summarized]
 
@@ -321,14 +346,14 @@ class CompactionManager:
 
         logger.info(f"Thread {thread_id}: Manual compact starting ({msg_count_before} messages)")
 
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
         try:
             agent._flush_memories_before_trim(user_id, thread_id, messages)
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
+
+        summary = await self._generate_summary(thread_id, user_id)
+        if not summary:
+            return {"success": False, "reason": "Failed to generate summary"}
 
         cleared = await self._clear_and_reset(
             thread_id,
@@ -387,8 +412,18 @@ class CompactionManager:
         graph = agent._get_async_graph_for_user(user_id, thread_id=thread_id)
 
         try:
-            result = await graph.ainvoke(self._summary_input(), config=config)
+            result = await asyncio.wait_for(
+                graph.ainvoke(self._summary_input(), config=config),
+                timeout=COMPACTION_TIMEOUT_SECONDS,
+            )
             return self._extract_summary_from_result(result.get("messages", []))
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Thread %s: Async summary generation timed out after %s seconds",
+                thread_id,
+                COMPACTION_TIMEOUT_SECONDS,
+            )
+            return None
         except Exception as e:
             logger.error(
                 f"Thread {thread_id}: Async summary generation failed: {e}",
@@ -510,9 +545,10 @@ class CompactionManager:
     ) -> Dict[str, Any]:
         """Prepare auto-compaction (astream() streams the resume afterward).
 
-        1. Generate summary
-        2. Clear all messages
-        3. Build an internal resume prompt with summary
+        1. Flush full messages to RAG
+        2. Generate summary
+        3. Clear all messages
+        4. Build an internal resume prompt with summary
         """
         from .agent import _create_human_message
 
@@ -532,14 +568,14 @@ class CompactionManager:
 
         logger.info(f"Thread {thread_id}: Auto-compact starting ({msg_count_before} messages)")
 
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
         try:
             agent._flush_memories_before_trim(user_id, thread_id, messages)
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
+
+        summary = await self._generate_summary(thread_id, user_id)
+        if not summary:
+            return {"success": False, "reason": "Failed to generate summary"}
 
         cleared = await self._clear_and_reset(
             thread_id,
@@ -613,7 +649,7 @@ class CompactionManager:
         thread_id: str,
         user_id: str,
     ) -> Dict[str, Any]:
-        """Sync auto-compact: summarize -> clear -> store pending summary."""
+        """Sync auto-compact: flush -> summarize -> clear -> store pending summary."""
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
@@ -626,14 +662,14 @@ class CompactionManager:
 
         logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
 
-        summary = self._generate_summary_sync(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
         try:
             agent._flush_memories_before_trim(user_id, thread_id, messages)
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
+
+        summary = self._generate_summary_sync(thread_id, user_id)
+        if not summary:
+            return {"success": False, "reason": "Failed to generate summary"}
 
         cleared = self._clear_and_reset_sync(
             thread_id,
@@ -668,15 +704,34 @@ class CompactionManager:
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_graph_for_user(user_id, thread_id=thread_id)
 
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="nymeria-compact-summary",
+        )
         try:
-            result = graph.invoke(self._summary_input(), config=config)
+            future = executor.submit(
+                graph.invoke,
+                self._summary_input(),
+                config=config,
+            )
+            result = future.result(timeout=COMPACTION_TIMEOUT_SECONDS)
             return self._extract_summary_from_result(result.get("messages", []))
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "Thread %s: Sync summary generation timed out after %s seconds",
+                thread_id,
+                COMPACTION_TIMEOUT_SECONDS,
+            )
+            future.cancel()
+            return None
         except Exception as e:
             logger.error(
                 f"Thread {thread_id}: Sync summary generation failed: {e}",
                 exc_info=True,
             )
             return None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _clear_and_reset_sync(
         self,
@@ -730,6 +785,514 @@ class CompactionManager:
 
         agent._token_tracker.reset_after_compact(thread_id, 0)
         return True
+
+    # ------------------------------------------------------------------
+    # Overflow recovery
+    # ------------------------------------------------------------------
+
+    async def rewind_and_compact(
+        self,
+        thread_id: str,
+        user_id: str = "default",
+    ) -> Dict[str, Any]:
+        """Recover from provider context overflow by rewinding before compaction.
+
+        The current oversized state is flushed to RAG first. We then fork the
+        thread from an older checkpoint so summary generation can run against a
+        smaller active history, and finally use the normal compact_now() path.
+        """
+        agent = self._agent
+        graph = agent._default_async_graph
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+        try:
+            state = await graph.aget_state(config)
+            messages = state.values.get("messages", [])
+            msg_count_before = len(messages)
+            if not messages:
+                return {"success": False, "reason": "No messages to compact"}
+
+            logger.warning(
+                "Thread %s: Context overflow recovery starting (%s messages)",
+                thread_id,
+                msg_count_before,
+            )
+            self._flush_recovery_messages(user_id, thread_id, messages)
+
+            rewound = await self._rewind_to_older_checkpoint(
+                graph,
+                config,
+                thread_id,
+                user_id,
+                messages,
+            )
+            if not rewound:
+                logger.warning(
+                    "Thread %s: No suitable rewind checkpoint; trimming oldest messages",
+                    thread_id,
+                )
+                trimmed = await self._direct_trim_for_recovery(
+                    graph,
+                    config,
+                    thread_id,
+                )
+                if not trimmed:
+                    return {
+                        "success": False,
+                        "reason": "No suitable checkpoint and direct trim failed",
+                    }
+
+            result = await self.compact_now(thread_id, user_id)
+            if result.get("success"):
+                result["overflow_recovery"] = True
+                result["rewound"] = bool(rewound)
+                result["messages_before_overflow_recovery"] = msg_count_before
+                return result
+
+            if rewound:
+                logger.warning(
+                    "Thread %s: Compaction after rewind failed (%s); trying direct trim",
+                    thread_id,
+                    result.get("reason", result),
+                )
+                trimmed = await self._direct_trim_for_recovery(
+                    graph,
+                    config,
+                    thread_id,
+                )
+                if trimmed:
+                    result = await self.compact_now(thread_id, user_id)
+                    if result.get("success"):
+                        result["overflow_recovery"] = True
+                        result["rewound"] = True
+                        result["direct_trim_after_rewind"] = True
+                        result["messages_before_overflow_recovery"] = msg_count_before
+                        return result
+
+            return result
+        except Exception as e:
+            logger.error(
+                "Thread %s: Context overflow recovery failed: %s",
+                thread_id,
+                e,
+                exc_info=True,
+            )
+            return {"success": False, "reason": str(e)}
+
+    def rewind_and_compact_sync(
+        self,
+        thread_id: str,
+        user_id: str = "default",
+    ) -> Dict[str, Any]:
+        """Sync version of rewind_and_compact() for chat()/CLI callers."""
+        agent = self._agent
+        graph = agent._default_graph
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+        try:
+            state = graph.get_state(config)
+            messages = state.values.get("messages", [])
+            msg_count_before = len(messages)
+            if not messages:
+                return {"success": False, "reason": "No messages to compact"}
+
+            logger.warning(
+                "Thread %s: Sync context overflow recovery starting (%s messages)",
+                thread_id,
+                msg_count_before,
+            )
+            self._flush_recovery_messages(user_id, thread_id, messages)
+
+            rewound = self._rewind_to_older_checkpoint_sync(
+                graph,
+                config,
+                thread_id,
+                user_id,
+                messages,
+            )
+            if not rewound:
+                logger.warning(
+                    "Thread %s: No suitable sync rewind checkpoint; trimming oldest messages",
+                    thread_id,
+                )
+                trimmed = self._direct_trim_for_recovery_sync(
+                    graph,
+                    config,
+                    thread_id,
+                )
+                if not trimmed:
+                    return {
+                        "success": False,
+                        "reason": "No suitable checkpoint and direct trim failed",
+                    }
+
+            result = self._do_compact_sync(thread_id, user_id)
+            if result.get("success"):
+                result["overflow_recovery"] = True
+                result["rewound"] = bool(rewound)
+                result["messages_before_overflow_recovery"] = msg_count_before
+                return result
+
+            if rewound:
+                logger.warning(
+                    "Thread %s: Sync compaction after rewind failed (%s); trying direct trim",
+                    thread_id,
+                    result.get("reason", result),
+                )
+                trimmed = self._direct_trim_for_recovery_sync(
+                    graph,
+                    config,
+                    thread_id,
+                )
+                if trimmed:
+                    result = self._do_compact_sync(thread_id, user_id)
+                    if result.get("success"):
+                        result["overflow_recovery"] = True
+                        result["rewound"] = True
+                        result["direct_trim_after_rewind"] = True
+                        result["messages_before_overflow_recovery"] = msg_count_before
+                        return result
+
+            return result
+        except Exception as e:
+            logger.error(
+                "Thread %s: Sync context overflow recovery failed: %s",
+                thread_id,
+                e,
+                exc_info=True,
+            )
+            return {"success": False, "reason": str(e)}
+
+    def _flush_recovery_messages(
+        self,
+        user_id: str,
+        thread_id: str,
+        messages: List[Any],
+    ) -> None:
+        """Flush the current oversized state to RAG before any rewind/trim."""
+        try:
+            self._agent._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning(
+                "Thread %s: Overflow recovery RAG flush failed: %s",
+                thread_id,
+                e,
+            )
+
+    async def _rewind_to_older_checkpoint(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        thread_id: str,
+        user_id: str,
+        current_messages: List[Any],
+    ) -> bool:
+        rewind_state = await self._find_rewind_state(graph, config, current_messages)
+        if rewind_state is None:
+            return False
+        return await self._fork_from_rewind_state(
+            graph,
+            rewind_state,
+            thread_id,
+            user_id,
+            current_messages,
+        )
+
+    def _rewind_to_older_checkpoint_sync(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        thread_id: str,
+        user_id: str,
+        current_messages: List[Any],
+    ) -> bool:
+        rewind_state = self._find_rewind_state_sync(graph, config, current_messages)
+        if rewind_state is None:
+            return False
+        return self._fork_from_rewind_state_sync(
+            graph,
+            rewind_state,
+            thread_id,
+            user_id,
+            current_messages,
+        )
+
+    async def _find_rewind_state(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        current_messages: List[Any],
+    ) -> Optional[Any]:
+        min_messages = self._agent.settings.compact_keep_messages
+        current_turns = self._count_user_turns(current_messages)
+        target_turns = max(0, current_turns - 4)
+        fallback_state: Optional[Any] = None
+
+        try:
+            async for state in graph.aget_state_history(config, limit=50):
+                messages = self._state_messages(state)
+                checkpoint_id = self._state_checkpoint_id(state)
+                if not checkpoint_id or not messages:
+                    continue
+                if len(messages) >= len(current_messages):
+                    continue
+                if len(messages) < min_messages:
+                    continue
+                if fallback_state is None:
+                    fallback_state = state
+                if self._count_user_turns(messages) <= target_turns:
+                    return state
+        except Exception as e:
+            logger.warning("Failed to scan async checkpoint history: %s", e)
+
+        return fallback_state
+
+    def _find_rewind_state_sync(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        current_messages: List[Any],
+    ) -> Optional[Any]:
+        min_messages = self._agent.settings.compact_keep_messages
+        current_turns = self._count_user_turns(current_messages)
+        target_turns = max(0, current_turns - 4)
+        fallback_state: Optional[Any] = None
+
+        try:
+            for state in graph.get_state_history(config, limit=50):
+                messages = self._state_messages(state)
+                checkpoint_id = self._state_checkpoint_id(state)
+                if not checkpoint_id or not messages:
+                    continue
+                if len(messages) >= len(current_messages):
+                    continue
+                if len(messages) < min_messages:
+                    continue
+                if fallback_state is None:
+                    fallback_state = state
+                if self._count_user_turns(messages) <= target_turns:
+                    return state
+        except Exception as e:
+            logger.warning("Failed to scan sync checkpoint history: %s", e)
+
+        return fallback_state
+
+    async def _fork_from_rewind_state(
+        self,
+        graph: Any,
+        rewind_state: Any,
+        thread_id: str,
+        user_id: str,
+        current_messages: List[Any],
+    ) -> bool:
+        checkpoint_id = self._state_checkpoint_id(rewind_state)
+        if checkpoint_id is None:
+            return False
+        rewind_messages = self._state_messages(rewind_state)
+        fork_config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+        marker = self._create_rewind_marker(
+            messages_before=len(current_messages),
+            messages_after=len(rewind_messages),
+        )
+        await graph.aupdate_state(fork_config, {"messages": [marker]})
+        logger.warning(
+            "Thread %s: Rewound context from %s to %s messages at checkpoint %s",
+            thread_id,
+            len(current_messages),
+            len(rewind_messages),
+            checkpoint_id,
+        )
+        return True
+
+    def _fork_from_rewind_state_sync(
+        self,
+        graph: Any,
+        rewind_state: Any,
+        thread_id: str,
+        user_id: str,
+        current_messages: List[Any],
+    ) -> bool:
+        checkpoint_id = self._state_checkpoint_id(rewind_state)
+        if checkpoint_id is None:
+            return False
+        rewind_messages = self._state_messages(rewind_state)
+        fork_config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+        marker = self._create_rewind_marker(
+            messages_before=len(current_messages),
+            messages_after=len(rewind_messages),
+        )
+        graph.update_state(fork_config, {"messages": [marker]})
+        logger.warning(
+            "Thread %s: Sync rewound context from %s to %s messages at checkpoint %s",
+            thread_id,
+            len(current_messages),
+            len(rewind_messages),
+            checkpoint_id,
+        )
+        return True
+
+    async def _direct_trim_for_recovery(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        thread_id: str,
+    ) -> bool:
+        state = await graph.aget_state(config)
+        messages = state.values.get("messages", [])
+        remove_count = self._recovery_prefix_remove_count(thread_id, messages)
+        if remove_count <= 0:
+            return False
+
+        remove_commands = [
+            RemoveMessage(id=msg.id)
+            for msg in messages[:remove_count]
+            if getattr(msg, "id", None)
+        ]
+        if not remove_commands:
+            return False
+
+        await graph.aupdate_state(config, {"messages": remove_commands})
+        logger.warning(
+            "Thread %s: Direct overflow trim removed %s oldest messages",
+            thread_id,
+            len(remove_commands),
+        )
+        return True
+
+    def _direct_trim_for_recovery_sync(
+        self,
+        graph: Any,
+        config: Dict[str, Any],
+        thread_id: str,
+    ) -> bool:
+        state = graph.get_state(config)
+        messages = state.values.get("messages", [])
+        remove_count = self._recovery_prefix_remove_count(thread_id, messages)
+        if remove_count <= 0:
+            return False
+
+        remove_commands = [
+            RemoveMessage(id=msg.id)
+            for msg in messages[:remove_count]
+            if getattr(msg, "id", None)
+        ]
+        if not remove_commands:
+            return False
+
+        graph.update_state(config, {"messages": remove_commands})
+        logger.warning(
+            "Thread %s: Sync direct overflow trim removed %s oldest messages",
+            thread_id,
+            len(remove_commands),
+        )
+        return True
+
+    def _recovery_prefix_remove_count(
+        self,
+        thread_id: str,
+        messages: List[Any],
+    ) -> int:
+        min_messages = self._agent.settings.compact_keep_messages
+        if len(messages) <= min_messages:
+            return 0
+
+        max_prefix = len(messages) - min_messages
+        boundaries = [
+            idx
+            for idx in range(1, max_prefix + 1)
+            if idx == max_prefix or isinstance(messages[idx], HumanMessage)
+        ]
+        if not boundaries:
+            boundaries = list(range(1, max_prefix + 1))
+
+        target_tokens = self._recovery_target_tokens(thread_id)
+        current_tokens = self._estimate_messages_tokens(messages)
+        if current_tokens <= target_tokens:
+            return boundaries[0]
+
+        for idx in boundaries:
+            if self._estimate_messages_tokens(messages[idx:]) <= target_tokens:
+                return idx
+
+        return boundaries[-1]
+
+    def _recovery_target_tokens(self, thread_id: str) -> int:
+        llm_config = self._agent._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
+        ratio = min(float(self._agent.settings.compact_threshold), 0.5)
+        return max(1, int(model_limit * ratio))
+
+    @staticmethod
+    def _estimate_messages_tokens(messages: List[Any]) -> int:
+        total = 0
+        for msg in messages:
+            content = getattr(msg, "content", "")
+            total += estimate_tokens(content if isinstance(content, str) else str(content))
+        return total
+
+    @staticmethod
+    def _count_user_turns(messages: List[Any]) -> int:
+        turns = 0
+        for msg in messages:
+            if not isinstance(msg, HumanMessage):
+                continue
+            if getattr(msg, "additional_kwargs", {}).get("internal"):
+                continue
+            turns += 1
+        return turns
+
+    @staticmethod
+    def _state_messages(state: Any) -> List[Any]:
+        values = getattr(state, "values", {}) or {}
+        messages = values.get("messages", [])
+        return messages if isinstance(messages, list) else []
+
+    @staticmethod
+    def _state_checkpoint_id(state: Any) -> Optional[str]:
+        config = getattr(state, "config", None)
+        if not isinstance(config, dict):
+            return None
+        configurable = config.get("configurable")
+        if not isinstance(configurable, dict):
+            return None
+        checkpoint_id = configurable.get("checkpoint_id")
+        return str(checkpoint_id) if checkpoint_id else None
+
+    @staticmethod
+    def _create_rewind_marker(
+        *,
+        messages_before: int,
+        messages_after: int,
+    ) -> HumanMessage:
+        from .agent import _create_human_message
+
+        marker = _create_human_message(
+            "Context overflow recovery: the active thread state was rewound "
+            "to an earlier checkpoint before compaction because the full "
+            "context exceeded the model window. Newer messages were flushed "
+            "to conversation memory before this rewind.",
+            internal=True,
+            internal_type="context_rewind",
+        )
+        marker.id = str(_uuid.uuid4())
+        marker.additional_kwargs.update({
+            "messages_before_rewind": messages_before,
+            "messages_after_rewind": messages_after,
+            "timestamp": utc_now().isoformat(),
+        })
+        return marker
 
     # ------------------------------------------------------------------
     # Notepad helpers
