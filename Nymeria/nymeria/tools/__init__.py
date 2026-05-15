@@ -1100,7 +1100,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + GOOGLE_DOCS_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
-    + SLASH_COMMAND_TOOLS
     + TOOL_SEARCH_TOOLS
     + SEARCH_SKILLS_TOOLS
     + SEARCH_MCP_TOOLS
@@ -1246,6 +1245,8 @@ ALL_TOOLS = [
     nym_todo_list,
     # Unified notification tool
     notify,
+    # Core command-service bridge
+    slash_command,
 ]
 
 __all__ = [

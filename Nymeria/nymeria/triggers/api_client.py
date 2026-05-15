@@ -662,6 +662,37 @@ class NymeriaAPIClient:
         """Remove a user-owned Telegram bot."""
         return await self._delete(f"/me/telegram-bots/{bot_id}", act_as=user_id)
 
+    # ── Commands ─────────────────────────────────────────────────────────
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: Optional[str] = None,
+        source: str = "user",
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Execute a backend slash command and return markdown output."""
+        return await self._post(
+            "/commands/execute",
+            json={"command": command, "thread_id": thread_id, "source": source},
+            act_as=user_id,
+        )
+
+    async def list_commands(
+        self,
+        *,
+        source: str = "user",
+        user_id: Optional[str] = None,
+    ) -> List[dict]:
+        """List registered slash commands for a caller source."""
+        data = await self._get(
+            "/commands",
+            params={"source": source},
+            act_as=user_id,
+        )
+        return data if isinstance(data, list) else data.get("commands", [])
+
     # ── Settings ──────────────────────────────────────────────────────────
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:

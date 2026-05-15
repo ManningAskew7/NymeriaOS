@@ -1,3 +1,3 @@
-import { TriggersApi } from './triggers';
+import { CommandsApi } from './commands';
 
-export class ReportingApi extends TriggersApi {}
+export class ReportingApi extends CommandsApi {}

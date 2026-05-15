@@ -95,6 +95,21 @@ function createChatStore() {
       return id;
     },
 
+    addCommandResult(commandInput: string, content: string, success: boolean): string {
+      const id = generateId();
+      const message: Message = {
+        id,
+        role: 'system',
+        kind: 'command_result',
+        commandInput,
+        content,
+        timestamp: new Date(),
+        status: success ? 'complete' : 'error'
+      };
+      messages = [...messages, message];
+      return id;
+    },
+
     addAutonomousPromptMessage(prompt: string, source: string): string {
       const id = generateId();
       const message: Message = {

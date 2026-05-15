@@ -24,6 +24,7 @@ from ..api.routers.accounts import create_accounts_router
 from ..api.routers.autonomous_stream import create_autonomous_stream_router
 from ..api.routers.chat import create_chat_router
 from ..api.routers.chat_apps import create_chat_apps_router
+from ..api.routers.commands import create_commands_router
 from ..api.routers.credentials import create_credentials_router
 from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
@@ -628,6 +629,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(create_todos_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(create_commands_router(verify_api_key))
     app.include_router(create_autonomous_stream_router(get_agent, get_settings))
     app.include_router(create_custom_tools_router(require_admin_user, get_agent))
     app.include_router(

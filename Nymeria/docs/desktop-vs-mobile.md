@@ -97,13 +97,14 @@ Both apps now use the same modular API service layout:
 | `services/api.svelte.ts` | EXACT_MATCH | Compatibility entrypoint; re-exports from `services/api/index.ts`. |
 | `services/api/index.ts` | EXACT_MATCH | Constructs the concrete `NymeriaAPI` facade from the domain class chain. |
 | `services/api/credentials.ts` | EXACT_MATCH | Shared credential-vault API client. |
+| `services/api/commands.ts` | EXACT_MATCH | Shared slash-command execute/list API client used by chat input autocomplete. |
 | `services/api/*.ts` domain modules | KNOWN_DRIFT | Same module names and inheritance order, but the desktop API surface is still a superset in a few administrative areas. |
 | `stores/credentials.svelte.ts` | EXACT_MATCH | Shared credential-vault state and actions. |
 | `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 
 The shared module chain is:
-`base -> system -> accounts -> credentials -> chat -> threads -> todos -> tools -> mcp -> thread-config -> skills -> triggers -> reporting`.
+`base -> system -> accounts -> credentials -> chat -> threads -> todos -> tools -> mcp -> thread-config -> skills -> triggers -> commands -> reporting`.
 
 When adding or changing an endpoint wrapper, edit the relevant domain module in
 both apps instead of adding code to `api.svelte.ts`. Compare the two module
