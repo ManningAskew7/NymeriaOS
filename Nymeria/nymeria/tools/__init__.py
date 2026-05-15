@@ -1226,6 +1226,21 @@ from .chat_platform_service_integrations import (
     zulip_delete_message,
     CHAT_PLATFORM_SERVICE_TOOLS,
 )
+from .microsoft_graph_service_integrations import (
+    microsoft_todo_list_task_lists,
+    microsoft_todo_list_tasks,
+    microsoft_todo_create_task,
+    microsoft_todo_update_task,
+    microsoft_onedrive_list_children,
+    microsoft_onedrive_get_item,
+    microsoft_onedrive_search,
+    microsoft_onedrive_upload_text_file,
+    microsoft_teams_list_joined_teams,
+    microsoft_teams_list_channels,
+    microsoft_teams_list_channel_messages,
+    microsoft_teams_send_channel_message,
+    MICROSOFT_GRAPH_SERVICE_TOOLS,
+)
 from ..core.self_agent import SELF_AGENT_TOOLS
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
@@ -1304,6 +1319,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + LEAD_ENRICHMENT_SERVICE_TOOLS
     + DATA_TABLE_SERVICE_TOOLS
     + CHAT_PLATFORM_SERVICE_TOOLS
+    + MICROSOFT_GRAPH_SERVICE_TOOLS
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
@@ -2483,6 +2499,19 @@ __all__ = [
     "zulip_send_message",
     "zulip_delete_message",
     "CHAT_PLATFORM_SERVICE_TOOLS",
+    "microsoft_todo_list_task_lists",
+    "microsoft_todo_list_tasks",
+    "microsoft_todo_create_task",
+    "microsoft_todo_update_task",
+    "microsoft_onedrive_list_children",
+    "microsoft_onedrive_get_item",
+    "microsoft_onedrive_search",
+    "microsoft_onedrive_upload_text_file",
+    "microsoft_teams_list_joined_teams",
+    "microsoft_teams_list_channels",
+    "microsoft_teams_list_channel_messages",
+    "microsoft_teams_send_channel_message",
+    "MICROSOFT_GRAPH_SERVICE_TOOLS",
     "web_search",
     "consult",
     "CONSULT_TOOLS",

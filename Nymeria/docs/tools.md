@@ -1609,7 +1609,8 @@ connections can also be reused for AWS service tools. Business-service credentia
 `unleashed.api_id` plus `unleashed.api_key`, `quickbooks.access_token` plus
 `quickbooks.realm_id`, and `xero.access_token` plus `xero.tenant_id`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
-`todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
+`todoist.api_key`, `trello.api_key`, `trello.api_token`, and
+`microsoft_graph.access_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
 `yourls.signature` or `yourls.username` plus `yourls.password`. Work-tracking
 credentials use `asana.access_token` and `linear.api_key`. IT support credentials
@@ -2252,6 +2253,16 @@ Credential providers and fallback env vars:
 - Matrix: provider `matrix`, fields `access_token`, `accessToken`, `token`, or `value`; env fallback `MATRIX_ACCESS_TOKEN`. Save `homeserverUrl` / `base_url` or set `MATRIX_BASE_URL`; the tool appends `/_matrix/client/v3` when needed.
 - Rocket.Chat: provider `rocketchat`, fields `auth_token`, `authKey`, `token`, or `value`, plus `user_id` / `userId`; env fallbacks `ROCKETCHAT_AUTH_TOKEN`, `ROCKETCHAT_USER_ID`, and `ROCKETCHAT_BASE_URL`.
 - Zulip: provider `zulip`, fields `api_key`, `apiKey`, `token`, or `value`, plus `email`; env fallbacks `ZULIP_API_KEY`, `ZULIP_EMAIL`, and `ZULIP_BASE_URL`.
+
+### Microsoft Graph Service Tools
+
+This batch includes:
+- `microsoft_todo_list_task_lists()`, `microsoft_todo_list_tasks(list_id, ...)`, `microsoft_todo_create_task(list_id, title, ...)`, and `microsoft_todo_update_task(list_id, task_id, fields_json)` for Microsoft To Do. Listing is SAFE; create/update operations are MODERATE because they change task state.
+- `microsoft_onedrive_list_children(...)`, `microsoft_onedrive_get_item(...)`, `microsoft_onedrive_search(query, ...)`, and `microsoft_onedrive_upload_text_file(path, content, ...)` for OneDrive files. Metadata/search reads are SAFE; upload is MODERATE because it writes files.
+- `microsoft_teams_list_joined_teams(...)`, `microsoft_teams_list_channels(team_id, ...)`, `microsoft_teams_list_channel_messages(team_id, channel_id, ...)`, and `microsoft_teams_send_channel_message(team_id, channel_id, content, ...)` for Teams channel workflows. Listing reads are SAFE; sending is MODERATE because it posts a message.
+
+Credential providers and fallback env vars:
+- Microsoft Graph: provider `microsoft_graph`, fields `access_token`, `accessToken`, `token`, `bearer_token`, or `value`; env fallback `MICROSOFT_GRAPH_ACCESS_TOKEN`. Use `base_url` / `baseUrl` / `url` or `MICROSOFT_GRAPH_BASE_URL` for non-default Graph API roots.
 
 ### tool_enable
 
