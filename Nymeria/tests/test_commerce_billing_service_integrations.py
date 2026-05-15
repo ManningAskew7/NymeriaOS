@@ -336,6 +336,154 @@ def test_unleashed_list_stock_on_hand_signs_query(monkeypatch):
     assert captured["headers"]["api-auth-signature"] == expected_signature
 
 
+def test_quickbooks_query_uses_env_token_realm_and_sandbox(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("QUICKBOOKS_ACCESS_TOKEN", "qb-token")
+    monkeypatch.setenv("QUICKBOOKS_REALM_ID", "realm-1")
+    monkeypatch.setenv("QUICKBOOKS_ENVIRONMENT", "sandbox")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"QueryResponse": {"Customer": [{"Id": "1", "DisplayName": "Ada"}]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.quickbooks_query.func(query="SELECT * FROM Customer", limit=3))
+
+    assert result["Customer"][0]["DisplayName"] == "Ada"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://sandbox-quickbooks.api.intuit.com/v3/company/realm-1/query"
+    assert captured["params"]["query"] == "SELECT * FROM Customer MAXRESULTS 3 STARTPOSITION 1"
+    assert captured["params"]["minorversion"] == "75"
+    assert captured["headers"]["Authorization"] == "Bearer qb-token"
+
+
+def test_quickbooks_create_invoice_uses_vault_token_and_line_items(tmp_path, monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="QuickBooks",
+        provider="quickbooks",
+        kind="api_key",
+        allowed_targets=["native_tool:quickbooks_create_invoice"],
+        secret_fields={
+            "accessToken": "qb-token",
+            "realmId": "realm-1",
+            "base_url": "https://quickbooks.example",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"Invoice": {"Id": "inv-1", "CustomerRef": json_body["CustomerRef"]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.quickbooks_create_invoice.func(
+            customer_id="cust-1",
+            line_items_json='[{"description":"Consulting","quantity":2,"unit_price":100,"item_id":"1"}]',
+            due_date="2026-06-01",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["Id"] == "inv-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://quickbooks.example/v3/company/realm-1/invoice"
+    assert captured["headers"]["Authorization"] == "Bearer qb-token"
+    assert captured["json_body"]["CustomerRef"] == {"value": "cust-1"}
+    assert captured["json_body"]["DueDate"] == "2026-06-01"
+    line = captured["json_body"]["Line"][0]
+    assert line["Amount"] == 200.0
+    assert line["SalesItemLineDetail"]["ItemRef"] == {"value": "1"}
+
+
+def test_xero_list_records_uses_env_token_and_tenant(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("XERO_ACCESS_TOKEN", "xero-token")
+    monkeypatch.setenv("XERO_TENANT_ID", "tenant-1")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"Contacts": [{"ContactID": "contact-1", "Name": "Ada"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.xero_list_records.func(resource="contacts", where='Name=="Ada"', page=2))
+
+    assert result[0]["Name"] == "Ada"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://api.xero.com/api.xro/2.0/Contacts"
+    assert captured["params"] == {"where": 'Name=="Ada"', "order": "", "page": 2}
+    assert captured["headers"]["Authorization"] == "Bearer xero-token"
+    assert captured["headers"]["Xero-tenant-id"] == "tenant-1"
+
+
+def test_xero_create_contact_uses_vault_token_and_tenant(tmp_path, monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Xero",
+        provider="xero",
+        kind="api_key",
+        allowed_targets=["native_tool:xero_create_contact"],
+        secret_fields={
+            "access_token": "xero-token",
+            "tenant_id": "tenant-1",
+            "base_url": "https://xero.example/api.xro/2.0",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"Contacts": [{"ContactID": "contact-1", "Name": "Ada"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.xero_create_contact.func(
+            name="Ada",
+            email="ada@example.com",
+            fields_json='{"ContactStatus":"ACTIVE"}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result[0]["ContactID"] == "contact-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://xero.example/api.xro/2.0/Contacts"
+    assert captured["headers"]["Authorization"] == "Bearer xero-token"
+    assert captured["headers"]["Xero-tenant-id"] == "tenant-1"
+    assert captured["json_body"] == {
+        "Contacts": [
+            {
+                "ContactStatus": "ACTIVE",
+                "Name": "Ada",
+                "EmailAddress": "ada@example.com",
+            }
+        ]
+    }
+
+
 def test_chargebee_create_customer_uses_vault_site_and_key(tmp_path, monkeypatch):
     from nymeria.tools import commerce_billing_service_integrations as tools
 
@@ -494,6 +642,10 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     monkeypatch.setenv("WOOCOMMERCE_URL", "https://store.example")
     monkeypatch.setenv("CHARGEBEE_SITE", "testsite")
     monkeypatch.setenv("MAGENTO_BASE_URL", "https://store.example")
+    monkeypatch.setenv("QUICKBOOKS_REALM_ID", "realm-1")
+    monkeypatch.setenv("XERO_TENANT_ID", "tenant-1")
+    monkeypatch.delenv("QUICKBOOKS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("XERO_ACCESS_TOKEN", raising=False)
 
     stripe_result = tools.stripe_get_balance.func()
     shopify_result = tools.shopify_list_records.func(resource="products")
@@ -504,6 +656,8 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     tapfiliate_result = tools.tapfiliate_list_affiliates.func()
     magento_result = tools.magento_list_records.func(resource="customers")
     unleashed_result = tools.unleashed_list_sales_orders.func()
+    quickbooks_result = tools.quickbooks_query.func(query="SELECT * FROM Customer")
+    xero_result = tools.xero_list_records.func(resource="contacts")
 
     assert 'provider "stripe"' in stripe_result
     assert "STRIPE_SECRET_KEY" in stripe_result
@@ -530,6 +684,10 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     assert "MAGENTO_ACCESS_TOKEN" in magento_result
     assert "No Unleashed credential found" in unleashed_result
     assert "UNLEASHED_API_ID + UNLEASHED_API_KEY" in unleashed_result
+    assert 'provider "quickbooks"' in quickbooks_result
+    assert "QUICKBOOKS_ACCESS_TOKEN" in quickbooks_result
+    assert 'provider "xero"' in xero_result
+    assert "XERO_ACCESS_TOKEN" in xero_result
 
 
 def test_commerce_billing_tools_are_registered_with_metadata():
@@ -564,6 +722,12 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "unleashed_list_sales_orders",
         "unleashed_list_stock_on_hand",
         "unleashed_get_stock_on_hand",
+        "quickbooks_query",
+        "quickbooks_list_records",
+        "quickbooks_get_record",
+        "xero_list_tenants",
+        "xero_list_records",
+        "xero_get_record",
     ]
     moderate_names = [
         "stripe_create_customer",
@@ -593,6 +757,13 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "magento_create_invoice",
         "magento_cancel_order",
         "magento_ship_order",
+        "quickbooks_create_customer",
+        "quickbooks_update_customer",
+        "quickbooks_create_invoice",
+        "xero_create_contact",
+        "xero_update_contact",
+        "xero_create_invoice",
+        "xero_update_invoice",
     ]
 
     for name in safe_names:
@@ -615,11 +786,13 @@ def test_commerce_billing_tool_schemas_hide_runtime_config():
         chargebee_create_customer,
         magento_create_product,
         paddle_create_coupon,
+        quickbooks_create_invoice,
         shopify_list_records,
         stripe_create_customer,
         tapfiliate_create_affiliate,
         unleashed_list_sales_orders,
         woocommerce_update_record,
+        xero_create_invoice,
     )
 
     assert "config" not in stripe_create_customer.args_schema.model_json_schema()["properties"]
@@ -627,6 +800,8 @@ def test_commerce_billing_tool_schemas_hide_runtime_config():
     assert "config" not in woocommerce_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in chargebee_create_customer.args_schema.model_json_schema()["properties"]
     assert "config" not in paddle_create_coupon.args_schema.model_json_schema()["properties"]
+    assert "config" not in quickbooks_create_invoice.args_schema.model_json_schema()["properties"]
     assert "config" not in tapfiliate_create_affiliate.args_schema.model_json_schema()["properties"]
     assert "config" not in magento_create_product.args_schema.model_json_schema()["properties"]
     assert "config" not in unleashed_list_sales_orders.args_schema.model_json_schema()["properties"]
+    assert "config" not in xero_create_invoice.args_schema.model_json_schema()["properties"]

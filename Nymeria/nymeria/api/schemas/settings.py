@@ -356,6 +356,14 @@ class ServerSettingsUpdate(BaseModel):
     unleashed_api_id: Optional[str] = None
     unleashed_api_key: Optional[str] = None
     unleashed_base_url: Optional[str] = None
+    quickbooks_access_token: Optional[str] = None
+    quickbooks_realm_id: Optional[str] = None
+    quickbooks_environment: Optional[str] = None
+    quickbooks_base_url: Optional[str] = None
+    xero_access_token: Optional[str] = None
+    xero_tenant_id: Optional[str] = None
+    xero_base_url: Optional[str] = None
+    xero_connections_url: Optional[str] = None
     pushbullet_access_token: Optional[str] = None
     pushbullet_base_url: Optional[str] = None
     pushcut_api_key: Optional[str] = None
