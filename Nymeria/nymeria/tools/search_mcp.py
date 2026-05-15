@@ -334,6 +334,13 @@ def install_mcp_server(
     """Compatibility wrapper for installing one MCP server.
 
     Prefer ``manage_mcp(action="install", ...)`` for new agent-facing flows.
+
+    Returns:
+        Same as manage_mcp(action="install"). Human-readable summary on
+        success; may trigger "[Tool reload queued - STOP NOW]" and
+        graph force-end when new tools are loaded. JSON
+        {requires_confirmation, plan} when unconfirmed.
+        Errors: "[error] ...".
     """
     return _install_mcp_server_impl(
         source=source,
@@ -371,8 +378,22 @@ def mcp_manage(
         name: Optional server display name, or server id/name for inspect.
         confirmed: Required for higher-risk installs.
         config_values: Required config values for install.
-        ttl: TTL for discovered tools enabled on this thread.
+        ttl: TTL for discovered tools enabled on this thread. Format:
+            Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
         auto_enable_thread: Enable discovered server tools on this thread.
+
+    Returns:
+        search: JSON {count, results: [{id, name, description, source,
+        install_hint}]}.
+        preview: JSON {server: {id, name, description, transport}, plan}.
+        install: human-readable summary with server id, discovered tools,
+        and thread binding result. When new tools are loaded, includes
+        "[Tool reload queued - STOP NOW]" and the graph is force-ended
+        for rebuild — do not respond after this. JSON
+        {requires_confirmation, plan} when confirmed=False.
+        inspect: JSON {count, servers: [{id, name, enabled, transport,
+        discovered_tools, missing_config}]}.
+        Errors: JSON {error: "..."}.
     """
     action_key = (action or "").strip().lower()
     if action_key == "search":

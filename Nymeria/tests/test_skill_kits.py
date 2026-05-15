@@ -194,6 +194,7 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
         enable_result = tool_enable.func(
             action="enable",
             tools=["sticky_note"],
+            ttl="4w",
             tool_call_id="call-enable",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
@@ -205,6 +206,33 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
     assert "[Thread Tool Status]" in status_result
     assert isinstance(enable_result, Command)
     assert "sticky_note" in agent.thread_config_manager.get_config("thread-a").temporary_tools
+    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
+
+
+def test_tool_enable_requires_ttl_and_accepts_flexible_ttl(tmp_path: Path):
+    agent = _FakeAgent(tmp_path)
+    set_current_agent(agent)
+    try:
+        enable_result = tool_enable.func(
+            action="enable",
+            tools=["hello_test"],
+            tool_call_id="call-enable",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+        enable_with_ttl = tool_enable.func(
+            action="enable",
+            tools=["hello_test"],
+            ttl="4w",
+            tool_call_id="call-enable-ttl",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(enable_result, str)
+    assert "ttl is required for enable" in enable_result
+    assert isinstance(enable_with_ttl, Command)
+    assert "hello_test" in agent.thread_config_manager.get_config("thread-a").temporary_tools
     assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
 
 

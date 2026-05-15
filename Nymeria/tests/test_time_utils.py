@@ -1,0 +1,86 @@
+"""Tests for shared time parsing helpers."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from nymeria.core.time_utils import parse_future_scheduled_time, parse_scheduled_time, parse_tool_ttl
+from nymeria.core.todo_constants import calculate_next_recurrence_time
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("30m", ("30m", 30 * 60)),
+        ("2h", ("2h", 2 * 3600)),
+        ("7d", ("7d", 7 * 86400)),
+        ("4w", ("4w", 4 * 7 * 86400)),
+        ("never", ("never", None)),
+        ("permanent", ("permanent", None)),
+    ],
+)
+def test_parse_tool_ttl_accepts_supported_formats(raw: str, expected):
+    assert parse_tool_ttl(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["0h", "abc", "", "30s", "53w"])
+def test_parse_tool_ttl_rejects_invalid_values(raw: str):
+    with pytest.raises(ValueError):
+        parse_tool_ttl(raw)
+
+
+def test_parse_scheduled_time_accepts_arbitrary_relative_minutes_and_weeks():
+    before = datetime.now(timezone.utc)
+
+    scheduled = parse_scheduled_time("17m")
+    week = parse_scheduled_time("1w")
+
+    assert scheduled is not None
+    assert timedelta(minutes=16, seconds=59) <= scheduled - before <= timedelta(minutes=17, seconds=2)
+    assert week is not None
+    assert timedelta(days=6, hours=23, minutes=59) <= week - before <= timedelta(days=7, seconds=2)
+
+
+def test_parse_scheduled_time_accepts_iso_timezone():
+    scheduled = parse_scheduled_time("2026-05-16T12:34:00-04:00")
+
+    assert scheduled == datetime(2026, 5, 16, 16, 34, tzinfo=timezone.utc)
+
+
+def test_parse_future_scheduled_time_rejects_past_absolute_time():
+    with pytest.raises(ValueError, match="must be in the future"):
+        parse_future_scheduled_time(
+            "2026-05-15 09:00",
+            tz=timezone.utc,
+            now=datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_calculate_next_recurrence_time_preserves_schedule_anchor():
+    anchor = datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc)
+    completion_time = datetime(2026, 5, 15, 10, 3, tzinfo=timezone.utc)
+
+    assert calculate_next_recurrence_time("hourly", anchor, now=completion_time) == datetime(
+        2026,
+        5,
+        15,
+        11,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+
+def test_calculate_next_recurrence_time_skips_missed_intervals():
+    anchor = datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 15, 12, 5, tzinfo=timezone.utc)
+
+    assert calculate_next_recurrence_time("hourly", anchor, now=now) == datetime(
+        2026,
+        5,
+        15,
+        13,
+        0,
+        tzinfo=timezone.utc,
+    )

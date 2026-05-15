@@ -41,7 +41,8 @@ def file_read(
         max_lines: Maximum number of lines to read (optional, reads all if not specified)
 
     Returns:
-        File contents or error message
+        File contents as plain text. Truncated output ends with
+        "[Truncated after N lines]". Errors: "[Error]: <reason>".
     """
     logger.info(f"Reading file: {file_path}")
 
@@ -111,7 +112,9 @@ def file_write(
         attach: Send the written file to the user as a downloadable attachment (default False)
 
     Returns:
-        Success message or error message
+        "[Success]: Wrote N characters to <path>" (or "Appended").
+        If attach=True, includes "[attach:<path>]" tag for chat delivery.
+        Errors: "[Error]: <reason>".
     """
     logger.info(f"Writing to file: {file_path} (append={append})")
 

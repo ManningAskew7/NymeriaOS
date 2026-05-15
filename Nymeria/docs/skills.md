@@ -68,7 +68,7 @@ metadata:
 
 - `required_tools` must be exact Nymeria tool names. Categories, globs, and
   Anthropic-style `Bash(...)` patterns are not interpreted.
-- `tool_ttl` accepts `30m`, `2h`, `6h`, `24h`, or `permanent`; default is `2h`.
+- `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default is `2h`.
 - `allowed-tools` remains advisory/portable and never auto-binds tools.
 - Binding is strict. If any required tool is unknown, unloadable, or blocked
   by the admin-only gate, activation fails and no tool config is mutated.

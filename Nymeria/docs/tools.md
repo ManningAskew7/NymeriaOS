@@ -1445,8 +1445,9 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 - `todo_id` (`Optional[str]`): Omit to create a new TODO, provide the 8-character ID to update an existing one
 - `task` (`str`): Task description — **required** for create, optional for update
 - `scheduled_for` (`str`): When to execute — **required** for create, optional for update. Formats:
-  - Relative: `"30s"`, `"5m"`, `"1h"`, `"1d"` (seconds, minutes, hours, days)
+  - Relative: any positive seconds/minutes/hours/days/weeks duration, e.g. `"45s"`, `"17m"`, `"3h"`, `"2d"`, `"1w"`
   - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (user timezone)
+  - ISO with timezone: `"YYYY-MM-DDTHH:MM:SSZ"` or `"YYYY-MM-DDTHH:MM:SS-04:00"`
 - `status` (`Optional[str]`): `"pending"`, `"in_progress"`, or `"done"` (update only)
 - `notes` (`Optional[str]`): Add or update notes (max 1000 characters)
 - `recurrence` (`Optional[str]`): `"5min"`, `"10min"`, `"15min"`, `"30min"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`
@@ -1461,7 +1462,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Statuses:** `pending` (default), `in_progress`, `done`. Use `nym_todo(todo_id=..., status="done")` to complete a TODO.
 
-**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the `recurrence` pattern and the status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
+**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the prior scheduled fire time, not the later completion time, so a task scheduled hourly for `10:00` moves to `11:00` even if the agent marks it done at `10:03`. If Nymeria was offline long enough to miss intervals, it skips forward to the next future slot. The status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
 
 **Auto-purge:** Completed TODOs remain visible to `nym_todo_list(filter_status="done")` and `GET /todos?filter_status=done` until the ticker cleanup removes them from `data/todos/{user_id}.json`. The retention is controlled by `TODO_AUTO_ARCHIVE_DAYS` (default 7 days, range 1-30). There is no separate completed-TODO archive file; use activity/RAG history for historical outcome lookup after cleanup.
 
@@ -2278,7 +2279,7 @@ Enable, disable, or inspect current-thread tool bindings. This is normally
 available after the agent activates `Skill(name="self-improve")`.
 
 ```python
-tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str = "2h", force: bool = False)
+tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str | None = None, force: bool = False)
 ```
 
 **Actions:**
@@ -2291,10 +2292,10 @@ tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str =
 - `action` (`str`): One of: `enable`, `disable`, `list_categories`, `status`.
 - `tools` (`list[str]`): Specific tool names to enable or disable.
 - `category` (`str`): Category name to enable all tools in.
-- `ttl` (`str`): For `enable` only — how long to keep tools bound before lazy eviction. One of: `"30m"`, `"2h"` (default), `"6h"`, `"24h"`, `"permanent"`.
+- `ttl` (`str`): Required for `enable` only; ignored by other actions. Duration format: `Nm` (minutes), `Nh` (hours), `Nd` (days), `Nw` (weeks), or `"never"`/`"permanent"` for no expiry. Examples: `"30m"`, `"2h"`, `"7d"`, `"4w"`, `"never"`.
 - `force` (`bool`): For `disable` only — set `True` to allow disabling core tools. Default `False`.
 
-**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order — (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS — the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set — `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
+**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order — (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS — the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set — `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
 
 The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in ALL_TOOLS}`). Tools that live in `ALL_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. Note: the bucket is called `Already bound (default set)` — not "core" — to avoid conflating it with the `disable` guard's "core" protection, which uses the broader `ALL_TOOLS` list.
 
@@ -2317,6 +2318,9 @@ Successful installs reload MCP server tools, enable discovered
 `auto_enable_thread=true`, and queue a same-turn reload with
 `source="mcp_install"`. Installing MCP servers remains admin-only at execution
 time because stdio servers can launch local commands.
+
+`ttl` controls how long discovered tools stay bound on this thread. It accepts
+`Nm`, `Nh`, `Nd`, `Nw`, or `"never"`/`"permanent"`; default is `"2h"`.
 
 ### skill_manage
 
@@ -2347,15 +2351,15 @@ To the client this looks like one continuous turn: no extra `done` event, no sep
 
 #### TTL and eviction
 
-Each enablement (other than `ttl="permanent"`) gets an `expires_at` timestamp stored in `ThreadConfig.temporary_tools`. At the start of every new turn, `_build_graph_with_prompt` calls `_resolve_temporary_tools(tc)` which:
+Each enablement (other than `ttl="never"` or `ttl="permanent"`) gets an `expires_at` timestamp stored in `ThreadConfig.temporary_tools`. At the start of every new turn, `_build_graph_with_prompt` calls `_resolve_temporary_tools(tc)` which:
 
 1. Drops entries whose `expires_at` has passed.
 2. Persists the cleaned config back to disk.
 3. Returns the still-live set for inclusion in the tool list.
 
-Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` adds the name to `disabled_tools` without deleting preserved permanent/TTL state, so a later enable restores that state.
+Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="never"` or `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` adds the name to `disabled_tools` without deleting preserved permanent/TTL state, so a later enable restores that state.
 
-Pick the shortest TTL that covers your task. `2h` is a sensible default for multi-step tasks; `30m` for one-shots; `6h`/`24h` for sustained workflows; `permanent` only if the tool should remain as a standing capability on the thread.
+Pick the shortest TTL that covers your task. Use `30m` or `2h` for short work, `7d` or `14d` for multi-day projects, and `never` only if the tool should remain as a standing capability on the thread.
 
 ---
 
@@ -2535,17 +2539,28 @@ slash_command(command: str)
 
 **Blocked commands:** `/ask`, `/stop`, `/clear`, `/compact`, `/restart`, `/start` — these would interrupt or destroy the current conversation and are rejected before any API call.
 
-**Returns:** Plain-text result prefixed with `[Success]`, `[Error]`, or `[Info]`.
+**Returns:** Markdown from the centralized command service. The REST command
+endpoint also includes a structured `level` (`info`, `success`, `warning`, or
+`error`) and optional `data` for richer clients.
 
-**Runtime behavior:** Works in both normal conversation turns and autonomous scheduled TODO runs. Some tool callers still need a synchronous return value, so `slash_command` provides both sync and async invocation modes even though the underlying dispatcher talks to the local API asynchronously.
+**Runtime behavior:** Works in both normal conversation turns and autonomous scheduled TODO runs. Some tool callers still need a synchronous return value, so `slash_command` provides both sync and async invocation modes while the centralized backend registry handles parsing, metadata, aliases, and execution.
 
-**Requirements:**
-- `NYMERIA_API_URL` — defaults to `http://api:8000` inside Docker or `http://localhost:8000` outside.
-- Authenticates with `NYMERIA_SERVICE_TOKEN` (admin service token) plus `X-Nymeria-Act-As: <caller_user_id>` so each invocation runs under the requesting user. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`.
+**Requirements:** Runs in-process through the command service's direct backend
+adapter when a `NymeriaAgent` is active. The legacy REST compatibility path is
+only a fallback for out-of-process callers and still uses
+`NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As`.
 
-**Security note:** The tool runs in-process against the local API as the calling user (via act-as routing). `/env get` returns unmasked secrets and is admin-only at the API layer — non-admin callers will get 403 if they try to invoke admin-gated slash commands like `/env_get`, `/restart`, or `/config_*`.
+**Security note:** The tool runs in-process as the calling user. `/env get`
+returns unmasked secrets and is admin-only — non-admin callers will get 403 if
+they try to invoke admin-gated slash commands like `/env_get`, `/restart`, or
+`/config_*`.
 
-**Implementation:** See `nymeria/tools/slash_command.py` (parser + denylist + tool entry point) and `nymeria/triggers/slash_dispatcher.py` (command → API-method routing and plain-text formatting). Mirrors the Telegram bot's command handlers but emits plain text instead of HTML.
+**Implementation:** See `nymeria/tools/slash_command.py` (tool entry point) and
+`nymeria/core/command_service.py` (global command registry, path metadata,
+alias resolution, direct backend adapter, actor/surface filtering, and markdown
+command execution).
+`nymeria/triggers/slash_dispatcher.py` remains only as a compatibility shim for
+legacy parsed-command callers.
 
 ---
 
@@ -2648,7 +2663,7 @@ tool_create(
 - `list` — Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
 - `delete` — Delete this user's draft only. It does not delete a globally published tool.
 
-**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`30m`, `2h`, `6h`, `24h`, or `permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
+**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
 
 **V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets and `${env:...}` references. Sensitive headers are allowed only when their value uses a credential-vault reference like `${credential:cred_id.value}`.
 
@@ -2713,6 +2728,10 @@ skill_config(
 
 **V1 limits:** `skill_config` writes only `SKILL.md`. It cannot create scripts, assets, references, or arbitrary paths. It rejects body text that includes YAML frontmatter; agents pass `name`, `description`, `allowed_tools`, `required_tools`, and `tool_ttl` as structured parameters.
 
+`tool_ttl` controls how long required tools are bound when the Skill Kit is
+activated. It accepts `Nm`, `Nh`, `Nd`, `Nw`, or `"never"`/`"permanent"`;
+default is `"2h"`.
+
 **Skill Kit dependency checks:** `required_tools` are validated before any publish write. Unknown, unloadable, or admin-blocked tools fail strictly. Publishing a user skill that would shadow an existing bundled/global skill is rejected; replacing an existing generated skill requires `overwrite=true` and the existing directory must contain only `SKILL.md`.
 
 **Same-turn activation:** When `activate_current_thread=true`, publish adds the skill name to `ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph caches, and queues a same-turn `tool_reload` with `source="skill_config"` and `reason="skill_published"`. The event may have an empty `tools` list because the reload refreshes the `Skill` meta-tool index rather than binding a new normal tool.
@@ -2727,12 +2746,18 @@ skill_kit_create(
     name: str = "",
     description: str = "",
     body: str = "",
+    allowed_tools: Optional[list[str] | str] = None,
     required_tools: Optional[list[str] | str] = None,
+    tool_ttl: str = "2h",
     draft_id: str = "",
+    scope: str = "user",
+    overwrite: bool = False,
+    activate_current_thread: bool = True,
     tool_id: str = "",
     parameters: Optional[dict] = None,
     http_config: Optional[dict] = None,
     sample_params: Optional[dict] = None,
+    ttl: str = "2h",
 )
 ```
 
@@ -2745,6 +2770,9 @@ Actions:
 `source="skill_kit_create"` and `reason="skill_kit_created"`. Publishing an
 HTTP tool through this facade enables the new tool on the current thread with
 `source="skill_kit_create"` and `reason="http_tool_published_for_skill_kit"`.
+`tool_ttl` is the Skill Kit required-tool TTL and accepts `Nm`, `Nh`, `Nd`,
+`Nw`, or `"never"`/`"permanent"`; `ttl` is only for enabling a newly published
+HTTP tool on the current thread.
 
 ---
 
@@ -2778,7 +2806,7 @@ watchdog_dispatch(target_thread_id: str, task: str, scheduled_for: str = "now", 
 **Parameters:**
 - `target_thread_id` (`str`): Thread ID to dispatch the TODO to (must differ from caller)
 - `task` (`str`): Clear, specific description of what the target thread should do
-- `scheduled_for` (`str`): When to fire — `"now"`, `"30s"`, `"5m"`, `"1h"`, `"1d"`, or `"YYYY-MM-DD HH:MM"`
+- `scheduled_for` (`str`): When to fire — `"now"`, any relative duration such as `"30s"`, `"17m"`, `"1h"`, `"1d"`, `"1w"`, or an absolute/ISO datetime
 - `notes` (`str`): Supporting context for the target thread
 
 **Returns:** Confirmation with the created TODO ID, or error if self-targeting or limit reached.
@@ -2903,7 +2931,7 @@ ThreadName(
 
 The `task` parameter is the instruction. `mode="ask"` preserves the legacy behavior: the caller waits and receives the target thread's final response. `mode="handoff"` starts an autonomous run in the target thread and returns `[HandedOff]` metadata (`handoff_id`, target thread, and optional TODO id) without returning the target's final output.
 
-For handoffs, `scheduled_for` can delay execution with values such as `"30s"`, `"5m"`, `"1h"`, `"1d"`, or `"YYYY-MM-DD HH:MM"`; delayed handoffs are stored as scheduled TODOs on the target thread. Omit `scheduled_for` for immediate handoff. For immediate handoffs, `if_busy="queue"` lets the target thread wait for its lock in the background, while `if_busy="error"` returns a busy response if the target is already running. In blocking ask mode, `if_busy="error"` performs a best-effort busy check before waiting.
+For handoffs, `scheduled_for` can delay execution with any relative duration such as `"30s"`, `"17m"`, `"1h"`, `"1d"`, `"1w"`, or an absolute/ISO datetime; delayed handoffs are stored as scheduled TODOs on the target thread. Omit `scheduled_for` for immediate handoff. For immediate handoffs, `if_busy="queue"` lets the target thread wait for its lock in the background, while `if_busy="error"` returns a busy response if the target is already running. In blocking ask mode, `if_busy="error"` performs a best-effort busy check before waiting.
 
 Handoff prompts include source-thread metadata so the target thread can call the original callable thread later if useful. There is no automatic completion callback. If the target thread is bound to Telegram and `telegram_autonomous_delivery="full"`, its handoff output is delivered through Telegram like other autonomous output.
 

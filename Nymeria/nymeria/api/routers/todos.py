@@ -1,16 +1,20 @@
 """TODO dashboard routes."""
 
 import logging
-import re
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
 from ...core.accounts import AuthenticatedUser
-from ...core.todo_constants import RECURRENCE_DELTAS, STATUS_ORDER, VALID_RECURRENCES
+from ...core.time_utils import ensure_aware_utc, parse_future_scheduled_time, utc_now
+from ...core.todo_constants import (
+    STATUS_ORDER,
+    VALID_RECURRENCES,
+    calculate_next_recurrence_time,
+)
 from ...core.todo_manager import TodoItem, TodoManager, TodoStatus
 from ...core.todo_schedule_db import TodoScheduleDB
 from ..schemas.todos import TodoCreateRequest, TodoItemResponse, TodoListResponse, TodoUpdateRequest
@@ -23,75 +27,28 @@ def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
     Parse scheduled_for string to a timezone-aware UTC datetime.
 
     Supports:
-    - Relative times: "30s", "30m", "2h", "1d", "1w"
-    - ISO datetime with Z suffix (e.g., "2024-01-01T12:00:00.000Z") - parsed as UTC
-    - ISO datetime without Z (e.g., "2024-01-01T12:00") - interpreted as LOCAL time
+    - Relative times: "45s", "17m", "2h", "1d", "1w"
+    - Absolute local times: "2024-01-01 12:34", "2024-01-01T12:34"
+    - ISO datetime with timezone: "2024-01-01T12:34:00Z"
     """
     if not scheduled_for:
         return None
 
-    scheduled_for = scheduled_for.strip()
     logger.info(f"[API] Parsing scheduled_for: '{scheduled_for}'")
-
-    # Try relative time parsing first: 30s, 5m, 1h, 1d, 1w
-    match = re.match(r"^(\d+)(s|m|h|d|w)$", scheduled_for.lower())
-    if match:
-        value = int(match.group(1))
-        unit = match.group(2)
-        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
-        seconds = value * multipliers[unit]
-        # Use timezone-aware UTC datetime to avoid timestamp() interpretation issues
-        result = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-        logger.info(
-            f"[API] Parsed relative time '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}"
-        )
-        return result
-
-    # Handle ISO strings with Z suffix (UTC) - from frontend toISOString()
-    if scheduled_for.endswith("Z"):
-        utc_formats = [
-            "%Y-%m-%dT%H:%M:%S.%fZ",  # With milliseconds: 2024-01-01T12:00:00.000Z
-            "%Y-%m-%dT%H:%M:%SZ",  # Without milliseconds: 2024-01-01T12:00:00Z
-        ]
-        for fmt in utc_formats:
-            try:
-                result = datetime.strptime(scheduled_for, fmt).replace(tzinfo=timezone.utc)
-                logger.info(
-                    f"[API] Parsed UTC time '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}"
-                )
-                return result
-            except ValueError:
-                continue
-
-    # Try absolute formats - these are interpreted as LOCAL time, then converted to UTC
-    formats = [
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-    ]
-
-    for fmt in formats:
-        try:
-            # Parse as naive datetime (assumed local time from user's browser)
-            local_dt = datetime.strptime(scheduled_for, fmt)
-            # Convert to UTC by assuming it's in the system's local timezone
-            local_dt = local_dt.astimezone()  # Add local timezone info
-            result = local_dt.astimezone(timezone.utc)  # Convert to UTC
-            logger.info(
-                f"[API] Parsed absolute time '{scheduled_for}' -> local={local_dt}, UTC={result}, timestamp={result.timestamp()}"
-            )
-            return result
-        except ValueError:
-            continue
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            f"Invalid scheduled_for format: '{scheduled_for}'. Use relative "
-            "(e.g., '30m', '2h') or datetime (e.g., '2024-03-15 14:00')."
-        ),
+    try:
+        result = parse_future_scheduled_time(scheduled_for)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info(
+        f"[API] Parsed scheduled_for '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}"
     )
+    return result
+
+
+def _recurrence_anchor(item: TodoItem | None) -> datetime:
+    if item and item.scheduled_for:
+        return ensure_aware_utc(item.scheduled_for)
+    return utc_now()
 
 
 def _todo_to_response(item: TodoItem) -> TodoItemResponse:
@@ -358,17 +315,21 @@ def create_todos_router(
             if status == TodoStatus.DONE:
                 updated = todo_list.get_item(todo_id)
                 if updated and updated.recurrence:
-                    delta = RECURRENCE_DELTAS.get(updated.recurrence)
-                    if delta:
-                        next_execution = datetime.now(timezone.utc) + delta
+                    recurrence_anchor = _recurrence_anchor(updated)
+                    next_execution = calculate_next_recurrence_time(
+                        updated.recurrence,
+                        recurrence_anchor,
+                    )
+                    if next_execution:
                         todo_list.update_item(
                             todo_id,
                             scheduled_for=next_execution,
                             status=TodoStatus.PENDING,
                         )
-                        updated.last_execution = datetime.now(timezone.utc)
+                        updated.last_execution = recurrence_anchor
                         logger.info(
-                            f"[API] Auto-rescheduled recurring TODO {todo_id} for {next_execution}"
+                            f"[API] Auto-rescheduled recurring TODO {todo_id} "
+                            f"from anchor {recurrence_anchor} for {next_execution}"
                         )
 
             # Re-fetch the updated item (still in memory)
@@ -461,9 +422,12 @@ def create_todos_router(
 
             # Auto-reschedule recurring TODOs
             if has_recurrence:
-                delta = RECURRENCE_DELTAS.get(has_recurrence)
-                if delta:
-                    next_execution = datetime.now(timezone.utc) + delta
+                recurrence_anchor = _recurrence_anchor(item)
+                next_execution = calculate_next_recurrence_time(
+                    has_recurrence,
+                    recurrence_anchor,
+                )
+                if next_execution:
                     todo_list.update_item(
                         todo_id,
                         scheduled_for=next_execution,
@@ -471,9 +435,10 @@ def create_todos_router(
                     )
                     refreshed = todo_list.get_item(todo_id)
                     if refreshed:
-                        refreshed.last_execution = datetime.now(timezone.utc)
+                        refreshed.last_execution = recurrence_anchor
                     logger.info(
-                        f"[API] Auto-rescheduled recurring TODO {todo_id} for {next_execution}"
+                        f"[API] Auto-rescheduled recurring TODO {todo_id} "
+                        f"from anchor {recurrence_anchor} for {next_execution}"
                     )
 
             # Re-fetch the updated item

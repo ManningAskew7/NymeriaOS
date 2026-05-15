@@ -134,6 +134,11 @@ def memory_add(
         scope: "global" (user profile) or "thread" (per-thread notepad).
         content: The memory text. Empty string deletes.
         key: Required when scope="global". Ignored when scope="thread".
+
+    Returns:
+        Global: "[Saved]: I'll remember '<key>'..." or "[Deleted]: Forgot
+        '<key>'..." (when content is empty). Thread: "[Saved]: Notepad
+        updated (N bytes)...". Errors: "[Error]: <reason>".
     """
     err = _validate_scope(scope)
     if err:
@@ -195,6 +200,11 @@ def memory_edit(
         find: Exact substring to locate (first occurrence).
         replace: Replacement text. Empty string deletes the matched substring.
         key: Required when scope="global". Ignored when scope="thread".
+
+    Returns:
+        Global: "[Saved]: Updated '<key>'" or "[Deleted]: Edit emptied
+        '<key>'". Thread: "[Saved]: Text replaced...". Errors: "[Error]:
+        <reason>" (key not found, substring not matched).
     """
     err = _validate_scope(scope)
     if err:
@@ -260,6 +270,12 @@ def memory_read(
         scope: "global" or "thread".
         key: (global only) fetch a single memory by key.
         query: substring filter (both scopes).
+
+    Returns:
+        Global: "key: value" for single key; "Stored memories (N shown):"
+        + "- key: value" lines for list mode; personality prefs appended
+        when no query filter. Thread: raw notepad markdown or matching
+        lines. Empty: "[Info]: ..." or "[empty]".
     """
     err = _validate_scope(scope)
     if err:
@@ -364,6 +380,9 @@ def personality_set(
     Args:
         trait: Preference category (e.g., "tone", "verbosity", "formality", "humor", "detail_level")
         value: Desired behavior (e.g., "casual and friendly", "concise", "always include code examples")
+
+    Returns:
+        "[Set]: I'll remember to '<value>' in future conversations."
     """
     logger.info(f"personality_set called: trait={trait}, value={value}")
 
@@ -389,6 +408,12 @@ def rag_search(
     Args:
         query: What to search for
         max_results: Max results (1-10, default 5)
+
+    Returns:
+        "Found N relevant result(s):" header + numbered entries with
+        [chunk_type] tag, relevance score (0-1), and content snippet
+        (max 400 chars). "[No Results]: ..." when empty. "[RAG
+        Disabled]: ..." if RAG is off. Errors: "[Error]: <reason>".
     """
     logger.info(f"rag_search called: query={query[:50]}...")
 

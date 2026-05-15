@@ -43,7 +43,9 @@ def consult(
         model: Model alias - "gemini-3-pro" (default), "gemini-2.5-pro", or "gemini-2.5-flash"
 
     Returns:
-        Gemini's reasoning and analysis
+        Plain text. "**Reasoning:**" block (when reasoning tokens used),
+        main response content, and "_(N reasoning tokens used)_" footer.
+        Errors: "[Error]: <reason>".
     """
     logger.info(f"Consult tool: {question[:80]}")
 

@@ -68,7 +68,8 @@ that are not currently bound, the Skill tool:
 1. Validates every required tool strictly (unknown, unloadable, or admin-only
    dependencies fail before any config write).
 2. Writes the required tools to `temporary_tools` or `enabled_tools` using the
-   skill's `metadata.nymeria.tool_ttl` (`2h` by default).
+   skill's `metadata.nymeria.tool_ttl` (`2h` by default; accepts `Nm`, `Nh`,
+   `Nd`, `Nw`, or `never`/`permanent`).
 3. Removes required tools from `disabled_tools` when needed, matching
    `tool_enable(action="enable")`.
 4. Queues `_pending_tool_reload[thread_id]` with `source="skill_kit"`,
@@ -113,21 +114,17 @@ queues `source="skill_kit_create"` and `reason="skill_kit_created"`.
 
 Not every tool enable should be permanent. A one-shot PDF conversion doesn't need `pdf_write` bound forever. TTL lets the agent pick the right lifetime.
 
-### Presets
+### Duration Format
 
-| Key | Duration | Use case |
-|-----|----------|----------|
-| `30m` | 30 minutes | One-shot operations |
-| `2h` | 2 hours | Multi-step tasks (default) |
-| `6h` | 6 hours | Sustained workflows |
-| `24h` | 24 hours | Long-running sessions |
-| `permanent` | Never expires | Standing capability |
+Tool TTL accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`.
+Examples: `30m`, `2h`, `7d`, `4w`, `never`. Values must be greater than zero
+and no longer than about one year (`365d` or `52w`).
 
 ### Storage Split
 
 `ThreadConfig` has two fields for enabled tools:
 
-- **`enabled_tools: List[str]`** — Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
+- **`enabled_tools: List[str]`** — Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="never")` or `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
 
 - **`temporary_tools: Dict[str, TemporaryToolEntry]`** — TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
 
@@ -139,7 +136,7 @@ No background scheduler. At graph-build time, `_resolve_temporary_tools()` filte
 
 ### Sliding Renewal
 
-Calling `tool_enable(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
+Calling `tool_enable(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="never"` or `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
 
 ### Disable Preserves State
 
@@ -170,7 +167,7 @@ Each requested tool is classified into exactly one bucket (checked in this prior
 | **un_disabled** | In `tc.disabled_tools` | Removed from disabled list. Preserved state restored if it exists; otherwise fresh entry written with requested TTL |
 | **already_permanent** | In `tc.enabled_tools` and not disabled | No-op |
 | **already_default** | Part of thread's default-bound tool set | No-op (already callable) |
-| **refreshed / promoted** | In `tc.temporary_tools` | `ttl="permanent"` promotes to `enabled_tools`; otherwise refreshes `expires_at` |
+| **refreshed / promoted** | In `tc.temporary_tools` | `ttl="never"` or `ttl="permanent"` promotes to `enabled_tools`; otherwise refreshes `expires_at` |
 | **newly_added** | None of the above | Written to `enabled_tools` (permanent) or `temporary_tools` (TTL'd) |
 
 After classification, if `newly_added` or `un_disabled` is non-empty **and** the reload cap hasn't been hit:
@@ -345,7 +342,7 @@ tool_call(tool_enable enable) → tool_result → tool_reload → [second invoca
 |-------|------|-------------|
 | `type` | `"tool_reload"` | Event type |
 | `tools` | `string[]` | Names of newly-loaded tools |
-| `ttl` | `string` | TTL preset key (`"2h"`, `"permanent"`, etc.) |
+| `ttl` | `string` | TTL key (`"2h"`, `"7d"`, `"4w"`, `"never"`, etc.) |
 | `ttl_seconds` | `int \| null` | TTL in seconds, or null for permanent |
 | `source` | `string` | `"tool_enable"`, `"tool_create"`, `"skill_kit"`, `"skill_config"`, `"mcp_install"`, `"skill_install"`, or `"skill_kit_create"` |
 | `skill_name` | `string \| null` | Skill Kit/name context for skill-driven reloads |
