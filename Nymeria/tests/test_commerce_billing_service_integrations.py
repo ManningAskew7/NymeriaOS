@@ -1,5 +1,8 @@
 import base64
+import hashlib
+import hmac
 import json
+from urllib.parse import urlencode
 
 import pytest
 from cryptography.fernet import Fernet
@@ -224,6 +227,115 @@ def test_woocommerce_create_record_uses_env_basic_auth(monkeypatch):
     assert captured["json_body"] == {"name": "Backpack", "type": "simple"}
 
 
+def test_magento_list_records_uses_env_bearer_and_search_criteria(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MAGENTO_BASE_URL", "https://store.example")
+    monkeypatch.setenv("MAGENTO_ACCESS_TOKEN", "magento-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"items": [{"entity_id": 1, "email": "ada@example.com"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.magento_list_records.func(
+            resource="customers",
+            search_criteria_json='{"searchCriteria": {"filterGroups": [{"filters": [{"field": "email", "value": "ada@example.com", "conditionType": "eq"}]}]}}',
+            limit=10,
+            current_page=2,
+        )
+    )
+
+    assert result[0]["email"] == "ada@example.com"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://store.example/rest/default/V1/customers/search"
+    assert captured["headers"]["Authorization"] == "Bearer magento-token"
+    assert captured["params"]["searchCriteria[pageSize]"] == 10
+    assert captured["params"]["searchCriteria[currentPage]"] == 2
+    assert captured["params"]["searchCriteria[filterGroups][0][filters][0][field]"] == "email"
+
+
+def test_magento_create_product_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Magento",
+        provider="magento",
+        kind="api_key",
+        allowed_targets=["native_tool:magento_create_product"],
+        secret_fields={"host": "https://magento.example", "accessToken": "magento-token"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"sku": json_body["product"]["sku"], "name": json_body["product"]["name"]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.magento_create_product.func(
+            sku="SKU-1",
+            name="Backpack",
+            attribute_set_id=4,
+            price=25.5,
+            fields_json='{"status": 1}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["sku"] == "SKU-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://magento.example/rest/default/V1/products"
+    assert captured["headers"]["Authorization"] == "Bearer magento-token"
+    assert captured["json_body"]["product"]["attribute_set_id"] == 4
+    assert captured["json_body"]["product"]["price"] == 25.5
+    assert captured["json_body"]["product"]["status"] == 1
+
+
+def test_unleashed_list_stock_on_hand_signs_query(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("UNLEASHED_API_ID", "api-id")
+    monkeypatch.setenv("UNLEASHED_API_KEY", "api-key")
+    monkeypatch.setenv("UNLEASHED_BASE_URL", "https://unleashed.example")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"Items": [{"ProductCode": "SKU-1", "QtyOnHand": 3}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.unleashed_list_stock_on_hand.func(
+            filters_json='{"warehouseCode": "MAIN"}',
+            limit=25,
+            page=2,
+        )
+    )
+
+    expected_signature = base64.b64encode(
+        hmac.new(b"api-key", urlencode(captured["params"], doseq=True).encode(), hashlib.sha256).digest()
+    ).decode()
+    assert result[0]["ProductCode"] == "SKU-1"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://unleashed.example/StockOnHand/2"
+    assert captured["params"] == {"warehouseCode": "MAIN", "pageSize": 25}
+    assert captured["headers"]["api-auth-id"] == "api-id"
+    assert captured["headers"]["api-auth-signature"] == expected_signature
+
+
 def test_chargebee_create_customer_uses_vault_site_and_key(tmp_path, monkeypatch):
     from nymeria.tools import commerce_billing_service_integrations as tools
 
@@ -381,6 +493,7 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     monkeypatch.setenv("SHOPIFY_SHOP", "example")
     monkeypatch.setenv("WOOCOMMERCE_URL", "https://store.example")
     monkeypatch.setenv("CHARGEBEE_SITE", "testsite")
+    monkeypatch.setenv("MAGENTO_BASE_URL", "https://store.example")
 
     stripe_result = tools.stripe_get_balance.func()
     shopify_result = tools.shopify_list_records.func(resource="products")
@@ -389,6 +502,8 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     paddle_result = tools.paddle_list_products.func()
     profitwell_result = tools.profitwell_get_settings.func()
     tapfiliate_result = tools.tapfiliate_list_affiliates.func()
+    magento_result = tools.magento_list_records.func(resource="customers")
+    unleashed_result = tools.unleashed_list_sales_orders.func()
 
     assert 'provider "stripe"' in stripe_result
     assert "STRIPE_SECRET_KEY" in stripe_result
@@ -411,6 +526,10 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     assert 'provider "tapfiliate"' in tapfiliate_result
     assert "TAPFILIATE_API_KEY" in tapfiliate_result
     assert 'allowed target "native_tool:tapfiliate_list_affiliates"' in tapfiliate_result
+    assert "No Magento credential found" in magento_result
+    assert "MAGENTO_ACCESS_TOKEN" in magento_result
+    assert "No Unleashed credential found" in unleashed_result
+    assert "UNLEASHED_API_ID + UNLEASHED_API_KEY" in unleashed_result
 
 
 def test_commerce_billing_tools_are_registered_with_metadata():
@@ -440,6 +559,11 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "tapfiliate_get_affiliate",
         "tapfiliate_list_program_affiliates",
         "tapfiliate_get_program_affiliate",
+        "magento_list_records",
+        "magento_get_record",
+        "unleashed_list_sales_orders",
+        "unleashed_list_stock_on_hand",
+        "unleashed_get_stock_on_hand",
     ]
     moderate_names = [
         "stripe_create_customer",
@@ -461,6 +585,14 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "tapfiliate_add_program_affiliate",
         "tapfiliate_approve_program_affiliate",
         "tapfiliate_disapprove_program_affiliate",
+        "magento_create_customer",
+        "magento_update_customer",
+        "magento_create_product",
+        "magento_update_product",
+        "magento_delete_record",
+        "magento_create_invoice",
+        "magento_cancel_order",
+        "magento_ship_order",
     ]
 
     for name in safe_names:
@@ -481,10 +613,12 @@ def test_commerce_billing_tools_are_registered_with_metadata():
 def test_commerce_billing_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         chargebee_create_customer,
+        magento_create_product,
         paddle_create_coupon,
         shopify_list_records,
         stripe_create_customer,
         tapfiliate_create_affiliate,
+        unleashed_list_sales_orders,
         woocommerce_update_record,
     )
 
@@ -494,3 +628,5 @@ def test_commerce_billing_tool_schemas_hide_runtime_config():
     assert "config" not in chargebee_create_customer.args_schema.model_json_schema()["properties"]
     assert "config" not in paddle_create_coupon.args_schema.model_json_schema()["properties"]
     assert "config" not in tapfiliate_create_affiliate.args_schema.model_json_schema()["properties"]
+    assert "config" not in magento_create_product.args_schema.model_json_schema()["properties"]
+    assert "config" not in unleashed_list_sales_orders.args_schema.model_json_schema()["properties"]

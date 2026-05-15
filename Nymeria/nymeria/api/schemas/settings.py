@@ -344,6 +344,12 @@ class ServerSettingsUpdate(BaseModel):
     profitwell_base_url: Optional[str] = None
     tapfiliate_api_key: Optional[str] = None
     tapfiliate_base_url: Optional[str] = None
+    magento_host: Optional[str] = None
+    magento_base_url: Optional[str] = None
+    magento_access_token: Optional[str] = None
+    unleashed_api_id: Optional[str] = None
+    unleashed_api_key: Optional[str] = None
+    unleashed_base_url: Optional[str] = None
     pushbullet_access_token: Optional[str] = None
     pushbullet_base_url: Optional[str] = None
     pushcut_api_key: Optional[str] = None

@@ -1605,7 +1605,8 @@ connections can also be reused for AWS service tools. Business-service credentia
 `brandfetch.api_key`, `marketstack.api_key`, `deepl.api_key`,
 `lingvanex.api_key`, `apitemplate.api_key`, `onesimple.api_token`,
 `paddle.vendor_id` plus `paddle.vendor_auth_code`, `profitwell.access_token`,
-and `tapfiliate.api_key`; DeepL can also
+`tapfiliate.api_key`, `magento.access_token` plus `magento.host`, and
+`unleashed.api_id` plus `unleashed.api_key`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
@@ -2072,6 +2073,8 @@ This batch includes:
 - `paddle_list_products(...)`, `paddle_list_plans(...)`, `paddle_list_subscription_users(...)`, `paddle_list_payments(...)`, `paddle_get_order(...)`, and `paddle_list_coupons(...)` for SAFE Paddle vendor reads. `paddle_create_coupon(...)`, `paddle_update_coupon(...)`, and `paddle_reschedule_payment(...)` are MODERATE because they change coupons or payment schedules.
 - `profitwell_get_settings()` and `profitwell_get_metrics(...)` for SAFE ProfitWell account and metrics reads.
 - `tapfiliate_list_affiliates(...)`, `tapfiliate_get_affiliate(...)`, `tapfiliate_list_program_affiliates(...)`, and `tapfiliate_get_program_affiliate(...)` for SAFE Tapfiliate affiliate reads. Create/delete/metadata/program-approval tools are MODERATE because they change affiliate or program state.
+- `magento_list_records(resource, ...)` and `magento_get_record(resource, record_id)` for SAFE Magento customer, order, and product reads. Customer/product create/update/delete, invoice creation, order cancellation, and shipment creation are MODERATE because they change store or order state.
+- `unleashed_list_sales_orders(...)`, `unleashed_list_stock_on_hand(...)`, and `unleashed_get_stock_on_hand(product_id)` for SAFE Unleashed order and inventory reads.
 
 Credential providers and fallback env vars:
 - Stripe: provider `stripe`, fields `secret_key`, `secretKey`, `api_key`, `apiKey`, `token`, or `value`; env fallback `STRIPE_SECRET_KEY`. Use `base_url` / `url` or `STRIPE_BASE_URL` for non-default API roots.
@@ -2081,6 +2084,8 @@ Credential providers and fallback env vars:
 - Paddle: provider `paddle`, fields `vendor_id` / `vendorId` plus `vendor_auth_code` / `vendorAuthCode`; env fallback `PADDLE_VENDOR_ID` and `PADDLE_VENDOR_AUTH_CODE`. Use `sandbox` / `use_sandbox`, `PADDLE_SANDBOX`, `base_url`, or `PADDLE_BASE_URL` for sandbox or non-default vendor API roots.
 - ProfitWell: provider `profitwell`, fields `access_token`, `api_token`, `token`, or `value`; env fallback `PROFITWELL_API_TOKEN`. Use `base_url` / `url` or `PROFITWELL_BASE_URL` for non-default API roots.
 - Tapfiliate: provider `tapfiliate`, fields `api_key`, `token`, or `value`; env fallback `TAPFILIATE_API_KEY`. Use `base_url` / `url` or `TAPFILIATE_BASE_URL` for non-default API roots.
+- Magento: provider `magento`, fields `host` / `base_url` plus `access_token`; env fallback `MAGENTO_HOST` or `MAGENTO_BASE_URL` plus `MAGENTO_ACCESS_TOKEN`.
+- Unleashed: provider `unleashed`, fields `api_id` plus `api_key`; env fallback `UNLEASHED_API_ID` and `UNLEASHED_API_KEY`. Use `base_url` / `url` or `UNLEASHED_BASE_URL` for non-default API roots.
 
 ### Notification Service Tools
 
