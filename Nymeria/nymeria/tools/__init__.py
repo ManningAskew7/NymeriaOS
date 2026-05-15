@@ -48,6 +48,27 @@ from .hello_test import hello_test
 from .sticky_note import sticky_note, STICKY_NOTE_TOOLS
 from .google_docs import GOOGLE_DOCS_TOOLS
 from .google_sheets import GOOGLE_SHEETS_TOOLS
+from .google_workspace_service_integrations import (
+    google_tasks_list_tasklists,
+    google_tasks_list_tasks,
+    google_tasks_get_task,
+    google_tasks_create_task,
+    google_tasks_update_task,
+    google_tasks_complete_task,
+    google_tasks_delete_task,
+    google_contacts_list_contacts,
+    google_contacts_get_contact,
+    google_contacts_create_contact,
+    google_contacts_update_contact,
+    google_contacts_delete_contact,
+    google_drive_search_files,
+    google_drive_get_file,
+    google_drive_download_text,
+    google_drive_create_folder,
+    google_drive_upload_text_file,
+    google_drive_trash_file,
+    GOOGLE_WORKSPACE_SERVICE_TOOLS,
+)
 from .gmail_auth import (
     gmail_auth_start,
     gmail_auth_complete,
@@ -1272,6 +1293,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SELF_AGENT_TOOLS
     + RUNTIME_ADMIN_TOOLS
     + GOOGLE_DOCS_TOOLS
+    + GOOGLE_WORKSPACE_SERVICE_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + TOOL_SEARCH_TOOLS
@@ -2555,6 +2577,25 @@ __all__ = [
     "STICKY_NOTE_TOOLS",
     "GOOGLE_DOCS_TOOLS",
     "GOOGLE_SHEETS_TOOLS",
+    "google_tasks_list_tasklists",
+    "google_tasks_list_tasks",
+    "google_tasks_get_task",
+    "google_tasks_create_task",
+    "google_tasks_update_task",
+    "google_tasks_complete_task",
+    "google_tasks_delete_task",
+    "google_contacts_list_contacts",
+    "google_contacts_get_contact",
+    "google_contacts_create_contact",
+    "google_contacts_update_contact",
+    "google_contacts_delete_contact",
+    "google_drive_search_files",
+    "google_drive_get_file",
+    "google_drive_download_text",
+    "google_drive_create_folder",
+    "google_drive_upload_text_file",
+    "google_drive_trash_file",
+    "GOOGLE_WORKSPACE_SERVICE_TOOLS",
     "gmail_auth_start",
     "gmail_auth_complete",
     "gmail_auth_clear",

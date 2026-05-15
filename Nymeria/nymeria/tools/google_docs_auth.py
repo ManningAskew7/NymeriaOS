@@ -1,12 +1,12 @@
-"""Google Docs / Drive / Sheets OAuth 2.0 authentication tools.
+"""Google Workspace OAuth 2.0 authentication tools.
 
 Per-user OAuth flow, callback handling, token cache I/O, refresh validation,
 and tool generation live in ``auth_cache_utils``. This module wires the
-Docs/Drive/Sheets-specific provider name, cache file, scopes, and user-facing
-tool names.
+Docs/Drive/Sheets/Tasks/Contacts provider name, cache file, scopes, and
+user-facing tool names.
 
 Token cache is per-user at ``data/auth_tokens/<user_id>/google_docs.json``
-and tokens are auto-refreshed on expiry (60-second buffer) by ``google_docs.py``.
+and tokens are auto-refreshed on expiry (60-second buffer) by Google tools.
 
 Optional tools, enable per-thread via thread config.
 """
@@ -28,7 +28,7 @@ for _ENV_PATH in get_env_file_paths():
 PROVIDER = "google_docs"
 _CACHE_FILENAME = "google_docs.json"
 
-GOOGLE_SCOPES = [
+GOOGLE_DOCS_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive.readonly",
@@ -36,6 +36,13 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
+
+GOOGLE_WORKSPACE_EXTRA_SCOPES = [
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts",
+]
+
+GOOGLE_SCOPES = GOOGLE_DOCS_SCOPES + GOOGLE_WORKSPACE_EXTRA_SCOPES
 
 
 def load_token_cache(user_id: str) -> dict:

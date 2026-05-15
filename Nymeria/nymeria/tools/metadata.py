@@ -121,7 +121,10 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.BROWSER, ("BROWSER_TOOLS",)),
     (ToolCategory.IMAGE, ("IMAGE_GENERATION_TOOLS",)),
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
-    (ToolCategory.GOOGLE_DOCS, ("GOOGLE_DOCS_TOOLS", "GOOGLE_SHEETS_TOOLS")),
+    (
+        ToolCategory.GOOGLE_DOCS,
+        ("GOOGLE_DOCS_TOOLS", "GOOGLE_SHEETS_TOOLS", "GOOGLE_WORKSPACE_SERVICE_TOOLS"),
+    ),
     (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
     (
         ToolCategory._PRV_A,
@@ -248,6 +251,14 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_docs_list",
         "google_docs_find_index",
         "google_sheets_search",
+        "google_tasks_list_tasklists",
+        "google_tasks_list_tasks",
+        "google_tasks_get_task",
+        "google_contacts_list_contacts",
+        "google_contacts_get_contact",
+        "google_drive_search_files",
+        "google_drive_get_file",
+        "google_drive_download_text",
     }
 )
 
