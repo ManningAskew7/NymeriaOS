@@ -262,6 +262,12 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_slides_get_presentation",
         "google_slides_list_slides",
         "google_slides_get_page_thumbnail",
+        "google_chat_list_spaces",
+        "google_chat_get_space",
+        "google_chat_list_members",
+        "google_chat_get_member",
+        "google_chat_list_messages",
+        "google_chat_get_message",
     }
 )
 
