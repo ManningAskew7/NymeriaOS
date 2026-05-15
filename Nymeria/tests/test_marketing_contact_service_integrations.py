@@ -484,6 +484,86 @@ def test_vero_track_event_uses_form_auth(monkeypatch):
     assert json.loads(captured["data"]["extras"]) == {"source": "cli"}
 
 
+def test_mautic_list_contacts_uses_env_basic_auth(monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("MAUTIC_BASE_URL", "https://mautic.example")
+    monkeypatch.setenv("MAUTIC_USERNAME", "alice")
+    monkeypatch.setenv("MAUTIC_PASSWORD", "secret")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {
+            "contacts": {
+                "1": {
+                    "id": 1,
+                    "fields": {"all": {"email": "ada@example.com", "firstname": "Ada"}},
+                }
+            },
+            "total": "1",
+        }
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.mautic_list_contacts.func(search="ada", limit=5))
+
+    expected_auth = base64.b64encode(b"alice:secret").decode()
+    assert result == [{"email": "ada@example.com", "firstname": "Ada"}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://mautic.example/api/contacts"
+    assert captured["params"]["search"] == "ada"
+    assert captured["params"]["limit"] == 5
+    assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
+
+
+def test_mautic_create_contact_uses_vault_bearer_token(tmp_path, monkeypatch):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Mautic",
+        provider="mautic",
+        kind="oauth_token",
+        allowed_targets=["native_tool:mautic_create_contact"],
+        secret_fields={"access_token": "mautic-token", "base_url": "https://mautic.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return {
+            "contact": {
+                "id": 2,
+                "fields": {"all": {"email": kwargs["json_body"]["email"], "company": "Example"}},
+            }
+        }
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.mautic_create_contact.func(
+            email="ada@example.com",
+            first_name="Ada",
+            fields_json='{"company": "Example"}',
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["email"] == "ada@example.com"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://mautic.example/api/contacts/new"
+    assert captured["headers"]["Authorization"] == "Bearer mautic-token"
+    assert captured["json_body"]["email"] == "ada@example.com"
+    assert captured["json_body"]["firstname"] == "Ada"
+    assert captured["json_body"]["company"] == "Example"
+
+
 def test_new_marketing_missing_keys_return_setup_hints(monkeypatch):
     from nymeria.tools import marketing_contact_service_integrations as tools
 
@@ -499,6 +579,7 @@ def test_new_marketing_missing_keys_return_setup_hints(monkeypatch):
     assert "AUTOPILOT_API_KEY" in tools.autopilot_list_contacts.func()
     assert "EGOI_API_KEY" in tools.egoi_list_lists.func()
     assert "VERO_AUTH_TOKEN" in tools.vero_identify_user.func(user_id="user-1")
+    assert "MAUTIC_BASE_URL" in tools.mautic_get_contact.func(contact_id="1")
 
 
 def test_marketing_contact_tools_are_registered_with_metadata():
@@ -544,6 +625,10 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "emelia_list_campaigns",
         "emelia_get_campaign",
         "emelia_list_contact_lists",
+        "mautic_list_contacts",
+        "mautic_get_contact",
+        "mautic_list_companies",
+        "mautic_get_company",
     ]
     moderate_names = [
         "activecampaign_sync_contact",
@@ -602,6 +687,20 @@ def test_marketing_contact_tools_are_registered_with_metadata():
         "emelia_duplicate_campaign",
         "emelia_add_contact_to_campaign",
         "emelia_add_contact_to_list",
+        "mautic_create_contact",
+        "mautic_update_contact",
+        "mautic_delete_contact",
+        "mautic_create_company",
+        "mautic_update_company",
+        "mautic_delete_company",
+        "mautic_add_contact_to_segment",
+        "mautic_remove_contact_from_segment",
+        "mautic_add_contact_to_campaign",
+        "mautic_remove_contact_from_campaign",
+        "mautic_add_contact_to_company",
+        "mautic_remove_contact_from_company",
+        "mautic_send_email_to_contact",
+        "mautic_send_segment_email",
     ]
 
     for name in safe_names:
@@ -629,6 +728,7 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
         egoi_create_contact,
         emelia_create_campaign,
         lemlist_create_lead,
+        mautic_create_contact,
         mailerlite_create_subscriber,
         posthog_capture_event,
         segment_track,
@@ -644,6 +744,7 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
     assert "config" not in egoi_create_contact.args
     assert "config" not in emelia_create_campaign.args
     assert "config" not in lemlist_create_lead.args
+    assert "config" not in mautic_create_contact.args
     assert "config" not in mailerlite_create_subscriber.args
     assert "config" not in posthog_capture_event.args
     assert "config" not in segment_track.args

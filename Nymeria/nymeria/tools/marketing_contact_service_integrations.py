@@ -271,6 +271,99 @@ def _token_config(
     return _base_url(base), str(token)
 
 
+def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="mautic",
+            provider_aliases=("mautic_api", "mautic_oauth2"),
+            field_names=("base_url", "baseUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("mautic_base_url")
+    )
+    if not base:
+        return "", (
+            '[Error]: No Mautic base URL found. Save a Mautic credential with "base_url" / "url", '
+            "or set MAUTIC_BASE_URL."
+        )
+    token = _credential_value(
+        provider="mautic",
+        provider_aliases=("mautic_api", "mautic_oauth2"),
+        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("mautic_access_token")
+    username = _credential_value(
+        provider="mautic",
+        provider_aliases=("mautic_api", "mautic_oauth2"),
+        field_names=("username", "user", "email"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("mautic_username")
+    password = _credential_value(
+        provider="mautic",
+        provider_aliases=("mautic_api", "mautic_oauth2"),
+        field_names=("password", "api_password", "apiPassword"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("mautic_password")
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        return _base_url(base), headers
+    if username and password:
+        headers["Authorization"] = f"Basic {_basic_auth(username, password)}"
+        return _base_url(base), headers
+    return _base_url(base), _setup_hint(
+        provider="mautic",
+        field_names=("access_token", "username", "password"),
+        tool_name=tool_name,
+        env_var="MAUTIC_ACCESS_TOKEN or MAUTIC_USERNAME + MAUTIC_PASSWORD",
+        display_name="Mautic",
+    )
+
+
+def _mautic_request(
+    tool_name: str,
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base, headers_or_error = _mautic_config(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    data = _request_json(method, f"{base}/api{endpoint}", params=params, json_body=json_body, headers=headers_or_error)
+    if isinstance(data, dict) and data.get("errors"):
+        raise RuntimeError(_dump_json(data["errors"], max_chars=1000))
+    return data
+
+
+def _mautic_collection(data: Any, key: str, *, limit: int) -> Any:
+    if isinstance(data, str):
+        return data
+    records = data.get(key, data) if isinstance(data, dict) else data
+    if isinstance(records, dict):
+        records = list(records.values())
+    if isinstance(records, list):
+        return records[:limit]
+    return records
+
+
+def _mautic_entity(data: Any, key: str, *, simple: bool = True) -> Any:
+    if isinstance(data, str):
+        return data
+    entity = data.get(key, data) if isinstance(data, dict) else data
+    if simple and isinstance(entity, dict):
+        fields = entity.get("fields")
+        if isinstance(fields, dict) and isinstance(fields.get("all"), dict):
+            return fields["all"]
+    return entity
+
+
 def _lemlist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, token_or_error = _token_config(
         provider="lemlist",
@@ -3066,6 +3159,468 @@ def emelia_add_contact_to_list(
         return f"[Error]: Emelia contact-list contact add failed: {e}"
 
 
+@tool
+def mautic_list_contacts(
+    search: str = "",
+    order_by: str = "",
+    order_direction: str = "",
+    start: int = 0,
+    limit: int = 30,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Mautic contacts.
+
+    Args:
+        search: Optional Mautic search string.
+        order_by: Optional field to sort by.
+        order_direction: Optional sort direction, asc or desc.
+        start: Result offset.
+        limit: Number of contacts to return, 1-100.
+        raw_data: Return raw Mautic entities instead of flattened fields.
+    """
+    try:
+        per_page = _limit(limit, default=30)
+        data = _mautic_request(
+            "mautic_list_contacts",
+            "GET",
+            "/contacts",
+            params={
+                "search": search.strip(),
+                "orderBy": order_by.strip(),
+                "orderByDir": order_direction.strip(),
+                "start": max(0, int(start or 0)),
+                "limit": per_page,
+            },
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        records = _mautic_collection(data, "contacts", limit=per_page)
+        if not raw_data and isinstance(records, list):
+            records = [_mautic_entity(record, "contact", simple=True) for record in records]
+        return _dump_json(records)
+    except Exception as e:
+        logger.error("mautic_list_contacts failed", exc_info=True)
+        return f"[Error]: Mautic contact listing failed: {e}"
+
+
+@tool
+def mautic_get_contact(
+    contact_id: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get a Mautic contact by ID."""
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        data = _mautic_request("mautic_get_contact", "GET", f"/contacts/{quote(contact_id, safe='')}", config=config)
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "contact", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_get_contact failed", exc_info=True)
+        return f"[Error]: Mautic contact lookup failed: {e}"
+
+
+@tool
+def mautic_create_contact(
+    email: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    company: str = "",
+    position: str = "",
+    title: str = "",
+    fields_json: str = "",
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create a Mautic contact.
+
+    Args:
+        email: Contact email address.
+        first_name: Optional first name.
+        last_name: Optional last name.
+        company: Optional company name.
+        position: Optional role or position.
+        title: Optional title.
+        fields_json: Optional JSON object of additional Mautic contact fields.
+        raw_data: Return raw Mautic entity instead of flattened fields.
+    """
+    try:
+        body = _json_object(fields_json, field_name="fields_json")
+        body.update(
+            _filtered(
+                {
+                    "email": email.strip(),
+                    "firstname": first_name.strip(),
+                    "lastname": last_name.strip(),
+                    "company": company.strip(),
+                    "position": position.strip(),
+                    "title": title.strip(),
+                }
+            )
+        )
+        if not body:
+            return "[Error]: provide email or fields_json."
+        data = _mautic_request("mautic_create_contact", "POST", "/contacts/new", json_body=body, config=config)
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "contact", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_create_contact failed", exc_info=True)
+        return f"[Error]: Mautic contact creation failed: {e}"
+
+
+@tool
+def mautic_update_contact(
+    contact_id: str,
+    fields_json: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update a Mautic contact with a JSON object of Mautic field aliases."""
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        body = _json_object(fields_json, field_name="fields_json")
+        if not body:
+            return "[Error]: fields_json is required."
+        data = _mautic_request(
+            "mautic_update_contact",
+            "PATCH",
+            f"/contacts/{quote(contact_id, safe='')}/edit",
+            json_body=body,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "contact", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_update_contact failed", exc_info=True)
+        return f"[Error]: Mautic contact update failed: {e}"
+
+
+@tool
+def mautic_delete_contact(
+    contact_id: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete a Mautic contact by ID."""
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        data = _mautic_request(
+            "mautic_delete_contact",
+            "DELETE",
+            f"/contacts/{quote(contact_id, safe='')}/delete",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "contact", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_delete_contact failed", exc_info=True)
+        return f"[Error]: Mautic contact deletion failed: {e}"
+
+
+@tool
+def mautic_list_companies(
+    search: str = "",
+    order_by: str = "",
+    order_direction: str = "",
+    start: int = 0,
+    limit: int = 30,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """List Mautic companies."""
+    try:
+        per_page = _limit(limit, default=30)
+        data = _mautic_request(
+            "mautic_list_companies",
+            "GET",
+            "/companies",
+            params={
+                "search": search.strip(),
+                "orderBy": order_by.strip(),
+                "orderByDir": order_direction.strip(),
+                "start": max(0, int(start or 0)),
+                "limit": per_page,
+            },
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        records = _mautic_collection(data, "companies", limit=per_page)
+        if not raw_data and isinstance(records, list):
+            records = [_mautic_entity(record, "company", simple=True) for record in records]
+        return _dump_json(records)
+    except Exception as e:
+        logger.error("mautic_list_companies failed", exc_info=True)
+        return f"[Error]: Mautic company listing failed: {e}"
+
+
+@tool
+def mautic_get_company(
+    company_id: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Get a Mautic company by ID."""
+    company_id = company_id.strip()
+    if not company_id:
+        return "[Error]: company_id is required."
+    try:
+        data = _mautic_request("mautic_get_company", "GET", f"/companies/{quote(company_id, safe='')}", config=config)
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "company", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_get_company failed", exc_info=True)
+        return f"[Error]: Mautic company lookup failed: {e}"
+
+
+@tool
+def mautic_create_company(
+    name: str,
+    fields_json: str = "",
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Create a Mautic company."""
+    if not name.strip():
+        return "[Error]: name is required."
+    try:
+        body = {"companyname": name.strip(), **_json_object(fields_json, field_name="fields_json")}
+        data = _mautic_request("mautic_create_company", "POST", "/companies/new", json_body=body, config=config)
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "company", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_create_company failed", exc_info=True)
+        return f"[Error]: Mautic company creation failed: {e}"
+
+
+@tool
+def mautic_update_company(
+    company_id: str,
+    fields_json: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Update a Mautic company with a JSON object of Mautic field aliases."""
+    company_id = company_id.strip()
+    if not company_id:
+        return "[Error]: company_id is required."
+    try:
+        body = _json_object(fields_json, field_name="fields_json")
+        if not body:
+            return "[Error]: fields_json is required."
+        data = _mautic_request(
+            "mautic_update_company",
+            "PATCH",
+            f"/companies/{quote(company_id, safe='')}/edit",
+            json_body=body,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "company", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_update_company failed", exc_info=True)
+        return f"[Error]: Mautic company update failed: {e}"
+
+
+@tool
+def mautic_delete_company(
+    company_id: str,
+    raw_data: bool = False,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Delete a Mautic company by ID."""
+    company_id = company_id.strip()
+    if not company_id:
+        return "[Error]: company_id is required."
+    try:
+        data = _mautic_request(
+            "mautic_delete_company",
+            "DELETE",
+            f"/companies/{quote(company_id, safe='')}/delete",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_mautic_entity(data, "company", simple=not raw_data))
+    except Exception as e:
+        logger.error("mautic_delete_company failed", exc_info=True)
+        return f"[Error]: Mautic company deletion failed: {e}"
+
+
+@tool
+def mautic_add_contact_to_segment(
+    contact_id: str,
+    segment_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a Mautic contact to a segment."""
+    if not contact_id.strip() or not segment_id.strip():
+        return "[Error]: contact_id and segment_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_add_contact_to_segment",
+            "POST",
+            f"/segments/{quote(segment_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/add",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_add_contact_to_segment failed", exc_info=True)
+        return f"[Error]: Mautic segment contact add failed: {e}"
+
+
+@tool
+def mautic_remove_contact_from_segment(
+    contact_id: str,
+    segment_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove a Mautic contact from a segment."""
+    if not contact_id.strip() or not segment_id.strip():
+        return "[Error]: contact_id and segment_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_remove_contact_from_segment",
+            "POST",
+            f"/segments/{quote(segment_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/remove",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_remove_contact_from_segment failed", exc_info=True)
+        return f"[Error]: Mautic segment contact removal failed: {e}"
+
+
+@tool
+def mautic_add_contact_to_campaign(
+    contact_id: str,
+    campaign_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a Mautic contact to a campaign."""
+    if not contact_id.strip() or not campaign_id.strip():
+        return "[Error]: contact_id and campaign_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_add_contact_to_campaign",
+            "POST",
+            f"/campaigns/{quote(campaign_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/add",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_add_contact_to_campaign failed", exc_info=True)
+        return f"[Error]: Mautic campaign contact add failed: {e}"
+
+
+@tool
+def mautic_remove_contact_from_campaign(
+    contact_id: str,
+    campaign_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove a Mautic contact from a campaign."""
+    if not contact_id.strip() or not campaign_id.strip():
+        return "[Error]: contact_id and campaign_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_remove_contact_from_campaign",
+            "POST",
+            f"/campaigns/{quote(campaign_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/remove",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_remove_contact_from_campaign failed", exc_info=True)
+        return f"[Error]: Mautic campaign contact removal failed: {e}"
+
+
+@tool
+def mautic_add_contact_to_company(
+    contact_id: str,
+    company_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Add a Mautic contact to a company."""
+    if not contact_id.strip() or not company_id.strip():
+        return "[Error]: contact_id and company_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_add_contact_to_company",
+            "POST",
+            f"/companies/{quote(company_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/add",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_add_contact_to_company failed", exc_info=True)
+        return f"[Error]: Mautic company contact add failed: {e}"
+
+
+@tool
+def mautic_remove_contact_from_company(
+    contact_id: str,
+    company_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Remove a Mautic contact from a company."""
+    if not contact_id.strip() or not company_id.strip():
+        return "[Error]: contact_id and company_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_remove_contact_from_company",
+            "POST",
+            f"/companies/{quote(company_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/remove",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_remove_contact_from_company failed", exc_info=True)
+        return f"[Error]: Mautic company contact removal failed: {e}"
+
+
+@tool
+def mautic_send_email_to_contact(
+    contact_id: str,
+    email_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Send a Mautic campaign/template email to a contact."""
+    if not contact_id.strip() or not email_id.strip():
+        return "[Error]: contact_id and email_id are required."
+    try:
+        data = _mautic_request(
+            "mautic_send_email_to_contact",
+            "POST",
+            f"/emails/{quote(email_id.strip(), safe='')}/contact/{quote(contact_id.strip(), safe='')}/send",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_send_email_to_contact failed", exc_info=True)
+        return f"[Error]: Mautic contact email send failed: {e}"
+
+
+@tool
+def mautic_send_segment_email(
+    email_id: str,
+    config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
+) -> str:
+    """Send a Mautic segment/list email."""
+    if not email_id.strip():
+        return "[Error]: email_id is required."
+    try:
+        data = _mautic_request(
+            "mautic_send_segment_email",
+            "POST",
+            f"/emails/{quote(email_id.strip(), safe='')}/send",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("mautic_send_segment_email failed", exc_info=True)
+        return f"[Error]: Mautic segment email send failed: {e}"
+
+
 MARKETING_CONTACT_SERVICE_TOOLS = [
     customerio_list_campaigns,
     customerio_get_campaign,
@@ -3161,4 +3716,22 @@ MARKETING_CONTACT_SERVICE_TOOLS = [
     emelia_add_contact_to_campaign,
     emelia_list_contact_lists,
     emelia_add_contact_to_list,
+    mautic_list_contacts,
+    mautic_get_contact,
+    mautic_create_contact,
+    mautic_update_contact,
+    mautic_delete_contact,
+    mautic_list_companies,
+    mautic_get_company,
+    mautic_create_company,
+    mautic_update_company,
+    mautic_delete_company,
+    mautic_add_contact_to_segment,
+    mautic_remove_contact_from_segment,
+    mautic_add_contact_to_campaign,
+    mautic_remove_contact_from_campaign,
+    mautic_add_contact_to_company,
+    mautic_remove_contact_from_company,
+    mautic_send_email_to_contact,
+    mautic_send_segment_email,
 ]

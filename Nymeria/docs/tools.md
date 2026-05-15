@@ -1790,6 +1790,7 @@ This batch includes:
 - `lemlist_list_campaigns(...)`, `lemlist_get_campaign_stats(...)`, `lemlist_list_activities(...)`, `lemlist_get_lead(email)`, `lemlist_create_lead(...)`, `lemlist_remove_lead(...)`, `lemlist_get_team()`, `lemlist_get_team_credits()`, `lemlist_list_unsubscribes(...)`, and `lemlist_update_unsubscribe(...)`. Reads are SAFE; lead and unsubscribe changes are MODERATE.
 - `sendy_create_campaign(...)`, `sendy_add_subscriber(...)`, `sendy_get_subscriber_status(...)`, `sendy_count_active_subscribers(list_id)`, and `sendy_update_subscriber_subscription(...)`. Status/count reads are SAFE; campaign/subscriber writes are MODERATE.
 - `emelia_list_campaigns(...)`, `emelia_get_campaign(campaign_id)`, `emelia_create_campaign(name)`, `emelia_update_campaign_status(...)`, `emelia_duplicate_campaign(...)`, `emelia_add_contact_to_campaign(...)`, `emelia_list_contact_lists(...)`, and `emelia_add_contact_to_list(...)`. Reads are SAFE; campaign/contact writes are MODERATE.
+- `mautic_list_contacts(...)`, `mautic_get_contact(contact_id)`, `mautic_create_contact(...)`, `mautic_update_contact(...)`, `mautic_delete_contact(contact_id)`, `mautic_list_companies(...)`, `mautic_get_company(company_id)`, `mautic_create_company(...)`, `mautic_update_company(...)`, `mautic_delete_company(company_id)`, contact segment/campaign/company membership helpers, and email send helpers. Contact/company reads are SAFE; writes, membership changes, deletes, and sends are MODERATE.
 
 Credential providers and fallback env vars:
 - ActiveCampaign: provider `activecampaign`, fields `api_key` and `api_url` / `base_url`; env fallbacks `ACTIVECAMPAIGN_API_KEY` and `ACTIVECAMPAIGN_BASE_URL`.
@@ -1807,6 +1808,7 @@ Credential providers and fallback env vars:
 - Lemlist: provider `lemlist`, fields `api_key` / `apiKey` / `token` / `value`, optional `base_url`; env fallbacks `LEMLIST_API_KEY` and `LEMLIST_BASE_URL`.
 - Sendy: provider `sendy`, fields `url` / `base_url` and `api_key` / `apiKey` / `value`; env fallbacks `SENDY_URL`, `SENDY_BASE_URL`, and `SENDY_API_KEY`.
 - Emelia: provider `emelia`, fields `api_key` / `apiKey` / `token` / `value`, optional `graphql_url`; env fallbacks `EMELIA_API_KEY` and `EMELIA_GRAPHQL_URL`.
+- Mautic: provider `mautic`, fields `base_url` / `url`, plus `access_token` / `token` for bearer auth or `username` plus `password` for basic auth; env fallback supports `MAUTIC_BASE_URL`, `MAUTIC_ACCESS_TOKEN`, `MAUTIC_USERNAME`, and `MAUTIC_PASSWORD`.
 
 ### Developer Platform Tools
 
