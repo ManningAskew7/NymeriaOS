@@ -29,6 +29,7 @@ from nymeria.tools.metadata import (
     ToolCategory,
     _description_from_tool,
     get_all_tool_metadata,
+    get_tool_metadata,
     refresh_builtin_tool_metadata,
 )
 from nymeria.tools import triggers as trigger_tools
@@ -701,6 +702,34 @@ def test_builtin_tool_metadata_is_generated_from_registered_tools():
         for name, tool in sorted(tools.items())
         if get_all_tool_metadata(name).description != _description_from_tool(tool)
     ] == []
+
+
+def test_builtin_tool_metadata_getters_reuse_loaded_cache(monkeypatch):
+    from nymeria.tools import metadata as metadata_module
+
+    refresh_builtin_tool_metadata()
+    calls = 0
+    original_generate = metadata_module._generate_builtin_tool_metadata
+
+    def counting_generate():
+        nonlocal calls
+        calls += 1
+        return original_generate()
+
+    monkeypatch.setattr(
+        metadata_module,
+        "_generate_builtin_tool_metadata",
+        counting_generate,
+    )
+
+    assert get_tool_metadata(ALL_TOOLS[0].name) is not None
+    assert get_all_tool_metadata(ALL_TOOLS[0].name) is not None
+    assert calls == 0
+
+    refresh_builtin_tool_metadata()
+    assert calls == 1
+    assert get_all_tool_metadata(ALL_TOOLS[0].name) is not None
+    assert calls == 1
 
 
 def test_builtin_tool_names_avoid_claude_oauth_reserved_mcp_namespace():

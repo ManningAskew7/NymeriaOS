@@ -2806,10 +2806,12 @@ class NymeriaAgent:
 
         # Reload the main tools module (__init__.py) to pick up new exports
         importlib.reload(tools_module)
+        from ..tools.metadata import refresh_builtin_tool_metadata
 
         # Get ALL_TOOLS directly from the reloaded module object
         # (using 'from ..tools import ALL_TOOLS' could get cached references)
         ALL_TOOLS = getattr(tools_module, 'ALL_TOOLS', [])
+        refresh_builtin_tool_metadata()
         new_core_names = {t.name for t in ALL_TOOLS}
         logger.info(f"ALL_TOOLS after reload: {list(new_core_names)}")
 
