@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -292,6 +293,120 @@ def test_onesimple_create_screenshot_uses_vault_token(tmp_path, monkeypatch):
     assert captured["params"]["output"] == "json"
 
 
+def test_dhl_track_uses_vault_api_key(tmp_path, monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="DHL",
+        provider="dhl",
+        kind="api_key",
+        allowed_targets=["native_tool:dhl_track_shipment"],
+        secret_fields={
+            "api_key": "dhl-key",
+            "base_url": "https://dhl.example",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"shipments": [{"id": "shipment-1"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.dhl_track_shipment.func(
+            tracking_number="TRACK1",
+            recipient_postal_code="90210",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == [{"id": "shipment-1"}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://dhl.example/track/shipments"
+    assert captured["params"] == {"trackingNumber": "TRACK1", "recipientPostalCode": "90210"}
+    assert captured["headers"]["DHL-API-Key"] == "dhl-key"
+
+
+def test_onfleet_complete_task_uses_basic_auth_and_body(monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    monkeypatch.setenv("ONFLEET_API_KEY", "onfleet-key")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"status": "ok"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.onfleet_complete_task.func(task_id="task-1", success=False, notes="missed"))
+
+    assert result == {"status": "ok"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://onfleet.com/api/v2/tasks/task-1/complete"
+    assert captured["json_body"] == {"completionDetails": {"success": False, "notes": "missed"}}
+    expected_auth = base64.b64encode(b"onfleet-key:").decode()
+    assert captured["headers"]["Authorization"] == f"Basic {expected_auth}"
+
+
+def test_phantombuster_launch_uses_vault_key_and_resolves_container(tmp_path, monkeypatch):
+    from nymeria.tools import business_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Phantombuster",
+        provider="phantombuster",
+        kind="api_key",
+        allowed_targets=["native_tool:*"],
+        secret_fields={
+            "api_key": "phantom-key",
+            "base_url": "https://phantom.example/api/v2",
+        },
+        created_by_user_id="alice",
+    )
+    requests = []
+
+    def fake_request(method, url, params=None, json_body=None, data=None, headers=None):
+        requests.append({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        if url.endswith("/agents/launch"):
+            return {"containerId": "container-1"}
+        return {"id": "container-1", "status": "running"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.phantombuster_launch_agent.func(
+            agent_id="agent-1",
+            arguments_json='{"profileUrl":"https://example.com"}',
+            fields_json='{"saveArguments": true}',
+            resolve_container=True,
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "container-1"
+    assert requests[0]["method"] == "POST"
+    assert requests[0]["url"] == "https://phantom.example/api/v2/agents/launch"
+    assert requests[0]["json_body"] == {
+        "id": "agent-1",
+        "saveArguments": True,
+        "arguments": {"profileUrl": "https://example.com"},
+    }
+    assert requests[0]["headers"]["X-Phantombuster-Key"] == "phantom-key"
+    assert requests[1]["url"] == "https://phantom.example/api/v2/containers/fetch"
+    assert requests[1]["params"] == {"id": "container-1"}
+
+
 def test_business_service_tools_are_registered_with_metadata():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
@@ -308,6 +423,17 @@ def test_business_service_tools_are_registered_with_metadata():
         "lingvanex_list_languages",
         "apitemplate_list_templates",
         "apitemplate_get_account",
+        "dhl_track_shipment",
+        "onfleet_test_auth",
+        "onfleet_list_tasks",
+        "onfleet_get_task",
+        "onfleet_list_workers",
+        "onfleet_get_worker",
+        "onfleet_list_teams",
+        "onfleet_get_team",
+        "phantombuster_list_agents",
+        "phantombuster_get_agent",
+        "phantombuster_get_agent_output",
     }
     moderate_names = {
         "bitly_create_bitlink",
@@ -324,6 +450,9 @@ def test_business_service_tools_are_registered_with_metadata():
         "onesimple_validate_email",
         "onesimple_expand_url",
         "onesimple_create_qr_code",
+        "onfleet_complete_task",
+        "phantombuster_launch_agent",
+        "phantombuster_delete_agent",
     }
 
     for name in safe_names:
@@ -345,13 +474,19 @@ def test_business_service_tool_schemas_hide_runtime_config():
     from nymeria.tools.business_service_integrations import (
         apitemplate_create_pdf,
         bitly_get_bitlink,
+        dhl_track_shipment,
         deepl_translate_text,
         lingvanex_translate_text,
         onesimple_create_pdf,
+        onfleet_complete_task,
+        phantombuster_launch_agent,
     )
 
     assert "config" not in apitemplate_create_pdf.args_schema.model_json_schema()["properties"]
     assert "config" not in bitly_get_bitlink.args_schema.model_json_schema()["properties"]
+    assert "config" not in dhl_track_shipment.args_schema.model_json_schema()["properties"]
     assert "config" not in deepl_translate_text.args_schema.model_json_schema()["properties"]
     assert "config" not in lingvanex_translate_text.args_schema.model_json_schema()["properties"]
     assert "config" not in onesimple_create_pdf.args_schema.model_json_schema()["properties"]
+    assert "config" not in onfleet_complete_task.args_schema.model_json_schema()["properties"]
+    assert "config" not in phantombuster_launch_agent.args_schema.model_json_schema()["properties"]

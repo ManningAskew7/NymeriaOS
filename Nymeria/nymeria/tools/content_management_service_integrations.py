@@ -21,6 +21,7 @@ _CONTENTFUL_PREVIEW_BASE_URL = "https://preview.contentful.com"
 _GHOST_API_VERSION = "v5.0"
 _STORYBLOK_CONTENT_BASE_URL = "https://api.storyblok.com/v2/cdn"
 _STORYBLOK_MANAGEMENT_BASE_URL = "https://mapi.storyblok.com/v1"
+_WEBFLOW_BASE_URL = "https://api.webflow.com/v2"
 
 _WORDPRESS_RESOURCES = {
     "post": "posts",
@@ -525,6 +526,66 @@ def _storyblok_management_config(
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+
+
+def _webflow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="webflow",
+            provider_aliases=("webflow_api", "webflow_oauth2_api"),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("webflow_base_url")
+        or _WEBFLOW_BASE_URL
+    )
+    token = _credential_value(
+        provider="webflow",
+        provider_aliases=("webflow_api", "webflow_oauth2_api"),
+        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("webflow_access_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="webflow",
+            field_names=("access_token", "value"),
+            tool_name=tool_name,
+            env_var="WEBFLOW_ACCESS_TOKEN",
+            display_name="Webflow",
+        )
+    base_url = _base_url(base)
+    if not base_url.endswith("/v2"):
+        base_url = f"{base_url}/v2"
+    return base_url, {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _webflow_request(
+    tool_name: str,
+    path: str,
+    config: Optional[RunnableConfig],
+    *,
+    method: str = "GET",
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+) -> str:
+    base_url, headers_or_error = _webflow_config(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    data = _request_json(
+        method,
+        f"{base_url}/{path.strip('/')}",
+        params=params,
+        json_body=json_body,
+        headers=headers_or_error,
+    )
+    return _dump_json(data)
 
 
 @tool
@@ -1335,6 +1396,223 @@ def storyblok_delete_story(
         return f"[Error]: Storyblok story delete failed: {e}"
 
 
+@tool
+def webflow_list_sites(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+    """List Webflow sites available to the saved connection.
+
+    Args:
+        config: Runtime context injected by Nymeria.
+    """
+    try:
+        data = _webflow_request("webflow_list_sites", "sites", config)
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and isinstance(parsed.get("sites"), list):
+            return _dump_json(parsed["sites"])
+        return data
+    except Exception as e:
+        logger.error("webflow_list_sites failed", exc_info=True)
+        return f"[Error]: Webflow site listing failed: {e}"
+
+
+@tool
+def webflow_list_site_collections(
+    site_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Webflow CMS collections for a site.
+
+    Args:
+        site_id: Webflow site ID.
+    """
+    if not site_id.strip():
+        return "[Error]: site_id is required."
+    try:
+        data = _webflow_request("webflow_list_site_collections", f"sites/{quote(site_id.strip(), safe='')}/collections", config)
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and isinstance(parsed.get("collections"), list):
+            return _dump_json(parsed["collections"])
+        return data
+    except Exception as e:
+        logger.error("webflow_list_site_collections failed", exc_info=True)
+        return f"[Error]: Webflow collection listing failed: {e}"
+
+
+@tool
+def webflow_get_collection(
+    collection_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Webflow CMS collection metadata and fields.
+
+    Args:
+        collection_id: Webflow collection ID.
+    """
+    if not collection_id.strip():
+        return "[Error]: collection_id is required."
+    try:
+        return _webflow_request("webflow_get_collection", f"collections/{quote(collection_id.strip(), safe='')}", config)
+    except Exception as e:
+        logger.error("webflow_get_collection failed", exc_info=True)
+        return f"[Error]: Webflow collection lookup failed: {e}"
+
+
+@tool
+def webflow_list_collection_items(
+    collection_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List items in a Webflow CMS collection.
+
+    Args:
+        collection_id: Webflow collection ID.
+        limit: Maximum items to return.
+        offset: Zero-based pagination offset.
+    """
+    if not collection_id.strip():
+        return "[Error]: collection_id is required."
+    try:
+        data = _webflow_request(
+            "webflow_list_collection_items",
+            f"collections/{quote(collection_id.strip(), safe='')}/items",
+            config,
+            params={"limit": _limit(limit, default=100, max_value=100), "offset": max(0, int(offset))},
+        )
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+            return _dump_json(parsed["items"])
+        return data
+    except Exception as e:
+        logger.error("webflow_list_collection_items failed", exc_info=True)
+        return f"[Error]: Webflow collection item listing failed: {e}"
+
+
+@tool
+def webflow_get_collection_item(
+    collection_id: str,
+    item_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Webflow CMS collection item.
+
+    Args:
+        collection_id: Webflow collection ID.
+        item_id: Webflow item ID.
+    """
+    if not collection_id.strip() or not item_id.strip():
+        return "[Error]: collection_id and item_id are required."
+    try:
+        return _webflow_request(
+            "webflow_get_collection_item",
+            f"collections/{quote(collection_id.strip(), safe='')}/items/{quote(item_id.strip(), safe='')}",
+            config,
+        )
+    except Exception as e:
+        logger.error("webflow_get_collection_item failed", exc_info=True)
+        return f"[Error]: Webflow collection item lookup failed: {e}"
+
+
+@tool
+def webflow_create_collection_item(
+    collection_id: str,
+    field_data_json: str,
+    live: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Webflow CMS collection item.
+
+    Args:
+        collection_id: Webflow collection ID.
+        field_data_json: JSON object keyed by Webflow field slug.
+        live: Publish directly to the live site when supported.
+    """
+    if not collection_id.strip():
+        return "[Error]: collection_id is required."
+    try:
+        field_data = _parse_json(field_data_json, expected=dict, label="field_data_json")
+        if not field_data:
+            return "[Error]: field_data_json must include at least one field."
+        suffix = "/live" if live else ""
+        return _webflow_request(
+            "webflow_create_collection_item",
+            f"collections/{quote(collection_id.strip(), safe='')}/items{suffix}",
+            config,
+            method="POST",
+            json_body={"fieldData": field_data},
+        )
+    except Exception as e:
+        logger.error("webflow_create_collection_item failed", exc_info=True)
+        return f"[Error]: Webflow collection item creation failed: {e}"
+
+
+@tool
+def webflow_update_collection_item(
+    collection_id: str,
+    item_id: str,
+    field_data_json: str,
+    live: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Webflow CMS collection item.
+
+    Args:
+        collection_id: Webflow collection ID.
+        item_id: Webflow item ID.
+        field_data_json: JSON object keyed by Webflow field slug.
+        live: Publish the update directly to the live site when supported.
+    """
+    if not collection_id.strip() or not item_id.strip():
+        return "[Error]: collection_id and item_id are required."
+    try:
+        field_data = _parse_json(field_data_json, expected=dict, label="field_data_json")
+        if not field_data:
+            return "[Error]: field_data_json must include at least one field."
+        suffix = "/live" if live else ""
+        return _webflow_request(
+            "webflow_update_collection_item",
+            f"collections/{quote(collection_id.strip(), safe='')}/items/{quote(item_id.strip(), safe='')}{suffix}",
+            config,
+            method="PATCH",
+            json_body={"fieldData": field_data},
+        )
+    except Exception as e:
+        logger.error("webflow_update_collection_item failed", exc_info=True)
+        return f"[Error]: Webflow collection item update failed: {e}"
+
+
+@tool
+def webflow_delete_collection_item(
+    collection_id: str,
+    item_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Webflow CMS collection item.
+
+    Args:
+        collection_id: Webflow collection ID.
+        item_id: Webflow item ID.
+    """
+    if not collection_id.strip() or not item_id.strip():
+        return "[Error]: collection_id and item_id are required."
+    try:
+        return _webflow_request(
+            "webflow_delete_collection_item",
+            f"collections/{quote(collection_id.strip(), safe='')}/items/{quote(item_id.strip(), safe='')}",
+            config,
+            method="DELETE",
+        )
+    except Exception as e:
+        logger.error("webflow_delete_collection_item failed", exc_info=True)
+        return f"[Error]: Webflow collection item deletion failed: {e}"
+
+
 CONTENT_MANAGEMENT_SERVICE_TOOLS = [
     wordpress_list_records,
     wordpress_get_record,
@@ -1358,4 +1636,12 @@ CONTENT_MANAGEMENT_SERVICE_TOOLS = [
     storyblok_publish_story,
     storyblok_unpublish_story,
     storyblok_delete_story,
+    webflow_list_sites,
+    webflow_list_site_collections,
+    webflow_get_collection,
+    webflow_list_collection_items,
+    webflow_get_collection_item,
+    webflow_create_collection_item,
+    webflow_update_collection_item,
+    webflow_delete_collection_item,
 ]

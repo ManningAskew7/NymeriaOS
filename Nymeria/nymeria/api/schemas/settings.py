@@ -173,6 +173,12 @@ class ServerSettingsUpdate(BaseModel):
     apitemplate_base_url: Optional[str] = None
     onesimple_api_token: Optional[str] = None
     onesimple_base_url: Optional[str] = None
+    dhl_api_key: Optional[str] = None
+    dhl_base_url: Optional[str] = None
+    onfleet_api_key: Optional[str] = None
+    onfleet_base_url: Optional[str] = None
+    phantombuster_api_key: Optional[str] = None
+    phantombuster_base_url: Optional[str] = None
     erpnext_api_key: Optional[str] = None
     erpnext_api_secret: Optional[str] = None
     erpnext_base_url: Optional[str] = None
@@ -369,6 +375,8 @@ class ServerSettingsUpdate(BaseModel):
     storyblok_space_id: Optional[str] = None
     storyblok_content_base_url: Optional[str] = None
     storyblok_management_base_url: Optional[str] = None
+    webflow_access_token: Optional[str] = None
+    webflow_base_url: Optional[str] = None
     netlify_access_token: Optional[str] = None
     netlify_base_url: Optional[str] = None
     uptimerobot_api_key: Optional[str] = None

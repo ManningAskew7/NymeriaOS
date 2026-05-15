@@ -62,7 +62,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (899)
+### Optional: Service Integration Tools (921)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -970,6 +970,28 @@ in the credential vault for provider-specific saved connections scoped to
 | 897 | `gotowebinar_get_registrant` | Integrations | SAFE | Get a GoToWebinar registrant |
 | 898 | `gotowebinar_create_registrant` | Integrations | MODERATE | Create a GoToWebinar registrant |
 | 899 | `gotowebinar_delete_registrant` | Integrations | MODERATE | Delete a GoToWebinar registrant |
+| 900 | `dhl_track_shipment` | Integrations | SAFE | Get DHL shipment tracking details |
+| 901 | `onfleet_test_auth` | Integrations | SAFE | Validate the saved Onfleet API connection |
+| 902 | `onfleet_list_tasks` | Integrations | SAFE | List Onfleet tasks |
+| 903 | `onfleet_get_task` | Integrations | SAFE | Get an Onfleet task by ID or short ID |
+| 904 | `onfleet_list_workers` | Integrations | SAFE | List Onfleet workers |
+| 905 | `onfleet_get_worker` | Integrations | SAFE | Get an Onfleet worker |
+| 906 | `onfleet_list_teams` | Integrations | SAFE | List Onfleet teams |
+| 907 | `onfleet_get_team` | Integrations | SAFE | Get an Onfleet team |
+| 908 | `onfleet_complete_task` | Integrations | MODERATE | Force-complete an Onfleet task |
+| 909 | `phantombuster_list_agents` | Integrations | SAFE | List Phantombuster agents |
+| 910 | `phantombuster_get_agent` | Integrations | SAFE | Get Phantombuster agent metadata |
+| 911 | `phantombuster_get_agent_output` | Integrations | SAFE | Get Phantombuster agent output |
+| 912 | `phantombuster_launch_agent` | Integrations | MODERATE | Launch a Phantombuster agent |
+| 913 | `phantombuster_delete_agent` | Integrations | MODERATE | Delete a Phantombuster agent |
+| 914 | `webflow_list_sites` | Integrations | SAFE | List Webflow sites |
+| 915 | `webflow_list_site_collections` | Integrations | SAFE | List Webflow CMS collections for a site |
+| 916 | `webflow_get_collection` | Integrations | SAFE | Get Webflow CMS collection metadata and fields |
+| 917 | `webflow_list_collection_items` | Integrations | SAFE | List Webflow CMS collection items |
+| 918 | `webflow_get_collection_item` | Integrations | SAFE | Get a Webflow CMS collection item |
+| 919 | `webflow_create_collection_item` | Integrations | MODERATE | Create a Webflow CMS collection item |
+| 920 | `webflow_update_collection_item` | Integrations | MODERATE | Update a Webflow CMS collection item |
+| 921 | `webflow_delete_collection_item` | Integrations | MODERATE | Delete a Webflow CMS collection item |
 ### Optional: Private B Tools (4)
 
 Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
@@ -1825,6 +1847,9 @@ This batch includes:
 - `lingvanex_translate_text(text, target_lang, source_lang?, platform?, translate_mode?)` and `lingvanex_list_languages()`. Translation is MODERATE because it sends user text to LingvaNex and consumes quota.
 - `apitemplate_list_templates(template_type?)`, `apitemplate_get_account()`, `apitemplate_create_image(template_id, overrides_json?)`, and `apitemplate_create_pdf(template_id, properties_json)`. Create operations are MODERATE because they generate billable remote artifacts.
 - `onesimple_create_pdf(url, ...)`, `onesimple_create_screenshot(url, ...)`, `onesimple_get_page_info(url, include_headers?)`, `onesimple_get_exchange_rate(value, from_currency, to_currency)`, `onesimple_get_image_metadata(image_url)`, `onesimple_validate_email(email)`, `onesimple_expand_url(url)`, and `onesimple_create_qr_code(content, ...)`. These are MODERATE because they send user-provided URLs, content, or addresses to an external API.
+- `dhl_track_shipment(tracking_number, recipient_postal_code?)` for shipment tracking.
+- `onfleet_test_auth()`, `onfleet_list_tasks(...)`, `onfleet_get_task(task_id)`, `onfleet_list_workers(...)`, `onfleet_get_worker(worker_id)`, `onfleet_list_teams(limit?)`, `onfleet_get_team(team_id)`, and `onfleet_complete_task(task_id, ...)`. Reads are SAFE; force-complete is MODERATE because it changes dispatch task state.
+- `phantombuster_list_agents(limit?)`, `phantombuster_get_agent(agent_id)`, `phantombuster_get_agent_output(agent_id, ...)`, `phantombuster_launch_agent(agent_id, ...)`, and `phantombuster_delete_agent(agent_id)`. Launch/delete are MODERATE because they run or remove remote automation agents.
 
 Credential providers and fallback env vars:
 - Bitly: provider `bitly`, fields `access_token`, `token`, `api_key`, or `value`; env fallback `BITLY_TOKEN`.
@@ -1834,6 +1859,9 @@ Credential providers and fallback env vars:
 - LingvaNex: provider `lingvanex`, fields `api_key`, `access_token`, `token`, or `value`; env fallback `LINGVANEX_API_KEY`. Use `base_url` / `url` or `LINGVANEX_BASE_URL` for non-default API roots.
 - APITemplate: provider `apitemplate`, fields `api_key`, `token`, or `value`; env fallback `APITEMPLATE_API_KEY`. Use `base_url` / `url` or `APITEMPLATE_BASE_URL` for non-default API roots.
 - One Simple API: provider `onesimple`, fields `api_token`, `api_key`, `token`, or `value`; env fallback `ONESIMPLE_API_TOKEN`. Use `base_url` / `url` or `ONESIMPLE_BASE_URL` for non-default API roots.
+- DHL: provider `dhl`, fields `api_key` / `apiKey` / `value`; env fallback `DHL_API_KEY`. Use `base_url` / `url` or `DHL_BASE_URL` for non-default API roots.
+- Onfleet: provider `onfleet`, fields `api_key` / `apiKey` / `token` / `value`; env fallback `ONFLEET_API_KEY`. Use `base_url` / `url` or `ONFLEET_BASE_URL` for non-default API roots.
+- Phantombuster: provider `phantombuster`, fields `api_key` / `apiKey` / `token` / `value`; env fallback `PHANTOMBUSTER_API_KEY`. Use `base_url` / `url` or `PHANTOMBUSTER_BASE_URL` for non-default API roots.
 
 ### Productivity Service Tools
 
@@ -2044,6 +2072,7 @@ This batch includes:
 - `contentful_list_records(resource, ...)` and `contentful_get_record(resource, record_id, ...)` for Contentful Delivery/Preview API reads. Both are SAFE.
 - `ghost_list_posts(...)`, `ghost_get_post(...)`, `ghost_create_post(...)`, `ghost_update_post(post_id, ...)`, and `ghost_delete_post(post_id)`. Reads use the Content API and are SAFE; Admin API mutations are MODERATE.
 - `storyblok_list_stories(...)`, `storyblok_get_story(...)`, `storyblok_publish_story(story_id)`, `storyblok_unpublish_story(story_id)`, and `storyblok_delete_story(story_id)`. Reads are SAFE; publish/unpublish/delete are MODERATE because they change public content state or remove content.
+- `webflow_list_sites()`, `webflow_list_site_collections(site_id)`, `webflow_get_collection(collection_id)`, `webflow_list_collection_items(collection_id, ...)`, `webflow_get_collection_item(collection_id, item_id)`, `webflow_create_collection_item(collection_id, field_data_json, live?)`, `webflow_update_collection_item(collection_id, item_id, field_data_json, live?)`, and `webflow_delete_collection_item(collection_id, item_id)`. Reads are SAFE; create/update/delete are MODERATE because they change CMS content.
 
 Credential providers and fallback env vars:
 - WordPress: provider `wordpress`, fields `url` / `site_url` / `base_url`, `username`, and `password` / `application_password`; env fallback `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`.
@@ -2051,6 +2080,7 @@ Credential providers and fallback env vars:
 - Contentful: provider `contentful`, fields `space_id` / `spaceId`, delivery token (`access_token`, `delivery_token`, or Contentful-style names), and optional preview token. Env fallback supports `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_PREVIEW_TOKEN`, `CONTENTFUL_BASE_URL`, and `CONTENTFUL_PREVIEW_BASE_URL`.
 - Ghost: provider `ghost`, fields `url`, `content_api_key`, and `admin_api_key` (`key_id:hex_secret`). Env fallback supports `GHOST_URL`, `GHOST_CONTENT_API_KEY`, `GHOST_ADMIN_API_KEY`, and `GHOST_API_VERSION`.
 - Storyblok: provider `storyblok`, fields `content_token`, `management_token`, and `space_id` / `spaceId`; env fallback supports `STORYBLOK_CONTENT_TOKEN`, `STORYBLOK_MANAGEMENT_TOKEN`, `STORYBLOK_SPACE_ID`, `STORYBLOK_CONTENT_BASE_URL`, and `STORYBLOK_MANAGEMENT_BASE_URL`.
+- Webflow: provider `webflow`, fields `access_token` / `accessToken` / `token` / `value`; env fallback `WEBFLOW_ACCESS_TOKEN`. Use `base_url` / `url` or `WEBFLOW_BASE_URL` for non-default API roots.
 
 ### Operations Monitoring Service Tools
 

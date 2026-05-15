@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Annotated, Any, Optional
@@ -22,6 +23,9 @@ _DEEPL_FREE_BASE_URL = "https://api-free.deepl.com/v2"
 _LINGVANEX_BASE_URL = "https://api-b2b.backenster.com/b1/api/v3"
 _APITEMPLATE_BASE_URL = "https://api.apitemplate.io/v1"
 _ONESIMPLE_BASE_URL = "https://onesimpleapi.com/api"
+_DHL_BASE_URL = "https://api-eu.dhl.com"
+_ONFLEET_BASE_URL = "https://onfleet.com/api/v2"
+_PHANTOMBUSTER_BASE_URL = "https://api.phantombuster.com/api/v2"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -92,6 +96,10 @@ def _absolute_url(value: str, *, field_name: str = "url") -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{field_name} must be an absolute http(s) URL")
     return value.strip()
+
+
+def _basic_auth(username: str, password: str = "") -> str:
+    return base64.b64encode(f"{username}:{password}".encode()).decode()
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -463,6 +471,132 @@ def _onesimple_get(
         f"{base_url}{endpoint}",
         params={**params, "token": token_or_error, "output": "json"},
         headers={"Accept": "application/json", "User-Agent": "Nymeria"},
+    )
+    return _dump_json(data)
+
+
+def _dhl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="dhl",
+            provider_aliases=("dhl_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("dhl_base_url")
+        or _DHL_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="dhl",
+        provider_aliases=("dhl_api",),
+        field_names=("api_key", "apiKey", "key", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("dhl_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="dhl",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="DHL_API_KEY",
+            display_name="DHL",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "DHL-API-Key": api_key,
+        "User-Agent": "Nymeria",
+    }
+
+
+def _onfleet_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="onfleet",
+            provider_aliases=("onfleet_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("onfleet_base_url")
+        or _ONFLEET_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="onfleet",
+        provider_aliases=("onfleet_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("onfleet_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="onfleet",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="ONFLEET_API_KEY",
+            display_name="Onfleet",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {_basic_auth(api_key)}",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _phantombuster_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="phantombuster",
+            provider_aliases=("phantombuster_api", "phantom_buster"),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("phantombuster_base_url")
+        or _PHANTOMBUSTER_BASE_URL
+    )
+    api_key = _credential_value(
+        provider="phantombuster",
+        provider_aliases=("phantombuster_api", "phantom_buster"),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("phantombuster_api_key")
+    if not api_key:
+        return _base_url(base), _setup_hint(
+            provider="phantombuster",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="PHANTOMBUSTER_API_KEY",
+            display_name="Phantombuster",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Phantombuster-Key": api_key,
+        "User-Agent": "Nymeria",
+    }
+
+
+def _onfleet_request(
+    tool_name: str,
+    path: str,
+    config: Optional[RunnableConfig],
+    *,
+    method: str = "GET",
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+) -> str:
+    base_url, headers_or_error = _onfleet_config(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    data = _request_json(
+        method,
+        f"{base_url}/{path.strip('/')}",
+        params=params,
+        json_body=json_body,
+        headers=headers_or_error,
     )
     return _dump_json(data)
 
@@ -1259,6 +1393,425 @@ def onesimple_create_qr_code(
         return f"[Error]: One Simple API QR-code creation failed: {e}"
 
 
+@tool
+def dhl_track_shipment(
+    tracking_number: str,
+    recipient_postal_code: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get DHL shipment tracking details.
+
+    Args:
+        tracking_number: DHL shipment tracking number.
+        recipient_postal_code: Optional recipient postal code for detailed tracking verification.
+    """
+    if not tracking_number.strip():
+        return "[Error]: tracking_number is required."
+    try:
+        base_url, headers_or_error = _dhl_config("dhl_track_shipment", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/track/shipments",
+            params={
+                "trackingNumber": tracking_number.strip(),
+                "recipientPostalCode": recipient_postal_code.strip(),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("shipments", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("dhl_track_shipment failed", exc_info=True)
+        return f"[Error]: DHL shipment tracking lookup failed: {e}"
+
+
+@tool
+def onfleet_test_auth(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+    """Validate the saved Onfleet API connection.
+
+    Args:
+        config: Runtime context injected by Nymeria.
+    """
+    try:
+        return _onfleet_request("onfleet_test_auth", "auth/test", config)
+    except Exception as e:
+        logger.error("onfleet_test_auth failed", exc_info=True)
+        return f"[Error]: Onfleet auth test failed: {e}"
+
+
+@tool
+def onfleet_list_tasks(
+    from_timestamp_ms: int = 0,
+    to_timestamp_ms: int = 0,
+    state_csv: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Onfleet tasks.
+
+    Args:
+        from_timestamp_ms: Optional start timestamp in Unix milliseconds.
+        to_timestamp_ms: Optional end timestamp in Unix milliseconds.
+        state_csv: Optional comma-separated Onfleet task state values, or "0,1,2,3" for all active states.
+        limit: Maximum tasks to return.
+    """
+    try:
+        data = _onfleet_request(
+            "onfleet_list_tasks",
+            "tasks/all",
+            config,
+            params={
+                "from": from_timestamp_ms or None,
+                "to": to_timestamp_ms or None,
+                "state": _csv(state_csv),
+            },
+        )
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list):
+            return _dump_json(parsed["tasks"][: _limit(limit, default=50, max_value=200)])
+        if isinstance(parsed, list):
+            return _dump_json(parsed[: _limit(limit, default=50, max_value=200)])
+        return data
+    except Exception as e:
+        logger.error("onfleet_list_tasks failed", exc_info=True)
+        return f"[Error]: Onfleet task listing failed: {e}"
+
+
+@tool
+def onfleet_get_task(
+    task_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Onfleet task by ID or short ID.
+
+    Args:
+        task_id: Onfleet task ID. Values up to 8 characters are treated as short IDs.
+    """
+    task_id = task_id.strip()
+    if not task_id:
+        return "[Error]: task_id is required."
+    path = f"tasks/{'shortId/' if len(task_id) <= 8 else ''}{quote(task_id, safe='')}"
+    try:
+        return _onfleet_request("onfleet_get_task", path, config)
+    except Exception as e:
+        logger.error("onfleet_get_task failed", exc_info=True)
+        return f"[Error]: Onfleet task lookup failed: {e}"
+
+
+@tool
+def onfleet_list_workers(
+    states_csv: str = "",
+    teams_csv: str = "",
+    phones_csv: str = "",
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Onfleet workers.
+
+    Args:
+        states_csv: Optional comma-separated worker state values.
+        teams_csv: Optional comma-separated team IDs.
+        phones_csv: Optional comma-separated phone numbers.
+        limit: Maximum workers to return.
+    """
+    try:
+        data = _onfleet_request(
+            "onfleet_list_workers",
+            "workers",
+            config,
+            params={
+                "states": _csv(states_csv),
+                "teams": _csv(teams_csv),
+                "phones": _csv(phones_csv),
+            },
+        )
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, list):
+            return _dump_json(parsed[: _limit(limit, default=100, max_value=500)])
+        if isinstance(parsed, dict) and isinstance(parsed.get("workers"), list):
+            return _dump_json(parsed["workers"][: _limit(limit, default=100, max_value=500)])
+        return data
+    except Exception as e:
+        logger.error("onfleet_list_workers failed", exc_info=True)
+        return f"[Error]: Onfleet worker listing failed: {e}"
+
+
+@tool
+def onfleet_get_worker(
+    worker_id: str,
+    include_analytics: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Onfleet worker by ID.
+
+    Args:
+        worker_id: Onfleet worker ID.
+        include_analytics: Include analytics details when supported by Onfleet.
+    """
+    if not worker_id.strip():
+        return "[Error]: worker_id is required."
+    try:
+        return _onfleet_request(
+            "onfleet_get_worker",
+            f"workers/{quote(worker_id.strip(), safe='')}",
+            config,
+            params={"analytics": "true" if include_analytics else None},
+        )
+    except Exception as e:
+        logger.error("onfleet_get_worker failed", exc_info=True)
+        return f"[Error]: Onfleet worker lookup failed: {e}"
+
+
+@tool
+def onfleet_list_teams(
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Onfleet teams.
+
+    Args:
+        limit: Maximum teams to return.
+    """
+    try:
+        data = _onfleet_request("onfleet_list_teams", "teams", config)
+        if data.startswith("[Error]:"):
+            return data
+        parsed = json.loads(data)
+        if isinstance(parsed, list):
+            return _dump_json(parsed[: _limit(limit, default=100, max_value=500)])
+        return data
+    except Exception as e:
+        logger.error("onfleet_list_teams failed", exc_info=True)
+        return f"[Error]: Onfleet team listing failed: {e}"
+
+
+@tool
+def onfleet_get_team(
+    team_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Onfleet team by ID.
+
+    Args:
+        team_id: Onfleet team ID.
+    """
+    if not team_id.strip():
+        return "[Error]: team_id is required."
+    try:
+        return _onfleet_request("onfleet_get_team", f"teams/{quote(team_id.strip(), safe='')}", config)
+    except Exception as e:
+        logger.error("onfleet_get_team failed", exc_info=True)
+        return f"[Error]: Onfleet team lookup failed: {e}"
+
+
+@tool
+def onfleet_complete_task(
+    task_id: str,
+    success: bool = True,
+    notes: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Force-complete an Onfleet task.
+
+    Args:
+        task_id: Onfleet task ID.
+        success: Whether the completion should be marked successful.
+        notes: Optional completion notes.
+    """
+    if not task_id.strip():
+        return "[Error]: task_id is required."
+    body: dict[str, Any] = {"completionDetails": {"success": success}}
+    if notes.strip():
+        body["completionDetails"]["notes"] = notes.strip()
+    try:
+        return _onfleet_request(
+            "onfleet_complete_task",
+            f"tasks/{quote(task_id.strip(), safe='')}/complete",
+            config,
+            method="POST",
+            json_body=body,
+        )
+    except Exception as e:
+        logger.error("onfleet_complete_task failed", exc_info=True)
+        return f"[Error]: Onfleet task completion failed: {e}"
+
+
+@tool
+def phantombuster_list_agents(
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Phantombuster agents.
+
+    Args:
+        limit: Maximum agents to return.
+    """
+    try:
+        base_url, headers_or_error = _phantombuster_config("phantombuster_list_agents", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/agents/fetch-all", headers=headers_or_error)
+        if isinstance(data, list):
+            return _dump_json(data[: _limit(limit, default=100, max_value=500)])
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("phantombuster_list_agents failed", exc_info=True)
+        return f"[Error]: Phantombuster agent listing failed: {e}"
+
+
+@tool
+def phantombuster_get_agent(
+    agent_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Phantombuster agent metadata.
+
+    Args:
+        agent_id: Phantombuster agent ID.
+    """
+    if not agent_id.strip():
+        return "[Error]: agent_id is required."
+    try:
+        base_url, headers_or_error = _phantombuster_config("phantombuster_get_agent", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/agents/fetch",
+            params={"id": agent_id.strip()},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("phantombuster_get_agent failed", exc_info=True)
+        return f"[Error]: Phantombuster agent lookup failed: {e}"
+
+
+@tool
+def phantombuster_get_agent_output(
+    agent_id: str,
+    resolve_data: bool = False,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Phantombuster agent output, optionally resolving the result object.
+
+    Args:
+        agent_id: Phantombuster agent ID.
+        resolve_data: Fetch and parse the result object for the returned container ID.
+        fields_json: Optional JSON object of additional query parameters.
+    """
+    if not agent_id.strip():
+        return "[Error]: agent_id is required."
+    try:
+        base_url, headers_or_error = _phantombuster_config("phantombuster_get_agent_output", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params = {"id": agent_id.strip(), **_json_object(fields_json, field_name="fields_json")}
+        data = _request_json(
+            "GET",
+            f"{base_url}/agents/fetch-output",
+            params=params,
+            headers=headers_or_error,
+        )
+        if not resolve_data:
+            return _dump_json(data)
+        container_id = data.get("containerId") if isinstance(data, dict) else None
+        if not container_id:
+            return _dump_json(data)
+        result = _request_json(
+            "GET",
+            f"{base_url}/containers/fetch-result-object",
+            params={"id": container_id},
+            headers=headers_or_error,
+        )
+        result_object = result.get("resultObject") if isinstance(result, dict) else None
+        if result_object is None:
+            return _dump_json({})
+        if isinstance(result_object, str):
+            try:
+                return _dump_json(json.loads(result_object))
+            except json.JSONDecodeError:
+                return _dump_json({"resultObject": result_object})
+        return _dump_json(result_object)
+    except Exception as e:
+        logger.error("phantombuster_get_agent_output failed", exc_info=True)
+        return f"[Error]: Phantombuster agent output lookup failed: {e}"
+
+
+@tool
+def phantombuster_launch_agent(
+    agent_id: str,
+    arguments_json: str = "",
+    bonus_argument_json: str = "",
+    fields_json: str = "",
+    resolve_container: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Launch a Phantombuster agent.
+
+    Args:
+        agent_id: Phantombuster agent ID.
+        arguments_json: Optional JSON object for the launch arguments.
+        bonus_argument_json: Optional JSON object for bonus arguments.
+        fields_json: Optional JSON object of additional launch fields.
+        resolve_container: Fetch the launched container after starting the agent.
+    """
+    if not agent_id.strip():
+        return "[Error]: agent_id is required."
+    try:
+        base_url, headers_or_error = _phantombuster_config("phantombuster_launch_agent", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = {"id": agent_id.strip(), **_json_object(fields_json, field_name="fields_json")}
+        arguments = _json_object(arguments_json, field_name="arguments_json")
+        if arguments:
+            body["arguments"] = arguments
+        bonus_argument = _json_object(bonus_argument_json, field_name="bonus_argument_json")
+        if bonus_argument:
+            body["bonusArgument"] = bonus_argument
+        data = _request_json("POST", f"{base_url}/agents/launch", json_body=body, headers=headers_or_error)
+        if resolve_container and isinstance(data, dict) and data.get("containerId"):
+            data = _request_json(
+                "GET",
+                f"{base_url}/containers/fetch",
+                params={"id": data["containerId"]},
+                headers=headers_or_error,
+            )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("phantombuster_launch_agent failed", exc_info=True)
+        return f"[Error]: Phantombuster agent launch failed: {e}"
+
+
+@tool
+def phantombuster_delete_agent(
+    agent_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Phantombuster agent.
+
+    Args:
+        agent_id: Phantombuster agent ID.
+    """
+    if not agent_id.strip():
+        return "[Error]: agent_id is required."
+    try:
+        base_url, headers_or_error = _phantombuster_config("phantombuster_delete_agent", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        _request_json("POST", f"{base_url}/agents/delete", json_body={"id": agent_id.strip()}, headers=headers_or_error)
+        return _dump_json({"success": True})
+    except Exception as e:
+        logger.error("phantombuster_delete_agent failed", exc_info=True)
+        return f"[Error]: Phantombuster agent deletion failed: {e}"
+
+
 BUSINESS_SERVICE_TOOLS = [
     bitly_get_bitlink,
     bitly_create_bitlink,
@@ -1285,4 +1838,18 @@ BUSINESS_SERVICE_TOOLS = [
     onesimple_validate_email,
     onesimple_expand_url,
     onesimple_create_qr_code,
+    dhl_track_shipment,
+    onfleet_test_auth,
+    onfleet_list_tasks,
+    onfleet_get_task,
+    onfleet_list_workers,
+    onfleet_get_worker,
+    onfleet_list_teams,
+    onfleet_get_team,
+    onfleet_complete_task,
+    phantombuster_list_agents,
+    phantombuster_get_agent,
+    phantombuster_get_agent_output,
+    phantombuster_launch_agent,
+    phantombuster_delete_agent,
 ]
