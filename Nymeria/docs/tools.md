@@ -1629,7 +1629,8 @@ Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
 `uproc.email` plus `uproc.api_key`. Data-table credentials use
 `baserow.token`, `nocodb.api_token`, `coda.access_token`, `grist.api_key`,
 `supabase.base_url` plus `supabase.service_role`, `quickbase.hostname` plus
-`quickbase.user_token`, `seatable.api_token`, and `stackby.api_key`.
+`quickbase.user_token`, `seatable.api_token`, `stackby.api_key`, and
+`kobotoolbox.api_token`.
 Transform credentials use
 `crypto.hmac_secret`, `crypto.private_key`, `jwt.secret`, `jwt.private_key`,
 `jwt.public_key`, and optional `jwt.algorithm`. Scope a
@@ -2137,6 +2138,7 @@ This batch includes:
 - `metabase_list_questions(...)`, `metabase_get_question(question_id)`, `metabase_query_question(question_id, ...)`, `metabase_list_dashboards(...)`, and `metabase_get_dashboard(dashboard_id)`. These are SAFE analytics reads; question execution may consume database resources.
 - `elasticsearch_list_indices(...)`, `elasticsearch_search(index, ...)`, `elasticsearch_get_document(index, document_id)`, `elasticsearch_index_document(...)`, and `elasticsearch_delete_document(...)`. Reads/searches are SAFE; index/delete operations are MODERATE because they change documents.
 - `splunk_list_saved_searches(...)`, `splunk_create_search_job(...)`, `splunk_get_search_job(search_id)`, and `splunk_get_search_results(search_id, ...)`. Listing/job reads are SAFE; search-job creation is MODERATE because it runs backend work and can consume Splunk capacity.
+- `rundeck_get_job_metadata(job_id, ...)` and `rundeck_execute_job(job_id, ...)`. Job metadata reads are SAFE; job execution is MODERATE because it starts Rundeck automation.
 
 Credential providers and fallback env vars:
 - Netlify: provider `netlify`, fields `access_token` / `api_key` / `token` / `value`; env fallback `NETLIFY_ACCESS_TOKEN`. Use `base_url` / `url` or `NETLIFY_BASE_URL` for non-default API roots.
@@ -2148,6 +2150,7 @@ Credential providers and fallback env vars:
 - Metabase: provider `metabase`, fields `base_url` / `url`, plus `session_token`, `api_key`, or `username` plus `password`; env fallback supports `METABASE_BASE_URL`, `METABASE_SESSION_TOKEN`, `METABASE_API_KEY`, `METABASE_USERNAME`, and `METABASE_PASSWORD`.
 - Elasticsearch: provider `elasticsearch`, `elastic`, or `elastic_cloud`, fields `base_url` / `url`, `api_key`, `bearer_token`, or `username` plus `password`; env fallback supports `ELASTICSEARCH_BASE_URL`, `ELASTICSEARCH_API_KEY`, `ELASTICSEARCH_BEARER_TOKEN`, `ELASTICSEARCH_USERNAME`, `ELASTICSEARCH_PASSWORD`, and `ELASTICSEARCH_IGNORE_SSL_ISSUES`.
 - Splunk: provider `splunk`, fields `auth_token`, `access_token`, `token`, or `value`, plus `base_url` / `url` and optional `allow_unauthorized_certs`; env fallback supports `SPLUNK_BASE_URL`, `SPLUNK_AUTH_TOKEN`, and `SPLUNK_ALLOW_UNAUTHORIZED_CERTS`.
+- Rundeck: provider `rundeck`, fields `token`, `api_token`, `access_token`, or `value`, plus `base_url` / `url`; env fallback supports `RUNDECK_BASE_URL` and `RUNDECK_TOKEN`.
 
 ### Enrichment Security Service Tools
 
@@ -2207,6 +2210,7 @@ This batch includes:
 - `quickbase_list_fields(table_id)`, `quickbase_query_records(table_id, ...)`, `quickbase_upsert_records(table_id, records_json, ...)`, and `quickbase_delete_records(table_id, where)`. Reads are SAFE; upsert/delete are MODERATE.
 - `seatable_get_metadata()`, `seatable_list_rows(table_name, ...)`, `seatable_get_row(table_name, row_id)`, `seatable_create_row(table_name, fields_json)`, `seatable_update_row(table_name, row_id, fields_json)`, and `seatable_delete_row(table_name, row_id)`. Reads are SAFE; create/update/delete are MODERATE.
 - `stackby_list_rows(stack_id, table, ...)`, `stackby_get_row(stack_id, table, row_id)`, `stackby_create_rows(stack_id, table, records_json)`, and `stackby_delete_rows(stack_id, table, row_ids)`. Reads are SAFE; create/delete are MODERATE.
+- `kobotoolbox_list_forms(...)`, `kobotoolbox_get_form(form_id)`, `kobotoolbox_redeploy_form(form_id)`, submission list/get/delete/validation helpers, REST hook list/get/log/retry helpers, and form media file list/get/delete/create helpers. Form/submission/hook/file reads are SAFE; redeploy, delete, validation update, retry, and file creation operations are MODERATE because they change form state or data.
 
 Credential providers and fallback env vars:
 - Baserow: provider `baserow`, fields `token`, `api_token`, `apiKey`, `api_key`, `database_token`, or `value`; env fallback `BASEROW_API_TOKEN`. Use `base_url` / `host` / `url` or `BASEROW_BASE_URL` for self-hosted Baserow.
@@ -2220,6 +2224,7 @@ Credential providers and fallback env vars:
 - Quickbase: provider `quickbase`, fields `user_token`, `api_key`, `token`, or `value`, plus `hostname`; env fallbacks `QUICKBASE_USER_TOKEN` and `QUICKBASE_HOSTNAME`. Use `base_url` / `url` or `QUICKBASE_BASE_URL` for non-default API roots.
 - SeaTable: provider `seatable`, fields `api_token`, `token`, or `value`; env fallback `SEATABLE_API_TOKEN`. Use `base_url` / `domain` / `url` or `SEATABLE_BASE_URL` for self-hosted SeaTable.
 - Stackby: provider `stackby`, fields `api_key`, `apiKey`, `api_token`, `token`, or `value`; env fallback `STACKBY_API_KEY`. Use `base_url` / `host` / `url` or `STACKBY_BASE_URL` for non-default API roots.
+- KoBoToolbox: provider `kobotoolbox`, fields `api_token`, `apiToken`, `token`, or `value`; env fallback `KOBOTOOLBOX_API_TOKEN`. Use `base_url` / `host` / `url` or `KOBOTOOLBOX_BASE_URL` for self-hosted or regional KoBoToolbox hosts.
 
 ### Chat Platform Service Tools
 

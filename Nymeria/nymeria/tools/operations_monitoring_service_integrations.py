@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 from typing import Annotated, Any, Optional
 from urllib.parse import quote, urlparse
 
@@ -483,6 +484,73 @@ def _splunk_config(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }, verify
+
+
+def _rundeck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="rundeck",
+            provider_aliases=("rundeck_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("rundeck_base_url")
+    )
+    if not base:
+        return "", (
+            '[Error]: No Rundeck base URL found. Save a Rundeck credential with "base_url" / "url", '
+            "or set RUNDECK_BASE_URL."
+        )
+    token = _credential_value(
+        provider="rundeck",
+        provider_aliases=("rundeck_api",),
+        field_names=("token", "api_token", "apiToken", "access_token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("rundeck_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="rundeck",
+            field_names=("token", "api_token", "value"),
+            tool_name=tool_name,
+            env_var="RUNDECK_TOKEN",
+            display_name="Rundeck",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+        "X-Rundeck-Auth-Token": str(token),
+    }
+
+
+def _rundeck_arg_string(arguments_json: str) -> str:
+    if not arguments_json.strip():
+        return ""
+    try:
+        parsed = json.loads(arguments_json)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"arguments_json must be valid JSON: {e}") from e
+    if isinstance(parsed, dict):
+        items = parsed.items()
+    elif isinstance(parsed, list):
+        items = []
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                raise ValueError("arguments_json list entries must be objects")
+            name = entry.get("name")
+            value = entry.get("value")
+            if name is not None:
+                items.append((str(name), "" if value is None else str(value)))
+    else:
+        raise ValueError("arguments_json must be a JSON object or array")
+    parts: list[str] = []
+    for name, value in items:
+        clean_name = str(name).strip().lstrip("-")
+        if clean_name:
+            parts.append(f"-{clean_name} {shlex.quote(str(value))}")
+    return " ".join(parts)
 
 
 def _netlify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -2234,6 +2302,75 @@ def splunk_get_search_results(
         return f"[Error]: Splunk search results lookup failed: {e}"
 
 
+@tool
+def rundeck_get_job_metadata(
+    job_id: str,
+    api_version: int = 18,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Rundeck job metadata by job ID.
+
+    Args:
+        job_id: Rundeck job UUID.
+        api_version: Rundeck API version to use. Defaults to 18.
+    """
+    job_id = job_id.strip()
+    if not job_id:
+        return "[Error]: job_id is required."
+    try:
+        base_url, headers_or_error = _rundeck_config("rundeck_get_job_metadata", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        version = max(14, int(api_version or 18))
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/{version}/job/{quote(job_id, safe='')}/info",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("rundeck_get_job_metadata failed", exc_info=True)
+        return f"[Error]: Rundeck job metadata lookup failed: {e}"
+
+
+@tool
+def rundeck_execute_job(
+    job_id: str,
+    arguments_json: str = "",
+    node_filter: str = "",
+    api_version: int = 14,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Execute a Rundeck job.
+
+    Args:
+        job_id: Rundeck job UUID.
+        arguments_json: Optional JSON object of option names to values, or list of {"name","value"} objects.
+        node_filter: Optional Rundeck node filter.
+        api_version: Rundeck API version to use. Defaults to 14.
+    """
+    job_id = job_id.strip()
+    if not job_id:
+        return "[Error]: job_id is required."
+    try:
+        base_url, headers_or_error = _rundeck_config("rundeck_execute_job", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        version = max(14, int(api_version or 14))
+        body = {"argString": _rundeck_arg_string(arguments_json)}
+        data = _request_json(
+            "POST",
+            f"{base_url}/api/{version}/job/{quote(job_id, safe='')}/run",
+            params={"filter": node_filter.strip()},
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("rundeck_execute_job failed", exc_info=True)
+        return f"[Error]: Rundeck job execution failed: {e}"
+
+
 OPERATIONS_MONITORING_SERVICE_TOOLS = [
     netlify_list_sites,
     netlify_get_site,
@@ -2290,4 +2427,6 @@ OPERATIONS_MONITORING_SERVICE_TOOLS = [
     splunk_create_search_job,
     splunk_get_search_job,
     splunk_get_search_results,
+    rundeck_get_job_metadata,
+    rundeck_execute_job,
 ]

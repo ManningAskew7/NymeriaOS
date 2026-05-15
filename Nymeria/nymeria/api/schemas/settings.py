@@ -395,6 +395,8 @@ class ServerSettingsUpdate(BaseModel):
     webflow_base_url: Optional[str] = None
     netlify_access_token: Optional[str] = None
     netlify_base_url: Optional[str] = None
+    rundeck_base_url: Optional[str] = None
+    rundeck_token: Optional[str] = None
     uptimerobot_api_key: Optional[str] = None
     uptimerobot_base_url: Optional[str] = None
     pagerduty_api_token: Optional[str] = None
@@ -467,6 +469,8 @@ class ServerSettingsUpdate(BaseModel):
     bubble_base_url: Optional[str] = None
     cockpit_base_url: Optional[str] = None
     cockpit_access_token: Optional[str] = None
+    kobotoolbox_api_token: Optional[str] = None
+    kobotoolbox_base_url: Optional[str] = None
     telegram_api_base_url: Optional[str] = None
     webex_access_token: Optional[str] = None
     webex_base_url: Optional[str] = None
