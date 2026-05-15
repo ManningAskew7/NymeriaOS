@@ -163,6 +163,16 @@ Set the API key for your chosen provider:
 | `JIRA_BASE_URL` | Jira | Jira Cloud site base URL, such as `https://example.atlassian.net` |
 | `CLICKUP_ACCESS_TOKEN` | ClickUp | Optional env fallback for ClickUp tools; credential vault provider `clickup` is preferred |
 | `CLICKUP_BASE_URL` | ClickUp | Optional ClickUp API base URL override |
+| `MONDAY_API_TOKEN` | Monday | Optional env fallback for Monday tools; credential vault provider `monday` is preferred |
+| `MONDAY_API_URL` | Monday | Optional Monday GraphQL API URL override |
+| `TAIGA_AUTH_TOKEN` | Taiga | Optional env fallback auth token for Taiga tools; credential vault provider `taiga` is preferred |
+| `TAIGA_USERNAME` | Taiga | Optional Taiga username fallback for login-based auth |
+| `TAIGA_PASSWORD` | Taiga | Optional Taiga password fallback for login-based auth |
+| `TAIGA_BASE_URL` | Taiga | Optional Taiga API base URL or instance root override |
+| `WEKAN_BASE_URL` | Wekan | Wekan instance root URL; credential vault provider `wekan` is preferred |
+| `WEKAN_TOKEN` | Wekan | Optional env fallback session token for Wekan tools |
+| `WEKAN_USERNAME` | Wekan | Optional Wekan username fallback for login-based auth |
+| `WEKAN_PASSWORD` | Wekan | Optional Wekan password fallback for login-based auth |
 | `SLACK_BOT_TOKEN` | Slack | Optional env fallback for Slack tools; credential vault provider `slack` is preferred |
 | `SLACK_ACCESS_TOKEN` | Slack | Optional alternate env fallback for Slack tools |
 | `SLACK_BASE_URL` | Slack | Optional Slack Web API base URL override |
@@ -709,6 +719,16 @@ reachable from the backend process.
 | `JIRA_BASE_URL` | - | Jira Cloud site base URL |
 | `CLICKUP_ACCESS_TOKEN` | - | ClickUp access token fallback |
 | `CLICKUP_BASE_URL` | `https://api.clickup.com/api/v2` | ClickUp API base URL |
+| `MONDAY_API_TOKEN` | - | Monday API token fallback |
+| `MONDAY_API_URL` | `https://api.monday.com/v2` | Monday GraphQL API URL |
+| `TAIGA_AUTH_TOKEN` | - | Taiga auth token fallback |
+| `TAIGA_USERNAME` | - | Taiga username fallback |
+| `TAIGA_PASSWORD` | - | Taiga password fallback |
+| `TAIGA_BASE_URL` | `https://api.taiga.io/api/v1` | Taiga API base URL |
+| `WEKAN_BASE_URL` | - | Wekan instance root URL |
+| `WEKAN_TOKEN` | - | Wekan session token fallback |
+| `WEKAN_USERNAME` | - | Wekan username fallback |
+| `WEKAN_PASSWORD` | - | Wekan password fallback |
 | `SLACK_BOT_TOKEN` | - | Slack bot token fallback |
 | `SLACK_ACCESS_TOKEN` | - | Slack access token fallback |
 | `SLACK_BASE_URL` | `https://slack.com/api` | Slack Web API base URL |

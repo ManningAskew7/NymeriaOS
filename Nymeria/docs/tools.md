@@ -860,6 +860,44 @@ in the credential vault for provider-specific saved connections scoped to
 | 780 | `cockpit_list_singletons` | Integrations | SAFE | List Cockpit singleton names |
 | 781 | `cockpit_get_singleton` | Integrations | SAFE | Get a Cockpit singleton |
 | 782 | `cockpit_submit_form` | Integrations | MODERATE | Submit a Cockpit form |
+| 783 | `monday_get_me` | Integrations | SAFE | Get the current Monday user |
+| 784 | `monday_list_boards` | Integrations | SAFE | List Monday boards |
+| 785 | `monday_get_board` | Integrations | SAFE | Get a Monday board by ID |
+| 786 | `monday_create_board` | Integrations | MODERATE | Create a Monday board |
+| 787 | `monday_archive_board` | Integrations | MODERATE | Archive a Monday board |
+| 788 | `monday_list_board_columns` | Integrations | SAFE | List Monday board columns |
+| 789 | `monday_create_board_column` | Integrations | MODERATE | Create a Monday board column |
+| 790 | `monday_list_board_groups` | Integrations | SAFE | List Monday board groups |
+| 791 | `monday_create_board_group` | Integrations | MODERATE | Create a Monday board group |
+| 792 | `monday_list_items` | Integrations | SAFE | List Monday board items |
+| 793 | `monday_get_item` | Integrations | SAFE | Get Monday items by ID |
+| 794 | `monday_create_item` | Integrations | MODERATE | Create a Monday item |
+| 795 | `monday_update_item_columns` | Integrations | MODERATE | Update Monday item column values |
+| 796 | `monday_add_item_update` | Integrations | MODERATE | Add an update/comment to a Monday item |
+| 797 | `monday_move_item` | Integrations | MODERATE | Move a Monday item to another group |
+| 798 | `monday_delete_item` | Integrations | MODERATE | Delete a Monday item |
+| 799 | `taiga_list_projects` | Integrations | SAFE | List Taiga projects |
+| 800 | `taiga_list_records` | Integrations | SAFE | List Taiga epics, issues, tasks, or user stories |
+| 801 | `taiga_get_record` | Integrations | SAFE | Get a Taiga epic, issue, task, or user story |
+| 802 | `taiga_create_record` | Integrations | MODERATE | Create a Taiga epic, issue, task, or user story |
+| 803 | `taiga_update_record` | Integrations | MODERATE | Update a Taiga epic, issue, task, or user story |
+| 804 | `taiga_delete_record` | Integrations | MODERATE | Delete a Taiga epic, issue, task, or user story |
+| 805 | `wekan_get_current_user` | Integrations | SAFE | Get the current Wekan user |
+| 806 | `wekan_list_users` | Integrations | SAFE | List Wekan users |
+| 807 | `wekan_list_user_boards` | Integrations | SAFE | List Wekan boards for a user |
+| 808 | `wekan_get_board` | Integrations | SAFE | Get a Wekan board by ID |
+| 809 | `wekan_create_board` | Integrations | MODERATE | Create a Wekan board |
+| 810 | `wekan_delete_board` | Integrations | MODERATE | Delete a Wekan board |
+| 811 | `wekan_list_lists` | Integrations | SAFE | List Wekan lists on a board |
+| 812 | `wekan_create_list` | Integrations | MODERATE | Create a Wekan list |
+| 813 | `wekan_delete_list` | Integrations | MODERATE | Delete a Wekan list |
+| 814 | `wekan_list_cards` | Integrations | SAFE | List Wekan cards from a list or swimlane |
+| 815 | `wekan_get_card` | Integrations | SAFE | Get a Wekan card by ID |
+| 816 | `wekan_create_card` | Integrations | MODERATE | Create a Wekan card |
+| 817 | `wekan_update_card` | Integrations | MODERATE | Update a Wekan card |
+| 818 | `wekan_delete_card` | Integrations | MODERATE | Delete a Wekan card |
+| 819 | `wekan_list_card_comments` | Integrations | SAFE | List comments on a Wekan card |
+| 820 | `wekan_add_card_comment` | Integrations | MODERATE | Add a comment to a Wekan card |
 
 ### Optional: Private B Tools (4)
 
@@ -1762,10 +1800,16 @@ Credential providers and fallback env vars:
 This batch includes:
 - `jira_get_myself()`, `jira_list_projects(query?, limit?)`, `jira_search_issues(jql, fields?, limit?)`, `jira_get_issue(issue_key, fields?, expand?)`, `jira_create_issue(...)`, `jira_update_issue(...)`, `jira_list_issue_transitions(issue_key)`, `jira_list_users(query, limit?)`, `jira_list_issue_comments(issue_key, limit?)`, and `jira_add_issue_comment(issue_key, body)`. Create/update/comment operations are MODERATE because they change Jira state.
 - `clickup_list_teams()`, `clickup_list_spaces(team_id, archived?)`, `clickup_list_folders(space_id, archived?)`, `clickup_list_lists(folder_id?, space_id?, archived?)`, `clickup_get_task(task_id, include_subtasks?, include_markdown_description?)`, `clickup_list_tasks(...)`, `clickup_create_task(...)`, `clickup_update_task(...)`, `clickup_list_task_comments(task_id)`, and `clickup_add_task_comment(task_id, comment_text, notify_all?)`. Create/update/comment operations are MODERATE because they change ClickUp state.
+- `monday_get_me()`, `monday_list_boards(limit?, page?)`, `monday_get_board(board_id)`, `monday_create_board(...)`, `monday_archive_board(board_id)`, `monday_list_board_columns(board_id)`, `monday_create_board_column(...)`, `monday_list_board_groups(board_id)`, `monday_create_board_group(...)`, `monday_list_items(...)`, `monday_get_item(item_ids)`, `monday_create_item(...)`, `monday_update_item_columns(...)`, `monday_add_item_update(item_id, body)`, `monday_move_item(item_id, group_id)`, and `monday_delete_item(item_id)`. Create/archive/update/move/delete operations are MODERATE because they change Monday state.
+- `taiga_list_projects(query?, member_id?, limit?)`, `taiga_list_records(resource, ...)`, `taiga_get_record(resource, record_id)`, `taiga_create_record(...)`, `taiga_update_record(...)`, and `taiga_delete_record(resource, record_id)`. Create/update/delete operations are MODERATE because they change Taiga state.
+- `wekan_get_current_user()`, `wekan_list_users()`, `wekan_list_user_boards(user_id?, limit?)`, `wekan_get_board(board_id)`, `wekan_create_board(...)`, `wekan_delete_board(board_id)`, `wekan_list_lists(board_id, limit?)`, `wekan_create_list(board_id, title)`, `wekan_delete_list(board_id, list_id)`, `wekan_list_cards(...)`, `wekan_get_card(...)`, `wekan_create_card(...)`, `wekan_update_card(...)`, `wekan_delete_card(...)`, `wekan_list_card_comments(board_id, card_id, limit?)`, and `wekan_add_card_comment(...)`. Create/update/delete/comment operations are MODERATE because they change Wekan state.
 
 Credential providers and fallback env vars:
 - Jira: provider `jira`, fields `access_token`, `bearer_token`, `token`, or `value` for bearer auth; or `email` / `username` plus `api_token` / `apiToken` / `password` for basic auth. Use `base_url` / `domain` / `url` / `site_url` or `JIRA_BASE_URL` for the Jira Cloud site, such as `https://example.atlassian.net`. Env fallback supports `JIRA_ACCESS_TOKEN` or `JIRA_EMAIL` plus `JIRA_API_TOKEN`.
 - ClickUp: provider `clickup`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `CLICKUP_ACCESS_TOKEN`. Use `base_url` / `url` or `CLICKUP_BASE_URL` for non-default API roots.
+- Monday: provider `monday`, fields `api_token`, `apiToken`, `access_token`, `token`, or `value`; env fallback `MONDAY_API_TOKEN`. Use `api_url` / `graphql_url` / `base_url` / `url` or `MONDAY_API_URL` for non-default GraphQL endpoints.
+- Taiga: provider `taiga`, fields `auth_token`, `access_token`, `bearer_token`, `token`, or `value`; env fallback `TAIGA_AUTH_TOKEN`. Username/password login is also supported with `username` plus `password`, or `TAIGA_USERNAME` plus `TAIGA_PASSWORD`. Use `api_url` / `base_url` / `url` or `TAIGA_BASE_URL` for self-hosted instances.
+- Wekan: provider `wekan`, fields `session_token`, `token`, `access_token`, `bearer_token`, or `value`; env fallback `WEKAN_TOKEN`. Username/password login is also supported with `username` plus `password`, or `WEKAN_USERNAME` plus `WEKAN_PASSWORD`. Use `base_url` / `url` or `WEKAN_BASE_URL` for the Wekan instance root.
 
 ### Collaboration And Data Service Tools
 

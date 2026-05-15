@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _CLICKUP_BASE_URL = "https://api.clickup.com/api/v2"
+_MONDAY_API_URL = "https://api.monday.com/v2"
+_TAIGA_BASE_URL = "https://api.taiga.io/api/v1"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -60,6 +62,26 @@ def _base_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base URL must be an absolute http(s) URL")
     return value.strip().rstrip("/")
+
+
+def _bearer_header_value(token: str) -> str:
+    token = token.strip()
+    if token.lower().startswith("bearer "):
+        return token
+    return f"Bearer {token}"
+
+
+def _json_object_arg(value: str, field_name: str) -> dict[str, Any]:
+    value = value.strip()
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{field_name} must be a valid JSON object") from e
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return parsed
 
 
 def _settings_value(name: str) -> Optional[str]:
@@ -250,6 +272,169 @@ def _clickup_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     }
 
 
+def _monday_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    api_url = (
+        _credential_value(
+            provider="monday",
+            provider_aliases=("monday_com", "mondaycom", "monday_api", "mondaycom_api"),
+            field_names=("api_url", "graphql_url", "base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("monday_api_url")
+        or _MONDAY_API_URL
+    )
+    token = _credential_value(
+        provider="monday",
+        provider_aliases=("monday_com", "mondaycom", "monday_api", "mondaycom_api"),
+        field_names=("api_token", "apiToken", "access_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("monday_api_token")
+    if not token:
+        return _base_url(api_url), _setup_hint(
+            provider="monday",
+            field_names=("api_token", "apiToken", "access_token", "value"),
+            tool_name=tool_name,
+            env_var="MONDAY_API_TOKEN",
+            display_name="Monday",
+        )
+    return _base_url(api_url), {
+        "Accept": "application/json",
+        "API-Version": "2023-10",
+        "Authorization": _bearer_header_value(token),
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _taiga_api_base(value: str) -> str:
+    base = _base_url(value)
+    return base if base.endswith("/api/v1") else f"{base}/api/v1"
+
+
+def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    raw_base = (
+        _credential_value(
+            provider="taiga",
+            provider_aliases=("taiga_api",),
+            field_names=("api_url", "base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("taiga_base_url")
+        or _TAIGA_BASE_URL
+    )
+    base = _taiga_api_base(raw_base)
+    token = _credential_value(
+        provider="taiga",
+        provider_aliases=("taiga_api",),
+        field_names=("auth_token", "access_token", "bearer_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("taiga_auth_token")
+    username = _credential_value(
+        provider="taiga",
+        provider_aliases=("taiga_api",),
+        field_names=("username", "email", "user"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("taiga_username")
+    password = _credential_value(
+        provider="taiga",
+        provider_aliases=("taiga_api",),
+        field_names=("password",),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("taiga_password")
+
+    if not token and username and password:
+        data = _request_json(
+            "POST",
+            f"{base}/auth",
+            json_body={"type": "normal", "username": username, "password": password},
+            headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"},
+        )
+        token = data.get("auth_token") if isinstance(data, dict) else None
+    if not token:
+        return base, _setup_hint(
+            provider="taiga",
+            field_names=("auth_token", "username", "password", "value"),
+            tool_name=tool_name,
+            env_var="TAIGA_AUTH_TOKEN or TAIGA_USERNAME and TAIGA_PASSWORD",
+            display_name="Taiga",
+        )
+    return base, {
+        "Accept": "application/json",
+        "Authorization": _bearer_header_value(token),
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    raw_base = (
+        _credential_value(
+            provider="wekan",
+            provider_aliases=("wekan_api",),
+            field_names=("base_url", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("wekan_base_url")
+    )
+    if not raw_base:
+        return "", (
+            "[Error]: No Wekan base URL found. Save a Wekan credential with field "
+            '"url" or "base_url", or set WEKAN_BASE_URL.'
+        )
+    base = _base_url(raw_base)
+    token = _credential_value(
+        provider="wekan",
+        provider_aliases=("wekan_api",),
+        field_names=("session_token", "token", "access_token", "bearer_token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("wekan_token")
+    username = _credential_value(
+        provider="wekan",
+        provider_aliases=("wekan_api",),
+        field_names=("username", "email", "user"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("wekan_username")
+    password = _credential_value(
+        provider="wekan",
+        provider_aliases=("wekan_api",),
+        field_names=("password",),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("wekan_password")
+
+    if not token and username and password:
+        data = _request_json(
+            "POST",
+            f"{base}/users/login",
+            json_body={"username": username, "password": password},
+            headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"},
+        )
+        token = data.get("token") if isinstance(data, dict) else None
+    if not token:
+        return base, _setup_hint(
+            provider="wekan",
+            field_names=("token", "session_token", "username", "password", "value"),
+            tool_name=tool_name,
+            env_var="WEKAN_TOKEN or WEKAN_USERNAME and WEKAN_PASSWORD",
+            display_name="Wekan",
+        )
+    return base, {
+        "Accept": "application/json",
+        "Authorization": _bearer_header_value(token),
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
 def _jira_adf_text(text: str) -> dict[str, Any]:
     return {
         "type": "doc",
@@ -349,6 +534,83 @@ def _clickup_task_body(
     if body.get("markdown_content"):
         body.pop("description", None)
     return body
+
+
+def _monday_graphql(
+    api_url: str,
+    headers: dict[str, str],
+    query: str,
+    variables: Optional[dict[str, Any]] = None,
+) -> Any:
+    data = _request_json(
+        "POST",
+        api_url,
+        json_body={"query": query, "variables": _filtered_params(variables)},
+        headers=headers,
+    )
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if errors:
+        first = errors[0] if isinstance(errors, list) and errors else errors
+        message = first.get("message") if isinstance(first, dict) else str(first)
+        raise RuntimeError(message)
+    return data.get("data", data) if isinstance(data, dict) else data
+
+
+def _monday_json_scalar(value: str, field_name: str) -> str | None:
+    parsed = _json_object_arg(value, field_name)
+    return json.dumps(parsed) if parsed else None
+
+
+_TAIGA_RESOURCE_ENDPOINTS = {
+    "epic": "/epics",
+    "epics": "/epics",
+    "issue": "/issues",
+    "issues": "/issues",
+    "task": "/tasks",
+    "tasks": "/tasks",
+    "story": "/userstories",
+    "stories": "/userstories",
+    "user_story": "/userstories",
+    "user_stories": "/userstories",
+    "userstory": "/userstories",
+    "userstories": "/userstories",
+}
+
+
+def _taiga_resource_endpoint(resource: str) -> str:
+    endpoint = _TAIGA_RESOURCE_ENDPOINTS.get(resource.strip().lower())
+    if not endpoint:
+        raise ValueError("resource must be one of epic, issue, task, or user_story")
+    return endpoint
+
+
+def _taiga_record_url(base_url: str, resource: str, record_id: str = "") -> str:
+    endpoint = _taiga_resource_endpoint(resource)
+    if record_id.strip():
+        return f"{base_url}{endpoint}/{quote(record_id.strip(), safe='')}"
+    return f"{base_url}{endpoint}"
+
+
+def _wekan_api_url(base_url: str, endpoint: str) -> str:
+    return f"{base_url}/api/{endpoint.strip('/')}"
+
+
+def _wekan_request(
+    method: str,
+    base_url: str,
+    endpoint: str,
+    headers: dict[str, str],
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+) -> Any:
+    return _request_json(
+        method,
+        _wekan_api_url(base_url, endpoint),
+        params=params,
+        json_body=json_body,
+        headers=headers,
+    )
 
 
 @tool
@@ -1093,6 +1355,1297 @@ def clickup_add_task_comment(
         return f"[Error]: ClickUp comment creation failed: {e}"
 
 
+@tool
+def monday_get_me(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the current Monday user for the configured credential."""
+    try:
+        api_url, headers_or_error = _monday_config("monday_get_me", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "query { me { id name email is_admin is_guest is_view_only enabled } }",
+        )
+        return _dump_json(data.get("me", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_get_me failed", exc_info=True)
+        return f"[Error]: Monday current user lookup failed: {e}"
+
+
+@tool
+def monday_list_boards(
+    limit: int = 50,
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Monday boards visible to the credential.
+
+    Args:
+        limit: Number of boards to return, 1-100.
+        page: Monday pagination page number.
+    """
+    try:
+        api_url, headers_or_error = _monday_config("monday_list_boards", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            query ($page: Int, $limit: Int) {
+              boards(page: $page, limit: $limit) {
+                id
+                name
+                description
+                state
+                board_kind
+                board_folder_id
+                owners { id name }
+              }
+            }
+            """,
+            {"page": max(1, int(page)), "limit": _limit(limit)},
+        )
+        return _dump_json(data.get("boards", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_list_boards failed", exc_info=True)
+        return f"[Error]: Monday board list failed: {e}"
+
+
+@tool
+def monday_get_board(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Monday board by ID.
+
+    Args:
+        board_id: Monday board ID.
+    """
+    board_id = board_id.strip()
+    if not board_id:
+        return "[Error]: board_id is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_get_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            query ($id: [ID!]) {
+              boards(ids: $id) {
+                id
+                name
+                description
+                state
+                board_kind
+                board_folder_id
+                owners { id name }
+                groups { id title color position archived }
+                columns { id title type settings_str archived }
+              }
+            }
+            """,
+            {"id": [board_id]},
+        )
+        return _dump_json(data.get("boards", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_get_board failed", exc_info=True)
+        return f"[Error]: Monday board lookup failed: {e}"
+
+
+@tool
+def monday_create_board(
+    name: str,
+    kind: str = "public",
+    template_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Monday board.
+
+    Args:
+        name: Board name.
+        kind: Board kind, such as public, private, or share.
+        template_id: Optional template board ID.
+    """
+    if not name.strip():
+        return "[Error]: name is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_create_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            mutation ($name: String!, $kind: BoardKind!, $templateId: ID) {
+              create_board(board_name: $name, board_kind: $kind, template_id: $templateId) {
+                id
+                name
+                state
+                board_kind
+              }
+            }
+            """,
+            {
+                "name": name.strip(),
+                "kind": kind.strip() or "public",
+                "templateId": template_id.strip(),
+            },
+        )
+        return _dump_json(data.get("create_board", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_create_board failed", exc_info=True)
+        return f"[Error]: Monday board creation failed: {e}"
+
+
+@tool
+def monday_archive_board(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Archive a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_archive_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "mutation ($id: ID!) { archive_board(board_id: $id) { id } }",
+            {"id": board_id.strip()},
+        )
+        return _dump_json(data.get("archive_board", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_archive_board failed", exc_info=True)
+        return f"[Error]: Monday board archive failed: {e}"
+
+
+@tool
+def monday_list_board_columns(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List columns on a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_list_board_columns", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            query ($boardId: [ID!]) {
+              boards(ids: $boardId) {
+                columns { id title type settings_str archived }
+              }
+            }
+            """,
+            {"boardId": [board_id.strip()]},
+        )
+        boards = data.get("boards", []) if isinstance(data, dict) else []
+        columns = boards[0].get("columns", []) if boards else []
+        return _dump_json(columns)
+    except Exception as e:
+        logger.error("monday_list_board_columns failed", exc_info=True)
+        return f"[Error]: Monday column list failed: {e}"
+
+
+@tool
+def monday_create_board_column(
+    board_id: str,
+    title: str,
+    column_type: str = "text",
+    defaults_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a column on a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+        title: Column title.
+        column_type: Monday column type, such as text, status, date, or numbers.
+        defaults_json: Optional column defaults JSON object.
+    """
+    if not board_id.strip() or not title.strip():
+        return "[Error]: board_id and title are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_create_board_column", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            mutation ($boardId: ID!, $title: String!, $columnType: ColumnType!, $defaults: JSON) {
+              create_column(board_id: $boardId, title: $title, column_type: $columnType, defaults: $defaults) {
+                id
+                title
+                type
+              }
+            }
+            """,
+            {
+                "boardId": board_id.strip(),
+                "title": title.strip(),
+                "columnType": column_type.strip() or "text",
+                "defaults": _monday_json_scalar(defaults_json, "defaults_json"),
+            },
+        )
+        return _dump_json(data.get("create_column", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_create_board_column failed", exc_info=True)
+        return f"[Error]: Monday column creation failed: {e}"
+
+
+@tool
+def monday_list_board_groups(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List groups on a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_list_board_groups", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            query ($boardId: [ID!]) {
+              boards(ids: $boardId) {
+                groups { id title color position archived }
+              }
+            }
+            """,
+            {"boardId": [board_id.strip()]},
+        )
+        boards = data.get("boards", []) if isinstance(data, dict) else []
+        groups = boards[0].get("groups", []) if boards else []
+        return _dump_json(groups)
+    except Exception as e:
+        logger.error("monday_list_board_groups failed", exc_info=True)
+        return f"[Error]: Monday group list failed: {e}"
+
+
+@tool
+def monday_create_board_group(
+    board_id: str,
+    group_name: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a group on a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+        group_name: New group name.
+    """
+    if not board_id.strip() or not group_name.strip():
+        return "[Error]: board_id and group_name are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_create_board_group", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "mutation ($boardId: ID!, $groupName: String!) { create_group(board_id: $boardId, group_name: $groupName) { id title } }",
+            {"boardId": board_id.strip(), "groupName": group_name.strip()},
+        )
+        return _dump_json(data.get("create_group", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_create_board_group failed", exc_info=True)
+        return f"[Error]: Monday group creation failed: {e}"
+
+
+@tool
+def monday_list_items(
+    board_id: str,
+    group_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Monday items on a board or within a group.
+
+    Args:
+        board_id: Monday board ID.
+        group_id: Optional board group ID.
+        limit: Number of items to return, 1-100.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    item_fields = """
+      id
+      name
+      created_at
+      state
+      column_values { id text type value column { title archived description settings_str } }
+    """
+    if group_id.strip():
+        query = f"""
+        query ($boardId: [ID!], $groupId: [String], $limit: Int) {{
+          boards(ids: $boardId) {{
+            groups(ids: $groupId) {{
+              id
+              items_page(limit: $limit) {{ cursor items {{ {item_fields} }} }}
+            }}
+          }}
+        }}
+        """
+        variables = {"boardId": [board_id.strip()], "groupId": [group_id.strip()], "limit": _limit(limit)}
+    else:
+        query = f"""
+        query ($boardId: [ID!], $limit: Int) {{
+          boards(ids: $boardId) {{
+            items_page(limit: $limit) {{ cursor items {{ {item_fields} }} }}
+          }}
+        }}
+        """
+        variables = {"boardId": [board_id.strip()], "limit": _limit(limit)}
+    try:
+        api_url, headers_or_error = _monday_config("monday_list_items", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(api_url, headers_or_error, query, variables)
+        boards = data.get("boards", []) if isinstance(data, dict) else []
+        if not boards:
+            return "[]"
+        if group_id.strip():
+            groups = boards[0].get("groups", [])
+            items = groups[0].get("items_page", {}).get("items", []) if groups else []
+        else:
+            items = boards[0].get("items_page", {}).get("items", [])
+        return _dump_json(items)
+    except Exception as e:
+        logger.error("monday_list_items failed", exc_info=True)
+        return f"[Error]: Monday item list failed: {e}"
+
+
+@tool
+def monday_get_item(
+    item_ids: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one or more Monday items by ID.
+
+    Args:
+        item_ids: Comma-separated Monday item IDs.
+    """
+    ids = _split_csv(item_ids)
+    if not ids:
+        return "[Error]: item_ids is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_get_item", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            query ($itemIds: [ID!]) {
+              items(ids: $itemIds) {
+                id
+                name
+                created_at
+                state
+                board { id name }
+                column_values { id text type value column { title archived description settings_str } }
+              }
+            }
+            """,
+            {"itemIds": ids},
+        )
+        return _dump_json(data.get("items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_get_item failed", exc_info=True)
+        return f"[Error]: Monday item lookup failed: {e}"
+
+
+@tool
+def monday_create_item(
+    board_id: str,
+    group_id: str,
+    item_name: str,
+    column_values_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an item on a Monday board.
+
+    Args:
+        board_id: Monday board ID.
+        group_id: Monday board group ID.
+        item_name: New item name.
+        column_values_json: Optional column values JSON object keyed by column ID.
+    """
+    if not board_id.strip() or not group_id.strip() or not item_name.strip():
+        return "[Error]: board_id, group_id, and item_name are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_create_item", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            mutation ($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON) {
+              create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $columnValues) {
+                id
+                name
+              }
+            }
+            """,
+            {
+                "boardId": board_id.strip(),
+                "groupId": group_id.strip(),
+                "itemName": item_name.strip(),
+                "columnValues": _monday_json_scalar(column_values_json, "column_values_json"),
+            },
+        )
+        return _dump_json(data.get("create_item", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_create_item failed", exc_info=True)
+        return f"[Error]: Monday item creation failed: {e}"
+
+
+@tool
+def monday_update_item_columns(
+    board_id: str,
+    item_id: str,
+    column_values_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update multiple Monday item column values.
+
+    Args:
+        board_id: Monday board ID.
+        item_id: Monday item ID.
+        column_values_json: Column values JSON object keyed by column ID.
+    """
+    if not board_id.strip() or not item_id.strip() or not column_values_json.strip():
+        return "[Error]: board_id, item_id, and column_values_json are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_update_item_columns", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            """
+            mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+              change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) {
+                id
+                name
+              }
+            }
+            """,
+            {
+                "boardId": board_id.strip(),
+                "itemId": item_id.strip(),
+                "columnValues": _monday_json_scalar(column_values_json, "column_values_json"),
+            },
+        )
+        return _dump_json(data.get("change_multiple_column_values", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_update_item_columns failed", exc_info=True)
+        return f"[Error]: Monday item column update failed: {e}"
+
+
+@tool
+def monday_add_item_update(
+    item_id: str,
+    body: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Add an update/comment to a Monday item.
+
+    Args:
+        item_id: Monday item ID.
+        body: Update body text.
+    """
+    if not item_id.strip() or not body.strip():
+        return "[Error]: item_id and body are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_add_item_update", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "mutation ($itemId: ID!, $body: String!) { create_update(item_id: $itemId, body: $body) { id body created_at } }",
+            {"itemId": item_id.strip(), "body": body.strip()},
+        )
+        return _dump_json(data.get("create_update", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_add_item_update failed", exc_info=True)
+        return f"[Error]: Monday item update creation failed: {e}"
+
+
+@tool
+def monday_move_item(
+    item_id: str,
+    group_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Move a Monday item to another group.
+
+    Args:
+        item_id: Monday item ID.
+        group_id: Target group ID.
+    """
+    if not item_id.strip() or not group_id.strip():
+        return "[Error]: item_id and group_id are required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_move_item", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "mutation ($itemId: ID!, $groupId: String!) { move_item_to_group(item_id: $itemId, group_id: $groupId) { id } }",
+            {"itemId": item_id.strip(), "groupId": group_id.strip()},
+        )
+        return _dump_json(data.get("move_item_to_group", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_move_item failed", exc_info=True)
+        return f"[Error]: Monday item move failed: {e}"
+
+
+@tool
+def monday_delete_item(
+    item_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Monday item.
+
+    Args:
+        item_id: Monday item ID.
+    """
+    if not item_id.strip():
+        return "[Error]: item_id is required."
+    try:
+        api_url, headers_or_error = _monday_config("monday_delete_item", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _monday_graphql(
+            api_url,
+            headers_or_error,
+            "mutation ($itemId: ID!) { delete_item(item_id: $itemId) { id } }",
+            {"itemId": item_id.strip()},
+        )
+        return _dump_json(data.get("delete_item", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("monday_delete_item failed", exc_info=True)
+        return f"[Error]: Monday item deletion failed: {e}"
+
+
+@tool
+def taiga_list_projects(
+    query: str = "",
+    member_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Taiga projects visible to the credential.
+
+    Args:
+        query: Optional project search query.
+        member_id: Optional member/user ID filter.
+        limit: Number of projects to return, 1-100.
+    """
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_list_projects", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/projects",
+            params={"q": query.strip(), "member": member_id.strip(), "limit": _limit(limit)},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("taiga_list_projects failed", exc_info=True)
+        return f"[Error]: Taiga project list failed: {e}"
+
+
+@tool
+def taiga_list_records(
+    resource: str,
+    project_id: str = "",
+    status_id: str = "",
+    assigned_to: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Taiga epics, issues, tasks, or user stories.
+
+    Args:
+        resource: One of epic, issue, task, or user_story.
+        project_id: Optional Taiga project ID filter.
+        status_id: Optional status ID filter.
+        assigned_to: Optional assignee user ID filter.
+        limit: Number of records to return, 1-100.
+    """
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            _taiga_record_url(base_url, resource),
+            params={
+                "project": project_id.strip(),
+                "status": status_id.strip(),
+                "assigned_to": assigned_to.strip(),
+                "limit": _limit(limit),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("taiga_list_records failed", exc_info=True)
+        return f"[Error]: Taiga record list failed: {e}"
+
+
+@tool
+def taiga_get_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Taiga epic, issue, task, or user story by ID.
+
+    Args:
+        resource: One of epic, issue, task, or user_story.
+        record_id: Taiga record ID.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            _taiga_record_url(base_url, resource, record_id),
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("taiga_get_record failed", exc_info=True)
+        return f"[Error]: Taiga record lookup failed: {e}"
+
+
+@tool
+def taiga_create_record(
+    resource: str,
+    project_id: str,
+    subject: str,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Taiga epic, issue, task, or user story.
+
+    Args:
+        resource: One of epic, issue, task, or user_story.
+        project_id: Taiga project ID.
+        subject: Record subject/title.
+        fields_json: Optional extra Taiga fields as a JSON object.
+    """
+    if not project_id.strip() or not subject.strip():
+        return "[Error]: project_id and subject are required."
+    body = _json_object_arg(fields_json, "fields_json")
+    body.update({"project": project_id.strip(), "subject": subject.strip()})
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_create_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            _taiga_record_url(base_url, resource),
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("taiga_create_record failed", exc_info=True)
+        return f"[Error]: Taiga record creation failed: {e}"
+
+
+@tool
+def taiga_update_record(
+    resource: str,
+    record_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Taiga epic, issue, task, or user story.
+
+    Args:
+        resource: One of epic, issue, task, or user_story.
+        record_id: Taiga record ID.
+        fields_json: Taiga fields to update as a JSON object.
+    """
+    if not record_id.strip() or not fields_json.strip():
+        return "[Error]: record_id and fields_json are required."
+    body = _json_object_arg(fields_json, "fields_json")
+    if not body:
+        return "[Error]: fields_json must include at least one field."
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_update_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        if "version" not in body:
+            current = _request_json(
+                "GET",
+                _taiga_record_url(base_url, resource, record_id),
+                headers=headers_or_error,
+            )
+            if isinstance(current, dict) and "version" in current:
+                body["version"] = current["version"]
+        data = _request_json(
+            "PATCH",
+            _taiga_record_url(base_url, resource, record_id),
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("taiga_update_record failed", exc_info=True)
+        return f"[Error]: Taiga record update failed: {e}"
+
+
+@tool
+def taiga_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Taiga epic, issue, task, or user story.
+
+    Args:
+        resource: One of epic, issue, task, or user_story.
+        record_id: Taiga record ID.
+    """
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        base_url, headers_or_error = _taiga_config("taiga_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        _request_json(
+            "DELETE",
+            _taiga_record_url(base_url, resource, record_id),
+            headers=headers_or_error,
+        )
+        return _dump_json({"success": True})
+    except Exception as e:
+        logger.error("taiga_delete_record failed", exc_info=True)
+        return f"[Error]: Taiga record deletion failed: {e}"
+
+
+@tool
+def wekan_get_current_user(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the current Wekan user for the configured credential."""
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_get_current_user", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("GET", base_url, "user", headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_get_current_user failed", exc_info=True)
+        return f"[Error]: Wekan current user lookup failed: {e}"
+
+
+@tool
+def wekan_list_users(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Wekan users visible to the credential."""
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_list_users", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("GET", base_url, "users", headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_list_users failed", exc_info=True)
+        return f"[Error]: Wekan user list failed: {e}"
+
+
+@tool
+def wekan_list_user_boards(
+    user_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Wekan boards for a user.
+
+    Args:
+        user_id: Optional Wekan user ID. Uses current user when omitted.
+        limit: Number of boards to return, 1-100.
+    """
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_list_user_boards", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        resolved_user_id = user_id.strip()
+        if not resolved_user_id:
+            me = _wekan_request("GET", base_url, "user", headers_or_error)
+            resolved_user_id = str(me.get("_id") or me.get("id") or "") if isinstance(me, dict) else ""
+        if not resolved_user_id:
+            return "[Error]: user_id is required when current Wekan user response has no ID."
+        data = _wekan_request(
+            "GET",
+            base_url,
+            f"users/{quote(resolved_user_id, safe='')}/boards",
+            headers_or_error,
+        )
+        return _dump_json(data[: _limit(limit)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("wekan_list_user_boards failed", exc_info=True)
+        return f"[Error]: Wekan board list failed: {e}"
+
+
+@tool
+def wekan_get_board(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Wekan board by ID.
+
+    Args:
+        board_id: Wekan board ID.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_get_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("GET", base_url, f"boards/{quote(board_id.strip(), safe='')}", headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_get_board failed", exc_info=True)
+        return f"[Error]: Wekan board lookup failed: {e}"
+
+
+@tool
+def wekan_create_board(
+    title: str,
+    owner_id: str,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Wekan board.
+
+    Args:
+        title: Board title.
+        owner_id: Wekan user ID for the board owner.
+        fields_json: Optional extra board fields as a JSON object.
+    """
+    if not title.strip() or not owner_id.strip():
+        return "[Error]: title and owner_id are required."
+    body = _json_object_arg(fields_json, "fields_json")
+    body.update({"title": title.strip(), "owner": owner_id.strip()})
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_create_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("POST", base_url, "boards", headers_or_error, json_body=body)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_create_board failed", exc_info=True)
+        return f"[Error]: Wekan board creation failed: {e}"
+
+
+@tool
+def wekan_delete_board(
+    board_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Wekan board.
+
+    Args:
+        board_id: Wekan board ID.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_delete_board", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        _wekan_request("DELETE", base_url, f"boards/{quote(board_id.strip(), safe='')}", headers_or_error)
+        return _dump_json({"success": True})
+    except Exception as e:
+        logger.error("wekan_delete_board failed", exc_info=True)
+        return f"[Error]: Wekan board deletion failed: {e}"
+
+
+@tool
+def wekan_list_lists(
+    board_id: str,
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Wekan lists on a board.
+
+    Args:
+        board_id: Wekan board ID.
+        limit: Number of lists to return, 1-100.
+    """
+    if not board_id.strip():
+        return "[Error]: board_id is required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_list_lists", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("GET", base_url, f"boards/{quote(board_id.strip(), safe='')}/lists", headers_or_error)
+        return _dump_json(data[: _limit(limit)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("wekan_list_lists failed", exc_info=True)
+        return f"[Error]: Wekan list list failed: {e}"
+
+
+@tool
+def wekan_create_list(
+    board_id: str,
+    title: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Wekan list on a board.
+
+    Args:
+        board_id: Wekan board ID.
+        title: List title.
+    """
+    if not board_id.strip() or not title.strip():
+        return "[Error]: board_id and title are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_create_list", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "POST",
+            base_url,
+            f"boards/{quote(board_id.strip(), safe='')}/lists",
+            headers_or_error,
+            json_body={"title": title.strip()},
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_create_list failed", exc_info=True)
+        return f"[Error]: Wekan list creation failed: {e}"
+
+
+@tool
+def wekan_delete_list(
+    board_id: str,
+    list_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Wekan list.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Wekan list ID.
+    """
+    if not board_id.strip() or not list_id.strip():
+        return "[Error]: board_id and list_id are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_delete_list", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        _wekan_request(
+            "DELETE",
+            base_url,
+            f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}",
+            headers_or_error,
+        )
+        return _dump_json({"success": True})
+    except Exception as e:
+        logger.error("wekan_delete_list failed", exc_info=True)
+        return f"[Error]: Wekan list deletion failed: {e}"
+
+
+@tool
+def wekan_list_cards(
+    board_id: str,
+    list_id: str = "",
+    swimlane_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Wekan cards from a list or swimlane.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Optional Wekan list ID.
+        swimlane_id: Optional Wekan swimlane ID.
+        limit: Number of cards to return, 1-100.
+    """
+    if not board_id.strip() or (not list_id.strip() and not swimlane_id.strip()):
+        return "[Error]: board_id and either list_id or swimlane_id are required."
+    endpoint = (
+        f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}/cards"
+        if list_id.strip()
+        else f"boards/{quote(board_id.strip(), safe='')}/swimlanes/{quote(swimlane_id.strip(), safe='')}/cards"
+    )
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_list_cards", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request("GET", base_url, endpoint, headers_or_error)
+        return _dump_json(data[: _limit(limit)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("wekan_list_cards failed", exc_info=True)
+        return f"[Error]: Wekan card list failed: {e}"
+
+
+@tool
+def wekan_get_card(
+    board_id: str,
+    list_id: str,
+    card_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Wekan card by ID.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Wekan list ID.
+        card_id: Wekan card ID.
+    """
+    if not board_id.strip() or not list_id.strip() or not card_id.strip():
+        return "[Error]: board_id, list_id, and card_id are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_get_card", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "GET",
+            base_url,
+            (
+                f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}"
+                f"/cards/{quote(card_id.strip(), safe='')}"
+            ),
+            headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_get_card failed", exc_info=True)
+        return f"[Error]: Wekan card lookup failed: {e}"
+
+
+@tool
+def wekan_create_card(
+    board_id: str,
+    list_id: str,
+    title: str,
+    swimlane_id: str = "",
+    author_id: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Wekan card.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Wekan list ID.
+        title: Card title.
+        swimlane_id: Optional swimlane ID.
+        author_id: Optional author user ID.
+        fields_json: Optional extra card fields as a JSON object.
+    """
+    if not board_id.strip() or not list_id.strip() or not title.strip():
+        return "[Error]: board_id, list_id, and title are required."
+    body = _json_object_arg(fields_json, "fields_json")
+    body.update(_filtered_params({"title": title.strip(), "swimlaneId": swimlane_id.strip(), "authorId": author_id.strip()}))
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_create_card", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "POST",
+            base_url,
+            f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}/cards",
+            headers_or_error,
+            json_body=body,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_create_card failed", exc_info=True)
+        return f"[Error]: Wekan card creation failed: {e}"
+
+
+@tool
+def wekan_update_card(
+    board_id: str,
+    list_id: str,
+    card_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Wekan card.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Wekan list ID.
+        card_id: Wekan card ID.
+        fields_json: Card fields to update as a JSON object.
+    """
+    if not board_id.strip() or not list_id.strip() or not card_id.strip() or not fields_json.strip():
+        return "[Error]: board_id, list_id, card_id, and fields_json are required."
+    body = _json_object_arg(fields_json, "fields_json")
+    if not body:
+        return "[Error]: fields_json must include at least one field."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_update_card", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "PUT",
+            base_url,
+            (
+                f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}"
+                f"/cards/{quote(card_id.strip(), safe='')}"
+            ),
+            headers_or_error,
+            json_body=body,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_update_card failed", exc_info=True)
+        return f"[Error]: Wekan card update failed: {e}"
+
+
+@tool
+def wekan_delete_card(
+    board_id: str,
+    list_id: str,
+    card_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Wekan card.
+
+    Args:
+        board_id: Wekan board ID.
+        list_id: Wekan list ID.
+        card_id: Wekan card ID.
+    """
+    if not board_id.strip() or not list_id.strip() or not card_id.strip():
+        return "[Error]: board_id, list_id, and card_id are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_delete_card", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        _wekan_request(
+            "DELETE",
+            base_url,
+            (
+                f"boards/{quote(board_id.strip(), safe='')}/lists/{quote(list_id.strip(), safe='')}"
+                f"/cards/{quote(card_id.strip(), safe='')}"
+            ),
+            headers_or_error,
+        )
+        return _dump_json({"success": True})
+    except Exception as e:
+        logger.error("wekan_delete_card failed", exc_info=True)
+        return f"[Error]: Wekan card deletion failed: {e}"
+
+
+@tool
+def wekan_list_card_comments(
+    board_id: str,
+    card_id: str,
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List comments on a Wekan card.
+
+    Args:
+        board_id: Wekan board ID.
+        card_id: Wekan card ID.
+        limit: Number of comments to return, 1-100.
+    """
+    if not board_id.strip() or not card_id.strip():
+        return "[Error]: board_id and card_id are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_list_card_comments", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "GET",
+            base_url,
+            f"boards/{quote(board_id.strip(), safe='')}/cards/{quote(card_id.strip(), safe='')}/comments",
+            headers_or_error,
+        )
+        return _dump_json(data[: _limit(limit)] if isinstance(data, list) else data)
+    except Exception as e:
+        logger.error("wekan_list_card_comments failed", exc_info=True)
+        return f"[Error]: Wekan card comment list failed: {e}"
+
+
+@tool
+def wekan_add_card_comment(
+    board_id: str,
+    card_id: str,
+    comment: str,
+    author_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Add a comment to a Wekan card.
+
+    Args:
+        board_id: Wekan board ID.
+        card_id: Wekan card ID.
+        comment: Comment text.
+        author_id: Optional author user ID.
+    """
+    if not board_id.strip() or not card_id.strip() or not comment.strip():
+        return "[Error]: board_id, card_id, and comment are required."
+    try:
+        base_url, headers_or_error = _wekan_config("wekan_add_card_comment", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _wekan_request(
+            "POST",
+            base_url,
+            f"boards/{quote(board_id.strip(), safe='')}/cards/{quote(card_id.strip(), safe='')}/comments",
+            headers_or_error,
+            json_body=_filtered_params({"comment": comment.strip(), "authorId": author_id.strip()}),
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("wekan_add_card_comment failed", exc_info=True)
+        return f"[Error]: Wekan card comment creation failed: {e}"
+
+
 PROJECT_MANAGEMENT_SERVICE_TOOLS = [
     jira_get_myself,
     jira_list_projects,
@@ -1114,4 +2667,42 @@ PROJECT_MANAGEMENT_SERVICE_TOOLS = [
     clickup_update_task,
     clickup_list_task_comments,
     clickup_add_task_comment,
+    monday_get_me,
+    monday_list_boards,
+    monday_get_board,
+    monday_create_board,
+    monday_archive_board,
+    monday_list_board_columns,
+    monday_create_board_column,
+    monday_list_board_groups,
+    monday_create_board_group,
+    monday_list_items,
+    monday_get_item,
+    monday_create_item,
+    monday_update_item_columns,
+    monday_add_item_update,
+    monday_move_item,
+    monday_delete_item,
+    taiga_list_projects,
+    taiga_list_records,
+    taiga_get_record,
+    taiga_create_record,
+    taiga_update_record,
+    taiga_delete_record,
+    wekan_get_current_user,
+    wekan_list_users,
+    wekan_list_user_boards,
+    wekan_get_board,
+    wekan_create_board,
+    wekan_delete_board,
+    wekan_list_lists,
+    wekan_create_list,
+    wekan_delete_list,
+    wekan_list_cards,
+    wekan_get_card,
+    wekan_create_card,
+    wekan_update_card,
+    wekan_delete_card,
+    wekan_list_card_comments,
+    wekan_add_card_comment,
 ]
