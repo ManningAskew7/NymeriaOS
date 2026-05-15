@@ -1606,7 +1606,8 @@ connections can also be reused for AWS service tools. Business-service credentia
 `lingvanex.api_key`, `apitemplate.api_key`, `onesimple.api_token`,
 `paddle.vendor_id` plus `paddle.vendor_auth_code`, `profitwell.access_token`,
 `tapfiliate.api_key`, `magento.access_token` plus `magento.host`, and
-`unleashed.api_id` plus `unleashed.api_key`; DeepL can also
+`unleashed.api_id` plus `unleashed.api_key`, `quickbooks.access_token` plus
+`quickbooks.realm_id`, and `xero.access_token` plus `xero.tenant_id`; DeepL can also
 use `deepl.api_plan = free` for the free endpoint. Productivity credentials use
 `todoist.api_key`, `trello.api_key`, and `trello.api_token`. Bookmark/link
 credentials use `raindrop.access_token`, `yourls.url`, and either
@@ -2080,6 +2081,8 @@ This batch includes:
 - `tapfiliate_list_affiliates(...)`, `tapfiliate_get_affiliate(...)`, `tapfiliate_list_program_affiliates(...)`, and `tapfiliate_get_program_affiliate(...)` for SAFE Tapfiliate affiliate reads. Create/delete/metadata/program-approval tools are MODERATE because they change affiliate or program state.
 - `magento_list_records(resource, ...)` and `magento_get_record(resource, record_id)` for SAFE Magento customer, order, and product reads. Customer/product create/update/delete, invoice creation, order cancellation, and shipment creation are MODERATE because they change store or order state.
 - `unleashed_list_sales_orders(...)`, `unleashed_list_stock_on_hand(...)`, and `unleashed_get_stock_on_hand(product_id)` for SAFE Unleashed order and inventory reads.
+- `quickbooks_query(...)`, `quickbooks_list_records(...)`, and `quickbooks_get_record(...)` for SAFE QuickBooks Online accounting reads. Customer and invoice create/update tools are MODERATE because they change accounting records.
+- `xero_list_tenants()`, `xero_list_records(...)`, and `xero_get_record(...)` for SAFE Xero accounting reads. Contact and invoice create/update tools are MODERATE because they change accounting records.
 
 Credential providers and fallback env vars:
 - Stripe: provider `stripe`, fields `secret_key`, `secretKey`, `api_key`, `apiKey`, `token`, or `value`; env fallback `STRIPE_SECRET_KEY`. Use `base_url` / `url` or `STRIPE_BASE_URL` for non-default API roots.
@@ -2091,6 +2094,8 @@ Credential providers and fallback env vars:
 - Tapfiliate: provider `tapfiliate`, fields `api_key`, `token`, or `value`; env fallback `TAPFILIATE_API_KEY`. Use `base_url` / `url` or `TAPFILIATE_BASE_URL` for non-default API roots.
 - Magento: provider `magento`, fields `host` / `base_url` plus `access_token`; env fallback `MAGENTO_HOST` or `MAGENTO_BASE_URL` plus `MAGENTO_ACCESS_TOKEN`.
 - Unleashed: provider `unleashed`, fields `api_id` plus `api_key`; env fallback `UNLEASHED_API_ID` and `UNLEASHED_API_KEY`. Use `base_url` / `url` or `UNLEASHED_BASE_URL` for non-default API roots.
+- QuickBooks Online: provider `quickbooks`, fields `access_token`, `realm_id` / `company_id`, optional `environment`, and optional `base_url`; env fallback supports `QUICKBOOKS_ACCESS_TOKEN`, `QUICKBOOKS_REALM_ID`, `QUICKBOOKS_ENVIRONMENT`, and `QUICKBOOKS_BASE_URL`.
+- Xero: provider `xero`, fields `access_token`, `tenant_id` / `organization_id`, optional `base_url`, and optional `connections_url`; env fallback supports `XERO_ACCESS_TOKEN`, `XERO_TENANT_ID`, `XERO_BASE_URL`, and `XERO_CONNECTIONS_URL`.
 
 ### Notification Service Tools
 

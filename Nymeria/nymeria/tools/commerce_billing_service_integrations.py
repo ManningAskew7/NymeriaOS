@@ -25,6 +25,10 @@ _PADDLE_SANDBOX_BASE_URL = "https://sandbox-vendors.paddle.com/api"
 _PROFITWELL_BASE_URL = "https://api.profitwell.com/v2"
 _TAPFILIATE_BASE_URL = "https://api.tapfiliate.com/1.6"
 _UNLEASHED_BASE_URL = "https://api.unleashedsoftware.com"
+_QUICKBOOKS_PROD_BASE_URL = "https://quickbooks.api.intuit.com"
+_QUICKBOOKS_SANDBOX_BASE_URL = "https://sandbox-quickbooks.api.intuit.com"
+_XERO_BASE_URL = "https://api.xero.com/api.xro/2.0"
+_XERO_CONNECTIONS_URL = "https://api.xero.com/connections"
 
 _STRIPE_RESOURCES = {
     "customer": "customers",
@@ -104,6 +108,32 @@ _MAGENTO_DELETE_ENDPOINTS = {
     "customers": "customers/{id}",
     "product": "products/{id}",
     "products": "products/{id}",
+}
+_QUICKBOOKS_RESOURCES = {
+    "bill": ("Bill", "bill"),
+    "bills": ("Bill", "bill"),
+    "customer": ("Customer", "customer"),
+    "customers": ("Customer", "customer"),
+    "employee": ("Employee", "employee"),
+    "employees": ("Employee", "employee"),
+    "estimate": ("Estimate", "estimate"),
+    "estimates": ("Estimate", "estimate"),
+    "invoice": ("Invoice", "invoice"),
+    "invoices": ("Invoice", "invoice"),
+    "item": ("Item", "item"),
+    "items": ("Item", "item"),
+    "payment": ("Payment", "payment"),
+    "payments": ("Payment", "payment"),
+    "purchase": ("Purchase", "purchase"),
+    "purchases": ("Purchase", "purchase"),
+    "vendor": ("Vendor", "vendor"),
+    "vendors": ("Vendor", "vendor"),
+}
+_XERO_RESOURCES = {
+    "contact": ("Contacts", "ContactID"),
+    "contacts": ("Contacts", "ContactID"),
+    "invoice": ("Invoices", "InvoiceID"),
+    "invoices": ("Invoices", "InvoiceID"),
 }
 
 
@@ -816,6 +846,268 @@ def _normal_resource(resource: str, mapping: dict[str, str]) -> str:
     if key not in mapping:
         raise ValueError(f"Unsupported resource {resource!r}. Supported: {', '.join(sorted(mapping))}.")
     return mapping[key]
+
+
+def _quickbooks_resource(resource: str) -> tuple[str, str]:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _QUICKBOOKS_RESOURCES:
+        raise ValueError(f"Unsupported QuickBooks resource {resource!r}. Supported: {', '.join(sorted(_QUICKBOOKS_RESOURCES))}.")
+    return _QUICKBOOKS_RESOURCES[key]
+
+
+def _xero_resource(resource: str) -> tuple[str, str]:
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _XERO_RESOURCES:
+        raise ValueError(f"Unsupported Xero resource {resource!r}. Supported: {', '.join(sorted(_XERO_RESOURCES))}.")
+    return _XERO_RESOURCES[key]
+
+
+def _quickbooks_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("quickbooks_online", "quickbooks_oauth2", "quick_books_oauth2_api", "quickbooks_api")
+    environment = (
+        _credential_value(
+            provider="quickbooks",
+            provider_aliases=provider_aliases,
+            field_names=("environment", "env", "sandbox"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("quickbooks_environment")
+        or ""
+    )
+    default_base = _QUICKBOOKS_SANDBOX_BASE_URL if _truthy(str(environment)) else _QUICKBOOKS_PROD_BASE_URL
+    base = (
+        _credential_value(
+            provider="quickbooks",
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("quickbooks_base_url")
+        or default_base
+    )
+    realm_id = _credential_value(
+        provider="quickbooks",
+        provider_aliases=provider_aliases,
+        field_names=("realm_id", "realmId", "company_id", "companyId"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("quickbooks_realm_id")
+    if not realm_id:
+        return "", (
+            "[Error]: No QuickBooks company/realm ID found. Save a QuickBooks credential with "
+            '"realm_id" / "company_id", or set QUICKBOOKS_REALM_ID.'
+        )
+    access_token = _credential_value(
+        provider="quickbooks",
+        provider_aliases=provider_aliases,
+        field_names=("access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("quickbooks_access_token")
+    if not access_token:
+        return _base_url(base), _setup_hint(
+            provider="quickbooks",
+            field_names=("access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="QUICKBOOKS_ACCESS_TOKEN",
+            display_name="QuickBooks Online",
+        )
+    base_url = _base_url(base)
+    if "/v3/company/" not in base_url:
+        base_url = f"{base_url}/v3/company/{quote(str(realm_id).strip(), safe='')}"
+    return base_url, {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _quickbooks_request(
+    tool_name: str,
+    method: str,
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    minor_version: str = "75",
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base_url, headers_or_error = _quickbooks_config(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    query = dict(params or {})
+    if minor_version.strip():
+        query["minorversion"] = minor_version.strip()
+    return _request_json(method, f"{base_url}/{path.strip('/')}", params=query, json_body=json_body, headers=headers_or_error)
+
+
+def _quickbooks_invoice_lines(line_items_json: str) -> list[dict[str, Any]]:
+    items = _parse_json(line_items_json, expected=list, label="line_items_json")
+    lines: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("line_items_json entries must be JSON objects.")
+        if item.get("DetailType"):
+            lines.append(item)
+            continue
+        quantity = item.get("quantity", item.get("qty", item.get("Qty")))
+        unit_price = item.get("unit_price", item.get("unitPrice", item.get("UnitPrice")))
+        amount = item.get("amount", item.get("Amount"))
+        if amount is None and quantity is not None and unit_price is not None:
+            amount = float(quantity) * float(unit_price)
+        detail = _filtered(
+            {
+                "Qty": quantity,
+                "UnitPrice": unit_price,
+            }
+        )
+        item_id = item.get("item_id", item.get("itemId", item.get("ItemRef")))
+        if item_id:
+            detail["ItemRef"] = item_id if isinstance(item_id, dict) else {"value": str(item_id)}
+        tax_code = item.get("tax_code", item.get("taxCode"))
+        if tax_code:
+            detail["TaxCodeRef"] = {"value": str(tax_code)}
+        line = _filtered(
+            {
+                "Amount": amount,
+                "Description": item.get("description", item.get("Description", "")),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": detail,
+            }
+        )
+        lines.append(line)
+    if not lines:
+        raise ValueError("line_items_json must contain at least one line item.")
+    return lines
+
+
+def _xero_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    *,
+    tenant_id: str = "",
+    require_tenant: bool = True,
+) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("xero_oauth2", "xero_api")
+    base = (
+        _credential_value(
+            provider="xero",
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("xero_base_url")
+        or _XERO_BASE_URL
+    )
+    resolved_tenant = tenant_id.strip() or (
+        _credential_value(
+            provider="xero",
+            provider_aliases=provider_aliases,
+            field_names=("tenant_id", "tenantId", "organization_id", "organizationId"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("xero_tenant_id")
+        or ""
+    )
+    if require_tenant and not resolved_tenant:
+        return "", (
+            "[Error]: No Xero tenant ID found. Save a Xero credential with "
+            '"tenant_id" / "organization_id", pass tenant_id, or set XERO_TENANT_ID.'
+        )
+    access_token = _credential_value(
+        provider="xero",
+        provider_aliases=provider_aliases,
+        field_names=("access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("xero_access_token")
+    if not access_token:
+        return _base_url(base), _setup_hint(
+            provider="xero",
+            field_names=("access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="XERO_ACCESS_TOKEN",
+            display_name="Xero",
+        )
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+    if resolved_tenant:
+        headers["Xero-tenant-id"] = resolved_tenant
+    return _base_url(base), headers
+
+
+def _xero_request(
+    tool_name: str,
+    method: str,
+    path: str,
+    *,
+    tenant_id: str = "",
+    params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
+    use_connections: bool = False,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base_url, headers_or_error = _xero_config(
+        tool_name,
+        config,
+        tenant_id=tenant_id,
+        require_tenant=not use_connections,
+    )
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    if use_connections:
+        url = (
+            _credential_value(
+                provider="xero",
+                provider_aliases=("xero_oauth2", "xero_api"),
+                field_names=("connections_url", "connectionsUrl"),
+                tool_name=tool_name,
+                config=config,
+            )
+            or _settings_value("xero_connections_url")
+            or _XERO_CONNECTIONS_URL
+        )
+    else:
+        url = f"{base_url}/{path.strip('/')}"
+    return _request_json(method, url, params=params, json_body=json_body, headers=headers_or_error)
+
+
+def _xero_line_items(line_items_json: str) -> list[dict[str, Any]]:
+    items = _parse_json(line_items_json, expected=list, label="line_items_json")
+    lines: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("line_items_json entries must be JSON objects.")
+        if any(key[:1].isupper() for key in item):
+            lines.append(item)
+            continue
+        lines.append(
+            _filtered(
+                {
+                    "Description": item.get("description"),
+                    "Quantity": item.get("quantity", item.get("qty")),
+                    "UnitAmount": item.get("unit_amount", item.get("unitAmount")),
+                    "AccountCode": item.get("account_code", item.get("accountCode")),
+                    "ItemCode": item.get("item_code", item.get("itemCode")),
+                    "TaxType": item.get("tax_type", item.get("taxType")),
+                    "TaxAmount": item.get("tax_amount", item.get("taxAmount")),
+                    "LineAmount": item.get("line_amount", item.get("lineAmount")),
+                    "DiscountRate": item.get("discount_rate", item.get("discountRate")),
+                }
+            )
+        )
+    if not lines:
+        raise ValueError("line_items_json must contain at least one line item.")
+    return lines
 
 
 @tool
@@ -2554,6 +2846,429 @@ def unleashed_get_stock_on_hand(
         return f"[Error]: Unleashed stock-on-hand lookup failed: {e}"
 
 
+@tool
+def quickbooks_query(
+    query: str,
+    limit: int = 50,
+    start_position: int = 1,
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Run a QuickBooks Online read-only SQL-style query.
+
+    Args:
+        query: QuickBooks query starting with SELECT.
+        limit: MAXRESULTS value to append when query does not specify one.
+        start_position: STARTPOSITION value to append when query does not specify one.
+        minor_version: Optional QuickBooks API minor version.
+    """
+    clean_query = query.strip().rstrip(";")
+    if not clean_query.lower().startswith("select"):
+        return "[Error]: query must start with SELECT."
+    lower_query = clean_query.lower()
+    if "maxresults" not in lower_query:
+        clean_query += f" MAXRESULTS {_limit(limit, default=50, max_value=1000)}"
+    if "startposition" not in lower_query:
+        clean_query += f" STARTPOSITION {max(1, int(start_position))}"
+    try:
+        data = _quickbooks_request(
+            "quickbooks_query",
+            "GET",
+            "query",
+            params={"query": clean_query},
+            minor_version=minor_version,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("QueryResponse", data))
+    except Exception as e:
+        logger.error("quickbooks_query failed", exc_info=True)
+        return f"[Error]: QuickBooks query failed: {e}"
+
+
+@tool
+def quickbooks_list_records(
+    resource: str,
+    where_clause: str = "",
+    limit: int = 50,
+    start_position: int = 1,
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List QuickBooks Online records.
+
+    Args:
+        resource: Customer, Vendor, Item, Invoice, Bill, Payment, Purchase, Estimate, or Employee.
+        where_clause: Optional QuickBooks WHERE clause, with or without the WHERE keyword.
+        limit: Maximum records to return.
+        start_position: QuickBooks start position.
+        minor_version: Optional QuickBooks API minor version.
+    """
+    try:
+        entity, _path = _quickbooks_resource(resource)
+        query = f"SELECT * FROM {entity}"
+        if where_clause.strip():
+            clause = where_clause.strip()
+            query += f" {clause if clause.lower().startswith('where ') else f'WHERE {clause}'}"
+        query += f" MAXRESULTS {_limit(limit, default=50, max_value=1000)} STARTPOSITION {max(1, int(start_position))}"
+        data = _quickbooks_request(
+            "quickbooks_list_records",
+            "GET",
+            "query",
+            params={"query": query},
+            minor_version=minor_version,
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        query_response = data.get("QueryResponse", data) if isinstance(data, dict) else data
+        return _dump_json(query_response.get(entity, query_response) if isinstance(query_response, dict) else query_response)
+    except Exception as e:
+        logger.error("quickbooks_list_records failed", exc_info=True)
+        return f"[Error]: QuickBooks record list failed: {e}"
+
+
+@tool
+def quickbooks_get_record(
+    resource: str,
+    record_id: str,
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a QuickBooks Online record by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        entity, path = _quickbooks_resource(resource)
+        data = _quickbooks_request(
+            "quickbooks_get_record",
+            "GET",
+            f"{path}/{quote(record_id.strip(), safe='')}",
+            minor_version=minor_version,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get(entity, data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("quickbooks_get_record failed", exc_info=True)
+        return f"[Error]: QuickBooks record lookup failed: {e}"
+
+
+@tool
+def quickbooks_create_customer(
+    display_name: str,
+    given_name: str = "",
+    family_name: str = "",
+    company_name: str = "",
+    email: str = "",
+    phone: str = "",
+    billing_address_json: str = "",
+    fields_json: str = "",
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a QuickBooks Online customer."""
+    if not display_name.strip():
+        return "[Error]: display_name is required."
+    try:
+        customer = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            **_filtered(
+                {
+                    "DisplayName": display_name.strip(),
+                    "GivenName": given_name.strip(),
+                    "FamilyName": family_name.strip(),
+                    "CompanyName": company_name.strip(),
+                    "PrimaryEmailAddr": {"Address": email.strip()} if email.strip() else {},
+                    "PrimaryPhone": {"FreeFormNumber": phone.strip()} if phone.strip() else {},
+                    "BillAddr": _parse_json(billing_address_json, expected=dict, label="billing_address_json"),
+                }
+            ),
+        }
+        data = _quickbooks_request(
+            "quickbooks_create_customer",
+            "POST",
+            "customer",
+            json_body=customer,
+            minor_version=minor_version,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Customer", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("quickbooks_create_customer failed", exc_info=True)
+        return f"[Error]: QuickBooks customer create failed: {e}"
+
+
+@tool
+def quickbooks_update_customer(
+    customer_id: str,
+    sync_token: str,
+    fields_json: str,
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a QuickBooks Online customer using sparse update fields."""
+    if not customer_id.strip() or not sync_token.strip() or not fields_json.strip():
+        return "[Error]: customer_id, sync_token, and fields_json are required."
+    try:
+        customer = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            "Id": customer_id.strip(),
+            "SyncToken": sync_token.strip(),
+            "sparse": True,
+        }
+        data = _quickbooks_request(
+            "quickbooks_update_customer",
+            "POST",
+            "customer",
+            json_body=customer,
+            minor_version=minor_version,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Customer", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("quickbooks_update_customer failed", exc_info=True)
+        return f"[Error]: QuickBooks customer update failed: {e}"
+
+
+@tool
+def quickbooks_create_invoice(
+    customer_id: str,
+    line_items_json: str,
+    due_date: str = "",
+    doc_number: str = "",
+    customer_memo: str = "",
+    fields_json: str = "",
+    minor_version: str = "75",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a QuickBooks Online invoice."""
+    if not customer_id.strip():
+        return "[Error]: customer_id is required."
+    try:
+        invoice = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            **_filtered(
+                {
+                    "CustomerRef": {"value": customer_id.strip()},
+                    "Line": _quickbooks_invoice_lines(line_items_json),
+                    "DueDate": due_date.strip(),
+                    "DocNumber": doc_number.strip(),
+                    "CustomerMemo": {"value": customer_memo.strip()} if customer_memo.strip() else {},
+                }
+            ),
+        }
+        data = _quickbooks_request(
+            "quickbooks_create_invoice",
+            "POST",
+            "invoice",
+            json_body=invoice,
+            minor_version=minor_version,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Invoice", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("quickbooks_create_invoice failed", exc_info=True)
+        return f"[Error]: QuickBooks invoice create failed: {e}"
+
+
+@tool
+def xero_list_tenants(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Xero tenants connected to the saved OAuth token."""
+    try:
+        data = _xero_request("xero_list_tenants", "GET", "", use_connections=True, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("xero_list_tenants failed", exc_info=True)
+        return f"[Error]: Xero tenant list failed: {e}"
+
+
+@tool
+def xero_list_records(
+    resource: str,
+    tenant_id: str = "",
+    where: str = "",
+    order: str = "",
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Xero contacts or invoices."""
+    try:
+        path, _id_field = _xero_resource(resource)
+        data = _xero_request(
+            "xero_list_records",
+            "GET",
+            path,
+            tenant_id=tenant_id,
+            params={"where": where.strip(), "order": order.strip(), "page": max(1, int(page))},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get(path, data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("xero_list_records failed", exc_info=True)
+        return f"[Error]: Xero record list failed: {e}"
+
+
+@tool
+def xero_get_record(
+    resource: str,
+    record_id: str,
+    tenant_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Xero contact or invoice by ID."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    try:
+        path, _id_field = _xero_resource(resource)
+        data = _xero_request(
+            "xero_get_record",
+            "GET",
+            f"{path}/{quote(record_id.strip(), safe='')}",
+            tenant_id=tenant_id,
+            config=config,
+        )
+        result = data.get(path, data) if isinstance(data, dict) else data
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        return data if isinstance(data, str) else _dump_json(result)
+    except Exception as e:
+        logger.error("xero_get_record failed", exc_info=True)
+        return f"[Error]: Xero record lookup failed: {e}"
+
+
+@tool
+def xero_create_contact(
+    name: str,
+    tenant_id: str = "",
+    email: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Xero contact."""
+    if not name.strip():
+        return "[Error]: name is required."
+    try:
+        contact = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            **_filtered(
+                {
+                    "Name": name.strip(),
+                    "EmailAddress": email.strip(),
+                    "FirstName": first_name.strip(),
+                    "LastName": last_name.strip(),
+                }
+            ),
+        }
+        data = _xero_request(
+            "xero_create_contact",
+            "POST",
+            "Contacts",
+            tenant_id=tenant_id,
+            json_body={"Contacts": [contact]},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Contacts", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("xero_create_contact failed", exc_info=True)
+        return f"[Error]: Xero contact create failed: {e}"
+
+
+@tool
+def xero_update_contact(
+    contact_id: str,
+    tenant_id: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Xero contact."""
+    if not contact_id.strip() or not fields_json.strip():
+        return "[Error]: contact_id and fields_json are required."
+    try:
+        contact = {"ContactID": contact_id.strip(), **_parse_json(fields_json, expected=dict, label="fields_json")}
+        data = _xero_request(
+            "xero_update_contact",
+            "POST",
+            f"Contacts/{quote(contact_id.strip(), safe='')}",
+            tenant_id=tenant_id,
+            json_body={"Contacts": [contact]},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Contacts", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("xero_update_contact failed", exc_info=True)
+        return f"[Error]: Xero contact update failed: {e}"
+
+
+@tool
+def xero_create_invoice(
+    contact_id: str,
+    line_items_json: str,
+    tenant_id: str = "",
+    invoice_type: str = "ACCREC",
+    due_date: str = "",
+    status: str = "DRAFT",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Xero invoice."""
+    if not contact_id.strip():
+        return "[Error]: contact_id is required."
+    try:
+        invoice = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            **_filtered(
+                {
+                    "Type": invoice_type.strip().upper() or "ACCREC",
+                    "Contact": {"ContactID": contact_id.strip()},
+                    "LineItems": _xero_line_items(line_items_json),
+                    "DueDate": due_date.strip(),
+                    "Status": status.strip().upper() or "DRAFT",
+                }
+            ),
+        }
+        data = _xero_request(
+            "xero_create_invoice",
+            "POST",
+            "Invoices",
+            tenant_id=tenant_id,
+            json_body={"Invoices": [invoice]},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Invoices", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("xero_create_invoice failed", exc_info=True)
+        return f"[Error]: Xero invoice create failed: {e}"
+
+
+@tool
+def xero_update_invoice(
+    invoice_id: str,
+    tenant_id: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Xero invoice."""
+    if not invoice_id.strip() or not fields_json.strip():
+        return "[Error]: invoice_id and fields_json are required."
+    try:
+        invoice = {"InvoiceID": invoice_id.strip(), **_parse_json(fields_json, expected=dict, label="fields_json")}
+        data = _xero_request(
+            "xero_update_invoice",
+            "POST",
+            f"Invoices/{quote(invoice_id.strip(), safe='')}",
+            tenant_id=tenant_id,
+            json_body={"Invoices": [invoice]},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data.get("Invoices", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("xero_update_invoice failed", exc_info=True)
+        return f"[Error]: Xero invoice update failed: {e}"
+
+
 COMMERCE_BILLING_SERVICE_TOOLS = [
     stripe_list_records,
     stripe_search_records,
@@ -2609,4 +3324,17 @@ COMMERCE_BILLING_SERVICE_TOOLS = [
     unleashed_list_sales_orders,
     unleashed_list_stock_on_hand,
     unleashed_get_stock_on_hand,
+    quickbooks_query,
+    quickbooks_list_records,
+    quickbooks_get_record,
+    quickbooks_create_customer,
+    quickbooks_update_customer,
+    quickbooks_create_invoice,
+    xero_list_tenants,
+    xero_list_records,
+    xero_get_record,
+    xero_create_contact,
+    xero_update_contact,
+    xero_create_invoice,
+    xero_update_invoice,
 ]
