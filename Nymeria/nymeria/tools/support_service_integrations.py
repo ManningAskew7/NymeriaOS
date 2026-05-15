@@ -19,6 +19,7 @@ _MAX_JSON_CHARS = 60_000
 _HELPSCOUT_BASE_URL = "https://api.helpscout.net/v2"
 _INTERCOM_BASE_URL = "https://api.intercom.io"
 _INTERCOM_VERSION = "2.11"
+_DRIFT_BASE_URL = "https://driftapi.com"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -500,6 +501,47 @@ def _intercom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         "Intercom-Version": version,
         "User-Agent": "Nymeria",
     }
+
+
+def _drift_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="drift",
+            provider_aliases=("drift_api", "drift_oauth2"),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("drift_base_url")
+        or _DRIFT_BASE_URL
+    )
+    token = _credential_value(
+        provider="drift",
+        provider_aliases=("drift_api", "drift_oauth2"),
+        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("drift_access_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="drift",
+            field_names=("access_token", "accessToken", "api_key", "token", "value"),
+            tool_name=tool_name,
+            env_var="DRIFT_ACCESS_TOKEN",
+            display_name="Drift",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _drift_payload(data: Any) -> Any:
+    if isinstance(data, dict) and "data" in data:
+        return data["data"]
+    return data
 
 
 @tool
@@ -2205,6 +2247,162 @@ def intercom_reply_conversation(
         return f"[Error]: Intercom conversation reply failed: {e}"
 
 
+@tool
+def drift_get_contact(
+    contact_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Drift contact by ID.
+
+    Args:
+        contact_id: Drift contact ID.
+    """
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        base_url, headers_or_error = _drift_config("drift_get_contact", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/contacts/{quote(contact_id, safe='')}", headers=headers_or_error)
+        return _dump_json(_drift_payload(data))
+    except Exception as e:
+        logger.error("drift_get_contact failed", exc_info=True)
+        return f"[Error]: Drift contact lookup failed: {e}"
+
+
+@tool
+def drift_create_contact(
+    email: str,
+    name: str = "",
+    phone: str = "",
+    attributes_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Drift contact.
+
+    Args:
+        email: Contact email address.
+        name: Optional contact name.
+        phone: Optional phone number.
+        attributes_json: Optional JSON object of additional Drift contact attributes.
+    """
+    if not email.strip():
+        return "[Error]: email is required."
+    try:
+        attributes = _filtered_params(
+            {
+                "email": email.strip(),
+                "name": name.strip(),
+                "phone": phone.strip(),
+            }
+        )
+        attributes.update(_parse_json(attributes_json, expected=dict, label="attributes_json"))
+        base_url, headers_or_error = _drift_config("drift_create_contact", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/contacts",
+            json_body={"attributes": attributes},
+            headers=headers_or_error,
+        )
+        return _dump_json(_drift_payload(data))
+    except Exception as e:
+        logger.error("drift_create_contact failed", exc_info=True)
+        return f"[Error]: Drift contact creation failed: {e}"
+
+
+@tool
+def drift_update_contact(
+    contact_id: str,
+    email: str = "",
+    name: str = "",
+    phone: str = "",
+    attributes_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Drift contact.
+
+    Args:
+        contact_id: Drift contact ID.
+        email: Optional replacement email address.
+        name: Optional replacement contact name.
+        phone: Optional replacement phone number.
+        attributes_json: Optional JSON object of additional Drift contact attributes.
+    """
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        attributes = _filtered_params(
+            {
+                "email": email.strip(),
+                "name": name.strip(),
+                "phone": phone.strip(),
+            }
+        )
+        attributes.update(_parse_json(attributes_json, expected=dict, label="attributes_json"))
+        if not attributes:
+            return "[Error]: provide at least one contact field to update."
+        base_url, headers_or_error = _drift_config("drift_update_contact", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PATCH",
+            f"{base_url}/contacts/{quote(contact_id, safe='')}",
+            json_body={"attributes": attributes},
+            headers=headers_or_error,
+        )
+        return _dump_json(_drift_payload(data))
+    except Exception as e:
+        logger.error("drift_update_contact failed", exc_info=True)
+        return f"[Error]: Drift contact update failed: {e}"
+
+
+@tool
+def drift_delete_contact(
+    contact_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Drift contact.
+
+    Args:
+        contact_id: Drift contact ID.
+    """
+    contact_id = contact_id.strip()
+    if not contact_id:
+        return "[Error]: contact_id is required."
+    try:
+        base_url, headers_or_error = _drift_config("drift_delete_contact", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("DELETE", f"{base_url}/contacts/{quote(contact_id, safe='')}", headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("drift_delete_contact failed", exc_info=True)
+        return f"[Error]: Drift contact deletion failed: {e}"
+
+
+@tool
+def drift_list_contact_attributes(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List custom contact attributes configured in Drift."""
+    try:
+        base_url, headers_or_error = _drift_config("drift_list_contact_attributes", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/contacts/attributes", headers=headers_or_error)
+        payload = _drift_payload(data)
+        if isinstance(payload, dict) and "properties" in payload:
+            payload = payload["properties"]
+        return _dump_json(payload)
+    except Exception as e:
+        logger.error("drift_list_contact_attributes failed", exc_info=True)
+        return f"[Error]: Drift contact attribute listing failed: {e}"
+
+
 SUPPORT_SERVICE_TOOLS = [
     freshdesk_list_tickets,
     freshdesk_search_tickets,
@@ -2250,4 +2448,9 @@ SUPPORT_SERVICE_TOOLS = [
     intercom_list_conversations,
     intercom_get_conversation,
     intercom_reply_conversation,
+    drift_get_contact,
+    drift_create_contact,
+    drift_update_contact,
+    drift_delete_contact,
+    drift_list_contact_attributes,
 ]

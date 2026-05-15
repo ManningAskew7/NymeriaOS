@@ -24,6 +24,7 @@ _JINA_SEARCH_BASE_URL = "https://s.jina.ai"
 _JINA_DEEPSEARCH_BASE_URL = "https://deepsearch.jina.ai/v1"
 _SECURITYSCORECARD_BASE_URL = "https://api.securityscorecard.io"
 _API_SUFFIX = "/api"
+_OKTA_DEFAULT_DOMAIN_SUFFIX = ".okta.com"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -407,6 +408,114 @@ def _securityscorecard_config(
         "Accept": "application/json",
         "Authorization": f"Token {api_key}",
         "Content-Type": "application/json",
+    }
+
+
+def _okta_root(value: str) -> str:
+    root = value.strip().rstrip("/")
+    if not root:
+        raise ValueError("Okta base URL is required")
+    if "://" not in root:
+        root = f"https://{root}"
+    return _base_url(root)
+
+
+def _okta_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="okta",
+            provider_aliases=("okta_api",),
+            field_names=("base_url", "baseUrl", "org_url", "orgUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("okta_base_url")
+    )
+    domain = (
+        _credential_value(
+            provider="okta",
+            provider_aliases=("okta_api",),
+            field_names=("domain", "subdomain", "org_domain", "orgDomain"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("okta_domain")
+    )
+    if not base and domain:
+        domain_text = domain.strip().replace("https://", "").replace("http://", "").rstrip("/")
+        if "." not in domain_text:
+            domain_text = f"{domain_text}{_OKTA_DEFAULT_DOMAIN_SUFFIX}"
+        base = f"https://{domain_text}"
+    if not base:
+        return "", (
+            '[Error]: No Okta base URL found. Save an Okta credential with "base_url" or '
+            '"domain", or set OKTA_BASE_URL or OKTA_DOMAIN.'
+        )
+    token = _credential_value(
+        provider="okta",
+        provider_aliases=("okta_api",),
+        field_names=("access_token", "accessToken", "api_token", "apiToken", "ssws_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("okta_access_token")
+    if not token:
+        return _okta_root(base), _setup_hint(
+            provider="okta",
+            field_names=("access_token", "accessToken", "api_token", "ssws_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="OKTA_ACCESS_TOKEN",
+            display_name="Okta",
+        )
+    return _okta_root(base), {
+        "Accept": "application/json",
+        "Authorization": f"SSWS {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _okta_profile(
+    *,
+    first_name: str = "",
+    last_name: str = "",
+    login: str = "",
+    email: str = "",
+    profile_json: str = "",
+) -> dict[str, Any]:
+    profile = _parse_json(profile_json, expected=dict, label="profile_json")
+    profile.update(
+        _filtered(
+            {
+                "firstName": first_name.strip(),
+                "lastName": last_name.strip(),
+                "login": login.strip(),
+                "email": email.strip(),
+            }
+        )
+    )
+    return profile
+
+
+def _okta_simplify_user(user: Any) -> Any:
+    if not isinstance(user, dict):
+        return user
+    profile = user.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+    return {
+        "id": user.get("id"),
+        "status": user.get("status"),
+        "created": user.get("created"),
+        "activated": user.get("activated"),
+        "lastLogin": user.get("lastLogin"),
+        "lastUpdated": user.get("lastUpdated"),
+        "passwordChanged": user.get("passwordChanged"),
+        "profile": {
+            "firstName": profile.get("firstName"),
+            "lastName": profile.get("lastName"),
+            "login": profile.get("login"),
+            "email": profile.get("email"),
+        },
     }
 
 
@@ -1518,6 +1627,215 @@ def securityscorecard_remove_portfolio_company(
 
 
 @tool
+def okta_list_users(
+    search_query: str = "",
+    q: str = "",
+    filter_query: str = "",
+    after: str = "",
+    limit: int = 20,
+    simplify: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List or search Okta users.
+
+    Args:
+        search_query: Optional Okta search expression such as profile.lastName sw "Smi".
+        q: Optional free-text query against first name, last name, or email.
+        filter_query: Optional Okta filter expression.
+        after: Optional cursor from Okta's Link header.
+        limit: Number of users to return, 1-200.
+        simplify: Return compact user fields when true.
+    """
+    try:
+        base_url, headers_or_error = _okta_config("okta_list_users", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/v1/users",
+            params={
+                "search": search_query.strip(),
+                "q": q.strip(),
+                "filter": filter_query.strip(),
+                "after": after.strip(),
+                "limit": _limit(limit, default=20, max_value=200),
+            },
+            headers=headers_or_error,
+        )
+        if simplify and isinstance(data, list):
+            data = [_okta_simplify_user(item) for item in data]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("okta_list_users failed", exc_info=True)
+        return f"[Error]: Okta user listing failed: {e}"
+
+
+@tool
+def okta_get_user(
+    user_id: str,
+    simplify: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Okta user by ID, login, or email.
+
+    Args:
+        user_id: Okta user ID, login, or email.
+        simplify: Return compact user fields when true.
+    """
+    user_id = user_id.strip()
+    if not user_id:
+        return "[Error]: user_id is required."
+    try:
+        base_url, headers_or_error = _okta_config("okta_get_user", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/api/v1/users/{quote(user_id, safe='')}", headers=headers_or_error)
+        return _dump_json(_okta_simplify_user(data) if simplify else data)
+    except Exception as e:
+        logger.error("okta_get_user failed", exc_info=True)
+        return f"[Error]: Okta user lookup failed: {e}"
+
+
+@tool
+def okta_create_user(
+    first_name: str,
+    last_name: str,
+    login: str,
+    email: str,
+    activate: bool = True,
+    profile_json: str = "",
+    credentials_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an Okta user.
+
+    Args:
+        first_name: User first name.
+        last_name: User last name.
+        login: Unique Okta login, usually an email address.
+        email: Primary email address.
+        activate: Whether Okta should activate the user immediately.
+        profile_json: Optional JSON object of additional profile fields.
+        credentials_json: Optional JSON object for password/recovery credentials.
+    """
+    required = {
+        "first_name": first_name.strip(),
+        "last_name": last_name.strip(),
+        "login": login.strip(),
+        "email": email.strip(),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        return f"[Error]: missing required fields: {', '.join(missing)}."
+    try:
+        body: dict[str, Any] = {
+            "profile": _okta_profile(
+                first_name=first_name,
+                last_name=last_name,
+                login=login,
+                email=email,
+                profile_json=profile_json,
+            )
+        }
+        credentials = _parse_json(credentials_json, expected=dict, label="credentials_json")
+        if credentials:
+            body["credentials"] = credentials
+        base_url, headers_or_error = _okta_config("okta_create_user", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/api/v1/users",
+            params={"activate": "true" if activate else "false"},
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("okta_create_user failed", exc_info=True)
+        return f"[Error]: Okta user creation failed: {e}"
+
+
+@tool
+def okta_update_user(
+    user_id: str,
+    profile_json: str,
+    credentials_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update an Okta user profile.
+
+    Args:
+        user_id: Okta user ID, login, or email.
+        profile_json: JSON object of profile fields to update.
+        credentials_json: Optional JSON object for password/recovery credential updates.
+    """
+    user_id = user_id.strip()
+    if not user_id:
+        return "[Error]: user_id is required."
+    try:
+        profile = _parse_json(profile_json, expected=dict, label="profile_json")
+        credentials = _parse_json(credentials_json, expected=dict, label="credentials_json")
+        body: dict[str, Any] = _filtered({"profile": profile, "credentials": credentials})
+        if not body:
+            return "[Error]: profile_json or credentials_json is required."
+        base_url, headers_or_error = _okta_config("okta_update_user", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/api/v1/users/{quote(user_id, safe='')}",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("okta_update_user failed", exc_info=True)
+        return f"[Error]: Okta user update failed: {e}"
+
+
+@tool
+def okta_delete_user(
+    user_id: str,
+    deactivate_first: bool = False,
+    send_email: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete an Okta user, optionally deactivating the user first.
+
+    Args:
+        user_id: Okta user ID, login, or email.
+        deactivate_first: Run Okta's deactivate lifecycle action before deletion.
+        send_email: Whether Okta should send a deactivation email when applicable.
+    """
+    user_id = user_id.strip()
+    if not user_id:
+        return "[Error]: user_id is required."
+    try:
+        base_url, headers_or_error = _okta_config("okta_delete_user", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        results: dict[str, Any] = {}
+        if deactivate_first:
+            results["deactivate"] = _request_json(
+                "POST",
+                f"{base_url}/api/v1/users/{quote(user_id, safe='')}/lifecycle/deactivate",
+                params={"sendEmail": "true" if send_email else "false"},
+                headers=headers_or_error,
+            )
+        results["delete"] = _request_json(
+            "DELETE",
+            f"{base_url}/api/v1/users/{quote(user_id, safe='')}",
+            params={"sendEmail": "true" if send_email else "false"},
+            headers=headers_or_error,
+        )
+        return _dump_json(results)
+    except Exception as e:
+        logger.error("okta_delete_user failed", exc_info=True)
+        return f"[Error]: Okta user deletion failed: {e}"
+
+
+@tool
 def elastic_security_list_cases(
     status: str = "",
     tags: str = "",
@@ -1688,6 +2006,11 @@ ENRICHMENT_SECURITY_SERVICE_TOOLS = [
     securityscorecard_list_portfolios,
     securityscorecard_add_portfolio_company,
     securityscorecard_remove_portfolio_company,
+    okta_list_users,
+    okta_get_user,
+    okta_create_user,
+    okta_update_user,
+    okta_delete_user,
     elastic_security_list_cases,
     elastic_security_get_case,
     elastic_security_list_case_tags,
