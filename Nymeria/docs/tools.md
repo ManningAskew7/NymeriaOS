@@ -1621,7 +1621,8 @@ plus `freshworks_crm.domain`, `salesmate.session_token` plus
 `salesmate.link_name`, and `pipedrive.api_token` or `pipedrive.access_token`.
 Relationship CRM
 credentials use `copper.api_key` plus `copper.email`, `agilecrm.email` plus
-`agilecrm.api_key` and `agilecrm.subdomain`, and `monica.access_token`.
+`agilecrm.api_key` and `agilecrm.subdomain`, `monica.access_token`,
+`affinity.api_key`, and `keap.access_token`.
 Lead-enrichment credentials use `clearbit.api_key`, `uplead.api_key`,
 `dropcontact.api_key`, `humantic.api_key`, `lonescale.api_key`, and
 `uproc.email` plus `uproc.api_key`. Data-table credentials use
@@ -2029,11 +2030,15 @@ This batch includes:
 - `copper_list_records(resource, ...)`, `copper_get_record(resource, record_id)`, `copper_create_record(resource, fields_json)`, `copper_update_record(resource, record_id, fields_json)`, and `copper_delete_record(resource, record_id)` for Copper companies, people, leads, opportunities, projects, tasks, users, and customer sources. Reads are SAFE; create/update/delete operations are MODERATE.
 - `agilecrm_list_records(resource, ...)`, `agilecrm_get_record(resource, record_id)`, `agilecrm_create_record(resource, fields_json)`, `agilecrm_update_record(resource, record_id, fields_json)`, and `agilecrm_delete_record(resource, record_id)` for Agile CRM contacts, companies, and deals. Reads are SAFE; create/update/delete operations are MODERATE.
 - `monica_list_records(resource, ...)`, `monica_get_record(resource, record_id)`, `monica_create_record(resource, fields_json)`, `monica_update_record(resource, record_id, fields_json)`, and `monica_delete_record(resource, record_id)` for Monica CRM contacts, activities, calls, notes, reminders, tags, tasks, and related records. Reads are SAFE; create/update/delete operations are MODERATE.
+- `affinity_list_records(resource, ...)`, `affinity_get_record(resource, record_id)`, `affinity_create_person(...)`, `affinity_create_organization(...)`, `affinity_update_record(resource, record_id, fields_json)`, `affinity_delete_record(resource, record_id)`, `affinity_list_entries(list_id, ...)`, `affinity_create_list_entry(...)`, and `affinity_delete_list_entry(list_id, list_entry_id)` for Affinity people, organizations, lists, and list entries. Reads are SAFE; create/update/delete operations are MODERATE.
+- `keap_list_records(resource, ...)`, `keap_get_record(resource, record_id)`, `keap_create_record(resource, fields_json)`, `keap_update_note(note_id, fields_json)`, `keap_delete_record(resource, record_id)`, `keap_list_contact_tags(contact_id)`, `keap_apply_tags(contact_id, tag_ids_csv)`, `keap_remove_tags(contact_id, tag_ids_csv)`, and `keap_send_email(...)` for Keap CRM, note, tag, ecommerce, email, and file records. Reads are SAFE; create/update/delete/tag/send operations are MODERATE.
 
 Credential providers and fallback env vars:
 - Copper: provider `copper`, fields `api_key` and `email`, optional `base_url`; env fallbacks `COPPER_API_KEY`, `COPPER_EMAIL`, and `COPPER_BASE_URL`.
 - Agile CRM: provider `agilecrm`, fields `email`, `api_key`, and `subdomain`, optional `base_url`; env fallbacks `AGILECRM_EMAIL`, `AGILECRM_API_KEY`, `AGILECRM_SUBDOMAIN`, and `AGILECRM_BASE_URL`.
 - Monica CRM: provider `monica`, fields `api_token`, `access_token`, or `value`, optional `base_url`; env fallbacks `MONICA_ACCESS_TOKEN` and `MONICA_BASE_URL`.
+- Affinity: provider `affinity`, fields `api_key`, `token`, or `value`, optional `base_url`; env fallbacks `AFFINITY_API_KEY` and `AFFINITY_BASE_URL`.
+- Keap: provider `keap`, fields `access_token`, `bearer_token`, `token`, or `value`, optional `base_url`; env fallbacks `KEAP_ACCESS_TOKEN` and `KEAP_BASE_URL`.
 
 ### Messaging Delivery Service Tools
 
