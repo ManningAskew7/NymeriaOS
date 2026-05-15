@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
+from nymeria.core.time_utils import utc_now
 from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.tools import todo as todo_tools
 
@@ -103,6 +105,36 @@ def test_nym_todo_update_cannot_modify_another_thread(
     )
     assert current_result.startswith(f"[Updated]: TODO {current.id}")
     assert manager.get_todos("owner").get_item(current.id).status == TodoStatus.DONE
+
+
+def test_nym_todo_recurring_done_preserves_scheduled_anchor(
+    tmp_path: Path,
+    monkeypatch,
+):
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    scheduled_anchor = utc_now() - timedelta(minutes=3)
+
+    with manager.atomic_update("owner") as todo_list:
+        recurring = todo_list.add_item(
+            "Hourly recurring task",
+            scheduled_for=scheduled_anchor,
+            thread_id="thread-a",
+            recurrence="hourly",
+        )
+        assert recurring is not None
+
+    result = todo_tools.nym_todo.func(
+        todo_id=recurring.id,
+        status="done",
+        config=_config("thread-a"),
+    )
+
+    updated = manager.get_todos("owner").get_item(recurring.id)
+    assert result.startswith(f"[Updated]: TODO {recurring.id}")
+    assert updated.status == TodoStatus.PENDING
+    assert updated.scheduled_for == scheduled_anchor + timedelta(hours=1)
+    assert updated.last_execution == scheduled_anchor
 
 
 def test_nym_todo_delete_cannot_remove_another_thread(

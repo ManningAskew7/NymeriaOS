@@ -447,8 +447,8 @@ def _schedule_handoff(
     if not todo_scheduled:
         return (
             f"[Error]: Invalid scheduled_for '{scheduled_for}'. Use '30s', "
-            "'5m', '1h', '1d', 'YYYY-MM-DD HH:MM', or omit scheduled_for "
-            "for immediate handoff."
+            "'17m', '1h', '1d', '1w', 'YYYY-MM-DD HH:MM', an ISO datetime, "
+            "or omit scheduled_for for immediate handoff."
         )
 
     todo_task = f"Handoff {handoff_id} from {caller_name or caller_thread_id or 'unknown'}: {task}"

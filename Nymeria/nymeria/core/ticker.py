@@ -505,11 +505,8 @@ class Ticker:
         Returns:
             Next execution datetime, or None if invalid recurrence
         """
-        from .todo_constants import RECURRENCE_DELTAS
-        delta = RECURRENCE_DELTAS.get(recurrence)
-        if delta:
-            return from_time + delta
-        return None
+        from .todo_constants import calculate_next_recurrence_time
+        return calculate_next_recurrence_time(recurrence, from_time)
 
     def _should_create_autonomous_notification(self, thread_id: str) -> bool:
         return should_notify_autonomous(thread_id, self.agent.thread_config_manager)
@@ -844,13 +841,19 @@ class Ticker:
     def _handle_recurrence(self, entry: ScheduledTodoEntry, todo) -> None:
         current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
         if current_todo and current_todo.recurrence:
+            recurrence_anchor = datetime.fromtimestamp(
+                entry.scheduled_for,
+                timezone.utc,
+            )
             next_execution = self._calculate_next_execution(
-                current_todo.recurrence, datetime.now(timezone.utc),
+                current_todo.recurrence,
+                recurrence_anchor,
             )
             if next_execution:
                 logger.info(
                     f"Rescheduling recurring TODO {todo.id} "
-                    f"({current_todo.recurrence}) for {next_execution}"
+                    f"({current_todo.recurrence}) from anchor "
+                    f"{recurrence_anchor} for {next_execution}"
                 )
                 with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                     todo_list.update_item(
@@ -860,7 +863,7 @@ class Ticker:
                     )
                     item = todo_list.get_item(todo.id)
                     if item:
-                        item.last_execution = datetime.now(timezone.utc)
+                        item.last_execution = recurrence_anchor
                 self.todo_manager.sync_schedule_to_db(
                     entry.user_id, todo.id, self.schedule_db,
                 )

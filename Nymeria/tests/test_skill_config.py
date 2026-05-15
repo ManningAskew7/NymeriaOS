@@ -284,7 +284,7 @@ def test_create_skill_draft_normalizes_and_validates_dependencies(tmp_path: Path
             body="# Hello Workflow\n\nUse hello_test.",
             allowed_tools="Read, Write",
             required_tools=["hello_test", "hello_test"],
-            tool_ttl="30m",
+            tool_ttl="4w",
         )
     finally:
         set_current_agent(None)
@@ -292,4 +292,4 @@ def test_create_skill_draft_normalizes_and_validates_dependencies(tmp_path: Path
     assert draft.name == "hello-workflow"
     assert draft.allowed_tools == ["Read", "Write"]
     assert draft.required_tools == ["hello_test"]
-    assert draft.tool_ttl == "30m"
+    assert draft.tool_ttl == "4w"

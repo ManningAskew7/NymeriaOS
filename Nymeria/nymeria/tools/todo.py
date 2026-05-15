@@ -10,15 +10,25 @@ When a TODO has a scheduled time, Nymeria wakes up to work on it.
 
 import logging
 import uuid as _uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.activity_log import ActivityType, log_activity
-from ..core.time_utils import get_user_tz, parse_scheduled_time, utc_now
-from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER, VALID_RECURRENCES
+from ..core.time_utils import (
+    ensure_aware_utc,
+    get_user_tz,
+    parse_future_scheduled_time,
+    utc_now,
+)
+from ..core.todo_constants import (
+    STATUS_ICONS,
+    STATUS_ORDER,
+    VALID_RECURRENCES,
+    calculate_next_recurrence_time,
+)
 from ..core.todo_manager import TodoManager, TodoStatus
 from .utils import get_user_id, get_thread_id
 
@@ -40,7 +50,7 @@ def _get_todo_manager() -> TodoManager:
 
 
 # Use shared time parsing utilities
-_parse_scheduled_for = parse_scheduled_time
+_parse_scheduled_for = parse_future_scheduled_time
 
 
 def _get_schedule_db():
@@ -86,6 +96,21 @@ def _todo_not_found_for_thread(todo_id: str) -> str:
     )
 
 
+def _schedule_format_error(exc: ValueError) -> str:
+    return f"[Error]: {exc}"
+
+
+def _recurrence_anchor(item, schedule_db, todo_id: str, user_id: str) -> datetime:
+    """Return the scheduled slot that recurrence should advance from."""
+    if schedule_db:
+        entry = schedule_db.get_entry(todo_id)
+        if entry and entry.user_id == user_id:
+            return datetime.fromtimestamp(entry.scheduled_for, timezone.utc)
+    if item and item.scheduled_for:
+        return ensure_aware_utc(item.scheduled_for)
+    return utc_now()
+
+
 @tool
 def nym_todo(
     todo_id: Optional[str] = None,
@@ -111,12 +136,21 @@ def nym_todo(
     Args:
         todo_id: 8-char TODO ID (omit to create a new TODO)
         task: Task description (required for create, optional for update)
-        scheduled_for: When to auto-wake: "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM" (required for create)
+        scheduled_for: Future wake time. Relative durations accept any positive
+            number of seconds/minutes/hours/days/weeks, e.g. "45s", "17m",
+            "3h", "2d", "1w". Absolute times accept "YYYY-MM-DD HH:MM",
+            "YYYY-MM-DDTHH:MM", or ISO datetimes with timezone.
         status: "pending", "in_progress", or "done"
         notes: Additional notes (max 1000 chars)
         recurrence: "5min", "10min", "15min", "30min", "hourly", "daily", "weekly", "monthly"
         clear_schedule: Remove scheduled time
         clear_recurrence: Remove recurrence pattern
+
+    Returns:
+        Create: "[Added]: TODO <id>: <task> (scheduled for <time>)".
+        Update: "[Updated]: TODO <id> - <task> (status: <status>)".
+        Done status: "[Completed]: <task>" (with auto-reschedule note
+        if recurring). Errors: "[Error]: <reason>".
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -135,9 +169,10 @@ def nym_todo(
         logger.info(f"nym_todo create: task={task[:50]}")
 
         # Parse scheduled_for
-        todo_scheduled = _parse_scheduled_for(scheduled_for)
-        if not todo_scheduled:
-            return f"[Error]: Invalid scheduled_for format '{scheduled_for}'. Use '30s', '5m', '1h', '1d' or 'YYYY-MM-DD HH:MM'."
+        try:
+            todo_scheduled = _parse_scheduled_for(scheduled_for)
+        except ValueError as exc:
+            return _schedule_format_error(exc)
 
         # Validate recurrence
         todo_recurrence = None
@@ -203,9 +238,10 @@ def nym_todo(
     # Parse scheduled_for
     todo_scheduled = None
     if scheduled_for and not clear_schedule:
-        todo_scheduled = _parse_scheduled_for(scheduled_for)
-        if not todo_scheduled:
-            return f"[Error]: Invalid scheduled_for format '{scheduled_for}'. Use '30s', '5m', '1h', '1d' or 'YYYY-MM-DD HH:MM'."
+        try:
+            todo_scheduled = _parse_scheduled_for(scheduled_for)
+        except ValueError as exc:
+            return _schedule_format_error(exc)
 
     # Validate recurrence
     todo_recurrence = None
@@ -238,10 +274,14 @@ def nym_todo(
 
             # Auto-reschedule recurring TODOs marked as done
             if todo_status == TodoStatus.DONE and item.recurrence:
-                from ..core.todo_constants import RECURRENCE_DELTAS
-                delta = RECURRENCE_DELTAS.get(item.recurrence)
-                if delta:
-                    rescheduled_time = utc_now() + delta
+                recurrence_anchor = _recurrence_anchor(
+                    item, schedule_db, todo_id, user_id
+                )
+                rescheduled_time = calculate_next_recurrence_time(
+                    item.recurrence,
+                    recurrence_anchor,
+                )
+                if rescheduled_time:
                     todo_list.update_item(
                         todo_id,
                         scheduled_for=rescheduled_time,
@@ -249,7 +289,7 @@ def nym_todo(
                     )
                     item = todo_list.get_item(todo_id)
                     if item:
-                        item.last_execution = utc_now()
+                        item.last_execution = recurrence_anchor
                     logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync to schedule database
@@ -340,10 +380,14 @@ def _todo_complete_internal(
 
             # Auto-reschedule recurring TODOs
             if has_recurrence:
-                from ..core.todo_constants import RECURRENCE_DELTAS
-                delta = RECURRENCE_DELTAS.get(has_recurrence)
-                if delta:
-                    rescheduled_time = utc_now() + delta
+                recurrence_anchor = _recurrence_anchor(
+                    item, schedule_db, todo_id, user_id
+                )
+                rescheduled_time = calculate_next_recurrence_time(
+                    has_recurrence,
+                    recurrence_anchor,
+                )
+                if rescheduled_time:
                     todo_list.update_item(
                         todo_id,
                         scheduled_for=rescheduled_time,
@@ -351,7 +395,7 @@ def _todo_complete_internal(
                     )
                     refreshed = todo_list.get_item(todo_id)
                     if refreshed:
-                        refreshed.last_execution = utc_now()
+                        refreshed.last_execution = recurrence_anchor
                     logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync schedule database
@@ -392,6 +436,10 @@ def nym_todo_delete(
 
     Args:
         todo_id: 8-char TODO ID
+
+    Returns:
+        "[Deleted]: <task>" on success. "[Error]: TODO '<id>' not
+        found for this thread" on failure.
     """
     logger.info(f"nym_todo_delete called: id={todo_id}")
 
@@ -437,6 +485,11 @@ def nym_todo_list(
 
     Args:
         filter_status: "pending", "in_progress", "done", or "all"
+
+    Returns:
+        "TODO List (N items):" header + one line per item: status icon,
+        [id], task, optional [scheduled:] and [recurring:] tags, notes.
+        "[Info]: No active TODOs..." when empty.
     """
     logger.info(f"nym_todo_list called: filter={filter_status}")
 

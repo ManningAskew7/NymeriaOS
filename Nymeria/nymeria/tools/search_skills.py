@@ -452,6 +452,17 @@ def skill_manage(
         source: "installed" or marketplace source "anthropic".
         scope: Install/list scope. Global install requires admin.
         activate_current_thread: After install, enable this skill on the thread.
+
+    Returns:
+        list/inspect: JSON {ok, skill: {name, description, scope, ...}}
+        or {count, skills: [...]}.
+        search: JSON {count, mode, results: [{name, description, score}]}.
+        install: human-readable summary or "[error] ...".
+        enable: JSON {ok, action, changed, skill, reload_queued, ...}.
+        When reload_queued=true, includes "[Skill reload queued - STOP
+        NOW]" and the graph is force-ended for rebuild — do not respond
+        after this directive. disable: JSON {ok, action, changed, ...}.
+        Errors: JSON {ok: false, error: "..."}.
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)

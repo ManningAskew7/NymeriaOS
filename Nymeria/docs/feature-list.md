@@ -96,7 +96,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Runtime Capability Expansion (`self-improve`)
 - **Search** — `tool_search` finds tools by keyword/category after `self-improve` loads
-- **Enable** — `tool_enable` activates optional tools per-thread with TTL (30m, 2h, 6h, 24h, permanent)
+- **Enable** — `tool_enable` activates optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
 - **MCP** — `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
 - **Skills** — `skill_manage` lists, searches, installs, enables, and disables Agent Skills
 - **Skill Kits** — `skill_kit_create` packages existing tools or creates HTTP tools before publishing a durable Skill Kit
@@ -202,7 +202,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ## 6. Autonomous Operation
 
 ### TODO-Based Scheduling
-- **Relative scheduling**: "30s", "5m", "2h", "1d" from now
+- **Relative scheduling**: arbitrary positive durations like "45s", "17m", "2h", "1w" from now
 - **Absolute scheduling**: ISO 8601 datetime
 - **Recurrence patterns**: 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
 - **Status tracking**: pending → in_progress → done

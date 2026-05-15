@@ -56,7 +56,8 @@ def watchdog_dispatch(
     Args:
         target_thread_id: Thread ID to dispatch the TODO to (must be different from yours)
         task: Clear, specific description of what the target thread should do
-        scheduled_for: When to fire: "now", "30s", "5m", "1h", "1d" or "YYYY-MM-DD HH:MM"
+        scheduled_for: When to fire: "now", any relative duration such as
+            "30s", "17m", "1h", "1d", "1w", or an absolute/ISO datetime.
         notes: Supporting context for the target thread (e.g. what you observed)
     """
     caller_thread_id = get_thread_id(config)
@@ -76,7 +77,10 @@ def watchdog_dispatch(
 
     todo_scheduled = parse_scheduled_time(scheduled_for)
     if not todo_scheduled:
-        return f"[Error]: Invalid scheduled_for '{scheduled_for}'. Use 'now', '30s', '5m', '1h', '1d' or 'YYYY-MM-DD HH:MM'."
+        return (
+            f"[Error]: Invalid scheduled_for '{scheduled_for}'. Use 'now', "
+            "'30s', '17m', '1h', '1d', '1w', 'YYYY-MM-DD HH:MM', or an ISO datetime."
+        )
 
     manager = _get_todo_manager()
     schedule_db = _get_schedule_db()

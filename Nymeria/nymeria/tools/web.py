@@ -114,8 +114,9 @@ def web_search(
         max_sources: Maximum number of sources per query (1-10, default 5)
 
     Returns:
-        Search results with relevant information.
-        In batch mode, results are grouped per query with === delimiters.
+        Perplexity response text with numbered "**Sources:**" list appended.
+        Batch mode: sections separated by "=== Query N/M: <query> ==="
+        headers. Errors: "[Error]: <reason>".
     """
     # Parse queries
     if queries.strip():

@@ -19,13 +19,12 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
-from ..core.time_utils import utc_now
+from ..core.time_utils import parse_tool_ttl, utc_now
 from ..core.tool_reload import tool_reload_command
 from ..core.thread_config import ThreadConfig
 from ..skills import (
     DEFAULT_SKILL_KIT_TOOL_TTL,
     KEBAB_NAME_RE,
-    SKILL_KIT_TTL_PRESETS,
     Skill,
     SkillFrontmatter,
     SkillParseError,
@@ -42,7 +41,6 @@ from .utils import get_thread_id, get_user_id
 logger = logging.getLogger(__name__)
 
 SKILL_CONFIG_VERSION = "2026-05-01.1"
-TTL_OPTIONS = ("30m", "2h", "6h", "24h", "permanent")
 
 
 class SkillDraft(BaseModel):
@@ -168,10 +166,12 @@ def _normalize_tool_list(values: Optional[list[str] | str], *, field_name: str) 
 
 
 def _normalize_ttl(tool_ttl: str) -> str:
-    ttl = (tool_ttl or DEFAULT_SKILL_KIT_TOOL_TTL).strip().lower()
-    if ttl not in SKILL_KIT_TTL_PRESETS:
-        raise ValueError(f"tool_ttl must be one of: {', '.join(TTL_OPTIONS)}")
-    return ttl
+    ttl = DEFAULT_SKILL_KIT_TOOL_TTL if tool_ttl is None else tool_ttl
+    try:
+        ttl_key, _ = parse_tool_ttl(ttl)
+        return ttl_key
+    except ValueError as exc:
+        raise ValueError(f"tool_ttl is invalid. {exc}") from exc
 
 
 def _coerce_scope(scope: str) -> SkillScope:
@@ -410,6 +410,7 @@ def _load_draft_or_inline(
         if draft is None:
             raise ValueError(f"Draft not found: {draft_id}")
         _validate_required_tools(draft.required_tools, user_id)
+        draft.tool_ttl = _normalize_ttl(draft.tool_ttl)
         draft.last_validated_at = utc_now()
         return draft
     return create_skill_draft(
@@ -545,10 +546,11 @@ def skill_config(
 ) -> Union[str, Command]:
     """Draft, validate, publish, list, or delete Nymeria Skills and Skill Kits.
 
-    Use this after you have written concise SKILL.md body instructions and
-    identified any exact Nymeria tools the Skill Kit must bind. V1 writes only
-    SKILL.md files in managed user/global skill directories; it cannot create
-    scripts, assets, references, or arbitrary paths.
+    Use this after you have written concise SKILL.md body instructions. A
+    plain Skill is instructions only. A Skill Kit is a Skill with
+    required_tools, so activating it binds those Nymeria tools for the thread.
+    V1 writes only SKILL.md files in managed user/global skill directories; it
+    cannot create scripts, assets, references, or arbitrary paths.
 
     Actions:
       draft:    Validate and save a per-user skill draft.
@@ -558,6 +560,19 @@ def skill_config(
       list:     Show this user's drafts and visible installed skills.
       delete:   Delete a draft when scope="draft", otherwise uninstall a
                user/global skill. Global delete requires admin.
+
+    Args:
+      tool_ttl: TTL for required tools when the skill is activated. Format:
+               Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
+
+    Returns:
+        JSON {tool_version, ok, action, ...}. draft/validate return
+        {draft: {draft_id, name, description, ...}}. publish returns
+        {published, skill, activated_current_thread, reload_queued};
+        when reload_queued=true, includes "[Skill reload queued - STOP
+        NOW]" and the graph is force-ended for rebuild — do not respond
+        after this directive. list returns {drafts, installed}. delete
+        returns {deleted}. Errors: {ok: false, error: {type, message}}.
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -754,7 +769,11 @@ async def skill_kit_create(
     tool_call_id: Annotated[str, InjectedToolCallId],
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> Union[str, Command]:
-    """Create durable Skill Kits, optionally drafting HTTP tools first.
+    """Create durable Skills or Skill Kits, optionally drafting HTTP tools first.
+
+    Use a plain Skill when the reusable value is instructions only. Use a
+    Skill Kit when future threads should receive both the instructions and
+    exact Nymeria tools via required_tools.
 
     Actions:
       draft:             Save a Skill Kit draft.
@@ -764,6 +783,18 @@ async def skill_kit_create(
       draft_http_tool:   Draft an HTTP custom tool.
       test_http_tool:    Test an HTTP custom tool draft.
       publish_http_tool: Publish a tested HTTP tool and enable it on this thread.
+
+    Args:
+      tool_ttl: TTL for required tools when the skill is activated. Format:
+               Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
+
+    Returns:
+        JSON {tool_version, ok, action, ...}. Same schema as skill_config
+        for draft/validate/publish (publish may trigger "[Skill reload
+        queued - STOP NOW]" graph force-end). list adds
+        {http_tool_drafts, published_http_tools}. publish_http_tool may
+        also trigger "[Tool reload queued - STOP NOW]" when the new
+        tool is bound. Errors: {ok: false, error: {type, message}}.
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)

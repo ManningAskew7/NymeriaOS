@@ -110,6 +110,17 @@ def test_load_skill_kit_metadata(tmp_path: Path):
     assert skill.is_skill_kit is True
 
 
+def test_load_skill_kit_accepts_flexible_tool_ttl(tmp_path: Path):
+    d = _write_skill(
+        tmp_path,
+        "trigger-management",
+        SKILL_KIT.replace("tool_ttl: 6h", "tool_ttl: 4w"),
+    )
+    skill = load_skill_directory(d, scope="bundled")
+    assert skill is not None
+    assert skill.tool_ttl == "4w"
+
+
 def test_manager_precedence_user_over_global(tmp_path: Path):
     bundled = tmp_path / "bundled"
     bundled.mkdir()

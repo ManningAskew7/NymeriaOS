@@ -31,7 +31,7 @@ class TodoCreateRequest(BaseModel):
     )
     scheduled_for: Optional[str] = Field(
         default=None,
-        description="When to execute: relative ('2h', '30m') or ISO datetime",
+        description="When to execute: relative ('45s', '17m', '2h', '1w') or absolute/ISO datetime",
     )
     recurrence: Optional[str] = Field(
         default=None, description="Recurrence: hourly, daily, weekly, monthly"
@@ -53,7 +53,7 @@ class TodoUpdateRequest(BaseModel):
     )
     scheduled_for: Optional[str] = Field(
         default=None,
-        description="When to execute: relative ('2h', '30m') or ISO datetime",
+        description="When to execute: relative ('45s', '17m', '2h', '1w') or absolute/ISO datetime",
     )
     recurrence: Optional[str] = Field(
         default=None, description="Recurrence: hourly, daily, weekly, monthly"

@@ -3,12 +3,12 @@
 ``tool_search`` is intentionally search-only. ``tool_enable`` owns the
 thread-binding mutations that used to live behind ``tool_search(action=...)``.
 
-Enabling a tool with a TTL (default 2h) triggers an in-turn auto-continue:
-the turn finishes the current graph invocation, rebuilds a fresh graph with
-the new tools bound, and resumes via an internal `tool_reload_resume` message
-so the agent can call the newly-enabled tools without waiting for the next
-user message. See `core/agent.py::_do_tool_reload` for the orchestration
-and `docs/tools.md` for the full flow.
+Enabling a tool with a TTL triggers an in-turn auto-continue: the turn
+finishes the current graph invocation, rebuilds a fresh graph with the new
+tools bound, and resumes via an internal `tool_reload_resume` message so the
+agent can call the newly-enabled tools without waiting for the next user
+message. See `core/agent.py::_do_tool_reload` for the orchestration and
+`docs/tools.md` for the full flow.
 """
 
 import logging
@@ -20,21 +20,13 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
-from ..core.time_utils import ensure_aware_utc, utc_now
+from ..core.time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
 from ..core.tool_reload import tool_reload_command
 from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
 
-# TTL presets. None => permanent (no expiry).
-TTL_PRESETS: Dict[str, Optional[int]] = {
-    "30m": 30 * 60,
-    "2h": 2 * 3600,
-    "6h": 6 * 3600,
-    "24h": 24 * 3600,
-    "permanent": None,
-}
 DEFAULT_TTL = "2h"
 
 
@@ -319,17 +311,17 @@ def bind_tools_for_thread(
     except Exception:
         user_role = "user"
 
-    ttl_key = (ttl or DEFAULT_TTL).strip().lower()
-    if ttl_key not in TTL_PRESETS:
-        options = ", ".join(f'"{k}"' for k in TTL_PRESETS)
+    ttl_value = DEFAULT_TTL if ttl is None else ttl
+    try:
+        ttl_key, ttl_seconds = parse_tool_ttl(ttl_value)
+    except ValueError as exc:
         return ToolBindingResult(
             ok=False,
-            text=f"[Error]: Invalid ttl '{ttl}'. Must be one of: {options}.",
+            text=f"[Error]: {exc}",
             source=source,
             skill_name=skill_name,
             reason=reason,
         )
-    ttl_seconds = TTL_PRESETS[ttl_key]
 
     if category and not tool_names:
         cat_key = category.lower().strip().replace("-", "_")
@@ -536,12 +528,12 @@ def bind_tools_for_thread(
         # Un-disabling is the primary action when the tool was filtered out
         # by tc.disabled_tools. Since disable is non-destructive (it only
         # adds to disabled_tools without touching enabled_tools/temporary_tools),
-        # un-disable should restore preserved state AS-IS — the requested `ttl`
+        # un-disable should restore preserved state AS-IS; the requested `ttl`
         # must NOT bleed into this path and overwrite a preserved permanent or
         # TTL entry. Mixed-batch example: enable([hello_test, sticky_note],
-        # ttl="permanent") where hello_test is a TTL→promote and sticky_note is
-        # a disabled-with-preserved-TTL: the "permanent" was intended for
-        # hello_test, so sticky_note's 18m TTL must survive intact.
+        # ttl="never") where hello_test is a TTL-to-permanent promotion and
+        # sticky_note is a disabled-with-preserved-TTL: the "never" was
+        # intended for hello_test, so sticky_note's 18m TTL must survive intact.
         #
         # Only write fresh state when there's genuinely nothing to restore:
         # no default binding, no permanent entry, no TTL entry. Expired TTL
@@ -940,6 +932,11 @@ def tool_search(
         category: Optional category filter (e.g. "email", "twitch").
         top_k: Max results to return, capped at 50.
         include_status: Include current-thread enabled/disabled annotations.
+
+    Returns:
+        "[Tool Search]: N result(s)" header + per result: name
+        (category, security_level) [ENABLED/DISABLED], description,
+        and enable hint. "[No results]: ..." when empty.
     """
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
@@ -963,7 +960,7 @@ def tool_enable(
     action: str,
     tools: Optional[List[str]] = None,
     category: str = "",
-    ttl: str = DEFAULT_TTL,
+    ttl: Optional[str] = None,
     force: bool = False,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -976,8 +973,26 @@ def tool_enable(
         action: One of: enable, disable, list_categories, status.
         tools: Tool names to enable or disable.
         category: Category name to enable or list/filter.
-        ttl: For enable: "30m", "2h" (default), "6h", "24h", or "permanent".
+        ttl: Required for enable action. Duration format: Nm (minutes),
+            Nh (hours), Nd (days), Nw (weeks), or "never" for permanent.
+            "permanent" is also accepted. Examples: "30m", "2h", "7d",
+            "4w", "never". Choose based on how long this task needs the tool;
+            don't default blindly.
         force: For disable only. Set True to allow disabling core tools.
+
+    Returns:
+        enable: "[Success]: N requested, M newly loaded..." summary
+        with per-tool breakdown. When new tools are loaded, includes
+        "[Tool reload queued - STOP NOW]" — the graph is force-ended
+        via Command(goto=END), rebuilt with the new tools, and the
+        agent is re-prompted via tool_reload_resume. Do not respond
+        or call tools after seeing this directive.
+        When no new tools are loaded (no-op/refresh): plain text
+        summary, no reload.
+        disable: "[Success]: Disabled N tool(s): ...".
+        list_categories: "[Tool Categories]: N categories" with counts.
+        status: "[Thread Tool Status]" with enabled/TTL/disabled sections.
+        Errors: "[Error]: <reason>".
     """
     action = action.strip().lower()
     thread_id = get_thread_id(config)
@@ -989,6 +1004,11 @@ def tool_enable(
     )
 
     if action == "enable":
+        if ttl is None:
+            return (
+                "[Error]: ttl is required for enable. "
+                "Format: Nm, Nh, Nd, Nw, or 'never'."
+            )
         return _enable(
             tools or [],
             category,

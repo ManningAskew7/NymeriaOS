@@ -90,7 +90,7 @@ class TodoItem(BaseModel):
 class TodoCreateRequest(BaseModel):
     task: str
     notes: Optional[str]
-    scheduled_for: Optional[str] # "30s", "5m", "2h", "1w", or ISO datetime
+    scheduled_for: Optional[str] # "45s", "17m", "2h", "1w", absolute, or ISO datetime
     recurrence: Optional[str]    # 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
     thread_id: Optional[str]     # Thread for scheduled execution output
 
@@ -113,11 +113,11 @@ The `_parse_scheduled_for` helper handles timezone conversion:
 
 ```python
 def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
-    # Relative times: "30s", "5m", "2h", "1d", "1w"
+    # Relative times: any positive duration like "45s", "17m", "2h", "1d", "1w"
     # Uses timezone-aware UTC: datetime.now(timezone.utc) + timedelta(...)
 
-    # Absolute times: "2026-01-15T14:00"
-    # Parsed as local system time, then converted to UTC
+    # Absolute times: "2026-01-15T14:37" or ISO with timezone
+    # Naive absolute times are interpreted in the configured user timezone
 ```
 
 The `_datetime_to_timestamp` function in `todo_schedule_db.py` handles naive datetimes:
@@ -345,7 +345,7 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 1. Create TODO with recurrence (for example `"5min"`), scheduled for 1 minute
 2. Wait for execution
 3. **Verify:** TODO status resets to pending
-4. **Verify:** Schedule updated to the configured recurrence interval (for example +5 minutes for `5min`)
+4. **Verify:** Schedule updated to the next cadence slot based on the prior scheduled fire time, not completion time (for example a `5min` TODO due at 10:00 moves to 10:05 even if marked done at 10:01)
 
 ### Test 4: Visual Distinction
 1. Create TODO via UI (should show user icon badge)

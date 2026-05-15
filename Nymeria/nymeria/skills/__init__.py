@@ -30,6 +30,8 @@ from typing import Dict, List, Literal, Optional
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from ..core.time_utils import parse_tool_ttl
+
 logger = logging.getLogger(__name__)
 
 KEBAB_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*[a-z0-9]$")
@@ -38,7 +40,6 @@ SkillScope = Literal["bundled", "global", "user"]
 
 # Anthropic's documented upper bound on the <available_skills> block.
 AVAILABLE_SKILLS_CHAR_BUDGET = 15_000
-SKILL_KIT_TTL_PRESETS = frozenset({"30m", "2h", "6h", "24h", "permanent"})
 DEFAULT_SKILL_KIT_TOOL_TTL = "2h"
 
 
@@ -120,13 +121,21 @@ class Skill(BaseModel):
 
     @property
     def tool_ttl(self) -> str:
-        """TTL preset for Skill Kit tool bindings, defaulting to 2h."""
+        """TTL for Skill Kit tool bindings, defaulting to 2h."""
         value = str(
             self._nymeria_metadata.get("tool_ttl", DEFAULT_SKILL_KIT_TOOL_TTL)
         ).strip().lower()
-        if value in SKILL_KIT_TTL_PRESETS:
-            return value
-        return DEFAULT_SKILL_KIT_TOOL_TTL
+        try:
+            ttl_key, _ = parse_tool_ttl(value)
+            return ttl_key
+        except ValueError:
+            logger.warning(
+                "skill %s: invalid metadata.nymeria.tool_ttl %r; using %s",
+                self.name,
+                value,
+                DEFAULT_SKILL_KIT_TOOL_TTL,
+            )
+            return DEFAULT_SKILL_KIT_TOOL_TTL
 
     @property
     def is_skill_kit(self) -> bool:

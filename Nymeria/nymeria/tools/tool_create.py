@@ -23,9 +23,10 @@ from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
 from ..core.time_utils import utc_now
+from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import tool_reload_command
 from .definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
-from .tool_search import DEFAULT_TTL, TTL_PRESETS, _enable
+from .tool_search import DEFAULT_TTL, _enable
 from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
@@ -362,12 +363,12 @@ def _publish_draft(
             },
         )
 
-    ttl_key = (ttl or DEFAULT_TTL).strip().lower()
-    if ttl_key not in TTL_PRESETS:
-        options = ", ".join(TTL_PRESETS.keys())
+    try:
+        ttl_key, _ = parse_tool_ttl(DEFAULT_TTL if ttl is None else ttl)
+    except ValueError as exc:
         return _json_result(
             ok=False,
-            error={"type": "validation_error", "message": f"Invalid ttl. Use one of: {options}"},
+            error={"type": "validation_error", "message": str(exc)},
         )
 
     agent = get_current_agent()
@@ -461,6 +462,10 @@ async def tool_create(
     Published tools are globally discoverable via tool_search but are not
     added to default_thread_tools and do not affect other users unless they
     explicitly enable them.
+
+    Args:
+      ttl: Publish-only TTL for enabling the new tool on this thread. Format:
+           Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
