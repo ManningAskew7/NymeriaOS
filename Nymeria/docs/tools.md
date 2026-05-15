@@ -3079,6 +3079,28 @@ These optional tools reuse the `google_analytics_auth_start` OAuth connection an
 
 ---
 
+### Google Business Profile Auth Tools (4)
+
+Google Business Profile uses its own OAuth cache at `data/auth_tokens/<user_id>/google_business_profile.json` and requires the Google Business Profile APIs to be enabled for the OAuth client.
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `google_business_profile_auth_start` | `()` | Start Google Business Profile OAuth flow. Returns authorization URL for the user. |
+| `google_business_profile_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
+| `google_business_profile_auth_clear` | `(account_id?)` | Clear one saved Google Business Profile account by ID, or all Business Profile accounts plus any pending OAuth flow when omitted. |
+| `google_business_profile_list_accounts` | `()` | List authenticated Google accounts for Business Profile tools with verified token/scopes status. Invalid refresh tokens are pruned. |
+
+### Google Business Profile Service Tools (11)
+
+These optional tools reuse the `google_business_profile_auth_start` OAuth connection:
+- `google_business_profile_list_profile_accounts(page_size?, page_token?, account_id?)` lists managed Business Profile accounts.
+- `google_business_profile_list_locations(account_name, read_mask?, page_size?, page_token?, account_id?)` lists locations for an account.
+- `google_business_profile_list_reviews(account_name, location_name, page_size?, page_token?, order_by?, account_id?)` and `google_business_profile_get_review(review_name, account_name?, location_name?, account_id?)` read reviews.
+- `google_business_profile_reply_to_review(review_name, comment, account_name?, location_name?, account_id?)` and `google_business_profile_delete_review_reply(review_name, account_name?, location_name?, account_id?)` manage business replies.
+- `google_business_profile_list_posts(account_name, location_name, page_size?, page_token?, account_id?)`, `google_business_profile_get_post(post_name, account_name?, location_name?, account_id?)`, `google_business_profile_create_post(...)`, `google_business_profile_update_post(...)`, and `google_business_profile_delete_post(...)` manage local posts.
+
+---
+
 ### SelfModify Tools (8)
 
 Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write** and **delete** are restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
@@ -3111,6 +3133,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Subagent tools (reload/rollback): 2
 - Google Docs tools: 4 auth + 17 document + 34 Workspace = 55 total
 - Google Analytics tools: 4 auth + 4 report = 8 total
+- Google Business Profile tools: 4 auth + 11 profile = 15 total
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4

@@ -99,6 +99,27 @@ from .google_analytics_service_integrations import (
     google_analytics_run_realtime_report,
     GOOGLE_ANALYTICS_SERVICE_TOOLS,
 )
+from .google_business_profile_auth import (
+    google_business_profile_auth_start,
+    google_business_profile_auth_complete,
+    google_business_profile_auth_clear,
+    google_business_profile_list_accounts,
+    GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS,
+)
+from .google_business_profile_service_integrations import (
+    google_business_profile_list_profile_accounts,
+    google_business_profile_list_locations,
+    google_business_profile_list_reviews,
+    google_business_profile_get_review,
+    google_business_profile_reply_to_review,
+    google_business_profile_delete_review_reply,
+    google_business_profile_list_posts,
+    google_business_profile_get_post,
+    google_business_profile_create_post,
+    google_business_profile_update_post,
+    google_business_profile_delete_post,
+    GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS,
+)
 from .gmail_auth import (
     gmail_auth_start,
     gmail_auth_complete,
@@ -1354,6 +1375,8 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + GOOGLE_WORKSPACE_SERVICE_TOOLS
     + GOOGLE_ANALYTICS_AUTH_TOOLS
     + GOOGLE_ANALYTICS_SERVICE_TOOLS
+    + GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS
+    + GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + TOOL_SEARCH_TOOLS
@@ -2710,6 +2733,23 @@ __all__ = [
     "google_analytics_run_report",
     "google_analytics_run_realtime_report",
     "GOOGLE_ANALYTICS_SERVICE_TOOLS",
+    "google_business_profile_auth_start",
+    "google_business_profile_auth_complete",
+    "google_business_profile_auth_clear",
+    "google_business_profile_list_accounts",
+    "GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS",
+    "google_business_profile_list_profile_accounts",
+    "google_business_profile_list_locations",
+    "google_business_profile_list_reviews",
+    "google_business_profile_get_review",
+    "google_business_profile_reply_to_review",
+    "google_business_profile_delete_review_reply",
+    "google_business_profile_list_posts",
+    "google_business_profile_get_post",
+    "google_business_profile_create_post",
+    "google_business_profile_update_post",
+    "google_business_profile_delete_post",
+    "GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS",
     "gmail_auth_start",
     "gmail_auth_complete",
     "gmail_auth_clear",
