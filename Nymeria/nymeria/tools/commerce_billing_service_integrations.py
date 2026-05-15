@@ -18,6 +18,10 @@ _MAX_JSON_CHARS = 60_000
 _STRIPE_BASE_URL = "https://api.stripe.com/v1"
 _SHOPIFY_API_VERSION = "2026-01"
 _CHARGEBEE_API_VERSION = "v2"
+_PADDLE_BASE_URL = "https://vendors.paddle.com/api"
+_PADDLE_SANDBOX_BASE_URL = "https://sandbox-vendors.paddle.com/api"
+_PROFITWELL_BASE_URL = "https://api.profitwell.com/v2"
+_TAPFILIATE_BASE_URL = "https://api.tapfiliate.com/1.6"
 
 _STRIPE_RESOURCES = {
     "customer": "customers",
@@ -87,6 +91,10 @@ def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
 
 def _split_csv(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _split_csv_ints(value: str) -> list[int]:
+    return [int(part) for part in _split_csv(value)]
 
 
 def _filtered(params: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -241,6 +249,12 @@ def _request_json(
 
 def _auth_basic(username: str, password: str = "") -> str:
     return base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
+def _truthy(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on", "sandbox"}
 
 
 def _stripe_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -445,6 +459,178 @@ def _chargebee_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     return _base_url(base), {
         "Accept": "application/json",
         "Authorization": f"Basic {_auth_basic(api_key)}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _paddle_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    provider_aliases = ("paddle_api",)
+    sandbox_value = _credential_value(
+        provider="paddle",
+        provider_aliases=provider_aliases,
+        field_names=("sandbox", "use_sandbox", "useSandbox"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("paddle_sandbox")
+    default_base = _PADDLE_SANDBOX_BASE_URL if _truthy(str(sandbox_value)) else _PADDLE_BASE_URL
+    base = (
+        _credential_value(
+            provider="paddle",
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("paddle_base_url")
+        or default_base
+    )
+    vendor_id = _credential_value(
+        provider="paddle",
+        provider_aliases=provider_aliases,
+        field_names=("vendor_id", "vendorId"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("paddle_vendor_id")
+    auth_code = _credential_value(
+        provider="paddle",
+        provider_aliases=provider_aliases,
+        field_names=("vendor_auth_code", "vendorAuthCode", "auth_code", "authCode", "api_key", "apiKey", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("paddle_vendor_auth_code")
+    if not vendor_id or not auth_code:
+        return _base_url(base), _setup_hint(
+            provider="paddle",
+            field_names=("vendor_id", "vendor_auth_code"),
+            tool_name=tool_name,
+            env_var="PADDLE_VENDOR_ID + PADDLE_VENDOR_AUTH_CODE",
+            display_name="Paddle",
+        )
+    return _base_url(base), {
+        "vendor_id": str(vendor_id),
+        "vendor_auth_code": str(auth_code),
+    }
+
+
+def _paddle_request(
+    tool_name: str,
+    endpoint: str,
+    *,
+    method: str = "POST",
+    body: Optional[dict[str, Any]] = None,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base_url, auth_or_error = _paddle_config(tool_name, config)
+    if isinstance(auth_or_error, str):
+        return auth_or_error
+    payload = _filtered({**auth_or_error, **(body or {})})
+    data = _request_json(
+        method,
+        f"{base_url}{endpoint}",
+        params=payload if method.upper() == "GET" else None,
+        json_body=payload if method.upper() != "GET" else None,
+        headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"},
+    )
+    if isinstance(data, dict) and data.get("success") is False:
+        raise RuntimeError(str(data.get("error") or data.get("message") or data))
+    return data
+
+
+def _paddle_response(data: Any, path: str = "response") -> Any:
+    current = data
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return data
+    return current if current is not None else data
+
+
+def _profitwell_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="profitwell",
+            provider_aliases=("profitwell_api",),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("profitwell_base_url")
+        or _PROFITWELL_BASE_URL
+    )
+    token = _credential_value(
+        provider="profitwell",
+        provider_aliases=("profitwell_api",),
+        field_names=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("profitwell_api_token")
+    if not token:
+        return _base_url(base), _setup_hint(
+            provider="profitwell",
+            field_names=("access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="PROFITWELL_API_TOKEN",
+            display_name="ProfitWell",
+        )
+    return _base_url(base), {"Accept": "application/json", "Authorization": token, "User-Agent": "Nymeria"}
+
+
+def _profitwell_simplify_metrics(data: Any, metric_type: str) -> Any:
+    metrics = data.get("data", data) if isinstance(data, dict) else data
+    if not isinstance(metrics, dict) or not metrics:
+        return data
+    if metric_type == "daily":
+        first_series = next((series for series in metrics.values() if isinstance(series, list)), [])
+        rows: list[dict[str, Any]] = []
+        for index, point in enumerate(first_series):
+            if not isinstance(point, dict):
+                continue
+            row = {"date": point.get("date")}
+            for key, series in metrics.items():
+                if isinstance(series, list) and index < len(series) and isinstance(series[index], dict):
+                    row[key] = series[index].get("value")
+            rows.append(row)
+        return rows
+    row: dict[str, Any] = {}
+    for key, series in metrics.items():
+        if isinstance(series, list) and series and isinstance(series[-1], dict):
+            row[key] = series[-1].get("value")
+            row["date"] = series[-1].get("date")
+    return row or data
+
+
+def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="tapfiliate",
+            provider_aliases=("tapfiliate_api",),
+            field_names=("base_url", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("tapfiliate_base_url")
+        or _TAPFILIATE_BASE_URL
+    )
+    key = _credential_value(
+        provider="tapfiliate",
+        provider_aliases=("tapfiliate_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("tapfiliate_api_key")
+    if not key:
+        return _base_url(base), _setup_hint(
+            provider="tapfiliate",
+            field_names=("api_key", "value"),
+            tool_name=tool_name,
+            env_var="TAPFILIATE_API_KEY",
+            display_name="Tapfiliate",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Api-Key": key,
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
@@ -1109,6 +1295,776 @@ def chargebee_update_customer(
         return f"[Error]: Chargebee customer update failed: {e}"
 
 
+@tool
+def paddle_list_products(
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Paddle products.
+
+    Args:
+        limit: Number of products to return, 1-200.
+    """
+    try:
+        data = _paddle_request("paddle_list_products", "/2.0/product/get_products", config=config)
+        if isinstance(data, str):
+            return data
+        products = _paddle_response(data, "response.products")
+        if isinstance(products, list):
+            products = products[: _limit(limit, default=50, max_value=200)]
+        return _dump_json(products)
+    except Exception as e:
+        logger.error("paddle_list_products failed", exc_info=True)
+        return f"[Error]: Paddle product list failed: {e}"
+
+
+@tool
+def paddle_list_plans(
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Paddle subscription plans.
+
+    Args:
+        limit: Number of plans to return, 1-200.
+    """
+    try:
+        data = _paddle_request("paddle_list_plans", "/2.0/subscription/plans", config=config)
+        if isinstance(data, str):
+            return data
+        plans = _paddle_response(data)
+        if isinstance(plans, list):
+            plans = plans[: _limit(limit, default=50, max_value=200)]
+        return _dump_json(plans)
+    except Exception as e:
+        logger.error("paddle_list_plans failed", exc_info=True)
+        return f"[Error]: Paddle plan list failed: {e}"
+
+
+@tool
+def paddle_list_subscription_users(
+    state: str = "",
+    plan_id: str = "",
+    subscription_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Paddle subscription users.
+
+    Args:
+        state: Optional subscription state filter.
+        plan_id: Optional plan ID filter.
+        subscription_id: Optional subscription ID filter.
+        limit: Number of users to return, 1-200.
+    """
+    try:
+        body = {
+            "state": state.strip(),
+            "plan_id": plan_id.strip(),
+            "subscription_id": subscription_id.strip(),
+            "results_per_page": _limit(limit, default=50, max_value=200),
+        }
+        data = _paddle_request(
+            "paddle_list_subscription_users",
+            "/2.0/subscription/users",
+            body=body,
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        return _dump_json(_paddle_response(data))
+    except Exception as e:
+        logger.error("paddle_list_subscription_users failed", exc_info=True)
+        return f"[Error]: Paddle subscription user list failed: {e}"
+
+
+@tool
+def paddle_list_payments(
+    subscription_id: str = "",
+    plan: str = "",
+    state: str = "",
+    is_paid: Optional[bool] = None,
+    from_date: str = "",
+    to_date: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Paddle subscription payments.
+
+    Args:
+        subscription_id: Optional subscription ID filter.
+        plan: Optional plan filter.
+        state: Optional payment state filter.
+        is_paid: Optional paid/unpaid filter.
+        from_date: Optional start date, YYYY-MM-DD.
+        to_date: Optional end date, YYYY-MM-DD.
+        limit: Number of payments to return, 1-200.
+    """
+    try:
+        body = {
+            "subscription_id": subscription_id.strip(),
+            "plan": plan.strip(),
+            "state": state.strip(),
+            "is_paid": int(is_paid) if is_paid is not None else "",
+            "from": from_date.strip(),
+            "to": to_date.strip(),
+            "results_per_page": _limit(limit, default=50, max_value=200),
+        }
+        data = _paddle_request("paddle_list_payments", "/2.0/subscription/payments", body=body, config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(_paddle_response(data))
+    except Exception as e:
+        logger.error("paddle_list_payments failed", exc_info=True)
+        return f"[Error]: Paddle payment list failed: {e}"
+
+
+@tool
+def paddle_get_order(
+    checkout_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Paddle order by checkout ID.
+
+    Args:
+        checkout_id: Paddle checkout ID.
+    """
+    if not checkout_id.strip():
+        return "[Error]: checkout_id is required."
+    try:
+        data = _paddle_request(
+            "paddle_get_order",
+            "/1.0/order",
+            method="GET",
+            body={"checkout_id": checkout_id.strip()},
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("paddle_get_order failed", exc_info=True)
+        return f"[Error]: Paddle order lookup failed: {e}"
+
+
+@tool
+def paddle_list_coupons(
+    product_id: str,
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Paddle coupons for a product.
+
+    Args:
+        product_id: Paddle product ID.
+        limit: Number of coupons to return, 1-200.
+    """
+    if not product_id.strip():
+        return "[Error]: product_id is required."
+    try:
+        data = _paddle_request(
+            "paddle_list_coupons",
+            "/2.0/product/list_coupons",
+            body={"product_id": product_id.strip()},
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        coupons = _paddle_response(data)
+        if isinstance(coupons, list):
+            coupons = coupons[: _limit(limit, default=50, max_value=200)]
+        return _dump_json(coupons)
+    except Exception as e:
+        logger.error("paddle_list_coupons failed", exc_info=True)
+        return f"[Error]: Paddle coupon list failed: {e}"
+
+
+@tool
+def paddle_create_coupon(
+    coupon_type: str,
+    discount_type: str,
+    discount_amount: float,
+    product_ids: str = "",
+    currency: str = "",
+    coupon_code: str = "",
+    coupon_prefix: str = "",
+    description: str = "",
+    group: str = "",
+    allowed_uses: int = 0,
+    number_of_coupons: int = 0,
+    expires: str = "",
+    recurring: bool = False,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create Paddle coupon codes.
+
+    Args:
+        coupon_type: "checkout" or "product".
+        discount_type: "flat" or "percentage".
+        discount_amount: Discount amount.
+        product_ids: Comma-separated product IDs when coupon_type is "product".
+        currency: Currency for flat discounts.
+        coupon_code: Optional explicit coupon code.
+        coupon_prefix: Optional generated coupon prefix.
+        description: Optional coupon description.
+        group: Optional coupon group.
+        allowed_uses: Optional allowed uses.
+        number_of_coupons: Optional generated coupon count.
+        expires: Optional expiration date, YYYY-MM-DD.
+        recurring: Apply to recurring payments.
+        fields_json: Optional extra Paddle fields as JSON.
+    """
+    normalized_coupon_type = coupon_type.strip().lower()
+    normalized_discount_type = discount_type.strip().lower()
+    if normalized_coupon_type not in {"checkout", "product"}:
+        return '[Error]: coupon_type must be "checkout" or "product".'
+    if normalized_discount_type not in {"flat", "percentage"}:
+        return '[Error]: discount_type must be "flat" or "percentage".'
+    try:
+        body = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            **_filtered(
+                {
+                    "coupon_type": normalized_coupon_type,
+                    "discount_type": normalized_discount_type,
+                    "discount_amount": discount_amount,
+                    "product_ids": _split_csv_ints(product_ids),
+                    "currency": currency.strip().upper(),
+                    "coupon_code": coupon_code.strip(),
+                    "coupon_prefix": coupon_prefix.strip(),
+                    "description": description.strip(),
+                    "group": group.strip(),
+                    "allowed_uses": allowed_uses if allowed_uses > 0 else "",
+                    "num_coupons": number_of_coupons if number_of_coupons > 0 else "",
+                    "expires": expires.strip(),
+                    "recurring": 1 if recurring else 0,
+                }
+            ),
+        }
+        data = _paddle_request("paddle_create_coupon", "/2.1/product/create_coupon", body=body, config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(_paddle_response(data, "response.coupon_codes"))
+    except Exception as e:
+        logger.error("paddle_create_coupon failed", exc_info=True)
+        return f"[Error]: Paddle coupon creation failed: {e}"
+
+
+@tool
+def paddle_update_coupon(
+    coupon_code: str = "",
+    group: str = "",
+    fields_json: str = "{}",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update Paddle coupon metadata by coupon code or group.
+
+    Args:
+        coupon_code: Coupon code to update.
+        group: Coupon group to update.
+        fields_json: JSON object of Paddle update fields.
+    """
+    if bool(coupon_code.strip()) == bool(group.strip()):
+        return "[Error]: provide exactly one of coupon_code or group."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json is required."
+        body = {
+            **fields,
+            **_filtered({"coupon_code": coupon_code.strip(), "group": group.strip()}),
+        }
+        data = _paddle_request("paddle_update_coupon", "/2.1/product/update_coupon", body=body, config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(_paddle_response(data))
+    except Exception as e:
+        logger.error("paddle_update_coupon failed", exc_info=True)
+        return f"[Error]: Paddle coupon update failed: {e}"
+
+
+@tool
+def paddle_reschedule_payment(
+    payment_id: int,
+    date: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Reschedule a Paddle subscription payment.
+
+    Args:
+        payment_id: Paddle payment ID.
+        date: New payment date, YYYY-MM-DD.
+    """
+    if not date.strip():
+        return "[Error]: date is required."
+    try:
+        data = _paddle_request(
+            "paddle_reschedule_payment",
+            "/2.0/subscription/payments_reschedule",
+            body={"payment_id": int(payment_id), "date": date.strip()},
+            config=config,
+        )
+        if isinstance(data, str):
+            return data
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("paddle_reschedule_payment failed", exc_info=True)
+        return f"[Error]: Paddle payment reschedule failed: {e}"
+
+
+@tool
+def profitwell_get_settings(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get ProfitWell account settings.
+
+    Args:
+        config: Runtime context injected by Nymeria.
+    """
+    try:
+        base_url, headers_or_error = _profitwell_config("profitwell_get_settings", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("GET", f"{base_url}/company/settings/", headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("profitwell_get_settings failed", exc_info=True)
+        return f"[Error]: ProfitWell settings lookup failed: {e}"
+
+
+@tool
+def profitwell_get_metrics(
+    metric_type: str,
+    month: str = "",
+    metrics: str = "",
+    plan_id: str = "",
+    simplify: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get ProfitWell daily or monthly metrics.
+
+    Args:
+        metric_type: "daily" or "monthly".
+        month: Required for daily metrics, YYYY-MM.
+        metrics: Optional comma-separated metric names.
+        plan_id: Optional plan ID filter.
+        simplify: Return simplified rows instead of raw ProfitWell data.
+    """
+    normalized_type = metric_type.strip().lower()
+    if normalized_type not in {"daily", "monthly"}:
+        return '[Error]: metric_type must be "daily" or "monthly".'
+    if normalized_type == "daily" and not month.strip():
+        return "[Error]: month is required for daily metrics."
+    try:
+        base_url, headers_or_error = _profitwell_config("profitwell_get_metrics", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/metrics/{normalized_type}",
+            params={
+                "month": month.strip(),
+                "metrics": ",".join(_split_csv(metrics)),
+                "plan_id": plan_id.strip(),
+            },
+            headers=headers_or_error,
+        )
+        return _dump_json(_profitwell_simplify_metrics(data, normalized_type) if simplify else data)
+    except Exception as e:
+        logger.error("profitwell_get_metrics failed", exc_info=True)
+        return f"[Error]: ProfitWell metrics lookup failed: {e}"
+
+
+@tool
+def tapfiliate_list_affiliates(
+    email: str = "",
+    affiliate_group_id: str = "",
+    parent_id: str = "",
+    source_id: str = "",
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Tapfiliate affiliates.
+
+    Args:
+        email: Optional email filter.
+        affiliate_group_id: Optional affiliate group filter.
+        parent_id: Optional parent affiliate filter.
+        source_id: Optional source filter.
+        limit: Number of affiliates to return, 1-1000.
+    """
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_list_affiliates", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/affiliates/",
+            params={
+                "email": email.strip(),
+                "affiliate_group_id": affiliate_group_id.strip(),
+                "parent_id": parent_id.strip(),
+                "source_id": source_id.strip(),
+            },
+            headers=headers_or_error,
+        )
+        if isinstance(data, list):
+            data = data[: _limit(limit, default=100, max_value=1000)]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_list_affiliates failed", exc_info=True)
+        return f"[Error]: Tapfiliate affiliate list failed: {e}"
+
+
+@tool
+def tapfiliate_get_affiliate(
+    affiliate_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Tapfiliate affiliate by ID.
+
+    Args:
+        affiliate_id: Tapfiliate affiliate ID.
+    """
+    if not affiliate_id.strip():
+        return "[Error]: affiliate_id is required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_get_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/affiliates/{quote(affiliate_id.strip(), safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_get_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate affiliate lookup failed: {e}"
+
+
+@tool
+def tapfiliate_create_affiliate(
+    email: str,
+    first_name: str,
+    last_name: str,
+    company_name: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Tapfiliate affiliate.
+
+    Args:
+        email: Affiliate email address.
+        first_name: Affiliate first name.
+        last_name: Affiliate last name.
+        company_name: Optional company name.
+        fields_json: Optional extra affiliate fields as JSON.
+    """
+    if not email.strip() or not first_name.strip() or not last_name.strip():
+        return "[Error]: email, first_name, and last_name are required."
+    try:
+        body = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            "email": email.strip(),
+            "firstname": first_name.strip(),
+            "lastname": last_name.strip(),
+        }
+        if company_name.strip():
+            body["company"] = {"name": company_name.strip()}
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_create_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", f"{base_url}/affiliates/", json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_create_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate affiliate creation failed: {e}"
+
+
+@tool
+def tapfiliate_delete_affiliate(
+    affiliate_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Tapfiliate affiliate.
+
+    Args:
+        affiliate_id: Tapfiliate affiliate ID.
+    """
+    if not affiliate_id.strip():
+        return "[Error]: affiliate_id is required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_delete_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/affiliates/{quote(affiliate_id.strip(), safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_delete_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate affiliate delete failed: {e}"
+
+
+@tool
+def tapfiliate_add_affiliate_metadata(
+    affiliate_id: str,
+    metadata_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Add metadata fields to a Tapfiliate affiliate.
+
+    Args:
+        affiliate_id: Tapfiliate affiliate ID.
+        metadata_json: JSON object of metadata key/value pairs.
+    """
+    if not affiliate_id.strip():
+        return "[Error]: affiliate_id is required."
+    try:
+        metadata = _parse_json(metadata_json, expected=dict, label="metadata_json")
+        if not metadata:
+            return "[Error]: metadata_json cannot be empty."
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_add_affiliate_metadata", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        results = {}
+        for key, value in metadata.items():
+            results[str(key)] = _request_json(
+                "PUT",
+                f"{base_url}/affiliates/{quote(affiliate_id.strip(), safe='')}/meta-data/{quote(str(key), safe='')}/",
+                json_body={"value": value},
+                headers=headers_or_error,
+            )
+        return _dump_json({"success": True, "results": results})
+    except Exception as e:
+        logger.error("tapfiliate_add_affiliate_metadata failed", exc_info=True)
+        return f"[Error]: Tapfiliate metadata add failed: {e}"
+
+
+@tool
+def tapfiliate_remove_affiliate_metadata(
+    affiliate_id: str,
+    key: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Remove a metadata field from a Tapfiliate affiliate.
+
+    Args:
+        affiliate_id: Tapfiliate affiliate ID.
+        key: Metadata key to remove.
+    """
+    if not affiliate_id.strip() or not key.strip():
+        return "[Error]: affiliate_id and key are required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_remove_affiliate_metadata", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/affiliates/{quote(affiliate_id.strip(), safe='')}/meta-data/{quote(key.strip(), safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_remove_affiliate_metadata failed", exc_info=True)
+        return f"[Error]: Tapfiliate metadata removal failed: {e}"
+
+
+@tool
+def tapfiliate_update_affiliate_metadata(
+    affiliate_id: str,
+    key: str,
+    value: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a metadata field on a Tapfiliate affiliate.
+
+    Args:
+        affiliate_id: Tapfiliate affiliate ID.
+        key: Metadata key.
+        value: New metadata value.
+    """
+    if not affiliate_id.strip() or not key.strip():
+        return "[Error]: affiliate_id and key are required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_update_affiliate_metadata", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base_url}/affiliates/{quote(affiliate_id.strip(), safe='')}/meta-data/",
+            json_body={key.strip(): value},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_update_affiliate_metadata failed", exc_info=True)
+        return f"[Error]: Tapfiliate metadata update failed: {e}"
+
+
+@tool
+def tapfiliate_list_program_affiliates(
+    program_id: str,
+    filters_json: str = "",
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List affiliates in a Tapfiliate program.
+
+    Args:
+        program_id: Tapfiliate program ID.
+        filters_json: Optional JSON object of Tapfiliate filters.
+        limit: Number of program affiliates to return, 1-1000.
+    """
+    if not program_id.strip():
+        return "[Error]: program_id is required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_list_program_affiliates", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/programs/{quote(program_id.strip(), safe='')}/affiliates/",
+            params=_parse_json(filters_json, expected=dict, label="filters_json"),
+            headers=headers_or_error,
+        )
+        if isinstance(data, list):
+            data = data[: _limit(limit, default=100, max_value=1000)]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_list_program_affiliates failed", exc_info=True)
+        return f"[Error]: Tapfiliate program affiliate list failed: {e}"
+
+
+@tool
+def tapfiliate_get_program_affiliate(
+    program_id: str,
+    affiliate_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Tapfiliate affiliate in a program.
+
+    Args:
+        program_id: Tapfiliate program ID.
+        affiliate_id: Tapfiliate affiliate ID.
+    """
+    if not program_id.strip() or not affiliate_id.strip():
+        return "[Error]: program_id and affiliate_id are required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_get_program_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/programs/{quote(program_id.strip(), safe='')}/affiliates/{quote(affiliate_id.strip(), safe='')}/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_get_program_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate program affiliate lookup failed: {e}"
+
+
+@tool
+def tapfiliate_add_program_affiliate(
+    program_id: str,
+    affiliate_id: str,
+    approved: Optional[bool] = None,
+    coupon: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Add a Tapfiliate affiliate to a program.
+
+    Args:
+        program_id: Tapfiliate program ID.
+        affiliate_id: Tapfiliate affiliate ID.
+        approved: Optional approval status.
+        coupon: Optional affiliate coupon.
+    """
+    if not program_id.strip() or not affiliate_id.strip():
+        return "[Error]: program_id and affiliate_id are required."
+    try:
+        body = {
+            "affiliate": {"id": affiliate_id.strip()},
+            **_filtered({"approved": approved, "coupon": coupon.strip()}),
+        }
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_add_program_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "POST",
+            f"{base_url}/programs/{quote(program_id.strip(), safe='')}/affiliates/",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_add_program_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate program affiliate add failed: {e}"
+
+
+@tool
+def tapfiliate_approve_program_affiliate(
+    program_id: str,
+    affiliate_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Approve a Tapfiliate affiliate for a program.
+
+    Args:
+        program_id: Tapfiliate program ID.
+        affiliate_id: Tapfiliate affiliate ID.
+    """
+    if not program_id.strip() or not affiliate_id.strip():
+        return "[Error]: program_id and affiliate_id are required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_approve_program_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            f"{base_url}/programs/{quote(program_id.strip(), safe='')}/affiliates/{quote(affiliate_id.strip(), safe='')}/approved/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_approve_program_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate program affiliate approval failed: {e}"
+
+
+@tool
+def tapfiliate_disapprove_program_affiliate(
+    program_id: str,
+    affiliate_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Disapprove a Tapfiliate affiliate for a program.
+
+    Args:
+        program_id: Tapfiliate program ID.
+        affiliate_id: Tapfiliate affiliate ID.
+    """
+    if not program_id.strip() or not affiliate_id.strip():
+        return "[Error]: program_id and affiliate_id are required."
+    try:
+        base_url, headers_or_error = _tapfiliate_config("tapfiliate_disapprove_program_affiliate", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/programs/{quote(program_id.strip(), safe='')}/affiliates/{quote(affiliate_id.strip(), safe='')}/approved/",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("tapfiliate_disapprove_program_affiliate failed", exc_info=True)
+        return f"[Error]: Tapfiliate program affiliate disapproval failed: {e}"
+
+
 COMMERCE_BILLING_SERVICE_TOOLS = [
     stripe_list_records,
     stripe_search_records,
@@ -1128,4 +2084,27 @@ COMMERCE_BILLING_SERVICE_TOOLS = [
     chargebee_get_record,
     chargebee_create_customer,
     chargebee_update_customer,
+    paddle_list_products,
+    paddle_list_plans,
+    paddle_list_subscription_users,
+    paddle_list_payments,
+    paddle_get_order,
+    paddle_list_coupons,
+    paddle_create_coupon,
+    paddle_update_coupon,
+    paddle_reschedule_payment,
+    profitwell_get_settings,
+    profitwell_get_metrics,
+    tapfiliate_list_affiliates,
+    tapfiliate_get_affiliate,
+    tapfiliate_create_affiliate,
+    tapfiliate_delete_affiliate,
+    tapfiliate_add_affiliate_metadata,
+    tapfiliate_remove_affiliate_metadata,
+    tapfiliate_update_affiliate_metadata,
+    tapfiliate_list_program_affiliates,
+    tapfiliate_get_program_affiliate,
+    tapfiliate_add_program_affiliate,
+    tapfiliate_approve_program_affiliate,
+    tapfiliate_disapprove_program_affiliate,
 ]

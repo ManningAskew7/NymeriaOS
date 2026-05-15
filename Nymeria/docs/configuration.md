@@ -266,6 +266,14 @@ Set the API key for your chosen provider:
 | `CHARGEBEE_API_KEY` | Chargebee | Optional env fallback for Chargebee tools; credential vault provider `chargebee` is preferred |
 | `CHARGEBEE_SITE` | Chargebee | Optional Chargebee site subdomain fallback |
 | `CHARGEBEE_BASE_URL` | Chargebee | Optional Chargebee API base URL override |
+| `PADDLE_VENDOR_ID` | Paddle | Optional Paddle vendor ID fallback; credential vault provider `paddle` is preferred |
+| `PADDLE_VENDOR_AUTH_CODE` | Paddle | Optional Paddle vendor auth code fallback |
+| `PADDLE_SANDBOX` | Paddle | Use Paddle sandbox vendor API |
+| `PADDLE_BASE_URL` | Paddle | Optional Paddle vendor API base URL override |
+| `PROFITWELL_API_TOKEN` | ProfitWell | Optional env fallback for ProfitWell tools; credential vault provider `profitwell` is preferred |
+| `PROFITWELL_BASE_URL` | ProfitWell | Optional ProfitWell API base URL override |
+| `TAPFILIATE_API_KEY` | Tapfiliate | Optional env fallback for Tapfiliate tools; credential vault provider `tapfiliate` is preferred |
+| `TAPFILIATE_BASE_URL` | Tapfiliate | Optional Tapfiliate API base URL override |
 | `PUSHBULLET_ACCESS_TOKEN` | Pushbullet | Optional env fallback for Pushbullet tools; credential vault provider `pushbullet` is preferred |
 | `PUSHBULLET_BASE_URL` | Pushbullet | Optional Pushbullet API base URL override |
 | `PUSHCUT_API_KEY` | Pushcut | Optional env fallback for Pushcut tools; credential vault provider `pushcut` is preferred |
@@ -786,6 +794,14 @@ reachable from the backend process.
 | `CHARGEBEE_API_KEY` | - | Chargebee API key fallback |
 | `CHARGEBEE_SITE` | - | Chargebee site subdomain fallback |
 | `CHARGEBEE_BASE_URL` | - | Chargebee API base URL override |
+| `PADDLE_VENDOR_ID` | - | Paddle vendor ID fallback |
+| `PADDLE_VENDOR_AUTH_CODE` | - | Paddle vendor auth code fallback |
+| `PADDLE_SANDBOX` | `false` | Use Paddle sandbox vendor API |
+| `PADDLE_BASE_URL` | - | Paddle vendor API base URL override |
+| `PROFITWELL_API_TOKEN` | - | ProfitWell API token fallback |
+| `PROFITWELL_BASE_URL` | `https://api.profitwell.com/v2` | ProfitWell API base URL |
+| `TAPFILIATE_API_KEY` | - | Tapfiliate API key fallback |
+| `TAPFILIATE_BASE_URL` | `https://api.tapfiliate.com/1.6` | Tapfiliate API base URL |
 | `PUSHBULLET_ACCESS_TOKEN` | - | Pushbullet access token fallback |
 | `PUSHBULLET_BASE_URL` | `https://api.pushbullet.com/v2` | Pushbullet API base URL |
 | `PUSHCUT_API_KEY` | - | Pushcut API key fallback |

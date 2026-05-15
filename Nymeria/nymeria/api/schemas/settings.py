@@ -294,6 +294,14 @@ class ServerSettingsUpdate(BaseModel):
     chargebee_api_key: Optional[str] = None
     chargebee_site: Optional[str] = None
     chargebee_base_url: Optional[str] = None
+    paddle_vendor_id: Optional[str] = None
+    paddle_vendor_auth_code: Optional[str] = None
+    paddle_sandbox: Optional[bool] = None
+    paddle_base_url: Optional[str] = None
+    profitwell_api_token: Optional[str] = None
+    profitwell_base_url: Optional[str] = None
+    tapfiliate_api_key: Optional[str] = None
+    tapfiliate_base_url: Optional[str] = None
     pushbullet_access_token: Optional[str] = None
     pushbullet_base_url: Optional[str] = None
     pushcut_api_key: Optional[str] = None

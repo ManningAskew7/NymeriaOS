@@ -271,6 +271,109 @@ def test_chargebee_create_customer_uses_vault_site_and_key(tmp_path, monkeypatch
     assert captured["form_data"]["company"] == "Example Inc"
 
 
+def test_paddle_list_products_uses_sandbox_env_credentials(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("PADDLE_VENDOR_ID", "123")
+    monkeypatch.setenv("PADDLE_VENDOR_AUTH_CODE", "auth-code")
+    monkeypatch.setenv("PADDLE_SANDBOX", "true")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"success": True, "response": {"products": [{"id": 1, "name": "Plan"}]}}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(tools.paddle_list_products.func(limit=10))
+
+    assert result == [{"id": 1, "name": "Plan"}]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://sandbox-vendors.paddle.com/api/2.0/product/get_products"
+    assert captured["json_body"]["vendor_id"] == "123"
+    assert captured["json_body"]["vendor_auth_code"] == "auth-code"
+
+
+def test_profitwell_get_metrics_simplifies_daily_response(monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("PROFITWELL_API_TOKEN", "profit-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {
+            "data": {
+                "recurring_revenue": [{"date": "2026-05-01", "value": 100}],
+                "active_customers": [{"date": "2026-05-01", "value": 5}],
+            }
+        }
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.profitwell_get_metrics.func(
+            metric_type="daily",
+            month="2026-05",
+            metrics="recurring_revenue, active_customers",
+        )
+    )
+
+    assert result == [{"date": "2026-05-01", "recurring_revenue": 100, "active_customers": 5}]
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://api.profitwell.com/v2/metrics/daily"
+    assert captured["params"]["month"] == "2026-05"
+    assert captured["params"]["metrics"] == "recurring_revenue,active_customers"
+    assert captured["headers"]["Authorization"] == "profit-token"
+
+
+def test_tapfiliate_create_affiliate_uses_vault_key(tmp_path, monkeypatch):
+    from nymeria.tools import commerce_billing_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Tapfiliate",
+        provider="tapfiliate",
+        kind="api_key",
+        allowed_targets=["native_tool:tapfiliate_create_affiliate"],
+        secret_fields={
+            "api_key": "tap-key",
+            "base_url": "https://tap.example/1.6",
+        },
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"id": "aff_1", "email": "alice@example.com"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.tapfiliate_create_affiliate.func(
+            email="alice@example.com",
+            first_name="Alice",
+            last_name="Example",
+            company_name="Example Inc",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "aff_1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://tap.example/1.6/affiliates/"
+    assert captured["headers"]["Api-Key"] == "tap-key"
+    assert captured["json_body"]["firstname"] == "Alice"
+    assert captured["json_body"]["lastname"] == "Example"
+    assert captured["json_body"]["company"] == {"name": "Example Inc"}
+
+
 def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import commerce_billing_service_integrations as tools
 
@@ -283,6 +386,9 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     shopify_result = tools.shopify_list_records.func(resource="products")
     woo_result = tools.woocommerce_list_records.func(resource="products")
     chargebee_result = tools.chargebee_list_records.func(resource="customers")
+    paddle_result = tools.paddle_list_products.func()
+    profitwell_result = tools.profitwell_get_settings.func()
+    tapfiliate_result = tools.tapfiliate_list_affiliates.func()
 
     assert 'provider "stripe"' in stripe_result
     assert "STRIPE_SECRET_KEY" in stripe_result
@@ -296,6 +402,15 @@ def test_commerce_billing_missing_credentials_return_setup_hints(monkeypatch):
     assert 'provider "chargebee"' in chargebee_result
     assert "CHARGEBEE_API_KEY" in chargebee_result
     assert 'allowed target "native_tool:chargebee_list_records"' in chargebee_result
+    assert 'provider "paddle"' in paddle_result
+    assert "PADDLE_VENDOR_ID + PADDLE_VENDOR_AUTH_CODE" in paddle_result
+    assert 'allowed target "native_tool:paddle_list_products"' in paddle_result
+    assert 'provider "profitwell"' in profitwell_result
+    assert "PROFITWELL_API_TOKEN" in profitwell_result
+    assert 'allowed target "native_tool:profitwell_get_settings"' in profitwell_result
+    assert 'provider "tapfiliate"' in tapfiliate_result
+    assert "TAPFILIATE_API_KEY" in tapfiliate_result
+    assert 'allowed target "native_tool:tapfiliate_list_affiliates"' in tapfiliate_result
 
 
 def test_commerce_billing_tools_are_registered_with_metadata():
@@ -313,6 +428,18 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "woocommerce_get_record",
         "chargebee_list_records",
         "chargebee_get_record",
+        "paddle_list_products",
+        "paddle_list_plans",
+        "paddle_list_subscription_users",
+        "paddle_list_payments",
+        "paddle_get_order",
+        "paddle_list_coupons",
+        "profitwell_get_settings",
+        "profitwell_get_metrics",
+        "tapfiliate_list_affiliates",
+        "tapfiliate_get_affiliate",
+        "tapfiliate_list_program_affiliates",
+        "tapfiliate_get_program_affiliate",
     ]
     moderate_names = [
         "stripe_create_customer",
@@ -323,6 +450,17 @@ def test_commerce_billing_tools_are_registered_with_metadata():
         "woocommerce_update_record",
         "chargebee_create_customer",
         "chargebee_update_customer",
+        "paddle_create_coupon",
+        "paddle_update_coupon",
+        "paddle_reschedule_payment",
+        "tapfiliate_create_affiliate",
+        "tapfiliate_delete_affiliate",
+        "tapfiliate_add_affiliate_metadata",
+        "tapfiliate_remove_affiliate_metadata",
+        "tapfiliate_update_affiliate_metadata",
+        "tapfiliate_add_program_affiliate",
+        "tapfiliate_approve_program_affiliate",
+        "tapfiliate_disapprove_program_affiliate",
     ]
 
     for name in safe_names:
@@ -343,8 +481,10 @@ def test_commerce_billing_tools_are_registered_with_metadata():
 def test_commerce_billing_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         chargebee_create_customer,
+        paddle_create_coupon,
         shopify_list_records,
         stripe_create_customer,
+        tapfiliate_create_affiliate,
         woocommerce_update_record,
     )
 
@@ -352,3 +492,5 @@ def test_commerce_billing_tool_schemas_hide_runtime_config():
     assert "config" not in shopify_list_records.args_schema.model_json_schema()["properties"]
     assert "config" not in woocommerce_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in chargebee_create_customer.args_schema.model_json_schema()["properties"]
+    assert "config" not in paddle_create_coupon.args_schema.model_json_schema()["properties"]
+    assert "config" not in tapfiliate_create_affiliate.args_schema.model_json_schema()["properties"]
