@@ -235,6 +235,8 @@ class ServerSettingsUpdate(BaseModel):
     slack_bot_token: Optional[str] = None
     slack_access_token: Optional[str] = None
     slack_base_url: Optional[str] = None
+    microsoft_graph_access_token: Optional[str] = None
+    microsoft_graph_base_url: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_version: Optional[str] = None
     notion_base_url: Optional[str] = None

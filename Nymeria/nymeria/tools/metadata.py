@@ -171,6 +171,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "LEAD_ENRICHMENT_SERVICE_TOOLS",
             "DATA_TABLE_SERVICE_TOOLS",
             "CHAT_PLATFORM_SERVICE_TOOLS",
+            "MICROSOFT_GRAPH_SERVICE_TOOLS",
         ),
     ),
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
@@ -801,6 +802,14 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "zulip_get_profile",
         "zulip_list_streams",
         "zulip_get_messages",
+        "microsoft_todo_list_task_lists",
+        "microsoft_todo_list_tasks",
+        "microsoft_onedrive_list_children",
+        "microsoft_onedrive_get_item",
+        "microsoft_onedrive_search",
+        "microsoft_teams_list_joined_teams",
+        "microsoft_teams_list_channels",
+        "microsoft_teams_list_channel_messages",
     }
 )
 

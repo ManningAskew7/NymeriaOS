@@ -300,6 +300,14 @@ class Settings(BaseSettings):
         default=None,
         description="Outlook account ID to use for Teams (must have ChannelMessage.Send scope)"
     )
+    microsoft_graph_access_token: Optional[str] = Field(
+        default=None,
+        description="Microsoft Graph OAuth access token fallback for native productivity tools",
+    )
+    microsoft_graph_base_url: str = Field(
+        default="https://graph.microsoft.com/v1.0",
+        description="Microsoft Graph API base URL",
+    )
     outlook_default_account_id: Optional[str] = Field(
         default=None,
         description="Default Outlook account ID for email tools (used when agent doesn't specify one)"
