@@ -123,7 +123,13 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
     (
         ToolCategory.GOOGLE_DOCS,
-        ("GOOGLE_DOCS_TOOLS", "GOOGLE_SHEETS_TOOLS", "GOOGLE_WORKSPACE_SERVICE_TOOLS"),
+        (
+            "GOOGLE_DOCS_TOOLS",
+            "GOOGLE_SHEETS_TOOLS",
+            "GOOGLE_WORKSPACE_SERVICE_TOOLS",
+            "GOOGLE_ANALYTICS_AUTH_TOOLS",
+            "GOOGLE_ANALYTICS_SERVICE_TOOLS",
+        ),
     ),
     (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
     (
@@ -268,6 +274,11 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_chat_get_member",
         "google_chat_list_messages",
         "google_chat_get_message",
+        "google_analytics_list_accounts",
+        "google_analytics_list_account_summaries",
+        "google_analytics_get_metadata",
+        "google_analytics_run_report",
+        "google_analytics_run_realtime_report",
     }
 )
 

@@ -3058,6 +3058,27 @@ These optional tools reuse the `google_docs_auth_start` OAuth connection and the
 
 ---
 
+### Google Analytics Auth Tools (4)
+
+Google Analytics uses its own OAuth cache at `data/auth_tokens/<user_id>/google_analytics.json` so Analytics scopes do not force re-authentication for existing Google Docs/Drive accounts.
+
+| Tool | Signature | Description |
+|------|-----------|-------------|
+| `google_analytics_auth_start` | `()` | Start Google Analytics OAuth flow. Returns authorization URL for the user. |
+| `google_analytics_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
+| `google_analytics_auth_clear` | `(account_id?)` | Clear one saved Google Analytics account by ID, or all Analytics accounts plus any pending OAuth flow when omitted. |
+| `google_analytics_list_accounts` | `()` | List authenticated Google accounts for Analytics tools with verified token/scopes status. Invalid refresh tokens are pruned. |
+
+### Google Analytics Service Tools (4)
+
+These optional tools reuse the `google_analytics_auth_start` OAuth connection and are read-only:
+- `google_analytics_list_account_summaries(page_size?, page_token?, account_id?)` lists visible Analytics accounts and GA4 properties.
+- `google_analytics_get_metadata(property_id, account_id?)` lists available GA4 dimensions and metrics.
+- `google_analytics_run_report(property_id, metrics?, dimensions?, start_date?, end_date?, limit?, offset?, order_bys_json?, filters_json?, keep_empty_rows?, account_id?)` runs a GA4 Data API report.
+- `google_analytics_run_realtime_report(property_id, metrics?, dimensions?, limit?, order_bys_json?, filters_json?, account_id?)` runs a GA4 realtime report.
+
+---
+
 ### SelfModify Tools (8)
 
 Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write** and **delete** are restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
@@ -3089,6 +3110,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Self-modify tools: 8
 - Subagent tools (reload/rollback): 2
 - Google Docs tools: 4 auth + 17 document + 34 Workspace = 55 total
+- Google Analytics tools: 4 auth + 4 report = 8 total
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
