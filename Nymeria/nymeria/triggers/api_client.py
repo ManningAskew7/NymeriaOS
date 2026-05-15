@@ -670,25 +670,41 @@ class NymeriaAPIClient:
         *,
         thread_id: Optional[str] = None,
         source: str = "user",
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> dict:
         """Execute a backend slash command and return markdown output."""
+        payload = {"command": command, "thread_id": thread_id, "source": source}
+        if actor is not None:
+            payload["actor"] = actor
+        if surface is not None:
+            payload["surface"] = surface
         return await self._post(
             "/commands/execute",
-            json={"command": command, "thread_id": thread_id, "source": source},
+            json=payload,
             act_as=user_id,
         )
 
     async def list_commands(
         self,
         *,
-        source: str = "user",
+        source: Optional[str] = None,
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> List[dict]:
         """List registered slash commands for a caller source."""
+        params = {}
+        if source is not None:
+            params["source"] = source
+        if actor is not None:
+            params["actor"] = actor
+        if surface is not None:
+            params["surface"] = surface
         data = await self._get(
             "/commands",
-            params={"source": source},
+            params=params or None,
             act_as=user_id,
         )
         return data if isinstance(data, list) else data.get("commands", [])

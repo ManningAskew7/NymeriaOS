@@ -85,6 +85,13 @@ docker logs nymeria-discord-bot --tail 15
 
 ## Commands Reference
 
+Discord keeps the slash-command declarations local because Discord needs a
+static command tree, but duplicated global command bodies are thin wrappers over
+the backend command registry (`POST /commands/execute`). `/help` builds a merged
+catalog from backend global commands plus Discord-local commands such as
+`/ask`, `/stop`, `/clear`, `/compact`, `/export`, `/show-tools`, and
+`/channel-context`.
+
 ### Chat
 
 | Command | Description |
@@ -118,7 +125,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | Command | Description |
 |---------|-------------|
 | `/todos list [filter]` | List TODOs. Filter: `active` (default), `pending`, `in_progress`, `done`, `all`. |
-| `/todos add <task> [schedule] [repeat] [notes]` | Create a TODO. Schedule: `"30m"`, `"2h"`, `"1d"`, or `"2024-12-25 14:00"`. Repeat: `5min` through `monthly`. Associates with the current channel. |
+| `/todos add <task> [schedule] [repeat] [notes]` | Create a TODO. Schedule: any relative duration such as `"45s"`, `"17m"`, `"2h"`, `"1w"`, or an absolute/ISO datetime such as `"2024-12-25 14:00"`. Repeat: `5min` through `monthly`. Associates with the current channel. |
 | `/todos complete <todo_id>` | Mark a TODO as done (first 8 chars of ID). Recurring TODOs auto-reschedule. |
 | `/todos delete <todo_id>` | Permanently delete a TODO (first 8 chars of ID). |
 
@@ -138,6 +145,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/tools optional` | List optional tool categories with per-channel active counts. |
 | `/tools enabled` | Show all tools active in this channel: core (with any disabled), optional enabled. |
 | `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. |
+| `/tools search <query>` | Discord-local tool search with ranked suggestions and enable hints. |
 | `/tools enable <name>` | Enable a tool or entire category for this channel. Accepts a tool name (e.g., `bash_execute`) or category name (e.g., `email`). Autocomplete suggests both. |
 | `/tools disable <name>` | Disable a tool or entire category for this channel. Works for core tools (disabling a default) and optional tools. |
 

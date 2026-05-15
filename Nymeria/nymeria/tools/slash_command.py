@@ -92,7 +92,8 @@ def _slash_command_sync(
         command: The slash command string.
 
     Returns:
-        Markdown command result.
+        Markdown-formatted command output. Varies per command — run
+        /help to see available commands and output formats.
     """
     return _run_async_from_sync(lambda: _dispatch_command(command, config))
 

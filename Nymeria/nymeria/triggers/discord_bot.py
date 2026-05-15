@@ -222,6 +222,84 @@ class NymeriaDiscordBot(commands.Bot):
 
         return user_id
 
+    async def _send_interaction_text(
+        self,
+        interaction: "discord.Interaction",
+        content: str,
+        *,
+        ephemeral: bool = True,
+    ) -> None:
+        """Send text through either the initial interaction response or followup."""
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+
+    async def _send_backend_command(
+        self,
+        interaction: "discord.Interaction",
+        command: str,
+        *,
+        args: str = "",
+        require_admin: bool = False,
+        ephemeral: bool = True,
+    ) -> Optional[dict]:
+        """Execute a global backend slash command for a Discord interaction."""
+        user_id = await self._resolve_or_reject_interaction(
+            interaction,
+            require_admin=require_admin,
+        )
+        if user_id is None:
+            return None
+
+        command_text = command if command.startswith("/") else f"/{command}"
+        if args.strip():
+            command_text = f"{command_text} {args.strip()}"
+        thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
+
+        try:
+            result = await self.api.execute_command(
+                command_text,
+                thread_id=thread_id,
+                source="user",
+                actor="user",
+                surface="discord",
+                user_id=user_id,
+            )
+        except httpx.HTTPStatusError as e:
+            detail = str(e)
+            if e.response is not None:
+                try:
+                    detail = str(e.response.json().get("detail", detail))
+                except Exception:  # noqa: BLE001
+                    detail = e.response.text or detail
+            await self._send_interaction_text(
+                interaction,
+                f"Error: {detail}",
+                ephemeral=ephemeral,
+            )
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.error("Discord backend command failed: %s", command_text, exc_info=True)
+            await self._send_interaction_text(
+                interaction,
+                f"Error: {e}",
+                ephemeral=ephemeral,
+            )
+            return None
+
+        markdown = str(result.get("markdown") or "").strip()
+        if not markdown:
+            markdown = "Done." if result.get("success", True) else "Command returned no output."
+
+        for chunk in split_message(markdown):
+            await self._send_interaction_text(
+                interaction,
+                chunk,
+                ephemeral=ephemeral,
+            )
+        return result
+
     # =========================================================================
     # SSE handler for interactive chat (implements SSEEventHandler protocol)
     # =========================================================================
