@@ -147,6 +147,95 @@ def test_google_drive_upload_text_file_calls_drive_api(monkeypatch):
     assert calls[0]["kwargs"]["service_name"] == "drive"
 
 
+def test_google_slides_replace_text_calls_batch_update(monkeypatch):
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    captured = {}
+
+    class PresentationsResource:
+        def batchUpdate(self, **kwargs):
+            captured.update(kwargs)
+            return _Executable({"replies": [{"replaceAllText": {"occurrencesChanged": 2}}]})
+
+    class SlidesService:
+        def presentations(self):
+            return PresentationsResource()
+
+    calls = _patch_google_request(monkeypatch, SlidesService())
+
+    result = json.loads(
+        tools.google_slides_replace_text.func(
+            presentation_id="deck-1",
+            contains_text="{{name}}",
+            replace_text="Ada",
+            match_case=True,
+            page_object_ids_json='["slide-1"]',
+            required_revision_id="rev-1",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["replies"][0]["replaceAllText"]["occurrencesChanged"] == 2
+    assert captured["presentationId"] == "deck-1"
+    assert captured["body"]["writeControl"] == {"requiredRevisionId": "rev-1"}
+    replace_request = captured["body"]["requests"][0]["replaceAllText"]
+    assert replace_request["containsText"] == {"text": "{{name}}", "matchCase": True}
+    assert replace_request["replaceText"] == "Ada"
+    assert replace_request["pageObjectIds"] == ["slide-1"]
+    assert calls[0]["kwargs"]["service_name"] == "slides"
+    assert "https://www.googleapis.com/auth/presentations" in calls[0]["scopes"]
+
+
+def test_google_slides_list_slides_summarizes_text(monkeypatch):
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    class PresentationsResource:
+        def get(self, **kwargs):
+            return _Executable(
+                {
+                    "presentationId": kwargs["presentationId"],
+                    "title": "Deck",
+                    "slides": [
+                        {
+                            "objectId": "slide-1",
+                            "pageType": "SLIDE",
+                            "pageElements": [
+                                {
+                                    "shape": {
+                                        "text": {
+                                            "textElements": [
+                                                {"textRun": {"content": "Hello "}},
+                                                {"textRun": {"content": "world"}},
+                                            ]
+                                        }
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+    class SlidesService:
+        def presentations(self):
+            return PresentationsResource()
+
+    _patch_google_request(monkeypatch, SlidesService())
+
+    result = json.loads(
+        tools.google_slides_list_slides.func(
+            presentation_id="deck-1",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result == {
+        "presentationId": "deck-1",
+        "title": "Deck",
+        "slides": [{"index": 1, "objectId": "slide-1", "pageType": "SLIDE", "text": "Hello world"}],
+    }
+
+
 def test_google_workspace_missing_auth_returns_error(monkeypatch):
     from nymeria.tools import google_workspace_service_integrations as tools
 
@@ -173,6 +262,9 @@ def test_google_workspace_tools_registered_with_metadata():
         "google_drive_search_files",
         "google_drive_get_file",
         "google_drive_download_text",
+        "google_slides_get_presentation",
+        "google_slides_list_slides",
+        "google_slides_get_page_thumbnail",
     ]
     moderate_names = [
         "google_tasks_create_task",
@@ -185,6 +277,10 @@ def test_google_workspace_tools_registered_with_metadata():
         "google_drive_create_folder",
         "google_drive_upload_text_file",
         "google_drive_trash_file",
+        "google_slides_create_presentation",
+        "google_slides_create_slide",
+        "google_slides_replace_text",
+        "google_slides_batch_update",
     ]
 
     for name in safe_names:
@@ -206,9 +302,11 @@ def test_google_workspace_tool_schemas_hide_runtime_config():
     from nymeria.tools import (
         google_contacts_create_contact,
         google_drive_upload_text_file,
+        google_slides_create_presentation,
         google_tasks_create_task,
     )
 
     assert "config" not in google_tasks_create_task.args_schema.model_json_schema()["properties"]
     assert "config" not in google_contacts_create_contact.args_schema.model_json_schema()["properties"]
     assert "config" not in google_drive_upload_text_file.args_schema.model_json_schema()["properties"]
+    assert "config" not in google_slides_create_presentation.args_schema.model_json_schema()["properties"]

@@ -259,6 +259,9 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_drive_search_files",
         "google_drive_get_file",
         "google_drive_download_text",
+        "google_slides_get_presentation",
+        "google_slides_list_slides",
+        "google_slides_get_page_thumbnail",
     }
 )
 

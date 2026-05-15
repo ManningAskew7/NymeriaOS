@@ -40,6 +40,7 @@ GOOGLE_DOCS_SCOPES = [
 GOOGLE_WORKSPACE_EXTRA_SCOPES = [
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/presentations",
 ]
 
 GOOGLE_SCOPES = GOOGLE_DOCS_SCOPES + GOOGLE_WORKSPACE_EXTRA_SCOPES
