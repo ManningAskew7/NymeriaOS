@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 from typing import Annotated, Any, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -22,6 +24,7 @@ _PADDLE_BASE_URL = "https://vendors.paddle.com/api"
 _PADDLE_SANDBOX_BASE_URL = "https://sandbox-vendors.paddle.com/api"
 _PROFITWELL_BASE_URL = "https://api.profitwell.com/v2"
 _TAPFILIATE_BASE_URL = "https://api.tapfiliate.com/1.6"
+_UNLEASHED_BASE_URL = "https://api.unleashedsoftware.com"
 
 _STRIPE_RESOURCES = {
     "customer": "customers",
@@ -80,6 +83,28 @@ _CHARGEBEE_RESOURCES = {
     "plan": "plans",
     "plans": "plans",
 }
+_MAGENTO_LIST_ENDPOINTS = {
+    "customer": "customers/search",
+    "customers": "customers/search",
+    "order": "orders",
+    "orders": "orders",
+    "product": "products",
+    "products": "products",
+}
+_MAGENTO_GET_ENDPOINTS = {
+    "customer": "customers/{id}",
+    "customers": "customers/{id}",
+    "order": "orders/{id}",
+    "orders": "orders/{id}",
+    "product": "products/{id}",
+    "products": "products/{id}",
+}
+_MAGENTO_DELETE_ENDPOINTS = {
+    "customer": "customers/{id}",
+    "customers": "customers/{id}",
+    "product": "products/{id}",
+    "products": "products/{id}",
+}
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -113,6 +138,27 @@ def _flatten_form_fields(data: dict[str, Any], *, prefix: str = "") -> dict[str,
         field = f"{prefix}[{key}]" if prefix else key
         if isinstance(value, dict):
             flattened.update(_flatten_form_fields(value, prefix=field))
+            continue
+        flattened[field] = value
+    return flattened
+
+
+def _flatten_query_fields(data: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in data.items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        field = f"{prefix}[{key}]" if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(_flatten_query_fields(value, prefix=field))
+            continue
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                item_field = f"{field}[{index}]"
+                if isinstance(item, dict):
+                    flattened.update(_flatten_query_fields(item, prefix=item_field))
+                else:
+                    flattened[item_field] = item
             continue
         flattened[field] = value
     return flattened
@@ -634,6 +680,135 @@ def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+
+
+def _magento_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="magento",
+            provider_aliases=("magento2", "magento2_api", "magento_api"),
+            field_names=("host", "base_url", "baseUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("magento_base_url")
+        or _settings_value("magento_host")
+    )
+    access_token = _credential_value(
+        provider="magento",
+        provider_aliases=("magento2", "magento2_api", "magento_api"),
+        field_names=("access_token", "accessToken", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("magento_access_token")
+    if not base:
+        return "", (
+            "[Error]: No Magento base URL found. Save a Magento credential with "
+            '"host" / "base_url", or set MAGENTO_BASE_URL or MAGENTO_HOST.'
+        )
+    if not access_token:
+        return _base_url(base), _setup_hint(
+            provider="magento",
+            field_names=("access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="MAGENTO_ACCESS_TOKEN",
+            display_name="Magento",
+        )
+    return _base_url(base), {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _magento_url(base_url: str, endpoint: str) -> str:
+    base = base_url.rstrip("/")
+    path = endpoint.lstrip("/")
+    if "/rest/" in base:
+        return f"{base}/{path}"
+    return f"{base}/rest/default/V1/{path}"
+
+
+def _magento_search_params(search_criteria_json: str, *, limit: int, current_page: int) -> dict[str, Any]:
+    if search_criteria_json.strip():
+        parsed = _parse_json(search_criteria_json, expected=dict, label="search_criteria_json")
+        params = _flatten_query_fields(parsed)
+    else:
+        params = {}
+    if not any(key in params for key in ("searchCriteria[pageSize]", "search_criteria[page_size]")):
+        params["searchCriteria[pageSize]"] = _limit(limit, default=50, max_value=100)
+    if not any(key in params for key in ("searchCriteria[currentPage]", "search_criteria[current_page]")):
+        params["searchCriteria[currentPage]"] = max(1, int(current_page))
+    return params
+
+
+def _unleashed_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base = (
+        _credential_value(
+            provider="unleashed",
+            provider_aliases=("unleashed_software", "unleashed_software_api"),
+            field_names=("base_url", "baseUrl", "url"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value("unleashed_base_url")
+        or _UNLEASHED_BASE_URL
+    )
+    api_id = _credential_value(
+        provider="unleashed",
+        provider_aliases=("unleashed_software", "unleashed_software_api"),
+        field_names=("api_id", "apiId", "id"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("unleashed_api_id")
+    api_key = _credential_value(
+        provider="unleashed",
+        provider_aliases=("unleashed_software", "unleashed_software_api"),
+        field_names=("api_key", "apiKey", "key", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("unleashed_api_key")
+    if not api_id or not api_key:
+        return _base_url(base), _setup_hint(
+            provider="unleashed",
+            field_names=("api_id", "api_key"),
+            tool_name=tool_name,
+            env_var="UNLEASHED_API_ID + UNLEASHED_API_KEY",
+            display_name="Unleashed",
+        )
+    return _base_url(base), {"api_id": api_id, "api_key": api_key}
+
+
+def _unleashed_request(
+    tool_name: str,
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    page_number: Optional[int] = None,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base_url, auth_or_error = _unleashed_config(tool_name, config)
+    if isinstance(auth_or_error, str):
+        return auth_or_error
+    query = _filtered(params)
+    signature_payload = urlencode(query, doseq=True)
+    signature = base64.b64encode(
+        hmac.new(auth_or_error["api_key"].encode(), signature_payload.encode(), hashlib.sha256).digest()
+    ).decode()
+    suffix = f"/{max(1, int(page_number))}" if page_number else ""
+    return _request_json(
+        "GET",
+        f"{base_url}/{path.strip('/')}{suffix}",
+        params=query,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Nymeria",
+            "api-auth-id": auth_or_error["api_id"],
+            "api-auth-signature": signature,
+        },
+    )
 
 
 def _normal_resource(resource: str, mapping: dict[str, str]) -> str:
@@ -2065,6 +2240,320 @@ def tapfiliate_disapprove_program_affiliate(
         return f"[Error]: Tapfiliate program affiliate disapproval failed: {e}"
 
 
+@tool
+def magento_list_records(
+    resource: str,
+    search_criteria_json: str = "",
+    limit: int = 50,
+    current_page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Magento customers, orders, or products with optional searchCriteria JSON."""
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _MAGENTO_LIST_ENDPOINTS:
+        return "[Error]: resource must be one of customers, orders, or products."
+    try:
+        base_url, headers_or_error = _magento_config("magento_list_records", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            _magento_url(base_url, _MAGENTO_LIST_ENDPOINTS[key]),
+            params=_magento_search_params(search_criteria_json, limit=limit, current_page=current_page),
+            headers=headers_or_error,
+        )
+        return _dump_json(data.get("items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("magento_list_records failed", exc_info=True)
+        return f"[Error]: Magento record list failed: {e}"
+
+
+@tool
+def magento_get_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one Magento customer, order, or product by ID or SKU."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _MAGENTO_GET_ENDPOINTS:
+        return "[Error]: resource must be one of customers, orders, or products."
+    try:
+        base_url, headers_or_error = _magento_config("magento_get_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = _MAGENTO_GET_ENDPOINTS[key].format(id=quote(record_id.strip(), safe=""))
+        data = _request_json("GET", _magento_url(base_url, endpoint), headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_get_record failed", exc_info=True)
+        return f"[Error]: Magento record lookup failed: {e}"
+
+
+@tool
+def magento_create_customer(
+    email: str,
+    firstname: str,
+    lastname: str,
+    password: str = "",
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Magento customer."""
+    if not email.strip() or not firstname.strip() or not lastname.strip():
+        return "[Error]: email, firstname, and lastname are required."
+    try:
+        customer = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            "email": email.strip(),
+            "firstname": firstname.strip(),
+            "lastname": lastname.strip(),
+        }
+        body = {"customer": customer}
+        if password:
+            body["password"] = password
+        base_url, headers_or_error = _magento_config("magento_create_customer", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", _magento_url(base_url, "customers"), json_body=body, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_create_customer failed", exc_info=True)
+        return f"[Error]: Magento customer create failed: {e}"
+
+
+@tool
+def magento_update_customer(
+    customer_id: str,
+    email: str,
+    firstname: str,
+    lastname: str,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Magento customer."""
+    if not customer_id.strip() or not email.strip() or not firstname.strip() or not lastname.strip():
+        return "[Error]: customer_id, email, firstname, and lastname are required."
+    try:
+        customer = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            "id": int(customer_id) if customer_id.isdigit() else customer_id,
+            "email": email.strip(),
+            "firstname": firstname.strip(),
+            "lastname": lastname.strip(),
+        }
+        base_url, headers_or_error = _magento_config("magento_update_customer", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            _magento_url(base_url, f"customers/{quote(customer_id.strip(), safe='')}"),
+            json_body={"customer": customer},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_update_customer failed", exc_info=True)
+        return f"[Error]: Magento customer update failed: {e}"
+
+
+@tool
+def magento_create_product(
+    sku: str,
+    name: str,
+    attribute_set_id: int,
+    price: float,
+    fields_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Magento product."""
+    if not sku.strip() or not name.strip():
+        return "[Error]: sku and name are required."
+    try:
+        product = {
+            **_parse_json(fields_json, expected=dict, label="fields_json"),
+            "sku": sku.strip(),
+            "name": name.strip(),
+            "attribute_set_id": int(attribute_set_id),
+            "price": float(price),
+        }
+        base_url, headers_or_error = _magento_config("magento_create_product", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", _magento_url(base_url, "products"), json_body={"product": product}, headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_create_product failed", exc_info=True)
+        return f"[Error]: Magento product create failed: {e}"
+
+
+@tool
+def magento_update_product(
+    sku: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update a Magento product by SKU."""
+    if not sku.strip() or not fields_json.strip():
+        return "[Error]: sku and fields_json are required."
+    try:
+        product = {"sku": sku.strip(), **_parse_json(fields_json, expected=dict, label="fields_json")}
+        base_url, headers_or_error = _magento_config("magento_update_product", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "PUT",
+            _magento_url(base_url, f"products/{quote(sku.strip(), safe='')}"),
+            json_body={"product": product},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_update_product failed", exc_info=True)
+        return f"[Error]: Magento product update failed: {e}"
+
+
+@tool
+def magento_delete_record(
+    resource: str,
+    record_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Magento customer or product."""
+    if not record_id.strip():
+        return "[Error]: record_id is required."
+    key = resource.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _MAGENTO_DELETE_ENDPOINTS:
+        return "[Error]: resource must be customer or product."
+    try:
+        base_url, headers_or_error = _magento_config("magento_delete_record", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        endpoint = _MAGENTO_DELETE_ENDPOINTS[key].format(id=quote(record_id.strip(), safe=""))
+        data = _request_json("DELETE", _magento_url(base_url, endpoint), headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_delete_record failed", exc_info=True)
+        return f"[Error]: Magento record delete failed: {e}"
+
+
+@tool
+def magento_create_invoice(
+    order_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create an invoice for a Magento order."""
+    if not order_id.strip():
+        return "[Error]: order_id is required."
+    try:
+        base_url, headers_or_error = _magento_config("magento_create_invoice", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", _magento_url(base_url, f"order/{quote(order_id.strip(), safe='')}/invoice"), headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_create_invoice failed", exc_info=True)
+        return f"[Error]: Magento invoice create failed: {e}"
+
+
+@tool
+def magento_cancel_order(
+    order_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Cancel a Magento order."""
+    if not order_id.strip():
+        return "[Error]: order_id is required."
+    try:
+        base_url, headers_or_error = _magento_config("magento_cancel_order", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", _magento_url(base_url, f"orders/{quote(order_id.strip(), safe='')}/cancel"), headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_cancel_order failed", exc_info=True)
+        return f"[Error]: Magento order cancel failed: {e}"
+
+
+@tool
+def magento_ship_order(
+    order_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a shipment for a Magento order."""
+    if not order_id.strip():
+        return "[Error]: order_id is required."
+    try:
+        base_url, headers_or_error = _magento_config("magento_ship_order", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json("POST", _magento_url(base_url, f"order/{quote(order_id.strip(), safe='')}/ship"), headers=headers_or_error)
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("magento_ship_order failed", exc_info=True)
+        return f"[Error]: Magento order ship failed: {e}"
+
+
+@tool
+def unleashed_list_sales_orders(
+    filters_json: str = "",
+    limit: int = 50,
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Unleashed sales orders."""
+    try:
+        params = _parse_json(filters_json, expected=dict, label="filters_json")
+        params["pageSize"] = _limit(limit, default=50, max_value=1000)
+        data = _unleashed_request("unleashed_list_sales_orders", "SalesOrders", params=params, page_number=page, config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(data.get("Items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("unleashed_list_sales_orders failed", exc_info=True)
+        return f"[Error]: Unleashed sales order list failed: {e}"
+
+
+@tool
+def unleashed_list_stock_on_hand(
+    filters_json: str = "",
+    limit: int = 50,
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Unleashed stock-on-hand records."""
+    try:
+        params = _parse_json(filters_json, expected=dict, label="filters_json")
+        params["pageSize"] = _limit(limit, default=50, max_value=1000)
+        data = _unleashed_request("unleashed_list_stock_on_hand", "StockOnHand", params=params, page_number=page, config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(data.get("Items", data) if isinstance(data, dict) else data)
+    except Exception as e:
+        logger.error("unleashed_list_stock_on_hand failed", exc_info=True)
+        return f"[Error]: Unleashed stock-on-hand list failed: {e}"
+
+
+@tool
+def unleashed_get_stock_on_hand(
+    product_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Unleashed stock-on-hand for one product."""
+    if not product_id.strip():
+        return "[Error]: product_id is required."
+    try:
+        data = _unleashed_request("unleashed_get_stock_on_hand", f"StockOnHand/{quote(product_id.strip(), safe='')}", config=config)
+        if isinstance(data, str):
+            return data
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("unleashed_get_stock_on_hand failed", exc_info=True)
+        return f"[Error]: Unleashed stock-on-hand lookup failed: {e}"
+
+
 COMMERCE_BILLING_SERVICE_TOOLS = [
     stripe_list_records,
     stripe_search_records,
@@ -2107,4 +2596,17 @@ COMMERCE_BILLING_SERVICE_TOOLS = [
     tapfiliate_add_program_affiliate,
     tapfiliate_approve_program_affiliate,
     tapfiliate_disapprove_program_affiliate,
+    magento_list_records,
+    magento_get_record,
+    magento_create_customer,
+    magento_update_customer,
+    magento_create_product,
+    magento_update_product,
+    magento_delete_record,
+    magento_create_invoice,
+    magento_cancel_order,
+    magento_ship_order,
+    unleashed_list_sales_orders,
+    unleashed_list_stock_on_hand,
+    unleashed_get_stock_on_hand,
 ]
