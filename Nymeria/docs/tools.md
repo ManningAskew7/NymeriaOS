@@ -22,6 +22,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
 | 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
+| 15 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
 
@@ -42,14 +43,6 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 | 1 | `trigger_config` | Trigger | MODERATE | Create, update, enable/disable, or delete event triggers |
 | 2 | `trigger_info` | Trigger | SAFE | List triggers, inspect/test/history for one trigger, or show source schemas |
 
-### Optional: Slash Command Tool (1)
-
-Not loaded by default. Enable per-thread to let the agent invoke the same user-facing slash commands that the Discord/Telegram bots expose.
-
-| # | Tool | Category | Security | Description |
-|---|------|----------|----------|-------------|
-| 1 | `slash_command` | Self | MODERATE | Run a Nymeria slash command on the current thread (config, env, tools, memory, TODOs, notepad, status). Destructive commands blocked. |
-
 ### Optional: Capability Expansion and Authoring
 
 Not loaded by default. The normal path is to activate `Skill(name="self-improve")`,
@@ -69,7 +62,7 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (782)
+### Optional: Service Integration Tools (875)
 
 Not loaded by default. These are the first batch of general-purpose utility
 integrations and public information services. Tools that need connection details first look
@@ -372,568 +365,587 @@ in the credential vault for provider-specific saved connections scoped to
 | 292 | `cloudflare_get_origin_certificate` | Integrations | SAFE | Get a Cloudflare origin pull certificate |
 | 293 | `cloudflare_upload_origin_certificate` | Integrations | MODERATE | Upload a Cloudflare origin pull certificate |
 | 294 | `cloudflare_delete_origin_certificate` | Integrations | MODERATE | Delete a Cloudflare origin pull certificate |
-| 295 | `urlscan_search_scans` | Integrations | SAFE | Search archived urlscan.io scans |
-| 296 | `urlscan_get_result` | Integrations | SAFE | Get a urlscan.io scan result |
-| 297 | `urlscan_submit_scan` | Integrations | MODERATE | Submit a URL to urlscan.io for scanning |
-| 298 | `hunter_domain_search` | Integrations | SAFE | Find domain-associated email addresses with Hunter |
-| 299 | `hunter_email_finder` | Integrations | SAFE | Find a likely professional email with Hunter |
-| 300 | `hunter_email_verifier` | Integrations | SAFE | Verify email deliverability with Hunter |
-| 301 | `mailcheck_check_email` | Integrations | SAFE | Check an email address with Mailcheck |
-| 302 | `peekalink_preview_url` | Integrations | SAFE | Return link preview metadata with Peekalink |
-| 303 | `peekalink_check_availability` | Integrations | SAFE | Check Peekalink preview availability |
-| 304 | `jina_reader_fetch_url` | Integrations | SAFE | Fetch a URL through Jina Reader |
-| 305 | `jina_search_web` | Integrations | SAFE | Search the web through Jina Search |
-| 306 | `jina_deep_research` | Integrations | MODERATE | Run a Jina DeepSearch research query |
-| 307 | `baserow_list_tables` | Integrations | SAFE | List Baserow tables |
-| 308 | `baserow_list_fields` | Integrations | SAFE | List Baserow table fields |
-| 309 | `baserow_list_rows` | Integrations | SAFE | List Baserow table rows |
-| 310 | `baserow_get_row` | Integrations | SAFE | Get a Baserow row |
-| 311 | `baserow_create_row` | Integrations | MODERATE | Create a Baserow row |
-| 312 | `baserow_update_row` | Integrations | MODERATE | Update a Baserow row |
-| 313 | `baserow_delete_row` | Integrations | MODERATE | Delete a Baserow row |
-| 314 | `nocodb_list_bases` | Integrations | SAFE | List NocoDB bases |
-| 315 | `nocodb_get_base` | Integrations | SAFE | Get NocoDB base metadata |
-| 316 | `nocodb_list_records` | Integrations | SAFE | List NocoDB records |
-| 317 | `nocodb_get_record` | Integrations | SAFE | Get a NocoDB record |
-| 318 | `nocodb_count_records` | Integrations | SAFE | Count NocoDB records |
-| 319 | `nocodb_create_record` | Integrations | MODERATE | Create a NocoDB record |
-| 320 | `nocodb_update_record` | Integrations | MODERATE | Update a NocoDB record |
-| 321 | `nocodb_delete_record` | Integrations | MODERATE | Delete a NocoDB record |
-| 322 | `coda_list_docs` | Integrations | SAFE | List Coda docs |
-| 323 | `coda_list_tables` | Integrations | SAFE | List Coda tables and views |
-| 324 | `coda_list_table_rows` | Integrations | SAFE | List Coda table rows |
-| 325 | `coda_get_table_row` | Integrations | SAFE | Get a Coda table row |
-| 326 | `coda_create_table_row` | Integrations | MODERATE | Create a Coda table row |
-| 327 | `coda_update_table_row` | Integrations | MODERATE | Update a Coda table row |
-| 328 | `coda_delete_table_row` | Integrations | MODERATE | Delete a Coda table row |
-| 329 | `coda_list_formulas` | Integrations | SAFE | List Coda formulas |
-| 330 | `coda_list_controls` | Integrations | SAFE | List Coda controls |
-| 331 | `grist_list_orgs` | Integrations | SAFE | List Grist organizations |
-| 332 | `grist_list_workspaces` | Integrations | SAFE | List Grist workspaces |
-| 333 | `grist_list_docs` | Integrations | SAFE | List Grist docs |
-| 334 | `grist_list_tables` | Integrations | SAFE | List Grist tables |
-| 335 | `grist_list_columns` | Integrations | SAFE | List Grist table columns |
-| 336 | `grist_list_records` | Integrations | SAFE | List Grist table records |
-| 337 | `grist_create_record` | Integrations | MODERATE | Create a Grist record |
-| 338 | `grist_update_record` | Integrations | MODERATE | Update a Grist record |
-| 339 | `grist_delete_records` | Integrations | MODERATE | Delete Grist records |
-| 340 | `discord_list_guild_channels` | Integrations | SAFE | List Discord guild channels |
-| 341 | `discord_get_channel` | Integrations | SAFE | Get Discord channel metadata |
-| 342 | `discord_get_channel_messages` | Integrations | SAFE | Get Discord channel messages |
-| 343 | `discord_send_channel_message` | Integrations | MODERATE | Send a Discord channel message |
-| 344 | `discord_delete_message` | Integrations | MODERATE | Delete a Discord message |
-| 345 | `mattermost_get_me` | Integrations | SAFE | Get the current Mattermost user |
-| 346 | `mattermost_list_teams` | Integrations | SAFE | List Mattermost teams |
-| 347 | `mattermost_list_channels` | Integrations | SAFE | List Mattermost team channels |
-| 348 | `mattermost_list_channel_posts` | Integrations | SAFE | List Mattermost channel posts |
-| 349 | `mattermost_create_post` | Integrations | MODERATE | Create a Mattermost post |
-| 350 | `mattermost_delete_post` | Integrations | MODERATE | Delete a Mattermost post |
-| 351 | `matrix_whoami` | Integrations | SAFE | Get the current Matrix account |
-| 352 | `matrix_list_joined_rooms` | Integrations | SAFE | List joined Matrix rooms |
-| 353 | `matrix_get_room_messages` | Integrations | SAFE | Get Matrix room messages |
-| 354 | `matrix_send_room_message` | Integrations | MODERATE | Send a Matrix room message |
-| 355 | `matrix_leave_room` | Integrations | MODERATE | Leave a Matrix room |
-| 356 | `rocketchat_get_me` | Integrations | SAFE | Get the current Rocket.Chat user |
-| 357 | `rocketchat_list_channels` | Integrations | SAFE | List Rocket.Chat public channels |
-| 358 | `rocketchat_get_channel_history` | Integrations | SAFE | Get Rocket.Chat channel history |
-| 359 | `rocketchat_post_message` | Integrations | MODERATE | Post a Rocket.Chat message |
-| 360 | `rocketchat_delete_message` | Integrations | MODERATE | Delete a Rocket.Chat message |
-| 361 | `zulip_get_profile` | Integrations | SAFE | Get the current Zulip profile |
-| 362 | `zulip_list_streams` | Integrations | SAFE | List Zulip streams |
-| 363 | `zulip_get_messages` | Integrations | SAFE | Get Zulip messages |
-| 364 | `zulip_send_message` | Integrations | MODERATE | Send a Zulip message |
-| 365 | `zulip_delete_message` | Integrations | MODERATE | Delete a Zulip message |
-| 366 | `google_books_search` | Integrations | SAFE | Search Google Books volume metadata |
-| 367 | `google_books_get_volume` | Integrations | SAFE | Get a Google Books volume by ID |
-| 368 | `youtube_search` | Integrations | SAFE | Search YouTube videos, channels, or playlists |
-| 369 | `youtube_get_videos` | Integrations | SAFE | Get YouTube video metadata |
-| 370 | `youtube_get_channels` | Integrations | SAFE | Get YouTube channel metadata |
-| 371 | `youtube_list_playlist_items` | Integrations | SAFE | List YouTube playlist items |
-| 372 | `spotify_search` | Integrations | SAFE | Search Spotify catalog metadata |
-| 373 | `spotify_get_track` | Integrations | SAFE | Get Spotify track metadata |
-| 374 | `spotify_get_artist` | Integrations | SAFE | Get Spotify artist metadata |
-| 375 | `spotify_get_album` | Integrations | SAFE | Get Spotify album metadata |
-| 376 | `spotify_get_playlist` | Integrations | SAFE | Get Spotify playlist metadata |
-| 377 | `reddit_search_posts` | Integrations | SAFE | Search Reddit posts |
-| 378 | `reddit_list_subreddit_posts` | Integrations | SAFE | List subreddit posts |
-| 379 | `reddit_get_post` | Integrations | SAFE | Get a Reddit post and comments |
-| 380 | `reddit_get_subreddit` | Integrations | SAFE | Get subreddit metadata |
-| 381 | `reddit_get_user` | Integrations | SAFE | Get Reddit user metadata |
-| 382 | `reddit_create_post` | Integrations | MODERATE | Create a Reddit post |
-| 383 | `reddit_create_comment` | Integrations | MODERATE | Create a Reddit comment or reply |
-| 384 | `reddit_delete_thing` | Integrations | MODERATE | Delete a Reddit post or comment |
-| 385 | `discourse_search` | Integrations | SAFE | Search a Discourse forum |
-| 386 | `discourse_list_latest_topics` | Integrations | SAFE | List latest Discourse topics |
-| 387 | `discourse_get_topic` | Integrations | SAFE | Get a Discourse topic |
-| 388 | `discourse_get_post` | Integrations | SAFE | Get a Discourse post |
-| 389 | `discourse_create_topic` | Integrations | MODERATE | Create a Discourse topic |
-| 390 | `discourse_create_post` | Integrations | MODERATE | Create a Discourse reply post |
-| 391 | `discourse_update_post` | Integrations | MODERATE | Update a Discourse post |
-| 392 | `medium_get_me` | Integrations | SAFE | Get the authenticated Medium profile |
-| 393 | `medium_list_publications` | Integrations | SAFE | List Medium publications for a user |
-| 394 | `medium_create_post` | Integrations | MODERATE | Create a Medium profile post |
-| 395 | `medium_create_publication_post` | Integrations | MODERATE | Create a Medium publication post |
-| 396 | `bamboohr_list_employees` | Integrations | SAFE | List BambooHR employees |
-| 397 | `bamboohr_get_employee` | Integrations | SAFE | Get a BambooHR employee |
-| 398 | `bamboohr_create_employee` | Integrations | MODERATE | Create a BambooHR employee |
-| 399 | `bamboohr_update_employee` | Integrations | MODERATE | Update BambooHR employee fields |
-| 400 | `bamboohr_get_company_report` | Integrations | SAFE | Run a BambooHR company report |
-| 401 | `beeminder_get_user` | Integrations | SAFE | Get the authenticated Beeminder user |
-| 402 | `beeminder_list_goals` | Integrations | SAFE | List Beeminder goals |
-| 403 | `beeminder_get_goal` | Integrations | SAFE | Get a Beeminder goal |
-| 404 | `beeminder_list_datapoints` | Integrations | SAFE | List Beeminder datapoints |
-| 405 | `beeminder_create_datapoint` | Integrations | MODERATE | Create a Beeminder datapoint |
-| 406 | `beeminder_update_datapoint` | Integrations | MODERATE | Update a Beeminder datapoint |
-| 407 | `beeminder_delete_datapoint` | Integrations | MODERATE | Delete a Beeminder datapoint |
-| 408 | `clockify_list_workspaces` | Integrations | SAFE | List Clockify workspaces |
-| 409 | `clockify_list_users` | Integrations | SAFE | List Clockify users |
-| 410 | `clockify_list_projects` | Integrations | SAFE | List Clockify projects |
-| 411 | `clockify_create_project` | Integrations | MODERATE | Create a Clockify project |
-| 412 | `clockify_list_time_entries` | Integrations | SAFE | List Clockify time entries |
-| 413 | `clockify_create_time_entry` | Integrations | MODERATE | Create a Clockify time entry |
-| 414 | `clockify_update_time_entry` | Integrations | MODERATE | Update a Clockify time entry |
-| 415 | `clockify_delete_time_entry` | Integrations | MODERATE | Delete a Clockify time entry |
-| 416 | `harvest_get_me` | Integrations | SAFE | Get the authenticated Harvest user |
-| 417 | `harvest_get_company` | Integrations | SAFE | Get Harvest company metadata |
-| 418 | `harvest_list_clients` | Integrations | SAFE | List Harvest clients |
-| 419 | `harvest_list_projects` | Integrations | SAFE | List Harvest projects |
-| 420 | `harvest_list_tasks` | Integrations | SAFE | List Harvest tasks |
-| 421 | `harvest_list_time_entries` | Integrations | SAFE | List Harvest time entries |
-| 422 | `harvest_create_time_entry` | Integrations | MODERATE | Create a Harvest time entry |
-| 423 | `harvest_update_time_entry` | Integrations | MODERATE | Update a Harvest time entry |
-| 424 | `harvest_stop_time_entry` | Integrations | MODERATE | Stop a running Harvest time entry |
-| 425 | `harvest_delete_time_entry` | Integrations | MODERATE | Delete a Harvest time entry |
-| 426 | `oura_get_profile` | Integrations | SAFE | Get the authenticated Oura profile |
-| 427 | `oura_get_daily_activity` | Integrations | SAFE | Get Oura daily activity summaries |
-| 428 | `oura_get_daily_readiness` | Integrations | SAFE | Get Oura daily readiness summaries |
-| 429 | `oura_get_daily_sleep` | Integrations | SAFE | Get Oura daily sleep summaries |
-| 430 | `strava_list_activities` | Integrations | SAFE | List Strava activities |
-| 431 | `strava_get_activity` | Integrations | SAFE | Get a Strava activity |
-| 432 | `strava_create_activity` | Integrations | MODERATE | Create a manual Strava activity |
-| 433 | `strava_update_activity` | Integrations | MODERATE | Update a Strava activity |
-| 434 | `strava_list_activity_comments` | Integrations | SAFE | List Strava activity comments |
-| 435 | `strava_get_activity_streams` | Integrations | SAFE | Get Strava activity streams |
-| 436 | `homeassistant_get_config` | Integrations | SAFE | Get Home Assistant configuration metadata |
-| 437 | `homeassistant_check_config` | Integrations | MODERATE | Run Home Assistant config checks |
-| 438 | `homeassistant_list_states` | Integrations | SAFE | List Home Assistant states |
-| 439 | `homeassistant_get_state` | Integrations | SAFE | Get a Home Assistant state |
-| 440 | `homeassistant_set_state` | Integrations | MODERATE | Create or update a Home Assistant state |
-| 441 | `homeassistant_list_services` | Integrations | SAFE | List Home Assistant services |
-| 442 | `homeassistant_call_service` | Integrations | MODERATE | Call a Home Assistant service |
-| 443 | `homeassistant_list_events` | Integrations | SAFE | List Home Assistant event types |
-| 444 | `homeassistant_fire_event` | Integrations | MODERATE | Fire a Home Assistant event |
-| 445 | `homeassistant_render_template` | Integrations | MODERATE | Render a Home Assistant template |
-| 446 | `homeassistant_get_logbook` | Integrations | SAFE | Get Home Assistant logbook entries |
-| 447 | `philips_hue_list_lights` | Integrations | SAFE | List Philips Hue lights |
-| 448 | `philips_hue_get_light` | Integrations | SAFE | Get a Philips Hue light |
-| 449 | `philips_hue_update_light_state` | Integrations | MODERATE | Update Philips Hue light state |
-| 450 | `philips_hue_delete_light` | Integrations | MODERATE | Delete a Philips Hue light |
-| 451 | `activecampaign_list_contacts` | Integrations | SAFE | List ActiveCampaign contacts |
-| 452 | `activecampaign_get_contact` | Integrations | SAFE | Get an ActiveCampaign contact |
-| 453 | `activecampaign_sync_contact` | Integrations | MODERATE | Create or update an ActiveCampaign contact |
-| 454 | `activecampaign_update_contact` | Integrations | MODERATE | Update an ActiveCampaign contact |
-| 455 | `activecampaign_list_lists` | Integrations | SAFE | List ActiveCampaign lists |
-| 456 | `activecampaign_list_tags` | Integrations | SAFE | List ActiveCampaign tags |
-| 457 | `activecampaign_add_contact_to_list` | Integrations | MODERATE | Subscribe or unsubscribe an ActiveCampaign contact to a list |
-| 458 | `activecampaign_add_contact_tag` | Integrations | MODERATE | Add an ActiveCampaign tag to a contact |
-| 459 | `convertkit_get_account` | Integrations | SAFE | Get ConvertKit account details |
-| 460 | `convertkit_list_forms` | Integrations | SAFE | List ConvertKit forms |
-| 461 | `convertkit_list_tags` | Integrations | SAFE | List ConvertKit tags |
-| 462 | `convertkit_list_subscribers` | Integrations | SAFE | List ConvertKit subscribers |
-| 463 | `convertkit_add_subscriber_to_form` | Integrations | MODERATE | Subscribe an email address to a ConvertKit form |
-| 464 | `convertkit_add_subscriber_to_tag` | Integrations | MODERATE | Subscribe an email address to a ConvertKit tag |
-| 465 | `getresponse_list_campaigns` | Integrations | SAFE | List GetResponse campaigns |
-| 466 | `getresponse_list_contacts` | Integrations | SAFE | List GetResponse contacts |
-| 467 | `getresponse_get_contact` | Integrations | SAFE | Get a GetResponse contact |
-| 468 | `getresponse_create_contact` | Integrations | MODERATE | Create a GetResponse contact |
-| 469 | `getresponse_update_contact` | Integrations | MODERATE | Update a GetResponse contact |
-| 470 | `getresponse_delete_contact` | Integrations | MODERATE | Delete a GetResponse contact |
-| 471 | `mailerlite_list_subscribers` | Integrations | SAFE | List MailerLite subscribers |
-| 472 | `mailerlite_get_subscriber` | Integrations | SAFE | Get a MailerLite subscriber |
-| 473 | `mailerlite_create_subscriber` | Integrations | MODERATE | Create a MailerLite subscriber |
-| 474 | `mailerlite_update_subscriber` | Integrations | MODERATE | Update a MailerLite subscriber |
-| 475 | `mailerlite_list_groups` | Integrations | SAFE | List MailerLite groups |
-| 476 | `copper_list_records` | Integrations | SAFE | List Copper CRM records |
-| 477 | `copper_get_record` | Integrations | SAFE | Get a Copper CRM record |
-| 478 | `copper_create_record` | Integrations | MODERATE | Create a Copper CRM record |
-| 479 | `copper_update_record` | Integrations | MODERATE | Update a Copper CRM record |
-| 480 | `copper_delete_record` | Integrations | MODERATE | Delete a Copper CRM record |
-| 481 | `agilecrm_list_records` | Integrations | SAFE | List Agile CRM records |
-| 482 | `agilecrm_get_record` | Integrations | SAFE | Get an Agile CRM record |
-| 483 | `agilecrm_create_record` | Integrations | MODERATE | Create an Agile CRM record |
-| 484 | `agilecrm_update_record` | Integrations | MODERATE | Update an Agile CRM record |
-| 485 | `agilecrm_delete_record` | Integrations | MODERATE | Delete an Agile CRM record |
-| 486 | `monica_list_records` | Integrations | SAFE | List Monica CRM records |
-| 487 | `monica_get_record` | Integrations | SAFE | Get a Monica CRM record |
-| 488 | `monica_create_record` | Integrations | MODERATE | Create a Monica CRM record |
-| 489 | `monica_update_record` | Integrations | MODERATE | Update a Monica CRM record |
-| 490 | `monica_delete_record` | Integrations | MODERATE | Delete a Monica CRM record |
-| 491 | `plivo_send_message` | Integrations | MODERATE | Send SMS or MMS messages with Plivo |
-| 492 | `plivo_get_account` | Integrations | SAFE | Get Plivo account metadata |
-| 493 | `vonage_send_sms` | Integrations | MODERATE | Send SMS messages with Vonage |
-| 494 | `vonage_get_balance` | Integrations | SAFE | Get Vonage account balance |
-| 495 | `seven_send_sms` | Integrations | MODERATE | Send SMS messages with seven.io |
-| 496 | `seven_get_balance` | Integrations | SAFE | Get seven.io account balance |
-| 497 | `raindrop_list_bookmarks` | Integrations | SAFE | List Raindrop bookmarks |
-| 498 | `raindrop_get_bookmark` | Integrations | SAFE | Get a Raindrop bookmark |
-| 499 | `raindrop_create_bookmark` | Integrations | MODERATE | Create a Raindrop bookmark |
-| 500 | `raindrop_update_bookmark` | Integrations | MODERATE | Update a Raindrop bookmark |
-| 501 | `raindrop_delete_bookmark` | Integrations | MODERATE | Delete a Raindrop bookmark |
-| 502 | `raindrop_list_collections` | Integrations | SAFE | List Raindrop collections |
-| 503 | `raindrop_get_collection` | Integrations | SAFE | Get a Raindrop collection |
-| 504 | `raindrop_list_tags` | Integrations | SAFE | List Raindrop tags |
-| 505 | `raindrop_delete_tags` | Integrations | MODERATE | Delete Raindrop tags |
-| 506 | `raindrop_get_user` | Integrations | SAFE | Get Raindrop user metadata |
-| 507 | `yourls_shorten_url` | Integrations | MODERATE | Create a short URL with YOURLS |
-| 508 | `yourls_expand_url` | Integrations | SAFE | Expand a YOURLS short URL |
-| 509 | `yourls_get_url_stats` | Integrations | SAFE | Get YOURLS short URL stats |
-| 510 | `yourls_get_db_stats` | Integrations | SAFE | Get YOURLS database stats |
-| 511 | `circleci_list_pipelines` | Integrations | SAFE | List CircleCI pipelines |
-| 512 | `circleci_get_pipeline` | Integrations | SAFE | Get a CircleCI pipeline |
-| 513 | `circleci_trigger_pipeline` | Integrations | MODERATE | Trigger a CircleCI pipeline |
-| 514 | `travisci_list_builds` | Integrations | SAFE | List Travis CI builds |
-| 515 | `travisci_get_build` | Integrations | SAFE | Get a Travis CI build |
-| 516 | `travisci_trigger_build` | Integrations | MODERATE | Trigger a Travis CI build |
-| 517 | `travisci_restart_build` | Integrations | MODERATE | Restart a Travis CI build |
-| 518 | `travisci_cancel_build` | Integrations | MODERATE | Cancel a Travis CI build |
-| 519 | `jenkins_get_instance` | Integrations | SAFE | Get Jenkins instance metadata |
-| 520 | `jenkins_list_jobs` | Integrations | SAFE | List Jenkins jobs |
-| 521 | `jenkins_list_job_builds` | Integrations | SAFE | List Jenkins job builds |
-| 522 | `jenkins_trigger_job` | Integrations | MODERATE | Trigger a Jenkins job |
-| 523 | `jenkins_trigger_job_with_parameters` | Integrations | MODERATE | Trigger a parameterized Jenkins job |
-| 524 | `jenkins_copy_job` | Integrations | MODERATE | Copy a Jenkins job |
-| 525 | `jenkins_create_job` | Integrations | MODERATE | Create a Jenkins job |
-| 526 | `jenkins_quiet_down` | Integrations | MODERATE | Put Jenkins into quiet-down mode |
-| 527 | `jenkins_cancel_quiet_down` | Integrations | MODERATE | Cancel Jenkins quiet-down mode |
-| 528 | `jenkins_restart_instance` | Integrations | MODERATE | Restart a Jenkins instance |
-| 529 | `jenkins_shutdown_instance` | Integrations | MODERATE | Shut down a Jenkins instance |
-| 530 | `dropbox_get_current_account` | Integrations | SAFE | Get Dropbox account metadata |
-| 531 | `dropbox_get_metadata` | Integrations | SAFE | Get Dropbox file or folder metadata |
-| 532 | `dropbox_list_folder` | Integrations | SAFE | List Dropbox folder entries |
-| 533 | `dropbox_search` | Integrations | SAFE | Search Dropbox files and folders |
-| 534 | `dropbox_download_file` | Integrations | SAFE | Download a Dropbox file preview |
-| 535 | `dropbox_upload_text_file` | Integrations | MODERATE | Upload a text file to Dropbox |
-| 536 | `dropbox_create_folder` | Integrations | MODERATE | Create a Dropbox folder |
-| 537 | `dropbox_copy_path` | Integrations | MODERATE | Copy a Dropbox file or folder |
-| 538 | `dropbox_move_path` | Integrations | MODERATE | Move or rename a Dropbox file or folder |
-| 539 | `dropbox_delete_path` | Integrations | MODERATE | Delete a Dropbox file or folder |
-| 540 | `nextcloud_list_folder` | Integrations | SAFE | List Nextcloud folder entries |
-| 541 | `nextcloud_download_file` | Integrations | SAFE | Download a Nextcloud file preview |
-| 542 | `nextcloud_upload_text_file` | Integrations | MODERATE | Upload a text file to Nextcloud |
-| 543 | `nextcloud_create_folder` | Integrations | MODERATE | Create a Nextcloud folder |
-| 544 | `nextcloud_copy_path` | Integrations | MODERATE | Copy a Nextcloud file or folder |
-| 545 | `nextcloud_move_path` | Integrations | MODERATE | Move or rename a Nextcloud file or folder |
-| 546 | `nextcloud_delete_path` | Integrations | MODERATE | Delete a Nextcloud file or folder |
-| 547 | `nextcloud_list_users` | Integrations | SAFE | List Nextcloud users |
-| 548 | `nextcloud_get_user` | Integrations | SAFE | Get Nextcloud user metadata |
-| 549 | `s3_list_buckets` | Integrations | SAFE | List S3 buckets |
-| 550 | `s3_list_objects` | Integrations | SAFE | List S3 objects |
-| 551 | `s3_get_object_text` | Integrations | SAFE | Download an S3 object preview |
-| 552 | `s3_upload_text_object` | Integrations | MODERATE | Upload a text object to S3 |
-| 553 | `s3_copy_object` | Integrations | MODERATE | Copy an S3 object |
-| 554 | `s3_delete_object` | Integrations | MODERATE | Delete an S3 object |
-| 555 | `s3_create_folder` | Integrations | MODERATE | Create an S3 folder marker object |
-| 556 | `s3_create_bucket` | Integrations | MODERATE | Create an S3 bucket |
-| 557 | `s3_delete_bucket` | Integrations | MODERATE | Delete an empty S3 bucket |
-| 558 | `clearbit_enrich_company` | Integrations | MODERATE | Enrich company data from a domain |
-| 559 | `clearbit_autocomplete_company` | Integrations | MODERATE | Autocomplete company names and domains |
-| 560 | `clearbit_enrich_person` | Integrations | MODERATE | Enrich person data from an email address |
-| 561 | `uplead_enrich_company` | Integrations | MODERATE | Enrich company data by domain or name |
-| 562 | `uplead_enrich_person` | Integrations | MODERATE | Enrich person data by email or identity hints |
-| 563 | `dropcontact_submit_enrichment` | Integrations | MODERATE | Submit a contact enrichment request |
-| 564 | `dropcontact_fetch_request` | Integrations | MODERATE | Fetch a submitted enrichment request |
-| 565 | `humantic_create_profile` | Integrations | MODERATE | Create a contact-intelligence profile |
-| 566 | `humantic_get_profile` | Integrations | MODERATE | Get a contact-intelligence profile |
-| 567 | `humantic_update_profile_text` | Integrations | MODERATE | Update a profile with additional text |
-| 568 | `lonescale_create_list` | Integrations | MODERATE | Create a prospecting list |
-| 569 | `lonescale_add_people_item` | Integrations | MODERATE | Add a person to a prospecting list |
-| 570 | `lonescale_add_company_item` | Integrations | MODERATE | Add a company to a prospecting list |
-| 571 | `uproc_get_profile` | Integrations | MODERATE | Get the saved enrichment account profile |
-| 572 | `uproc_process` | Integrations | MODERATE | Run an enrichment processor with explicit JSON parameters |
-| 573 | `datetime_current` | Integrations | SAFE | Get the current date or time |
-| 574 | `datetime_add` | Integrations | SAFE | Add a duration to a date/time |
-| 575 | `datetime_subtract` | Integrations | SAFE | Subtract a duration from a date/time |
-| 576 | `datetime_format` | Integrations | SAFE | Parse and format a date/time |
-| 577 | `datetime_between` | Integrations | SAFE | Get the time difference between two dates |
-| 578 | `datetime_extract` | Integrations | SAFE | Extract part of a date/time |
-| 579 | `datetime_round` | Integrations | SAFE | Round a date/time to a calendar boundary |
-| 580 | `crypto_hash_text` | Integrations | SAFE | Hash text locally |
-| 581 | `crypto_hmac_text` | Integrations | MODERATE | Create an HMAC with a saved secret |
-| 582 | `crypto_generate_random` | Integrations | SAFE | Generate a random UUID or string |
-| 583 | `crypto_sign_text` | Integrations | MODERATE | Sign text with a saved private key |
-| 584 | `jwt_decode_token` | Integrations | SAFE | Decode a JWT without verification |
-| 585 | `jwt_sign_claims` | Integrations | MODERATE | Sign JWT claims with saved credentials |
-| 586 | `jwt_verify_token` | Integrations | MODERATE | Verify a JWT with saved credentials |
-| 587 | `compression_gzip_text` | Integrations | SAFE | Gzip text and return base64 |
-| 588 | `compression_gunzip_text` | Integrations | SAFE | Decompress base64 gzip text |
-| 589 | `compression_zip_text_files` | Integrations | SAFE | Create a base64 zip from text files |
-| 590 | `compression_unzip_text_files` | Integrations | SAFE | Extract base64 zip text files |
-| 591 | `aws_lambda_list_functions` | Integrations | SAFE | List AWS Lambda functions |
-| 592 | `aws_lambda_invoke` | Integrations | MODERATE | Invoke an AWS Lambda function |
-| 593 | `aws_sns_list_topics` | Integrations | SAFE | List AWS SNS topics |
-| 594 | `aws_sns_create_topic` | Integrations | MODERATE | Create an AWS SNS topic |
-| 595 | `aws_sns_publish` | Integrations | MODERATE | Publish a message to an AWS SNS topic |
-| 596 | `aws_sns_delete_topic` | Integrations | MODERATE | Delete an AWS SNS topic |
-| 597 | `aws_ses_send_email` | Integrations | MODERATE | Send email with Amazon SES |
-| 598 | `aws_ses_list_identities` | Integrations | SAFE | List Amazon SES identities |
-| 599 | `aws_ses_verify_email_identity` | Integrations | MODERATE | Start Amazon SES email identity verification |
-| 600 | `aws_ses_list_templates` | Integrations | SAFE | List Amazon SES email templates |
-| 601 | `aws_ses_get_template` | Integrations | SAFE | Get an Amazon SES email template |
-| 602 | `aws_ses_create_template` | Integrations | MODERATE | Create an Amazon SES email template |
-| 603 | `aws_ses_update_template` | Integrations | MODERATE | Update an Amazon SES email template |
-| 604 | `aws_ses_delete_template` | Integrations | MODERATE | Delete an Amazon SES email template |
-| 605 | `aws_textract_analyze_expense` | Integrations | MODERATE | Analyze a receipt or invoice with Amazon Textract |
-| 606 | `aws_transcribe_start_job` | Integrations | MODERATE | Start an Amazon Transcribe transcription job |
-| 607 | `aws_transcribe_get_job` | Integrations | SAFE | Get an Amazon Transcribe job |
-| 608 | `aws_transcribe_list_jobs` | Integrations | SAFE | List Amazon Transcribe jobs |
-| 609 | `aws_transcribe_delete_job` | Integrations | MODERATE | Delete an Amazon Transcribe job |
-| 610 | `freshservice_list_tickets` | Integrations | SAFE | List Freshservice tickets |
-| 611 | `freshservice_get_ticket` | Integrations | SAFE | Get a Freshservice ticket |
-| 612 | `freshservice_create_ticket` | Integrations | MODERATE | Create a Freshservice ticket |
-| 613 | `freshservice_update_ticket` | Integrations | MODERATE | Update a Freshservice ticket |
-| 614 | `freshservice_list_requesters` | Integrations | SAFE | List Freshservice requesters |
-| 615 | `freshservice_get_requester` | Integrations | SAFE | Get a Freshservice requester |
-| 616 | `servicenow_list_records` | Integrations | SAFE | List ServiceNow table records |
-| 617 | `servicenow_get_record` | Integrations | SAFE | Get a ServiceNow table record |
-| 618 | `servicenow_create_record` | Integrations | MODERATE | Create a ServiceNow table record |
-| 619 | `servicenow_update_record` | Integrations | MODERATE | Update a ServiceNow table record |
-| 620 | `servicenow_delete_record` | Integrations | MODERATE | Delete a ServiceNow table record |
-| 621 | `zammad_list_records` | Integrations | SAFE | List or search Zammad tickets, users, organizations, or groups |
-| 622 | `zammad_get_record` | Integrations | SAFE | Get a Zammad ticket, user, organization, or group |
-| 623 | `zammad_create_record` | Integrations | MODERATE | Create a Zammad ticket, user, organization, or group |
-| 624 | `zammad_update_record` | Integrations | MODERATE | Update a Zammad ticket, user, organization, or group |
-| 625 | `supabase_list_rows` | Integrations | SAFE | List rows from a Supabase table |
-| 626 | `supabase_insert_rows` | Integrations | MODERATE | Insert rows into a Supabase table |
-| 627 | `supabase_update_rows` | Integrations | MODERATE | Update Supabase rows matching a filter |
-| 628 | `supabase_delete_rows` | Integrations | MODERATE | Delete Supabase rows matching a filter |
-| 629 | `quickbase_list_fields` | Integrations | SAFE | List fields for a Quickbase table |
-| 630 | `quickbase_query_records` | Integrations | SAFE | Query Quickbase records |
-| 631 | `quickbase_upsert_records` | Integrations | MODERATE | Create or update Quickbase records |
-| 632 | `quickbase_delete_records` | Integrations | MODERATE | Delete Quickbase records matching a where clause |
-| 633 | `seatable_get_metadata` | Integrations | SAFE | Get SeaTable base metadata |
-| 634 | `seatable_list_rows` | Integrations | SAFE | List SeaTable rows |
-| 635 | `seatable_get_row` | Integrations | SAFE | Get a SeaTable row by ID |
-| 636 | `seatable_create_row` | Integrations | MODERATE | Create a SeaTable row |
-| 637 | `seatable_update_row` | Integrations | MODERATE | Update a SeaTable row |
-| 638 | `seatable_delete_row` | Integrations | MODERATE | Delete a SeaTable row |
-| 639 | `stackby_list_rows` | Integrations | SAFE | List Stackby rows |
-| 640 | `stackby_get_row` | Integrations | SAFE | Get a Stackby row by ID |
-| 641 | `stackby_create_rows` | Integrations | MODERATE | Create Stackby rows |
-| 642 | `stackby_delete_rows` | Integrations | MODERATE | Delete Stackby rows |
-| 643 | `salesforce_query_records` | Integrations | SAFE | Run a Salesforce SOQL SELECT query |
-| 644 | `salesforce_get_record` | Integrations | SAFE | Get a Salesforce object record |
-| 645 | `salesforce_create_record` | Integrations | MODERATE | Create a Salesforce object record |
-| 646 | `salesforce_update_record` | Integrations | MODERATE | Update a Salesforce object record |
-| 647 | `salesforce_delete_record` | Integrations | MODERATE | Delete a Salesforce object record |
-| 648 | `zoho_crm_list_records` | Integrations | SAFE | List Zoho CRM module records |
-| 649 | `zoho_crm_search_records` | Integrations | SAFE | Search Zoho CRM module records |
-| 650 | `zoho_crm_get_record` | Integrations | SAFE | Get a Zoho CRM module record |
-| 651 | `zoho_crm_create_records` | Integrations | MODERATE | Create Zoho CRM module records |
-| 652 | `zoho_crm_update_record` | Integrations | MODERATE | Update a Zoho CRM module record |
-| 653 | `zoho_crm_delete_record` | Integrations | MODERATE | Delete a Zoho CRM module record |
-| 654 | `freshworks_crm_list_records` | Integrations | SAFE | List Freshworks CRM records |
-| 655 | `freshworks_crm_search_records` | Integrations | SAFE | Search Freshworks CRM records |
-| 656 | `freshworks_crm_get_record` | Integrations | SAFE | Get a Freshworks CRM record |
-| 657 | `freshworks_crm_create_record` | Integrations | MODERATE | Create a Freshworks CRM record |
-| 658 | `freshworks_crm_update_record` | Integrations | MODERATE | Update a Freshworks CRM record |
-| 659 | `freshworks_crm_delete_record` | Integrations | MODERATE | Delete a Freshworks CRM record |
-| 660 | `salesmate_list_users` | Integrations | SAFE | List active Salesmate users |
-| 661 | `salesmate_search_records` | Integrations | SAFE | Search Salesmate records |
-| 662 | `salesmate_get_record` | Integrations | SAFE | Get a Salesmate record |
-| 663 | `salesmate_create_record` | Integrations | MODERATE | Create a Salesmate record |
-| 664 | `salesmate_update_record` | Integrations | MODERATE | Update a Salesmate record |
-| 665 | `salesmate_delete_record` | Integrations | MODERATE | Delete a Salesmate record |
-| 666 | `customerio_list_campaigns` | Integrations | SAFE | List Customer.io campaigns |
-| 667 | `customerio_get_campaign` | Integrations | SAFE | Get a Customer.io campaign |
-| 668 | `customerio_upsert_customer` | Integrations | MODERATE | Create or update a Customer.io customer profile |
-| 669 | `customerio_track_event` | Integrations | MODERATE | Track a Customer.io event for a known customer |
-| 670 | `customerio_track_anonymous_event` | Integrations | MODERATE | Track a Customer.io anonymous event |
-| 671 | `customerio_update_segment` | Integrations | MODERATE | Add or remove customers from a Customer.io manual segment |
-| 672 | `iterable_list_lists` | Integrations | SAFE | List Iterable static lists |
-| 673 | `iterable_get_user` | Integrations | SAFE | Get an Iterable user by email or user ID |
-| 674 | `iterable_upsert_user` | Integrations | MODERATE | Create or update an Iterable user |
-| 675 | `iterable_track_event` | Integrations | MODERATE | Track an Iterable event |
-| 676 | `iterable_update_list_subscribers` | Integrations | MODERATE | Subscribe or unsubscribe Iterable list members |
-| 677 | `posthog_capture_event` | Integrations | MODERATE | Capture a PostHog event |
-| 678 | `posthog_identify` | Integrations | MODERATE | Identify a PostHog user |
-| 679 | `posthog_create_alias` | Integrations | MODERATE | Create a PostHog alias |
-| 680 | `posthog_track_page_or_screen` | Integrations | MODERATE | Track a PostHog page or screen view |
-| 681 | `segment_identify` | Integrations | MODERATE | Send a Segment identify call |
-| 682 | `segment_track` | Integrations | MODERATE | Send a Segment track event |
-| 683 | `segment_group` | Integrations | MODERATE | Send a Segment group call |
-| 684 | `telegram_get_me` | Integrations | SAFE | Get the Telegram bot profile |
-| 685 | `telegram_get_chat` | Integrations | SAFE | Get Telegram chat metadata |
-| 686 | `telegram_send_message` | Integrations | MODERATE | Send a Telegram text message |
-| 687 | `telegram_delete_message` | Integrations | MODERATE | Delete a Telegram message |
-| 688 | `webex_list_rooms` | Integrations | SAFE | List Webex rooms |
-| 689 | `webex_get_room` | Integrations | SAFE | Get Webex room metadata |
-| 690 | `webex_list_messages` | Integrations | SAFE | List Webex messages |
-| 691 | `webex_get_message` | Integrations | SAFE | Get a Webex message |
-| 692 | `webex_send_message` | Integrations | MODERATE | Send a Webex message |
-| 693 | `webex_delete_message` | Integrations | MODERATE | Delete a Webex message |
-| 694 | `whatsapp_list_phone_numbers` | Integrations | SAFE | List WhatsApp Business Cloud phone numbers |
-| 695 | `whatsapp_send_text_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud text message |
-| 696 | `whatsapp_send_template_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud template message |
-| 697 | `whatsapp_get_media_url` | Integrations | SAFE | Get a WhatsApp Business Cloud media URL |
-| 698 | `whatsapp_delete_media` | Integrations | MODERATE | Delete WhatsApp Business Cloud media |
-| 699 | `graphql_execute_query` | Integrations | MODERATE | Execute a GraphQL query or mutation against an explicit or saved endpoint |
-| 700 | `totp_generate_code` | Integrations | MODERATE | Generate a TOTP code from a saved secret |
-| 701 | `totp_verify_code` | Integrations | MODERATE | Verify a TOTP code against a saved secret |
-| 702 | `lingvanex_translate_text` | Integrations | MODERATE | Translate text with LingvaNex |
-| 703 | `lingvanex_list_languages` | Integrations | SAFE | List LingvaNex supported languages |
-| 704 | `apitemplate_list_templates` | Integrations | SAFE | List APITemplate templates |
-| 705 | `apitemplate_get_account` | Integrations | SAFE | Get APITemplate account information |
-| 706 | `apitemplate_create_image` | Integrations | MODERATE | Create an image from an APITemplate image template |
-| 707 | `apitemplate_create_pdf` | Integrations | MODERATE | Create a PDF from an APITemplate PDF template |
-| 708 | `onesimple_create_pdf` | Integrations | MODERATE | Create a PDF URL for a webpage |
-| 709 | `onesimple_create_screenshot` | Integrations | MODERATE | Create a screenshot URL for a webpage |
-| 710 | `onesimple_get_page_info` | Integrations | MODERATE | Get webpage SEO and metadata |
-| 711 | `onesimple_get_exchange_rate` | Integrations | MODERATE | Convert a currency amount |
-| 712 | `onesimple_get_image_metadata` | Integrations | MODERATE | Get image metadata from an image URL |
-| 713 | `onesimple_validate_email` | Integrations | MODERATE | Validate an email address |
-| 714 | `onesimple_expand_url` | Integrations | MODERATE | Expand a shortened URL |
-| 715 | `onesimple_create_qr_code` | Integrations | MODERATE | Create a QR-code image URL |
-| 716 | `paddle_list_products` | Integrations | SAFE | List Paddle products |
-| 717 | `paddle_list_plans` | Integrations | SAFE | List Paddle subscription plans |
-| 718 | `paddle_list_subscription_users` | Integrations | SAFE | List Paddle subscription users |
-| 719 | `paddle_list_payments` | Integrations | SAFE | List Paddle subscription payments |
-| 720 | `paddle_get_order` | Integrations | SAFE | Get a Paddle order by checkout ID |
-| 721 | `paddle_list_coupons` | Integrations | SAFE | List Paddle coupons for a product |
-| 722 | `paddle_create_coupon` | Integrations | MODERATE | Create Paddle coupon codes |
-| 723 | `paddle_update_coupon` | Integrations | MODERATE | Update Paddle coupon metadata |
-| 724 | `paddle_reschedule_payment` | Integrations | MODERATE | Reschedule a Paddle subscription payment |
-| 725 | `profitwell_get_settings` | Integrations | SAFE | Get ProfitWell account settings |
-| 726 | `profitwell_get_metrics` | Integrations | SAFE | Get ProfitWell daily or monthly metrics |
-| 727 | `tapfiliate_list_affiliates` | Integrations | SAFE | List Tapfiliate affiliates |
-| 728 | `tapfiliate_get_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate |
-| 729 | `tapfiliate_create_affiliate` | Integrations | MODERATE | Create a Tapfiliate affiliate |
-| 730 | `tapfiliate_delete_affiliate` | Integrations | MODERATE | Delete a Tapfiliate affiliate |
-| 731 | `tapfiliate_add_affiliate_metadata` | Integrations | MODERATE | Add metadata fields to a Tapfiliate affiliate |
-| 732 | `tapfiliate_remove_affiliate_metadata` | Integrations | MODERATE | Remove a Tapfiliate affiliate metadata field |
-| 733 | `tapfiliate_update_affiliate_metadata` | Integrations | MODERATE | Update a Tapfiliate affiliate metadata field |
-| 734 | `tapfiliate_list_program_affiliates` | Integrations | SAFE | List affiliates in a Tapfiliate program |
-| 735 | `tapfiliate_get_program_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate in a program |
-| 736 | `tapfiliate_add_program_affiliate` | Integrations | MODERATE | Add a Tapfiliate affiliate to a program |
-| 737 | `tapfiliate_approve_program_affiliate` | Integrations | MODERATE | Approve a Tapfiliate affiliate for a program |
-| 738 | `tapfiliate_disapprove_program_affiliate` | Integrations | MODERATE | Disapprove a Tapfiliate affiliate for a program |
-| 739 | `actionnetwork_list_records` | Integrations | SAFE | List Action Network events, people, petitions, tags, attendances, signatures, or taggings |
-| 740 | `actionnetwork_get_record` | Integrations | SAFE | Get an Action Network record by ID |
-| 741 | `actionnetwork_create_person` | Integrations | MODERATE | Create an Action Network person |
-| 742 | `actionnetwork_update_person` | Integrations | MODERATE | Update an Action Network person |
-| 743 | `actionnetwork_create_event` | Integrations | MODERATE | Create an Action Network event |
-| 744 | `actionnetwork_create_petition` | Integrations | MODERATE | Create an Action Network petition |
-| 745 | `actionnetwork_create_attendance` | Integrations | MODERATE | Create an Action Network attendance |
-| 746 | `actionnetwork_create_signature` | Integrations | MODERATE | Create an Action Network petition signature |
-| 747 | `actionnetwork_add_person_tag` | Integrations | MODERATE | Tag an Action Network person |
-| 748 | `actionnetwork_remove_person_tag` | Integrations | MODERATE | Remove an Action Network person tag |
-| 749 | `autopilot_list_contacts` | Integrations | SAFE | List Autopilot contacts |
-| 750 | `autopilot_get_contact` | Integrations | SAFE | Get an Autopilot contact |
-| 751 | `autopilot_upsert_contact` | Integrations | MODERATE | Create or update an Autopilot contact |
-| 752 | `autopilot_delete_contact` | Integrations | MODERATE | Delete an Autopilot contact |
-| 753 | `autopilot_list_lists` | Integrations | SAFE | List Autopilot lists |
-| 754 | `autopilot_create_list` | Integrations | MODERATE | Create an Autopilot list |
-| 755 | `autopilot_update_contact_list_membership` | Integrations | MODERATE | Add, remove, or check Autopilot list membership |
-| 756 | `autopilot_add_contact_to_journey` | Integrations | MODERATE | Add an Autopilot contact to a journey trigger |
-| 757 | `egoi_list_lists` | Integrations | SAFE | List E-goi lists |
-| 758 | `egoi_list_contacts` | Integrations | SAFE | List E-goi contacts |
-| 759 | `egoi_get_contact` | Integrations | SAFE | Get an E-goi contact |
-| 760 | `egoi_create_contact` | Integrations | MODERATE | Create an E-goi contact |
-| 761 | `egoi_update_contact` | Integrations | MODERATE | Update an E-goi contact |
-| 762 | `vero_identify_user` | Integrations | MODERATE | Create or update a Vero user profile |
-| 763 | `vero_alias_user` | Integrations | MODERATE | Alias a Vero user ID |
-| 764 | `vero_update_user_subscription` | Integrations | MODERATE | Unsubscribe, resubscribe, or delete a Vero user |
-| 765 | `vero_update_user_tags` | Integrations | MODERATE | Add or remove Vero user tags |
-| 766 | `vero_track_event` | Integrations | MODERATE | Track a Vero event |
-| 767 | `adalo_list_records` | Integrations | SAFE | List Adalo collection records |
-| 768 | `adalo_get_record` | Integrations | SAFE | Get an Adalo collection record |
-| 769 | `adalo_create_record` | Integrations | MODERATE | Create an Adalo collection record |
-| 770 | `adalo_update_record` | Integrations | MODERATE | Update an Adalo collection record |
-| 771 | `adalo_delete_record` | Integrations | MODERATE | Delete an Adalo collection record |
-| 772 | `bubble_list_objects` | Integrations | SAFE | List Bubble Data API objects |
-| 773 | `bubble_get_object` | Integrations | SAFE | Get a Bubble Data API object |
-| 774 | `bubble_create_object` | Integrations | MODERATE | Create a Bubble Data API object |
-| 775 | `bubble_update_object` | Integrations | MODERATE | Update a Bubble Data API object |
-| 776 | `bubble_delete_object` | Integrations | MODERATE | Delete a Bubble Data API object |
-| 777 | `cockpit_list_collections` | Integrations | SAFE | List Cockpit collection names |
-| 778 | `cockpit_list_collection_entries` | Integrations | SAFE | List Cockpit collection entries |
-| 779 | `cockpit_save_collection_entry` | Integrations | MODERATE | Create or update a Cockpit collection entry |
-| 780 | `cockpit_list_singletons` | Integrations | SAFE | List Cockpit singleton names |
-| 781 | `cockpit_get_singleton` | Integrations | SAFE | Get a Cockpit singleton |
-| 782 | `cockpit_submit_form` | Integrations | MODERATE | Submit a Cockpit form |
-| 783 | `monday_get_me` | Integrations | SAFE | Get the current Monday user |
-| 784 | `monday_list_boards` | Integrations | SAFE | List Monday boards |
-| 785 | `monday_get_board` | Integrations | SAFE | Get a Monday board by ID |
-| 786 | `monday_create_board` | Integrations | MODERATE | Create a Monday board |
-| 787 | `monday_archive_board` | Integrations | MODERATE | Archive a Monday board |
-| 788 | `monday_list_board_columns` | Integrations | SAFE | List Monday board columns |
-| 789 | `monday_create_board_column` | Integrations | MODERATE | Create a Monday board column |
-| 790 | `monday_list_board_groups` | Integrations | SAFE | List Monday board groups |
-| 791 | `monday_create_board_group` | Integrations | MODERATE | Create a Monday board group |
-| 792 | `monday_list_items` | Integrations | SAFE | List Monday board items |
-| 793 | `monday_get_item` | Integrations | SAFE | Get Monday items by ID |
-| 794 | `monday_create_item` | Integrations | MODERATE | Create a Monday item |
-| 795 | `monday_update_item_columns` | Integrations | MODERATE | Update Monday item column values |
-| 796 | `monday_add_item_update` | Integrations | MODERATE | Add an update/comment to a Monday item |
-| 797 | `monday_move_item` | Integrations | MODERATE | Move a Monday item to another group |
-| 798 | `monday_delete_item` | Integrations | MODERATE | Delete a Monday item |
-| 799 | `taiga_list_projects` | Integrations | SAFE | List Taiga projects |
-| 800 | `taiga_list_records` | Integrations | SAFE | List Taiga epics, issues, tasks, or user stories |
-| 801 | `taiga_get_record` | Integrations | SAFE | Get a Taiga epic, issue, task, or user story |
-| 802 | `taiga_create_record` | Integrations | MODERATE | Create a Taiga epic, issue, task, or user story |
-| 803 | `taiga_update_record` | Integrations | MODERATE | Update a Taiga epic, issue, task, or user story |
-| 804 | `taiga_delete_record` | Integrations | MODERATE | Delete a Taiga epic, issue, task, or user story |
-| 805 | `wekan_get_current_user` | Integrations | SAFE | Get the current Wekan user |
-| 806 | `wekan_list_users` | Integrations | SAFE | List Wekan users |
-| 807 | `wekan_list_user_boards` | Integrations | SAFE | List Wekan boards for a user |
-| 808 | `wekan_get_board` | Integrations | SAFE | Get a Wekan board by ID |
-| 809 | `wekan_create_board` | Integrations | MODERATE | Create a Wekan board |
-| 810 | `wekan_delete_board` | Integrations | MODERATE | Delete a Wekan board |
-| 811 | `wekan_list_lists` | Integrations | SAFE | List Wekan lists on a board |
-| 812 | `wekan_create_list` | Integrations | MODERATE | Create a Wekan list |
-| 813 | `wekan_delete_list` | Integrations | MODERATE | Delete a Wekan list |
-| 814 | `wekan_list_cards` | Integrations | SAFE | List Wekan cards from a list or swimlane |
-| 815 | `wekan_get_card` | Integrations | SAFE | Get a Wekan card by ID |
-| 816 | `wekan_create_card` | Integrations | MODERATE | Create a Wekan card |
-| 817 | `wekan_update_card` | Integrations | MODERATE | Update a Wekan card |
-| 818 | `wekan_delete_card` | Integrations | MODERATE | Delete a Wekan card |
-| 819 | `wekan_list_card_comments` | Integrations | SAFE | List comments on a Wekan card |
-| 820 | `wekan_add_card_comment` | Integrations | MODERATE | Add a comment to a Wekan card |
-| 821 | `erpnext_get_logged_user` | Integrations | SAFE | Get the current ERPNext user |
-| 822 | `erpnext_list_documents` | Integrations | SAFE | List ERPNext documents for a DocType |
-| 823 | `erpnext_get_document` | Integrations | SAFE | Get an ERPNext document by DocType and document name |
-| 824 | `erpnext_create_document` | Integrations | MODERATE | Create an ERPNext document |
-| 825 | `erpnext_update_document` | Integrations | MODERATE | Update an ERPNext document |
-| 826 | `erpnext_delete_document` | Integrations | MODERATE | Delete an ERPNext document |
-| 827 | `odoo_get_server_version` | Integrations | SAFE | Get the Odoo server version |
-| 828 | `odoo_list_records` | Integrations | SAFE | List Odoo records from a model |
-| 829 | `odoo_get_record` | Integrations | SAFE | Get an Odoo record by ID |
-| 830 | `odoo_create_record` | Integrations | MODERATE | Create an Odoo record |
-| 831 | `odoo_update_record` | Integrations | MODERATE | Update an Odoo record |
-| 832 | `odoo_delete_record` | Integrations | MODERATE | Delete an Odoo record |
-| 833 | `invoiceninja_list_records` | Integrations | SAFE | List Invoice Ninja records |
-| 834 | `invoiceninja_get_record` | Integrations | SAFE | Get an Invoice Ninja record by ID |
-| 835 | `invoiceninja_create_record` | Integrations | MODERATE | Create an Invoice Ninja record |
-| 836 | `invoiceninja_delete_record` | Integrations | MODERATE | Delete an Invoice Ninja record |
-| 837 | `invoiceninja_email_invoice_or_quote` | Integrations | MODERATE | Email an Invoice Ninja invoice or quote |
-| 838 | `demio_list_events` | Integrations | SAFE | List Demio events |
-| 839 | `demio_get_event` | Integrations | SAFE | Get a Demio event or event date/session |
-| 840 | `demio_register_event` | Integrations | MODERATE | Register a Demio event attendee |
-| 841 | `demio_get_session_participants` | Integrations | SAFE | Get Demio participant report rows |
-| 842 | `zoom_list_meetings` | Integrations | SAFE | List Zoom meetings |
-| 843 | `zoom_get_meeting` | Integrations | SAFE | Get a Zoom meeting by ID |
-| 844 | `zoom_create_meeting` | Integrations | MODERATE | Create a Zoom meeting |
-| 845 | `zoom_update_meeting` | Integrations | MODERATE | Update a Zoom meeting |
-| 846 | `zoom_delete_meeting` | Integrations | MODERATE | Delete a Zoom meeting |
-| 847 | `gotowebinar_list_webinars` | Integrations | SAFE | List GoToWebinar webinars |
-| 848 | `gotowebinar_get_webinar` | Integrations | SAFE | Get a GoToWebinar webinar |
-| 849 | `gotowebinar_create_webinar` | Integrations | MODERATE | Create a GoToWebinar webinar |
-| 850 | `gotowebinar_update_webinar` | Integrations | MODERATE | Update a GoToWebinar webinar |
-| 851 | `gotowebinar_list_sessions` | Integrations | SAFE | List GoToWebinar sessions |
-| 852 | `gotowebinar_get_session` | Integrations | SAFE | Get a GoToWebinar session |
-| 853 | `gotowebinar_list_registrants` | Integrations | SAFE | List GoToWebinar registrants |
-| 854 | `gotowebinar_get_registrant` | Integrations | SAFE | Get a GoToWebinar registrant |
-| 855 | `gotowebinar_create_registrant` | Integrations | MODERATE | Create a GoToWebinar registrant |
-| 856 | `gotowebinar_delete_registrant` | Integrations | MODERATE | Delete a GoToWebinar registrant |
+| 295 | `grafana_search_dashboards` | Integrations | SAFE | Search Grafana dashboards |
+| 296 | `grafana_get_dashboard` | Integrations | SAFE | Get a Grafana dashboard by UID |
+| 297 | `grafana_create_dashboard` | Integrations | MODERATE | Create or update a Grafana dashboard |
+| 298 | `grafana_delete_dashboard` | Integrations | MODERATE | Delete a Grafana dashboard |
+| 299 | `grafana_list_teams` | Integrations | SAFE | List Grafana teams |
+| 300 | `metabase_list_questions` | Integrations | SAFE | List Metabase questions |
+| 301 | `metabase_get_question` | Integrations | SAFE | Get a Metabase question |
+| 302 | `metabase_query_question` | Integrations | SAFE | Run a Metabase question |
+| 303 | `metabase_list_dashboards` | Integrations | SAFE | List Metabase dashboards |
+| 304 | `metabase_get_dashboard` | Integrations | SAFE | Get a Metabase dashboard |
+| 305 | `elasticsearch_list_indices` | Integrations | SAFE | List Elasticsearch indices |
+| 306 | `elasticsearch_search` | Integrations | SAFE | Search Elasticsearch documents |
+| 307 | `elasticsearch_get_document` | Integrations | SAFE | Get an Elasticsearch document |
+| 308 | `elasticsearch_index_document` | Integrations | MODERATE | Create or replace an Elasticsearch document |
+| 309 | `elasticsearch_delete_document` | Integrations | MODERATE | Delete an Elasticsearch document |
+| 310 | `splunk_list_saved_searches` | Integrations | SAFE | List Splunk saved searches |
+| 311 | `splunk_create_search_job` | Integrations | MODERATE | Create a Splunk search job |
+| 312 | `splunk_get_search_job` | Integrations | SAFE | Get a Splunk search job |
+| 313 | `splunk_get_search_results` | Integrations | SAFE | Get Splunk search results |
+| 314 | `urlscan_search_scans` | Integrations | SAFE | Search archived urlscan.io scans |
+| 315 | `urlscan_get_result` | Integrations | SAFE | Get a urlscan.io scan result |
+| 316 | `urlscan_submit_scan` | Integrations | MODERATE | Submit a URL to urlscan.io for scanning |
+| 317 | `hunter_domain_search` | Integrations | SAFE | Find domain-associated email addresses with Hunter |
+| 318 | `hunter_email_finder` | Integrations | SAFE | Find a likely professional email with Hunter |
+| 319 | `hunter_email_verifier` | Integrations | SAFE | Verify email deliverability with Hunter |
+| 320 | `mailcheck_check_email` | Integrations | SAFE | Check an email address with Mailcheck |
+| 321 | `peekalink_preview_url` | Integrations | SAFE | Return link preview metadata with Peekalink |
+| 322 | `peekalink_check_availability` | Integrations | SAFE | Check Peekalink preview availability |
+| 323 | `jina_reader_fetch_url` | Integrations | SAFE | Fetch a URL through Jina Reader |
+| 324 | `jina_search_web` | Integrations | SAFE | Search the web through Jina Search |
+| 325 | `jina_deep_research` | Integrations | MODERATE | Run a Jina DeepSearch research query |
+| 326 | `baserow_list_tables` | Integrations | SAFE | List Baserow tables |
+| 327 | `baserow_list_fields` | Integrations | SAFE | List Baserow table fields |
+| 328 | `baserow_list_rows` | Integrations | SAFE | List Baserow table rows |
+| 329 | `baserow_get_row` | Integrations | SAFE | Get a Baserow row |
+| 330 | `baserow_create_row` | Integrations | MODERATE | Create a Baserow row |
+| 331 | `baserow_update_row` | Integrations | MODERATE | Update a Baserow row |
+| 332 | `baserow_delete_row` | Integrations | MODERATE | Delete a Baserow row |
+| 333 | `nocodb_list_bases` | Integrations | SAFE | List NocoDB bases |
+| 334 | `nocodb_get_base` | Integrations | SAFE | Get NocoDB base metadata |
+| 335 | `nocodb_list_records` | Integrations | SAFE | List NocoDB records |
+| 336 | `nocodb_get_record` | Integrations | SAFE | Get a NocoDB record |
+| 337 | `nocodb_count_records` | Integrations | SAFE | Count NocoDB records |
+| 338 | `nocodb_create_record` | Integrations | MODERATE | Create a NocoDB record |
+| 339 | `nocodb_update_record` | Integrations | MODERATE | Update a NocoDB record |
+| 340 | `nocodb_delete_record` | Integrations | MODERATE | Delete a NocoDB record |
+| 341 | `coda_list_docs` | Integrations | SAFE | List Coda docs |
+| 342 | `coda_list_tables` | Integrations | SAFE | List Coda tables and views |
+| 343 | `coda_list_table_rows` | Integrations | SAFE | List Coda table rows |
+| 344 | `coda_get_table_row` | Integrations | SAFE | Get a Coda table row |
+| 345 | `coda_create_table_row` | Integrations | MODERATE | Create a Coda table row |
+| 346 | `coda_update_table_row` | Integrations | MODERATE | Update a Coda table row |
+| 347 | `coda_delete_table_row` | Integrations | MODERATE | Delete a Coda table row |
+| 348 | `coda_list_formulas` | Integrations | SAFE | List Coda formulas |
+| 349 | `coda_list_controls` | Integrations | SAFE | List Coda controls |
+| 350 | `grist_list_orgs` | Integrations | SAFE | List Grist organizations |
+| 351 | `grist_list_workspaces` | Integrations | SAFE | List Grist workspaces |
+| 352 | `grist_list_docs` | Integrations | SAFE | List Grist docs |
+| 353 | `grist_list_tables` | Integrations | SAFE | List Grist tables |
+| 354 | `grist_list_columns` | Integrations | SAFE | List Grist table columns |
+| 355 | `grist_list_records` | Integrations | SAFE | List Grist table records |
+| 356 | `grist_create_record` | Integrations | MODERATE | Create a Grist record |
+| 357 | `grist_update_record` | Integrations | MODERATE | Update a Grist record |
+| 358 | `grist_delete_records` | Integrations | MODERATE | Delete Grist records |
+| 359 | `discord_list_guild_channels` | Integrations | SAFE | List Discord guild channels |
+| 360 | `discord_get_channel` | Integrations | SAFE | Get Discord channel metadata |
+| 361 | `discord_get_channel_messages` | Integrations | SAFE | Get Discord channel messages |
+| 362 | `discord_send_channel_message` | Integrations | MODERATE | Send a Discord channel message |
+| 363 | `discord_delete_message` | Integrations | MODERATE | Delete a Discord message |
+| 364 | `mattermost_get_me` | Integrations | SAFE | Get the current Mattermost user |
+| 365 | `mattermost_list_teams` | Integrations | SAFE | List Mattermost teams |
+| 366 | `mattermost_list_channels` | Integrations | SAFE | List Mattermost team channels |
+| 367 | `mattermost_list_channel_posts` | Integrations | SAFE | List Mattermost channel posts |
+| 368 | `mattermost_create_post` | Integrations | MODERATE | Create a Mattermost post |
+| 369 | `mattermost_delete_post` | Integrations | MODERATE | Delete a Mattermost post |
+| 370 | `matrix_whoami` | Integrations | SAFE | Get the current Matrix account |
+| 371 | `matrix_list_joined_rooms` | Integrations | SAFE | List joined Matrix rooms |
+| 372 | `matrix_get_room_messages` | Integrations | SAFE | Get Matrix room messages |
+| 373 | `matrix_send_room_message` | Integrations | MODERATE | Send a Matrix room message |
+| 374 | `matrix_leave_room` | Integrations | MODERATE | Leave a Matrix room |
+| 375 | `rocketchat_get_me` | Integrations | SAFE | Get the current Rocket.Chat user |
+| 376 | `rocketchat_list_channels` | Integrations | SAFE | List Rocket.Chat public channels |
+| 377 | `rocketchat_get_channel_history` | Integrations | SAFE | Get Rocket.Chat channel history |
+| 378 | `rocketchat_post_message` | Integrations | MODERATE | Post a Rocket.Chat message |
+| 379 | `rocketchat_delete_message` | Integrations | MODERATE | Delete a Rocket.Chat message |
+| 380 | `zulip_get_profile` | Integrations | SAFE | Get the current Zulip profile |
+| 381 | `zulip_list_streams` | Integrations | SAFE | List Zulip streams |
+| 382 | `zulip_get_messages` | Integrations | SAFE | Get Zulip messages |
+| 383 | `zulip_send_message` | Integrations | MODERATE | Send a Zulip message |
+| 384 | `zulip_delete_message` | Integrations | MODERATE | Delete a Zulip message |
+| 385 | `google_books_search` | Integrations | SAFE | Search Google Books volume metadata |
+| 386 | `google_books_get_volume` | Integrations | SAFE | Get a Google Books volume by ID |
+| 387 | `youtube_search` | Integrations | SAFE | Search YouTube videos, channels, or playlists |
+| 388 | `youtube_get_videos` | Integrations | SAFE | Get YouTube video metadata |
+| 389 | `youtube_get_channels` | Integrations | SAFE | Get YouTube channel metadata |
+| 390 | `youtube_list_playlist_items` | Integrations | SAFE | List YouTube playlist items |
+| 391 | `spotify_search` | Integrations | SAFE | Search Spotify catalog metadata |
+| 392 | `spotify_get_track` | Integrations | SAFE | Get Spotify track metadata |
+| 393 | `spotify_get_artist` | Integrations | SAFE | Get Spotify artist metadata |
+| 394 | `spotify_get_album` | Integrations | SAFE | Get Spotify album metadata |
+| 395 | `spotify_get_playlist` | Integrations | SAFE | Get Spotify playlist metadata |
+| 396 | `reddit_search_posts` | Integrations | SAFE | Search Reddit posts |
+| 397 | `reddit_list_subreddit_posts` | Integrations | SAFE | List subreddit posts |
+| 398 | `reddit_get_post` | Integrations | SAFE | Get a Reddit post and comments |
+| 399 | `reddit_get_subreddit` | Integrations | SAFE | Get subreddit metadata |
+| 400 | `reddit_get_user` | Integrations | SAFE | Get Reddit user metadata |
+| 401 | `reddit_create_post` | Integrations | MODERATE | Create a Reddit post |
+| 402 | `reddit_create_comment` | Integrations | MODERATE | Create a Reddit comment or reply |
+| 403 | `reddit_delete_thing` | Integrations | MODERATE | Delete a Reddit post or comment |
+| 404 | `discourse_search` | Integrations | SAFE | Search a Discourse forum |
+| 405 | `discourse_list_latest_topics` | Integrations | SAFE | List latest Discourse topics |
+| 406 | `discourse_get_topic` | Integrations | SAFE | Get a Discourse topic |
+| 407 | `discourse_get_post` | Integrations | SAFE | Get a Discourse post |
+| 408 | `discourse_create_topic` | Integrations | MODERATE | Create a Discourse topic |
+| 409 | `discourse_create_post` | Integrations | MODERATE | Create a Discourse reply post |
+| 410 | `discourse_update_post` | Integrations | MODERATE | Update a Discourse post |
+| 411 | `medium_get_me` | Integrations | SAFE | Get the authenticated Medium profile |
+| 412 | `medium_list_publications` | Integrations | SAFE | List Medium publications for a user |
+| 413 | `medium_create_post` | Integrations | MODERATE | Create a Medium profile post |
+| 414 | `medium_create_publication_post` | Integrations | MODERATE | Create a Medium publication post |
+| 415 | `bamboohr_list_employees` | Integrations | SAFE | List BambooHR employees |
+| 416 | `bamboohr_get_employee` | Integrations | SAFE | Get a BambooHR employee |
+| 417 | `bamboohr_create_employee` | Integrations | MODERATE | Create a BambooHR employee |
+| 418 | `bamboohr_update_employee` | Integrations | MODERATE | Update BambooHR employee fields |
+| 419 | `bamboohr_get_company_report` | Integrations | SAFE | Run a BambooHR company report |
+| 420 | `beeminder_get_user` | Integrations | SAFE | Get the authenticated Beeminder user |
+| 421 | `beeminder_list_goals` | Integrations | SAFE | List Beeminder goals |
+| 422 | `beeminder_get_goal` | Integrations | SAFE | Get a Beeminder goal |
+| 423 | `beeminder_list_datapoints` | Integrations | SAFE | List Beeminder datapoints |
+| 424 | `beeminder_create_datapoint` | Integrations | MODERATE | Create a Beeminder datapoint |
+| 425 | `beeminder_update_datapoint` | Integrations | MODERATE | Update a Beeminder datapoint |
+| 426 | `beeminder_delete_datapoint` | Integrations | MODERATE | Delete a Beeminder datapoint |
+| 427 | `clockify_list_workspaces` | Integrations | SAFE | List Clockify workspaces |
+| 428 | `clockify_list_users` | Integrations | SAFE | List Clockify users |
+| 429 | `clockify_list_projects` | Integrations | SAFE | List Clockify projects |
+| 430 | `clockify_create_project` | Integrations | MODERATE | Create a Clockify project |
+| 431 | `clockify_list_time_entries` | Integrations | SAFE | List Clockify time entries |
+| 432 | `clockify_create_time_entry` | Integrations | MODERATE | Create a Clockify time entry |
+| 433 | `clockify_update_time_entry` | Integrations | MODERATE | Update a Clockify time entry |
+| 434 | `clockify_delete_time_entry` | Integrations | MODERATE | Delete a Clockify time entry |
+| 435 | `harvest_get_me` | Integrations | SAFE | Get the authenticated Harvest user |
+| 436 | `harvest_get_company` | Integrations | SAFE | Get Harvest company metadata |
+| 437 | `harvest_list_clients` | Integrations | SAFE | List Harvest clients |
+| 438 | `harvest_list_projects` | Integrations | SAFE | List Harvest projects |
+| 439 | `harvest_list_tasks` | Integrations | SAFE | List Harvest tasks |
+| 440 | `harvest_list_time_entries` | Integrations | SAFE | List Harvest time entries |
+| 441 | `harvest_create_time_entry` | Integrations | MODERATE | Create a Harvest time entry |
+| 442 | `harvest_update_time_entry` | Integrations | MODERATE | Update a Harvest time entry |
+| 443 | `harvest_stop_time_entry` | Integrations | MODERATE | Stop a running Harvest time entry |
+| 444 | `harvest_delete_time_entry` | Integrations | MODERATE | Delete a Harvest time entry |
+| 445 | `oura_get_profile` | Integrations | SAFE | Get the authenticated Oura profile |
+| 446 | `oura_get_daily_activity` | Integrations | SAFE | Get Oura daily activity summaries |
+| 447 | `oura_get_daily_readiness` | Integrations | SAFE | Get Oura daily readiness summaries |
+| 448 | `oura_get_daily_sleep` | Integrations | SAFE | Get Oura daily sleep summaries |
+| 449 | `strava_list_activities` | Integrations | SAFE | List Strava activities |
+| 450 | `strava_get_activity` | Integrations | SAFE | Get a Strava activity |
+| 451 | `strava_create_activity` | Integrations | MODERATE | Create a manual Strava activity |
+| 452 | `strava_update_activity` | Integrations | MODERATE | Update a Strava activity |
+| 453 | `strava_list_activity_comments` | Integrations | SAFE | List Strava activity comments |
+| 454 | `strava_get_activity_streams` | Integrations | SAFE | Get Strava activity streams |
+| 455 | `homeassistant_get_config` | Integrations | SAFE | Get Home Assistant configuration metadata |
+| 456 | `homeassistant_check_config` | Integrations | MODERATE | Run Home Assistant config checks |
+| 457 | `homeassistant_list_states` | Integrations | SAFE | List Home Assistant states |
+| 458 | `homeassistant_get_state` | Integrations | SAFE | Get a Home Assistant state |
+| 459 | `homeassistant_set_state` | Integrations | MODERATE | Create or update a Home Assistant state |
+| 460 | `homeassistant_list_services` | Integrations | SAFE | List Home Assistant services |
+| 461 | `homeassistant_call_service` | Integrations | MODERATE | Call a Home Assistant service |
+| 462 | `homeassistant_list_events` | Integrations | SAFE | List Home Assistant event types |
+| 463 | `homeassistant_fire_event` | Integrations | MODERATE | Fire a Home Assistant event |
+| 464 | `homeassistant_render_template` | Integrations | MODERATE | Render a Home Assistant template |
+| 465 | `homeassistant_get_logbook` | Integrations | SAFE | Get Home Assistant logbook entries |
+| 466 | `philips_hue_list_lights` | Integrations | SAFE | List Philips Hue lights |
+| 467 | `philips_hue_get_light` | Integrations | SAFE | Get a Philips Hue light |
+| 468 | `philips_hue_update_light_state` | Integrations | MODERATE | Update Philips Hue light state |
+| 469 | `philips_hue_delete_light` | Integrations | MODERATE | Delete a Philips Hue light |
+| 470 | `activecampaign_list_contacts` | Integrations | SAFE | List ActiveCampaign contacts |
+| 471 | `activecampaign_get_contact` | Integrations | SAFE | Get an ActiveCampaign contact |
+| 472 | `activecampaign_sync_contact` | Integrations | MODERATE | Create or update an ActiveCampaign contact |
+| 473 | `activecampaign_update_contact` | Integrations | MODERATE | Update an ActiveCampaign contact |
+| 474 | `activecampaign_list_lists` | Integrations | SAFE | List ActiveCampaign lists |
+| 475 | `activecampaign_list_tags` | Integrations | SAFE | List ActiveCampaign tags |
+| 476 | `activecampaign_add_contact_to_list` | Integrations | MODERATE | Subscribe or unsubscribe an ActiveCampaign contact to a list |
+| 477 | `activecampaign_add_contact_tag` | Integrations | MODERATE | Add an ActiveCampaign tag to a contact |
+| 478 | `convertkit_get_account` | Integrations | SAFE | Get ConvertKit account details |
+| 479 | `convertkit_list_forms` | Integrations | SAFE | List ConvertKit forms |
+| 480 | `convertkit_list_tags` | Integrations | SAFE | List ConvertKit tags |
+| 481 | `convertkit_list_subscribers` | Integrations | SAFE | List ConvertKit subscribers |
+| 482 | `convertkit_add_subscriber_to_form` | Integrations | MODERATE | Subscribe an email address to a ConvertKit form |
+| 483 | `convertkit_add_subscriber_to_tag` | Integrations | MODERATE | Subscribe an email address to a ConvertKit tag |
+| 484 | `getresponse_list_campaigns` | Integrations | SAFE | List GetResponse campaigns |
+| 485 | `getresponse_list_contacts` | Integrations | SAFE | List GetResponse contacts |
+| 486 | `getresponse_get_contact` | Integrations | SAFE | Get a GetResponse contact |
+| 487 | `getresponse_create_contact` | Integrations | MODERATE | Create a GetResponse contact |
+| 488 | `getresponse_update_contact` | Integrations | MODERATE | Update a GetResponse contact |
+| 489 | `getresponse_delete_contact` | Integrations | MODERATE | Delete a GetResponse contact |
+| 490 | `mailerlite_list_subscribers` | Integrations | SAFE | List MailerLite subscribers |
+| 491 | `mailerlite_get_subscriber` | Integrations | SAFE | Get a MailerLite subscriber |
+| 492 | `mailerlite_create_subscriber` | Integrations | MODERATE | Create a MailerLite subscriber |
+| 493 | `mailerlite_update_subscriber` | Integrations | MODERATE | Update a MailerLite subscriber |
+| 494 | `mailerlite_list_groups` | Integrations | SAFE | List MailerLite groups |
+| 495 | `copper_list_records` | Integrations | SAFE | List Copper CRM records |
+| 496 | `copper_get_record` | Integrations | SAFE | Get a Copper CRM record |
+| 497 | `copper_create_record` | Integrations | MODERATE | Create a Copper CRM record |
+| 498 | `copper_update_record` | Integrations | MODERATE | Update a Copper CRM record |
+| 499 | `copper_delete_record` | Integrations | MODERATE | Delete a Copper CRM record |
+| 500 | `agilecrm_list_records` | Integrations | SAFE | List Agile CRM records |
+| 501 | `agilecrm_get_record` | Integrations | SAFE | Get an Agile CRM record |
+| 502 | `agilecrm_create_record` | Integrations | MODERATE | Create an Agile CRM record |
+| 503 | `agilecrm_update_record` | Integrations | MODERATE | Update an Agile CRM record |
+| 504 | `agilecrm_delete_record` | Integrations | MODERATE | Delete an Agile CRM record |
+| 505 | `monica_list_records` | Integrations | SAFE | List Monica CRM records |
+| 506 | `monica_get_record` | Integrations | SAFE | Get a Monica CRM record |
+| 507 | `monica_create_record` | Integrations | MODERATE | Create a Monica CRM record |
+| 508 | `monica_update_record` | Integrations | MODERATE | Update a Monica CRM record |
+| 509 | `monica_delete_record` | Integrations | MODERATE | Delete a Monica CRM record |
+| 510 | `plivo_send_message` | Integrations | MODERATE | Send SMS or MMS messages with Plivo |
+| 511 | `plivo_get_account` | Integrations | SAFE | Get Plivo account metadata |
+| 512 | `vonage_send_sms` | Integrations | MODERATE | Send SMS messages with Vonage |
+| 513 | `vonage_get_balance` | Integrations | SAFE | Get Vonage account balance |
+| 514 | `seven_send_sms` | Integrations | MODERATE | Send SMS messages with seven.io |
+| 515 | `seven_get_balance` | Integrations | SAFE | Get seven.io account balance |
+| 516 | `raindrop_list_bookmarks` | Integrations | SAFE | List Raindrop bookmarks |
+| 517 | `raindrop_get_bookmark` | Integrations | SAFE | Get a Raindrop bookmark |
+| 518 | `raindrop_create_bookmark` | Integrations | MODERATE | Create a Raindrop bookmark |
+| 519 | `raindrop_update_bookmark` | Integrations | MODERATE | Update a Raindrop bookmark |
+| 520 | `raindrop_delete_bookmark` | Integrations | MODERATE | Delete a Raindrop bookmark |
+| 521 | `raindrop_list_collections` | Integrations | SAFE | List Raindrop collections |
+| 522 | `raindrop_get_collection` | Integrations | SAFE | Get a Raindrop collection |
+| 523 | `raindrop_list_tags` | Integrations | SAFE | List Raindrop tags |
+| 524 | `raindrop_delete_tags` | Integrations | MODERATE | Delete Raindrop tags |
+| 525 | `raindrop_get_user` | Integrations | SAFE | Get Raindrop user metadata |
+| 526 | `yourls_shorten_url` | Integrations | MODERATE | Create a short URL with YOURLS |
+| 527 | `yourls_expand_url` | Integrations | SAFE | Expand a YOURLS short URL |
+| 528 | `yourls_get_url_stats` | Integrations | SAFE | Get YOURLS short URL stats |
+| 529 | `yourls_get_db_stats` | Integrations | SAFE | Get YOURLS database stats |
+| 530 | `circleci_list_pipelines` | Integrations | SAFE | List CircleCI pipelines |
+| 531 | `circleci_get_pipeline` | Integrations | SAFE | Get a CircleCI pipeline |
+| 532 | `circleci_trigger_pipeline` | Integrations | MODERATE | Trigger a CircleCI pipeline |
+| 533 | `travisci_list_builds` | Integrations | SAFE | List Travis CI builds |
+| 534 | `travisci_get_build` | Integrations | SAFE | Get a Travis CI build |
+| 535 | `travisci_trigger_build` | Integrations | MODERATE | Trigger a Travis CI build |
+| 536 | `travisci_restart_build` | Integrations | MODERATE | Restart a Travis CI build |
+| 537 | `travisci_cancel_build` | Integrations | MODERATE | Cancel a Travis CI build |
+| 538 | `jenkins_get_instance` | Integrations | SAFE | Get Jenkins instance metadata |
+| 539 | `jenkins_list_jobs` | Integrations | SAFE | List Jenkins jobs |
+| 540 | `jenkins_list_job_builds` | Integrations | SAFE | List Jenkins job builds |
+| 541 | `jenkins_trigger_job` | Integrations | MODERATE | Trigger a Jenkins job |
+| 542 | `jenkins_trigger_job_with_parameters` | Integrations | MODERATE | Trigger a parameterized Jenkins job |
+| 543 | `jenkins_copy_job` | Integrations | MODERATE | Copy a Jenkins job |
+| 544 | `jenkins_create_job` | Integrations | MODERATE | Create a Jenkins job |
+| 545 | `jenkins_quiet_down` | Integrations | MODERATE | Put Jenkins into quiet-down mode |
+| 546 | `jenkins_cancel_quiet_down` | Integrations | MODERATE | Cancel Jenkins quiet-down mode |
+| 547 | `jenkins_restart_instance` | Integrations | MODERATE | Restart a Jenkins instance |
+| 548 | `jenkins_shutdown_instance` | Integrations | MODERATE | Shut down a Jenkins instance |
+| 549 | `dropbox_get_current_account` | Integrations | SAFE | Get Dropbox account metadata |
+| 550 | `dropbox_get_metadata` | Integrations | SAFE | Get Dropbox file or folder metadata |
+| 551 | `dropbox_list_folder` | Integrations | SAFE | List Dropbox folder entries |
+| 552 | `dropbox_search` | Integrations | SAFE | Search Dropbox files and folders |
+| 553 | `dropbox_download_file` | Integrations | SAFE | Download a Dropbox file preview |
+| 554 | `dropbox_upload_text_file` | Integrations | MODERATE | Upload a text file to Dropbox |
+| 555 | `dropbox_create_folder` | Integrations | MODERATE | Create a Dropbox folder |
+| 556 | `dropbox_copy_path` | Integrations | MODERATE | Copy a Dropbox file or folder |
+| 557 | `dropbox_move_path` | Integrations | MODERATE | Move or rename a Dropbox file or folder |
+| 558 | `dropbox_delete_path` | Integrations | MODERATE | Delete a Dropbox file or folder |
+| 559 | `nextcloud_list_folder` | Integrations | SAFE | List Nextcloud folder entries |
+| 560 | `nextcloud_download_file` | Integrations | SAFE | Download a Nextcloud file preview |
+| 561 | `nextcloud_upload_text_file` | Integrations | MODERATE | Upload a text file to Nextcloud |
+| 562 | `nextcloud_create_folder` | Integrations | MODERATE | Create a Nextcloud folder |
+| 563 | `nextcloud_copy_path` | Integrations | MODERATE | Copy a Nextcloud file or folder |
+| 564 | `nextcloud_move_path` | Integrations | MODERATE | Move or rename a Nextcloud file or folder |
+| 565 | `nextcloud_delete_path` | Integrations | MODERATE | Delete a Nextcloud file or folder |
+| 566 | `nextcloud_list_users` | Integrations | SAFE | List Nextcloud users |
+| 567 | `nextcloud_get_user` | Integrations | SAFE | Get Nextcloud user metadata |
+| 568 | `s3_list_buckets` | Integrations | SAFE | List S3 buckets |
+| 569 | `s3_list_objects` | Integrations | SAFE | List S3 objects |
+| 570 | `s3_get_object_text` | Integrations | SAFE | Download an S3 object preview |
+| 571 | `s3_upload_text_object` | Integrations | MODERATE | Upload a text object to S3 |
+| 572 | `s3_copy_object` | Integrations | MODERATE | Copy an S3 object |
+| 573 | `s3_delete_object` | Integrations | MODERATE | Delete an S3 object |
+| 574 | `s3_create_folder` | Integrations | MODERATE | Create an S3 folder marker object |
+| 575 | `s3_create_bucket` | Integrations | MODERATE | Create an S3 bucket |
+| 576 | `s3_delete_bucket` | Integrations | MODERATE | Delete an empty S3 bucket |
+| 577 | `clearbit_enrich_company` | Integrations | MODERATE | Enrich company data from a domain |
+| 578 | `clearbit_autocomplete_company` | Integrations | MODERATE | Autocomplete company names and domains |
+| 579 | `clearbit_enrich_person` | Integrations | MODERATE | Enrich person data from an email address |
+| 580 | `uplead_enrich_company` | Integrations | MODERATE | Enrich company data by domain or name |
+| 581 | `uplead_enrich_person` | Integrations | MODERATE | Enrich person data by email or identity hints |
+| 582 | `dropcontact_submit_enrichment` | Integrations | MODERATE | Submit a contact enrichment request |
+| 583 | `dropcontact_fetch_request` | Integrations | MODERATE | Fetch a submitted enrichment request |
+| 584 | `humantic_create_profile` | Integrations | MODERATE | Create a contact-intelligence profile |
+| 585 | `humantic_get_profile` | Integrations | MODERATE | Get a contact-intelligence profile |
+| 586 | `humantic_update_profile_text` | Integrations | MODERATE | Update a profile with additional text |
+| 587 | `lonescale_create_list` | Integrations | MODERATE | Create a prospecting list |
+| 588 | `lonescale_add_people_item` | Integrations | MODERATE | Add a person to a prospecting list |
+| 589 | `lonescale_add_company_item` | Integrations | MODERATE | Add a company to a prospecting list |
+| 590 | `uproc_get_profile` | Integrations | MODERATE | Get the saved enrichment account profile |
+| 591 | `uproc_process` | Integrations | MODERATE | Run an enrichment processor with explicit JSON parameters |
+| 592 | `datetime_current` | Integrations | SAFE | Get the current date or time |
+| 593 | `datetime_add` | Integrations | SAFE | Add a duration to a date/time |
+| 594 | `datetime_subtract` | Integrations | SAFE | Subtract a duration from a date/time |
+| 595 | `datetime_format` | Integrations | SAFE | Parse and format a date/time |
+| 596 | `datetime_between` | Integrations | SAFE | Get the time difference between two dates |
+| 597 | `datetime_extract` | Integrations | SAFE | Extract part of a date/time |
+| 598 | `datetime_round` | Integrations | SAFE | Round a date/time to a calendar boundary |
+| 599 | `crypto_hash_text` | Integrations | SAFE | Hash text locally |
+| 600 | `crypto_hmac_text` | Integrations | MODERATE | Create an HMAC with a saved secret |
+| 601 | `crypto_generate_random` | Integrations | SAFE | Generate a random UUID or string |
+| 602 | `crypto_sign_text` | Integrations | MODERATE | Sign text with a saved private key |
+| 603 | `jwt_decode_token` | Integrations | SAFE | Decode a JWT without verification |
+| 604 | `jwt_sign_claims` | Integrations | MODERATE | Sign JWT claims with saved credentials |
+| 605 | `jwt_verify_token` | Integrations | MODERATE | Verify a JWT with saved credentials |
+| 606 | `compression_gzip_text` | Integrations | SAFE | Gzip text and return base64 |
+| 607 | `compression_gunzip_text` | Integrations | SAFE | Decompress base64 gzip text |
+| 608 | `compression_zip_text_files` | Integrations | SAFE | Create a base64 zip from text files |
+| 609 | `compression_unzip_text_files` | Integrations | SAFE | Extract base64 zip text files |
+| 610 | `aws_lambda_list_functions` | Integrations | SAFE | List AWS Lambda functions |
+| 611 | `aws_lambda_invoke` | Integrations | MODERATE | Invoke an AWS Lambda function |
+| 612 | `aws_sns_list_topics` | Integrations | SAFE | List AWS SNS topics |
+| 613 | `aws_sns_create_topic` | Integrations | MODERATE | Create an AWS SNS topic |
+| 614 | `aws_sns_publish` | Integrations | MODERATE | Publish a message to an AWS SNS topic |
+| 615 | `aws_sns_delete_topic` | Integrations | MODERATE | Delete an AWS SNS topic |
+| 616 | `aws_ses_send_email` | Integrations | MODERATE | Send email with Amazon SES |
+| 617 | `aws_ses_list_identities` | Integrations | SAFE | List Amazon SES identities |
+| 618 | `aws_ses_verify_email_identity` | Integrations | MODERATE | Start Amazon SES email identity verification |
+| 619 | `aws_ses_list_templates` | Integrations | SAFE | List Amazon SES email templates |
+| 620 | `aws_ses_get_template` | Integrations | SAFE | Get an Amazon SES email template |
+| 621 | `aws_ses_create_template` | Integrations | MODERATE | Create an Amazon SES email template |
+| 622 | `aws_ses_update_template` | Integrations | MODERATE | Update an Amazon SES email template |
+| 623 | `aws_ses_delete_template` | Integrations | MODERATE | Delete an Amazon SES email template |
+| 624 | `aws_textract_analyze_expense` | Integrations | MODERATE | Analyze a receipt or invoice with Amazon Textract |
+| 625 | `aws_transcribe_start_job` | Integrations | MODERATE | Start an Amazon Transcribe transcription job |
+| 626 | `aws_transcribe_get_job` | Integrations | SAFE | Get an Amazon Transcribe job |
+| 627 | `aws_transcribe_list_jobs` | Integrations | SAFE | List Amazon Transcribe jobs |
+| 628 | `aws_transcribe_delete_job` | Integrations | MODERATE | Delete an Amazon Transcribe job |
+| 629 | `freshservice_list_tickets` | Integrations | SAFE | List Freshservice tickets |
+| 630 | `freshservice_get_ticket` | Integrations | SAFE | Get a Freshservice ticket |
+| 631 | `freshservice_create_ticket` | Integrations | MODERATE | Create a Freshservice ticket |
+| 632 | `freshservice_update_ticket` | Integrations | MODERATE | Update a Freshservice ticket |
+| 633 | `freshservice_list_requesters` | Integrations | SAFE | List Freshservice requesters |
+| 634 | `freshservice_get_requester` | Integrations | SAFE | Get a Freshservice requester |
+| 635 | `servicenow_list_records` | Integrations | SAFE | List ServiceNow table records |
+| 636 | `servicenow_get_record` | Integrations | SAFE | Get a ServiceNow table record |
+| 637 | `servicenow_create_record` | Integrations | MODERATE | Create a ServiceNow table record |
+| 638 | `servicenow_update_record` | Integrations | MODERATE | Update a ServiceNow table record |
+| 639 | `servicenow_delete_record` | Integrations | MODERATE | Delete a ServiceNow table record |
+| 640 | `zammad_list_records` | Integrations | SAFE | List or search Zammad tickets, users, organizations, or groups |
+| 641 | `zammad_get_record` | Integrations | SAFE | Get a Zammad ticket, user, organization, or group |
+| 642 | `zammad_create_record` | Integrations | MODERATE | Create a Zammad ticket, user, organization, or group |
+| 643 | `zammad_update_record` | Integrations | MODERATE | Update a Zammad ticket, user, organization, or group |
+| 644 | `supabase_list_rows` | Integrations | SAFE | List rows from a Supabase table |
+| 645 | `supabase_insert_rows` | Integrations | MODERATE | Insert rows into a Supabase table |
+| 646 | `supabase_update_rows` | Integrations | MODERATE | Update Supabase rows matching a filter |
+| 647 | `supabase_delete_rows` | Integrations | MODERATE | Delete Supabase rows matching a filter |
+| 648 | `quickbase_list_fields` | Integrations | SAFE | List fields for a Quickbase table |
+| 649 | `quickbase_query_records` | Integrations | SAFE | Query Quickbase records |
+| 650 | `quickbase_upsert_records` | Integrations | MODERATE | Create or update Quickbase records |
+| 651 | `quickbase_delete_records` | Integrations | MODERATE | Delete Quickbase records matching a where clause |
+| 652 | `seatable_get_metadata` | Integrations | SAFE | Get SeaTable base metadata |
+| 653 | `seatable_list_rows` | Integrations | SAFE | List SeaTable rows |
+| 654 | `seatable_get_row` | Integrations | SAFE | Get a SeaTable row by ID |
+| 655 | `seatable_create_row` | Integrations | MODERATE | Create a SeaTable row |
+| 656 | `seatable_update_row` | Integrations | MODERATE | Update a SeaTable row |
+| 657 | `seatable_delete_row` | Integrations | MODERATE | Delete a SeaTable row |
+| 658 | `stackby_list_rows` | Integrations | SAFE | List Stackby rows |
+| 659 | `stackby_get_row` | Integrations | SAFE | Get a Stackby row by ID |
+| 660 | `stackby_create_rows` | Integrations | MODERATE | Create Stackby rows |
+| 661 | `stackby_delete_rows` | Integrations | MODERATE | Delete Stackby rows |
+| 662 | `salesforce_query_records` | Integrations | SAFE | Run a Salesforce SOQL SELECT query |
+| 663 | `salesforce_get_record` | Integrations | SAFE | Get a Salesforce object record |
+| 664 | `salesforce_create_record` | Integrations | MODERATE | Create a Salesforce object record |
+| 665 | `salesforce_update_record` | Integrations | MODERATE | Update a Salesforce object record |
+| 666 | `salesforce_delete_record` | Integrations | MODERATE | Delete a Salesforce object record |
+| 667 | `zoho_crm_list_records` | Integrations | SAFE | List Zoho CRM module records |
+| 668 | `zoho_crm_search_records` | Integrations | SAFE | Search Zoho CRM module records |
+| 669 | `zoho_crm_get_record` | Integrations | SAFE | Get a Zoho CRM module record |
+| 670 | `zoho_crm_create_records` | Integrations | MODERATE | Create Zoho CRM module records |
+| 671 | `zoho_crm_update_record` | Integrations | MODERATE | Update a Zoho CRM module record |
+| 672 | `zoho_crm_delete_record` | Integrations | MODERATE | Delete a Zoho CRM module record |
+| 673 | `freshworks_crm_list_records` | Integrations | SAFE | List Freshworks CRM records |
+| 674 | `freshworks_crm_search_records` | Integrations | SAFE | Search Freshworks CRM records |
+| 675 | `freshworks_crm_get_record` | Integrations | SAFE | Get a Freshworks CRM record |
+| 676 | `freshworks_crm_create_record` | Integrations | MODERATE | Create a Freshworks CRM record |
+| 677 | `freshworks_crm_update_record` | Integrations | MODERATE | Update a Freshworks CRM record |
+| 678 | `freshworks_crm_delete_record` | Integrations | MODERATE | Delete a Freshworks CRM record |
+| 679 | `salesmate_list_users` | Integrations | SAFE | List active Salesmate users |
+| 680 | `salesmate_search_records` | Integrations | SAFE | Search Salesmate records |
+| 681 | `salesmate_get_record` | Integrations | SAFE | Get a Salesmate record |
+| 682 | `salesmate_create_record` | Integrations | MODERATE | Create a Salesmate record |
+| 683 | `salesmate_update_record` | Integrations | MODERATE | Update a Salesmate record |
+| 684 | `salesmate_delete_record` | Integrations | MODERATE | Delete a Salesmate record |
+| 685 | `customerio_list_campaigns` | Integrations | SAFE | List Customer.io campaigns |
+| 686 | `customerio_get_campaign` | Integrations | SAFE | Get a Customer.io campaign |
+| 687 | `customerio_upsert_customer` | Integrations | MODERATE | Create or update a Customer.io customer profile |
+| 688 | `customerio_track_event` | Integrations | MODERATE | Track a Customer.io event for a known customer |
+| 689 | `customerio_track_anonymous_event` | Integrations | MODERATE | Track a Customer.io anonymous event |
+| 690 | `customerio_update_segment` | Integrations | MODERATE | Add or remove customers from a Customer.io manual segment |
+| 691 | `iterable_list_lists` | Integrations | SAFE | List Iterable static lists |
+| 692 | `iterable_get_user` | Integrations | SAFE | Get an Iterable user by email or user ID |
+| 693 | `iterable_upsert_user` | Integrations | MODERATE | Create or update an Iterable user |
+| 694 | `iterable_track_event` | Integrations | MODERATE | Track an Iterable event |
+| 695 | `iterable_update_list_subscribers` | Integrations | MODERATE | Subscribe or unsubscribe Iterable list members |
+| 696 | `posthog_capture_event` | Integrations | MODERATE | Capture a PostHog event |
+| 697 | `posthog_identify` | Integrations | MODERATE | Identify a PostHog user |
+| 698 | `posthog_create_alias` | Integrations | MODERATE | Create a PostHog alias |
+| 699 | `posthog_track_page_or_screen` | Integrations | MODERATE | Track a PostHog page or screen view |
+| 700 | `segment_identify` | Integrations | MODERATE | Send a Segment identify call |
+| 701 | `segment_track` | Integrations | MODERATE | Send a Segment track event |
+| 702 | `segment_group` | Integrations | MODERATE | Send a Segment group call |
+| 703 | `telegram_get_me` | Integrations | SAFE | Get the Telegram bot profile |
+| 704 | `telegram_get_chat` | Integrations | SAFE | Get Telegram chat metadata |
+| 705 | `telegram_send_message` | Integrations | MODERATE | Send a Telegram text message |
+| 706 | `telegram_delete_message` | Integrations | MODERATE | Delete a Telegram message |
+| 707 | `webex_list_rooms` | Integrations | SAFE | List Webex rooms |
+| 708 | `webex_get_room` | Integrations | SAFE | Get Webex room metadata |
+| 709 | `webex_list_messages` | Integrations | SAFE | List Webex messages |
+| 710 | `webex_get_message` | Integrations | SAFE | Get a Webex message |
+| 711 | `webex_send_message` | Integrations | MODERATE | Send a Webex message |
+| 712 | `webex_delete_message` | Integrations | MODERATE | Delete a Webex message |
+| 713 | `whatsapp_list_phone_numbers` | Integrations | SAFE | List WhatsApp Business Cloud phone numbers |
+| 714 | `whatsapp_send_text_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud text message |
+| 715 | `whatsapp_send_template_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud template message |
+| 716 | `whatsapp_get_media_url` | Integrations | SAFE | Get a WhatsApp Business Cloud media URL |
+| 717 | `whatsapp_delete_media` | Integrations | MODERATE | Delete WhatsApp Business Cloud media |
+| 718 | `graphql_execute_query` | Integrations | MODERATE | Execute a GraphQL query or mutation against an explicit or saved endpoint |
+| 719 | `totp_generate_code` | Integrations | MODERATE | Generate a TOTP code from a saved secret |
+| 720 | `totp_verify_code` | Integrations | MODERATE | Verify a TOTP code against a saved secret |
+| 721 | `lingvanex_translate_text` | Integrations | MODERATE | Translate text with LingvaNex |
+| 722 | `lingvanex_list_languages` | Integrations | SAFE | List LingvaNex supported languages |
+| 723 | `apitemplate_list_templates` | Integrations | SAFE | List APITemplate templates |
+| 724 | `apitemplate_get_account` | Integrations | SAFE | Get APITemplate account information |
+| 725 | `apitemplate_create_image` | Integrations | MODERATE | Create an image from an APITemplate image template |
+| 726 | `apitemplate_create_pdf` | Integrations | MODERATE | Create a PDF from an APITemplate PDF template |
+| 727 | `onesimple_create_pdf` | Integrations | MODERATE | Create a PDF URL for a webpage |
+| 728 | `onesimple_create_screenshot` | Integrations | MODERATE | Create a screenshot URL for a webpage |
+| 729 | `onesimple_get_page_info` | Integrations | MODERATE | Get webpage SEO and metadata |
+| 730 | `onesimple_get_exchange_rate` | Integrations | MODERATE | Convert a currency amount |
+| 731 | `onesimple_get_image_metadata` | Integrations | MODERATE | Get image metadata from an image URL |
+| 732 | `onesimple_validate_email` | Integrations | MODERATE | Validate an email address |
+| 733 | `onesimple_expand_url` | Integrations | MODERATE | Expand a shortened URL |
+| 734 | `onesimple_create_qr_code` | Integrations | MODERATE | Create a QR-code image URL |
+| 735 | `paddle_list_products` | Integrations | SAFE | List Paddle products |
+| 736 | `paddle_list_plans` | Integrations | SAFE | List Paddle subscription plans |
+| 737 | `paddle_list_subscription_users` | Integrations | SAFE | List Paddle subscription users |
+| 738 | `paddle_list_payments` | Integrations | SAFE | List Paddle subscription payments |
+| 739 | `paddle_get_order` | Integrations | SAFE | Get a Paddle order by checkout ID |
+| 740 | `paddle_list_coupons` | Integrations | SAFE | List Paddle coupons for a product |
+| 741 | `paddle_create_coupon` | Integrations | MODERATE | Create Paddle coupon codes |
+| 742 | `paddle_update_coupon` | Integrations | MODERATE | Update Paddle coupon metadata |
+| 743 | `paddle_reschedule_payment` | Integrations | MODERATE | Reschedule a Paddle subscription payment |
+| 744 | `profitwell_get_settings` | Integrations | SAFE | Get ProfitWell account settings |
+| 745 | `profitwell_get_metrics` | Integrations | SAFE | Get ProfitWell daily or monthly metrics |
+| 746 | `tapfiliate_list_affiliates` | Integrations | SAFE | List Tapfiliate affiliates |
+| 747 | `tapfiliate_get_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate |
+| 748 | `tapfiliate_create_affiliate` | Integrations | MODERATE | Create a Tapfiliate affiliate |
+| 749 | `tapfiliate_delete_affiliate` | Integrations | MODERATE | Delete a Tapfiliate affiliate |
+| 750 | `tapfiliate_add_affiliate_metadata` | Integrations | MODERATE | Add metadata fields to a Tapfiliate affiliate |
+| 751 | `tapfiliate_remove_affiliate_metadata` | Integrations | MODERATE | Remove a Tapfiliate affiliate metadata field |
+| 752 | `tapfiliate_update_affiliate_metadata` | Integrations | MODERATE | Update a Tapfiliate affiliate metadata field |
+| 753 | `tapfiliate_list_program_affiliates` | Integrations | SAFE | List affiliates in a Tapfiliate program |
+| 754 | `tapfiliate_get_program_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate in a program |
+| 755 | `tapfiliate_add_program_affiliate` | Integrations | MODERATE | Add a Tapfiliate affiliate to a program |
+| 756 | `tapfiliate_approve_program_affiliate` | Integrations | MODERATE | Approve a Tapfiliate affiliate for a program |
+| 757 | `tapfiliate_disapprove_program_affiliate` | Integrations | MODERATE | Disapprove a Tapfiliate affiliate for a program |
+| 758 | `actionnetwork_list_records` | Integrations | SAFE | List Action Network events, people, petitions, tags, attendances, signatures, or taggings |
+| 759 | `actionnetwork_get_record` | Integrations | SAFE | Get an Action Network record by ID |
+| 760 | `actionnetwork_create_person` | Integrations | MODERATE | Create an Action Network person |
+| 761 | `actionnetwork_update_person` | Integrations | MODERATE | Update an Action Network person |
+| 762 | `actionnetwork_create_event` | Integrations | MODERATE | Create an Action Network event |
+| 763 | `actionnetwork_create_petition` | Integrations | MODERATE | Create an Action Network petition |
+| 764 | `actionnetwork_create_attendance` | Integrations | MODERATE | Create an Action Network attendance |
+| 765 | `actionnetwork_create_signature` | Integrations | MODERATE | Create an Action Network petition signature |
+| 766 | `actionnetwork_add_person_tag` | Integrations | MODERATE | Tag an Action Network person |
+| 767 | `actionnetwork_remove_person_tag` | Integrations | MODERATE | Remove an Action Network person tag |
+| 768 | `autopilot_list_contacts` | Integrations | SAFE | List Autopilot contacts |
+| 769 | `autopilot_get_contact` | Integrations | SAFE | Get an Autopilot contact |
+| 770 | `autopilot_upsert_contact` | Integrations | MODERATE | Create or update an Autopilot contact |
+| 771 | `autopilot_delete_contact` | Integrations | MODERATE | Delete an Autopilot contact |
+| 772 | `autopilot_list_lists` | Integrations | SAFE | List Autopilot lists |
+| 773 | `autopilot_create_list` | Integrations | MODERATE | Create an Autopilot list |
+| 774 | `autopilot_update_contact_list_membership` | Integrations | MODERATE | Add, remove, or check Autopilot list membership |
+| 775 | `autopilot_add_contact_to_journey` | Integrations | MODERATE | Add an Autopilot contact to a journey trigger |
+| 776 | `egoi_list_lists` | Integrations | SAFE | List E-goi lists |
+| 777 | `egoi_list_contacts` | Integrations | SAFE | List E-goi contacts |
+| 778 | `egoi_get_contact` | Integrations | SAFE | Get an E-goi contact |
+| 779 | `egoi_create_contact` | Integrations | MODERATE | Create an E-goi contact |
+| 780 | `egoi_update_contact` | Integrations | MODERATE | Update an E-goi contact |
+| 781 | `vero_identify_user` | Integrations | MODERATE | Create or update a Vero user profile |
+| 782 | `vero_alias_user` | Integrations | MODERATE | Alias a Vero user ID |
+| 783 | `vero_update_user_subscription` | Integrations | MODERATE | Unsubscribe, resubscribe, or delete a Vero user |
+| 784 | `vero_update_user_tags` | Integrations | MODERATE | Add or remove Vero user tags |
+| 785 | `vero_track_event` | Integrations | MODERATE | Track a Vero event |
+| 786 | `adalo_list_records` | Integrations | SAFE | List Adalo collection records |
+| 787 | `adalo_get_record` | Integrations | SAFE | Get an Adalo collection record |
+| 788 | `adalo_create_record` | Integrations | MODERATE | Create an Adalo collection record |
+| 789 | `adalo_update_record` | Integrations | MODERATE | Update an Adalo collection record |
+| 790 | `adalo_delete_record` | Integrations | MODERATE | Delete an Adalo collection record |
+| 791 | `bubble_list_objects` | Integrations | SAFE | List Bubble Data API objects |
+| 792 | `bubble_get_object` | Integrations | SAFE | Get a Bubble Data API object |
+| 793 | `bubble_create_object` | Integrations | MODERATE | Create a Bubble Data API object |
+| 794 | `bubble_update_object` | Integrations | MODERATE | Update a Bubble Data API object |
+| 795 | `bubble_delete_object` | Integrations | MODERATE | Delete a Bubble Data API object |
+| 796 | `cockpit_list_collections` | Integrations | SAFE | List Cockpit collection names |
+| 797 | `cockpit_list_collection_entries` | Integrations | SAFE | List Cockpit collection entries |
+| 798 | `cockpit_save_collection_entry` | Integrations | MODERATE | Create or update a Cockpit collection entry |
+| 799 | `cockpit_list_singletons` | Integrations | SAFE | List Cockpit singleton names |
+| 800 | `cockpit_get_singleton` | Integrations | SAFE | Get a Cockpit singleton |
+| 801 | `cockpit_submit_form` | Integrations | MODERATE | Submit a Cockpit form |
+| 802 | `monday_get_me` | Integrations | SAFE | Get the current Monday user |
+| 803 | `monday_list_boards` | Integrations | SAFE | List Monday boards |
+| 804 | `monday_get_board` | Integrations | SAFE | Get a Monday board by ID |
+| 805 | `monday_create_board` | Integrations | MODERATE | Create a Monday board |
+| 806 | `monday_archive_board` | Integrations | MODERATE | Archive a Monday board |
+| 807 | `monday_list_board_columns` | Integrations | SAFE | List Monday board columns |
+| 808 | `monday_create_board_column` | Integrations | MODERATE | Create a Monday board column |
+| 809 | `monday_list_board_groups` | Integrations | SAFE | List Monday board groups |
+| 810 | `monday_create_board_group` | Integrations | MODERATE | Create a Monday board group |
+| 811 | `monday_list_items` | Integrations | SAFE | List Monday board items |
+| 812 | `monday_get_item` | Integrations | SAFE | Get Monday items by ID |
+| 813 | `monday_create_item` | Integrations | MODERATE | Create a Monday item |
+| 814 | `monday_update_item_columns` | Integrations | MODERATE | Update Monday item column values |
+| 815 | `monday_add_item_update` | Integrations | MODERATE | Add an update/comment to a Monday item |
+| 816 | `monday_move_item` | Integrations | MODERATE | Move a Monday item to another group |
+| 817 | `monday_delete_item` | Integrations | MODERATE | Delete a Monday item |
+| 818 | `taiga_list_projects` | Integrations | SAFE | List Taiga projects |
+| 819 | `taiga_list_records` | Integrations | SAFE | List Taiga epics, issues, tasks, or user stories |
+| 820 | `taiga_get_record` | Integrations | SAFE | Get a Taiga epic, issue, task, or user story |
+| 821 | `taiga_create_record` | Integrations | MODERATE | Create a Taiga epic, issue, task, or user story |
+| 822 | `taiga_update_record` | Integrations | MODERATE | Update a Taiga epic, issue, task, or user story |
+| 823 | `taiga_delete_record` | Integrations | MODERATE | Delete a Taiga epic, issue, task, or user story |
+| 824 | `wekan_get_current_user` | Integrations | SAFE | Get the current Wekan user |
+| 825 | `wekan_list_users` | Integrations | SAFE | List Wekan users |
+| 826 | `wekan_list_user_boards` | Integrations | SAFE | List Wekan boards for a user |
+| 827 | `wekan_get_board` | Integrations | SAFE | Get a Wekan board by ID |
+| 828 | `wekan_create_board` | Integrations | MODERATE | Create a Wekan board |
+| 829 | `wekan_delete_board` | Integrations | MODERATE | Delete a Wekan board |
+| 830 | `wekan_list_lists` | Integrations | SAFE | List Wekan lists on a board |
+| 831 | `wekan_create_list` | Integrations | MODERATE | Create a Wekan list |
+| 832 | `wekan_delete_list` | Integrations | MODERATE | Delete a Wekan list |
+| 833 | `wekan_list_cards` | Integrations | SAFE | List Wekan cards from a list or swimlane |
+| 834 | `wekan_get_card` | Integrations | SAFE | Get a Wekan card by ID |
+| 835 | `wekan_create_card` | Integrations | MODERATE | Create a Wekan card |
+| 836 | `wekan_update_card` | Integrations | MODERATE | Update a Wekan card |
+| 837 | `wekan_delete_card` | Integrations | MODERATE | Delete a Wekan card |
+| 838 | `wekan_list_card_comments` | Integrations | SAFE | List comments on a Wekan card |
+| 839 | `wekan_add_card_comment` | Integrations | MODERATE | Add a comment to a Wekan card |
+| 840 | `erpnext_get_logged_user` | Integrations | SAFE | Get the current ERPNext user |
+| 841 | `erpnext_list_documents` | Integrations | SAFE | List ERPNext documents for a DocType |
+| 842 | `erpnext_get_document` | Integrations | SAFE | Get an ERPNext document by DocType and document name |
+| 843 | `erpnext_create_document` | Integrations | MODERATE | Create an ERPNext document |
+| 844 | `erpnext_update_document` | Integrations | MODERATE | Update an ERPNext document |
+| 845 | `erpnext_delete_document` | Integrations | MODERATE | Delete an ERPNext document |
+| 846 | `odoo_get_server_version` | Integrations | SAFE | Get the Odoo server version |
+| 847 | `odoo_list_records` | Integrations | SAFE | List Odoo records from a model |
+| 848 | `odoo_get_record` | Integrations | SAFE | Get an Odoo record by ID |
+| 849 | `odoo_create_record` | Integrations | MODERATE | Create an Odoo record |
+| 850 | `odoo_update_record` | Integrations | MODERATE | Update an Odoo record |
+| 851 | `odoo_delete_record` | Integrations | MODERATE | Delete an Odoo record |
+| 852 | `invoiceninja_list_records` | Integrations | SAFE | List Invoice Ninja records |
+| 853 | `invoiceninja_get_record` | Integrations | SAFE | Get an Invoice Ninja record by ID |
+| 854 | `invoiceninja_create_record` | Integrations | MODERATE | Create an Invoice Ninja record |
+| 855 | `invoiceninja_delete_record` | Integrations | MODERATE | Delete an Invoice Ninja record |
+| 856 | `invoiceninja_email_invoice_or_quote` | Integrations | MODERATE | Email an Invoice Ninja invoice or quote |
+| 857 | `demio_list_events` | Integrations | SAFE | List Demio events |
+| 858 | `demio_get_event` | Integrations | SAFE | Get a Demio event or event date/session |
+| 859 | `demio_register_event` | Integrations | MODERATE | Register a Demio event attendee |
+| 860 | `demio_get_session_participants` | Integrations | SAFE | Get Demio participant report rows |
+| 861 | `zoom_list_meetings` | Integrations | SAFE | List Zoom meetings |
+| 862 | `zoom_get_meeting` | Integrations | SAFE | Get a Zoom meeting by ID |
+| 863 | `zoom_create_meeting` | Integrations | MODERATE | Create a Zoom meeting |
+| 864 | `zoom_update_meeting` | Integrations | MODERATE | Update a Zoom meeting |
+| 865 | `zoom_delete_meeting` | Integrations | MODERATE | Delete a Zoom meeting |
+| 866 | `gotowebinar_list_webinars` | Integrations | SAFE | List GoToWebinar webinars |
+| 867 | `gotowebinar_get_webinar` | Integrations | SAFE | Get a GoToWebinar webinar |
+| 868 | `gotowebinar_create_webinar` | Integrations | MODERATE | Create a GoToWebinar webinar |
+| 869 | `gotowebinar_update_webinar` | Integrations | MODERATE | Update a GoToWebinar webinar |
+| 870 | `gotowebinar_list_sessions` | Integrations | SAFE | List GoToWebinar sessions |
+| 871 | `gotowebinar_get_session` | Integrations | SAFE | Get a GoToWebinar session |
+| 872 | `gotowebinar_list_registrants` | Integrations | SAFE | List GoToWebinar registrants |
+| 873 | `gotowebinar_get_registrant` | Integrations | SAFE | Get a GoToWebinar registrant |
+| 874 | `gotowebinar_create_registrant` | Integrations | MODERATE | Create a GoToWebinar registrant |
+| 875 | `gotowebinar_delete_registrant` | Integrations | MODERATE | Delete a GoToWebinar registrant |
 
 ### Optional: Private B Tools (4)
 
@@ -2025,6 +2037,10 @@ This batch includes:
 - `pagerduty_list_incidents(...)`, `pagerduty_get_incident(incident_id)`, `pagerduty_create_incident(...)`, `pagerduty_update_incident(incident_id, ...)`, `pagerduty_add_incident_note(incident_id, content, ...)`, `pagerduty_list_services(...)`, and `pagerduty_get_user(user_id)`. Reads are SAFE; incident writes and notes are MODERATE because they change incident workflows.
 - `sentry_list_organizations(...)`, `sentry_list_projects(...)`, `sentry_list_project_issues(...)`, `sentry_get_issue(issue_id)`, `sentry_update_issue(organization_slug, issue_id, ...)`, `sentry_list_project_events(...)`, and `sentry_get_event(...)`. Reads are SAFE; issue updates are MODERATE.
 - `cloudflare_list_zones(...)`, `cloudflare_list_dns_records(zone_id, ...)`, `cloudflare_create_dns_record(...)`, `cloudflare_update_dns_record(...)`, `cloudflare_delete_dns_record(...)`, `cloudflare_list_origin_certificates(zone_id, ...)`, `cloudflare_get_origin_certificate(...)`, `cloudflare_upload_origin_certificate(...)`, and `cloudflare_delete_origin_certificate(...)`. Reads are SAFE; DNS/certificate writes are MODERATE.
+- `grafana_search_dashboards(...)`, `grafana_get_dashboard(dashboard_uid)`, `grafana_create_dashboard(...)`, `grafana_delete_dashboard(dashboard_uid)`, and `grafana_list_teams(...)`. Reads are SAFE; create/delete operations are MODERATE because they change dashboards.
+- `metabase_list_questions(...)`, `metabase_get_question(question_id)`, `metabase_query_question(question_id, ...)`, `metabase_list_dashboards(...)`, and `metabase_get_dashboard(dashboard_id)`. These are SAFE analytics reads; question execution may consume database resources.
+- `elasticsearch_list_indices(...)`, `elasticsearch_search(index, ...)`, `elasticsearch_get_document(index, document_id)`, `elasticsearch_index_document(...)`, and `elasticsearch_delete_document(...)`. Reads/searches are SAFE; index/delete operations are MODERATE because they change documents.
+- `splunk_list_saved_searches(...)`, `splunk_create_search_job(...)`, `splunk_get_search_job(search_id)`, and `splunk_get_search_results(search_id, ...)`. Listing/job reads are SAFE; search-job creation is MODERATE because it runs backend work and can consume Splunk capacity.
 
 Credential providers and fallback env vars:
 - Netlify: provider `netlify`, fields `access_token` / `api_key` / `token` / `value`; env fallback `NETLIFY_ACCESS_TOKEN`. Use `base_url` / `url` or `NETLIFY_BASE_URL` for non-default API roots.
@@ -2032,6 +2048,10 @@ Credential providers and fallback env vars:
 - PagerDuty: provider `pagerduty`, fields `api_token` / `api_key` / `token` / `value` for REST API-token auth, or `access_token` for OAuth bearer auth. Env fallback supports `PAGERDUTY_API_TOKEN`, optional `PAGERDUTY_FROM_EMAIL`, and `PAGERDUTY_BASE_URL`.
 - Sentry: provider `sentry`, fields `auth_token` / `access_token` / `api_key` / `token` / `value`; env fallback `SENTRY_AUTH_TOKEN`. Use `base_url` / `url` or `SENTRY_BASE_URL` for self-hosted Sentry.
 - Cloudflare: provider `cloudflare`, fields `api_token` / `access_token` / `token` / `value`; env fallback `CLOUDFLARE_API_TOKEN`. Use `base_url` / `url` or `CLOUDFLARE_BASE_URL` for non-default API roots.
+- Grafana: provider `grafana`, fields `api_key`, `apiKey`, `access_token`, `token`, or `value`, plus `base_url` / `url`; env fallback `GRAFANA_API_TOKEN` and `GRAFANA_BASE_URL`.
+- Metabase: provider `metabase`, fields `base_url` / `url`, plus `session_token`, `api_key`, or `username` plus `password`; env fallback supports `METABASE_BASE_URL`, `METABASE_SESSION_TOKEN`, `METABASE_API_KEY`, `METABASE_USERNAME`, and `METABASE_PASSWORD`.
+- Elasticsearch: provider `elasticsearch`, `elastic`, or `elastic_cloud`, fields `base_url` / `url`, `api_key`, `bearer_token`, or `username` plus `password`; env fallback supports `ELASTICSEARCH_BASE_URL`, `ELASTICSEARCH_API_KEY`, `ELASTICSEARCH_BEARER_TOKEN`, `ELASTICSEARCH_USERNAME`, `ELASTICSEARCH_PASSWORD`, and `ELASTICSEARCH_IGNORE_SSL_ISSUES`.
+- Splunk: provider `splunk`, fields `auth_token`, `access_token`, `token`, or `value`, plus `base_url` / `url` and optional `allow_unauthorized_certs`; env fallback supports `SPLUNK_BASE_URL`, `SPLUNK_AUTH_TOKEN`, and `SPLUNK_ALLOW_UNAUTHORIZED_CERTS`.
 
 ### Enrichment Security Service Tools
 

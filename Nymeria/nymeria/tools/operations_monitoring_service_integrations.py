@@ -19,6 +19,7 @@ _UPTIMEROBOT_BASE_URL = "https://api.uptimerobot.com/v2"
 _PAGERDUTY_BASE_URL = "https://api.pagerduty.com"
 _SENTRY_BASE_URL = "https://sentry.io"
 _CLOUDFLARE_BASE_URL = "https://api.cloudflare.com/client/v4"
+_GRAFANA_API_SUFFIX = "/api"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -62,7 +63,7 @@ def _parse_json(value: str, *, expected: type, label: str) -> Any:
     return parsed
 
 
-def _settings_value(name: str) -> Optional[str]:
+def _settings_value(name: str) -> Any:
     from ..config import get_settings
 
     return getattr(get_settings(), name)
@@ -115,11 +116,13 @@ def _request_json(
     json_body: Optional[dict[str, Any]] = None,
     form_data: Optional[dict[str, Any]] = None,
     headers: Optional[dict[str, str]] = None,
+    auth: Any = None,
+    verify: bool = True,
 ) -> Any:
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with httpx.Client(timeout=_HTTP_TIMEOUT, verify=verify) as client:
             response = client.request(
                 method,
                 url,
@@ -127,6 +130,7 @@ def _request_json(
                 json=json_body,
                 data=_filtered(form_data) if form_data is not None else None,
                 headers=headers,
+                auth=auth,
             )
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
@@ -216,6 +220,269 @@ def _bearer_config(
         "Content-Type": "application/json",
         "User-Agent": "Nymeria",
     }
+
+
+def _rooted_api_base(base: str, suffix: str) -> str:
+    base = _base_url(base)
+    suffix = suffix.rstrip("/")
+    if base.rstrip("/").endswith(suffix):
+        return base
+    return f"{base}{suffix}"
+
+
+def _service_base(
+    *,
+    provider: str,
+    provider_aliases: tuple[str, ...],
+    settings_base_name: str,
+    tool_name: str,
+    display_name: str,
+    env_var: str,
+    config: Optional[RunnableConfig],
+) -> str | None:
+    base = (
+        _credential_value(
+            provider=provider,
+            provider_aliases=provider_aliases,
+            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or _settings_value(settings_base_name)
+    )
+    if base:
+        return _base_url(base)
+    return _setup_hint(
+        provider=provider,
+        field_names=("base_url", "url"),
+        tool_name=tool_name,
+        env_var=env_var,
+        display_name=display_name,
+    )
+
+
+def _grafana_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, dict[str, str] | str]:
+    base_or_error = _service_base(
+        provider="grafana",
+        provider_aliases=("grafana_api",),
+        settings_base_name="grafana_base_url",
+        tool_name=tool_name,
+        display_name="Grafana",
+        env_var="GRAFANA_BASE_URL",
+        config=config,
+    )
+    if base_or_error is None or base_or_error.startswith("[Error]:"):
+        return "", base_or_error or "[Error]: Grafana base URL is required."
+    token = _credential_value(
+        provider="grafana",
+        provider_aliases=("grafana_api",),
+        field_names=("api_key", "apiKey", "access_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("grafana_api_token")
+    if not token:
+        return "", _setup_hint(
+            provider="grafana",
+            field_names=("api_key", "access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="GRAFANA_API_TOKEN",
+            display_name="Grafana",
+        )
+    return _rooted_api_base(base_or_error, _GRAFANA_API_SUFFIX), {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def _metabase_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, dict[str, str] | str]:
+    base_or_error = _service_base(
+        provider="metabase",
+        provider_aliases=("metabase_api",),
+        settings_base_name="metabase_base_url",
+        tool_name=tool_name,
+        display_name="Metabase",
+        env_var="METABASE_BASE_URL",
+        config=config,
+    )
+    if base_or_error is None or base_or_error.startswith("[Error]:"):
+        return "", base_or_error or "[Error]: Metabase base URL is required."
+    session_token = _credential_value(
+        provider="metabase",
+        provider_aliases=("metabase_api",),
+        field_names=("session_token", "sessionToken"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("metabase_session_token")
+    api_key = _credential_value(
+        provider="metabase",
+        provider_aliases=("metabase_api",),
+        field_names=("api_key", "apiKey", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("metabase_api_key")
+    if session_token:
+        return base_or_error, {"Accept": "application/json", "X-Metabase-Session": session_token}
+    if api_key:
+        return base_or_error, {"Accept": "application/json", "x-api-key": api_key}
+
+    username = _credential_value(
+        provider="metabase",
+        provider_aliases=("metabase_api",),
+        field_names=("username", "email"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("metabase_username")
+    password = _credential_value(
+        provider="metabase",
+        provider_aliases=("metabase_api",),
+        field_names=("password",),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("metabase_password")
+    if username and password:
+        session = _request_json(
+            "POST",
+            f"{base_or_error}/api/session",
+            json_body={"username": username, "password": password},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        token = session.get("id") if isinstance(session, dict) else None
+        if token:
+            return base_or_error, {"Accept": "application/json", "X-Metabase-Session": token}
+
+    return "", _setup_hint(
+        provider="metabase",
+        field_names=("session_token", "api_key", "username", "password"),
+        tool_name=tool_name,
+        env_var="METABASE_SESSION_TOKEN or METABASE_API_KEY",
+        display_name="Metabase",
+    )
+
+
+def _elasticsearch_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, dict[str, str] | str, Any, bool]:
+    base_or_error = _service_base(
+        provider="elasticsearch",
+        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        settings_base_name="elasticsearch_base_url",
+        tool_name=tool_name,
+        display_name="Elasticsearch",
+        env_var="ELASTICSEARCH_BASE_URL",
+        config=config,
+    )
+    if base_or_error is None or base_or_error.startswith("[Error]:"):
+        return "", base_or_error or "[Error]: Elasticsearch base URL is required.", None, True
+    api_key = _credential_value(
+        provider="elasticsearch",
+        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        field_names=("api_key", "apiKey", "encoded_api_key", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("elasticsearch_api_key")
+    bearer_token = _credential_value(
+        provider="elasticsearch",
+        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        field_names=("access_token", "bearer_token", "bearerToken"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("elasticsearch_bearer_token")
+    username = _credential_value(
+        provider="elasticsearch",
+        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        field_names=("username", "user"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("elasticsearch_username")
+    password = _credential_value(
+        provider="elasticsearch",
+        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        field_names=("password",),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("elasticsearch_password")
+    verify = not _truthy(
+        _credential_value(
+            provider="elasticsearch",
+            provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+            field_names=("ignore_ssl_issues", "ignoreSSLIssues", "allow_insecure"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or str(_settings_value("elasticsearch_ignore_ssl_issues") or "")
+    )
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    auth = None
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    elif bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    elif username and password:
+        auth = (username, password)
+    else:
+        return "", _setup_hint(
+            provider="elasticsearch",
+            field_names=("api_key", "username", "password"),
+            tool_name=tool_name,
+            env_var="ELASTICSEARCH_API_KEY or ELASTICSEARCH_USERNAME + ELASTICSEARCH_PASSWORD",
+            display_name="Elasticsearch",
+        ), None, verify
+    return base_or_error, headers, auth, verify
+
+
+def _splunk_config(
+    tool_name: str,
+    config: Optional[RunnableConfig],
+) -> tuple[str, dict[str, str] | str, bool]:
+    base_or_error = _service_base(
+        provider="splunk",
+        provider_aliases=("splunk_api",),
+        settings_base_name="splunk_base_url",
+        tool_name=tool_name,
+        display_name="Splunk",
+        env_var="SPLUNK_BASE_URL",
+        config=config,
+    )
+    if base_or_error is None or base_or_error.startswith("[Error]:"):
+        return "", base_or_error or "[Error]: Splunk base URL is required.", True
+    token = _credential_value(
+        provider="splunk",
+        provider_aliases=("splunk_api",),
+        field_names=("auth_token", "authToken", "access_token", "token", "value"),
+        tool_name=tool_name,
+        config=config,
+    ) or _settings_value("splunk_auth_token")
+    verify = not _truthy(
+        _credential_value(
+            provider="splunk",
+            provider_aliases=("splunk_api",),
+            field_names=("allow_unauthorized_certs", "allowUnauthorizedCerts", "allow_insecure"),
+            tool_name=tool_name,
+            config=config,
+        )
+        or str(_settings_value("splunk_allow_unauthorized_certs") or "")
+    )
+    if not token:
+        return "", _setup_hint(
+            provider="splunk",
+            field_names=("auth_token", "access_token", "token", "value"),
+            tool_name=tool_name,
+            env_var="SPLUNK_AUTH_TOKEN",
+            display_name="Splunk",
+        ), verify
+    return base_or_error, {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }, verify
 
 
 def _netlify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -1432,6 +1699,541 @@ def cloudflare_delete_origin_certificate(
         return f"[Error]: Cloudflare origin certificate deletion failed: {e}"
 
 
+@tool
+def grafana_search_dashboards(
+    query: str = "",
+    tag: str = "",
+    folder_ids: str = "",
+    starred: bool = False,
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search Grafana dashboards.
+
+    Args:
+        query: Optional search text.
+        tag: Optional dashboard tag filter.
+        folder_ids: Optional comma-separated folder IDs.
+        starred: Only return starred dashboards.
+        limit: Maximum dashboards to return, 1-500.
+    """
+    try:
+        base_url, headers_or_error = _grafana_config("grafana_search_dashboards", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        params: dict[str, Any] = {
+            "type": "dash-db",
+            "query": query.strip(),
+            "tag": tag.strip(),
+            "starred": str(bool(starred)).lower() if starred else "",
+            "limit": _limit(limit, max_value=500),
+        }
+        folders = _csv_to_list(folder_ids)
+        if folders:
+            params["folderIds"] = folders
+        data = _request_json(
+            "GET",
+            f"{base_url}/search",
+            params=params,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("grafana_search_dashboards failed", exc_info=True)
+        return f"[Error]: Grafana dashboard search failed: {e}"
+
+
+@tool
+def grafana_get_dashboard(
+    dashboard_uid: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Grafana dashboard by UID."""
+    if not dashboard_uid.strip():
+        return "[Error]: dashboard_uid is required."
+    try:
+        base_url, headers_or_error = _grafana_config("grafana_get_dashboard", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/dashboards/uid/{quote(dashboard_uid.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("grafana_get_dashboard failed", exc_info=True)
+        return f"[Error]: Grafana dashboard lookup failed: {e}"
+
+
+@tool
+def grafana_create_dashboard(
+    title: str,
+    folder_uid: str = "",
+    dashboard_json: str = "",
+    overwrite: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create or update a Grafana dashboard.
+
+    Args:
+        title: Dashboard title. Used when dashboard_json is empty.
+        folder_uid: Optional Grafana folder UID.
+        dashboard_json: Optional full Grafana dashboard JSON object.
+        overwrite: Whether Grafana may overwrite an existing dashboard.
+    """
+    if not title.strip() and not dashboard_json.strip():
+        return "[Error]: title or dashboard_json is required."
+    try:
+        base_url, headers_or_error = _grafana_config("grafana_create_dashboard", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        dashboard = (
+            _parse_json(dashboard_json, expected=dict, label="dashboard_json")
+            if dashboard_json.strip()
+            else {"id": None, "title": title.strip()}
+        )
+        body: dict[str, Any] = {"dashboard": dashboard, "overwrite": bool(overwrite)}
+        if folder_uid.strip():
+            body["folderUid"] = folder_uid.strip()
+        data = _request_json(
+            "POST",
+            f"{base_url}/dashboards/db",
+            json_body=body,
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("grafana_create_dashboard failed", exc_info=True)
+        return f"[Error]: Grafana dashboard creation failed: {e}"
+
+
+@tool
+def grafana_delete_dashboard(
+    dashboard_uid: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a Grafana dashboard by UID."""
+    if not dashboard_uid.strip():
+        return "[Error]: dashboard_uid is required."
+    try:
+        base_url, headers_or_error = _grafana_config("grafana_delete_dashboard", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/dashboards/uid/{quote(dashboard_uid.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("grafana_delete_dashboard failed", exc_info=True)
+        return f"[Error]: Grafana dashboard deletion failed: {e}"
+
+
+@tool
+def grafana_list_teams(
+    query: str = "",
+    limit: int = 50,
+    page: int = 1,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Grafana teams."""
+    try:
+        base_url, headers_or_error = _grafana_config("grafana_list_teams", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/teams/search",
+            params={"query": query.strip(), "perpage": _limit(limit, max_value=500), "page": max(1, int(page))},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("grafana_list_teams failed", exc_info=True)
+        return f"[Error]: Grafana team listing failed: {e}"
+
+
+@tool
+def metabase_list_questions(
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Metabase questions/cards."""
+    try:
+        base_url, headers_or_error = _metabase_config("metabase_list_questions", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/card",
+            headers=headers_or_error,
+        )
+        if isinstance(data, list):
+            data = data[: _limit(limit, max_value=500)]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("metabase_list_questions failed", exc_info=True)
+        return f"[Error]: Metabase question listing failed: {e}"
+
+
+@tool
+def metabase_get_question(
+    question_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Metabase question/card by ID."""
+    if not question_id.strip():
+        return "[Error]: question_id is required."
+    try:
+        base_url, headers_or_error = _metabase_config("metabase_get_question", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/card/{quote(question_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("metabase_get_question failed", exc_info=True)
+        return f"[Error]: Metabase question lookup failed: {e}"
+
+
+@tool
+def metabase_query_question(
+    question_id: str,
+    parameters_json: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Run a Metabase question/card and return JSON results.
+
+    Args:
+        question_id: Metabase card/question ID.
+        parameters_json: Optional Metabase parameter array as JSON.
+    """
+    if not question_id.strip():
+        return "[Error]: question_id is required."
+    try:
+        base_url, headers_or_error = _metabase_config("metabase_query_question", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        parameters = _parse_json(parameters_json, expected=list, label="parameters_json") if parameters_json.strip() else []
+        data = _request_json(
+            "POST",
+            f"{base_url}/api/card/{quote(question_id.strip(), safe='')}/query/json",
+            json_body={"parameters": parameters},
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("metabase_query_question failed", exc_info=True)
+        return f"[Error]: Metabase question query failed: {e}"
+
+
+@tool
+def metabase_list_dashboards(
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Metabase dashboards."""
+    try:
+        base_url, headers_or_error = _metabase_config("metabase_list_dashboards", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/dashboard",
+            headers=headers_or_error,
+        )
+        if isinstance(data, list):
+            data = data[: _limit(limit, max_value=500)]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("metabase_list_dashboards failed", exc_info=True)
+        return f"[Error]: Metabase dashboard listing failed: {e}"
+
+
+@tool
+def metabase_get_dashboard(
+    dashboard_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Metabase dashboard by ID."""
+    if not dashboard_id.strip():
+        return "[Error]: dashboard_id is required."
+    try:
+        base_url, headers_or_error = _metabase_config("metabase_get_dashboard", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/api/dashboard/{quote(dashboard_id.strip(), safe='')}",
+            headers=headers_or_error,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("metabase_get_dashboard failed", exc_info=True)
+        return f"[Error]: Metabase dashboard lookup failed: {e}"
+
+
+@tool
+def elasticsearch_list_indices(
+    index_pattern: str = "*",
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Elasticsearch indices."""
+    try:
+        base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_list_indices", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/_cat/indices/{quote(index_pattern.strip() or '*', safe='*')}",
+            params={"format": "json"},
+            headers=headers_or_error,
+            auth=auth,
+            verify=verify,
+        )
+        if isinstance(data, list):
+            data = data[: _limit(limit, max_value=1000)]
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("elasticsearch_list_indices failed", exc_info=True)
+        return f"[Error]: Elasticsearch index listing failed: {e}"
+
+
+@tool
+def elasticsearch_search(
+    index: str,
+    query_json: str = "",
+    limit: int = 10,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search Elasticsearch documents.
+
+    Args:
+        index: Index or index pattern to search.
+        query_json: Optional Elasticsearch query body JSON.
+        limit: Number of hits to request when query_json does not specify size.
+    """
+    if not index.strip():
+        return "[Error]: index is required."
+    try:
+        base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_search", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        body = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {"query": {"match_all": {}}}
+        body.setdefault("size", _limit(limit, max_value=1000))
+        data = _request_json(
+            "POST",
+            f"{base_url}/{quote(index.strip(), safe='*,')}/_search",
+            json_body=body,
+            headers=headers_or_error,
+            auth=auth,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("elasticsearch_search failed", exc_info=True)
+        return f"[Error]: Elasticsearch search failed: {e}"
+
+
+@tool
+def elasticsearch_get_document(
+    index: str,
+    document_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get an Elasticsearch document by ID."""
+    if not index.strip() or not document_id.strip():
+        return "[Error]: index and document_id are required."
+    try:
+        base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_get_document", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/{quote(index.strip(), safe='')}/_doc/{quote(document_id.strip(), safe='')}",
+            headers=headers_or_error,
+            auth=auth,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("elasticsearch_get_document failed", exc_info=True)
+        return f"[Error]: Elasticsearch document lookup failed: {e}"
+
+
+@tool
+def elasticsearch_index_document(
+    index: str,
+    document_json: str,
+    document_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create or replace an Elasticsearch document."""
+    if not index.strip() or not document_json.strip():
+        return "[Error]: index and document_json are required."
+    try:
+        base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_index_document", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        path = f"{base_url}/{quote(index.strip(), safe='')}/_doc"
+        method = "POST"
+        if document_id.strip():
+            path += f"/{quote(document_id.strip(), safe='')}"
+            method = "PUT"
+        data = _request_json(
+            method,
+            path,
+            json_body=_parse_json(document_json, expected=dict, label="document_json"),
+            headers=headers_or_error,
+            auth=auth,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("elasticsearch_index_document failed", exc_info=True)
+        return f"[Error]: Elasticsearch document indexing failed: {e}"
+
+
+@tool
+def elasticsearch_delete_document(
+    index: str,
+    document_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete an Elasticsearch document by ID."""
+    if not index.strip() or not document_id.strip():
+        return "[Error]: index and document_id are required."
+    try:
+        base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_delete_document", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "DELETE",
+            f"{base_url}/{quote(index.strip(), safe='')}/_doc/{quote(document_id.strip(), safe='')}",
+            headers=headers_or_error,
+            auth=auth,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("elasticsearch_delete_document failed", exc_info=True)
+        return f"[Error]: Elasticsearch document deletion failed: {e}"
+
+
+@tool
+def splunk_list_saved_searches(
+    search: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List Splunk saved searches."""
+    try:
+        base_url, headers_or_error, verify = _splunk_config("splunk_list_saved_searches", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/servicesNS/-/-/saved/searches",
+            params={"output_mode": "json", "search": search.strip(), "count": _limit(limit, max_value=500)},
+            headers=headers_or_error,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("splunk_list_saved_searches failed", exc_info=True)
+        return f"[Error]: Splunk saved-search listing failed: {e}"
+
+
+@tool
+def splunk_create_search_job(
+    search_query: str,
+    earliest_time: str = "",
+    latest_time: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Splunk search job."""
+    if not search_query.strip():
+        return "[Error]: search_query is required."
+    try:
+        base_url, headers_or_error, verify = _splunk_config("splunk_create_search_job", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        form_data = {"search": search_query.strip(), "output_mode": "json"}
+        if earliest_time.strip():
+            form_data["earliest_time"] = earliest_time.strip()
+        if latest_time.strip():
+            form_data["latest_time"] = latest_time.strip()
+        data = _request_json(
+            "POST",
+            f"{base_url}/services/search/jobs",
+            form_data=form_data,
+            headers=headers_or_error,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("splunk_create_search_job failed", exc_info=True)
+        return f"[Error]: Splunk search job creation failed: {e}"
+
+
+@tool
+def splunk_get_search_job(
+    search_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a Splunk search job by SID."""
+    if not search_id.strip():
+        return "[Error]: search_id is required."
+    try:
+        base_url, headers_or_error, verify = _splunk_config("splunk_get_search_job", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/services/search/jobs/{quote(search_id.strip(), safe='')}",
+            params={"output_mode": "json"},
+            headers=headers_or_error,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("splunk_get_search_job failed", exc_info=True)
+        return f"[Error]: Splunk search job lookup failed: {e}"
+
+
+@tool
+def splunk_get_search_results(
+    search_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Splunk search job results."""
+    if not search_id.strip():
+        return "[Error]: search_id is required."
+    try:
+        base_url, headers_or_error, verify = _splunk_config("splunk_get_search_results", config)
+        if isinstance(headers_or_error, str):
+            return headers_or_error
+        data = _request_json(
+            "GET",
+            f"{base_url}/services/search/jobs/{quote(search_id.strip(), safe='')}/results",
+            params={"output_mode": "json", "count": _limit(limit, max_value=1000), "offset": max(0, int(offset))},
+            headers=headers_or_error,
+            verify=verify,
+        )
+        return _dump_json(data)
+    except Exception as e:
+        logger.error("splunk_get_search_results failed", exc_info=True)
+        return f"[Error]: Splunk search results lookup failed: {e}"
+
+
 OPERATIONS_MONITORING_SERVICE_TOOLS = [
     netlify_list_sites,
     netlify_get_site,
@@ -1469,4 +2271,23 @@ OPERATIONS_MONITORING_SERVICE_TOOLS = [
     cloudflare_get_origin_certificate,
     cloudflare_upload_origin_certificate,
     cloudflare_delete_origin_certificate,
+    grafana_search_dashboards,
+    grafana_get_dashboard,
+    grafana_create_dashboard,
+    grafana_delete_dashboard,
+    grafana_list_teams,
+    metabase_list_questions,
+    metabase_get_question,
+    metabase_query_question,
+    metabase_list_dashboards,
+    metabase_get_dashboard,
+    elasticsearch_list_indices,
+    elasticsearch_search,
+    elasticsearch_get_document,
+    elasticsearch_index_document,
+    elasticsearch_delete_document,
+    splunk_list_saved_searches,
+    splunk_create_search_job,
+    splunk_get_search_job,
+    splunk_get_search_results,
 ]
