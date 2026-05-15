@@ -451,6 +451,28 @@ from .enterprise_business_service_integrations import (
     invoiceninja_email_invoice_or_quote,
     ENTERPRISE_BUSINESS_SERVICE_TOOLS,
 )
+from .event_meeting_service_integrations import (
+    demio_list_events,
+    demio_get_event,
+    demio_register_event,
+    demio_get_session_participants,
+    zoom_list_meetings,
+    zoom_get_meeting,
+    zoom_create_meeting,
+    zoom_update_meeting,
+    zoom_delete_meeting,
+    gotowebinar_list_webinars,
+    gotowebinar_get_webinar,
+    gotowebinar_create_webinar,
+    gotowebinar_update_webinar,
+    gotowebinar_list_sessions,
+    gotowebinar_get_session,
+    gotowebinar_list_registrants,
+    gotowebinar_get_registrant,
+    gotowebinar_create_registrant,
+    gotowebinar_delete_registrant,
+    EVENT_MEETING_SERVICE_TOOLS,
+)
 from .productivity_service_integrations import (
     todoist_list_tasks,
     todoist_get_task,
@@ -1086,6 +1108,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + AWS_SERVICE_TOOLS
     + BUSINESS_SERVICE_TOOLS
     + ENTERPRISE_BUSINESS_SERVICE_TOOLS
+    + EVENT_MEETING_SERVICE_TOOLS
     + PRODUCTIVITY_SERVICE_TOOLS
     + BOOKMARK_LINK_SERVICE_TOOLS
     + WORK_TRACKING_SERVICE_TOOLS
@@ -1544,6 +1567,26 @@ __all__ = [
     "invoiceninja_delete_record",
     "invoiceninja_email_invoice_or_quote",
     "ENTERPRISE_BUSINESS_SERVICE_TOOLS",
+    "demio_list_events",
+    "demio_get_event",
+    "demio_register_event",
+    "demio_get_session_participants",
+    "zoom_list_meetings",
+    "zoom_get_meeting",
+    "zoom_create_meeting",
+    "zoom_update_meeting",
+    "zoom_delete_meeting",
+    "gotowebinar_list_webinars",
+    "gotowebinar_get_webinar",
+    "gotowebinar_create_webinar",
+    "gotowebinar_update_webinar",
+    "gotowebinar_list_sessions",
+    "gotowebinar_get_session",
+    "gotowebinar_list_registrants",
+    "gotowebinar_get_registrant",
+    "gotowebinar_create_registrant",
+    "gotowebinar_delete_registrant",
+    "EVENT_MEETING_SERVICE_TOOLS",
     "todoist_list_tasks",
     "todoist_get_task",
     "todoist_create_task",

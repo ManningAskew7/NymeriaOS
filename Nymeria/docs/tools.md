@@ -915,6 +915,25 @@ in the credential vault for provider-specific saved connections scoped to
 | 835 | `invoiceninja_create_record` | Integrations | MODERATE | Create an Invoice Ninja record |
 | 836 | `invoiceninja_delete_record` | Integrations | MODERATE | Delete an Invoice Ninja record |
 | 837 | `invoiceninja_email_invoice_or_quote` | Integrations | MODERATE | Email an Invoice Ninja invoice or quote |
+| 838 | `demio_list_events` | Integrations | SAFE | List Demio events |
+| 839 | `demio_get_event` | Integrations | SAFE | Get a Demio event or event date/session |
+| 840 | `demio_register_event` | Integrations | MODERATE | Register a Demio event attendee |
+| 841 | `demio_get_session_participants` | Integrations | SAFE | Get Demio participant report rows |
+| 842 | `zoom_list_meetings` | Integrations | SAFE | List Zoom meetings |
+| 843 | `zoom_get_meeting` | Integrations | SAFE | Get a Zoom meeting by ID |
+| 844 | `zoom_create_meeting` | Integrations | MODERATE | Create a Zoom meeting |
+| 845 | `zoom_update_meeting` | Integrations | MODERATE | Update a Zoom meeting |
+| 846 | `zoom_delete_meeting` | Integrations | MODERATE | Delete a Zoom meeting |
+| 847 | `gotowebinar_list_webinars` | Integrations | SAFE | List GoToWebinar webinars |
+| 848 | `gotowebinar_get_webinar` | Integrations | SAFE | Get a GoToWebinar webinar |
+| 849 | `gotowebinar_create_webinar` | Integrations | MODERATE | Create a GoToWebinar webinar |
+| 850 | `gotowebinar_update_webinar` | Integrations | MODERATE | Update a GoToWebinar webinar |
+| 851 | `gotowebinar_list_sessions` | Integrations | SAFE | List GoToWebinar sessions |
+| 852 | `gotowebinar_get_session` | Integrations | SAFE | Get a GoToWebinar session |
+| 853 | `gotowebinar_list_registrants` | Integrations | SAFE | List GoToWebinar registrants |
+| 854 | `gotowebinar_get_registrant` | Integrations | SAFE | Get a GoToWebinar registrant |
+| 855 | `gotowebinar_create_registrant` | Integrations | MODERATE | Create a GoToWebinar registrant |
+| 856 | `gotowebinar_delete_registrant` | Integrations | MODERATE | Delete a GoToWebinar registrant |
 
 ### Optional: Private B Tools (4)
 
@@ -1839,6 +1858,18 @@ Credential providers and fallback env vars:
 - ERPNext: provider `erpnext`, fields `api_key` / `apiKey` plus `api_secret` / `apiSecret`; env fallbacks `ERPNEXT_API_KEY` and `ERPNEXT_API_SECRET`. Use `base_url` / `url` / `domain` or `ERPNEXT_BASE_URL`; cloud-hosted subdomain/domain fallback is also supported with `ERPNEXT_SUBDOMAIN` and `ERPNEXT_CLOUD_DOMAIN`.
 - Odoo: provider `odoo`, fields `url`, `username`, `password` / `api_key`, and `database` / `db`; env fallbacks `ODOO_URL`, `ODOO_USERNAME`, `ODOO_PASSWORD`, and `ODOO_DATABASE`.
 - Invoice Ninja: provider `invoiceninja`, fields `api_token` / `apiToken` / `token`, optional `secret`, and optional `base_url` / `url`; env fallbacks `INVOICENINJA_API_TOKEN`, `INVOICENINJA_SECRET`, `INVOICENINJA_BASE_URL`, and `INVOICENINJA_API_VERSION`.
+
+### Event And Meeting Service Tools
+
+This batch includes:
+- `demio_list_events(event_type?, limit?)`, `demio_get_event(event_id, active?, date_id?)`, `demio_register_event(event_id, name, email, fields_json?)`, and `demio_get_session_participants(date_id, status?, limit?)`. Registration is MODERATE because it creates an attendee registration.
+- `zoom_list_meetings(meeting_type?, limit?)`, `zoom_get_meeting(meeting_id, occurrence_id?, show_previous_occurrences?)`, `zoom_create_meeting(topic, fields_json?)`, `zoom_update_meeting(meeting_id, fields_json)`, and `zoom_delete_meeting(meeting_id, occurrence_id?, schedule_for_reminder?)`. Create/update/delete operations are MODERATE because they change Zoom meetings.
+- `gotowebinar_list_webinars(from_time?, to_time?, limit?)`, `gotowebinar_get_webinar(webinar_key)`, `gotowebinar_create_webinar(subject, times_json, fields_json?)`, `gotowebinar_update_webinar(webinar_key, fields_json, notify_participants?)`, `gotowebinar_list_sessions(webinar_key?, from_time?, to_time?, limit?)`, `gotowebinar_get_session(webinar_key, session_key)`, `gotowebinar_list_registrants(webinar_key, limit?)`, `gotowebinar_get_registrant(webinar_key, registrant_key)`, `gotowebinar_create_registrant(...)`, and `gotowebinar_delete_registrant(webinar_key, registrant_key)`. Create/update/delete operations are MODERATE because they change webinars or registrations.
+
+Credential providers and fallback env vars:
+- Demio: provider `demio`, fields `api_key` / `apiKey` plus `api_secret` / `apiSecret`; env fallbacks `DEMIO_API_KEY` and `DEMIO_API_SECRET`. Use `base_url` / `api_url` / `url` or `DEMIO_BASE_URL` for non-default API roots.
+- Zoom: provider `zoom`, fields `access_token`, `bearer_token`, `token`, or `value`; env fallback `ZOOM_ACCESS_TOKEN`. Use `base_url` / `api_url` / `url` or `ZOOM_BASE_URL` for non-default API roots.
+- GoToWebinar: provider `gotowebinar`, fields `access_token`, `account_key`, and `organizer_key`; env fallbacks `GOTOWEBINAR_ACCESS_TOKEN`, `GOTOWEBINAR_ACCOUNT_KEY`, and `GOTOWEBINAR_ORGANIZER_KEY`. Use `base_url` / `api_url` / `url` or `GOTOWEBINAR_BASE_URL` for non-default API roots.
 
 ### Collaboration And Data Service Tools
 

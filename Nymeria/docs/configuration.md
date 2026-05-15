@@ -149,6 +149,15 @@ Set the API key for your chosen provider:
 | `INVOICENINJA_SECRET` | Invoice Ninja | Optional Invoice Ninja v5 API secret fallback |
 | `INVOICENINJA_BASE_URL` | Invoice Ninja | Optional Invoice Ninja API base URL override |
 | `INVOICENINJA_API_VERSION` | Invoice Ninja | Optional Invoice Ninja API version, `v4` or `v5` |
+| `DEMIO_API_KEY` | Demio | Optional Demio API key fallback; credential vault provider `demio` is preferred |
+| `DEMIO_API_SECRET` | Demio | Optional Demio API secret fallback |
+| `DEMIO_BASE_URL` | Demio | Optional Demio API base URL override |
+| `ZOOM_ACCESS_TOKEN` | Zoom | Optional Zoom OAuth or bearer token fallback; credential vault provider `zoom` is preferred |
+| `ZOOM_BASE_URL` | Zoom | Optional Zoom API base URL override |
+| `GOTOWEBINAR_ACCESS_TOKEN` | GoToWebinar | Optional GoToWebinar OAuth token fallback; credential vault provider `gotowebinar` is preferred |
+| `GOTOWEBINAR_ACCOUNT_KEY` | GoToWebinar | Optional GoToWebinar account key fallback |
+| `GOTOWEBINAR_ORGANIZER_KEY` | GoToWebinar | Optional GoToWebinar organizer key fallback |
+| `GOTOWEBINAR_BASE_URL` | GoToWebinar | Optional GoToWebinar API base URL override |
 | `TODOIST_API_KEY` | Todoist | Optional env fallback for Todoist tools; credential vault provider `todoist` is preferred |
 | `TODOIST_BASE_URL` | Todoist | Optional Todoist API base URL override |
 | `TRELLO_API_KEY` | Trello | Optional env fallback for Trello tools; credential vault provider `trello` is preferred |
@@ -718,6 +727,15 @@ reachable from the backend process.
 | `INVOICENINJA_SECRET` | - | Invoice Ninja v5 API secret fallback |
 | `INVOICENINJA_BASE_URL` | `https://invoicing.co` | Invoice Ninja API base URL |
 | `INVOICENINJA_API_VERSION` | `v5` | Invoice Ninja API version |
+| `DEMIO_API_KEY` | - | Demio API key fallback |
+| `DEMIO_API_SECRET` | - | Demio API secret fallback |
+| `DEMIO_BASE_URL` | `https://my.demio.com/api/v1` | Demio API base URL |
+| `ZOOM_ACCESS_TOKEN` | - | Zoom OAuth or bearer access token fallback |
+| `ZOOM_BASE_URL` | `https://api.zoom.us/v2` | Zoom API base URL |
+| `GOTOWEBINAR_ACCESS_TOKEN` | - | GoToWebinar OAuth access token fallback |
+| `GOTOWEBINAR_ACCOUNT_KEY` | - | GoToWebinar account key fallback |
+| `GOTOWEBINAR_ORGANIZER_KEY` | - | GoToWebinar organizer key fallback |
+| `GOTOWEBINAR_BASE_URL` | `https://api.getgo.com/G2W/rest/v2` | GoToWebinar API base URL |
 | `TODOIST_API_KEY` | - | Todoist API key fallback |
 | `TODOIST_BASE_URL` | `https://api.todoist.com/api/v1` | Todoist API base URL |
 | `TRELLO_API_KEY` | - | Trello API key fallback |
