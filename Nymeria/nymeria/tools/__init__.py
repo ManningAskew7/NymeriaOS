@@ -85,6 +85,20 @@ from .google_workspace_service_integrations import (
     google_chat_delete_message,
     GOOGLE_WORKSPACE_SERVICE_TOOLS,
 )
+from .google_analytics_auth import (
+    google_analytics_auth_start,
+    google_analytics_auth_complete,
+    google_analytics_auth_clear,
+    google_analytics_list_accounts,
+    GOOGLE_ANALYTICS_AUTH_TOOLS,
+)
+from .google_analytics_service_integrations import (
+    google_analytics_list_account_summaries,
+    google_analytics_get_metadata,
+    google_analytics_run_report,
+    google_analytics_run_realtime_report,
+    GOOGLE_ANALYTICS_SERVICE_TOOLS,
+)
 from .gmail_auth import (
     gmail_auth_start,
     gmail_auth_complete,
@@ -1338,6 +1352,8 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + RUNTIME_ADMIN_TOOLS
     + GOOGLE_DOCS_TOOLS
     + GOOGLE_WORKSPACE_SERVICE_TOOLS
+    + GOOGLE_ANALYTICS_AUTH_TOOLS
+    + GOOGLE_ANALYTICS_SERVICE_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
     + TOOL_SEARCH_TOOLS
@@ -2684,6 +2700,16 @@ __all__ = [
     "google_chat_update_message",
     "google_chat_delete_message",
     "GOOGLE_WORKSPACE_SERVICE_TOOLS",
+    "google_analytics_auth_start",
+    "google_analytics_auth_complete",
+    "google_analytics_auth_clear",
+    "google_analytics_list_accounts",
+    "GOOGLE_ANALYTICS_AUTH_TOOLS",
+    "google_analytics_list_account_summaries",
+    "google_analytics_get_metadata",
+    "google_analytics_run_report",
+    "google_analytics_run_realtime_report",
+    "GOOGLE_ANALYTICS_SERVICE_TOOLS",
     "gmail_auth_start",
     "gmail_auth_complete",
     "gmail_auth_clear",
