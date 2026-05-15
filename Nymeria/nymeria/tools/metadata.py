@@ -62,6 +62,7 @@ class ToolMetadata:
 
 
 _REFRESHING_BUILTIN_METADATA = False
+_BUILTIN_METADATA_LOADED = False
 
 
 class _BuiltinToolMetadataRegistry(dict):
@@ -69,7 +70,7 @@ class _BuiltinToolMetadataRegistry(dict):
 
     def _ensure_loaded(self) -> None:
         if not _REFRESHING_BUILTIN_METADATA:
-            refresh_builtin_tool_metadata()
+            ensure_builtin_tool_metadata()
 
     def __contains__(self, key: object) -> bool:
         self._ensure_loaded()
@@ -1109,7 +1110,7 @@ def _generate_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
 
 def refresh_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
     """Regenerate built-in metadata from the currently registered tools."""
-    global _REFRESHING_BUILTIN_METADATA
+    global _REFRESHING_BUILTIN_METADATA, _BUILTIN_METADATA_LOADED
     if _REFRESHING_BUILTIN_METADATA:
         return TOOL_METADATA
 
@@ -1123,18 +1124,26 @@ def refresh_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
 
     dict.clear(TOOL_METADATA)
     dict.update(TOOL_METADATA, generated)
+    _BUILTIN_METADATA_LOADED = True
     return TOOL_METADATA
+
+
+def ensure_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
+    """Populate built-in metadata once, without forcing a full rebuild."""
+    if _BUILTIN_METADATA_LOADED:
+        return TOOL_METADATA
+    return refresh_builtin_tool_metadata()
 
 
 def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
     """Get built-in metadata for a tool by name."""
-    refresh_builtin_tool_metadata()
+    ensure_builtin_tool_metadata()
     return dict.get(TOOL_METADATA, tool_name)
 
 
 def get_tools_by_category(category: ToolCategory) -> List[str]:
     """Get all built-in tool names in a category."""
-    refresh_builtin_tool_metadata()
+    ensure_builtin_tool_metadata()
     return [
         name
         for name, meta in dict.items(TOOL_METADATA)
@@ -1144,7 +1153,7 @@ def get_tools_by_category(category: ToolCategory) -> List[str]:
 
 def get_sensitive_tools() -> List[str]:
     """Get all built-in tools that require explicit opt-in."""
-    refresh_builtin_tool_metadata()
+    ensure_builtin_tool_metadata()
     return [
         name
         for name, meta in dict.items(TOOL_METADATA)
@@ -1154,7 +1163,7 @@ def get_sensitive_tools() -> List[str]:
 
 def get_default_enabled_tools() -> Set[str]:
     """Get all built-in tools that are enabled by default."""
-    refresh_builtin_tool_metadata()
+    ensure_builtin_tool_metadata()
     return {
         name
         for name, meta in dict.items(TOOL_METADATA)
@@ -1169,13 +1178,15 @@ def get_all_categories() -> List[str]:
 
 def get_category_tools_summary() -> Dict[str, List[str]]:
     """Get a summary of built-in tools by category."""
-    summary: Dict[str, List[str]] = {}
-    refresh_builtin_tool_metadata()
-    for category in ToolCategory:
-        tools = get_tools_by_category(category)
-        if tools:
-            summary[category.value] = tools
-    return summary
+    by_category: Dict[str, List[str]] = {}
+    ensure_builtin_tool_metadata()
+    for name, meta in dict.items(TOOL_METADATA):
+        by_category.setdefault(meta.category.value, []).append(name)
+    return {
+        category.value: by_category[category.value]
+        for category in ToolCategory
+        if category.value in by_category
+    }
 
 
 # MCP server tool metadata registry
