@@ -821,6 +821,15 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "microsoft_teams_list_joined_teams",
         "microsoft_teams_list_channels",
         "microsoft_teams_list_channel_messages",
+        "microsoft_sharepoint_search_sites",
+        "microsoft_sharepoint_get_site",
+        "microsoft_sharepoint_list_lists",
+        "microsoft_sharepoint_list_items",
+        "microsoft_sharepoint_get_item",
+        "microsoft_excel_list_worksheets",
+        "microsoft_excel_get_used_range",
+        "microsoft_excel_read_range",
+        "microsoft_excel_list_tables",
     }
 )
 

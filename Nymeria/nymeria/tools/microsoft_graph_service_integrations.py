@@ -26,6 +26,9 @@ _GRAPH_ALIASES = (
     "microsoft_onedrive",
     "microsoft_todo",
     "microsoft_teams",
+    "microsoft_excel",
+    "microsoft_sharepoint",
+    "sharepoint",
 )
 _TOKEN_FIELDS = ("access_token", "accessToken", "token", "bearer_token", "bearerToken", "value")
 _BASE_FIELDS = ("base_url", "baseUrl", "url", "api_url", "apiUrl")
@@ -266,6 +269,27 @@ def _onedrive_item_path(*, path: str = "", item_id: str = "", drive_id: str = ""
     if path.strip():
         return f"me/drive/root:{_drive_path(path)}:"
     return "me/drive/root"
+
+
+def _excel_workbook_path(*, workbook_item_id: str = "", workbook_path: str = "", drive_id: str = "") -> str:
+    if drive_id.strip() and workbook_item_id.strip():
+        return f"drives/{_graph_path_id(drive_id, 'drive_id')}/items/{_graph_path_id(workbook_item_id, 'workbook_item_id')}"
+    if workbook_item_id.strip():
+        return f"me/drive/items/{_graph_path_id(workbook_item_id, 'workbook_item_id')}"
+    if workbook_path.strip():
+        return f"me/drive/root:{_drive_path(workbook_path)}:"
+    raise ValueError("workbook_item_id or workbook_path is required.")
+
+
+def _excel_range_address(address: str) -> str:
+    address = address.strip()
+    if not address:
+        raise ValueError("address is required.")
+    return quote(address.replace("'", "''"), safe="")
+
+
+def _site_path(site_id: str) -> str:
+    return f"sites/{_graph_path_id(site_id, 'site_id')}"
 
 
 def _response_value(data: Any, *, limit: int) -> Any:
@@ -607,6 +631,371 @@ def microsoft_teams_send_channel_message(
         return f"[Error]: Microsoft Teams channel message send failed: {e}"
 
 
+@tool
+def microsoft_sharepoint_search_sites(
+    query: str,
+    limit: int = 25,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Search SharePoint sites visible to the signed-in user."""
+    if not query.strip():
+        return "[Error]: query is required."
+    try:
+        max_items = _limit(limit, default=25, max_value=100)
+        data = _graph_request(
+            "microsoft_sharepoint_search_sites",
+            "GET",
+            "sites",
+            params={"search": query.strip(), "$top": max_items},
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(_response_value(data, limit=max_items))
+    except Exception as e:
+        logger.error("microsoft_sharepoint_search_sites failed", exc_info=True)
+        return f"[Error]: SharePoint site search failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_get_site(
+    site_id: str = "",
+    hostname: str = "",
+    site_path: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get SharePoint site metadata by site ID or hostname plus site path."""
+    if not site_id.strip() and not hostname.strip():
+        return "[Error]: site_id or hostname is required."
+    try:
+        if site_id.strip():
+            endpoint = _site_path(site_id)
+        elif site_path.strip():
+            endpoint = f"sites/{_graph_path_id(hostname, 'hostname')}:/{quote(site_path.strip('/'), safe='/')}"
+        else:
+            endpoint = f"sites/{_graph_path_id(hostname, 'hostname')}"
+        data = _graph_request("microsoft_sharepoint_get_site", "GET", endpoint, config=config)
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_sharepoint_get_site failed", exc_info=True)
+        return f"[Error]: SharePoint site lookup failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_list_lists(
+    site_id: str,
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List SharePoint lists in a site."""
+    if not site_id.strip():
+        return "[Error]: site_id is required."
+    try:
+        max_items = _limit(limit, max_value=100)
+        data = _graph_request(
+            "microsoft_sharepoint_list_lists",
+            "GET",
+            f"{_site_path(site_id)}/lists",
+            params={"$top": max_items},
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(_response_value(data, limit=max_items))
+    except Exception as e:
+        logger.error("microsoft_sharepoint_list_lists failed", exc_info=True)
+        return f"[Error]: SharePoint list listing failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_list_items(
+    site_id: str,
+    list_id: str,
+    limit: int = 50,
+    expand_fields: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List SharePoint list items, optionally expanding fields."""
+    if not site_id.strip() or not list_id.strip():
+        return "[Error]: site_id and list_id are required."
+    try:
+        max_items = _limit(limit, max_value=200)
+        params: dict[str, Any] = {"$top": max_items}
+        if expand_fields:
+            params["$expand"] = "fields"
+        data = _graph_request(
+            "microsoft_sharepoint_list_items",
+            "GET",
+            f"{_site_path(site_id)}/lists/{_graph_path_id(list_id, 'list_id')}/items",
+            params=params,
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(_response_value(data, limit=max_items))
+    except Exception as e:
+        logger.error("microsoft_sharepoint_list_items failed", exc_info=True)
+        return f"[Error]: SharePoint list item listing failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_get_item(
+    site_id: str,
+    list_id: str,
+    item_id: str,
+    expand_fields: bool = True,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get one SharePoint list item."""
+    if not site_id.strip() or not list_id.strip() or not item_id.strip():
+        return "[Error]: site_id, list_id, and item_id are required."
+    try:
+        params = {"$expand": "fields"} if expand_fields else None
+        data = _graph_request(
+            "microsoft_sharepoint_get_item",
+            "GET",
+            f"{_site_path(site_id)}/lists/{_graph_path_id(list_id, 'list_id')}/items/{_graph_path_id(item_id, 'item_id')}",
+            params=params,
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_sharepoint_get_item failed", exc_info=True)
+        return f"[Error]: SharePoint list item lookup failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_create_item(
+    site_id: str,
+    list_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a SharePoint list item from a JSON object of fields."""
+    if not site_id.strip() or not list_id.strip():
+        return "[Error]: site_id and list_id are required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must include at least one field."
+        data = _graph_request(
+            "microsoft_sharepoint_create_item",
+            "POST",
+            f"{_site_path(site_id)}/lists/{_graph_path_id(list_id, 'list_id')}/items",
+            json_body={"fields": fields},
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_sharepoint_create_item failed", exc_info=True)
+        return f"[Error]: SharePoint list item creation failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_update_item_fields(
+    site_id: str,
+    list_id: str,
+    item_id: str,
+    fields_json: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update SharePoint list item fields from a JSON object."""
+    if not site_id.strip() or not list_id.strip() or not item_id.strip():
+        return "[Error]: site_id, list_id, and item_id are required."
+    try:
+        fields = _parse_json(fields_json, expected=dict, label="fields_json")
+        if not fields:
+            return "[Error]: fields_json must include at least one field."
+        data = _graph_request(
+            "microsoft_sharepoint_update_item_fields",
+            "PATCH",
+            f"{_site_path(site_id)}/lists/{_graph_path_id(list_id, 'list_id')}/items/{_graph_path_id(item_id, 'item_id')}/fields",
+            json_body=fields,
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_sharepoint_update_item_fields failed", exc_info=True)
+        return f"[Error]: SharePoint list item update failed: {e}"
+
+
+@tool
+def microsoft_sharepoint_delete_item(
+    site_id: str,
+    list_id: str,
+    item_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a SharePoint list item."""
+    if not site_id.strip() or not list_id.strip() or not item_id.strip():
+        return "[Error]: site_id, list_id, and item_id are required."
+    try:
+        data = _graph_request(
+            "microsoft_sharepoint_delete_item",
+            "DELETE",
+            f"{_site_path(site_id)}/lists/{_graph_path_id(list_id, 'list_id')}/items/{_graph_path_id(item_id, 'item_id')}",
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json({"status": "deleted", "item_id": item_id.strip()})
+    except Exception as e:
+        logger.error("microsoft_sharepoint_delete_item failed", exc_info=True)
+        return f"[Error]: SharePoint list item deletion failed: {e}"
+
+
+@tool
+def microsoft_excel_list_worksheets(
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List worksheets in an Excel workbook stored in OneDrive or SharePoint."""
+    try:
+        max_items = _limit(limit, max_value=100)
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_list_worksheets",
+            "GET",
+            f"{prefix}/workbook/worksheets",
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(_response_value(data, limit=max_items))
+    except Exception as e:
+        logger.error("microsoft_excel_list_worksheets failed", exc_info=True)
+        return f"[Error]: Excel worksheet listing failed: {e}"
+
+
+@tool
+def microsoft_excel_get_used_range(
+    worksheet_id_or_name: str,
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get the used range from an Excel worksheet."""
+    if not worksheet_id_or_name.strip():
+        return "[Error]: worksheet_id_or_name is required."
+    try:
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_get_used_range",
+            "GET",
+            f"{prefix}/workbook/worksheets/{_graph_path_id(worksheet_id_or_name, 'worksheet_id_or_name')}/usedRange()",
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_excel_get_used_range failed", exc_info=True)
+        return f"[Error]: Excel used range lookup failed: {e}"
+
+
+@tool
+def microsoft_excel_read_range(
+    worksheet_id_or_name: str,
+    address: str,
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Read an Excel worksheet range such as A1:D20."""
+    if not worksheet_id_or_name.strip():
+        return "[Error]: worksheet_id_or_name is required."
+    try:
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_read_range",
+            "GET",
+            f"{prefix}/workbook/worksheets/{_graph_path_id(worksheet_id_or_name, 'worksheet_id_or_name')}/range(address='{_excel_range_address(address)}')",
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_excel_read_range failed", exc_info=True)
+        return f"[Error]: Excel range read failed: {e}"
+
+
+@tool
+def microsoft_excel_update_range(
+    worksheet_id_or_name: str,
+    address: str,
+    values_json: str,
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Update an Excel worksheet range with a JSON two-dimensional values array."""
+    if not worksheet_id_or_name.strip():
+        return "[Error]: worksheet_id_or_name is required."
+    try:
+        values = _parse_json(values_json, expected=list, label="values_json")
+        if not values:
+            return "[Error]: values_json must include at least one row."
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_update_range",
+            "PATCH",
+            f"{prefix}/workbook/worksheets/{_graph_path_id(worksheet_id_or_name, 'worksheet_id_or_name')}/range(address='{_excel_range_address(address)}')",
+            json_body={"values": values},
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_excel_update_range failed", exc_info=True)
+        return f"[Error]: Excel range update failed: {e}"
+
+
+@tool
+def microsoft_excel_list_tables(
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    limit: int = 50,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List tables in an Excel workbook."""
+    try:
+        max_items = _limit(limit, max_value=100)
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_list_tables",
+            "GET",
+            f"{prefix}/workbook/tables",
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(_response_value(data, limit=max_items))
+    except Exception as e:
+        logger.error("microsoft_excel_list_tables failed", exc_info=True)
+        return f"[Error]: Excel table listing failed: {e}"
+
+
+@tool
+def microsoft_excel_add_table_row(
+    table_id_or_name: str,
+    values_json: str,
+    workbook_item_id: str = "",
+    workbook_path: str = "",
+    drive_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Append rows to an Excel workbook table from a JSON two-dimensional values array."""
+    if not table_id_or_name.strip():
+        return "[Error]: table_id_or_name is required."
+    try:
+        values = _parse_json(values_json, expected=list, label="values_json")
+        if not values:
+            return "[Error]: values_json must include at least one row."
+        prefix = _excel_workbook_path(workbook_item_id=workbook_item_id, workbook_path=workbook_path, drive_id=drive_id)
+        data = _graph_request(
+            "microsoft_excel_add_table_row",
+            "POST",
+            f"{prefix}/workbook/tables/{_graph_path_id(table_id_or_name, 'table_id_or_name')}/rows/add",
+            json_body={"values": values},
+            config=config,
+        )
+        return data if isinstance(data, str) and data.startswith("[Error]:") else _dump_json(data)
+    except Exception as e:
+        logger.error("microsoft_excel_add_table_row failed", exc_info=True)
+        return f"[Error]: Excel table row append failed: {e}"
+
+
 MICROSOFT_GRAPH_SERVICE_TOOLS = [
     microsoft_todo_list_task_lists,
     microsoft_todo_list_tasks,
@@ -620,4 +1009,18 @@ MICROSOFT_GRAPH_SERVICE_TOOLS = [
     microsoft_teams_list_channels,
     microsoft_teams_list_channel_messages,
     microsoft_teams_send_channel_message,
+    microsoft_sharepoint_search_sites,
+    microsoft_sharepoint_get_site,
+    microsoft_sharepoint_list_lists,
+    microsoft_sharepoint_list_items,
+    microsoft_sharepoint_get_item,
+    microsoft_sharepoint_create_item,
+    microsoft_sharepoint_update_item_fields,
+    microsoft_sharepoint_delete_item,
+    microsoft_excel_list_worksheets,
+    microsoft_excel_get_used_range,
+    microsoft_excel_read_range,
+    microsoft_excel_update_range,
+    microsoft_excel_list_tables,
+    microsoft_excel_add_table_row,
 ]
