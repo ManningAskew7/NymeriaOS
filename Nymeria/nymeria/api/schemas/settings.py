@@ -252,6 +252,10 @@ class ServerSettingsUpdate(BaseModel):
     mailchimp_access_token: Optional[str] = None
     mailchimp_server_prefix: Optional[str] = None
     mailchimp_base_url: Optional[str] = None
+    mautic_base_url: Optional[str] = None
+    mautic_access_token: Optional[str] = None
+    mautic_username: Optional[str] = None
+    mautic_password: Optional[str] = None
     freshdesk_api_key: Optional[str] = None
     freshdesk_domain: Optional[str] = None
     freshdesk_base_url: Optional[str] = None
