@@ -261,6 +261,30 @@ Shared-channel threads are inherently multi-user — per-user ownership rows wou
 - Deleting a thread (`DELETE /threads/{id}`) cascades through `thread_owners`, checkpoints, metadata, and config.
 - The orphan-backfill sweep on every restart is cheap and idempotent. If you don't want it (e.g. you intentionally hold ownerless threads), comment out the second pass in `NymeriaAgent.__init__`.
 
+## Planned: Optional Account Passwords and Email Reset
+
+The CLI (`python run.py users rotate-token`) operates directly on SQLite with
+no authentication. On a single-operator VPS this is fine — CLI access implies
+SSH access. On shared or bare-metal production installs (e.g. a Windows
+service), any local user could run the CLI to mint themselves an admin token.
+
+The `password_hash` column already exists in the `users` table but is not
+wired up. The plan:
+
+1. **Optional per-user password.** If a user sets a password (via UI or API),
+   the CLI `rotate-token` and API `POST /me/tokens` require it. If unset,
+   current token-only behavior is unchanged.
+2. **Email reset flow.** A "forgot password" path sends a time-limited reset
+   link to the user's email, covering the lockout scenario without needing
+   the CLI escape hatch.
+3. **`REQUIRE_ACCOUNT_PASSWORD` setting.** When `true`, all users must set a
+   password. Production admins enable this; solo/dev installs leave it off
+   (default `false`).
+
+This keeps single-operator setups frictionless while letting production
+deployments enforce password auth on token operations. See also the
+corresponding note in [`credentials.md`](credentials.md).
+
 ## Rationale for dedicated SQLite
 
 Accounts live in their own file rather than co-located with LangGraph's checkpoint database. The checkpoint backend is backend-switchable (SQLite locally, Postgres in Docker); keeping accounts SQLite-only keeps the account-layer code single-backend and avoids forcing a `psycopg` dependency path for what is fundamentally a low-volume, latency-insensitive store. The only cross-DB operation (Step 5's legacy thread backfill) reads `DISTINCT thread_id FROM checkpoints` and writes to `thread_owners` — two connections, one-shot, trivial.
