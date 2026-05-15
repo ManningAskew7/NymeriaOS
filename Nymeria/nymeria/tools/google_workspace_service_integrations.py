@@ -120,6 +120,22 @@ def _drive_request(
     )
 
 
+def _slides_request(
+    user_id: str,
+    operation: Callable[[Any], Any],
+    *,
+    account_id: Optional[str],
+) -> tuple[bool, Any]:
+    return _workspace_request(
+        user_id,
+        "slides",
+        "v1",
+        operation,
+        account_id=account_id,
+        api_label="Google Slides",
+    )
+
+
 def _resource_name(contact_id_or_resource: str) -> str:
     value = contact_id_or_resource.strip()
     if not value:
@@ -212,6 +228,54 @@ def _drive_query(
 
 def _rfc3339_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _slides_id(value: str, *, label: str = "presentation_id") -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{label} is required.")
+    return cleaned
+
+
+def _page_ids(value: str) -> list[str]:
+    if not value.strip():
+        return []
+    parsed = _parse_json(value, expected=list, label="page_object_ids_json")
+    out: list[str] = []
+    for item in parsed:
+        item_id = str(item).strip()
+        if item_id:
+            out.append(item_id)
+    return out
+
+
+def _slide_text(slide: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for element in slide.get("pageElements", []) or []:
+        shape = element.get("shape") if isinstance(element, dict) else None
+        text = shape.get("text") if isinstance(shape, dict) else None
+        for text_element in (text or {}).get("textElements", []) or []:
+            run = text_element.get("textRun") if isinstance(text_element, dict) else None
+            content = run.get("content") if isinstance(run, dict) else None
+            if content:
+                parts.append(str(content))
+    return "".join(parts).strip()
+
+
+def _summarize_slides(slides: list[dict[str, Any]], *, include_text: bool) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for idx, slide in enumerate(slides, start=1):
+        item: dict[str, Any] = {
+            "index": idx,
+            "objectId": slide.get("objectId"),
+            "pageType": slide.get("pageType"),
+        }
+        if "slideProperties" in slide:
+            item["slideProperties"] = slide.get("slideProperties")
+        if include_text:
+            item["text"] = _slide_text(slide)
+        summarized.append(item)
+    return summarized
 
 
 @tool
@@ -773,6 +837,220 @@ def google_drive_trash_file(
         return f"[Error]: Google Drive trash update failed: {e}"
 
 
+@tool
+def google_slides_create_presentation(
+    title: str,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a Google Slides presentation."""
+    user_id = get_user_id(config)
+    if not title.strip():
+        return "[Error]: title is required."
+    try:
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().create(body={"title": title.strip()}).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_create_presentation failed", exc_info=True)
+        return f"[Error]: Google Slides presentation creation failed: {e}"
+
+
+@tool
+def google_slides_get_presentation(
+    presentation_id: str,
+    fields: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get Google Slides presentation metadata and content."""
+    user_id = get_user_id(config)
+    try:
+        presentation_id = _slides_id(presentation_id)
+        kwargs: dict[str, Any] = {"presentationId": presentation_id}
+        if fields.strip():
+            kwargs["fields"] = fields.strip()
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().get(**kwargs).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_get_presentation failed", exc_info=True)
+        return f"[Error]: Google Slides presentation lookup failed: {e}"
+
+
+@tool
+def google_slides_list_slides(
+    presentation_id: str,
+    include_text: bool = True,
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List slides in a Google Slides presentation with optional text summaries."""
+    user_id = get_user_id(config)
+    try:
+        presentation_id = _slides_id(presentation_id)
+        fields = "presentationId,title,slides(objectId,pageType,slideProperties,pageElements(objectId,shape(text(textElements(textRun(content)))))"
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().get(presentationId=presentation_id, fields=fields).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return f"[Error]: {result}"
+        slides = result.get("slides", []) if isinstance(result, dict) else []
+        return _dump_json(
+            {
+                "presentationId": result.get("presentationId") if isinstance(result, dict) else presentation_id,
+                "title": result.get("title") if isinstance(result, dict) else None,
+                "slides": _summarize_slides(slides, include_text=include_text),
+            }
+        )
+    except Exception as e:
+        logger.error("google_slides_list_slides failed", exc_info=True)
+        return f"[Error]: Google Slides slide list failed: {e}"
+
+
+@tool
+def google_slides_get_page_thumbnail(
+    presentation_id: str,
+    page_object_id: str,
+    thumbnail_size: str = "LARGE",
+    mime_type: str = "PNG",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a temporary thumbnail URL for a Google Slides page."""
+    user_id = get_user_id(config)
+    try:
+        presentation_id = _slides_id(presentation_id)
+        page_object_id = _slides_id(page_object_id, label="page_object_id")
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().pages().getThumbnail(
+                presentationId=presentation_id,
+                pageObjectId=page_object_id,
+                **{
+                    "thumbnailProperties.thumbnailSize": thumbnail_size.strip().upper() or "LARGE",
+                    "thumbnailProperties.mimeType": mime_type.strip().upper() or "PNG",
+                },
+            ).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_get_page_thumbnail failed", exc_info=True)
+        return f"[Error]: Google Slides thumbnail lookup failed: {e}"
+
+
+@tool
+def google_slides_create_slide(
+    presentation_id: str,
+    insertion_index: int = -1,
+    predefined_layout: str = "BLANK",
+    object_id: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a slide in a Google Slides presentation."""
+    user_id = get_user_id(config)
+    try:
+        presentation_id = _slides_id(presentation_id)
+        create_slide: dict[str, Any] = {
+            "slideLayoutReference": {
+                "predefinedLayout": (predefined_layout.strip().upper() or "BLANK"),
+            }
+        }
+        if insertion_index >= 0:
+            create_slide["insertionIndex"] = int(insertion_index)
+        if object_id.strip():
+            create_slide["objectId"] = object_id.strip()
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().batchUpdate(
+                presentationId=presentation_id,
+                body={"requests": [{"createSlide": create_slide}]},
+            ).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_create_slide failed", exc_info=True)
+        return f"[Error]: Google Slides slide creation failed: {e}"
+
+
+@tool
+def google_slides_replace_text(
+    presentation_id: str,
+    contains_text: str,
+    replace_text: str,
+    match_case: bool = False,
+    page_object_ids_json: str = "",
+    required_revision_id: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Replace matching text across a Google Slides presentation or selected pages."""
+    user_id = get_user_id(config)
+    if not contains_text:
+        return "[Error]: contains_text is required."
+    try:
+        presentation_id = _slides_id(presentation_id)
+        request: dict[str, Any] = {
+            "replaceAllText": {
+                "containsText": {"text": contains_text, "matchCase": bool(match_case)},
+                "replaceText": replace_text,
+            }
+        }
+        page_ids = _page_ids(page_object_ids_json)
+        if page_ids:
+            request["replaceAllText"]["pageObjectIds"] = page_ids
+        body: dict[str, Any] = {"requests": [request]}
+        if required_revision_id.strip():
+            body["writeControl"] = {"requiredRevisionId": required_revision_id.strip()}
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().batchUpdate(presentationId=presentation_id, body=body).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_replace_text failed", exc_info=True)
+        return f"[Error]: Google Slides text replacement failed: {e}"
+
+
+@tool
+def google_slides_batch_update(
+    presentation_id: str,
+    requests_json: str,
+    required_revision_id: str = "",
+    account_id: Optional[str] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Run a Google Slides batchUpdate request for advanced presentation edits."""
+    user_id = get_user_id(config)
+    try:
+        presentation_id = _slides_id(presentation_id)
+        requests = _parse_json(requests_json, expected=list, label="requests_json")
+        body: dict[str, Any] = {"requests": requests}
+        if required_revision_id.strip():
+            body["writeControl"] = {"requiredRevisionId": required_revision_id.strip()}
+        success, result = _slides_request(
+            user_id,
+            lambda s: s.presentations().batchUpdate(presentationId=presentation_id, body=body).execute(),
+            account_id=account_id,
+        )
+        return _dump_json(result) if success else f"[Error]: {result}"
+    except Exception as e:
+        logger.error("google_slides_batch_update failed", exc_info=True)
+        return f"[Error]: Google Slides batch update failed: {e}"
+
+
 GOOGLE_WORKSPACE_SERVICE_TOOLS = [
     google_tasks_list_tasklists,
     google_tasks_list_tasks,
@@ -792,4 +1070,11 @@ GOOGLE_WORKSPACE_SERVICE_TOOLS = [
     google_drive_create_folder,
     google_drive_upload_text_file,
     google_drive_trash_file,
+    google_slides_create_presentation,
+    google_slides_get_presentation,
+    google_slides_list_slides,
+    google_slides_get_page_thumbnail,
+    google_slides_create_slide,
+    google_slides_replace_text,
+    google_slides_batch_update,
 ]
