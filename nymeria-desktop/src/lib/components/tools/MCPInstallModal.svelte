@@ -28,6 +28,7 @@
   let confirmed = $state(false);
   let error = $state<string | null>(null);
   let preview = $state<MCPInstallPreviewResponse | null>(null);
+  let selectedCandidateId = $state<string | null>(null);
   let result = $state<MCPInstallResponse | null>(null);
   let configValues = $state<Record<string, string>>({});
   let progressStep = $state(0);
@@ -63,10 +64,17 @@
 
   let detectedFormat = $derived(detectFormat(source));
   let canPreview = $derived(stage === 'input' && (source.trim().length > 0 || bundleFile !== null));
+  let activeCandidate = $derived.by(() => {
+    if (!preview) return null;
+    return preview.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? preview.candidates[0] ?? null;
+  });
+  let activeServer = $derived(activeCandidate?.server ?? preview?.server ?? null);
+  let activePlan = $derived(activeCandidate?.plan ?? preview?.plan ?? null);
   let canInstall = $derived(
     stage === 'preview' &&
     preview !== null &&
-    (!preview.plan.confirmation_required || confirmed)
+    activePlan !== null &&
+    (!activePlan.confirmation_required || confirmed)
   );
 
   function resetState() {
@@ -77,6 +85,7 @@
     confirmed = false;
     error = null;
     preview = null;
+    selectedCandidateId = null;
     result = null;
     configValues = {};
     progressStep = 0;
@@ -109,7 +118,8 @@
 
   function seedConfigValues(nextPreview: MCPInstallPreviewResponse) {
     const seeded: Record<string, string> = {};
-    for (const field of nextPreview.plan.required_config || []) {
+    const plan = nextPreview.candidates.find((candidate) => candidate.id === selectedCandidateId)?.plan ?? nextPreview.plan;
+    for (const field of plan.required_config || []) {
       if (field.default !== undefined && field.default !== null) {
         seeded[field.name] = String(field.default);
       }
@@ -131,6 +141,7 @@
         ? await mcpServersStore.previewUpload(bundleFile)
         : await mcpServersStore.preview({ source: source.trim() });
       preview = nextPreview;
+      selectedCandidateId = nextPreview.selectedCandidateId ?? nextPreview.candidates[0]?.id ?? null;
       seedConfigValues(nextPreview);
       stage = 'preview';
     } catch (e) {
@@ -148,10 +159,27 @@
     startProgress(2, 1800);
 
     try {
+      const plan = activePlan;
+      const config_values: Record<string, string> = {};
+      const credential_values: Record<string, string> = {};
+      for (const field of plan?.required_config ?? []) {
+        const value = configValues[field.name] ?? '';
+        if (!value) continue;
+        if (field.sensitive) {
+          credential_values[field.name] = value;
+        } else {
+          config_values[field.name] = value;
+        }
+      }
       const res = await mcpServersStore.install({
         preview_token: preview.previewToken,
+        candidate_id: selectedCandidateId ?? undefined,
         confirmed,
-        config_values: configValues,
+        confirmed_risk_ids: confirmed
+          ? (plan?.risk_signals ?? []).filter((signal) => signal.requires_confirmation).map((signal) => signal.id)
+          : [],
+        config_values,
+        credential_values,
         auto_enable: autoEnable,
         thread_id: threadId,
       });
@@ -194,6 +222,7 @@
   function handleBackToInput() {
     stage = 'input';
     preview = null;
+    selectedCandidateId = null;
     result = null;
     confirmed = false;
     error = null;
@@ -207,12 +236,26 @@
     configValues = { ...configValues, [name]: value };
   }
 
+  function handleCandidateChange(candidateId: string) {
+    selectedCandidateId = candidateId;
+    if (!preview) return;
+    const seeded: Record<string, string> = {};
+    const plan = preview.candidates.find((candidate) => candidate.id === candidateId)?.plan ?? preview.plan;
+    for (const field of plan.required_config || []) {
+      if (field.default !== undefined && field.default !== null) {
+        seeded[field.name] = String(field.default);
+      }
+    }
+    configValues = seeded;
+    confirmed = false;
+  }
+
   function fieldLabel(field: MCPInstallConfigField): string {
     return field.label || field.name;
   }
 
   function fieldDescription(field: MCPInstallConfigField): string {
-    return field.description || field.env_name || '';
+    return field.description || field.env_name || field.header_name || '';
   }
 
   function fieldInputType(field: MCPInstallConfigField): string {
@@ -347,49 +390,63 @@ https://github.com/example/mcp-server`}
         </ol>
       </div>
 
-    {:else if stage === 'preview' && preview}
+    {:else if stage === 'preview' && preview && activePlan && activeServer}
       <div class="preview-panel">
         <div class="preview-header">
           <div>
-            <h3>{preview.server.name}</h3>
-            <p>{preview.plan.parsed_summary}</p>
+            <h3>{activeServer.name}</h3>
+            <p>{activePlan.parsed_summary}</p>
           </div>
-          <span class="risk-pill {riskClass(preview.plan.risk_level)}">
-            {preview.plan.risk_level} risk
+          <span class="risk-pill {riskClass(activePlan.risk_level)}">
+            {activePlan.risk_level} risk
           </span>
         </div>
+
+        {#if preview.candidates.length > 1}
+          <label class="config-field">
+            <span>Detected server</span>
+            <select
+              value={selectedCandidateId ?? ''}
+              onchange={(event) => handleCandidateChange((event.currentTarget as HTMLSelectElement).value)}
+            >
+              {#each preview.candidates as candidate}
+                <option value={candidate.id}>{candidate.title}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
 
         <div class="plan-grid">
           <div class="plan-item">
             <span>Source</span>
-            <code>{preview.plan.source_type}</code>
+            <code>{activePlan.source_type}</code>
           </div>
           <div class="plan-item">
             <span>Runtime</span>
-            <code>{preview.plan.runtime_type}</code>
+            <code>{activePlan.runtime_type}</code>
           </div>
           <div class="plan-item wide">
             <span>Command</span>
-            <code>{preview.plan.command_preview || preview.server.url || 'runtime prepares command during install'}</code>
+            <code>{activePlan.command_preview || activeServer.url || 'runtime prepares command during install'}</code>
           </div>
         </div>
 
-        {#if preview.plan.warnings.length > 0}
+        {#if activePlan.warnings.length > 0}
           <div class="warning-banner">
             <Icon name="warning" size={16} />
             <div>
-              {#each preview.plan.warnings as warning}
+              {#each activePlan.warnings as warning}
                 <p>{warning}</p>
               {/each}
             </div>
           </div>
         {/if}
 
-        {#if preview.plan.required_config.length > 0}
+        {#if activePlan.required_config.length > 0}
           <div class="config-section">
             <span class="section-title">Required configuration</span>
             <div class="config-fields">
-              {#each preview.plan.required_config as field}
+              {#each activePlan.required_config as field}
                 <label class="config-field">
                   <span>
                     {fieldLabel(field)}
@@ -412,7 +469,7 @@ https://github.com/example/mcp-server`}
           </div>
         {/if}
 
-        {#if preview.plan.confirmation_required}
+        {#if activePlan.confirmation_required}
           <label class="confirm-box">
             <input type="checkbox" bind:checked={confirmed} />
             <span>
@@ -986,7 +1043,8 @@ https://github.com/example/mcp-server`}
     margin-left: 2px;
   }
 
-  .config-field input {
+  .config-field input,
+  .config-field select {
     width: 100%;
     min-height: 34px;
     padding: 0 var(--spacing-sm);
@@ -996,7 +1054,8 @@ https://github.com/example/mcp-server`}
     color: var(--text-primary);
   }
 
-  .config-field input:focus {
+  .config-field input:focus,
+  .config-field select:focus {
     outline: none;
     border-color: var(--accent-primary);
   }

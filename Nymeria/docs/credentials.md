@@ -32,7 +32,7 @@ The vault uses four SQLite tables:
 
 ## How Secrets Enter the Vault
 
-There are three paths:
+There are four paths:
 
 ### 1. Settings > Connections UI (Primary)
 
@@ -61,6 +61,23 @@ When the agent boots (`agent.py`), two migration functions run automatically:
   in MCP server configs into vault credentials. The original server definition
   is rewritten to use `${credential:id.value}` references. If decryption or
   import fails, the original value is left untouched and a warning is logged.
+
+### 4. Managed MCP Install
+
+The MCP preview/install flow scans pasted server definitions for secret-like
+env vars and HTTP headers by name and value. During install:
+
+- provided secret values are written as user-owned vault credentials with
+  `provider=mcp`, `kind=secret`, and `allowed_targets=["mcp_server:<server_id>"]`
+- server JSON stores only `${credential:<id>.value}` references
+- missing required secrets create `pending_setup` credentials instead of
+  placeholder values
+- if `NYMERIA_SECRETS_KEY` is missing, the install is saved as `needs_config`
+  with pending setup records rather than persisting plaintext
+
+The agent-facing `manage_mcp` tool never accepts or returns plaintext MCP
+secrets. It can create or bind pending setup records, then directs the user to
+finish in **Settings > Connections**.
 
 ## How Tools Automatically Get Their Credentials
 
@@ -112,6 +129,10 @@ from responses).
 Same `${credential:id.field}` pattern. When an MCP server starts, the MCP
 manager (`mcp_manager.py`) resolves these references in env vars and HTTP
 headers before spawning the process.
+
+Managed MCP installs use this path by default. New installs should not use
+legacy `encrypted_env_vars`; that field is only retained so old definitions can
+continue to boot until startup migration rewrites them.
 
 ### Path 4: LLM Provider Keys
 

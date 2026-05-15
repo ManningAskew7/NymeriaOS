@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from ..tools.definitions.mcp_schema import MCPServerDefinition
 from ..skills.marketplace import scan_for_suspicious_patterns
 from .mcp_sources import (
+    ENV_ASSIGNMENT_PATTERN,
     MCPInstallError,
     classify_mcp_source,
     describe_definition,
@@ -153,6 +154,14 @@ def _parse_stdio_command(command_str: str, *, name: Optional[str]) -> MCPServerD
     if not parts:
         raise MCPInstallError("empty command string")
 
+    env_vars: Dict[str, str] = {}
+    while parts and ENV_ASSIGNMENT_PATTERN.match(parts[0]):
+        key, value = parts.pop(0).split("=", 1)
+        env_vars[key] = value
+
+    if not parts:
+        raise MCPInstallError("stdio command is missing after env assignments")
+
     command, args = parts[0], parts[1:]
     _reject_suspicious(command, args)
 
@@ -166,6 +175,7 @@ def _parse_stdio_command(command_str: str, *, name: Optional[str]) -> MCPServerD
         transport="stdio",
         server_command=command,
         server_args=args,
+        env_vars=env_vars,
     )
 
 

@@ -114,6 +114,7 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/dashboard/ScheduledTodoItem.svelte",
     "lib/components/dashboard/index.ts",
     # Tools and MCP
+    "lib/components/tools/MCPInstallModal.svelte",
     "lib/components/tools/MCPManagementPanel.svelte",
     "lib/components/tools/MCPServerForm.svelte",
     "lib/components/tools/MCPServerPanel.svelte",

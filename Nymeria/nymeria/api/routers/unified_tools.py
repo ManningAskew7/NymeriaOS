@@ -133,6 +133,7 @@ def create_unified_tools_router(
             if tool_name in seen:
                 continue
             enabled = tool_name in dtt_set
+            live = bool(getattr(meta, "live", True))
             unified_tools.append(
                 UnifiedToolResponse(
                     id=tool_name,
@@ -142,7 +143,7 @@ def create_unified_tools_router(
                     custom_description=None,
                     category="mcp_server",
                     security_level="moderate",
-                    enabled=enabled,
+                    enabled=enabled and live,
                     enabled_reason="default_thread_tools",
                     tool_type="mcp_server",
                     implementation_type="mcp",
@@ -154,6 +155,8 @@ def create_unified_tools_router(
                     tags=[],
                     editable=False,
                     configurable=False,
+                    live=live,
+                    globally_disabled=not live,
                     created_at=None,
                     updated_at=None,
                 )
@@ -201,6 +204,12 @@ def create_unified_tools_router(
                 status_code=404,
                 detail=f"Tool '{tool_id}' not found",
             )
+        if request.enabled and getattr(tool_meta, "category", None) and tool_meta.category.value == "mcp_server":
+            if not getattr(tool_meta, "live", True):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"MCP tool '{tool_id}' is known but not currently available",
+                )
 
         if (
             request.enabled

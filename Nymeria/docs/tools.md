@@ -2305,19 +2305,33 @@ The classifier sources its default-bound set from the same place as graph-build 
 
 ### manage_mcp
 
-Search, preview, install, and inspect MCP servers through the capability
-expansion path.
+Search, preview, install, inspect, repair, and remove managed MCP servers
+through the capability expansion path.
 
 ```python
-manage_mcp(action: str, query: str = "", source: str = "", name: str = "", confirmed: bool = False, config_values: dict = {}, ttl: str = "2h", auto_enable_thread: bool = True)
+manage_mcp(action: str, query: str = "", source: str = "", name: str = "", server_id: str = "", preview_token: str = "", candidate_id: str = "", confirmed: bool = False, confirmed_risk_ids: list[str] = [], config_values: dict = {}, ttl: str = "2h", auto_enable_thread: bool = True)
 ```
 
-Actions are `search`, `preview`, `install`, and `inspect`/`status`/`list`.
+Actions are `search`, `preview`, `install`, `inspect`/`status`/`list`,
+`logs`, `test`, `discover`, `retry`, `disable`, `enable`, `delete`, and
+`configure_credentials`.
+
+`preview` is non-executing. It can return multiple candidates for multi-server
+JSON or prose with several install snippets; `install` selects one with
+`preview_token` plus `candidate_id`. Agent direct installs still run the same
+preview planner internally before any local process, package manager, Git
+clone, or bundle setup is allowed.
+
 Successful installs reload MCP server tools, enable discovered
 `mcp__<server>__<tool>` tools on the current thread when
 `auto_enable_thread=true`, and queue a same-turn reload with
 `source="mcp_install"`. Installing MCP servers remains admin-only at execution
 time because stdio servers can launch local commands.
+
+The agent cannot receive plaintext MCP secrets. If an install needs secret
+material, `manage_mcp(action="configure_credentials")` creates pending
+credential-vault records and tells the user to finish in Settings >
+Connections.
 
 `ttl` controls how long discovered tools stay bound on this thread. It accepts
 `Nm`, `Nh`, `Nd`, `Nw`, or `"never"`/`"permanent"`; default is `"2h"`.
@@ -3229,9 +3243,36 @@ HTTP tools make REST API calls with configurable:
 
 MCP tools connect to external MCP servers via JSON-RPC over stdio or HTTP.
 
-The MCP paste installer accepts Claude Desktop JSON, bare stdio commands, HTTP/SSE URLs, npm package pages, PyPI package pages, Git repository URLs, registry ids, bundle URLs, and uploaded `.mcpb`/`.dxt`/`.zip` bundles. The desktop installer previews the plan before running anything, asks for confirmation before Git/local-path/bundle installs, and saves failed installs as disabled drafts with logs so they can be retried. Sensitive pasted config values are encrypted with `NYMERIA_SECRETS_KEY`.
+The MCP paste installer accepts Claude Desktop/Cursor/Windsurf-style JSON,
+raw server objects, multi-server JSON, fenced commands, README prose,
+env-prefixed commands, HTTP/SSE URLs, npm package pages, PyPI package pages,
+Git repository URLs, registry ids, bundle URLs, and uploaded
+`.mcpb`/`.dxt`/`.zip` bundles. Preview is the UI entrypoint and does not run
+anything. It returns candidate server definitions, risk signals, install
+steps, credential requirements, and warnings. Install requires a selected
+preview candidate and explicit risk approval for downloaded code runners such
+as `npx`, `uvx`, Git, local paths, and bundles.
+
+Pasted MCP secrets are stored through the credential vault, not in MCP server
+JSON. Secret-like env vars and HTTP headers are converted to
+`${credential:<id>.value}` references; missing secrets create
+`pending_setup` credentials scoped to `mcp_server:<server_id>`. New managed
+installs do not write plaintext tokens/API keys/passwords or legacy
+`encrypted_env_vars`.
 
 Managed MCP servers and their discovered tools are configured from the dedicated **Settings → MCP** tab on desktop and mobile. Legacy user-created MCP custom tools remain under **Settings → Tools** with the other custom tools.
+
+Managed server definitions track install phases: `previewed`, `approved`,
+`preparing`, `discovering`, `ready`, `failed`, `needs_config`, and `disabled`.
+Logs and last errors are saved with secret redaction so failed installs can be
+inspected and retried.
+
+Discovered MCP tools are dynamic registry tools named
+`mcp__<server_id>__<tool_name>`. They are not entries in `OPTIONAL_TOOLS`.
+Metadata remains available for installed servers with live/enabled flags so
+the UI can distinguish known-but-unavailable tools from callable tools.
+Reload, disable, delete, and failed rediscovery unregister stale live tools and
+prune stale `mcp__...` names from user defaults and thread tool bindings.
 
 Known MCP auth presets are applied during install, retry, create, and update.
 For `@gongrzhe/server-gmail-autoauth-mcp`, Nymeria wires

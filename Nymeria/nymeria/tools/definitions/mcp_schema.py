@@ -8,7 +8,18 @@ from pydantic import BaseModel, Field, model_validator
 from ...core.time_utils import utc_now
 
 MCPTransport = Literal["stdio", "http"]
-MCPInstallStatus = Literal["ready", "draft", "failed"]
+MCPInstallStatus = Literal[
+    "previewed",
+    "approved",
+    "preparing",
+    "discovering",
+    "ready",
+    "failed",
+    "needs_config",
+    "disabled",
+    # Backwards-compatible value used by older managed-installer drafts.
+    "draft",
+]
 
 
 class MCPDiscoveredTool(BaseModel):
@@ -54,6 +65,9 @@ class MCPServerDefinition(BaseModel):
     install_logs: List[str] = []
     last_error: Optional[str] = None
     missing_config: List[Dict[str, Any]] = []
+    credential_requirements: List[Dict[str, Any]] = []
+    risk_signals: List[Dict[str, Any]] = []
+    registered_tool_names: List[str] = []
     risk_level: str = "low"
     confirmation_required: bool = False
     created_at: datetime = Field(default_factory=utc_now)

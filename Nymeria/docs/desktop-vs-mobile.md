@@ -249,6 +249,22 @@ Desktop: 1258 lines. Mobile: 145 lines. **Most divergent file.**
 
 Desktop version has inline rename, modifier-key click handling (Ctrl/Shift for multi-select), callable/config badges, and an accent-glowing Agent settings shortcut that remains visible for callable threads while staying hover/focus-only for other threads. Mobile version is simplified with just select + delete callbacks.
 
+#### `components/tools/MCPManagementPanel.svelte`, `MCPServerPanel.svelte`, and `MCPInstallModal.svelte`
+
+Both platforms support the managed MCP lifecycle: paste source, preview one or
+more detected candidates, approve risk, provide non-secret config or
+credential-vault-backed secret values, install, retry, enable/disable,
+rediscover, and delete. The API/store/type shapes should stay aligned across
+desktop and mobile.
+
+The implementations are KNOWN_DRIFT because desktop uses a wider modal with
+recipe shortcuts, upload preview, and denser server cards, while mobile uses a
+full-screen touch flow and currently exposes paste/preview/install/retry rather
+than bundle upload. Shared behavior changes must be replicated intentionally:
+candidate selection, `preview_token` + `candidate_id` install requests,
+`credential_values` for sensitive fields, `confirmed_risk_ids`, status/log
+rendering, and stale-tool refresh after install/retry/delete.
+
 #### `components/threads/ThreadSettingsPanel.svelte`
 
 Both exist and provide per-thread LLM config UI plus dedicated Agent, MCP, Skills, and Triggers tabs for callable-thread settings, MCP tool overrides, skill overrides, and trigger setup. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.

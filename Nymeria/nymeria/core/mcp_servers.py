@@ -141,6 +141,9 @@ class MCPServerRegistry:
 
         # Update definition and save
         defn.discovered_tools = discovered
+        defn.registered_tool_names = [
+            f"mcp__{defn.id}__{tool_def.name}" for tool_def in discovered
+        ]
         defn.updated_at = utc_now()
         self.save_server(defn)
 
@@ -179,7 +182,7 @@ class MCPServerRegistry:
         tools = []
 
         for defn in self._definitions.values():
-            if not defn.enabled:
+            if not defn.enabled or defn.install_status not in {"ready", "discovering"}:
                 continue
             for dt in defn.discovered_tools:
                 tool_name = f"mcp__{defn.id}__{dt.name}"
@@ -242,32 +245,97 @@ class MCPServerRegistry:
     ) -> type:
         """Create a Pydantic model from MCP JSON Schema input_schema."""
         from pydantic import Field, create_model
-        from typing import Optional
+        from typing import Any, Literal, Optional, Union
 
-        properties = input_schema.get("properties", {})
-        required_fields = set(input_schema.get("required", []))
+        def clean_model_name(raw: str) -> str:
+            cleaned = "".join(ch for ch in raw.title() if ch.isalnum())
+            return cleaned or "MCPArgs"
 
-        type_map = {
-            "string": str,
-            "integer": int,
-            "number": float,
-            "boolean": bool,
-            "array": list,
-            "object": dict,
-        }
+        def schema_type(schema: Dict[str, Any], path: str) -> Any:
+            if not isinstance(schema, dict):
+                return Any
+            if "enum" in schema and isinstance(schema["enum"], list) and schema["enum"]:
+                try:
+                    return Literal.__getitem__(tuple(schema["enum"]))
+                except Exception:
+                    return Any
+            if "anyOf" in schema or "oneOf" in schema:
+                variants = schema.get("anyOf") or schema.get("oneOf") or []
+                mapped = tuple(schema_type(v, f"{path}Variant{i}") for i, v in enumerate(variants) if isinstance(v, dict))
+                if not mapped:
+                    return Any
+                if len(mapped) == 1:
+                    return mapped[0]
+                try:
+                    return Union.__getitem__(mapped)
+                except Exception:
+                    return Any
+            raw_type = schema.get("type")
+            if isinstance(raw_type, list):
+                non_null = [item for item in raw_type if item != "null"]
+                if len(non_null) == 1:
+                    raw_type = non_null[0]
+                else:
+                    return Any
+            if raw_type == "string":
+                return str
+            if raw_type == "integer":
+                return int
+            if raw_type == "number":
+                return float
+            if raw_type == "boolean":
+                return bool
+            if raw_type == "array":
+                item_type = schema_type(schema.get("items") or {}, f"{path}Item")
+                return list[item_type]  # type: ignore[valid-type]
+            if raw_type == "object" or "properties" in schema:
+                props = schema.get("properties")
+                if not isinstance(props, dict):
+                    return dict[str, Any]
+                required = set(schema.get("required") or [])
+                nested_fields = {}
+                for prop_name, prop_schema in props.items():
+                    nested_type = schema_type(prop_schema, f"{path}{clean_model_name(str(prop_name))}")
+                    default = ... if prop_name in required else prop_schema.get("default", None)
+                    nested_fields[str(prop_name)] = (
+                        nested_type if prop_name in required else Optional[nested_type],
+                        Field(
+                            default,
+                            description=prop_schema.get("description", "") if isinstance(prop_schema, dict) else "",
+                        ),
+                    )
+                return create_model(clean_model_name(path), **nested_fields)
+            return dict[str, Any]
+
+        def field_kwargs(prop: Dict[str, Any]) -> Dict[str, Any]:
+            kwargs: Dict[str, Any] = {"description": prop.get("description", "")}
+            for schema_key, field_key in (
+                ("minimum", "ge"),
+                ("maximum", "le"),
+                ("exclusiveMinimum", "gt"),
+                ("exclusiveMaximum", "lt"),
+                ("minLength", "min_length"),
+                ("maxLength", "max_length"),
+                ("pattern", "pattern"),
+            ):
+                if schema_key in prop:
+                    kwargs[field_key] = prop[schema_key]
+            return kwargs
+
+        properties = input_schema.get("properties", {}) if isinstance(input_schema, dict) else {}
+        required_fields = set(input_schema.get("required", [])) if isinstance(input_schema, dict) else set()
 
         fields = {}
         for name, prop in properties.items():
-            python_type = type_map.get(prop.get("type", "string"), str)
-            desc = prop.get("description", "")
-
+            prop = prop if isinstance(prop, dict) else {}
+            python_type = schema_type(prop, f"{tool_name}_{name}")
             if name in required_fields:
-                fields[name] = (python_type, Field(description=desc))
+                fields[name] = (python_type, Field(..., **field_kwargs(prop)))
             else:
-                default = prop.get("default")
+                default = prop.get("default", None)
                 fields[name] = (
                     Optional[python_type],
-                    Field(default=default, description=desc),
+                    Field(default, **field_kwargs(prop)),
                 )
 
         model_name = (

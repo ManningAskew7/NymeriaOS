@@ -192,16 +192,27 @@ def test_mcp_install_requires_confirmation_for_risky_sources(
     client, agent, registry = _client(tmp_path, api_client_builder, monkeypatch)
     token = _create_user(agent, "admin", role="admin")
 
-    response = client.post(
-        "/mcp-servers/install",
+    from nymeria.core import mcp_runtime
+
+    settings = api_client_builder.settings(tmp_path)
+    monkeypatch.setattr(mcp_runtime, "get_settings", lambda: settings)
+
+    preview = client.post(
+        "/mcp-servers/install/preview",
         headers=api_client_builder.auth(token),
         json={"source": "https://github.com/example/example-mcp-server"},
     )
+    assert preview.status_code == 200
 
+    response = client.post(
+        "/mcp-servers/install",
+        headers=api_client_builder.auth(token),
+        json={"preview_token": preview.json()["preview_token"]},
+    )
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert "needs admin confirmation" in detail["message"]
     assert detail["preview"]["confirmation_required"] is True
     assert detail["server"]["install_status"] == "draft"
     assert detail["server"]["enabled"] is False
-    assert list(registry.servers) == [detail["server"]["id"]]
+    assert list(registry.servers) == []

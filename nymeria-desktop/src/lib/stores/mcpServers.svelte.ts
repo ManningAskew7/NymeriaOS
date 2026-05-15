@@ -68,7 +68,7 @@ function createMCPServersStore() {
       return api.previewMCPServerUpload(file, name);
     },
 
-    async retry(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'config_values'> = {}): Promise<MCPInstallResponse> {
+    async retry(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'confirmed_risk_ids' | 'config_values' | 'credential_values' | 'credential_bindings'> = {}): Promise<MCPInstallResponse> {
       const result = await api.retryMCPServerInstall(serverId, request);
       servers = servers.map(s => s.id === serverId ? result.server : s);
       return result;

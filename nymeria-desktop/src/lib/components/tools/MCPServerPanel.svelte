@@ -72,7 +72,8 @@
 
   function getStatusColor(server: MCPServer): string {
     if (server.installStatus === 'failed') return '#f44336';
-    if (server.installStatus === 'draft') return '#f59e0b';
+    if (server.installStatus === 'draft' || server.installStatus === 'needs_config') return '#f59e0b';
+    if (server.installStatus === 'disabled') return 'var(--text-muted, #555)';
     if (!server.enabled) return 'var(--text-muted, #555)';
     if (server.discoveredTools.length === 0) return '#f59e0b';
     return '#22c55e';
@@ -80,6 +81,8 @@
 
   function getStatusLabel(server: MCPServer): string {
     if (server.installStatus === 'failed') return 'failed';
+    if (server.installStatus === 'needs_config') return 'needs config';
+    if (server.installStatus === 'disabled') return 'disabled';
     if (server.installStatus === 'draft') return 'draft';
     if (!server.enabled) return 'disabled';
     if (server.discoveredTools.length === 0) return 'no tools';
@@ -88,7 +91,7 @@
 
   function getStatusClass(server: MCPServer): string {
     if (server.installStatus === 'failed') return 'status-failed';
-    if (server.installStatus === 'draft') return 'status-draft';
+    if (server.installStatus === 'draft' || server.installStatus === 'needs_config') return 'status-draft';
     if (!server.enabled) return 'status-disabled';
     if (server.discoveredTools.length === 0) return 'status-draft';
     return 'status-ready';
@@ -212,7 +215,12 @@
     retryingServer = server.id;
     delete testResults[server.id];
     try {
-      const result = await mcpServersStore.retry(server.id, { confirmed: true });
+      const result = await mcpServersStore.retry(server.id, {
+        confirmed: true,
+        confirmed_risk_ids: (server.riskSignals || [])
+          .filter((signal) => signal.requires_confirmation)
+          .map((signal) => signal.id),
+      });
       if (result.status === 'draft') {
         testResults = {
           ...testResults,

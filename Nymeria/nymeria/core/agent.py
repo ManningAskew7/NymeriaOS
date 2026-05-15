@@ -2617,6 +2617,78 @@ class NymeriaAgent:
             logger.error(f"Failed to load custom tools: {e}", exc_info=True)
             return 0
 
+    def _unregister_existing_mcp_tools(self) -> set[str]:
+        """Remove previously registered dynamic MCP wrappers from the live registry."""
+        existing = {
+            tool.name
+            for tool in self.tool_registry.get_all_tools()
+            if getattr(tool, "name", "").startswith("mcp__")
+        }
+        for name in existing:
+            self.tool_registry.unregister(name)
+        return existing
+
+    def _prune_mcp_tool_bindings(self, live_tool_names: set[str]) -> int:
+        """Remove unavailable MCP tool names from defaults and thread configs."""
+        removed = 0
+
+        try:
+            for user_id in self.profile_manager.list_users():
+                with self.profile_manager.atomic_update(user_id) as profile:
+                    defaults = profile.tool_preferences.default_thread_tools
+                    if defaults is None:
+                        continue
+                    filtered = [
+                        name
+                        for name in defaults
+                        if not name.startswith("mcp__") or name in live_tool_names
+                    ]
+                    removed += len(defaults) - len(filtered)
+                    profile.tool_preferences.default_thread_tools = filtered
+        except Exception:
+            logger.debug("Failed to prune MCP defaults", exc_info=True)
+
+        try:
+            for thread_id in self.thread_config_manager.list_configured_threads():
+                tc = self.thread_config_manager.get_config(thread_id)
+                if tc is None:
+                    continue
+                original_enabled = list(tc.enabled_tools)
+                original_disabled = list(tc.disabled_tools)
+                original_temporary = dict(tc.temporary_tools)
+                tc.enabled_tools = [
+                    name
+                    for name in tc.enabled_tools
+                    if not name.startswith("mcp__") or name in live_tool_names
+                ]
+                tc.disabled_tools = [
+                    name
+                    for name in tc.disabled_tools
+                    if not name.startswith("mcp__") or name in live_tool_names
+                ]
+                tc.temporary_tools = {
+                    name: entry
+                    for name, entry in tc.temporary_tools.items()
+                    if not name.startswith("mcp__") or name in live_tool_names
+                }
+                removed += len(original_enabled) - len(tc.enabled_tools)
+                removed += len(original_disabled) - len(tc.disabled_tools)
+                removed += len(original_temporary) - len(tc.temporary_tools)
+                if (
+                    tc.enabled_tools != original_enabled
+                    or tc.disabled_tools != original_disabled
+                    or tc.temporary_tools != original_temporary
+                ):
+                    self.thread_config_manager.save_config(tc)
+                    if hasattr(self, "_graph_cache_lock"):
+                        self.invalidate_thread_config_cache(tc.thread_id)
+        except Exception:
+            logger.debug("Failed to prune MCP thread bindings", exc_info=True)
+
+        if removed:
+            logger.info("Pruned %d stale MCP tool binding(s)", removed)
+        return removed
+
     def _load_mcp_server_tools(self) -> int:
         """Load MCP server tools from the mcp_servers directory.
 
@@ -2631,7 +2703,9 @@ class NymeriaAgent:
             )
 
             registry = get_mcp_server_registry()
+            self._unregister_existing_mcp_tools()
             mcp_tools = registry.get_all_tools()
+            live_names = {tool.name for tool in mcp_tools}
 
             # Metadata covers every discovered tool across every installed
             # server — even ones whose defn.enabled is False — so that the
@@ -2642,9 +2716,16 @@ class NymeriaAgent:
             clear_mcp_server_tool_metadata()
             for defn in registry.get_all_servers():
                 for dt in defn.discovered_tools:
+                    tool_name = f"mcp__{defn.id}__{dt.name}"
                     register_mcp_server_tool_metadata(
-                        f"mcp__{defn.id}__{dt.name}", dt.description
+                        tool_name,
+                        dt.description,
+                        live=tool_name in live_names,
+                        enabled=bool(defn.enabled),
+                        server_id=defn.id,
+                        install_status=defn.install_status,
                     )
+            self._prune_mcp_tool_bindings(live_names)
 
             if mcp_tools:
                 self.tool_registry.register_all(mcp_tools)
@@ -2669,7 +2750,9 @@ class NymeriaAgent:
             )
 
             registry = reload_mcp_server_registry()
+            self._unregister_existing_mcp_tools()
             mcp_tools = registry.get_all_tools()
+            live_names = {tool.name for tool in mcp_tools}
 
             # See _load_mcp_server_tools: register metadata for every
             # discovered tool regardless of defn.enabled, so the UI's defaults
@@ -2678,9 +2761,16 @@ class NymeriaAgent:
             clear_mcp_server_tool_metadata()
             for defn in registry.get_all_servers():
                 for dt in defn.discovered_tools:
+                    tool_name = f"mcp__{defn.id}__{dt.name}"
                     register_mcp_server_tool_metadata(
-                        f"mcp__{defn.id}__{dt.name}", dt.description
+                        tool_name,
+                        dt.description,
+                        live=tool_name in live_names,
+                        enabled=bool(defn.enabled),
+                        server_id=defn.id,
+                        install_status=defn.install_status,
                     )
+            self._prune_mcp_tool_bindings(live_names)
 
             # Re-register tools
             if mcp_tools:
