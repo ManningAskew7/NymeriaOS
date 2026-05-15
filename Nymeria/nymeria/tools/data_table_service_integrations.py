@@ -22,6 +22,7 @@ _QUICKBASE_BASE_URL = "https://api.quickbase.com/v1"
 _SEATABLE_BASE_URL = "https://cloud.seatable.io"
 _STACKBY_BASE_URL = "https://stackby.com/api/betav1"
 _ADALO_BASE_URL = "https://api.adalo.com/v0"
+_KOBO_BASE_URL = "https://kf.kobotoolbox.org"
 _BUBBLE_LIVE_SEGMENT = "/api/1.1"
 _BUBBLE_DEV_SEGMENT = "/version-test/api/1.1"
 
@@ -212,6 +213,76 @@ def _api_key_config(
             display_name=display_name,
         )
     return _base_url(base), api_key
+
+
+def _kobo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    base, token_or_error = _api_key_config(
+        provider="kobotoolbox",
+        provider_aliases=("kobo", "kobo_toolbox", "kobo_toolbox_api", "kobokit"),
+        env_var="KOBOTOOLBOX_API_TOKEN",
+        settings_key_name="kobotoolbox_api_token",
+        settings_base_name="kobotoolbox_base_url",
+        default_base=_KOBO_BASE_URL,
+        tool_name=tool_name,
+        display_name="KoBoToolbox",
+        config=config,
+        field_names=("api_token", "apiToken", "token", "value"),
+    )
+    if not token_or_error or token_or_error.startswith("[Error]:"):
+        return base, token_or_error or ""
+    return base, {
+        "Accept": "application/json",
+        "Authorization": f"Token {token_or_error}",
+        "Content-Type": "application/json",
+        "User-Agent": "Nymeria",
+    }
+
+
+def _kobo_request(
+    tool_name: str,
+    method: str,
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    json_body: Any = None,
+    return_all: bool = False,
+    config: Optional[RunnableConfig] = None,
+) -> Any:
+    base_url, headers_or_error = _kobo_config(tool_name, config)
+    if isinstance(headers_or_error, str):
+        return headers_or_error
+    url = f"{base_url}{path}"
+    collected: list[Any] = []
+    next_url: str | None = url
+    current_params = params
+    while next_url:
+        data = _request_json(method, next_url, params=current_params, json_body=json_body, headers=headers_or_error)
+        if not return_all:
+            return data
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            collected.extend(data["results"])
+            next_url = data.get("next")
+            current_params = None
+        else:
+            return data
+    return collected
+
+
+def _kobo_list_value(data: Any, *, limit: int) -> Any:
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("results"), list):
+        return data["results"][:limit]
+    if isinstance(data, list):
+        return data[:limit]
+    return data
+
+
+def _json_list(value: str) -> str:
+    if not value.strip():
+        return ""
+    parsed = _csv_to_list(value)
+    return json.dumps(parsed)
 
 
 def _json_headers() -> dict[str, str]:
@@ -2421,6 +2492,406 @@ def cockpit_submit_form(
         return f"[Error]: Cockpit form submission failed: {e}"
 
 
+@tool
+def kobotoolbox_list_forms(
+    filter_query: str = "",
+    ordering: str = "",
+    descending: bool = False,
+    limit: int = 100,
+    return_all: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List KoBoToolbox forms/assets."""
+    try:
+        per_page = _limit(limit, default=100, max_value=3000)
+        order = ordering.strip()
+        if order and descending:
+            order = f"-{order.lstrip('-')}"
+        data = _kobo_request(
+            "kobotoolbox_list_forms",
+            "GET",
+            "/api/v2/assets/",
+            params={"limit": per_page, "q": filter_query.strip(), "ordering": order},
+            return_all=return_all,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_kobo_list_value(data, limit=per_page))
+    except Exception as e:
+        logger.error("kobotoolbox_list_forms failed", exc_info=True)
+        return f"[Error]: KoBoToolbox form listing failed: {e}"
+
+
+@tool
+def kobotoolbox_get_form(
+    form_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a KoBoToolbox form/asset by UID."""
+    form_id = form_id.strip()
+    if not form_id:
+        return "[Error]: form_id is required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_form",
+            "GET",
+            f"/api/v2/assets/{quote(form_id, safe='')}",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_form failed", exc_info=True)
+        return f"[Error]: KoBoToolbox form lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_redeploy_form(
+    form_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Redeploy a KoBoToolbox form."""
+    form_id = form_id.strip()
+    if not form_id:
+        return "[Error]: form_id is required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_redeploy_form",
+            "PATCH",
+            f"/api/v2/assets/{quote(form_id, safe='')}/deployment/",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_redeploy_form failed", exc_info=True)
+        return f"[Error]: KoBoToolbox form redeploy failed: {e}"
+
+
+@tool
+def kobotoolbox_list_submissions(
+    form_id: str,
+    filter_json: str = "",
+    fields: str = "",
+    sort: str = "",
+    limit: int = 100,
+    return_all: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List KoBoToolbox submissions for a form."""
+    form_id = form_id.strip()
+    if not form_id:
+        return "[Error]: form_id is required."
+    try:
+        if filter_json.strip():
+            _parse_json(filter_json, expected=dict, label="filter_json")
+        per_page = _limit(limit, default=100, max_value=3000)
+        data = _kobo_request(
+            "kobotoolbox_list_submissions",
+            "GET",
+            f"/api/v2/assets/{quote(form_id, safe='')}/data/",
+            params={
+                "limit": per_page,
+                "query": filter_json.strip(),
+                "fields": _json_list(fields),
+                "sort": sort.strip(),
+            },
+            return_all=return_all,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_kobo_list_value(data, limit=per_page))
+    except Exception as e:
+        logger.error("kobotoolbox_list_submissions failed", exc_info=True)
+        return f"[Error]: KoBoToolbox submission listing failed: {e}"
+
+
+@tool
+def kobotoolbox_get_submission(
+    form_id: str,
+    submission_id: str,
+    fields: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a KoBoToolbox submission by ID."""
+    form_id = form_id.strip()
+    submission_id = submission_id.strip()
+    if not form_id or not submission_id:
+        return "[Error]: form_id and submission_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_submission",
+            "GET",
+            f"/api/v2/assets/{quote(form_id, safe='')}/data/{quote(submission_id, safe='')}",
+            params={"fields": _json_list(fields)},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_submission failed", exc_info=True)
+        return f"[Error]: KoBoToolbox submission lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_delete_submission(
+    form_id: str,
+    submission_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a KoBoToolbox submission."""
+    form_id = form_id.strip()
+    submission_id = submission_id.strip()
+    if not form_id or not submission_id:
+        return "[Error]: form_id and submission_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_delete_submission",
+            "DELETE",
+            f"/api/v2/assets/{quote(form_id, safe='')}/data/{quote(submission_id, safe='')}",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_delete_submission failed", exc_info=True)
+        return f"[Error]: KoBoToolbox submission deletion failed: {e}"
+
+
+@tool
+def kobotoolbox_get_submission_validation(
+    form_id: str,
+    submission_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get validation status for a KoBoToolbox submission."""
+    if not form_id.strip() or not submission_id.strip():
+        return "[Error]: form_id and submission_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_submission_validation",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/data/{quote(submission_id.strip(), safe='')}/validation_status/",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_submission_validation failed", exc_info=True)
+        return f"[Error]: KoBoToolbox submission validation lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_set_submission_validation(
+    form_id: str,
+    submission_id: str,
+    validation_status_uid: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Set validation status for a KoBoToolbox submission."""
+    if not form_id.strip() or not submission_id.strip() or not validation_status_uid.strip():
+        return "[Error]: form_id, submission_id, and validation_status_uid are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_set_submission_validation",
+            "PATCH",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/data/{quote(submission_id.strip(), safe='')}/validation_status/",
+            json_body={"validation_status.uid": validation_status_uid.strip()},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_set_submission_validation failed", exc_info=True)
+        return f"[Error]: KoBoToolbox submission validation update failed: {e}"
+
+
+@tool
+def kobotoolbox_list_hooks(
+    form_id: str,
+    limit: int = 100,
+    return_all: bool = False,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List KoBoToolbox REST service hooks for a form."""
+    if not form_id.strip():
+        return "[Error]: form_id is required."
+    try:
+        per_page = _limit(limit, default=100, max_value=3000)
+        data = _kobo_request(
+            "kobotoolbox_list_hooks",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/hooks/",
+            params={"limit": per_page},
+            return_all=return_all,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(_kobo_list_value(data, limit=per_page))
+    except Exception as e:
+        logger.error("kobotoolbox_list_hooks failed", exc_info=True)
+        return f"[Error]: KoBoToolbox hook listing failed: {e}"
+
+
+@tool
+def kobotoolbox_get_hook(
+    form_id: str,
+    hook_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get a KoBoToolbox REST service hook."""
+    if not form_id.strip() or not hook_id.strip():
+        return "[Error]: form_id and hook_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_hook",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/hooks/{quote(hook_id.strip(), safe='')}",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_hook failed", exc_info=True)
+        return f"[Error]: KoBoToolbox hook lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_get_hook_logs(
+    form_id: str,
+    hook_id: str,
+    start_date: str = "",
+    end_date: str = "",
+    status: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get KoBoToolbox REST service hook logs."""
+    if not form_id.strip() or not hook_id.strip():
+        return "[Error]: form_id and hook_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_hook_logs",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/hooks/{quote(hook_id.strip(), safe='')}/logs/",
+            params={"start": start_date.strip(), "end": end_date.strip(), "status": status.strip()},
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_hook_logs failed", exc_info=True)
+        return f"[Error]: KoBoToolbox hook log lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_retry_hook(
+    form_id: str,
+    hook_id: str,
+    log_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Retry all or one KoBoToolbox REST service hook delivery."""
+    if not form_id.strip() or not hook_id.strip():
+        return "[Error]: form_id and hook_id are required."
+    try:
+        if log_id.strip():
+            path = (
+                f"/api/v2/assets/{quote(form_id.strip(), safe='')}/hooks/{quote(hook_id.strip(), safe='')}"
+                f"/logs/{quote(log_id.strip(), safe='')}/retry/"
+            )
+        else:
+            path = f"/api/v2/assets/{quote(form_id.strip(), safe='')}/hooks/{quote(hook_id.strip(), safe='')}/retry/"
+        data = _kobo_request("kobotoolbox_retry_hook", "PATCH", path, config=config)
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_retry_hook failed", exc_info=True)
+        return f"[Error]: KoBoToolbox hook retry failed: {e}"
+
+
+@tool
+def kobotoolbox_list_files(
+    form_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """List KoBoToolbox form media files."""
+    if not form_id.strip():
+        return "[Error]: form_id is required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_list_files",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/files",
+            params={"file_type": "form_media"},
+            return_all=True,
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_list_files failed", exc_info=True)
+        return f"[Error]: KoBoToolbox file listing failed: {e}"
+
+
+@tool
+def kobotoolbox_get_file(
+    form_id: str,
+    file_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Get KoBoToolbox form media file metadata."""
+    if not form_id.strip() or not file_id.strip():
+        return "[Error]: form_id and file_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_get_file",
+            "GET",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/files/{quote(file_id.strip(), safe='')}",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_get_file failed", exc_info=True)
+        return f"[Error]: KoBoToolbox file lookup failed: {e}"
+
+
+@tool
+def kobotoolbox_delete_file(
+    form_id: str,
+    file_id: str,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Delete a KoBoToolbox form media file."""
+    if not form_id.strip() or not file_id.strip():
+        return "[Error]: form_id and file_id are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_delete_file",
+            "DELETE",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/files/{quote(file_id.strip(), safe='')}",
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_delete_file failed", exc_info=True)
+        return f"[Error]: KoBoToolbox file deletion failed: {e}"
+
+
+@tool
+def kobotoolbox_create_file_from_url(
+    form_id: str,
+    file_url: str,
+    description: str = "Uploaded file",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Create a KoBoToolbox form media file that redirects to a URL."""
+    if not form_id.strip() or not file_url.strip():
+        return "[Error]: form_id and file_url are required."
+    try:
+        data = _kobo_request(
+            "kobotoolbox_create_file_from_url",
+            "POST",
+            f"/api/v2/assets/{quote(form_id.strip(), safe='')}/files/",
+            json_body={
+                "description": description.strip() or "Uploaded file",
+                "file_type": "form_media",
+                "metadata": {"redirect_url": file_url.strip()},
+            },
+            config=config,
+        )
+        return data if isinstance(data, str) else _dump_json(data)
+    except Exception as e:
+        logger.error("kobotoolbox_create_file_from_url failed", exc_info=True)
+        return f"[Error]: KoBoToolbox file creation failed: {e}"
+
+
 DATA_TABLE_SERVICE_TOOLS = [
     supabase_list_rows,
     supabase_insert_rows,
@@ -2489,4 +2960,20 @@ DATA_TABLE_SERVICE_TOOLS = [
     cockpit_list_singletons,
     cockpit_get_singleton,
     cockpit_submit_form,
+    kobotoolbox_list_forms,
+    kobotoolbox_get_form,
+    kobotoolbox_redeploy_form,
+    kobotoolbox_list_submissions,
+    kobotoolbox_get_submission,
+    kobotoolbox_delete_submission,
+    kobotoolbox_get_submission_validation,
+    kobotoolbox_set_submission_validation,
+    kobotoolbox_list_hooks,
+    kobotoolbox_get_hook,
+    kobotoolbox_get_hook_logs,
+    kobotoolbox_retry_hook,
+    kobotoolbox_list_files,
+    kobotoolbox_get_file,
+    kobotoolbox_delete_file,
+    kobotoolbox_create_file_from_url,
 ]

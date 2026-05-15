@@ -509,12 +509,88 @@ def test_cockpit_save_collection_entry_uses_query_token(monkeypatch):
     assert captured["json_body"] == {"data": {"_id": "entry-1", "title": "Ada"}}
 
 
+def test_kobotoolbox_list_submissions_uses_env_token(monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("KOBOTOOLBOX_API_TOKEN", "kobo-token")
+    monkeypatch.setenv("KOBOTOOLBOX_BASE_URL", "https://kobo.example")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "params": params, "headers": headers})
+        return {"results": [{"_id": 1, "name": "Ada"}]}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.kobotoolbox_list_submissions.func(
+            form_id="form1",
+            filter_json='{"_id": {"$gt": 0}}',
+            fields="name,_id",
+            limit=10,
+        )
+    )
+
+    assert result[0]["name"] == "Ada"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://kobo.example/api/v2/assets/form1/data/"
+    assert captured["headers"]["Authorization"] == "Token kobo-token"
+    assert captured["params"]["limit"] == 10
+    assert captured["params"]["query"] == '{"_id": {"$gt": 0}}'
+    assert json.loads(captured["params"]["fields"]) == ["name", "_id"]
+
+
+def test_kobotoolbox_create_file_from_url_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import data_table_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="KoBoToolbox",
+        provider="kobotoolbox",
+        kind="api_key",
+        allowed_targets=["native_tool:kobotoolbox_create_file_from_url"],
+        secret_fields={"apiToken": "kobo-token", "base_url": "https://kobo.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, headers=None):
+        captured.update({"method": method, "url": url, "json_body": json_body, "headers": headers})
+        return {"uid": "file-1"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.kobotoolbox_create_file_from_url.func(
+            form_id="form1",
+            file_url="https://example.com/image.png",
+            description="Reference image",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["uid"] == "file-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://kobo.example/api/v2/assets/form1/files/"
+    assert captured["headers"]["Authorization"] == "Token kobo-token"
+    assert captured["json_body"] == {
+        "description": "Reference image",
+        "file_type": "form_media",
+        "metadata": {"redirect_url": "https://example.com/image.png"},
+    }
+
+
 def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import data_table_service_integrations as tools
 
     monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
     monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.setenv("QUICKBASE_HOSTNAME", "example.quickbase.com")
+    monkeypatch.delenv("KOBOTOOLBOX_API_TOKEN", raising=False)
 
     baserow_result = tools.baserow_list_tables.func()
     nocodb_result = tools.nocodb_list_bases.func()
@@ -527,6 +603,7 @@ def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     adalo_result = tools.adalo_list_records.func(collection_id="collection-1")
     bubble_result = tools.bubble_list_objects.func(type_name="Contact")
     cockpit_result = tools.cockpit_list_collections.func()
+    kobo_result = tools.kobotoolbox_list_forms.func()
 
     assert 'provider "baserow"' in baserow_result
     assert "BASEROW_API_TOKEN" in baserow_result
@@ -550,6 +627,8 @@ def test_data_table_missing_credentials_return_setup_hints(monkeypatch):
     assert "BUBBLE_API_TOKEN + BUBBLE_APP_NAME" in bubble_result
     assert 'provider "cockpit"' in cockpit_result
     assert "COCKPIT_BASE_URL + COCKPIT_ACCESS_TOKEN" in cockpit_result
+    assert 'provider "kobotoolbox"' in kobo_result
+    assert "KOBOTOOLBOX_API_TOKEN" in kobo_result
 
 
 def test_data_table_tools_are_registered_with_metadata():
@@ -594,6 +673,16 @@ def test_data_table_tools_are_registered_with_metadata():
         "cockpit_list_collection_entries",
         "cockpit_list_singletons",
         "cockpit_get_singleton",
+        "kobotoolbox_list_forms",
+        "kobotoolbox_get_form",
+        "kobotoolbox_list_submissions",
+        "kobotoolbox_get_submission",
+        "kobotoolbox_get_submission_validation",
+        "kobotoolbox_list_hooks",
+        "kobotoolbox_get_hook",
+        "kobotoolbox_get_hook_logs",
+        "kobotoolbox_list_files",
+        "kobotoolbox_get_file",
     ]
     moderate_names = [
         "supabase_insert_rows",
@@ -626,6 +715,12 @@ def test_data_table_tools_are_registered_with_metadata():
         "bubble_delete_object",
         "cockpit_save_collection_entry",
         "cockpit_submit_form",
+        "kobotoolbox_redeploy_form",
+        "kobotoolbox_delete_submission",
+        "kobotoolbox_set_submission_validation",
+        "kobotoolbox_retry_hook",
+        "kobotoolbox_delete_file",
+        "kobotoolbox_create_file_from_url",
     ]
 
     for name in safe_names:
@@ -651,6 +746,7 @@ def test_data_table_tool_schemas_hide_runtime_config():
         coda_create_table_row,
         cockpit_save_collection_entry,
         grist_list_records,
+        kobotoolbox_create_file_from_url,
         nocodb_update_record,
         quickbase_query_records,
         seatable_create_row,
@@ -665,6 +761,7 @@ def test_data_table_tool_schemas_hide_runtime_config():
     assert "config" not in nocodb_update_record.args_schema.model_json_schema()["properties"]
     assert "config" not in coda_create_table_row.args_schema.model_json_schema()["properties"]
     assert "config" not in grist_list_records.args_schema.model_json_schema()["properties"]
+    assert "config" not in kobotoolbox_create_file_from_url.args_schema.model_json_schema()["properties"]
     assert "config" not in supabase_insert_rows.args_schema.model_json_schema()["properties"]
     assert "config" not in quickbase_query_records.args_schema.model_json_schema()["properties"]
     assert "config" not in seatable_create_row.args_schema.model_json_schema()["properties"]

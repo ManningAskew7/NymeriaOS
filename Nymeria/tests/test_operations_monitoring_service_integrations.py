@@ -365,10 +365,78 @@ def test_splunk_create_search_job_uses_vault_token_and_ssl_flag(tmp_path, monkey
     assert captured["verify"] is False
 
 
+def test_rundeck_get_job_metadata_uses_vault_token(tmp_path, monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    repo = _repo(tmp_path, monkeypatch)
+    _use_repo(monkeypatch, repo)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Rundeck",
+        provider="rundeck",
+        kind="api_key",
+        allowed_targets=["native_tool:rundeck_get_job_metadata"],
+        secret_fields={"token": "rundeck-token", "base_url": "https://rundeck.example"},
+        created_by_user_id="alice",
+    )
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "headers": headers})
+        return {"id": "job-1", "name": "Deploy"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.rundeck_get_job_metadata.func(
+            job_id="job-1",
+            config={"configurable": {"user_id": "alice"}},
+        )
+    )
+
+    assert result["id"] == "job-1"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://rundeck.example/api/18/job/job-1/info"
+    assert captured["headers"]["X-Rundeck-Auth-Token"] == "rundeck-token"
+
+
+def test_rundeck_execute_job_uses_env_token(monkeypatch):
+    from nymeria.tools import operations_monitoring_service_integrations as tools
+
+    monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.setenv("RUNDECK_BASE_URL", "https://rundeck.example")
+    monkeypatch.setenv("RUNDECK_TOKEN", "rundeck-token")
+    captured = {}
+
+    def fake_request(method, url, params=None, json_body=None, form_data=None, headers=None, auth=None, verify=True):
+        captured.update({"method": method, "url": url, "params": params, "json_body": json_body, "headers": headers})
+        return {"id": "exec-1", "status": "running"}
+
+    monkeypatch.setattr(tools, "_request_json", fake_request)
+
+    result = json.loads(
+        tools.rundeck_execute_job.func(
+            job_id="job-1",
+            arguments_json='{"env":"prod","message":"hello world"}',
+            node_filter="name:node1",
+        )
+    )
+
+    assert result["id"] == "exec-1"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://rundeck.example/api/14/job/job-1/run"
+    assert captured["headers"]["X-Rundeck-Auth-Token"] == "rundeck-token"
+    assert captured["params"] == {"filter": "name:node1"}
+    assert captured["json_body"]["argString"] == "-env prod -message 'hello world'"
+
+
 def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatch):
     from nymeria.tools import operations_monitoring_service_integrations as tools
 
     monkeypatch.setattr(tools, "_credential_value", lambda **kwargs: None)
+    monkeypatch.delenv("RUNDECK_BASE_URL", raising=False)
+    monkeypatch.delenv("RUNDECK_TOKEN", raising=False)
 
     netlify_result = tools.netlify_list_sites.func()
     uptimerobot_result = tools.uptimerobot_get_account.func()
@@ -379,6 +447,7 @@ def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatc
     metabase_result = tools.metabase_list_questions.func()
     elasticsearch_result = tools.elasticsearch_list_indices.func()
     splunk_result = tools.splunk_list_saved_searches.func()
+    rundeck_result = tools.rundeck_get_job_metadata.func(job_id="job-1")
 
     assert 'provider "netlify"' in netlify_result
     assert "NETLIFY_ACCESS_TOKEN" in netlify_result
@@ -398,6 +467,8 @@ def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatc
     assert "ELASTICSEARCH_BASE_URL" in elasticsearch_result
     assert 'provider "splunk"' in splunk_result
     assert "SPLUNK_BASE_URL" in splunk_result
+    assert "Rundeck base URL" in rundeck_result
+    assert "RUNDECK_BASE_URL" in rundeck_result
 
 
 def test_operations_monitoring_tools_are_registered_with_metadata():
@@ -440,6 +511,7 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
         "splunk_list_saved_searches",
         "splunk_get_search_job",
         "splunk_get_search_results",
+        "rundeck_get_job_metadata",
     ]
     moderate_names = [
         "netlify_cancel_deploy",
@@ -462,6 +534,7 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
         "elasticsearch_index_document",
         "elasticsearch_delete_document",
         "splunk_create_search_job",
+        "rundeck_execute_job",
     ]
 
     for name in safe_names:
@@ -487,6 +560,7 @@ def test_operations_monitoring_tool_schemas_hide_runtime_config():
         metabase_query_question,
         netlify_list_sites,
         pagerduty_create_incident,
+        rundeck_execute_job,
         sentry_update_issue,
         splunk_create_search_job,
         uptimerobot_list_monitors,
@@ -501,3 +575,4 @@ def test_operations_monitoring_tool_schemas_hide_runtime_config():
     assert "config" not in metabase_query_question.args_schema.model_json_schema()["properties"]
     assert "config" not in elasticsearch_search.args_schema.model_json_schema()["properties"]
     assert "config" not in splunk_create_search_job.args_schema.model_json_schema()["properties"]
+    assert "config" not in rundeck_execute_job.args_schema.model_json_schema()["properties"]
