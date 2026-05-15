@@ -194,6 +194,16 @@ class ServerSettingsUpdate(BaseModel):
     jira_base_url: Optional[str] = None
     clickup_access_token: Optional[str] = None
     clickup_base_url: Optional[str] = None
+    monday_api_token: Optional[str] = None
+    monday_api_url: Optional[str] = None
+    taiga_auth_token: Optional[str] = None
+    taiga_username: Optional[str] = None
+    taiga_password: Optional[str] = None
+    taiga_base_url: Optional[str] = None
+    wekan_base_url: Optional[str] = None
+    wekan_token: Optional[str] = None
+    wekan_username: Optional[str] = None
+    wekan_password: Optional[str] = None
     slack_bot_token: Optional[str] = None
     slack_access_token: Optional[str] = None
     slack_base_url: Optional[str] = None
