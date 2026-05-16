@@ -97,6 +97,7 @@ EXPECTED_ROUTES = [
     ("/notifications/read-all", ("POST",)),
     ("/notifications/{notification_id}/read", ("POST",)),
     ("/platform/resolve", ("GET",)),
+    ("/ready", ("GET",)),
     ("/report", ("POST",)),
     ("/restart", ("POST",)),
     ("/settings", ("GET",)),
@@ -236,6 +237,41 @@ def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder)
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["version"] == __version__
+
+
+def test_public_ready_checks_dependencies_without_auth(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["version"] == __version__
+    assert body["checks"]["database"]["status"] == "ok"
+    assert body["checks"]["redis"]["status"] == "skipped"
+
+
+def test_public_ready_returns_503_when_dependency_fails(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(tmp_path, redis_enabled=True, redis_url=None)
+    agent = FakeAgent(tmp_path)
+    client = api_client_builder.client(agent, settings)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["checks"]["redis"] == {
+        "status": "error",
+        "detail": "REDIS_URL is unset",
+    }
 
 
 def test_api_responses_include_baseline_security_headers(

@@ -1,5 +1,7 @@
 """System endpoint schemas."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ... import __version__
@@ -10,6 +12,21 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = __version__
+
+
+class DependencyReadiness(BaseModel):
+    """Readiness state for one runtime dependency."""
+
+    status: Literal["ok", "skipped", "error"]
+    detail: str | None = None
+
+
+class ReadinessResponse(BaseModel):
+    """Response model for readiness checks."""
+
+    status: Literal["ok", "error"]
+    version: str = __version__
+    checks: dict[str, DependencyReadiness]
 
 
 class ReportRequest(BaseModel):
