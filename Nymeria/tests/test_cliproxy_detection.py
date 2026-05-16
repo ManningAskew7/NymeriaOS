@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from nymeria.vendor.react_agent.cliproxy import (
     CLIPROXY_BILLING_SYSTEM_BLOCK,
     CLIPROXY_PORTS,
@@ -105,6 +107,97 @@ class TestUsesCliproxyAnthropic:
 
         cfg = self._make_config(base_url=None)
         assert _uses_cliproxy_anthropic(cfg) is False
+
+
+class TestAnthropicCacheBreakpoints:
+    def _make_config(self, **overrides) -> LLMConfig:
+        defaults = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "test-key",
+        }
+        defaults.update(overrides)
+        return LLMConfig(**defaults)
+
+    def test_direct_anthropic_system_prompt_gets_cache_breakpoint(self):
+        from nymeria.vendor.react_agent.nodes import (
+            _format_system_prompt,
+            _uses_direct_anthropic,
+        )
+
+        cfg = self._make_config()
+
+        assert _uses_direct_anthropic(cfg) is True
+        formatted = _format_system_prompt("You are Nymeria.", cfg)
+
+        assert formatted == [
+            {
+                "type": "text",
+                "text": "You are Nymeria.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    def test_cliproxy_anthropic_keeps_billing_block_without_cache_breakpoint(self):
+        from nymeria.vendor.react_agent.nodes import (
+            _format_system_prompt,
+            _uses_direct_anthropic,
+        )
+
+        cfg = self._make_config(base_url="http://cli-proxy-api:8317")
+
+        assert _uses_direct_anthropic(cfg) is False
+        formatted = _format_system_prompt("You are Nymeria.", cfg)
+
+        assert formatted[0] == CLIPROXY_BILLING_SYSTEM_BLOCK
+        assert formatted[1] == {"type": "text", "text": "You are Nymeria."}
+
+    def test_conversation_cache_breakpoint_targets_second_to_last_user_message(self):
+        from nymeria.vendor.react_agent.nodes import (
+            _inject_conversation_cache_breakpoint,
+        )
+
+        messages = [
+            HumanMessage(content="first turn"),
+            AIMessage(content="first response"),
+            HumanMessage(content="second turn"),
+        ]
+
+        updated = _inject_conversation_cache_breakpoint(messages)
+
+        assert messages[0].content == "first turn"
+        assert updated[0].content == [
+            {
+                "type": "text",
+                "text": "first turn",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        assert updated[1] is messages[1]
+        assert updated[2] is messages[2]
+
+    def test_conversation_cache_breakpoint_respects_existing_annotations(self):
+        from nymeria.vendor.react_agent.nodes import (
+            _inject_conversation_cache_breakpoint,
+        )
+
+        messages = [
+            HumanMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "first turn",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            ),
+            HumanMessage(content="second turn"),
+        ]
+
+        updated = _inject_conversation_cache_breakpoint(messages)
+
+        assert updated is messages
 
 
 # ---------------------------------------------------------------------------
