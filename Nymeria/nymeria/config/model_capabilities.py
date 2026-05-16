@@ -65,8 +65,11 @@ _model_cache: Dict[str, ModelInfo] = {}
 _live_model_cache: Dict[str, ModelInfo] = {}
 _cache_timestamp: float = 0
 _cache_populated: bool = False
+_cache_failure_timestamp: float = 0
 _CACHE_TTL_SECONDS = 3600  # Refresh cache every hour
+_CACHE_FAILURE_TTL_SECONDS = 60  # Avoid repeated sync fetches during outages
 _cache_lock = threading.Lock()
+_cache_refresh_lock = threading.Lock()
 
 # Default context limits for common models (fallback when API unavailable)
 DEFAULT_CONTEXT_LIMITS = {
@@ -307,20 +310,40 @@ def _fetch_openrouter_models() -> Dict[str, ModelInfo]:
 
 def _ensure_cache() -> Dict[str, ModelInfo]:
     """Ensure cache is populated and not stale."""
-    global _model_cache, _cache_timestamp, _cache_populated
+    global _model_cache, _cache_timestamp, _cache_populated, _cache_failure_timestamp
 
     now = time.time()
-    if _cache_populated and (now - _cache_timestamp) <= _CACHE_TTL_SECONDS:
-        return _model_cache
-
-    result = _fetch_openrouter_models()
     with _cache_lock:
-        if result:
-            _model_cache = {**result, **_model_cache}
-            _cache_timestamp = time.time()
-            _cache_populated = True
+        if _cache_populated and (now - _cache_timestamp) <= _CACHE_TTL_SECONDS:
+            return _model_cache
+        if (
+            _cache_failure_timestamp
+            and (now - _cache_failure_timestamp) <= _CACHE_FAILURE_TTL_SECONDS
+        ):
+            return _model_cache
 
-    return _model_cache
+    with _cache_refresh_lock:
+        now = time.time()
+        with _cache_lock:
+            if _cache_populated and (now - _cache_timestamp) <= _CACHE_TTL_SECONDS:
+                return _model_cache
+            if (
+                _cache_failure_timestamp
+                and (now - _cache_failure_timestamp) <= _CACHE_FAILURE_TTL_SECONDS
+            ):
+                return _model_cache
+
+        result = _fetch_openrouter_models()
+        with _cache_lock:
+            if result:
+                _model_cache = {**result, **_model_cache}
+                _cache_timestamp = time.time()
+                _cache_populated = True
+                _cache_failure_timestamp = 0
+            else:
+                _cache_failure_timestamp = time.time()
+
+            return _model_cache
 
 
 def _lookup_model(model_id: str) -> Optional[ModelInfo]:
@@ -610,13 +633,14 @@ def get_model_modalities(model_id: str) -> Set[str]:
 
 def refresh_capabilities_cache() -> int:
     """Force refresh the capabilities cache."""
-    global _model_cache, _cache_timestamp, _cache_populated
+    global _model_cache, _cache_timestamp, _cache_populated, _cache_failure_timestamp
 
     result = _fetch_openrouter_models()
     with _cache_lock:
         _model_cache = result
         _cache_timestamp = time.time()
         _cache_populated = True
+        _cache_failure_timestamp = 0 if result else _cache_timestamp
 
     return len(result)
 
