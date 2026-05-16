@@ -15,16 +15,26 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Detect a source checkout for development backend management. Installed
-    // builds intentionally fall through to client-only mode.
-    let (pm, api_key) = match ProcessManager::detect_runtime_layout() {
-        Ok(layout) => {
-            let key = auto_config::ensure_env_file(layout.backend_root()).unwrap_or_default();
-            let manager = Arc::new(ProcessManager::new(layout));
-            (Some(manager), key)
-        }
-        Err(_) => {
-            // Client-only mode: no local backend, frontend connects to remote
-            (None, String::new())
+    // builds intentionally fall through to client-only mode. NYMERIA_CLIENT_ONLY=1
+    // forces client-only even from a source checkout, for pointing dev at a
+    // remote backend (e.g. a VPS) via the Setup Wizard.
+    let force_client_only = std::env::var("NYMERIA_CLIENT_ONLY")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(false);
+
+    let (pm, api_key) = if force_client_only {
+        (None, String::new())
+    } else {
+        match ProcessManager::detect_runtime_layout() {
+            Ok(layout) => {
+                let key = auto_config::ensure_env_file(layout.backend_root()).unwrap_or_default();
+                let manager = Arc::new(ProcessManager::new(layout));
+                (Some(manager), key)
+            }
+            Err(_) => {
+                // Client-only mode: no local backend, frontend connects to remote
+                (None, String::new())
+            }
         }
     };
 
