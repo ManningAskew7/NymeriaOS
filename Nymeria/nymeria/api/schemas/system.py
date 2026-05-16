@@ -2,12 +2,14 @@
 
 from pydantic import BaseModel, Field
 
+from ... import __version__
+
 
 class HealthResponse(BaseModel):
     """Response model for health check."""
 
     status: str = "ok"
-    version: str = "1.0.0"
+    version: str = __version__
 
 
 class ReportRequest(BaseModel):

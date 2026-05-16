@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi.routing import APIRoute
 
+from nymeria import __version__
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
 
@@ -234,6 +235,7 @@ def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder)
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["version"] == __version__
 
 
 def test_api_responses_include_baseline_security_headers(
@@ -267,6 +269,7 @@ def test_api_docs_and_schema_can_be_enabled(tmp_path: Path, api_client_builder):
     schema = client.get("/openapi.json")
     assert schema.status_code == 200
     assert schema.json()["info"]["title"] == "Nymeria API"
+    assert schema.json()["info"]["version"] == __version__
 
 
 def test_frontend_spa_fallback_serves_browser_routes(
