@@ -61,8 +61,6 @@ function createBackendProcessStore() {
       return;
     }
 
-    status = 'starting';
-
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const response = await invoke<BackendStatusResponse>('get_backend_status');
