@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 from typing import NoReturn, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,7 @@ from ..core.accounts import (
 )
 from ..core.event_bus import publish_sync_event
 from ..core.rate_limit import SlidingWindowRateLimiter
+from ..core.request_context import reset_request_id, set_request_id
 from ..core import thread_classification as _thread_classification
 from ..tools import ALL_TOOLS
 from ..api.routers.accounts import create_accounts_router
@@ -63,6 +65,14 @@ _AUTH_FAILURE_RATE_LIMIT = 10
 _AUTH_FAILURE_RATE_WINDOW_SECONDS = 60.0
 _auth_failure_rate_limiter = SlidingWindowRateLimiter()
 _FRONTEND_RESERVED_PREFIXES = {"_app", "docs", "openapi.json", "redoc"}
+_REQUEST_ID_HEADER = "X-Request-ID"
+_REQUEST_ID_ALLOWED_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "._:-"
+)
+_REQUEST_ID_MAX_LENGTH = 128
 
 
 def get_agent() -> NymeriaAgent:
@@ -113,6 +123,17 @@ def _is_api_like_frontend_miss(path: str, api_prefixes: set[str]) -> bool:
 
 def _request_accepts_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "")
+
+
+def _normalize_request_id(raw_request_id: str | None) -> str:
+    if raw_request_id:
+        request_id = raw_request_id.strip()
+        if (
+            0 < len(request_id) <= _REQUEST_ID_MAX_LENGTH
+            and all(char in _REQUEST_ID_ALLOWED_CHARS for char in request_id)
+        ):
+            return request_id
+    return str(uuid4())
 
 
 def _register_frontend_routes(app: FastAPI, frontend_dir: str) -> None:
@@ -571,6 +592,18 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         await close_provider_async_http_pools_for_loop()
 
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
+
+    @app.middleware("http")
+    async def _request_id_context(request: Request, call_next):
+        request_id = _normalize_request_id(request.headers.get(_REQUEST_ID_HEADER))
+        request.state.request_id = request_id
+        token = set_request_id(request_id)
+        try:
+            response = await call_next(request)
+            response.headers[_REQUEST_ID_HEADER] = request_id
+            return response
+        finally:
+            reset_request_id(token)
 
     @app.middleware("http")
     async def _security_headers(request: Request, call_next):

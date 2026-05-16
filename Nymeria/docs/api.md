@@ -27,6 +27,10 @@ Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Crea
 
 Failed bearer authentication attempts are rate-limited per client IP. After 10 missing, malformed, or invalid tokens within 60 seconds, further failed attempts return `429` with a `Retry-After` header. Valid tokens are not blocked by this failed-auth counter.
 
+Every API response includes `X-Request-ID`. If the client sends a safe
+`X-Request-ID` header, Nymeria propagates it; otherwise Nymeria generates one
+and includes it in request-scoped logs.
+
 Exceptions without Bearer auth:
 - `GET /health`
 - `GET /ready`
