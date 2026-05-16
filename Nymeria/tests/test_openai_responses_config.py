@@ -9,7 +9,10 @@ import warnings
 import anthropic
 import httpx
 from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import tool
 
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.cliproxy import (
@@ -27,6 +30,7 @@ from nymeria.vendor.react_agent.providers import (
     _should_disable_streaming_for_local_base_url,
     _wrap_cliproxy_context_management_event,
     create_llm,
+    create_llm_with_tools,
 )
 
 
@@ -74,6 +78,23 @@ def _run_in_new_event_loop(async_fn):
         loop.close()
 
 
+class _ToolOrderingFakeModel(BaseChatModel):
+    seen_tool_names: list[str] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "tool-ordering-fake"
+
+    def bind_tools(self, tools, **kwargs):
+        self.seen_tool_names = [tool.name for tool in tools]
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="ok"))]
+        )
+
+
 def test_chat_openai_with_reasoning_is_importable_stable_class():
     assert providers._get_chat_openai_with_reasoning() is ChatOpenAIWithReasoning
     assert (
@@ -86,6 +107,32 @@ def test_chat_openai_with_reasoning_is_importable_stable_class():
 
     assert type(openai_llm) is ChatOpenAIWithReasoning
     assert type(openrouter_llm) is ChatOpenAIWithReasoning
+
+
+def test_create_llm_with_tools_sorts_tools_deterministically():
+    @tool
+    def zz_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    @tool
+    def longer_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    @tool
+    def aa_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    model = _ToolOrderingFakeModel()
+
+    create_llm_with_tools(
+        LLMConfig(provider="custom", custom_llm=model),
+        [zz_tool, longer_tool, aa_tool],
+    )
+
+    assert model.seen_tool_names == ["longer_tool", "aa_tool", "zz_tool"]
 
 
 def test_openai_responses_mode_replays_checkpoint_items_payload():
@@ -305,10 +352,45 @@ def test_anthropic_non_cliproxy_base_url_does_not_use_context_management_adapter
 
     assert isinstance(llm, ChatAnthropic)
     assert type(llm) is not ChatAnthropic
-    assert type(llm).__name__ == "NymeriaChatAnthropic"
+    assert "NymeriaChatAnthropic" in type(llm).__name__
+    assert "CLIProxy" not in type(llm).__name__
     default_headers = llm._client_params.get("default_headers") or {}
     assert default_headers.get("User-Agent") != CLIPROXY_CLAUDE_USER_AGENT
     assert "Anthropic-Beta" not in default_headers
+
+
+def test_anthropic_direct_tool_payload_adds_cache_breakpoint():
+    @tool
+    def alpha_tool(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    llm = create_llm(_anthropic_config(base_url="https://api.anthropic.com"))
+    bound = llm.bind_tools([alpha_tool])
+
+    payload = bound.bound._get_request_payload(
+        [HumanMessage(content="hi")],
+        **bound.kwargs,
+    )
+
+    assert payload["tools"][-1]["name"] == "alpha_tool"
+    assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_tool_cache_breakpoint_respects_existing_annotations():
+    payload = {
+        "tools": [
+            {
+                "name": "existing",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"name": "plain"},
+        ]
+    }
+
+    providers._inject_tool_cache_control(payload)
+
+    assert "cache_control" not in payload["tools"][1]
 
 
 def test_anthropic_cliproxy_base_url_uses_context_management_adapter(monkeypatch):

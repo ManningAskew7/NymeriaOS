@@ -1134,7 +1134,7 @@ def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatM
         # Upstream bug filed against ggml-org/llama.cpp — this sort is a
         # harmless client-side workaround (tool order does not affect model
         # behavior, only the grammar ordering llama.cpp derives from it).
-        sorted_tools = sorted(tools, key=lambda t: len(t.name), reverse=True)
+        sorted_tools = sorted(tools, key=lambda t: (-len(t.name), t.name))
 
         return llm.bind_tools(sorted_tools)
 
@@ -1807,6 +1807,27 @@ atexit.register(_close_remaining_anthropic_async_http_pools_at_exit)
 atexit.register(_close_remaining_openai_async_http_pools_at_exit)
 
 
+_CACHE_CONTROL_EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
+
+
+def _inject_tool_cache_control(payload: dict) -> None:
+    """Add cache_control to the last tool definition in an Anthropic API payload.
+
+    Mirrors CLIProxy's strategy: a breakpoint on the last tool caches all
+    tool definitions as a prefix. Skips injection if any tool already has
+    cache_control (the caller may have set explicit breakpoints).
+    """
+    tools = payload.get("tools")
+    if not tools or not isinstance(tools, list):
+        return
+    for tool in tools:
+        if isinstance(tool, dict) and "cache_control" in tool:
+            return
+    last_tool = tools[-1]
+    if isinstance(last_tool, dict):
+        last_tool["cache_control"] = dict(_CACHE_CONTROL_EPHEMERAL)
+
+
 def _anthropic_chat_model_class_for_config(
     chat_model_cls: type[Any],
     config: LLMConfig,
@@ -1867,7 +1888,15 @@ def _anthropic_chat_model_class_for_config(
                 return async_client
 
     if not config.base_url or not looks_like_cliproxy_url(config.base_url):
-        return NymeriaChatAnthropic
+        # Direct Anthropic: inject cache_control on the last tool definition
+        # so the full tool schema prefix is cached across turns.
+        class NymeriaChatAnthropicWithToolCaching(NymeriaChatAnthropic):
+            def _get_request_payload(self, *args: Any, **kwargs: Any) -> dict:
+                payload = super()._get_request_payload(*args, **kwargs)
+                _inject_tool_cache_control(payload)
+                return payload
+
+        return NymeriaChatAnthropicWithToolCaching
 
     use_adapter, reason = _should_use_cliproxy_context_management_adapter(
         chat_model_cls

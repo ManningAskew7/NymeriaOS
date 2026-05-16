@@ -605,12 +605,30 @@ def _uses_cliproxy_anthropic(llm_config: Optional[LLMConfig]) -> bool:
     return looks_like_cliproxy_url(llm_config.base_url)
 
 
+def _uses_direct_anthropic(llm_config: Optional[LLMConfig]) -> bool:
+    """Return True for direct Anthropic API calls (not through CLIProxy)."""
+    if not llm_config or llm_config.provider != "anthropic":
+        return False
+    return not _uses_cliproxy_anthropic(llm_config)
+
+
+_CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
+
 def _format_system_prompt(
     system_prompt: str,
     llm_config: Optional[LLMConfig],
 ) -> str | list[dict[str, Any]]:
-    """Add CLIProxy's lightweight OAuth fingerprint without replacing Nymeria."""
-    if not _uses_cliproxy_anthropic(llm_config):
+    """Format system prompt with provider-specific annotations.
+
+    For CLIProxy Anthropic: prepends billing fingerprint block.
+    For direct Anthropic: adds cache_control breakpoint on the last block
+    so the system prompt is cached across turns.
+    """
+    is_cliproxy = _uses_cliproxy_anthropic(llm_config)
+    is_direct = _uses_direct_anthropic(llm_config)
+
+    if not is_cliproxy and not is_direct:
         return system_prompt
 
     if isinstance(system_prompt, list):
@@ -618,15 +636,77 @@ def _format_system_prompt(
     else:
         blocks = [{"type": "text", "text": system_prompt}]
 
-    has_billing_block = any(
-        isinstance(block, dict)
-        and str(block.get("text", "")).startswith("x-anthropic-billing-header:")
-        for block in blocks
-    )
-    if has_billing_block:
-        return blocks
+    if is_cliproxy:
+        has_billing_block = any(
+            isinstance(block, dict)
+            and str(block.get("text", "")).startswith("x-anthropic-billing-header:")
+            for block in blocks
+        )
+        if has_billing_block:
+            return blocks
+        return [dict(CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
 
-    return [dict(CLIPROXY_BILLING_SYSTEM_BLOCK), *blocks]
+    # Direct Anthropic: add cache_control to the last block
+    if blocks:
+        blocks[-1] = {
+            **blocks[-1],
+            "cache_control": dict(_CACHE_CONTROL_EPHEMERAL),
+        }
+    return blocks
+
+
+def _inject_conversation_cache_breakpoint(
+    messages: List[BaseMessage],
+) -> List[BaseMessage]:
+    """Add cache_control to the second-to-last human message for multi-turn caching.
+
+    Per Anthropic docs, placing a breakpoint on the second-to-last user message
+    caches the conversation prefix. Only modifies messages if there are at least
+    2 human messages and no existing cache_control annotations.
+    """
+    human_indices = [
+        i for i, m in enumerate(messages) if isinstance(m, HumanMessage)
+    ]
+    if len(human_indices) < 2:
+        return messages
+
+    target_idx = human_indices[-2]
+    target = messages[target_idx]
+
+    # Don't add if any message already has cache_control
+    for msg in messages:
+        if isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, dict) and "cache_control" in block:
+                    return messages
+
+    if isinstance(target.content, str):
+        new_content = [
+            {
+                "type": "text",
+                "text": target.content,
+                "cache_control": dict(_CACHE_CONTROL_EPHEMERAL),
+            }
+        ]
+    elif isinstance(target.content, list):
+        new_content = list(target.content)
+        # Add cache_control to the last text block
+        for i in range(len(new_content) - 1, -1, -1):
+            block = new_content[i]
+            if isinstance(block, dict) and block.get("type") == "text":
+                new_content[i] = {
+                    **block,
+                    "cache_control": dict(_CACHE_CONTROL_EPHEMERAL),
+                }
+                break
+        else:
+            return messages
+    else:
+        return messages
+
+    messages = list(messages)
+    messages[target_idx] = _copy_message_with_content(target, new_content)
+    return messages
 
 
 def _strip_malformed_anthropic_thinking_blocks(content: Any) -> tuple[Any, int]:
@@ -754,6 +834,12 @@ def create_agent_node(
                     tool_names = [tc.get('name', '?') for tc in msg.tool_calls]
                     tool_info = f" [tools: {', '.join(tool_names)}]"
                 logger.debug(f"[LLM]   [{i}] {msg_type}{tool_info}: {content_preview}...")
+
+        # For direct Anthropic: add cache_control breakpoint on the
+        # second-to-last human message so the conversation prefix is cached
+        # across turns. This mirrors what CLIProxy does automatically.
+        if _uses_direct_anthropic(llm_config):
+            messages = _inject_conversation_cache_breakpoint(messages)
 
         # Prepend system prompt (not stored in state)
         return [
