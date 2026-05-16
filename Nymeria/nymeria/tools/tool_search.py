@@ -627,7 +627,14 @@ def bind_tools_for_thread(
     current_reloads = getattr(agent, "_turn_reload_count", {}).get(thread_id, 0)
     cap_hit = reload_tools and current_reloads >= reload_cap
 
-    if reload_tools and not cap_hit:
+    # In dynamic-binding mode, skip the _pending_tool_reload write when the
+    # tools are already in the graph's superset. Otherwise the astream/chat
+    # reload loop would still fire (it reads _pending_tool_reload) and
+    # rebuild the graph — undoing the whole point of dynamic mode.
+    will_reload = bool(reload_tools and not cap_hit) and should_emit_reload_command(
+        reload_tools or []
+    )
+    if will_reload:
         if not hasattr(agent, "_pending_tool_reload"):
             agent._pending_tool_reload = {}
         agent._pending_tool_reload[thread_id] = {
@@ -673,7 +680,7 @@ def bind_tools_for_thread(
     if unloadable:
         lines.append(f"[Unloadable]: {_format_unloadable_error(unloadable)}")
     lines.append("")
-    if reload_tools and not cap_hit:
+    if will_reload:
         lines.append(
             "[Tool reload queued - STOP NOW]\n"
             "The newly-loaded tools are NOT bound to the model in this "
@@ -684,6 +691,14 @@ def bind_tools_for_thread(
             "you again with tool_reload_resume after the tools are bound; "
             "continue the user's task and call the new tools only after that "
             "automatic resume."
+        )
+    elif reload_tools and not cap_hit:
+        # Dynamic-binding mode: tools are already in the graph's superset
+        # and the model node will rebind them on its next step. No reload
+        # round-trip needed.
+        lines.append(
+            "[Tools bound; available on the next step] You may call the "
+            "newly-enabled tool(s) in your next thought without waiting."
         )
     elif reload_tools and cap_hit:
         lines.append(

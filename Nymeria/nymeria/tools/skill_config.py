@@ -379,6 +379,11 @@ def _queue_skill_reload(
     cap_hit = current_reloads >= reload_cap
     if cap_hit:
         return False, True
+    # Skill-only changes pass empty new_tools; in dynamic mode the next
+    # agent step's resolver rebuilds the skill meta-tool naturally, so
+    # the rebuild round-trip is unnecessary. Skip the _pending write.
+    if not should_emit_reload_command([]):
+        return False, False
     if not hasattr(agent, "_pending_tool_reload"):
         agent._pending_tool_reload = {}
     agent._pending_tool_reload[thread_id] = {
