@@ -9,7 +9,7 @@ import asyncio
 import atexit
 import logging
 import sqlite3
-from typing import List, Optional, Any
+from typing import Callable, List, Optional, Any
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -259,6 +259,9 @@ def create_graph(
     config: Optional[AgentConfig] = None,
     tools: Optional[List[BaseTool]] = None,
     checkpointer: Optional[BaseCheckpointSaver] = None,
+    *,
+    dynamic_tool_resolver: Optional[Callable[[], tuple]] = None,
+    superset_tools: Optional[List[BaseTool]] = None,
 ) -> Any:
     """
     Build and compile the ReAct agent graph.
@@ -268,8 +271,18 @@ def create_graph(
 
     Args:
         config: AgentConfig with all settings. Defaults to default_config.
-        tools: List of tools. Defaults to no tools.
+        tools: List of tools. Defaults to no tools. In dynamic mode this is
+            ignored by the agent node (the resolver supplies tools per-step)
+            but still serves as the static fallback when ``superset_tools``
+            is not given.
         checkpointer: Override checkpointer (ignores config.checkpointer)
+        dynamic_tool_resolver: Optional ``() -> (tools, hash)`` callable.
+            When provided, the agent node uses ``create_dynamic_agent_node``
+            and rebinds the LLM per-step on hash change.
+        superset_tools: Optional superset for ``ToolNode`` execution dispatch
+            when in dynamic mode. Must include every tool the resolver may
+            ever return; otherwise mid-turn enables of newly-registered tools
+            must fall back to the rebuild path.
 
     Returns:
         A compiled LangGraph ready to be invoked.
@@ -286,6 +299,14 @@ def create_graph(
         my_tools = [search_tool, calculate_tool]
         graph = create_graph(config=config, tools=my_tools)
 
+        # Dynamic binding
+        graph = create_graph(
+            config=config,
+            tools=superset,
+            dynamic_tool_resolver=resolver,
+            superset_tools=superset,
+        )
+
         # Invoke the graph
         result = graph.invoke(
             {"messages": [HumanMessage(content="Hello")]},
@@ -296,7 +317,12 @@ def create_graph(
     tools = tools if tools is not None else []
 
     # Create nodes using the factory
-    factory = NodeFactory(config, tools)
+    factory = NodeFactory(
+        config,
+        tools,
+        dynamic_tool_resolver=dynamic_tool_resolver,
+        superset_tools=superset_tools,
+    )
 
     # Build the graph
     graph = StateGraph(AgentState)

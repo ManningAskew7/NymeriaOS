@@ -1052,6 +1052,66 @@ def create_agent_node(
     return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
 
 
+def create_dynamic_agent_node(
+    system_prompt: str,
+    llm_config: LLMConfig,
+    tool_resolver: Callable[[], tuple],
+) -> Callable[[AgentState], dict]:
+    """Build an agent node whose bound tools are recomputed per-step.
+
+    The resolver is called on every invocation and returns
+    ``(tools_list, cache_key_hash)``. When ``cache_key_hash`` matches the
+    previous step's, the previously bound LLM (and its inner RunnableLambda)
+    are reused verbatim — this keeps the Anthropic prompt cache prefix
+    stable across consecutive steps with no tool-config mutation. When the
+    hash changes, the LLM is rebound via ``create_llm_with_tools`` and a
+    fresh inner agent node is built around it.
+
+    All retry/streaming/fallback machinery is delegated to ``create_agent_node``;
+    this function only adds the resolve→cache→rebind→delegate envelope.
+
+    Args:
+        system_prompt: System prompt for the agent (unchanged across steps).
+        llm_config: LLMConfig used to rebuild the LLM when tools change.
+        tool_resolver: ``() -> (List[BaseTool], str)`` callable. Typically
+            produced by ``NymeriaAgent._make_dynamic_tool_resolver``.
+
+    Returns:
+        A RunnableLambda compatible with LangGraph that dispatches to a
+        per-step rebound inner agent node.
+    """
+    # Mutable cache shared by sync + async closures. None on first call.
+    cache: dict = {"hash": None, "tools": None, "node": None}
+
+    def _ensure_node():
+        tools, cache_key = tool_resolver()
+        if cache["hash"] != cache_key or cache["node"] is None:
+            logger.info(
+                "[DynamicAgent] Rebinding tools (hash %s -> %s, %d tools)",
+                cache["hash"] or "init",
+                cache_key,
+                len(tools),
+            )
+            llm_with_tools = create_llm_with_tools(llm_config, tools)
+            cache["hash"] = cache_key
+            cache["tools"] = tools
+            cache["node"] = create_agent_node(
+                llm_with_tools,
+                system_prompt,
+                llm_config,
+                tools,
+            )
+        return cache["node"]
+
+    def agent_node(state: AgentState) -> dict:
+        return _ensure_node().invoke(state)
+
+    async def async_agent_node(state: AgentState) -> dict:
+        return await _ensure_node().ainvoke(state)
+
+    return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
+
+
 def create_tools_node(
     tools: List[BaseTool],
     handle_errors: bool = True,
@@ -1323,20 +1383,34 @@ class NodeFactory:
     """
     Factory class for creating all nodes from a single configuration.
 
-    Usage:
+    Usage (static-binding mode):
         factory = NodeFactory(config, tools)
         agent = factory.create_agent_node()
         tools_node = factory.create_tools_node()
         router = factory.create_router()
+
+    Usage (dynamic-binding mode):
+        factory = NodeFactory(
+            config, tools=superset,
+            dynamic_tool_resolver=resolver,
+            superset_tools=superset,
+        )
+        # agent node rebinds tools per-step via resolver;
+        # tools_node dispatches against superset_tools.
     """
 
     def __init__(
         self,
         config: Optional[AgentConfig] = None,
         tools: Optional[List[BaseTool]] = None,
+        *,
+        dynamic_tool_resolver: Optional[Callable[[], tuple]] = None,
+        superset_tools: Optional[List[BaseTool]] = None,
     ):
         self.config = config or default_config
         self.tools = tools or []
+        self._dynamic_tool_resolver = dynamic_tool_resolver
+        self._superset_tools = superset_tools
         self._llm_with_tools = None
 
     @property
@@ -1350,7 +1424,17 @@ class NodeFactory:
         return self._llm_with_tools
 
     def create_agent_node(self) -> Callable[[AgentState], dict]:
-        """Create the agent reasoning node."""
+        """Create the agent reasoning node.
+
+        Dispatches to ``create_dynamic_agent_node`` when a resolver is set
+        (dynamic-binding mode), otherwise to the static ``create_agent_node``.
+        """
+        if self._dynamic_tool_resolver is not None:
+            return create_dynamic_agent_node(
+                self.config.system_prompt,
+                self.config.llm,
+                self._dynamic_tool_resolver,
+            )
         return create_agent_node(
             self.llm_with_tools,
             self.config.system_prompt,
@@ -1359,9 +1443,19 @@ class NodeFactory:
         )
 
     def create_tools_node(self) -> ToolNode:
-        """Create the tool execution node."""
+        """Create the tool execution node.
+
+        In dynamic mode the superset is used so any tool the model might
+        bind on any step can be dispatched. The model's actual bound list
+        (a subset) is controlled by the dynamic agent node.
+        """
+        tools_for_node = (
+            self._superset_tools
+            if self._superset_tools is not None
+            else self.tools
+        )
         return create_tools_node(
-            self.tools,
+            tools_for_node,
             tool_timeout=self.config.tool_timeout,
             on_timeout=self.config.on_timeout,
             tool_output_max_chars=self.config.tool_output_max_chars,

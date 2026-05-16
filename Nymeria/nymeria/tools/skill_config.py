@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from ..core.time_utils import parse_tool_ttl, utc_now
-from ..core.tool_reload import tool_reload_command
+from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from ..core.thread_config import ThreadConfig
 from ..skills import (
     DEFAULT_SKILL_KIT_TOOL_TTL,
@@ -521,8 +521,21 @@ def _publish_skill(
     return str(skill_md), activated, cap_hit if not queued_reload else False, loaded
 
 
-def _command_or_text(text: str, queued_reload: bool, tool_call_id: str) -> Union[str, Command]:
-    if queued_reload and tool_call_id:
+def _command_or_text(
+    text: str,
+    queued_reload: bool,
+    tool_call_id: str,
+    new_tool_names: Optional[list[str]] = None,
+) -> Union[str, Command]:
+    """Decide whether to emit Command(goto=END) or a plain string.
+
+    ``new_tool_names`` lets dynamic-binding mode short-circuit the rebuild
+    when the tools are already in the graph's superset (i.e., the next
+    agent step will rebind them automatically). Default empty list is
+    correct for skill-only changes (meta-tool description update), which
+    are always rebind-safe in dynamic mode.
+    """
+    if queued_reload and tool_call_id and should_emit_reload_command(new_tool_names or []):
         return tool_reload_command(text, tool_call_id)
     return text
 
@@ -639,13 +652,17 @@ def skill_config(
                 and not cap_hit
                 and getattr(agent, "_pending_tool_reload", {}).get(thread_id)
             )
+            # In dynamic-binding mode, a pure-skill change (no new tool names)
+            # is rebind-safe — the next agent step's resolver rebuilds the
+            # skill meta-tool from fresh ThreadConfig.
+            will_reload = queued_reload and should_emit_reload_command([])
             payload = _json_result(
                 ok=True,
                 action="publish",
                 published=True,
                 saved_path=saved_path,
                 activated_current_thread=activated,
-                reload_queued=queued_reload,
+                reload_queued=will_reload,
                 reload_cap_hit=cap_hit,
                 skill={
                     "name": skill.name,
@@ -656,7 +673,7 @@ def skill_config(
                     "is_skill_kit": skill.is_skill_kit,
                 },
             )
-            if queued_reload:
+            if will_reload:
                 payload = (
                     payload
                     + "\n\n[Skill reload queued - STOP NOW]\n"
@@ -672,7 +689,7 @@ def skill_config(
                     "on this thread, but it will not be visible to the model "
                     "until the next user message."
                 )
-            return _command_or_text(payload, queued_reload, tool_call_id)
+            return _command_or_text(payload, will_reload, tool_call_id, [])
 
         if action_key == "list":
             from ..core.agent import get_current_agent
@@ -863,13 +880,15 @@ async def skill_kit_create(
                 and not cap_hit
                 and getattr(agent, "_pending_tool_reload", {}).get(thread_id)
             )
+            # Pure-skill change: rebind-safe in dynamic mode.
+            will_reload = queued_reload and should_emit_reload_command([])
             payload = _json_result(
                 ok=True,
                 action="publish",
                 published=True,
                 saved_path=saved_path,
                 activated_current_thread=activated,
-                reload_queued=queued_reload,
+                reload_queued=will_reload,
                 reload_cap_hit=cap_hit,
                 skill={
                     "name": skill.name,
@@ -880,7 +899,7 @@ async def skill_kit_create(
                     "is_skill_kit": skill.is_skill_kit,
                 },
             )
-            if queued_reload:
+            if will_reload:
                 payload += (
                     "\n\n[Skill Kit reload queued - STOP NOW]\n"
                     "The Skill Kit was created and enabled on this thread, but "
@@ -895,7 +914,7 @@ async def skill_kit_create(
                     "on this thread, but it will not be visible until the next "
                     "user message."
                 )
-            return _command_or_text(payload, queued_reload, tool_call_id)
+            return _command_or_text(payload, will_reload, tool_call_id, [])
 
         if action_key == "list":
             from .tool_create import _draft_store as tool_draft_store

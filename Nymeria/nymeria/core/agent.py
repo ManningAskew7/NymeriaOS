@@ -509,6 +509,17 @@ class NymeriaAgent:
         # agent respond in-turn rather than leaving an orphan tool_result).
         self._turn_reload_count: Dict[str, int] = {}
 
+        # Dynamic tool binding mode: when True, the model node resolves the
+        # tool list fresh on each invocation from thread_config — no graph
+        # rebuild on enable. Captured once at construction; settings updates
+        # require an agent re-instantiation (existing pattern).
+        self._dynamic_tool_binding: bool = bool(
+            getattr(self.settings, "dynamic_tool_binding", False)
+        )
+        # Name set of the most recently computed graph superset, used by
+        # should_emit_reload_command() to detect "tool not in superset" fallback.
+        self._current_tool_superset_names: set = set()
+
         # Build default checkpointer config (shared across all graphs)
         self._checkpointer_config = self._build_checkpointer_config()
         self._async_checkpointer_config = self._build_async_checkpointer_config()
@@ -2151,6 +2162,127 @@ class NymeriaAgent:
 
         return tools, tc
 
+    def _tool_config_hash(self, user_id: str, thread_id: str, tc) -> str:
+        """Stable hash over the tool-relevant slice of ThreadConfig.
+
+        Used by the dynamic-binding resolver to skip re-binding the LLM when
+        consecutive agent steps see no change to the resolved tool set. Keeps
+        Anthropic prompt cache hit-rate high: if the hash is unchanged, the
+        previously bound LLM (and thus the tools block in the request prefix)
+        is reused verbatim.
+
+        Includes enabled/disabled/temporary tools plus enabled/disabled skills
+        because skills affect which tools the meta-tool exposes. Temporary
+        tools are reduced to (name, expires_at) so a passive tick doesn't
+        invalidate the hash; only actual mutations do.
+        """
+        import hashlib
+
+        if tc is None:
+            parts: List[Any] = [[], [], [], [], []]
+        else:
+            now = utc_now()
+            live_temp = [
+                (name, ensure_aware_utc(entry.expires_at).isoformat())
+                for name, entry in (tc.temporary_tools or {}).items()
+                if ensure_aware_utc(entry.expires_at) > now
+            ]
+            parts = [
+                sorted(tc.enabled_tools or []),
+                sorted(tc.disabled_tools or []),
+                sorted(live_temp),
+                sorted(tc.enabled_skills or []),
+                sorted(tc.disabled_skills or []),
+            ]
+        # Include user_id so a thread reassigned across users (rare, but
+        # possible via tooling) gets a fresh resolution.
+        blob = json.dumps([user_id, thread_id, parts], default=str).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
+
+    def _make_dynamic_tool_resolver(self, user_id: str, thread_id: str):
+        """Return a () -> (tools, cache_key_hash) callable for the dynamic node.
+
+        The closure has no internal cache of its own — it always reads fresh
+        ThreadConfig and resolves through _select_tools_for_graph. Bound-LLM
+        caching lives in the model node (keyed on cache_key_hash) so that
+        per-step state stays in the node, not in the resolver.
+        """
+        def resolve():
+            tools, tc = self._select_tools_for_graph(user_id, thread_id)
+            cache_key = self._tool_config_hash(user_id, thread_id, tc)
+            return tools, cache_key
+
+        return resolve
+
+    def _compute_tool_superset(self, user_id: str, thread_id: str):
+        """Compute the full set of tools the dynamic ToolNode must dispatch.
+
+        Returns (tools_list, names_set). The ToolNode in dynamic mode is
+        constructed with the superset so that any tool the model binds at
+        any step (which may be a subset varying step-to-step) can still be
+        executed. A tool created mid-turn that isn't in this superset
+        triggers the fallback rebuild path via should_emit_reload_command().
+
+        Sources merged (deduped by name):
+          - ALL_TOOLS (core)
+          - OPTIONAL_TOOLS (all optional, gated downstream by role/disable)
+          - tool_registry.all_tools() (MCP + dynamically registered tools)
+          - owned callable threads (team-scoped, per user)
+          - skill meta-tool (if the user has any active skills)
+
+        Admin/dev-only gating is NOT applied here — the model node's bound
+        list (from _select_tools_for_graph) handles visibility. The
+        superset is purely for execution dispatch.
+        """
+        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+
+        merged: Dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
+        for name, tool in OPTIONAL_TOOLS.items():
+            merged.setdefault(name, tool)
+
+        if getattr(self, "tool_registry", None):
+            try:
+                for tool in self.tool_registry.all_tools():
+                    if tool.name not in merged:
+                        merged[tool.name] = tool
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "tool_registry.all_tools() failed during superset build: %s", exc
+                )
+
+        try:
+            owned_callables = self._get_team_scoped_callable_threads(
+                user_id=user_id,
+                caller_thread_id=thread_id,
+            )
+            from ..agents.tool_factory import create_callable_thread_tool
+            for callable_tc in owned_callables:
+                if not callable_tc.callable_name or callable_tc.callable_name in merged:
+                    continue
+                try:
+                    merged[callable_tc.callable_name] = create_callable_thread_tool(callable_tc)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to build callable tool for %s during superset build: %s",
+                        callable_tc.thread_id, exc,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Owned-callable superset enumeration failed: %s", exc)
+
+        # Skill meta-tool: only present when the user actually has active
+        # skills for this thread. We approximate by reading thread tools and
+        # calling _build_skill_meta_tool with the merged superset so its
+        # description sees every potentially-callable tool name.
+        try:
+            tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+            skill_tool = self._build_skill_meta_tool(user_id, tc, list(merged.values()))
+            if skill_tool is not None and skill_tool.name not in merged:
+                merged[skill_tool.name] = skill_tool
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Skill meta-tool superset injection failed: %s", exc)
+
+        return list(merged.values()), set(merged.keys())
+
     def _build_agent_config(self, system_prompt: str, checkpointer_config, thread_id: str, tc):
         """Build an AgentConfig with the given checkpointer config."""
         llm_config = self._get_llm_config_for_thread(thread_id)
@@ -2174,15 +2306,53 @@ class NymeriaAgent:
 
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a sync LangGraph execution graph with a specific system prompt."""
+        if getattr(self, "_dynamic_tool_binding", False):
+            return self._build_dynamic_graph_with_prompt(
+                system_prompt, user_id, thread_id, self._checkpointer_config
+            )
         tools, tc = self._select_tools_for_graph(user_id, thread_id)
         config = self._build_agent_config(system_prompt, self._checkpointer_config, thread_id, tc)
         return create_graph(config=config, tools=tools)
 
     def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build an async LangGraph execution graph with a specific system prompt."""
+        if getattr(self, "_dynamic_tool_binding", False):
+            return self._build_dynamic_graph_with_prompt(
+                system_prompt, user_id, thread_id, self._async_checkpointer_config
+            )
         tools, tc = self._select_tools_for_graph(user_id, thread_id)
         config = self._build_agent_config(system_prompt, self._async_checkpointer_config, thread_id, tc)
         return create_graph(config=config, tools=tools)
+
+    def _build_dynamic_graph_with_prompt(
+        self,
+        system_prompt: str,
+        user_id: str,
+        thread_id: str,
+        checkpointer_config,
+    ):
+        """Build a graph wired for per-step dynamic tool resolution.
+
+        The agent node receives a resolver closure (recomputes tools per call
+        from ThreadConfig); the ToolNode is constructed with the superset so
+        any tool the resolver may return is executable. ``tool_search`` and
+        peers detect the superset via ``_current_tool_superset_names`` and
+        skip the Command(goto=END) round-trip for tools already in it.
+        """
+        # Compute superset first so the dispatcher gate (should_emit_reload_command)
+        # sees the latest names on this build. Then build resolver and tc.
+        superset_tools, superset_names = self._compute_tool_superset(user_id, thread_id)
+        self._current_tool_superset_names = superset_names
+
+        tc = self.thread_config_manager.get_config(thread_id) if thread_id else None
+        config = self._build_agent_config(system_prompt, checkpointer_config, thread_id, tc)
+        resolver = self._make_dynamic_tool_resolver(user_id, thread_id)
+        return create_graph(
+            config=config,
+            tools=superset_tools,
+            dynamic_tool_resolver=resolver,
+            superset_tools=superset_tools,
+        )
 
     def _get_cached_graph_entry(
         self,

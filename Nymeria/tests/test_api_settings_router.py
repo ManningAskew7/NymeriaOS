@@ -40,6 +40,7 @@ class FakeSettings:
     llm_presence_penalty: float | None = None
     llm_reasoning_effort: str | None = None
     llm_extended_thinking: bool = False
+    dynamic_tool_binding: bool = False
     llm_use_model_defaults: bool = False
     llm_base_url: str | None = None
     openai_api_mode: str | None = "responses"

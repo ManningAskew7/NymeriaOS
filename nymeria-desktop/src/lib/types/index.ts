@@ -801,6 +801,7 @@ export interface ServerSettings {
   llm_presence_penalty: number | null;
   llm_reasoning_effort: string | null;
   llm_extended_thinking: boolean;
+  dynamic_tool_binding: boolean;
   llm_use_model_defaults: boolean;
   llm_base_url: string | null;
   openai_api_mode: OpenAIApiMode | null;
@@ -844,6 +845,7 @@ export interface ServerSettingsUpdate {
   llm_presence_penalty?: number | null;
   llm_reasoning_effort?: string | null;
   llm_extended_thinking?: boolean;
+  dynamic_tool_binding?: boolean;
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
   openai_api_mode?: OpenAIApiMode | null;

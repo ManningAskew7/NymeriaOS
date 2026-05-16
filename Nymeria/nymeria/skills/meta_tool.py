@@ -20,7 +20,7 @@ from langchain_core.tools import BaseTool, tool as tool_decorator
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId
 from langgraph.types import Command
 
-from ..core.tool_reload import tool_reload_command
+from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from . import AVAILABLE_SKILLS_CHAR_BUDGET, Skill, SkillManager
 
 logger = logging.getLogger(__name__)
@@ -286,16 +286,23 @@ def create_skill_meta_tool(
                 )
 
         if binding_reload_queued:
+            if should_emit_reload_command(binding.reload_tools):
+                body += (
+                    "\n\n---\n"
+                    "[Skill Kit reload queued - STOP NOW]\n"
+                    "This Skill Kit's required tools were just persisted, but they "
+                    "are not callable in the current graph invocation. Stop after "
+                    "this tool result. The system will automatically resume you "
+                    "after rebuilding the tool list; continue the user's task only "
+                    "after that resume."
+                )
+                return tool_reload_command(body, tool_call_id)
+            # Dynamic mode + tools in superset: skip the rebuild round-trip.
+            # The next agent step's resolver will rebind these tools.
             body += (
                 "\n\n---\n"
-                "[Skill Kit reload queued - STOP NOW]\n"
-                "This Skill Kit's required tools were just persisted, but they "
-                "are not callable in the current graph invocation. Stop after "
-                "this tool result. The system will automatically resume you "
-                "after rebuilding the tool list; continue the user's task only "
-                "after that resume."
+                "[Skill Kit tools bound; available on the next step]"
             )
-            return tool_reload_command(body, tool_call_id)
 
         if binding_cap_hit:
             body += (
