@@ -7,8 +7,10 @@ import logging
 from nymeria.config.logging_config import (
     _REDACTION_CHUNK_SIZE,
     _TokenRedactingFilter,
+    NymeriaFormatter,
     _redact_text,
 )
+from nymeria.core.request_context import reset_request_id, set_request_id
 
 
 def test_redact_text_masks_common_provider_tokens():
@@ -89,3 +91,24 @@ def test_redact_text_catches_secret_split_across_chunk_boundary():
 
     assert secret not in redacted
     assert "sk-ant...3456" in redacted
+
+
+def test_formatter_includes_active_request_id():
+    record = logging.LogRecord(
+        name="nymeria.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    formatter = NymeriaFormatter(use_color=False)
+
+    token = set_request_id("req-test-123")
+    try:
+        formatted = formatter.format(record)
+    finally:
+        reset_request_id(token)
+
+    assert "request_id=req-test-123" in formatted

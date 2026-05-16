@@ -30,6 +30,8 @@ import sys
 from collections.abc import Callable
 from typing import Dict, List, Optional
 
+from ..core.request_context import get_request_id
+
 
 _REDACTION_CHUNK_THRESHOLD = 32_768
 _REDACTION_CHUNK_SIZE = 16_384
@@ -292,13 +294,15 @@ class NymeriaFormatter(logging.Formatter):
         level = self._LEVEL_SHORT.get(record.levelname, record.levelname[:4])
         time_str = self.formatTime(record, "%H:%M:%S")
         msg = record.getMessage()
+        request_id = get_request_id()
 
         if record.exc_info and not record.exc_text:
             record.exc_text = self.formatException(record.exc_info)
         if record.exc_text:
             msg = msg + "\n" + record.exc_text
 
-        line = f"{time_str} {level:<4} {short_name}: {msg}"
+        request_context = f" request_id={request_id}" if request_id else ""
+        line = f"{time_str} {level:<4} {short_name}{request_context}: {msg}"
 
         if self.use_color:
             color = self._COLORS.get(record.levelno, "")

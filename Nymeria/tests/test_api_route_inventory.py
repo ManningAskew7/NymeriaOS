@@ -287,6 +287,21 @@ def test_api_responses_include_baseline_security_headers(
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
+def test_api_responses_include_request_id(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    generated = client.get("/health")
+    propagated = client.get("/health", headers={"X-Request-ID": "req-test-123"})
+    sanitized = client.get("/health", headers={"X-Request-ID": "bad\nvalue"})
+
+    assert generated.headers["x-request-id"]
+    assert propagated.headers["x-request-id"] == "req-test-123"
+    assert sanitized.headers["x-request-id"] != "bad\nvalue"
+
+
 def test_api_docs_and_schema_are_disabled_by_default(tmp_path: Path, api_client_builder):
     client, _agent = _client(tmp_path, api_client_builder)
 
