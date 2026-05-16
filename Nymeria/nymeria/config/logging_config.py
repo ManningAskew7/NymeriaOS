@@ -27,29 +27,152 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from typing import Dict, List, Optional
 
 
-_TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{16,}")
-_TOKEN_REDACTED = "nym_<redacted>"
+_REDACTION_CHUNK_THRESHOLD = 32_768
+_REDACTION_CHUNK_SIZE = 16_384
+_REDACTION_WINDOW_SIZE = _REDACTION_CHUNK_SIZE * 2
+
+
+def _mask_secret(value: str) -> str:
+    if len(value) >= 18:
+        return f"{value[:6]}...{value[-4:]}"
+    return "<redacted>"
+
+
+def _replace_secret(match: re.Match[str]) -> str:
+    return _mask_secret(match.group(0))
+
+
+def _replace_bearer(match: re.Match[str]) -> str:
+    return f"{match.group(1)}<redacted>"
+
+
+def _replace_assignment(match: re.Match[str]) -> str:
+    return f"{match.group(1)}<redacted>"
+
+
+def _replace_pem(_match: re.Match[str]) -> str:
+    return "-----BEGIN REDACTED-----\n<redacted>\n-----END REDACTED-----"
+
+
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], str]], ...] = (
+    (re.compile(r"nym_[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"sk-proj-[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}\b"), _replace_secret),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{16,}\b"), _replace_secret),
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{16,}\b"), _replace_secret),
+    (re.compile(r"xapp-[A-Za-z0-9-]{16,}\b"), _replace_secret),
+    (re.compile(r"AIza[0-9A-Za-z_-]{20,}\b"), _replace_secret),
+    (re.compile(r"AKIA[0-9A-Z]{16}\b"), _replace_secret),
+    (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"hf_[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"r8_[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"npm_[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"pypi-[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (re.compile(r"cpx-[A-Za-z0-9_-]{16,}\b"), _replace_secret),
+    (
+        re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b"),
+        _replace_secret,
+    ),
+    (
+        re.compile(
+            r"\b((?:Bearer|Token|Basic)\s+)[A-Za-z0-9._~+/\-=]{12,}",
+            re.IGNORECASE,
+        ),
+        _replace_bearer,
+    ),
+    (
+        re.compile(
+            r"\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS|"
+            r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY)[A-Z0-9_]*\s*=\s*)([^\s,;%]+)",
+            re.IGNORECASE,
+        ),
+        _replace_assignment,
+    ),
+    (
+        re.compile(
+            r"([\"']?(?:api[_-]?key|token|secret|password|credentials|"
+            r"private[_-]?key|access[_-]?key)[\"']?\s*[:=]\s*[\"']?)([^\"'\s,}%]+)",
+            re.IGNORECASE,
+        ),
+        _replace_assignment,
+    ),
+    (
+        re.compile(
+            r"\b([a-z][a-z0-9+.-]*://[^:\s/@]+:)([^@\s]+)(@[^/\s]+)",
+            re.IGNORECASE,
+        ),
+        lambda match: f"{match.group(1)}<redacted>{match.group(3)}",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        _replace_pem,
+    ),
+)
+
+
+def _redact_text(text: str) -> str:
+    def redact_chunk(chunk: str) -> str:
+        for pattern, replacer in _SECRET_PATTERNS:
+            chunk = pattern.sub(replacer, chunk)
+        return chunk
+
+    if len(text) <= _REDACTION_CHUNK_THRESHOLD:
+        return redact_chunk(text)
+
+    redactions: list[tuple[int, int, str]] = []
+    for window_start in range(0, len(text), _REDACTION_CHUNK_SIZE):
+        window_end = min(len(text), window_start + _REDACTION_WINDOW_SIZE)
+        accept_end = min(len(text), window_start + _REDACTION_CHUNK_SIZE)
+        window = text[window_start:window_end]
+        for pattern, replacer in _SECRET_PATTERNS:
+            for match in pattern.finditer(window):
+                start = window_start + match.start()
+                if start >= accept_end:
+                    continue
+                end = window_start + match.end()
+                redactions.append((start, end, replacer(match)))
+
+    if not redactions:
+        return text
+
+    redactions.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    parts: list[str] = []
+    last_end = 0
+    for start, end, replacement in redactions:
+        if start < last_end:
+            continue
+        parts.append(text[last_end:start])
+        parts.append(replacement)
+        last_end = end
+    parts.append(text[last_end:])
+    return "".join(parts)
 
 
 class _TokenRedactingFilter(logging.Filter):
-    """Redact raw Nymeria account tokens (``nym_...``) anywhere in a log record."""
+    """Redact known secret/token patterns anywhere in a log record."""
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
         try:
             if isinstance(record.msg, str):
-                record.msg = _TOKEN_PATTERN.sub(_TOKEN_REDACTED, record.msg)
+                record.msg = _redact_text(record.msg)
             if record.args:
                 if isinstance(record.args, dict):
                     record.args = {
-                        k: _TOKEN_PATTERN.sub(_TOKEN_REDACTED, v) if isinstance(v, str) else v
+                        k: _redact_text(v) if isinstance(v, str) else v
                         for k, v in record.args.items()
                     }
                 elif isinstance(record.args, tuple):
                     record.args = tuple(
-                        _TOKEN_PATTERN.sub(_TOKEN_REDACTED, a) if isinstance(a, str) else a
+                        _redact_text(a) if isinstance(a, str) else a
                         for a in record.args
                     )
         except Exception:  # noqa: BLE001
