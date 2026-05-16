@@ -299,8 +299,14 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
     assert status_bar.char == " "
     assert status_bar.style == "class:status"
     assert status_bar.content.text() == runtime.status_fragments()
+
     input_area = children[3]
     assert isinstance(input_area, HSplit)
+
+    slash_panel = children[4]
+    assert isinstance(slash_panel, ConditionalContainer)
+    assert isinstance(slash_panel.content, Window)
+    assert slash_panel.content.style == "class:slash-panel"
     input_children = input_area.children
     assert len(input_children) == 3
     top_border = input_children[0]
@@ -360,11 +366,13 @@ def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None
     shell.composer_controller.text_area.buffer.text = "abcdefghij " * 6
 
     assert runtime.scroll_region_enabled() is True
-    assert len(children) == 3
+    assert len(children) == 4
     assert isinstance(children[0], ConditionalContainer)
     assert isinstance(children[1], ConditionalContainer)
     assert isinstance(children[2], HSplit)
+    assert isinstance(children[3], ConditionalContainer)  # slash panel, below input
     assert runtime.composer_input_height() > 1
+    # Composer text does not start with "/", so the panel is hidden
     assert runtime.footer_height() == runtime.composer_input_height() + 4
     assert shell.composer_controller.text_area.window.height().min == (
         runtime.composer_input_height()

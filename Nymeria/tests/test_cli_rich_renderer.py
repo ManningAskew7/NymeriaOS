@@ -1013,7 +1013,7 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
             thread_id="thread-1",
             runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
         )
-        output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=0)
+        output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=1)
         prompt_renderer = FakePromptRenderer(output)
         prompt_renderer._min_available_height = 0
         runtime = _RichReplRuntime(
@@ -1055,7 +1055,10 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
 
     assert pinned is True
     assert ("erase", False) in activation_ops
-    assert ("raw", "\x1b8") in activation_ops
+    # Activation now moves cursor to terminal bottom (row 24) and scrolls
+    # `footer_height - rows_below + 1 - max(0, last_h - rows_below)` times
+    # rather than restoring a stale \x1b7 cursor and over-scrolling.
+    assert ("raw", "\x1b[24;1H") in activation_ops
     assert ("raw", "\r\n" * 5) in activation_ops
     assert events == ["rendered"]
     assert ops.count(("hide_cursor", None)) == 1
@@ -1132,7 +1135,16 @@ def test_rich_runtime_resizes_pinned_footer_when_composer_grows() -> None:
     assert prompt_renderer._last_screen is None
 
 
-def test_rich_runtime_resizes_pinned_footer_when_composer_shrinks() -> None:
+def test_rich_runtime_rebuilds_transcript_when_pinned_footer_shrinks() -> None:
+    """A shrinking footer rebuilds the transcript onto the larger scroll area.
+
+    Within a DECSTBM region, scrolling content downward would push the
+    topmost transcript rows out of the region (and lose them — they do
+    not enter terminal scrollback).  Replaying the reducer state onto
+    the freshly enlarged area is the only way to avoid a visible gap
+    between the last transcript line and the now-smaller footer.
+    """
+
     runtime, output, prompt_renderer, controller = _make_scroll_region_runtime(
         width=20,
         height=24,
@@ -1146,14 +1158,19 @@ def test_rich_runtime_resizes_pinned_footer_when_composer_shrinks() -> None:
 
     runtime._prepare_pinned_footer_render()
 
-    assert runtime.pinned_footer_active() is True
-    assert runtime.footer_height() == 5
-    assert runtime._pinned_footer_height == 5
-    assert runtime._pinned_scroll_bottom == 19
-    assert ("raw", "\x1b[19;1H") in output.ops
-    assert ("raw", "\x1b[18;1H\x1b[J") in output.ops
-    assert ("erase", False) not in output.ops
-    assert prompt_renderer._last_screen is None
+    # Shrink path deactivates the pinned footer and triggers a transcript
+    # replay; the next render cycle's probe re-activates the pin.
+    assert runtime.pinned_footer_active() is False
+    assert runtime._pinned_footer_height == 0
+    assert runtime._pinned_scroll_bottom == 0
+    assert runtime._follow_footer_pin_probe_pending is True
+    assert runtime._follow_footer_transcript_cursor_saved is True
+    assert ("raw", "\x1b[r") in output.ops  # scroll region reset
+    assert ("erase_screen", None) in output.ops
+    # Scrollback must be cleared as well — otherwise the previously-visible
+    # transcript stays in scrollback and the replay stacks a duplicate copy.
+    assert ("raw", "\x1b[3J") in output.ops
+    assert ("raw", "\x1b7") in output.ops  # transcript cursor save
 
 
 def test_rich_runtime_streams_through_resized_pinned_scroll_region() -> None:

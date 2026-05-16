@@ -30,6 +30,11 @@ from .commands import (
 from .autonomous import AutonomousStreamMonitor
 from .header import CLIHeaderSnapshot, build_header_snapshot, concise_connection_label
 from .rendering.indicator import FRAME_INTERVAL_SECONDS
+from .rendering.slash_panel import (
+    slash_panel_fragments,
+    slash_panel_height,
+    slash_panel_visible,
+)
 from .rendering.status_bar import StatusBarContext, StatusBarRenderer, StatusNotice
 from .rendering.welcome import render_welcome
 from .rendering.plain import PlainRenderer, strip_ansi
@@ -337,7 +342,31 @@ class _RichReplRuntime:
         return max(1, min(_RICH_REPL_COMPOSER_MAX_HEIGHT, height))
 
     def footer_height(self) -> int:
-        return self.composer_input_height() + 4
+        return self.composer_input_height() + 4 + self.slash_panel_height()
+
+    def _composer_text(self) -> str:
+        controller = self.composer_controller
+        if controller is None:
+            return ""
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        return str(getattr(buffer, "text", "") or "")
+
+    def slash_panel_visible(self) -> bool:
+        return slash_panel_visible(self._composer_text())
+
+    def slash_panel_height(self) -> int:
+        if not self.slash_panel_visible():
+            return 0
+        return slash_panel_height(self._composer_text(), self.app.registry)
+
+    def slash_panel_fragments(self):
+        return list(
+            slash_panel_fragments(
+                self._composer_text(),
+                self.app.registry,
+                width=self.terminal_width(),
+            )
+        )
 
     def _reserved_footer_height(self, size: Any) -> int:
         return min(self.footer_height(), max(1, int(size.rows) - 2))
@@ -424,7 +453,7 @@ class _RichReplRuntime:
         self._follow_footer_pin_probe_pending = False
         if rows_below > self.footer_height():
             return
-        self._activate_pinned_footer()
+        self._activate_pinned_footer(rows_below=rows_below)
 
     def _known_rows_below_cursor(self) -> int | None:
         app = self.application
@@ -451,25 +480,43 @@ class _RichReplRuntime:
             renderer._min_available_height = 0  # noqa: SLF001
             renderer.request_absolute_cursor_position()
 
-    def _activate_pinned_footer(self) -> None:
+    def _activate_pinned_footer(self, *, rows_below: int | None = None) -> None:
         app = self.application
         if app is None:
             return
         output = app.output
         size = output.get_size()
+        size_rows = int(size.rows)
         footer_height = self._reserved_footer_height(size)
-        scroll_bottom = size.rows - footer_height
+        scroll_bottom = size_rows - footer_height
         if scroll_bottom < 1 or not self._follow_footer_transcript_cursor_saved:
             return
 
-        output.hide_cursor()
         renderer = getattr(app, "renderer", None)
+        last_screen = getattr(renderer, "_last_screen", None) if renderer else None
+        last_h = int(getattr(last_screen, "height", 0) or 0)
+        # rows_below = (T - R_pre) where R_pre is the row that held Rich's
+        # last content when \x1b7 was issued. Fall back to footer_height (the
+        # boundary value) when caller didn't supply it (e.g. legacy tests).
+        rb = int(rows_below) if rows_below is not None else footer_height
+        # Total scroll we need (from the \x1b7 moment) to leave the last Rich
+        # row at scroll_bottom - 1. Subtract whatever prompt_toolkit's prior
+        # follow re-render already scrolled while drawing its layout, so we
+        # don't over-scroll and leave slack blank rows in the transcript.
+        desired_total_scroll = footer_height - rb + 1
+        pt_scroll = max(0, last_h - rb)
+        scroll_amount = max(0, desired_total_scroll - pt_scroll)
+        output.hide_cursor()
         if renderer is not None:
             with suppress(Exception):
                 renderer.erase(leave_alternate_screen=False)
         output.write_raw("\x1b[r")
-        output.write_raw("\x1b8")
-        output.write_raw("\r\n" * footer_height)
+        # Move to terminal bottom so subsequent `\r\n` always scrolls (the
+        # cursor saved by \x1b7 is an absolute row that doesn't track the
+        # scrolls prompt_toolkit performed while drawing its layout).
+        if scroll_amount > 0:
+            output.write_raw(f"\x1b[{size_rows};1H")
+            output.write_raw("\r\n" * scroll_amount)
         footer_top = scroll_bottom + 1
         output.write_raw(f"\x1b[{scroll_bottom};1H")
         output.write_raw("\x1b7")
@@ -493,6 +540,15 @@ class _RichReplRuntime:
             return
         footer_height = self._reserved_footer_height(size)
         if self._pinned_footer_height != footer_height:
+            if footer_height < self._pinned_footer_height:
+                # DECSTBM scroll-down would lose the topmost transcript
+                # rows, so replay the transcript onto the larger area.
+                # Clear scrollback too — otherwise the previously-visible
+                # rows (already pushed up by the scroll region) stay in
+                # scrollback and we end up stacking duplicate transcripts.
+                self._redraw_follow_footer(rebuild_scrollback=True)
+                self._follow_footer_pin_probe_pending = True
+                return
             self._resize_pinned_footer(footer_height=footer_height, size=size)
             if not self._pinned_footer_active:
                 return
@@ -1021,6 +1077,20 @@ class _RichReplPromptToolkitShell:
             ),
             filter=footer_visible,
         )
+        slash_panel_filter = (
+            Condition(self.runtime.slash_panel_visible) & footer_visible
+        )
+        slash_panel = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.runtime.slash_panel_fragments()),
+                height=lambda: Dimension.exact(max(1, self.runtime.slash_panel_height())),
+                dont_extend_height=True,
+                style="class:slash-panel",
+                wrap_lines=False,
+                char=" ",
+            ),
+            filter=slash_panel_filter,
+        )
         top_border = ConditionalContainer(
             Window(
                 height=Dimension.exact(1),
@@ -1046,11 +1116,13 @@ class _RichReplPromptToolkitShell:
         footer_spacer = Window(height=Dimension(weight=1), char=" ")
         if self.runtime.scroll_region_enabled():
             body = HSplit(
-                [transcript_gap, status_bar, input_area],
+                [transcript_gap, status_bar, input_area, slash_panel],
                 height=lambda: Dimension.exact(self.runtime.footer_height()),
             )
         else:
-            body = HSplit([footer_spacer, transcript_gap, status_bar, input_area])
+            body = HSplit(
+                [footer_spacer, transcript_gap, status_bar, input_area, slash_panel]
+            )
         bindings = KeyBindings()
 
         @bindings.add("c-d")
@@ -2900,6 +2972,11 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "input-area": "",
         "text-area": "",
         "text-area.prompt": "",
+        "slash-panel": ptk_style(theme, "status_fg"),
+        "slash-panel.name": ptk_style(theme, "status_accent", bold=True),
+        "slash-panel.desc": ptk_style(theme, "status_fg"),
+        "slash-panel.empty": ptk_style(theme, "status_fg"),
+        "slash-panel.more": ptk_style(theme, "separator"),
     }
 
 
