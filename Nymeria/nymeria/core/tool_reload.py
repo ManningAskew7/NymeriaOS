@@ -62,7 +62,10 @@ def should_emit_reload_command(new_tool_names: Sequence[str]) -> bool:
     agent = get_current_agent()
     if agent is None:
         return True
-    if not getattr(agent, "_dynamic_tool_binding", False):
+    # Read flag live from settings (not a cached instance attribute) so a
+    # PATCH /settings flip takes effect on the very next reload-decision.
+    settings = getattr(agent, "settings", None)
+    if not bool(getattr(settings, "dynamic_tool_binding", False)):
         return True
     superset = getattr(agent, "_current_tool_superset_names", None)
     if not superset:

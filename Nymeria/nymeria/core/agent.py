@@ -509,13 +509,11 @@ class NymeriaAgent:
         # agent respond in-turn rather than leaving an orphan tool_result).
         self._turn_reload_count: Dict[str, int] = {}
 
-        # Dynamic tool binding mode: when True, the model node resolves the
-        # tool list fresh on each invocation from thread_config — no graph
-        # rebuild on enable. Captured once at construction; settings updates
-        # require an agent re-instantiation (existing pattern).
-        self._dynamic_tool_binding: bool = bool(
-            getattr(self.settings, "dynamic_tool_binding", False)
-        )
+        # Dynamic tool binding mode is read live from self.settings on each
+        # graph build / reload check (not cached as an instance attribute) —
+        # PATCH /settings refreshes agent.settings in place, and we want the
+        # next graph build to pick up the new value without waiting for a
+        # full re-instantiation. See _is_dynamic_tool_binding() for the read.
         # Name set of the most recently computed graph superset, used by
         # should_emit_reload_command() to detect "tool not in superset" fallback.
         self._current_tool_superset_names: set = set()
@@ -2304,9 +2302,19 @@ class NymeriaAgent:
             on_timeout=self._on_tool_timeout,
         )
 
+    def _is_dynamic_tool_binding(self) -> bool:
+        """Return True when dynamic-binding mode is on.
+
+        Reads ``self.settings.dynamic_tool_binding`` live (not a cached
+        attribute) so a PATCH /settings call refreshing ``agent.settings``
+        flips the next graph build to/from dynamic mode without waiting
+        for a full process restart.
+        """
+        return bool(getattr(self.settings, "dynamic_tool_binding", False))
+
     def _build_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build a sync LangGraph execution graph with a specific system prompt."""
-        if getattr(self, "_dynamic_tool_binding", False):
+        if self._is_dynamic_tool_binding():
             return self._build_dynamic_graph_with_prompt(
                 system_prompt, user_id, thread_id, self._checkpointer_config
             )
@@ -2316,7 +2324,7 @@ class NymeriaAgent:
 
     def _build_async_graph_with_prompt(self, system_prompt: str, user_id: str = "default", thread_id: str = ""):
         """Build an async LangGraph execution graph with a specific system prompt."""
-        if getattr(self, "_dynamic_tool_binding", False):
+        if self._is_dynamic_tool_binding():
             return self._build_dynamic_graph_with_prompt(
                 system_prompt, user_id, thread_id, self._async_checkpointer_config
             )

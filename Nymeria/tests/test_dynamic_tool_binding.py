@@ -27,10 +27,17 @@ from nymeria.core.thread_config import TemporaryToolEntry, ThreadConfig
 from nymeria.core.time_utils import utc_now
 
 
-def _stub_agent() -> NymeriaAgent:
+class _StubSettings:
+    """Minimal stand-in for the pydantic Settings model in unit tests."""
+
+    def __init__(self, dynamic_tool_binding: bool = False):
+        self.dynamic_tool_binding = dynamic_tool_binding
+
+
+def _stub_agent(*, dynamic: bool = False) -> NymeriaAgent:
     """Create a NymeriaAgent stub with just enough state for the helpers."""
     agent = object.__new__(NymeriaAgent)
-    agent._dynamic_tool_binding = False
+    agent.settings = _StubSettings(dynamic_tool_binding=dynamic)
     agent._current_tool_superset_names = set()
     return agent
 
@@ -109,7 +116,7 @@ class ShouldEmitReloadCommandTests(unittest.TestCase):
 
     def test_rebuild_mode_always_emits(self):
         agent = _stub_agent()
-        agent._dynamic_tool_binding = False
+        agent.settings.dynamic_tool_binding = False
         agent._current_tool_superset_names = {"x"}
         with patch("nymeria.core.agent.get_current_agent", return_value=agent):
             self.assertTrue(tool_reload.should_emit_reload_command(["x"]))
@@ -117,7 +124,7 @@ class ShouldEmitReloadCommandTests(unittest.TestCase):
 
     def test_dynamic_mode_skips_when_all_in_superset(self):
         agent = _stub_agent()
-        agent._dynamic_tool_binding = True
+        agent.settings.dynamic_tool_binding = True
         agent._current_tool_superset_names = {"x", "y"}
         with patch("nymeria.core.agent.get_current_agent", return_value=agent):
             self.assertFalse(tool_reload.should_emit_reload_command(["x"]))
@@ -127,7 +134,7 @@ class ShouldEmitReloadCommandTests(unittest.TestCase):
 
     def test_dynamic_mode_emits_when_tool_missing_from_superset(self):
         agent = _stub_agent()
-        agent._dynamic_tool_binding = True
+        agent.settings.dynamic_tool_binding = True
         agent._current_tool_superset_names = {"x"}
         with patch("nymeria.core.agent.get_current_agent", return_value=agent):
             self.assertTrue(tool_reload.should_emit_reload_command(["unknown"]))
@@ -136,7 +143,7 @@ class ShouldEmitReloadCommandTests(unittest.TestCase):
     def test_dynamic_mode_empty_superset_falls_back_to_emit(self):
         """Defensive: if the superset attr is unset/empty we don't risk skipping."""
         agent = _stub_agent()
-        agent._dynamic_tool_binding = True
+        agent.settings.dynamic_tool_binding = True
         agent._current_tool_superset_names = set()
         with patch("nymeria.core.agent.get_current_agent", return_value=agent):
             self.assertTrue(tool_reload.should_emit_reload_command(["x"]))
@@ -238,7 +245,7 @@ class ToolEnableDynamicReturnTests(unittest.TestCase):
         ts_mod = sys.modules["nymeria.tools.tool_search"]
 
         agent = _stub_agent()
-        agent._dynamic_tool_binding = True
+        agent.settings.dynamic_tool_binding = True
         agent._current_tool_superset_names = {"calendar_list_events"}
 
         binding_result = ts_mod.ToolBindingResult(
@@ -266,7 +273,7 @@ class ToolEnableDynamicReturnTests(unittest.TestCase):
         ts_mod = sys.modules["nymeria.tools.tool_search"]
 
         agent = _stub_agent()
-        agent._dynamic_tool_binding = False
+        agent.settings.dynamic_tool_binding = False
 
         binding_result = ts_mod.ToolBindingResult(
             ok=True,

@@ -57,8 +57,8 @@ def _make_agent(*, dynamic: bool = False):
     agent.skill_manager = None
     agent._get_llm_config_for_thread = MagicMock(return_value=MagicMock())
 
-    # The new dynamic-mode state.
-    agent._dynamic_tool_binding = dynamic
+    # The new dynamic-mode state: read live from settings.
+    agent.settings.dynamic_tool_binding = dynamic
     agent._current_tool_superset_names = set()
 
     return agent
