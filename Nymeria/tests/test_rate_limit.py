@@ -46,3 +46,39 @@ def test_sliding_window_rate_limiter_rejects_invalid_configuration():
 
     with pytest.raises(ValueError, match="window_seconds"):
         limiter.check("x", limit=1, window_seconds=0.0)
+
+    with pytest.raises(ValueError, match="max_keys"):
+        SlidingWindowRateLimiter(max_keys=0)
+
+    with pytest.raises(ValueError, match="prune_interval_seconds"):
+        SlidingWindowRateLimiter(prune_interval_seconds=-1.0)
+
+
+def test_sliding_window_rate_limiter_caps_tracked_keys():
+    limiter = SlidingWindowRateLimiter(
+        clock=lambda: 100.0,
+        max_keys=2,
+    )
+
+    assert limiter.check("a", limit=1, window_seconds=60.0).allowed is True
+    assert limiter.check("b", limit=1, window_seconds=60.0).allowed is True
+    assert limiter.check("c", limit=1, window_seconds=60.0).allowed is True
+
+    assert set(limiter._events) == {"b", "c"}
+    assert set(limiter._windows) == {"b", "c"}
+
+
+def test_sliding_window_rate_limiter_prunes_stale_keys():
+    now = [100.0]
+    limiter = SlidingWindowRateLimiter(
+        clock=lambda: now[0],
+        prune_interval_seconds=0,
+    )
+
+    assert limiter.check("stale", limit=1, window_seconds=10.0).allowed is True
+
+    now[0] = 111.0
+    assert limiter.check("fresh", limit=1, window_seconds=10.0).allowed is True
+
+    assert set(limiter._events) == {"fresh"}
+    assert set(limiter._windows) == {"fresh"}
