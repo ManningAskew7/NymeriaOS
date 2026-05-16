@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .. import __version__
 from ..config import Settings, get_settings
 from ..core.agent import NymeriaAgent
 from ..core.accounts import (
@@ -556,7 +557,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app = FastAPI(
         title="Nymeria API",
         description="Personal AI Assistant REST API with SSE streaming",
-        version="1.0.0",
+        version=__version__,
         docs_url="/docs" if api_docs_enabled else None,
         redoc_url="/redoc" if api_docs_enabled else None,
         openapi_url="/openapi.json" if api_docs_enabled else None,
