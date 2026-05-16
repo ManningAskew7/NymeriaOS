@@ -4,16 +4,106 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable
 from html import escape as html_escape
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from ...core.accounts import AuthenticatedUser
-from ..schemas.system import HealthResponse, ReportRequest
+from ..schemas.system import (
+    DependencyReadiness,
+    HealthResponse,
+    ReadinessResponse,
+    ReportRequest,
+)
 
 logger = logging.getLogger(__name__)
+
+_READINESS_CACHE_SECONDS = 1.0
+
+
+def _dependency_ok(detail: str | None = None) -> DependencyReadiness:
+    return DependencyReadiness(status="ok", detail=detail)
+
+
+def _dependency_skipped(detail: str | None = None) -> DependencyReadiness:
+    return DependencyReadiness(status="skipped", detail=detail)
+
+
+def _dependency_error(detail: str) -> DependencyReadiness:
+    return DependencyReadiness(status="error", detail=detail)
+
+
+def _check_database_ready(settings: Any) -> DependencyReadiness:
+    backend = getattr(settings, "database_backend", "sqlite")
+    if backend == "memory":
+        return _dependency_skipped("memory backend")
+
+    if backend == "sqlite":
+        db_path = getattr(settings, "db_path", None)
+        if db_path is None:
+            return _dependency_error("sqlite db_path is unavailable")
+        parent = getattr(db_path, "parent", None)
+        if parent is not None and not parent.exists():
+            return _dependency_error("sqlite data directory is missing")
+        return _dependency_ok("sqlite")
+
+    if backend == "postgres":
+        postgres_uri = getattr(settings, "postgres_uri", None)
+        if not postgres_uri:
+            return _dependency_error("POSTGRES_URI is unset")
+        try:
+            import psycopg  # type: ignore[import-untyped]
+
+            with psycopg.connect(postgres_uri, connect_timeout=5) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+        except Exception as exc:  # noqa: BLE001 - readiness should report all failures.
+            return _dependency_error(type(exc).__name__)
+        return _dependency_ok("postgres")
+
+    return _dependency_error(f"unknown database backend: {backend}")
+
+
+def _check_redis_ready(settings: Any) -> DependencyReadiness:
+    if not getattr(settings, "redis_enabled", False):
+        return _dependency_skipped("disabled")
+
+    redis_url = getattr(settings, "redis_url", None)
+    if not redis_url:
+        return _dependency_error("REDIS_URL is unset")
+
+    try:
+        import redis
+
+        client = redis.from_url(
+            redis_url,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+        )
+        try:
+            client.ping()
+        finally:
+            client.close()
+    except Exception as exc:  # noqa: BLE001 - readiness should report all failures.
+        return _dependency_error(type(exc).__name__)
+    return _dependency_ok()
+
+
+def _build_readiness(settings: Any) -> ReadinessResponse:
+    checks = {
+        "database": _check_database_ready(settings),
+        "redis": _check_redis_ready(settings),
+    }
+    status = (
+        "error"
+        if any(check.status == "error" for check in checks.values())
+        else "ok"
+    )
+    return ReadinessResponse(status=status, checks=checks)
 
 
 def create_system_router(
@@ -24,11 +114,42 @@ def create_system_router(
 ) -> APIRouter:
     """Create the system router with app dependencies injected."""
     router = APIRouter(tags=["System"])
+    readiness_lock = asyncio.Lock()
+    readiness_cache: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
     @router.get("/health", response_model=HealthResponse)
     async def health_check():
         """Health check endpoint."""
         return HealthResponse()
+
+    @router.get("/ready", response_model=ReadinessResponse)
+    async def ready_check(
+        response: Response,
+        settings: Any = Depends(get_settings_fn),
+    ):
+        """Readiness endpoint with lightweight dependency checks."""
+        now = time.monotonic()
+        cached = readiness_cache["value"]
+        if cached is not None and now < readiness_cache["expires_at"]:
+            if cached.status == "error":
+                response.status_code = 503
+            return cached
+
+        async with readiness_lock:
+            now = time.monotonic()
+            cached = readiness_cache["value"]
+            if cached is not None and now < readiness_cache["expires_at"]:
+                if cached.status == "error":
+                    response.status_code = 503
+                return cached
+
+            readiness = await asyncio.to_thread(_build_readiness, settings)
+            readiness_cache["value"] = readiness
+            readiness_cache["expires_at"] = time.monotonic() + _READINESS_CACHE_SECONDS
+
+        if readiness.status == "error":
+            response.status_code = 503
+        return readiness
 
     @router.post("/restart")
     async def restart_server(

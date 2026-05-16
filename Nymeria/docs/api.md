@@ -3,7 +3,7 @@
 Base URL: `http://localhost:8000`
 
 Implementation note: `create_api_app()` remains the public FastAPI factory.
-The API is being split incrementally; the System slice (`/health`,
+The API is being split incrementally; the System slice (`/health`, `/ready`,
 `/restart`, `/report`), device, workspace, RAG, user memory, user
 tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
@@ -29,6 +29,7 @@ Failed bearer authentication attempts are rate-limited per client IP. After 10 m
 
 Exceptions without Bearer auth:
 - `GET /health`
+- `GET /ready`
 - `POST /triggers/fire/{trigger_id}` (public callers must provide the trigger's shared `secret`; Bearer auth can be used instead)
 
 ---
@@ -47,7 +48,33 @@ No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "1.0.0"
+  "version": "<nymeria.__version__>"
+}
+```
+
+---
+
+### Readiness Check
+
+```http
+GET /ready
+```
+
+No authentication required. Checks the configured database backend and Redis
+when Redis is enabled. Results are cached for 1 second.
+
+Returns `200` when all required dependencies are ready and `503` when any
+required dependency fails.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "version": "<nymeria.__version__>",
+  "checks": {
+    "database": {"status": "ok", "detail": "sqlite"},
+    "redis": {"status": "skipped", "detail": "disabled"}
+  }
 }
 ```
 
