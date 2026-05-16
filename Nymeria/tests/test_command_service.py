@@ -67,8 +67,9 @@ class FakeCommandApi:
 
 
 class _FakeAccountsRepo:
-    def __init__(self) -> None:
+    def __init__(self, default_role: str = "user") -> None:
         self.claims: list[tuple[str, str]] = []
+        self.default_role = default_role
 
     def claim_thread(self, thread_id: str, user_id: str) -> str:
         self.claims.append((thread_id, user_id))
@@ -79,19 +80,39 @@ class _FakeAccountsRepo:
             id=user_id,
             email=f"{user_id}@example.test",
             display_name=user_id,
-            role="user",
+            role=self.default_role,
         )
 
 
 class _FakeThreadLocks:
+    def __init__(self) -> None:
+        self.lock_info: dict[str, Any] | None = None
+
     def get_lock_info(self, thread_id: str):
-        return None
+        return self.lock_info
+
+
+class _FakeThreadMetadataManager:
+    def __init__(self) -> None:
+        self.deleted: list[tuple[str, str]] = []
+
+    def delete_thread(self, user_id: str, thread_id: str) -> None:
+        self.deleted.append((user_id, thread_id))
+
+
+class _FakeAsyncGraph:
+    async def aget_state(self, config: dict) -> SimpleNamespace:
+        return SimpleNamespace(values={"messages": []})
 
 
 class _FakeAgent:
     def __init__(self) -> None:
         self.accounts_repo = _FakeAccountsRepo()
         self._thread_locks = _FakeThreadLocks()
+        self.aborted: list[str] = []
+        self.thread_metadata_manager = _FakeThreadMetadataManager()
+        self._default_async_graph = _FakeAsyncGraph()
+        self.flushed: list[tuple[str, str]] = []
 
     def get_context_stats(self, thread_id: str) -> dict[str, Any]:
         return {
@@ -102,6 +123,12 @@ class _FakeAgent:
             "compaction_count": 0,
             "context_management": "auto_compact",
         }
+
+    def abort_with_cascade(self, thread_id: str) -> None:
+        self.aborted.append(thread_id)
+
+    def _flush_memories_before_trim(self, user_id: str, thread_id: str, messages: list) -> None:
+        self.flushed.append((user_id, thread_id))
 
 
 def _command_names(service: CommandService, **kwargs: Any) -> set[str]:
@@ -329,6 +356,155 @@ def test_compact_is_listed_but_not_executed_by_command_service() -> None:
     assert compact.execution_kind == "chat_stream"
     assert result.success is False
     assert "handled outside the command service" in result.markdown
+
+
+def test_stop_aborts_active_thread_and_reports_idle_when_no_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nymeria.core.agent as agent_module
+
+    fake_agent = _FakeAgent()
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    idle = run(CommandService().execute(ctx, "/stop"))
+    assert idle.success is True
+    assert "idle" in idle.markdown.lower()
+    assert fake_agent.aborted == []
+
+    fake_agent._thread_locks.lock_info = {"holder": "astream", "held_seconds": 4.2}
+    active = run(CommandService().execute(ctx, "/stop"))
+    assert active.success is True
+    assert "astream" in active.markdown
+    assert "iteration boundary" in active.markdown
+    assert fake_agent.aborted == ["thread-1"]
+
+
+def test_stop_is_blocked_for_agent_actor() -> None:
+    service = CommandService()
+    result = run(
+        service.execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="agent",
+                surface="agent",
+                is_admin=True,
+            ),
+            "/stop",
+            api=FakeCommandApi(),
+        )
+    )
+    assert result.success is False
+    assert "disabled for the agent" in result.markdown
+
+
+def test_clear_clears_history_and_preserves_notepad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nymeria.core.agent as agent_module
+
+    fake_agent = _FakeAgent()
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    # Monkeypatch delete_thread_checkpoints to a no-op
+    import nymeria.core.checkpoint_cleanup as cleanup_mod
+
+    deleted_checkpoints: list[str] = []
+
+    def fake_delete(settings, thread_id):
+        deleted_checkpoints.append(thread_id)
+
+    monkeypatch.setattr(cleanup_mod, "delete_thread_checkpoints", fake_delete)
+
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    result = run(CommandService().execute(ctx, "/clear"))
+    assert result.success is True
+    assert "cleared" in result.markdown.lower()
+    assert "notepad" in result.markdown.lower()
+    assert fake_agent.thread_metadata_manager.deleted == [("alice", "thread-1")]
+    assert deleted_checkpoints == ["thread-1"]
+
+
+def test_clear_is_blocked_for_agent_actor() -> None:
+    service = CommandService()
+    result = run(
+        service.execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="agent",
+                surface="agent",
+                is_admin=True,
+            ),
+            "/clear",
+            api=FakeCommandApi(),
+        )
+    )
+    assert result.success is False
+    assert "disabled for the agent" in result.markdown
+
+
+def test_restart_api_requires_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nymeria.core.agent as agent_module
+
+    fake_agent = _FakeAgent()
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    # Non-admin should be blocked at the dispatch level
+    non_admin_ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=False,
+    )
+    result = run(CommandService().execute(non_admin_ctx, "/restart api"))
+    assert result.success is False
+    assert "requires an admin" in result.markdown.lower()
+
+    # Admin should succeed — mock the restart helper to prevent actual restart
+    import nymeria.api.routers.system as system_mod
+
+    restarted: list[bool] = []
+
+    def fake_restart(agent, settings):
+        restarted.append(True)
+
+    monkeypatch.setattr(system_mod, "restart_api_process", fake_restart)
+
+    # Use a fake agent whose accounts_repo returns admin role
+    admin_agent = _FakeAgent()
+    admin_agent.accounts_repo = _FakeAccountsRepo(default_role="admin")
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: admin_agent)
+
+    admin_ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    result = run(CommandService().execute(admin_ctx, "/restart api"))
+    assert result.success is True
+    assert "restarting" in result.markdown.lower()
+    assert restarted == [True]
 
 
 def _client(

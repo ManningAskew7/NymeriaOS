@@ -21,7 +21,7 @@ from .base import (
     CommandResult,
 )
 
-_PROTECTED_BUILTINS = {"help", "exit", "clear"}
+_PROTECTED_BUILTINS = {"help", "exit", "cls"}
 _HELP_CATEGORY_ORDER = {
     "System": 0,
     "Threads": 10,
@@ -87,9 +87,9 @@ class CommandRegistry:
         )
         self.register(
             Command(
-                name="clear",
+                name="cls",
                 description="Clear screen",
-                usage="/clear",
+                usage="/cls",
                 handler=_handle_clear,
                 handler_mode="context",
                 builtin=True,

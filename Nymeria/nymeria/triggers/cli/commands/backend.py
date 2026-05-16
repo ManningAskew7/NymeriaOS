@@ -9,7 +9,6 @@ from typing import Any
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 
 _LOCAL_OVERRIDES = {
-    "clear",
     "compact",
     "exit",
     "help",

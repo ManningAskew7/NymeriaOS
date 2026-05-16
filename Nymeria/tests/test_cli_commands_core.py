@@ -459,7 +459,6 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
     assert run(registry.dispatch_async(ctx, "/usage session")).ok is True
     session_extra = run(registry.dispatch_async(ctx, "/usage session extra"))
     assert run(registry.dispatch_async(ctx, "/thread compact")).ok is True
-    assert run(registry.dispatch_async(ctx, "/thread stop")).ok is True
 
     assert session_extra.ok is False
     assert session_extra.error_code == "usage_error"
@@ -473,7 +472,6 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
         "include_internal": True,
     }) in client.calls
     assert ("compact", {"thread_id": "thread-1", "user_id": "alice"}) in client.calls
-    assert ("stop", {"thread_id": "thread-1", "user_id": "alice"}) in client.calls
     assert any("gpt-new" in message.content for message in sink.messages)
     assert any("hi there" in message.content for message in sink.messages)
 

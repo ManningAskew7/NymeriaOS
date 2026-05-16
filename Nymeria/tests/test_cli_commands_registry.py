@@ -211,7 +211,7 @@ def test_builtin_help_exit_and_clear_are_context_commands() -> None:
 
     help_result = run(registry.dispatch_async(context, "/help thread"))
     exit_result = run(registry.dispatch_async(context, "/exit"))
-    clear_result = run(registry.dispatch_async(context, "/clear"))
+    clear_result = run(registry.dispatch_async(context, "/cls"))
 
     assert help_result.status == "ok"
     assert "/thread list" in sink.messages[0].content
@@ -352,7 +352,7 @@ def test_full_screen_shell_clear_command_resets_transcript() -> None:
     assert "──── You " in shell.transcript.text
     assert "\n  hello" in shell.transcript.text
 
-    result = run(shell._run_command("/clear"))
+    result = run(shell._run_command("/cls"))
 
     assert result.status == "clear"
     assert shell.transcript.text == ""

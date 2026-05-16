@@ -287,7 +287,7 @@ async def _handle_thread_root_context(
         return CommandResult.completed()
     if args:
         return CommandResult.failed(
-            "Usage: /thread list|switch|new|rename|delete|pin|config|branch|compact|stop",
+            "Usage: /thread list|switch|new|rename|delete|pin|config|branch|compact",
             error_code="usage_error",
         )
     return await _handle_list_context(context, args)
@@ -681,32 +681,6 @@ async def _handle_branch_context(
             "thread_switched": True,
         },
         json_payload=dict(result),
-    )
-
-
-async def _handle_stop_context(
-    context: CommandContext,
-    _args: list[str],
-) -> CommandResult:
-    if context.legacy_state is not None:
-        context.legacy_state.agent.abort_with_cascade(context.legacy_state.thread_id)
-        context.legacy_state.console.print("[green]Stop requested.[/green]")
-        return CommandResult.completed()
-    if not context.thread_id:
-        return CommandResult.failed("No active thread is selected.")
-
-    try:
-        await call_client_method(
-            context,
-            "stop",
-            context.thread_id,
-            context.user_id,
-        )
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/thread stop", method_name=exc.method_name)
-
-    return CommandResult.completed(
-        CommandMessage(f"Stop requested for {compact_id(context.thread_id)}.", level="success")
     )
 
 
@@ -1222,14 +1196,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Compact context",
                 usage="compact [--yes]",
                 handler=_handle_compact_context,
-                handler_mode="context",
-                category="Threads",
-            ),
-            "stop": Command(
-                name="stop",
-                description="Stop active turn",
-                usage="stop",
-                handler=_handle_stop_context,
                 handler_mode="context",
                 category="Threads",
             ),

@@ -106,6 +106,46 @@ def _build_readiness(settings: Any) -> ReadinessResponse:
     return ReadinessResponse(status=status, checks=checks)
 
 
+def restart_api_process(agent: Any, settings: Any) -> None:
+    """Schedule an API server restart on the event loop.
+
+    Used by both the REST endpoint and the central command service.
+    """
+    import subprocess
+
+    async def _do_restart():
+        await asyncio.sleep(0.5)
+
+        ticker = getattr(agent, "_ticker", None)
+        if ticker:
+            ticker.stop()
+
+        from dotenv import dotenv_values
+        from ...config.settings import get_env_file_paths
+
+        child_env = os.environ.copy()
+        project_root = settings.project_root
+        for env_path in get_env_file_paths(project_root):
+            if not env_path.exists():
+                continue
+            for key, value in dotenv_values(env_path).items():
+                if key and value is not None:
+                    child_env[key] = value
+
+        subprocess.Popen(
+            [sys.executable] + sys.argv,
+            env=child_env,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                if sys.platform == "win32" else 0
+            ),
+            start_new_session=(sys.platform != "win32"),
+        )
+        os._exit(0)
+
+    asyncio.create_task(_do_restart())
+
+
 def create_system_router(
     verify_api_key: Callable[..., Any],
     require_admin_user: Callable[..., Any],
@@ -156,40 +196,7 @@ def create_system_router(
         _user: AuthenticatedUser = Depends(require_admin_user),
     ):
         """Restart the API server process. Admin-only; affects every user."""
-        import subprocess
-
-        async def _do_restart():
-            await asyncio.sleep(0.5)
-
-            agent = get_agent_fn()
-            ticker = getattr(agent, "_ticker", None)
-            if ticker:
-                ticker.stop()
-
-            from dotenv import dotenv_values
-            from ...config.settings import get_env_file_paths
-
-            child_env = os.environ.copy()
-            project_root = get_settings_fn().project_root
-            for env_path in get_env_file_paths(project_root):
-                if not env_path.exists():
-                    continue
-                for key, value in dotenv_values(env_path).items():
-                    if key and value is not None:
-                        child_env[key] = value
-
-            subprocess.Popen(
-                [sys.executable] + sys.argv,
-                env=child_env,
-                creationflags=(
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    if sys.platform == "win32" else 0
-                ),
-                start_new_session=(sys.platform != "win32"),
-            )
-            os._exit(0)
-
-        asyncio.create_task(_do_restart())
+        restart_api_process(get_agent_fn(), get_settings_fn())
         return {"message": "Server restarting..."}
 
     @router.post("/report")

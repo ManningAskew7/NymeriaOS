@@ -126,7 +126,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/help, /h", "Show this help"),
             ("/settings", "Show global settings"),
             ("/history", "Show conversation history"),
-            ("/clear", "Clear screen"),
+            ("/cls", "Clear screen"),
             ("/exit, /quit", "Exit the CLI"),
         ],
     }
@@ -700,7 +700,7 @@ def register(registry: CommandRegistry) -> None:
         handler=_handle_help,
     ))
     registry.register(Command(
-        name="clear",
+        name="cls",
         aliases=[],
         description="Clear screen",
         handler=_handle_clear,

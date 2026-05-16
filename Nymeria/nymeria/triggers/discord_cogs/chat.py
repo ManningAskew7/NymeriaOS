@@ -53,22 +53,7 @@ class ChatCog(commands.Cog):
         description="Clear conversation history (preserves notepad + tool config)",
     )
     async def cmd_clear(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
-        user_id = await self.bot._resolve_or_reject_interaction(interaction)
-        if user_id is None:
-            return
-        try:
-            await self.bot.api.clear_thread(thread_id, user_id)
-            await interaction.followup.send(
-                "Conversation history cleared. Notepad and tool config preserved.",
-                ephemeral=True,
-            )
-        except Exception as e:
-            logger.error(f"Error clearing thread: {e}", exc_info=True)
-            await interaction.followup.send(
-                f"Error clearing history: {e}", ephemeral=True
-            )
+        await self.bot._send_backend_command(interaction, "clear")
 
     @app_commands.command(
         name="compact",
@@ -101,15 +86,4 @@ class ChatCog(commands.Cog):
         name="stop", description="Abort the current running operation"
     )
     async def cmd_stop(self, interaction: discord.Interaction):
-        thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
-        try:
-            await self.bot.api.stop(thread_id)
-            await interaction.response.send_message(
-                "Abort signal sent. The current operation will stop shortly.",
-                ephemeral=True,
-            )
-        except Exception as e:
-            logger.error(f"Error aborting thread: {e}", exc_info=True)
-            await interaction.response.send_message(
-                f"Error sending abort: {e}", ephemeral=True
-            )
+        await self.bot._send_backend_command(interaction, "stop")
