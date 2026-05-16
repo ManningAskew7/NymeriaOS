@@ -240,6 +240,54 @@ def test_async_graph_cache_is_scoped_to_running_event_loop():
     assert agent._build_async_graph_with_prompt.call_count == 2
 
 
+def test_graph_cache_hit_moves_entry_to_lru_tail():
+    agent = _make_agent()
+    agent._graph_cache_lock = __import__("threading").Lock()
+
+    first_graph = object()
+    second_graph = object()
+    cache = {
+        ("u1", "t1"): ("hash", first_graph),
+        ("u2", "t2"): ("hash", second_graph),
+    }
+
+    cached = agent._get_cached_graph_entry(cache, ("u1", "t1"), "hash")
+
+    assert cached is first_graph
+    assert list(cache) == [("u2", "t2"), ("u1", "t1")]
+
+
+def test_graph_cache_eviction_uses_least_recently_used_entry():
+    agent = _make_agent()
+    agent._graph_cache_lock = __import__("threading").Lock()
+    agent._GRAPH_CACHE_MAX = 2
+
+    first_graph = object()
+    second_graph = object()
+    third_graph = object()
+    cache = {
+        ("u1", "t1"): ("hash", first_graph),
+        ("u2", "t2"): ("hash", second_graph),
+    }
+
+    assert agent._get_cached_graph_entry(cache, ("u1", "t1"), "hash") is first_graph
+    agent._store_cached_graph_entry(cache, ("u3", "t3"), "hash", third_graph)
+
+    assert list(cache) == [("u1", "t1"), ("u3", "t3")]
+    assert ("u2", "t2") not in cache
+
+
+def test_graph_cache_hash_mismatch_removes_stale_entry():
+    agent = _make_agent()
+    agent._graph_cache_lock = __import__("threading").Lock()
+    cache = {("u1", "t1"): ("old-hash", object())}
+
+    cached = agent._get_cached_graph_entry(cache, ("u1", "t1"), "new-hash")
+
+    assert cached is None
+    assert cache == {}
+
+
 def test_toolset_mutators_delegate_default_graph_rebuild():
     """Tool-set mutation paths go through the shared cache rebuild helper."""
     from nymeria.core.agent import NymeriaAgent
