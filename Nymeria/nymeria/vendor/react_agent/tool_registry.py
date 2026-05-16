@@ -5,6 +5,7 @@ Allows frameworks to register, discover, and manage tools dynamically.
 Supports multiple registration patterns for flexibility.
 """
 
+from threading import RLock
 from typing import Callable, List, Optional, Dict, Any
 from langchain_core.tools import BaseTool, tool as tool_decorator
 
@@ -35,6 +36,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, BaseTool] = {}
         self._disabled: set = set()
+        self._lock = RLock()
 
     def register(self, tool: BaseTool) -> "ToolRegistry":
         """
@@ -46,7 +48,8 @@ class ToolRegistry:
         Returns:
             Self for chaining
         """
-        self._tools[tool.name] = tool
+        with self._lock:
+            self._tools[tool.name] = tool
         return self
 
     def register_function(
@@ -81,58 +84,71 @@ class ToolRegistry:
 
     def register_all(self, tools: List[BaseTool]) -> "ToolRegistry":
         """Register multiple tools at once."""
-        for t in tools:
-            self.register(t)
+        with self._lock:
+            for t in tools:
+                self._tools[t.name] = t
         return self
 
     def unregister(self, name: str) -> "ToolRegistry":
         """Remove a tool from the registry."""
-        self._tools.pop(name, None)
-        self._disabled.discard(name)
+        with self._lock:
+            self._tools.pop(name, None)
+            self._disabled.discard(name)
         return self
 
     def disable(self, name: str) -> "ToolRegistry":
         """Disable a tool (keeps it registered but won't be used)."""
-        if name in self._tools:
-            self._disabled.add(name)
+        with self._lock:
+            if name in self._tools:
+                self._disabled.add(name)
         return self
 
     def enable(self, name: str) -> "ToolRegistry":
         """Re-enable a disabled tool."""
-        self._disabled.discard(name)
+        with self._lock:
+            self._disabled.discard(name)
         return self
 
     def get_tool(self, name: str) -> Optional[BaseTool]:
         """Get a specific tool by name."""
-        return self._tools.get(name)
+        with self._lock:
+            return self._tools.get(name)
 
     def get_all_tools(self) -> List[BaseTool]:
         """Get all registered tools (including disabled)."""
-        return list(self._tools.values())
+        with self._lock:
+            return list(self._tools.values())
 
     def get_enabled_tools(self) -> List[BaseTool]:
         """Get only enabled tools (what the agent will use)."""
-        return [t for name, t in self._tools.items() if name not in self._disabled]
+        with self._lock:
+            return [
+                t for name, t in self._tools.items() if name not in self._disabled
+            ]
 
     def list_tools(self) -> List[Dict[str, Any]]:
         """List all tools with their status."""
-        return [
-            {
-                "name": name,
-                "description": tool.description,
-                "enabled": name not in self._disabled,
-            }
-            for name, tool in self._tools.items()
-        ]
+        with self._lock:
+            return [
+                {
+                    "name": name,
+                    "description": tool.description,
+                    "enabled": name not in self._disabled,
+                }
+                for name, tool in self._tools.items()
+            ]
 
     def clear(self) -> "ToolRegistry":
         """Remove all tools from the registry."""
-        self._tools.clear()
-        self._disabled.clear()
+        with self._lock:
+            self._tools.clear()
+            self._disabled.clear()
         return self
 
     def __len__(self) -> int:
-        return len(self._tools)
+        with self._lock:
+            return len(self._tools)
 
     def __contains__(self, name: str) -> bool:
-        return name in self._tools
+        with self._lock:
+            return name in self._tools
