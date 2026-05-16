@@ -44,7 +44,7 @@ class ServerSettingsResponse(BaseModel):
     llm_presence_penalty: Optional[float] = None
     llm_reasoning_effort: Optional[str] = None
     llm_extended_thinking: bool = False
-    dynamic_tool_binding: bool = False
+    dynamic_tool_binding: bool = True
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
     openai_api_mode: Optional[OpenAIApiMode] = "responses"

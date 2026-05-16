@@ -357,12 +357,14 @@ class Settings(BaseSettings):
         default=False, description="Enable extended thinking/reasoning for compatible models"
     )
     dynamic_tool_binding: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Resolve tools per-step in the model node instead of rebuilding the "
             "graph on enable. Eliminates the Command(goto=END) + tool_reload_resume "
-            "round-trip when tools change mid-turn. Experimental — falls back to "
-            "rebuild when a newly-created tool isn't in the precomputed superset."
+            "round-trip when tools change mid-turn. Default; set False to use the "
+            "legacy rebuild path as a fallback. Falls back to rebuild "
+            "automatically when a newly-created tool isn't in the precomputed "
+            "superset (tool_create / mid-turn MCP install)."
         ),
     )
     llm_use_model_defaults: bool = Field(

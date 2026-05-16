@@ -62,6 +62,10 @@ def _make_agent():
     agent.settings.tool_timeout = 300
     agent.settings.tool_output_max_chars = 100000
     agent.settings.log_level = "INFO"
+    # These tests assert the legacy build path; opt out of dynamic mode
+    # explicitly so the MagicMock's truthy attribute access doesn't flip
+    # them onto the per-step resolver path.
+    agent.settings.dynamic_tool_binding = False
     agent.thread_config_manager = MagicMock()
     agent.thread_config_manager.get_config.return_value = None
     agent.profile_manager = MagicMock()
