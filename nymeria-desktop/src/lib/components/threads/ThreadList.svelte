@@ -19,6 +19,16 @@
   let importing = $state(false);
   let importReportTitle = $state('');
   let importWarnings = $state<string[]>([]);
+  let retryingSync = $state(false);
+
+  async function handleRetrySync() {
+    retryingSync = true;
+    try {
+      await threadsStore.syncFromBackend();
+    } finally {
+      retryingSync = false;
+    }
+  }
 
   // Multi-select state
   let selectedIds = $state<Set<string>>(new Set());
@@ -582,13 +592,27 @@
     </div>
   {/if}
 
-  {#if threadsStore.threads.length === 0}
-    <div class="empty-state">
-      <p>No conversations yet</p>
-      <p class="hint">Start a new chat to begin</p>
+  {#if !threadsStore.initialSyncDone}
+    <div class="sync-loading">
+      <Icon name="loading" size={16} />
+      <span>Loading threads…</span>
     </div>
   {:else}
-    {#if threadsStore.organizationMode === 'teams'}
+    {#if threadsStore.lastSyncError}
+      <div class="sync-error-banner">
+        <p>Couldn't sync threads from backend — showing cached data.</p>
+        <button type="button" disabled={retryingSync} onclick={handleRetrySync}>
+          {retryingSync ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
+
+    {#if threadsStore.threads.length === 0}
+      <div class="empty-state">
+        <p>No conversations yet</p>
+        <p class="hint">Start a new chat to begin</p>
+      </div>
+    {:else if threadsStore.organizationMode === 'teams'}
       {#each threadsStore.threadTeams as team (team.id)}
         <FolderItem
           kind="team"
@@ -973,6 +997,55 @@
 
   .load-error button:hover {
     background: color-mix(in srgb, var(--error) 20%, transparent);
+  }
+
+  .sync-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-lg);
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .sync-error-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    margin: var(--spacing-xs) var(--spacing-sm) var(--spacing-sm);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+  }
+
+  .sync-error-banner p {
+    margin: 0;
+    flex: 1;
+  }
+
+  .sync-error-banner button {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-primary);
+    background: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+
+  .sync-error-banner button:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .sync-error-banner button:disabled {
+    opacity: 0.6;
+    cursor: wait;
   }
 
   /* Sort bar */

@@ -139,6 +139,11 @@ function createThreadsStore() {
   let folders = $state<ThreadFolder[]>(loadFolders());
   let sortMode = $state<SortMode>(loadSortMode());
 
+  // Gates the UI on the first sync attempt so cached localStorage threads
+  // don't render as authoritative before /me + syncFromBackend complete.
+  let initialSyncDone = $state(false);
+  let lastSyncError = $state<string | null>(null);
+
   // Reload from localStorage when the connected user changes — new scope,
   // potentially different data.
   registerIdentityReloadHook(() => {
@@ -146,6 +151,9 @@ function createThreadsStore() {
     currentThreadId = loadCurrentThreadId(threads);
     folders = loadFolders();
     sortMode = loadSortMode();
+    // Re-arm the gate so the new user's first sync controls the sidebar.
+    initialSyncDone = false;
+    lastSyncError = null;
   });
 
   function saveCurrentThreadId(id: string | null): void {
@@ -185,6 +193,12 @@ function createThreadsStore() {
     },
     get currentThread(): Thread | undefined {
       return threads.find((t) => t.id === currentThreadId);
+    },
+    get initialSyncDone() {
+      return initialSyncDone;
+    },
+    get lastSyncError() {
+      return lastSyncError;
     },
 
     // Group threads by date
@@ -486,6 +500,7 @@ function createThreadsStore() {
     async syncFromBackend() {
       if (syncInProgress) return;
       syncInProgress = true;
+      lastSyncError = null;
       try {
         const response = await api.listThreadsWithMetadata();
         const backendThreads = response.threads;
@@ -515,9 +530,11 @@ function createThreadsStore() {
 
         this._applyBackendThreads(backendThreads);
       } catch (e) {
+        lastSyncError = e instanceof Error ? e.message : String(e);
         console.warn('[Threads] Backend sync failed:', e);
       } finally {
         syncInProgress = false;
+        initialSyncDone = true;
       }
     },
 

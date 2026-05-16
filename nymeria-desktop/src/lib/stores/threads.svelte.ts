@@ -193,6 +193,11 @@ function createThreadsStore() {
   let organizationMode = $state<OrganizationMode>(loadOrganizationMode());
   let sortMode = $state<SortMode>(loadSortMode());
 
+  // Gates the UI on the first sync attempt so cached localStorage threads
+  // don't render as authoritative before /me + syncFromBackend complete.
+  let initialSyncDone = $state(false);
+  let lastSyncError = $state<string | null>(null);
+
   // When the connected user changes (GET /me returns a different id), all
   // four localStorage keys switch to the new user's namespace. Reload from
   // the new scope so we don't keep the previous user's data in memory.
@@ -203,6 +208,9 @@ function createThreadsStore() {
     threadTeams = [];
     organizationMode = loadOrganizationMode();
     sortMode = loadSortMode();
+    // Re-arm the gate so the new user's first sync controls the sidebar.
+    initialSyncDone = false;
+    lastSyncError = null;
   });
 
   function applyThreadTeams(apiTeams: ThreadTeamApi[]): void {
@@ -292,6 +300,12 @@ function createThreadsStore() {
     },
     get currentThread(): Thread | undefined {
       return threads.find((t) => t.id === currentThreadId);
+    },
+    get initialSyncDone() {
+      return initialSyncDone;
+    },
+    get lastSyncError() {
+      return lastSyncError;
     },
 
     // Group threads by date
@@ -613,6 +627,8 @@ function createThreadsStore() {
       threadTeams = [];
       currentThreadId = null;
       syncInProgress = false;
+      initialSyncDone = false;
+      lastSyncError = null;
       saveThreads([]);
       saveFolders([]);
       saveTeamUi([]);
@@ -629,6 +645,7 @@ function createThreadsStore() {
     async syncFromBackend() {
       if (syncInProgress) return;
       syncInProgress = true;
+      lastSyncError = null;
       try {
         const response = await api.listThreadsWithMetadata();
         const backendThreads = response.threads;
@@ -660,9 +677,11 @@ function createThreadsStore() {
         this._applyBackendThreads(backendThreads);
         await this.loadThreadTeams();
       } catch (e) {
+        lastSyncError = e instanceof Error ? e.message : String(e);
         console.warn('[Threads] Backend sync failed:', e);
       } finally {
         syncInProgress = false;
+        initialSyncDone = true;
       }
     },
 
