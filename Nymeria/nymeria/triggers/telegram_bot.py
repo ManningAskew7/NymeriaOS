@@ -1945,31 +1945,11 @@ class NymeriaTelegramBot:
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop."""
-        chat_id = update.effective_chat.id
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        try:
-            await self.api.stop(thread_id, user_id=user_id)
-            await update.message.reply_text("Abort signal sent.")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "stop")
 
     async def _cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /clear."""
-        chat_id = update.effective_chat.id
-        user_id = await self._resolve_or_reject_update(update)
-        if user_id is None:
-            return
-        thread_id = self.resolve_thread_id_for_chat(chat_id)
-        try:
-            await self.api.clear_thread(thread_id, user_id)
-            await update.message.reply_text(
-                "Conversation history cleared. Notepad and tool config preserved."
-            )
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._send_backend_command(update, context, "clear")
 
     async def _cmd_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /compact."""
@@ -2144,16 +2124,26 @@ class NymeriaTelegramBot:
         """Handle /restart [bot|api] — admin-gated."""
         # Restart affects every user, so non-admins are rejected even if
         # they're linked Nymeria users.
-        if await self._resolve_or_reject_update(update, require_admin=True) is None:
+        user_id = await self._resolve_or_reject_update(update, require_admin=True)
+        if user_id is None:
             return
 
         target = (context.args[0].lower() if context.args else "bot")
         if target == "api":
-            await update.message.reply_text("Restarting API server...")
+            # API restart is centralized; suppress transient connection errors
+            # raised when the server closes mid-response.
             try:
-                await self.api.restart_api()
+                result = await self.api.execute_command(
+                    "/restart api",
+                    source="user",
+                    actor="user",
+                    surface="telegram",
+                    user_id=user_id,
+                )
+                text = str(result.get("markdown") or "Restarting API server...").strip()
+                await update.message.reply_text(text)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
-                pass  # transient connection errors during restart are expected
+                pass
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
         else:

@@ -656,6 +656,60 @@ class CommandBackendClient:
         self._require_same_user_or_admin(user_id)
         return user_id
 
+    async def clear_thread(self, thread_id: str) -> dict:
+        """Clear conversation history; preserve notepad + tool config."""
+        self._require_thread_access(thread_id)
+        agent = self.agent
+        settings = self._settings()
+        user_id = self.user.id
+
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            state = await agent._default_async_graph.aget_state(config)
+            messages = state.values.get("messages", [])
+            if messages:
+                agent._flush_memories_before_trim(user_id, thread_id, messages)
+        except Exception as e:
+            logger.warning("Pre-clear RAG flush failed for %s: %s", thread_id, e)
+
+        agent.thread_metadata_manager.delete_thread(user_id, thread_id)
+
+        try:
+            from .checkpoint_cleanup import delete_thread_checkpoints
+
+            delete_thread_checkpoints(settings, thread_id)
+        except Exception as e:
+            logger.warning("Failed to delete checkpoints for %s: %s", thread_id, e)
+
+        logger.info("Thread %s conversation cleared (config + notepad preserved)", thread_id)
+        return {"status": "ok", "thread_id": thread_id}
+
+    async def restart_api(self) -> dict:
+        """Schedule an API server restart. Admin-only."""
+        self._require_admin()
+        from ..api.routers.system import restart_api_process
+
+        restart_api_process(self.agent, self._settings())
+        return {"status": "restarting"}
+
+    async def stop_thread(self, thread_id: str) -> dict:
+        """Abort the running turn on a thread; cascades to callable children."""
+        self._require_thread_access(thread_id)
+        thread_locks = getattr(self.agent, "_thread_locks", None)
+        lock_info = thread_locks.get_lock_info(thread_id) if thread_locks else None
+        if lock_info:
+            self.agent.abort_with_cascade(thread_id)
+            return {
+                "status": "stopping",
+                "thread_id": thread_id,
+                "holder": lock_info.get("holder"),
+                "held_seconds": lock_info.get("held_seconds", 0),
+            }
+        return {
+            "status": "idle",
+            "thread_id": thread_id,
+        }
+
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         self._require_thread_access(thread_id)
         stats = dict(self.agent.get_context_stats(thread_id) or {})
@@ -1679,6 +1733,36 @@ class CommandService:
             requires_thread=True,
             execution_kind="chat_stream",
             note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "stop",
+            description="Abort the running turn on this thread",
+            category="Thread",
+            usage="/stop",
+            agent_allowed=False,
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "clear",
+            description="Clear conversation history (preserves notepad + tool config)",
+            category="Thread",
+            usage="/clear",
+            agent_allowed=False,
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "restart api",
+            description="Restart the API server process (admin-only)",
+            category="System",
+            usage="/restart api",
+            agent_allowed=False,
+            requires_admin=True,
+            mutates_state=True,
+            danger_level="dangerous",
         )
 
     def validate_registry(self) -> None:
@@ -2825,3 +2909,30 @@ class _CommandExecutor:
         if delete_notepad(self.thread_id):
             return "[Success]: Notepad cleared."
         return "[Info]: Notepad was already empty."
+
+    # ── Thread lifecycle ──────────────────────────────────────────────────
+
+    async def _cmd_stop(self, args: list[str], rest: str) -> str:
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+        result = await self.api.stop_thread(self.thread_id)
+        if result.get("status") == "stopping":
+            holder = result.get("holder") or "current turn"
+            held = result.get("held_seconds", 0)
+            return (
+                f"[Success]: Stop requested. {holder} has been running for "
+                f"{held:.0f}s; will halt at the next iteration boundary."
+            )
+        return "[Info]: Thread is idle; nothing to stop."
+
+    async def _cmd_clear(self, args: list[str], rest: str) -> str:
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+        await self.api.clear_thread(self.thread_id)
+        return "[Success]: Conversation history cleared. Notepad and tool config preserved."
+
+    async def _cmd_restart_api(self, args: list[str], rest: str) -> str:
+        await self.api.restart_api()
+        return "[Success]: Restarting API server..."

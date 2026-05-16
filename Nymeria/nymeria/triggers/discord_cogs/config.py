@@ -216,22 +216,18 @@ class ConfigCog(commands.Cog):
         target_value = target.value if target else "bot"
 
         if target_value == "api":
-            await interaction.response.send_message(
-                "Restarting API server...", ephemeral=True
-            )
+            # API restart is centralized; transient connection errors during
+            # the server handoff are expected and suppressed.
             try:
-                await self.bot.api.restart_api()
+                await self.bot._send_backend_command(
+                    interaction, "restart", args="api", require_admin=True
+                )
             except (
                 httpx.RemoteProtocolError,
                 httpx.ReadError,
                 httpx.ConnectError,
             ):
                 pass
-            except Exception as e:
-                logger.error(f"Error restarting API: {e}", exc_info=True)
-                await interaction.followup.send(
-                    f"Error: {e}", ephemeral=True
-                )
         else:
             await interaction.response.send_message(
                 "Restarting bot... (back in a few seconds)", ephemeral=True
