@@ -2184,6 +2184,40 @@ class NymeriaAgent:
         config = self._build_agent_config(system_prompt, self._async_checkpointer_config, thread_id, tc)
         return create_graph(config=config, tools=tools)
 
+    def _get_cached_graph_entry(
+        self,
+        cache: Dict[tuple, tuple],
+        cache_key: tuple,
+        memory_hash: str,
+    ):
+        with self._graph_cache_lock:
+            if cache_key not in cache:
+                return None
+
+            cached_hash, cached_graph = cache[cache_key]
+            if cached_hash != memory_hash:
+                cache.pop(cache_key, None)
+                return None
+
+            cache.pop(cache_key)
+            cache[cache_key] = (cached_hash, cached_graph)
+            return cached_graph
+
+    def _store_cached_graph_entry(
+        self,
+        cache: Dict[tuple, tuple],
+        cache_key: tuple,
+        memory_hash: str,
+        graph,
+    ) -> None:
+        with self._graph_cache_lock:
+            if cache_key in cache:
+                cache.pop(cache_key, None)
+            elif len(cache) >= self._GRAPH_CACHE_MAX:
+                oldest_key = next(iter(cache))
+                del cache[oldest_key]
+            cache[cache_key] = (memory_hash, graph)
+
     def _get_graph_for_user_impl(
         self,
         user_id: str,
@@ -2209,11 +2243,9 @@ class NymeriaAgent:
         build_cache_key = cache_key_fn or (lambda u, t: (u, t))
         cache_key = build_cache_key(user_id, thread_id)
 
-        with self._graph_cache_lock:
-            if cache_key in cache:
-                cached_hash, cached_graph = cache[cache_key]
-                if cached_hash == memory_hash:
-                    return cached_graph
+        cached_graph = self._get_cached_graph_entry(cache, cache_key, memory_hash)
+        if cached_graph is not None:
+            return cached_graph
 
         profile = self.profile_manager.get_profile(user_id)
         todo_list = self.todo_manager.get_todos(user_id)
@@ -2233,28 +2265,20 @@ class NymeriaAgent:
             # list contains every user's callables (cross-user leak). Build a
             # per-user graph and cache under the sentinel thread_id "".
             no_cust_key = build_cache_key(user_id, "")
-            with self._graph_cache_lock:
-                if no_cust_key in cache:
-                    cached_hash, cached_graph = cache[no_cust_key]
-                    if cached_hash == memory_hash:
-                        return cached_graph
+            cached_graph = self._get_cached_graph_entry(
+                cache, no_cust_key, memory_hash
+            )
+            if cached_graph is not None:
+                return cached_graph
             graph = build_fn(self._base_system_prompt, user_id=user_id)
-            with self._graph_cache_lock:
-                if len(cache) >= self._GRAPH_CACHE_MAX:
-                    oldest_key = next(iter(cache))
-                    del cache[oldest_key]
-                cache[no_cust_key] = (memory_hash, graph)
+            self._store_cached_graph_entry(cache, no_cust_key, memory_hash, graph)
             return graph
 
         logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
         full_prompt = self._build_full_system_prompt(user_id, thread_id=thread_id)
         graph = build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
-        with self._graph_cache_lock:
-            if len(cache) >= self._GRAPH_CACHE_MAX:
-                oldest_key = next(iter(cache))
-                del cache[oldest_key]
-            cache[cache_key] = (memory_hash, graph)
+        self._store_cached_graph_entry(cache, cache_key, memory_hash, graph)
         return graph
 
     def _get_graph_for_user(
