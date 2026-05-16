@@ -10,6 +10,37 @@ packaged setup, or create `.env` manually for a lighter source-checkout setup.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
+## Runtime Settings Updates
+
+Admins can update mapped server settings at runtime with `PATCH /settings`.
+The endpoint writes the selected dotenv file, syncs mapped values into
+`os.environ`, clears the cached `Settings` object, assigns the refreshed
+settings to the live agent, and returns `restart_required`.
+
+The following settings are applied to future graph builds immediately and also
+clear/rebuild the current default graph caches:
+
+- LLM provider/model/fallback fields, sampling fields, reasoning fields,
+  `LLM_BASE_URL`, `OPENAI_API_MODE`, and stream retry fields
+- LLM provider credentials: Anthropic, Anthropic direct, OpenAI, and OpenRouter
+- `TOOL_OUTPUT_MAX_CHARS`
+
+Other hot-updated settings are visible to code paths that read
+`agent.settings` after the patch. Existing compiled graphs may keep their old
+configuration until a graph rebuild or API restart unless the setting is in the
+graph-sensitive list above.
+
+These keys persist through `PATCH /settings` but require an API restart to take
+full effect:
+
+- `REDIS_URL`, `REDIS_ENABLED`
+- `POSTGRES_URI`, `NYMERIA_DATA_DIR`
+- `DISCORD_BOT_TOKEN`, `DISCORD_WEBHOOK_URL`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_DEFAULT_CHAT_ID`
+
+When any of those keys are patched, the API response includes
+`"restart_required": true`.
+
 ## Environment Variables
 
 ### LLM Configuration
