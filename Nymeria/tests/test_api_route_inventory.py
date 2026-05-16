@@ -53,6 +53,8 @@ EXPECTED_ROUTES = [
     ("/autonomous/stream", ("GET",)),
     ("/chat", ("POST",)),
     ("/chat/sync", ("POST",)),
+    ("/commands", ("GET",)),
+    ("/commands/execute", ("POST",)),
     ("/credential-bindings/{binding_id}", ("DELETE",)),
     ("/credential-setup-sessions", ("POST",)),
     ("/credentials", ("GET",)),
@@ -232,6 +234,19 @@ def test_public_health_does_not_require_auth(tmp_path: Path, api_client_builder)
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_api_responses_include_baseline_security_headers(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    response = client.get("/health")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
 
 
 def test_api_docs_and_schema_are_disabled_by_default(tmp_path: Path, api_client_builder):

@@ -571,6 +571,17 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
 
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
 
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        response = await call_next(request)
+        if "x-content-type-options" not in response.headers:
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        if "x-frame-options" not in response.headers:
+            response.headers["X-Frame-Options"] = "DENY"
+        if "referrer-policy" not in response.headers:
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     # Add CORS middleware with configurable origins
     app.add_middleware(
         CORSMiddleware,
