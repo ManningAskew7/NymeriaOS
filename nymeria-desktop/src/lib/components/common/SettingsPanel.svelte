@@ -1067,14 +1067,15 @@
               <div class="field">
                 <label class="toggle-label" for="dynamic-tool-binding">
                   <input type="checkbox" id="dynamic-tool-binding" bind:checked={dynamicToolBinding} />
-                  Dynamic tool binding (experimental)
+                  Dynamic tool binding
                 </label>
                 <p class="hint">
-                  Resolve tools per-step in the model node instead of rebuilding the graph
-                  when tools are enabled mid-turn. Removes the
-                  <code>tool_reload_resume</code> sentinel round-trip. May invalidate
-                  Anthropic prompt cache when tools change. Falls back to rebuild when a
-                  newly-created tool isn't in the precomputed superset.
+                  Default. Resolves tools per-step in the model node instead of
+                  rebuilding the graph when tools are enabled mid-turn — removes the
+                  <code>tool_reload_resume</code> sentinel round-trip. Falls back to
+                  rebuild automatically when a newly-created tool isn't in the
+                  precomputed superset. Uncheck to force the legacy rebuild path
+                  for the whole installation.
                 </p>
               </div>
 
