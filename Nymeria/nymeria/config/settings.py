@@ -356,6 +356,15 @@ class Settings(BaseSettings):
     llm_extended_thinking: bool = Field(
         default=False, description="Enable extended thinking/reasoning for compatible models"
     )
+    dynamic_tool_binding: bool = Field(
+        default=False,
+        description=(
+            "Resolve tools per-step in the model node instead of rebuilding the "
+            "graph on enable. Eliminates the Command(goto=END) + tool_reload_resume "
+            "round-trip when tools change mid-turn. Experimental — falls back to "
+            "rebuild when a newly-created tool isn't in the precomputed superset."
+        ),
+    )
     llm_use_model_defaults: bool = Field(
         default=False,
         description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"

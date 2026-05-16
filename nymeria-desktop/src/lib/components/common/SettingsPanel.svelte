@@ -66,6 +66,7 @@
   let llmPresencePenalty = $state<number | null>(null);
   let llmReasoningEffort = $state<string | null>(null);
   let llmExtendedThinking = $state(false);
+  let dynamicToolBinding = $state(false);
   let llmUseModelDefaults = $state(false);
   let llmBaseUrl = $state('');
   let openaiApiMode = $state<OpenAIApiMode>('responses');
@@ -207,6 +208,7 @@
       llmPresencePenalty = serverSettings.llm_presence_penalty;
       llmReasoningEffort = serverSettings.llm_reasoning_effort;
       llmExtendedThinking = serverSettings.llm_extended_thinking;
+      dynamicToolBinding = serverSettings.dynamic_tool_binding;
       llmUseModelDefaults = serverSettings.llm_use_model_defaults;
       llmBaseUrl = serverSettings.llm_base_url || '';
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
@@ -378,6 +380,7 @@
         llm_presence_penalty: llmPresencePenalty,
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
+        dynamic_tool_binding: dynamicToolBinding,
         llm_use_model_defaults: llmUseModelDefaults,
         llm_base_url: effectiveBaseUrl,
         openai_api_mode: openaiApiMode,
@@ -1058,6 +1061,20 @@
                 <p class="hint">
                   Override the API endpoint (e.g., <code>http://cli-proxy-api-latest:8317/v1</code> for OpenAI/Codex CLIProxy).
                   Leave empty to use the provider's default URL.
+                </p>
+              </div>
+
+              <div class="field">
+                <label class="toggle-label" for="dynamic-tool-binding">
+                  <input type="checkbox" id="dynamic-tool-binding" bind:checked={dynamicToolBinding} />
+                  Dynamic tool binding (experimental)
+                </label>
+                <p class="hint">
+                  Resolve tools per-step in the model node instead of rebuilding the graph
+                  when tools are enabled mid-turn. Removes the
+                  <code>tool_reload_resume</code> sentinel round-trip. May invalidate
+                  Anthropic prompt cache when tools change. Falls back to rebuild when a
+                  newly-created tool isn't in the precomputed superset.
                 </p>
               </div>
 

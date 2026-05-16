@@ -21,7 +21,7 @@ from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
 from ..core.thread_config import ThreadConfig
-from ..core.tool_reload import tool_reload_command
+from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .utils import get_user_id
 from .utils import get_thread_id
 
@@ -34,8 +34,19 @@ def _agent():
     return get_current_agent()
 
 
-def _command_or_text(text: str, queued_reload: bool, tool_call_id: Optional[str]) -> Union[str, Command]:
-    if queued_reload and tool_call_id:
+def _command_or_text(
+    text: str,
+    queued_reload: bool,
+    tool_call_id: Optional[str],
+    new_tool_names: Optional[list[str]] = None,
+) -> Union[str, Command]:
+    """Emit Command(goto=END) only when the rebuild is actually required.
+
+    In dynamic-binding mode, ``should_emit_reload_command`` skips the
+    Command for already-in-superset tools (the next agent step rebinds
+    them automatically). Skill-only changes pass an empty list.
+    """
+    if queued_reload and tool_call_id and should_emit_reload_command(new_tool_names or []):
         return tool_reload_command(text, tool_call_id)
     return text
 

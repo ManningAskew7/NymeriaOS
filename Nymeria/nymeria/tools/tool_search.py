@@ -21,7 +21,7 @@ from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
 from ..core.time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
-from ..core.tool_reload import tool_reload_command
+from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .utils import get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
@@ -745,7 +745,15 @@ def _enable(
     # immediately. Past the cap, return a plain string so the LLM can
     # respond in-turn (avoids leaving an orphan tool_result with no
     # follow-up response when the cap would otherwise eat the reload).
-    if binding.reload_tools and tool_call_id and not binding.cap_hit:
+    # In dynamic-binding mode, skip the Command-goto-END trip when every
+    # newly-bound tool is already in the graph's superset — the next
+    # agent step's resolver will rebind them naturally.
+    if (
+        binding.reload_tools
+        and tool_call_id
+        and not binding.cap_hit
+        and should_emit_reload_command(binding.reload_tools)
+    ):
         return tool_reload_command(binding.text, tool_call_id)
     return binding.text
 
