@@ -10,8 +10,6 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
-from .filesystem import get_workspace_dir
-
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +49,7 @@ def claude_code(
     working_dir: Optional[str] = None,
     model: str = "sonnet",
     allow_edit: bool = True,
-    allow_bash: bool = False,
+    allow_bash: bool = True,
     timeout: int = 300,
 ) -> str:
     """
@@ -66,8 +64,7 @@ def claude_code(
         working_dir: Directory to run in (defaults to current directory)
         model: Model to use - "sonnet", "opus", or "haiku" (default "sonnet")
         allow_edit: Allow Claude Code to edit files (default True)
-        allow_bash: Allow Claude Code to run commands (default False). Requires
-            NYMERIA_ALLOW_CLAUDE_CODE_BASH=true.
+        allow_bash: Allow Claude Code to run commands (default True)
         timeout: Timeout in seconds (default 300)
 
     Returns:
@@ -96,24 +93,15 @@ def claude_code(
     if model not in valid_models:
         return f"[Error]: Invalid model '{model}'. Must be one of: {', '.join(valid_models)}"
 
-    workspace_dir = get_workspace_dir()
-    work_dir_path = Path(working_dir).resolve() if working_dir else workspace_dir
-    if not work_dir_path.exists():
-        return f"[Error]: Working directory does not exist: {work_dir_path}"
-    if not work_dir_path.is_dir():
-        return f"[Error]: Working directory is not a directory: {work_dir_path}"
-    if not work_dir_path.is_relative_to(workspace_dir):
-        return (
-            f"[Error]: Working directory outside workspace: {work_dir_path}. "
-            f"claude_code is confined to {workspace_dir}."
-        )
-    work_dir = str(work_dir_path)
-
-    if allow_bash and os.environ.get("NYMERIA_ALLOW_CLAUDE_CODE_BASH", "").lower() not in {"1", "true", "yes", "on"}:
-        return (
-            "[Error]: Claude Code Bash access is disabled. Set "
-            "NYMERIA_ALLOW_CLAUDE_CODE_BASH=true to allow this admin-only escape hatch."
-        )
+    # Set working directory
+    work_dir = working_dir
+    if work_dir:
+        work_dir_path = Path(work_dir).resolve()
+        if not work_dir_path.exists():
+            return f"[Error]: Working directory does not exist: {work_dir}"
+        if not work_dir_path.is_dir():
+            return f"[Error]: Working directory is not a directory: {work_dir}"
+        work_dir = str(work_dir_path)
 
     # Build tools list
     tools = ["Read"]  # Always include Read

@@ -7,6 +7,8 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from ..config import get_settings
+
 logger = logging.getLogger(__name__)
 
 # Protected directories within Nymeria that should not be modified directly
@@ -28,8 +30,20 @@ def get_workspace_dir() -> Path:
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
 
 
+def confine_file_tools_to_workspace() -> bool:
+    """Return whether mutating file tools should reject paths outside workspace."""
+    try:
+        return bool(getattr(get_settings(), "nymeria_confine_file_to_workspace", False))
+    except Exception:
+        logger.debug("Failed to read file-tool confinement setting", exc_info=True)
+        return False
+
+
 def resolve_workspace_write_path(file_path: str) -> tuple[Optional[Path], Optional[str]]:
-    """Resolve a requested write target and enforce workspace confinement."""
+    """Resolve a requested write target, optionally enforcing workspace confinement."""
+    if not confine_file_tools_to_workspace():
+        return Path(file_path).resolve(), None
+
     workspace_dir = get_workspace_dir()
     requested = Path(file_path)
     if not requested.is_absolute():

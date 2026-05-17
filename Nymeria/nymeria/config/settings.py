@@ -200,12 +200,20 @@ class Settings(BaseSettings):
         description="Lifetime, in hours, for the first-run bootstrap admin token",
     )
     nymeria_allow_self_edit: bool = Field(
-        default=False,
+        default=True,
         description="Allow admin-only self_file_write/delete/reload tools to mutate Nymeria source",
     )
     nymeria_allow_unsandboxed_mcp_install: bool = Field(
-        default=False,
+        default=True,
         description="Allow managed MCP installs that execute downloaded package code without an external sandbox",
+    )
+    nymeria_enforce_mcp_stdio_allowlist: bool = Field(
+        default=False,
+        description="Restrict MCP stdio launches to the curated SAFE_STDIO_COMMANDS allowlist",
+    )
+    nymeria_confine_file_to_workspace: bool = Field(
+        default=False,
+        description="Restrict file_write and file_edit write targets to NYMERIA_WORKSPACE_DIR",
     )
 
     # Data directory override (for Docker volumes)

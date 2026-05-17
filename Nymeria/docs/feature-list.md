@@ -168,7 +168,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 | Category | Tools |
 |----------|-------|
-| **Files** | `file_read`, `file_write` (writes confined to `NYMERIA_WORKSPACE_DIR`) |
+| **Files** | `file_read`, `file_write` (broad write access by default; optional `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true`) |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
