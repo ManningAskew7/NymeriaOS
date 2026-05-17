@@ -68,8 +68,14 @@ RUN set -eux; \
 COPY docker/hexstrike/allowed-tools.txt /opt/hexstrike-ai/allowed-tools.txt
 COPY docker/hexstrike/hexstrike_mcp_limited.py /opt/hexstrike-ai/hexstrike_mcp_limited.py
 
-RUN chmod +x /opt/hexstrike-ai/hexstrike_mcp_limited.py
+RUN set -eux; \
+    chmod +x /opt/hexstrike-ai/hexstrike_mcp_limited.py; \
+    groupadd -r -g 999 hexstrike; \
+    useradd -r -g hexstrike -u 999 -m -s /bin/bash hexstrike; \
+    chown -R hexstrike:hexstrike /opt/hexstrike-ai /home/hexstrike
 
 WORKDIR /opt/hexstrike-ai
+
+USER hexstrike
 
 EXPOSE 8888 8889

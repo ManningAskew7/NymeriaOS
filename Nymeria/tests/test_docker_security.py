@@ -9,19 +9,11 @@ EXPECTED_CAP_DROP = ["ALL"]
 # Approved per-service exceptions to the "no cap_add" rule. Each entry is
 # justified inline below. New entries must be reviewed because cap_add
 # undoes part of the cap_drop ALL hardening baseline.
-_AGENT_INSTALL_CAPS = {"DAC_OVERRIDE", "CHOWN", "FOWNER", "SETUID", "SETGID"}
 PERMITTED_CAP_ADD = {
     # caddy: needs NET_BIND_SERVICE to bind 80/443. Cannot be avoided
     # without sysctl host tweaks or losing automatic Let's Encrypt
     # (which requires :80 for ACME HTTP-01).
     "caddy": {"NET_BIND_SERVICE"},
-    # api / worker: run the agent and need to apt-install runtime packages
-    # and write to system paths (/etc, /var) via bash_execute. DAC_OVERRIDE
-    # bypasses DAC checks (dpkg lock, system file writes); CHOWN sets owner
-    # on installed files; FOWNER lets the agent operate on files it didn't
-    # create. These are the same caps Hermes adds for its sandbox tier.
-    "api": _AGENT_INSTALL_CAPS,
-    "worker": _AGENT_INSTALL_CAPS,
 }
 
 
@@ -158,7 +150,6 @@ EXEMPT_SERVICES = {"qwen3-tts", "faster-whisper"}
 SOURCE_BIND_MOUNT_TARGETS = (
     "/app/nymeria",
     "/app/run.py",
-    "/app/.env.docker",
 )
 
 
@@ -201,33 +192,24 @@ def test_agent_services_keep_writable_rootfs_with_tmp_tmpfs() -> None:
         assert "/tmp" in tmpfs, f"{name} should still mount tmpfs /tmp for hygiene"
 
 
-def test_agent_services_run_as_root_with_install_caps() -> None:
-    """The agent-bearing containers run as root inside the container with
-    DAC_OVERRIDE/CHOWN/FOWNER so apt-get and other system-level installs
-    actually work. Thin-client containers explicitly do NOT get this —
-    they keep the image's USER nymeria default.
-
-    If you find yourself wanting to drop these caps, build the spawn-
-    isolated-sandbox tool first so the agent has another path to install.
+def test_agent_services_use_non_root_runtime_without_install_caps() -> None:
+    """Agent-bearing containers inherit Dockerfile USER nymeria and do not
+    add package-install capabilities in the production compose profile.
+    Runtime apt/dpkg installs must use a separate explicit maintenance path.
     """
     services = _load_compose("docker-compose.yml")["services"]
     for name in AGENT_SERVICES:
         service = services[name]
-        assert service.get("user") in ("0:0", "0", "root"), (
-            f"{name} must run as root (user: \"0:0\") so apt/dpkg work"
+        assert service.get("user") not in ("0:0", "0", "root"), (
+            f"{name} must not override Dockerfile USER nymeria"
         )
-        cap_add = set(service.get("cap_add") or [])
-        assert _AGENT_INSTALL_CAPS <= cap_add, (
-            f"{name} must add at least {_AGENT_INSTALL_CAPS} (got {cap_add}); "
-            f"these are the minimum caps for runtime package installation"
-        )
+        assert not service.get("cap_add"), f"{name} must not add Linux capabilities"
 
 
 def test_source_bind_mounts_are_read_only() -> None:
-    """Bind mounts of host source (./nymeria, ./run.py, ./.env.docker) must
+    """Bind mounts of host source (./nymeria, ./run.py) must
     be read-only inside the container. A container compromise should not
-    let an attacker overwrite the host's source tree or env file (which
-    would persist a backdoor across container restarts and image rebuilds).
+    let an attacker overwrite the host's source tree.
     """
     services = _load_compose("docker-compose.yml")["services"]
     for name, service in services.items():
@@ -239,6 +221,35 @@ def test_source_bind_mounts_are_read_only() -> None:
                     assert entry.endswith(":ro"), (
                         f"{name}: source bind mount must be read-only: {entry!r}"
                     )
+
+
+def test_no_service_mounts_full_env_file() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+    for name, service in services.items():
+        for entry in service.get("volumes", []) or []:
+            assert ".env.docker" not in str(entry), (
+                f"{name} must not mount the full .env.docker secret file"
+            )
+
+
+def test_thin_clients_receive_minimal_environment() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+    forbidden = {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "EMBEDDING_API_KEY",
+        "POSTGRES_URI",
+        "REDIS_URL",
+        "NYMERIA_SECRETS_KEY",
+        "FIREBASE_CREDENTIALS_PATH",
+        "GOOGLE_OAUTH_CREDENTIALS",
+    }
+    for name in THIN_CLIENT_SERVICES:
+        env = services[name].get("environment") or {}
+        assert "NYMERIA_SERVICE_TOKEN" in env, f"{name} needs the API service token"
+        leaked = forbidden.intersection(env)
+        assert not leaked, f"{name} receives unrelated high-value secrets: {leaked}"
 
 
 def test_services_have_resource_limits() -> None:
@@ -259,13 +270,11 @@ def test_caddy_is_only_publicly_exposed_service() -> None:
     host-published port must bind to 127.0.0.1 so it is reachable via SSH
     tunnel for local dev but not from the public internet.
 
-    Voice services (operator-installed GPU profile) are exempt — the
-    operator chooses how to expose them based on their setup.
+    Voice services are optional, but their host ports must still be
+    loopback-only by default.
     """
     services = _load_compose("docker-compose.yml")["services"]
     for name, service in services.items():
-        if name in EXEMPT_SERVICES:
-            continue
         for entry in service.get("ports") or []:
             port_str = entry if isinstance(entry, str) else str(entry.get("published", ""))
             if name == "caddy":
@@ -335,15 +344,14 @@ def test_caddy_service_is_present_and_hardened() -> None:
 
 
 def test_infra_images_are_digest_pinned() -> None:
-    """Third-party images we don't build (postgres, redis, caddy) must be
+    """Third-party images we don't build by default must be
     pinned to a sha256 digest, not a floating tag. A tag like
     ``postgres:15-alpine`` can be re-pointed by the image author or a
     compromised registry; a digest is content-addressed and stable.
 
     Locally-built images (``nymeria-full:local``, ``nymeria-slim:local``)
-    are exempt because we build them from our own Dockerfiles.
-    Operator-installed optional GPU images are exempt — those have their
-    own update workflow.
+    are exempt because we build them from our own Dockerfiles. Optional
+    GPU voice images are handled by an explicit-image test below.
     """
     services = _load_compose("docker-compose.yml")["services"]
     must_pin = {"postgres", "redis", "caddy"}
@@ -356,16 +364,10 @@ def test_infra_images_are_digest_pinned() -> None:
 
 def test_no_floating_latest_tag() -> None:
     """No service may pull ``:latest``. Pinning to an explicit version or
-    digest is a soft baseline against accidental upgrades; voice profile
-    services that currently use ``:latest`` are tracked but allowed for
-    now since they're behind the ``voice`` profile and not part of the
-    default deployment.
+    digest is a soft baseline against accidental upgrades.
     """
     services = _load_compose("docker-compose.yml")["services"]
     for name, service in services.items():
-        if name in EXEMPT_SERVICES:
-            # Voice services are operator-opt-in via --profile voice.
-            continue
         image = service.get("image", "")
         # Locally-built images use the `:local` tag — that's intentional.
         if image.endswith(":local"):
@@ -373,6 +375,14 @@ def test_no_floating_latest_tag() -> None:
         assert not image.endswith(":latest"), (
             f"{name} uses :latest tag; pin to a specific version or digest"
         )
+
+
+def test_voice_images_default_to_digest_pinned_placeholders() -> None:
+    services = _load_compose("docker-compose.yml")["services"]
+    for name in ("qwen3-tts", "faster-whisper"):
+        image = services[name].get("image", "")
+        assert "@sha256:" in image, f"{name} must use digest-pinned image syntax"
+        assert ":latest" not in image, f"{name} must not default to :latest"
 
 
 def test_app_dockerfiles_drop_to_non_root_user() -> None:
@@ -395,3 +405,32 @@ def test_app_dockerfiles_drop_to_non_root_user() -> None:
         assert user_directives[-1] == "USER nymeria", (
             f"{dockerfile_name} must end as USER nymeria, got {user_directives[-1]!r}"
         )
+
+
+def test_hexstrike_dockerfile_drops_to_non_root_user() -> None:
+    content = (ROOT / "docker" / "hexstrike" / "Dockerfile").read_text(encoding="utf-8")
+    user_directives = [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip().startswith("USER ")
+    ]
+    assert user_directives, "HexStrike Dockerfile has no USER directive"
+    assert user_directives[-1] == "USER hexstrike"
+
+
+def test_security_sensitive_dependency_floors_are_bumped() -> None:
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    expected = {
+        "fastapi>=0.136.1,<1.0.0",
+        "starlette>=1.0.0,<2.0.0",
+        "pydantic>=2.9.2,<3.0.0",
+        "httpx>=0.27.1,<1.0.0",
+        "requests>=2.32.0,<3.0.0",
+        "urllib3>=2.2.2,<3.0.0",
+        "PyYAML>=6.0.2,<7.0.0",
+        "Jinja2>=3.1.6,<4.0.0",
+        "Pillow>=10.4.0,<12.0.0",
+        "cryptography>=42.0.4,<47.0.0",
+    }
+    for requirement in expected:
+        assert requirement in requirements

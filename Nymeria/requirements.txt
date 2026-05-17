@@ -16,29 +16,33 @@ langchain-community>=0.4.1,<1.0.0  # optional: wikipedia, wolfram alpha, searxng
 -r requirements-sqlite.txt
 
 # API Framework
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+fastapi>=0.136.1,<1.0.0
+starlette>=1.0.0,<2.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
 sse-starlette>=2.1.0
 
 # Configuration
-pydantic>=2.9.0
+pydantic>=2.9.2,<3.0.0
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.0
 
 # HTTP client (for web tools)
-httpx>=0.27.0
-requests>=2.31.0  # agent skills marketplace (GitHub API)
+httpx>=0.27.1,<1.0.0
+requests>=2.32.0,<3.0.0  # agent skills marketplace (GitHub API)
+urllib3>=2.2.2,<3.0.0
 wikipedia>=1.4.0  # wikipedia_search optional tool
 wolframalpha>=5.0.0  # wolfram_alpha_query optional tool
 
 # Agent Skills — SKILL.md frontmatter parser
-PyYAML>=6.0
+PyYAML>=6.0.2,<7.0.0
 
 # Utilities
 python-multipart>=0.0.12
 rich>=13.9.0
 markdown-it-py>=3.0.0
 prompt_toolkit>=3.0.0
+Jinja2>=3.1.6,<4.0.0
+Pillow>=10.4.0,<12.0.0
 
 # MCP Server support (for agent-to-agent communication)
 mcp>=1.2.0
@@ -59,7 +63,7 @@ slack-sdk>=3.35.0
 # Symmetric encryption for at-rest secrets (BYO Telegram bot tokens, etc).
 # Already a transitive dep via langchain/google-auth, but pinned explicitly
 # so the secrets layer never silently breaks if upstream drops it.
-cryptography>=42.0.0
+cryptography>=42.0.4,<47.0.0
 PyJWT>=2.8.0
 
 # Optional: PostgreSQL support for local development. Install in addition to
