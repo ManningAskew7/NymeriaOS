@@ -100,8 +100,8 @@ def _analytics_request(
         try:
             payload = e.response.json()
             message = payload.get("error", {}).get("message", message)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to parse Google Analytics error response", exc_info=True)
         return False, f"Google Analytics API error ({status}): {message}"
     except Exception as e:
         logger.error("Google Analytics request failed", exc_info=True)

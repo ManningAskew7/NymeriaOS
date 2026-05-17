@@ -205,8 +205,11 @@ def _profile_request(
         try:
             payload = e.response.json()
             message = payload.get("error", {}).get("message", message)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to parse Google Business Profile error response",
+                exc_info=True,
+            )
         return False, f"Google Business Profile API error ({status}): {message}"
     except Exception as e:
         logger.error("Google Business Profile request failed", exc_info=True)

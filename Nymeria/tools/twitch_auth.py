@@ -110,7 +110,7 @@ def cmd_url(client_id: str) -> None:
     print("-" * 60)
     print("After visiting a URL, the page won't load (nothing on localhost:3000).")
     print("Copy the 'code' parameter from the browser URL bar, then run:")
-    print(f"  python tools/twitch_auth.py exchange THE_CODE")
+    print("  python tools/twitch_auth.py exchange THE_CODE")
 
 
 def cmd_exchange(client_id: str, client_secret: str, code: str) -> None:

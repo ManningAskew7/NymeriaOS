@@ -141,7 +141,7 @@ def parse_scheduled_time(time_str: str, tz: Optional[tzinfo] = None) -> Optional
                 parsed = parsed.replace(tzinfo=tz)
             return parsed.astimezone(timezone.utc)
         except ValueError:
-            pass
+            pass  # Not an ISO datetime; try configured absolute formats below.
 
     # Try absolute formats - interpreted in the user's timezone
     formats = [

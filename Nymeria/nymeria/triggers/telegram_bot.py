@@ -2143,7 +2143,7 @@ class NymeriaTelegramBot:
                 text = str(result.get("markdown") or "Restarting API server...").strip()
                 await update.message.reply_text(text)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
-                pass
+                pass  # Expected when the API restarts before sending a response.
             except Exception as e:
                 await update.message.reply_text(f"Error: {e}")
         else:
