@@ -21,7 +21,26 @@ NYMERIA_PROTECTED_DIRS = [
 
 # Get the Nymeria project root for path comparison
 _NYMERIA_ROOT = Path(__file__).parent.parent.parent.resolve()
-_WORKSPACE_DIR = Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
+
+
+def get_workspace_dir() -> Path:
+    """Return the only filesystem root where mutating file tools may write."""
+    return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
+
+
+def resolve_workspace_write_path(file_path: str) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve a requested write target and enforce workspace confinement."""
+    workspace_dir = get_workspace_dir()
+    requested = Path(file_path)
+    if not requested.is_absolute():
+        requested = workspace_dir / requested
+    path = requested.resolve()
+    if not path.is_relative_to(workspace_dir):
+        return None, (
+            f"Path outside workspace: {path}. Mutating file tools are confined "
+            f"to {workspace_dir}. Set NYMERIA_WORKSPACE_DIR to change the root."
+        )
+    return path, None
 
 
 @tool
@@ -119,7 +138,10 @@ def file_write(
     logger.info(f"Writing to file: {file_path} (append={append})")
 
     try:
-        path = Path(file_path).resolve()
+        path, workspace_error = resolve_workspace_write_path(file_path)
+        if workspace_error:
+            return f"[Error]: {workspace_error}"
+        assert path is not None
 
         # Check if this is a protected Nymeria system file
         try:
@@ -153,12 +175,13 @@ def file_write(
         logger.debug(f"{action} {len(content)} characters to {file_path}")
         result = f"[Success]: {action} {len(content)} characters to {file_path}"
         if attach:
-            if path.is_relative_to(_WORKSPACE_DIR):
+            workspace_dir = get_workspace_dir()
+            if path.is_relative_to(workspace_dir):
                 result += f"\n[attach:{path}]"
             else:
                 result += (
                     f"\n[Info]: Attachment skipped. Only files inside "
-                    f"{_WORKSPACE_DIR} can be delivered to chat clients."
+                    f"{workspace_dir} can be delivered to chat clients."
                 )
         return result
 

@@ -86,6 +86,7 @@ def _raise_if_todo_executing(
 
 def create_todos_router(
     verify_api_key: Callable[..., Any],
+    require_admin_user: Callable[..., Any],
     authed_user_id: Callable[..., Any],
     get_settings_fn: Callable[[], Any],
 ) -> APIRouter:
@@ -105,7 +106,7 @@ def create_todos_router(
 
     @router.get("/todos/users")
     async def list_users_with_todos(
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings_fn),
     ):
         """

@@ -26,6 +26,15 @@ Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header (Step 3)
 
 Raw token format: `nym_<32-url-safe-bytes>`. Only `sha256(raw)` is stored. The raw value is returned **once** at creation and cannot be recovered — lost tokens must be rotated.
 
+Tokens expire automatically. New regular tokens default to a 90-day TTL
+(`ACCOUNT_TOKEN_TTL_DAYS`), and each user defaults to at most 10 active
+non-expired tokens (`ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER`). Expired tokens are
+auto-revoked during token verification and token-list operations. First-run
+bootstrap tokens use a shorter 24-hour TTL
+(`ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS`) and the plaintext
+`BOOTSTRAP_TOKEN.txt` file is deleted after the first successful
+authentication with that token.
+
 Token redaction is applied at the logging layer (`config/logging_config.py::_TokenRedactingFilter`), so accidentally logged tokens come out as `nym_<redacted>`.
 
 ## Bootstrap
@@ -42,11 +51,12 @@ The raw token is:
 2. Written to `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600)
 
 Paste the `nym_...` token from that file into the Desktop/Mobile Setup Wizard
-in place of the old `NYMERIA_API_KEY`, then delete the file. Do not paste a
-provider API key such as an Anthropic, OpenAI, or OpenRouter key. The `default`
-user ID lines up with existing per-user file paths (`data/todos/default.json`,
-`data/profiles/default.json`, etc.) so no data migration is needed for the first
-user.
+in place of the old `NYMERIA_API_KEY`. The server deletes the file after the
+first successful authentication with that token; deleting it manually after
+setup is still fine. Do not paste a provider API key such as an Anthropic,
+OpenAI, or OpenRouter key. The `default` user ID lines up with existing
+per-user file paths (`data/todos/default.json`, `data/profiles/default.json`,
+etc.) so no data migration is needed for the first user.
 
 ## CLI (legacy — unmaintained)
 

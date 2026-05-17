@@ -45,7 +45,9 @@ def _base_url(value: str) -> str:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base URL must be an absolute http(s) URL")
-    return value.strip().rstrip("/")
+    from ..core.http_policy import validate_http_egress_url
+
+    return validate_http_egress_url(value.strip().rstrip("/"), label="base URL", resolve_dns=False)
 
 
 def _json_object(value: str, *, label: str = "fields_json") -> dict[str, Any]:

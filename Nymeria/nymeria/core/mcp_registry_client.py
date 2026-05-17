@@ -22,6 +22,12 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from ..config import get_settings
 from ..tools.definitions.mcp_schema import MCPServerDefinition
+from .http_policy import (
+    HTTPPolicyRedirectLimit,
+    HTTPPolicyViolation,
+    requests_get_with_policy,
+    validate_http_egress_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +98,13 @@ class OfficialMCPRegistryFetcher:
         else:
             self._http = http_session
         settings = get_settings()
-        self._base = (base_url or settings.mcp_registry_url).rstrip("/")
+        try:
+            self._base = validate_http_egress_url(
+                (base_url or settings.mcp_registry_url).rstrip("/"),
+                label="MCP registry URL",
+            )
+        except ValueError as e:
+            raise RegistryError(str(e)) from e
         self._cache = _TTLCache()
 
     def list(self, query: Optional[str] = None) -> List[MCPRegistryEntry]:
@@ -107,7 +119,14 @@ class OfficialMCPRegistryFetcher:
             params["search"] = query
 
         try:
-            resp = self._http.get(url, params=params, timeout=15)
+            resp, _redirect_chain, _policy = requests_get_with_policy(
+                url,
+                session=self._http,
+                params=params,
+                timeout=15,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            raise RegistryError(f"official registry request blocked: {e}") from e
         except Exception as e:
             raise RegistryError(f"official registry request failed: {e}") from e
 
@@ -145,7 +164,13 @@ class OfficialMCPRegistryFetcher:
         from urllib.parse import quote
         url = f"{self._base}/v0/servers/{quote(server_id, safe='')}/versions"
         try:
-            resp = self._http.get(url, timeout=15)
+            resp, _redirect_chain, _policy = requests_get_with_policy(
+                url,
+                session=self._http,
+                timeout=15,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            raise RegistryError(f"official registry request blocked: {e}") from e
         except Exception as e:
             raise RegistryError(f"official registry request failed: {e}") from e
         if resp.status_code == 404:
@@ -284,7 +309,14 @@ class SmitheryFetcher:
             params["q"] = query
 
         try:
-            resp = self._http.get(url, params=params, timeout=15)
+            resp, _redirect_chain, _policy = requests_get_with_policy(
+                url,
+                session=self._http,
+                params=params,
+                timeout=15,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            raise RegistryError(f"smithery request blocked: {e}") from e
         except Exception as e:
             raise RegistryError(f"smithery request failed: {e}") from e
         if resp.status_code >= 400:

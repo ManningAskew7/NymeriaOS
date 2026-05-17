@@ -13,6 +13,18 @@ permissions:
   contents: read
 
 jobs:
+  plaintext-secrets:
+    name: Plaintext secret guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Reject plaintext runtime secrets
+        run: python3 scripts/check_no_plaintext_secrets.py
+
   version-check:
     name: Version consistency
     runs-on: ubuntu-latest

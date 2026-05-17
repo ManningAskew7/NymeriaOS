@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.routing import APIRoute
 
-from nymeria.core.accounts import AccountsRepo
+from nymeria.core.accounts import AccountsRepo, TokenLimitExceeded
 
 
 class FakeAgent:
@@ -41,6 +43,44 @@ def _route_tags(client, path: str, method: str) -> list[str]:
         ):
             return route.tags
     raise AssertionError(f"Route not found: {method} {path}")
+
+
+def test_account_tokens_expire_and_active_token_cap_is_enforced(tmp_path: Path):
+    repo = AccountsRepo(
+        tmp_path / "accounts.db",
+        token_ttl_days=1,
+        max_active_tokens_per_user=2,
+    )
+    repo.create_user("owner", "owner@example.com", "Owner")
+    first = repo.issue_token("owner", label="first")
+    second = repo.issue_token("owner", label="second")
+
+    with pytest.raises(TokenLimitExceeded):
+        repo.issue_token("owner", label="third")
+
+    first_hash = repo.list_tokens_for_user("owner")[0].token_hash
+    with sqlite3.connect(tmp_path / "accounts.db") as conn:
+        conn.execute(
+            "UPDATE user_tokens SET expires_at = ? WHERE token_hash = ?",
+            ("2000-01-01T00:00:00+00:00", first_hash),
+        )
+        conn.commit()
+
+    assert repo.verify_token(first) is None
+    assert repo.verify_token(second) is not None
+    third = repo.issue_token("owner", label="third")
+    assert repo.verify_token(third) is not None
+
+
+def test_bootstrap_token_file_is_deleted_after_successful_auth(tmp_path: Path):
+    repo = AccountsRepo(tmp_path / "accounts.db")
+    raw = repo.ensure_bootstrap_admin(tmp_path)
+    token_path = tmp_path / "BOOTSTRAP_TOKEN.txt"
+
+    assert raw is not None
+    assert token_path.exists()
+    assert repo.verify_token(raw) is not None
+    assert not token_path.exists()
 
 
 def test_account_router_preserves_auth_and_admin_tags(

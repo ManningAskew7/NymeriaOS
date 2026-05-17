@@ -168,13 +168,15 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 | Category | Tools |
 |----------|-------|
-| **Shell & Files** | `bash_execute`, `file_read`, `file_write` |
+| **Files** | `file_read`, `file_write` (writes confined to `NYMERIA_WORKSPACE_DIR`) |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when needed |
+
+`bash_execute` is available only as an admin-enabled optional tool, not in the default core loadout.
 
 ### Optional Tool Categories
 
@@ -230,7 +232,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 |--------|------|-------------|
 | **Webhook** | Push | HTTP POST from external services, workflow tools, or local scripts with optional secret |
 | **Outlook Email** | Poll | Microsoft 365 inbox monitoring with triple deduplication, folder/sender/subject/importance filters, attachment pass-through |
-| **RSS/Atom** | Poll | Feed monitoring (blogs, YouTube, GitHub, Reddit) |
+| **RSS/Atom** | Poll | Feed monitoring (blogs, YouTube, GitHub, Reddit) with HTTP egress policy enforcement |
 | **HTTP Poll** | Poll | URL monitoring with fire modes: change, status_code, contains, always |
 | **Slack** | Poll | Channel/DM monitoring with keyword filtering and bot exclusion |
 | **Microsoft Teams** | Poll | Channel monitoring via Graph API |

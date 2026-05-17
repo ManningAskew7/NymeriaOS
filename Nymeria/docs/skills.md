@@ -14,7 +14,7 @@ A skill is a directory:
 ```
 my-skill/
 ├── SKILL.md              REQUIRED: YAML frontmatter + markdown body
-├── scripts/              optional: invoked via the existing bash_execute tool
+├── scripts/              optional: invoked via admin-enabled bash_execute
 ├── references/           optional: markdown files the agent reads on demand
 └── assets/               optional: path-only, never auto-read
 ```
@@ -37,7 +37,7 @@ Step 1: …
 
 A skill **does not register new Python tools** or Pydantic schemas. It is
 text + an advisory whitelist over Nymeria's *existing* tools. The body typically
-tells the agent to `file_read` a reference file or `bash_execute` a script.
+tells the agent to `file_read` a reference file or, when an admin has enabled it, `bash_execute` a script.
 
 In the UI, **Skill** means instructions only. **Skill Kit** means a Skill that
 also declares Nymeria tool dependencies in `metadata.nymeria.required_tools`.
@@ -122,7 +122,7 @@ Three layers:
    history only.
 3. **On demand:** `references/*.md` load only if the skill's body tells the
    agent to `file_read` them. `scripts/*` run only if the body tells the agent
-   to `bash_execute` them. `assets/` are never auto-read.
+   to use an enabled tool such as `bash_execute` for them. `assets/` are never auto-read.
 
 This is what lets a user keep dozens of skills installed without context
 bloat — the agent pays tokens only for the skills it actually activates.

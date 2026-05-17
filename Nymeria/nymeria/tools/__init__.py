@@ -1361,7 +1361,7 @@ _PRV_TOOLS_A = (
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
-    [claude_code, hello_test, memory_clear_all, rag_settings]
+    [bash_execute, claude_code, hello_test, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
     + GMAIL_AUTH_TOOLS
@@ -1444,9 +1444,10 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
     )
 )
 
-# Tools that mutate the running codebase (read/write/delete project source,
-# reload modules, roll back self-modifications, run arbitrary bash via
-# claude_code). In multi-user mode these are admin-only — a non-admin
+# Tools that mutate the running codebase or execute host-level processes
+# (read/write/delete project source, reload modules, roll back
+# self-modifications, run arbitrary bash via bash_execute or claude_code).
+# In multi-user mode these are admin-only — a non-admin
 # enabling them on their own thread would effectively be authenticated
 # remote code modification of the shared backend. Enforced at every API
 # write boundary (thread config, default tool set, unified enable), at
@@ -1454,7 +1455,8 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
 # /tools), and as defense-in-depth at graph-build time. Names — not tool
 # objects — so the gate survives reload_all().
 ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
-    [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)] + [claude_code.name]
+    [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)]
+    + [bash_execute.name, claude_code.name]
 )
 
 # Optional tools that exist for development/regression validation rather than
@@ -1509,7 +1511,6 @@ def filter_admin_only_tools(
 # All available tools
 ALL_TOOLS = [
     # Core system tools
-    bash_execute,
     file_read,
     file_write,
     web_search,

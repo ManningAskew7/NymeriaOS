@@ -10,6 +10,13 @@ from urllib.parse import quote, urlencode, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import (
+    HTTPPolicyRedirectLimit,
+    HTTPPolicyViolation,
+    httpx_request_with_policy,
+    validate_http_egress_url,
+)
+
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = 30.0
@@ -51,9 +58,17 @@ def _get_json(url: str, params: Optional[dict[str, Any]] = None, headers: Option
 
     try:
         with httpx.Client(timeout=_HTTP_TIMEOUT, headers=headers) as client:
-            response = client.get(url, params=_filtered_params(params or {}))
+            response, _redirect_chain, _policy = httpx_request_with_policy(
+                "GET",
+                url,
+                client=client,
+                params=_filtered_params(params or {}),
+                follow_redirects=False,
+            )
             response.raise_for_status()
             return response.json()
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
     except httpx.HTTPStatusError as e:
         detail = ""
         try:
@@ -68,10 +83,18 @@ def _get_text(url: str, *, verify: bool = True) -> str:
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True, verify=verify) as client:
-            response = client.get(url, headers={"Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"})
+        with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=False, verify=True) as client:
+            response, _redirect_chain, _policy = httpx_request_with_policy(
+                "GET",
+                url,
+                client=client,
+                headers={"Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"},
+                follow_redirects=True,
+            )
             response.raise_for_status()
             return response.text
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
     except httpx.HTTPStatusError as e:
         raise RuntimeError(f"HTTP {e.response.status_code}: {e.response.text[:300]}") from e
 
@@ -134,6 +157,11 @@ def _npm_registry_and_headers(
         )
         or _settings_value("npm_registry_url")
         or _NPM_REGISTRY_DEFAULT_URL
+    ).rstrip("/")
+    registry = validate_http_egress_url(
+        registry,
+        label="npm registry URL",
+        resolve_dns=False,
     ).rstrip("/")
     headers: dict[str, str] = {}
     token = _credential_value(

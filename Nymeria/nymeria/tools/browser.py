@@ -23,6 +23,11 @@ from urllib.parse import urlparse
 
 from langchain_core.tools import tool
 
+from nymeria.core.http_policy import (
+    requests_get_with_policy,
+    validate_http_egress_url,
+)
+
 logger = logging.getLogger(__name__)
 
 # Timeout configuration (in seconds)
@@ -31,7 +36,6 @@ NAVIGATION_TIMEOUT = 60  # Page navigation timeout
 DEFAULT_OPERATION_TIMEOUT = 30  # Default for other operations
 QUEUE_TIMEOUT = 90  # How long to wait for result from browser thread
 ALLOWED_BROWSER_URL_SCHEMES = {"http", "https"}
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 
@@ -63,22 +67,19 @@ def _validate_browser_url(url: str) -> Tuple[bool, str]:
             "http:// or https:// URL with a host.",
         )
 
+    try:
+        candidate = validate_http_egress_url(candidate, label="browser URL")
+    except ValueError as exc:
+        return False, f"[Error]: {exc}"
+
     return True, candidate
 
 
 def _browser_verify_ssl() -> bool:
     """Return whether browser fallback requests should verify TLS certificates."""
     raw_value = os.environ.get("BROWSER_VERIFY_SSL")
-    if raw_value is None:
-        return True
-
-    normalized = raw_value.strip().lower()
-    if normalized in _TRUE_ENV_VALUES:
-        return True
-    if normalized in _FALSE_ENV_VALUES:
-        return False
-
-    logger.warning("Invalid BROWSER_VERIFY_SSL=%r; defaulting to true", raw_value)
+    if raw_value and raw_value.strip().lower() in _FALSE_ENV_VALUES:
+        logger.warning("Ignoring insecure BROWSER_VERIFY_SSL=%r; TLS verification is enforced", raw_value)
     return True
 
 
@@ -102,11 +103,15 @@ def _maybe_suppress_insecure_request_warning(verify_ssl: bool):
 
 def _requests_get(url: str, headers: dict[str, str]):
     """Issue a fallback GET request with configured TLS verification."""
-    import requests
-
     verify_ssl = _browser_verify_ssl()
     with _maybe_suppress_insecure_request_warning(verify_ssl):
-        return requests.get(url, headers=headers, timeout=30, verify=verify_ssl)
+        response, _redirect_chain, _policy = requests_get_with_policy(
+            url,
+            headers=headers,
+            timeout=30,
+            verify=verify_ssl,
+        )
+        return response
 
 
 def _find_playwright_browsers_path() -> Optional[str]:
@@ -221,6 +226,7 @@ class BrowserThread:
         self._playwright = None
         self._browser = None
         self._page = None
+        self._last_policy_block: Optional[str] = None
 
     def start(self) -> Tuple[bool, str]:
         """Start the browser thread. Returns (success, message)."""
@@ -326,7 +332,17 @@ class BrowserThread:
         if command == "navigate":
             url = args["url"]
             logger.info(f"Navigating to {url}")
-            self._page.goto(url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT * 1000)
+            self._last_policy_block = None
+            try:
+                self._page.goto(
+                    url,
+                    wait_until='domcontentloaded',
+                    timeout=NAVIGATION_TIMEOUT * 1000,
+                )
+            except Exception as exc:
+                if self._last_policy_block:
+                    raise RuntimeError(self._last_policy_block) from exc
+                raise
             return {"title": self._page.title(), "url": self._page.url}
 
         elif command == "click":
@@ -415,8 +431,22 @@ class BrowserThread:
                 viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
+            context.route("**/*", self._route_with_policy)
             self._page = context.new_page()
             logger.info("Browser page created")
+
+    def _route_with_policy(self, route):
+        request_url = route.request.url
+        scheme = urlparse(request_url).scheme.lower()
+        if scheme in ALLOWED_BROWSER_URL_SCHEMES:
+            try:
+                validate_http_egress_url(request_url, label="browser request")
+            except ValueError as exc:
+                self._last_policy_block = str(exc)
+                logger.warning("Blocked browser request by HTTP policy: %s", exc)
+                route.abort()
+                return
+        route.continue_()
 
     def _cleanup(self):
         """Cleanup browser resources."""

@@ -12,12 +12,16 @@ from pathlib import Path
 from typing import Annotated, Any, Optional
 from uuid import uuid4
 
-import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
 from ..core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
+from ..core.http_policy import (
+    HTTPPolicyRedirectLimit,
+    HTTPPolicyViolation,
+    httpx_request_with_policy,
+)
 from ..core.user_profile import UserProfileManager
 from .utils import get_user_id
 
@@ -171,7 +175,15 @@ def _read_openai_image_bytes(image_item: Any) -> bytes:
     if not image_url and isinstance(image_item, dict):
         image_url = image_item.get("url")
     if isinstance(image_url, str) and image_url:
-        response = httpx.get(image_url, timeout=120.0)
+        try:
+            response, _redirect_chain, _policy = httpx_request_with_policy(
+                "GET",
+                image_url,
+                timeout=120.0,
+                follow_redirects=True,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as exc:
+            raise RuntimeError(f"OpenAI image URL blocked by HTTP egress policy: {exc}") from exc
         response.raise_for_status()
         return response.content
 

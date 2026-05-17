@@ -15,6 +15,7 @@ from ...core.accounts import (
     AuthenticatedUser,
     LastAdminError,
     TokenNotFound,
+    TokenLimitExceeded,
     UserAlreadyExists,
     UserHasResources,
     UserNotFound,
@@ -191,7 +192,10 @@ def create_accounts_router(
     ):
         """Issue a new token for the current user. Raw token returned ONCE."""
         repo = get_agent_fn().accounts_repo
-        raw = repo.issue_token(user.id, label=body.label)
+        try:
+            raw = repo.issue_token(user.id, label=body.label)
+        except TokenLimitExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _issued_token_response(repo, user.id, raw)
 
     @router.delete("/me/tokens/{token_hash_prefix}", tags=["Auth"])
@@ -380,6 +384,8 @@ def create_accounts_router(
             raw = repo.issue_token(user_id, label=body.label)
         except UserNotFound as exc:
             raise HTTPException(status_code=404, detail="User not found") from exc
+        except TokenLimitExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _issued_token_response(repo, user_id, raw)
 
     @router.post(

@@ -58,6 +58,7 @@ class TokenInfoResponse(BaseModel):
     token_hash_prefix: str
     label: Optional[str]
     created_at: str
+    expires_at: str
     last_used_at: Optional[str]
     revoked_at: Optional[str]
 
@@ -101,6 +102,7 @@ def token_info(record: Any) -> TokenInfoResponse:
         token_hash_prefix=record.token_hash[:TOKEN_HASH_PREFIX_LEN],
         label=record.label,
         created_at=record.created_at,
+        expires_at=record.expires_at,
         last_used_at=record.last_used_at,
         revoked_at=record.revoked_at,
     )

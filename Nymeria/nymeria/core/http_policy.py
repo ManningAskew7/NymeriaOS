@@ -15,7 +15,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,27 @@ class HTTPPolicyDecision:
         if self.matched_rule:
             data["matched_rule"] = self.matched_rule
         return data
+
+
+class HTTPPolicyViolation(RuntimeError):
+    """Raised when a concrete outbound request target violates policy."""
+
+    def __init__(
+        self,
+        decision: HTTPPolicyDecision,
+        redirect_chain: Optional[list[dict[str, Any]]] = None,
+    ):
+        self.decision = decision
+        self.redirect_chain = redirect_chain or []
+        super().__init__(policy_error_message(decision))
+
+
+class HTTPPolicyRedirectLimit(RuntimeError):
+    """Raised when a policy-managed request exceeds redirect limits."""
+
+    def __init__(self, redirect_chain: list[dict[str, Any]]):
+        self.redirect_chain = redirect_chain
+        super().__init__("Maximum redirect count exceeded")
 
 
 Resolver = Callable[[str, int], Iterable[str]]
@@ -309,6 +330,185 @@ def redirect_allowed(
     ):
         return HTTPPolicyDecision(False, "https_to_http_redirect", to_url, to_parsed.hostname)
     return evaluate_http_url(to_url, config=config, resolver=resolver)
+
+
+def policy_error_message(decision: HTTPPolicyDecision, label: str = "URL") -> str:
+    return f"{label} blocked by HTTP egress policy ({decision.reason}): {decision.target}"
+
+
+def validate_http_egress_url(
+    url: str,
+    *,
+    label: str = "URL",
+    config: Optional[HTTPPolicyConfig] = None,
+    resolver: Optional[Resolver] = None,
+    resolve_dns: Optional[bool] = None,
+) -> str:
+    """Return a stripped URL or raise ValueError if policy blocks it."""
+    candidate = str(url or "").strip()
+    if resolve_dns is not None:
+        loaded = config or load_http_policy_config()
+        config = HTTPPolicyConfig(
+            internal_allowlist=loaded.internal_allowlist,
+            domain_allowlist=loaded.domain_allowlist,
+            domain_blocklist=loaded.domain_blocklist,
+            max_redirects=loaded.max_redirects,
+            allow_https_to_http_redirect=loaded.allow_https_to_http_redirect,
+            resolve_dns=resolve_dns,
+        )
+    decision = evaluate_http_url(candidate, config=config, resolver=resolver)
+    if not decision.allowed:
+        raise ValueError(policy_error_message(decision, label=label))
+    return candidate
+
+
+def _raise_if_blocked(
+    decision: HTTPPolicyDecision,
+    redirect_chain: Optional[list[dict[str, Any]]] = None,
+) -> None:
+    if not decision.allowed:
+        raise HTTPPolicyViolation(decision, redirect_chain)
+
+
+def _redirect_target(current_url: str, location: str) -> str:
+    return urljoin(current_url, location)
+
+
+def requests_get_with_policy(
+    url: str,
+    *,
+    session: Optional[Any] = None,
+    headers: Optional[dict[str, str]] = None,
+    params: Optional[dict[str, Any]] = None,
+    stream: bool = False,
+    timeout: float = 30,
+    verify: bool = True,
+    follow_redirects: bool = True,
+    config: Optional[HTTPPolicyConfig] = None,
+    resolver: Optional[Resolver] = None,
+):
+    """Issue a requests GET with policy checks on the initial URL and redirects."""
+    import requests
+
+    policy_config = config or load_http_policy_config()
+    redirect_chain: list[dict[str, Any]] = []
+    current_url = str(url or "").strip()
+    current_params = params
+    requester = session or requests
+
+    while True:
+        decision = evaluate_http_url(current_url, config=policy_config, resolver=resolver)
+        _raise_if_blocked(decision, redirect_chain)
+
+        response = requester.get(
+            current_url,
+            headers=headers,
+            params=current_params,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            allow_redirects=False,
+        )
+
+        if not follow_redirects or not getattr(response, "is_redirect", False):
+            return response, redirect_chain, decision
+
+        location = response.headers.get("location")
+        if not location:
+            return response, redirect_chain, decision
+
+        redirect_url = _redirect_target(str(response.url), location)
+        redirect_decision = redirect_allowed(
+            str(response.url),
+            redirect_url,
+            config=policy_config,
+            resolver=resolver,
+        )
+        redirect_chain.append(
+            {
+                "status_code": response.status_code,
+                "url": str(response.url),
+                "location": location,
+                "redirect_url": redirect_url,
+                "policy": redirect_decision.to_dict(),
+            }
+        )
+        _raise_if_blocked(redirect_decision, redirect_chain)
+        if len(redirect_chain) > policy_config.max_redirects:
+            raise HTTPPolicyRedirectLimit(redirect_chain)
+        current_url = redirect_url
+        current_params = None
+
+
+def httpx_request_with_policy(
+    method: str,
+    url: str,
+    *,
+    client: Optional[Any] = None,
+    follow_redirects: bool = True,
+    config: Optional[HTTPPolicyConfig] = None,
+    resolver: Optional[Resolver] = None,
+    **request_kwargs: Any,
+):
+    """Issue an httpx request with policy checks on the initial URL and redirects."""
+    import httpx
+
+    policy_config = config or load_http_policy_config()
+    redirect_chain: list[dict[str, Any]] = []
+    current_method = method.upper()
+    current_url = str(url or "").strip()
+    current_kwargs = dict(request_kwargs)
+    owned_client = client is None
+    http_client = client or httpx.Client(follow_redirects=False)
+
+    try:
+        while True:
+            decision = evaluate_http_url(current_url, config=policy_config, resolver=resolver)
+            _raise_if_blocked(decision, redirect_chain)
+
+            response = http_client.request(
+                current_method,
+                current_url,
+                follow_redirects=False,
+                **current_kwargs,
+            )
+
+            if not follow_redirects or not response.is_redirect:
+                return response, redirect_chain, decision
+
+            location = response.headers.get("location")
+            if not location:
+                return response, redirect_chain, decision
+
+            redirect_url = str(response.url.join(location))
+            redirect_decision = redirect_allowed(
+                str(response.url),
+                redirect_url,
+                config=policy_config,
+                resolver=resolver,
+            )
+            redirect_chain.append(
+                {
+                    "status_code": response.status_code,
+                    "url": str(response.url),
+                    "location": location,
+                    "redirect_url": redirect_url,
+                    "policy": redirect_decision.to_dict(),
+                }
+            )
+            _raise_if_blocked(redirect_decision, redirect_chain)
+            if len(redirect_chain) > policy_config.max_redirects:
+                raise HTTPPolicyRedirectLimit(redirect_chain)
+
+            if response.status_code in {301, 302, 303} and current_method != "HEAD":
+                current_method = "GET"
+                for key in ("content", "data", "files", "json"):
+                    current_kwargs.pop(key, None)
+            current_url = redirect_url
+            current_kwargs.pop("params", None)
+    finally:
+        if owned_client:
+            http_client.close()
 
 
 def blocked_network_error(decision: HTTPPolicyDecision, message: Optional[str] = None) -> dict[str, Any]:

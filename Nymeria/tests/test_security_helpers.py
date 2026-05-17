@@ -100,6 +100,44 @@ def test_http_audit_write_failure_logs_error(monkeypatch, tmp_path, caplog):
     assert "Failed to write HTTP audit event" in caplog.text
 
 
+def test_requests_get_with_policy_blocks_private_redirect():
+    class FakeResponse:
+        status_code = 302
+        headers = {"location": "https://127.0.0.1/admin"}
+        url = "https://api.example.com/start"
+        is_redirect = True
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, *args, **kwargs):
+            self.calls += 1
+            return FakeResponse()
+
+    session = FakeSession()
+
+    with pytest.raises(http_policy.HTTPPolicyViolation) as exc_info:
+        http_policy.requests_get_with_policy(
+            "https://api.example.com/start",
+            session=session,
+            config=http_policy.HTTPPolicyConfig(resolve_dns=False),
+        )
+
+    assert session.calls == 1
+    assert exc_info.value.decision.reason == "loopback_network"
+    assert exc_info.value.redirect_chain[0]["redirect_url"] == "https://127.0.0.1/admin"
+
+
+def test_validate_http_egress_url_blocks_literal_private_base_url():
+    with pytest.raises(ValueError, match="blocked by HTTP egress policy"):
+        http_policy.validate_http_egress_url(
+            "http://127.0.0.1:8000/api",
+            label="base URL",
+            resolve_dns=False,
+        )
+
+
 def test_validator_accepts_sync_and_async_tool_definitions(tmp_path):
     validator = CodeValidator(tmp_path)
 
@@ -146,4 +184,3 @@ def test_validator_rejects_bad_syntax_missing_tool_and_disallowed_path(tmp_path)
     assert "No @tool decorated function found" in tool_msg
     assert valid_path is False
     assert "Path not allowed" in path_msg
-

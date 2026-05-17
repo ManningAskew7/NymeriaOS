@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -28,11 +29,49 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..tools.definitions.mcp_schema import MCPToolConfig
+from .http_policy import (
+    HTTPPolicyRedirectLimit,
+    HTTPPolicyViolation,
+    httpx_request_with_policy,
+    validate_http_egress_url,
+)
 
 logger = logging.getLogger(__name__)
+
+_UNSAFE_EVAL_FLAGS = {
+    "python": {"-c"},
+    "python3": {"-c"},
+    "node": {"-e", "--eval"},
+    "deno": {"eval"},
+    "bun": {"-e", "--eval"},
+    "npm": {"exec", "x"},
+    "npx": {"-c", "--call"},
+}
+
+
+def _validate_stdio_launch(command: str, args: List[str]) -> None:
+    from .mcp_sources import SAFE_STDIO_COMMANDS
+
+    basename = Path(command).name.lower()
+    if re.fullmatch(r"python3(?:\.\d+)?", basename):
+        basename = "python3"
+    if basename not in SAFE_STDIO_COMMANDS:
+        allowed = ", ".join(sorted(SAFE_STDIO_COMMANDS))
+        raise RuntimeError(
+            f"MCP stdio command '{command}' is not allowed. Allowed launchers: {allowed}"
+        )
+
+    blocked_flags = _UNSAFE_EVAL_FLAGS.get(basename, set())
+    for arg in args:
+        normalized = str(arg).strip().lower()
+        if normalized in blocked_flags:
+            raise RuntimeError(
+                f"MCP stdio launcher '{basename}' cannot use unsafe argument '{arg}'"
+            )
 
 # Per-phase timeouts (seconds). MCPToolConfig.startup_timeout_seconds overrides INIT.
 INIT_TIMEOUT_DEFAULT = 10
@@ -210,6 +249,7 @@ class MCPServerManager:
                 config.server_id or config.server_command,
             )
 
+        _validate_stdio_launch(config.server_command, config.server_args)
         cmd = [config.server_command] + config.server_args
 
         cwd = config.working_directory
@@ -304,6 +344,10 @@ class MCPServerManager:
             ) from e
 
         logger.info(f"Connecting to MCP server (http): {config.url}")
+        try:
+            validate_http_egress_url(config.url, label="MCP HTTP server URL")
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
 
         # Interpolate ${env:VAR} in headers.
         headers = {
@@ -519,7 +563,17 @@ class MCPServerManager:
             headers["Mcp-Session-Id"] = conn.session_id
 
         try:
-            resp = client.post(conn.config.url, json=request, headers=headers, timeout=timeout)
+            resp, _redirect_chain, _policy = httpx_request_with_policy(
+                "POST",
+                conn.config.url,
+                client=client,
+                json=request,
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
         except Exception as e:
             raise RuntimeError(f"HTTP request failed: {e}")
 
@@ -574,7 +628,17 @@ class MCPServerManager:
         if conn.session_id:
             headers["Mcp-Session-Id"] = conn.session_id
         try:
-            client.post(conn.config.url, json=notification, headers=headers, timeout=10)
+            httpx_request_with_policy(
+                "POST",
+                conn.config.url,
+                client=client,
+                json=notification,
+                headers=headers,
+                timeout=10,
+                follow_redirects=False,
+            )
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            logger.debug(f"Notification send blocked by egress policy (ignored): {e}")
         except Exception as e:
             logger.debug(f"Notification send failed (ignored): {e}")
 

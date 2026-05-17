@@ -451,28 +451,42 @@ def create_trigger_router(
         manager = _get_manager()
         if auth_user is not None:
             user_id = auth_user.id
-        trigger = manager.get_trigger(user_id, trigger_id)
+            trigger = manager.get_trigger(user_id, trigger_id)
+            if trigger is None:
+                raise HTTPException(status_code=404, detail="Trigger not found")
+        else:
+            from .sources import get_source
+            source = get_source("webhook")
+            if not source or not hasattr(source, "validate_secret"):
+                raise HTTPException(status_code=500, detail="Webhook source unavailable")
 
-        if trigger is None:
-            raise HTTPException(status_code=404, detail="Trigger not found")
+            candidates = [
+                (owner_id, candidate)
+                for owner_id, candidate in manager.find_triggers_by_id(trigger_id)
+                if candidate.source_type == "webhook"
+            ]
+            if not candidates:
+                raise HTTPException(status_code=404, detail="Trigger not found")
+
+            matches = [
+                (owner_id, candidate)
+                for owner_id, candidate in candidates
+                if source.validate_secret(candidate.source_config, secret)
+            ]
+            if not matches:
+                raise HTTPException(status_code=403, detail="Invalid or missing webhook secret")
+            if len(matches) > 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Ambiguous webhook trigger ID; authenticate to fire this trigger",
+                )
+            user_id, trigger = matches[0]
 
         if not trigger.enabled:
             raise HTTPException(status_code=409, detail="Trigger is disabled")
 
         if trigger.source_type != "webhook":
             raise HTTPException(status_code=400, detail="Trigger is not a webhook source")
-
-        # Public callers must present a valid per-trigger secret. A trigger
-        # configured without one is only fireable by an authenticated API
-        # caller, which prevents trigger-ID discovery from becoming prompt
-        # injection with tool access.
-        if auth_user is None:
-            from .sources import get_source
-            source = get_source("webhook")
-            if not source or not hasattr(source, "validate_secret"):
-                raise HTTPException(status_code=500, detail="Webhook source unavailable")
-            if not source.validate_secret(trigger.source_config, secret):
-                raise HTTPException(status_code=403, detail="Invalid or missing webhook secret")
 
         # Parse request body
         try:

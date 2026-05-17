@@ -23,7 +23,7 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 TOKEN_PREFIX = "nym_"
 TOKEN_BYTES = 32  # entropy of the random part (base64url)
 TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{32,}")
+DEFAULT_TOKEN_TTL_DAYS = 90
+DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
+DEFAULT_MAX_ACTIVE_TOKENS_PER_USER = 10
 
 UserRole = Literal["user", "admin"]
 Provider = Literal[
@@ -97,6 +100,7 @@ class TokenRecord:
     user_id: str
     label: Optional[str]
     created_at: str
+    expires_at: str
     last_used_at: Optional[str]
     revoked_at: Optional[str]
 
@@ -116,6 +120,18 @@ class PlatformIdentity:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_timestamp(value: str | None) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _hash_token(raw: str) -> str:
@@ -149,10 +165,12 @@ CREATE TABLE IF NOT EXISTS user_tokens (
     user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     label        TEXT,
     created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
     last_used_at TEXT,
     revoked_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_tokens_user ON user_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_tokens_expires ON user_tokens(expires_at);
 
 CREATE TABLE IF NOT EXISTS thread_owners (
     thread_id  TEXT PRIMARY KEY,
@@ -209,12 +227,27 @@ class AmbiguousTokenPrefix(ValueError):
     pass
 
 
+class TokenLimitExceeded(ValueError):
+    pass
+
+
 class AccountsRepo:
     """Thread-safe SQLite-backed repository for users/tokens/ownership."""
 
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        token_ttl_days: int = DEFAULT_TOKEN_TTL_DAYS,
+        max_active_tokens_per_user: int = DEFAULT_MAX_ACTIVE_TOKENS_PER_USER,
+        bootstrap_token_ttl_hours: int = DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS,
+    ):
         self.db_path = Path(db_path)
         self._lock = threading.Lock()
+        self.token_ttl_days = max(1, int(token_ttl_days))
+        self.max_active_tokens_per_user = max(1, int(max_active_tokens_per_user))
+        self.bootstrap_token_ttl_hours = max(1, int(bootstrap_token_ttl_hours))
+        self.bootstrap_token_path = self.db_path.parent / BOOTSTRAP_TOKEN_FILENAME
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
         logger.info("AccountsRepo initialized at %s", self.db_path)
@@ -231,7 +264,31 @@ class AccountsRepo:
     def _init_schema(self) -> None:
         with self._lock, self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_token_expiry(conn)
             conn.commit()
+
+    def _migrate_token_expiry(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(user_tokens)").fetchall()
+        }
+        if "expires_at" not in columns:
+            conn.execute("ALTER TABLE user_tokens ADD COLUMN expires_at TEXT")
+        rows = conn.execute(
+            "SELECT token_hash, label, created_at FROM user_tokens "
+            "WHERE expires_at IS NULL OR expires_at = ''"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE user_tokens SET expires_at = ? WHERE token_hash = ?",
+                (
+                    self._expiry_for_label(row["label"], created_at=row["created_at"]),
+                    row["token_hash"],
+                ),
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_tokens_expires ON user_tokens(expires_at)"
+        )
 
     # -- users -------------------------------------------------------------
 
@@ -416,13 +473,86 @@ class AccountsRepo:
             raise UserNotFound(user_id)
         raw = generate_raw_token()
         with self._lock, self._connect() as conn:
+            self._revoke_expired_tokens_locked(conn, user_id=user_id)
+            active = conn.execute(
+                "SELECT COUNT(*) AS n FROM user_tokens "
+                "WHERE user_id = ? AND revoked_at IS NULL",
+                (user_id,),
+            ).fetchone()
+            if int(active["n"]) >= self.max_active_tokens_per_user:
+                raise TokenLimitExceeded(
+                    f"User {user_id} already has the maximum "
+                    f"{self.max_active_tokens_per_user} active token(s)"
+                )
+            created_at = _now()
             conn.execute(
-                "INSERT INTO user_tokens (token_hash, user_id, label, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (_hash_token(raw), user_id, label, _now()),
+                "INSERT INTO user_tokens "
+                "(token_hash, user_id, label, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    _hash_token(raw),
+                    user_id,
+                    label,
+                    created_at,
+                    self._expiry_for_label(label, created_at=created_at),
+                ),
             )
             conn.commit()
         return raw
+
+    def _expiry_for_label(self, label: Optional[str], *, created_at: str) -> str:
+        base = _parse_timestamp(created_at) or datetime.now(timezone.utc)
+        if label == BOOTSTRAP_TOKEN_LABEL:
+            expires_at = base + timedelta(hours=self.bootstrap_token_ttl_hours)
+        else:
+            expires_at = base + timedelta(days=self.token_ttl_days)
+        return expires_at.isoformat(timespec="seconds")
+
+    def _token_expired(self, expires_at: str | None) -> bool:
+        parsed = _parse_timestamp(expires_at)
+        if parsed is None:
+            return True
+        return parsed <= datetime.now(timezone.utc)
+
+    def _revoke_expired_tokens_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: Optional[str] = None,
+    ) -> int:
+        now = _now()
+        if user_id is None:
+            rows = conn.execute(
+                "SELECT token_hash, expires_at FROM user_tokens "
+                "WHERE revoked_at IS NULL"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT token_hash, expires_at FROM user_tokens "
+                "WHERE user_id = ? AND revoked_at IS NULL",
+                (user_id,),
+            ).fetchall()
+
+        expired_hashes = [
+            row["token_hash"] for row in rows if self._token_expired(row["expires_at"])
+        ]
+        for token_hash in expired_hashes:
+            conn.execute(
+                "UPDATE user_tokens SET revoked_at = ? WHERE token_hash = ? "
+                "AND revoked_at IS NULL",
+                (now, token_hash),
+            )
+        return len(expired_hashes)
+
+    def _delete_bootstrap_token_file(self) -> None:
+        try:
+            self.bootstrap_token_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Failed to delete bootstrap token file %s after successful auth: %s",
+                self.bootstrap_token_path,
+                exc,
+            )
 
     def verify_token(self, raw: str) -> Optional[AuthenticatedUser]:
         """Resolve a raw bearer token → ``AuthenticatedUser``, or None."""
@@ -431,7 +561,8 @@ class AccountsRepo:
         token_hash = _hash_token(raw)
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled, t.revoked_at "
+                "SELECT u.id, u.email, u.display_name, u.role, u.disabled, "
+                "t.token_hash, t.label, t.expires_at, t.revoked_at "
                 "FROM user_tokens t JOIN users u ON u.id = t.user_id "
                 "WHERE t.token_hash = ?",
                 (token_hash,),
@@ -440,11 +571,20 @@ class AccountsRepo:
                 return None
             if row["revoked_at"] is not None or int(row["disabled"]) == 1:
                 return None
+            if self._token_expired(row["expires_at"]):
+                conn.execute(
+                    "UPDATE user_tokens SET revoked_at = ? WHERE token_hash = ?",
+                    (_now(), token_hash),
+                )
+                conn.commit()
+                return None
             conn.execute(
                 "UPDATE user_tokens SET last_used_at = ? WHERE token_hash = ?",
                 (_now(), token_hash),
             )
             conn.commit()
+            if row["id"] == BOOTSTRAP_USER_ID and row["label"] == BOOTSTRAP_TOKEN_LABEL:
+                self._delete_bootstrap_token_file()
             return AuthenticatedUser(
                 id=row["id"],
                 email=row["email"],
@@ -500,16 +640,19 @@ class AccountsRepo:
 
     def list_tokens_for_user(self, user_id: str) -> List[TokenRecord]:
         with self._lock, self._connect() as conn:
+            self._revoke_expired_tokens_locked(conn, user_id=user_id)
             rows = conn.execute(
                 "SELECT * FROM user_tokens WHERE user_id = ? ORDER BY created_at ASC",
                 (user_id,),
             ).fetchall()
+            conn.commit()
             return [
                 TokenRecord(
                     token_hash=r["token_hash"],
                     user_id=r["user_id"],
                     label=r["label"],
                     created_at=r["created_at"],
+                    expires_at=r["expires_at"],
                     last_used_at=r["last_used_at"],
                     revoked_at=r["revoked_at"],
                 )

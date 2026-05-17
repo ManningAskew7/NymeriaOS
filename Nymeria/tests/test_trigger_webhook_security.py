@@ -42,12 +42,13 @@ def _insert_webhook_trigger(
     *,
     user_id: str = "owner",
     trigger_id: str = "webhook1",
+    name: str = "Webhook",
     source_config: dict | None = None,
 ) -> None:
     manager = TriggerManager(data_dir)
     trigger = TriggerDefinition(
         id=trigger_id,
-        name="Webhook",
+        name=name,
         source_type="webhook",
         source_config=source_config or {},
         action=TriggerAction(
@@ -103,6 +104,38 @@ def test_public_webhook_fire_requires_matching_shared_secret(
     assert wrong.status_code == 403
     assert valid.status_code == 200
     assert valid.json()["status"] == "fired"
+
+
+def test_public_webhook_fire_derives_owner_from_matching_secret(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, _token = _client(tmp_path, api_client_builder, monkeypatch)
+    _insert_webhook_trigger(
+        tmp_path,
+        user_id="owner",
+        trigger_id="sharedid",
+        name="Owner webhook",
+        source_config={"secret": "owner-secret"},
+    )
+    _insert_webhook_trigger(
+        tmp_path,
+        user_id="attacker",
+        trigger_id="sharedid",
+        name="Attacker webhook",
+        source_config={"secret": "attacker-secret"},
+    )
+
+    response = client.post(
+        "/triggers/fire/sharedid?user_id=attacker&secret=owner-secret",
+        json={"message": "hello"},
+    )
+
+    manager = TriggerManager(tmp_path)
+    assert response.status_code == 200
+    assert manager.get_trigger("owner", "sharedid").fire_count == 1
+    assert manager.get_trigger("attacker", "sharedid").fire_count == 0
 
 
 def test_invalid_bearer_token_does_not_fall_back_to_shared_secret(

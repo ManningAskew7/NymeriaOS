@@ -1097,10 +1097,10 @@ def create_settings_router(
 
     @router.get("/settings", response_model=ServerSettingsResponse)
     async def get_server_settings(
-        user: AuthenticatedUser = Depends(verify_api_key),
+        user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings_fn),
     ):
-        """Get current server settings."""
+        """Get current server settings. Admin-only because values expose topology."""
         return ServerSettingsResponse(
             llm_provider=settings.llm_provider,
             llm_model=settings.llm_model,
