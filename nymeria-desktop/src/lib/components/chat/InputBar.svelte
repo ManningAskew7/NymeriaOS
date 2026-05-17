@@ -72,14 +72,32 @@
   let slashQuery = $derived(
     isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
   );
+  // Tier matches so the slash-command palette surfaces what the user is
+  // most likely typing first: prefix-on-name > substring-on-name >
+  // description-only. Without tiers, a permissive description-match floods
+  // the list with commands whose descriptions happen to contain a common
+  // letter (e.g. "h" pulls in any command mentioning "the" or "thread"),
+  // and the backend's (category, name) sort then surfaces alphabetically
+  // early categories like "Goals" at the top regardless of relevance.
   let filteredCommands = $derived(
     isCommandNameEntry
-      ? commands
-          .filter((command) => (
-            command.name.includes(slashQuery) ||
-            command.description.toLowerCase().includes(slashQuery)
-          ))
-          .slice(0, 8)
+      ? (() => {
+          if (!slashQuery) return commands.slice(0, 8);
+          const prefix: typeof commands = [];
+          const nameSub: typeof commands = [];
+          const descOnly: typeof commands = [];
+          for (const cmd of commands) {
+            const name = cmd.name.toLowerCase();
+            if (name.startsWith(slashQuery)) {
+              prefix.push(cmd);
+            } else if (name.includes(slashQuery)) {
+              nameSub.push(cmd);
+            } else if (cmd.description.toLowerCase().includes(slashQuery)) {
+              descOnly.push(cmd);
+            }
+          }
+          return [...prefix, ...nameSub, ...descOnly].slice(0, 8);
+        })()
       : []
   );
   let showCommandPalette = $derived(

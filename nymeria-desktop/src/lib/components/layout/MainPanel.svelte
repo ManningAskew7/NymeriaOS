@@ -148,11 +148,23 @@
     await streamMessage(send.message, send.attachments, true);
   }
 
+  // Slash commands whose execution_kind is `chat_stream` on the backend must
+  // be routed through the /chat SSE endpoint, not /commands/execute (which
+  // rejects them with "handled outside the command service"). The chat-stream
+  // intercept in nymeria/api/routers/chat.py handles their state work + agent
+  // kickoff in one round-trip. Keep this list in sync with the
+  // `execution_kind="chat_stream"` registrations in command_service.py.
+  // TODO: make this data-driven via api.listCommands() with execution_kind.
+  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal']);
+
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
     const trimmed = message.trim();
-    if (trimmed.startsWith('/') && trimmed !== '/compact' && (!attachments || attachments.length === 0)) {
+    const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0] : '';
+    const isChatStreamCommand = CHAT_STREAM_COMMAND_ROOTS.has(slashRoot);
+
+    if (trimmed.startsWith('/') && !isChatStreamCommand && (!attachments || attachments.length === 0)) {
       if (!threadsStore.currentThreadId) {
         threadsStore.createThread();
       }
