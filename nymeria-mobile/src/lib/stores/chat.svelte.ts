@@ -43,6 +43,16 @@ function createChatStore() {
   let _lastFlushTime = 0;
   let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Streaming-time mutators must refuse to touch an assistant message that has
+  // already been marked 'complete'. Without this guard, a stream that arrives
+  // after a thread-switch recovery flaw could graft tool calls and response
+  // steps onto the previous turn's reply.
+  function isLastAssistantStreaming(): boolean {
+    if (messages.length === 0) return false;
+    const last = messages[messages.length - 1];
+    return last.role === 'assistant' && last.status === 'streaming';
+  }
+
   return {
     get messages() {
       return messages;
@@ -139,37 +149,31 @@ function createChatStore() {
     },
 
     appendToLastMessage(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content: lastMessage.content + content
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: lastMessage.content + content
+        }
+      ];
     },
 
     setLastMessageContent(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content
+        }
+      ];
     },
 
     setLastMessageComplete() {
@@ -313,7 +317,7 @@ function createChatStore() {
      * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions.
      */
     addThinkingStep(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       _thinkingBuffer += content;
 
@@ -330,7 +334,11 @@ function createChatStore() {
 
     /** Flush buffered thinking content into the message steps. */
     _flushThinking() {
-      if (!_thinkingBuffer || messages.length === 0) return;
+      if (!_thinkingBuffer) return;
+      if (!isLastAssistantStreaming()) {
+        _thinkingBuffer = '';
+        return;
+      }
 
       const buffered = _thinkingBuffer;
       _thinkingBuffer = '';
@@ -375,7 +383,7 @@ function createChatStore() {
      */
     addToolCallStep(id: string, name: string, args: Record<string, unknown>) {
       this._forceFlush();
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
@@ -492,7 +500,7 @@ function createChatStore() {
      * chunks buffer for FLUSH_INTERVAL ms to reduce array reconstructions + re-parses.
      */
     addResponseStep(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       _responseBuffer += content;
 
@@ -509,7 +517,11 @@ function createChatStore() {
 
     /** Flush buffered response content into the message steps. */
     _flushResponse() {
-      if (!_responseBuffer || messages.length === 0) return;
+      if (!_responseBuffer) return;
+      if (!isLastAssistantStreaming()) {
+        _responseBuffer = '';
+        return;
+      }
 
       const buffered = _responseBuffer;
       _responseBuffer = '';
@@ -554,20 +566,17 @@ function createChatStore() {
 
     /** Set the final response content after all steps. */
     setResponseContent(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content: lastMessage.content + content
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: lastMessage.content + content
+        }
+      ];
     },
 
     /**
@@ -580,7 +589,7 @@ function createChatStore() {
      */
     reclassifyThinkingAsResponse() {
       this._forceFlush();
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
