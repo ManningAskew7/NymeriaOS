@@ -2564,8 +2564,9 @@ only a fallback for out-of-process callers and still uses
 `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As`.
 
 **Security note:** The tool runs in-process as the calling user. `/env get`
-returns unmasked secrets and is admin-only — non-admin callers will get 403 if
-they try to invoke admin-gated slash commands like `/env_get`, `/restart`, or
+returns unmasked secrets and is admin-only on local/authenticated command
+surfaces. Telegram no longer exposes `/env_get`; non-admin callers still get
+403 if they try to invoke admin-gated slash commands like `/restart` or
 `/config_*`.
 
 **Implementation:** See `nymeria/tools/slash_command.py` (tool entry point) and

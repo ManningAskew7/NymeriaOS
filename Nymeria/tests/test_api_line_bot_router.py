@@ -25,16 +25,18 @@ def test_line_webhook_rejects_invalid_json(
     tmp_path: Path,
     api_client_builder,
 ):
+    raw = b"{bad json"
     settings = api_client_builder.settings(
         tmp_path,
         line_channel_access_token="token",
-        line_validate_signature=False,
+        line_channel_secret="secret",
     )
     client = api_client_builder.client(FakeAgent(), settings)
 
     response = client.post(
         "/integrations/line/webhook",
-        content=b"{bad json",
+        content=raw,
+        headers={"x-line-signature": _sign(raw, "secret")},
     )
 
     assert response.status_code == 400
@@ -128,3 +130,24 @@ def test_line_webhook_accepts_empty_events_with_valid_signature(
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted"}
+
+
+def test_line_webhook_ignores_disabled_signature_toggle(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        line_channel_access_token="token",
+        line_channel_secret="secret",
+        line_validate_signature=False,
+    )
+    client = api_client_builder.client(FakeAgent(), settings)
+
+    response = client.post(
+        "/integrations/line/webhook",
+        json={"destination": "Ubot", "events": []},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing LINE signature"

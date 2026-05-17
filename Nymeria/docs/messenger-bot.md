@@ -1,6 +1,6 @@
 # Messenger Bot
 
-Nymeria's Messenger integration is an API-hosted Meta Messenger Platform webhook. It receives Page webhook events at `/integrations/messenger/webhook`, verifies `X-Hub-Signature-256` when `MESSENGER_APP_SECRET` is configured, resolves the sender's Page-scoped ID to a Nymeria account, streams the turn through the in-process agent, and replies through the Messenger Send API.
+Nymeria's Messenger integration is an API-hosted Meta Messenger Platform webhook. It receives Page webhook events at `/integrations/messenger/webhook`, requires `X-Hub-Signature-256` verification with `MESSENGER_APP_SECRET`, resolves the sender's Page-scoped ID to a Nymeria account, streams the turn through the in-process agent, and replies through the Messenger Send API.
 
 There is no standalone `run.py messenger-bot` command and no Docker Compose bot service. The API service hosts the webhook.
 
@@ -98,8 +98,8 @@ Slash-style `/stop` is also accepted.
 
 ## Limits And Security
 
-- Incoming webhooks should be signed with Meta's raw-body `X-Hub-Signature-256` HMAC. Set `MESSENGER_APP_SECRET` in production.
-- Meta can redeliver webhook events; Nymeria deduplicates recent message IDs and generated postback IDs.
+- Incoming webhooks must be signed with Meta's raw-body `X-Hub-Signature-256` HMAC. Set `MESSENGER_APP_SECRET` before enabling the webhook.
+- Meta can redeliver webhook events; Nymeria rejects stale message/postback timestamps and deduplicates recent message IDs and generated postback IDs.
 - Nymeria only replies to inbound user messages in v1. It does not implement proactive broadcasts or marketing sends.
 - Messenger replies are subject to Meta's messaging policies, including the standard response window after a user message.
 - Nymeria sends text-only replies in v1 and splits outgoing messages at 2000 characters.

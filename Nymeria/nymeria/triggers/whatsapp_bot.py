@@ -114,9 +114,9 @@ def verify_meta_signature(
     signature_header: Optional[str],
     app_secret: Optional[str],
 ) -> bool:
-    """Verify Meta's X-Hub-Signature-256 header when an app secret is set."""
+    """Verify Meta's X-Hub-Signature-256 header."""
     if not app_secret:
-        return True
+        return False
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     expected = "sha256=" + hmac.new(

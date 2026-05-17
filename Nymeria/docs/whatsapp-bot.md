@@ -41,13 +41,14 @@ WHATSAPP_ACCESS_TOKEN=...
 WHATSAPP_PHONE_NUMBER_ID=...
 WHATSAPP_BASE_URL=https://graph.facebook.com/v19.0
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=choose-a-long-random-token
-WHATSAPP_APP_SECRET=...          # recommended; verifies X-Hub-Signature-256
+WHATSAPP_APP_SECRET=...          # required; verifies X-Hub-Signature-256
 WHATSAPP_SHOW_TOOL_EVENTS=false
 ```
 
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN` is the token you type into Meta's webhook setup UI. Nymeria returns the `hub.challenge` only when Meta sends the same token.
 
-`WHATSAPP_APP_SECRET` is optional but recommended. When set, POST webhooks must include a valid `X-Hub-Signature-256` HMAC.
+`WHATSAPP_APP_SECRET` is required. POST webhooks must include a valid
+`X-Hub-Signature-256` HMAC, and inbound message timestamps must be fresh.
 
 ## Linking Users
 

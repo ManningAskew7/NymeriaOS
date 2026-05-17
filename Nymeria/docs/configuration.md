@@ -457,7 +457,7 @@ Set the API key for your chosen provider:
 | `TELEGRAM_API_BASE_URL` | Telegram | Optional Telegram Bot API base URL override |
 | `WEBEX_ACCESS_TOKEN` | Webex | Optional Webex access token fallback; credential vault provider `webex` is preferred |
 | `WEBEX_BASE_URL` | Webex | Optional Webex API base URL override |
-| `WEBEX_WEBHOOK_SECRET` | Webex | Optional shared secret for `X-Spark-Signature` webhook verification |
+| `WEBEX_WEBHOOK_SECRET` | Webex | Required shared secret for `X-Spark-Signature` webhook verification |
 | `WEBEX_BOT_PERSON_ID` | Webex | Optional Webex bot person ID override; otherwise resolved via `/people/me` |
 | `WEBEX_BOT_EMAIL` | Webex | Optional Webex bot email override for mention stripping |
 | `WEBEX_SHOW_TOOL_EVENTS` | Webex | `true` posts compact tool-call/result messages in Webex replies; default `false` |
@@ -466,18 +466,18 @@ Set the API key for your chosen provider:
 | `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business Cloud | Optional WhatsApp sender phone number ID fallback |
 | `WHATSAPP_BASE_URL` | WhatsApp Business Cloud | Optional WhatsApp Graph API base URL override |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | WhatsApp Business Cloud | Verification token for `GET /integrations/whatsapp/webhook` challenge-response setup |
-| `WHATSAPP_APP_SECRET` | WhatsApp Business Cloud | Optional Meta app secret for `X-Hub-Signature-256` webhook verification |
+| `WHATSAPP_APP_SECRET` | WhatsApp Business Cloud | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | WhatsApp Business Cloud | `true` posts compact tool-call/result messages in WhatsApp replies; default `false` |
 | `MESSENGER_PAGE_ACCESS_TOKEN` | Messenger Platform | Page access token for Messenger Send API webhook replies |
 | `MESSENGER_PAGE_ID` | Messenger Platform | Optional Facebook Page ID fallback for Messenger replies |
 | `MESSENGER_WEBHOOK_VERIFY_TOKEN` | Messenger Platform | Verification token for `GET /integrations/messenger/webhook` challenge-response setup |
-| `MESSENGER_APP_SECRET` | Messenger Platform | Optional Meta app secret for `X-Hub-Signature-256` webhook verification |
+| `MESSENGER_APP_SECRET` | Messenger Platform | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
 | `MESSENGER_GRAPH_API_BASE_URL` | Messenger Platform | Messenger Graph API base URL override |
 | `MESSENGER_SHOW_TOOL_EVENTS` | Messenger Platform | `true` posts compact tool-call/result messages in Messenger replies; default `false` |
 | `INSTAGRAM_ACCESS_TOKEN` | Instagram Messaging | Access token for Instagram webhook replies |
 | `INSTAGRAM_IG_USER_ID` | Instagram Messaging | Optional Instagram professional account ID used to scope replies and bindings |
 | `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | Instagram Messaging | Verification token for `GET /integrations/instagram/webhook` challenge-response setup |
-| `INSTAGRAM_APP_SECRET` | Instagram Messaging | Optional Meta app secret for `X-Hub-Signature-256` webhook verification |
+| `INSTAGRAM_APP_SECRET` | Instagram Messaging | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
 | `INSTAGRAM_GRAPH_API_BASE_URL` | Instagram Messaging | Instagram Graph API base URL override |
 | `INSTAGRAM_SHOW_TOOL_EVENTS` | Instagram Messaging | `true` posts compact tool-call/result messages in Instagram replies; default `false` |
 | `DISCORD_BASE_URL` | Discord | Optional Discord REST API base URL override |
@@ -496,7 +496,7 @@ Set the API key for your chosen provider:
 | `TEAMS_BOT_APP_PASSWORD` | Microsoft Teams | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | Microsoft Teams | Optional tenant ID used during Azure setup |
 | `TEAMS_BOT_RESPOND_MODE` | Microsoft Teams | Bot channel behavior: `mention` (personal chats and @mentions) or `all`; default `mention` |
-| `TEAMS_BOT_VALIDATE_AUTH` | Microsoft Teams | `true` validates Bot Framework bearer tokens on incoming Teams webhooks; default `true` |
+| `TEAMS_BOT_VALIDATE_AUTH` | Microsoft Teams | Deprecated and ignored; Bot Framework bearer-token validation is always enforced |
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | Microsoft Teams | `true` posts compact tool-call/result messages in Teams replies; default `false` |
 | `TEAMS_BOT_TOKEN_URL` | Microsoft Teams | Bot Framework OAuth token URL override |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | Microsoft Teams | Bot Framework OpenID metadata URL override for webhook JWT validation |
@@ -507,7 +507,7 @@ Set the API key for your chosen provider:
 | `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | Google Chat | `app-url` or `project-number`; default `app-url` |
 | `GOOGLE_CHAT_BOT_NAME` | Google Chat | Bot display name used for mention stripping; default `Nymeria` |
 | `GOOGLE_CHAT_RESPOND_MODE` | Google Chat | Bot space behavior: `mention` (DMs and app mentions) or `all`; default `mention` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | Google Chat | `true` validates Google Chat bearer tokens on incoming webhooks; default `true` |
+| `GOOGLE_CHAT_VALIDATE_AUTH` | Google Chat | Deprecated and ignored; Google Chat bearer-token validation is always enforced |
 | `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | Google Chat | `true` posts compact tool-call/result messages in Google Chat replies; default `false` |
 | `GOOGLE_CHAT_API_BASE_URL` | Google Chat | Google Chat REST API base URL override |
 | `GOOGLE_CHAT_USE_ADC` | Google Chat | `true` allows Application Default Credentials for replies; default `false` |
@@ -516,7 +516,7 @@ Set the API key for your chosen provider:
 | `LINE_BOT_USER_ID` | LINE Messaging API | Optional LINE bot user ID for mention matching; webhook `destination` is used when unset |
 | `LINE_BOT_NAME` | LINE Messaging API | Bot display name used for mention stripping; default `Nymeria` |
 | `LINE_RESPOND_MODE` | LINE Messaging API | Bot group/room behavior: `mention` (DMs and bot mentions) or `all`; default `mention` |
-| `LINE_VALIDATE_SIGNATURE` | LINE Messaging API | `true` validates LINE webhook signatures; default `true` |
+| `LINE_VALIDATE_SIGNATURE` | LINE Messaging API | Deprecated and ignored; LINE webhook signature validation is always enforced |
 | `LINE_SHOW_TOOL_EVENTS` | LINE Messaging API | `true` posts compact tool-call/result messages in LINE replies; default `false` |
 | `LINE_API_BASE_URL` | LINE Messaging API | LINE Messaging API base URL override |
 | `SIGNAL_HTTP_URL` | Signal | signal-cli-rest-api base URL for the Signal bot |
@@ -757,7 +757,7 @@ reachable from the backend process.
 | `TELEGRAM_DEFAULT_CHAT_ID` | - | Default Telegram chat ID for notifications |
 | `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback for native Webex tools |
 | `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
-| `WEBEX_WEBHOOK_SECRET` | - | Optional shared secret for Webex webhook signature verification |
+| `WEBEX_WEBHOOK_SECRET` | - | Required shared secret for Webex webhook signature verification |
 | `WEBEX_BOT_PERSON_ID` | - | Optional Webex bot person ID override |
 | `WEBEX_BOT_EMAIL` | - | Optional Webex bot email override |
 | `WEBEX_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Webex bot replies |
@@ -766,18 +766,18 @@ reachable from the backend process.
 | `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
 | `WHATSAPP_BASE_URL` | `https://graph.facebook.com/v19.0` | WhatsApp Graph API base URL |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | - | WhatsApp Cloud webhook challenge token |
-| `WHATSAPP_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `WHATSAPP_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in WhatsApp bot replies |
 | `MESSENGER_PAGE_ACCESS_TOKEN` | - | Messenger Page access token for webhook replies |
 | `MESSENGER_PAGE_ID` | - | Facebook Page ID fallback for Messenger replies |
 | `MESSENGER_WEBHOOK_VERIFY_TOKEN` | - | Messenger webhook challenge token |
-| `MESSENGER_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `MESSENGER_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `MESSENGER_GRAPH_API_BASE_URL` | `https://graph.facebook.com/v23.0` | Messenger Graph API base URL |
 | `MESSENGER_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Messenger bot replies |
 | `INSTAGRAM_ACCESS_TOKEN` | - | Instagram Messaging access token for webhook replies |
 | `INSTAGRAM_IG_USER_ID` | - | Instagram professional account ID fallback |
 | `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | - | Instagram webhook challenge token |
-| `INSTAGRAM_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `INSTAGRAM_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `INSTAGRAM_GRAPH_API_BASE_URL` | `https://graph.instagram.com/v23.0` | Instagram Graph API base URL |
 | `INSTAGRAM_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Instagram bot replies |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook URL for notifications |
@@ -815,7 +815,7 @@ reachable from the backend process.
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |
 | `TEAMS_BOT_RESPOND_MODE` | `mention` | Teams group/channel behavior: `mention` or `all` |
-| `TEAMS_BOT_VALIDATE_AUTH` | `true` | Validate Bot Framework bearer tokens on incoming Teams webhooks |
+| `TEAMS_BOT_VALIDATE_AUTH` | ignored | Deprecated. Bot Framework bearer-token validation is always enforced |
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | `false` | Show compact Teams tool call/result messages during streamed replies |
 | `TEAMS_BOT_TOKEN_URL` | `https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token` | Bot Framework OAuth token URL |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | `https://login.botframework.com/v1/.well-known/openidconfiguration` | Bot Framework OpenID metadata URL |
@@ -826,7 +826,7 @@ reachable from the backend process.
 | `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | `app-url` | Google Chat auth audience mode: `app-url` or `project-number` |
 | `GOOGLE_CHAT_BOT_NAME` | `Nymeria` | Google Chat bot display name used for mention stripping |
 | `GOOGLE_CHAT_RESPOND_MODE` | `mention` | Google Chat space behavior: `mention` or `all` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | `true` | Validate Google Chat bearer tokens on incoming webhooks |
+| `GOOGLE_CHAT_VALIDATE_AUTH` | ignored | Deprecated. Google Chat bearer-token validation is always enforced |
 | `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Google Chat tool call/result messages during streamed replies |
 | `GOOGLE_CHAT_API_BASE_URL` | `https://chat.googleapis.com/v1` | Google Chat REST API base URL |
 | `GOOGLE_CHAT_USE_ADC` | `false` | Allow Application Default Credentials for Google Chat replies |
@@ -835,7 +835,7 @@ reachable from the backend process.
 | `LINE_BOT_USER_ID` | - | Optional LINE bot user ID for mention matching |
 | `LINE_BOT_NAME` | `Nymeria` | LINE bot display name used for mention stripping |
 | `LINE_RESPOND_MODE` | `mention` | LINE group/room behavior: `mention` or `all` |
-| `LINE_VALIDATE_SIGNATURE` | `true` | Validate `x-line-signature` on incoming LINE webhooks |
+| `LINE_VALIDATE_SIGNATURE` | ignored | Deprecated. `x-line-signature` validation is always enforced |
 | `LINE_SHOW_TOOL_EVENTS` | `false` | Show compact LINE tool call/result messages during streamed replies |
 | `LINE_API_BASE_URL` | `https://api.line.me/v2/bot` | LINE Messaging API base URL |
 | `SIGNAL_HTTP_URL` | - | signal-cli-rest-api base URL for the Signal bot |
@@ -1210,7 +1210,7 @@ reachable from the backend process.
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL |
 | `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback |
 | `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
-| `WEBEX_WEBHOOK_SECRET` | - | Optional shared secret for Webex webhook signature verification |
+| `WEBEX_WEBHOOK_SECRET` | - | Required shared secret for Webex webhook signature verification |
 | `WEBEX_BOT_PERSON_ID` | - | Optional Webex bot person ID override |
 | `WEBEX_BOT_EMAIL` | - | Optional Webex bot email override |
 | `WEBEX_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Webex bot replies |
@@ -1219,18 +1219,18 @@ reachable from the backend process.
 | `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
 | `WHATSAPP_BASE_URL` | `https://graph.facebook.com/v19.0` | WhatsApp Graph API base URL |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | - | WhatsApp Cloud webhook challenge token |
-| `WHATSAPP_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `WHATSAPP_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in WhatsApp bot replies |
 | `MESSENGER_PAGE_ACCESS_TOKEN` | - | Messenger Page access token for webhook replies |
 | `MESSENGER_PAGE_ID` | - | Facebook Page ID fallback for Messenger replies |
 | `MESSENGER_WEBHOOK_VERIFY_TOKEN` | - | Messenger webhook challenge token |
-| `MESSENGER_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `MESSENGER_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `MESSENGER_GRAPH_API_BASE_URL` | `https://graph.facebook.com/v23.0` | Messenger Graph API base URL |
 | `MESSENGER_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Messenger bot replies |
 | `INSTAGRAM_ACCESS_TOKEN` | - | Instagram Messaging access token for webhook replies |
 | `INSTAGRAM_IG_USER_ID` | - | Instagram professional account ID fallback |
 | `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | - | Instagram webhook challenge token |
-| `INSTAGRAM_APP_SECRET` | - | Optional Meta app secret for webhook signature verification |
+| `INSTAGRAM_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `INSTAGRAM_GRAPH_API_BASE_URL` | `https://graph.instagram.com/v23.0` | Instagram Graph API base URL |
 | `INSTAGRAM_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Instagram bot replies |
 | `DISCORD_BASE_URL` | `https://discord.com/api/v10` | Discord REST API base URL |
@@ -1249,7 +1249,7 @@ reachable from the backend process.
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |
 | `TEAMS_BOT_RESPOND_MODE` | `mention` | Teams group/channel behavior: `mention` or `all` |
-| `TEAMS_BOT_VALIDATE_AUTH` | `true` | Validate Bot Framework bearer tokens on incoming Teams webhooks |
+| `TEAMS_BOT_VALIDATE_AUTH` | ignored | Deprecated. Bot Framework bearer-token validation is always enforced |
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | `false` | Show compact Teams tool call/result messages during streamed replies |
 | `TEAMS_BOT_TOKEN_URL` | `https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token` | Bot Framework OAuth token URL |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | `https://login.botframework.com/v1/.well-known/openidconfiguration` | Bot Framework OpenID metadata URL |
@@ -1260,7 +1260,7 @@ reachable from the backend process.
 | `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | `app-url` | Google Chat auth audience mode: `app-url` or `project-number` |
 | `GOOGLE_CHAT_BOT_NAME` | `Nymeria` | Google Chat bot display name used for mention stripping |
 | `GOOGLE_CHAT_RESPOND_MODE` | `mention` | Google Chat space behavior: `mention` or `all` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | `true` | Validate Google Chat bearer tokens on incoming webhooks |
+| `GOOGLE_CHAT_VALIDATE_AUTH` | ignored | Deprecated. Google Chat bearer-token validation is always enforced |
 | `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Google Chat tool call/result messages during streamed replies |
 | `GOOGLE_CHAT_API_BASE_URL` | `https://chat.googleapis.com/v1` | Google Chat REST API base URL |
 | `GOOGLE_CHAT_USE_ADC` | `false` | Allow Application Default Credentials for Google Chat replies |
@@ -1269,7 +1269,7 @@ reachable from the backend process.
 | `LINE_BOT_USER_ID` | - | Optional LINE bot user ID for mention matching |
 | `LINE_BOT_NAME` | `Nymeria` | LINE bot display name used for mention stripping |
 | `LINE_RESPOND_MODE` | `mention` | LINE group/room behavior: `mention` or `all` |
-| `LINE_VALIDATE_SIGNATURE` | `true` | Validate `x-line-signature` on incoming LINE webhooks |
+| `LINE_VALIDATE_SIGNATURE` | ignored | Deprecated. `x-line-signature` validation is always enforced |
 | `LINE_SHOW_TOOL_EVENTS` | `false` | Show compact LINE tool call/result messages during streamed replies |
 | `LINE_API_BASE_URL` | `https://api.line.me/v2/bot` | LINE Messaging API base URL |
 | `SIGNAL_HTTP_URL` | - | signal-cli-rest-api base URL for the Signal bot |

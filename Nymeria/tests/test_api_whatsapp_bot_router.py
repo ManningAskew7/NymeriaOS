@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import time
 from pathlib import Path
 
 
@@ -11,6 +13,11 @@ class FakeAgent:
 
     def sync_agent_tools(self) -> None:
         self.synced_tools += 1
+
+
+def _sign(raw_body: bytes, secret: str) -> str:
+    digest = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
 
 
 def test_whatsapp_webhook_verification_challenge(
@@ -67,13 +74,29 @@ def test_whatsapp_webhook_rejects_bad_signature(
     assert response.json()["detail"] == "Invalid webhook signature"
 
 
+def test_whatsapp_webhook_requires_app_secret(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        whatsapp_access_token="token",
+        whatsapp_phone_number_id="phone-1",
+    )
+    client = api_client_builder.client(FakeAgent(), settings)
+
+    response = client.post("/integrations/whatsapp/webhook", content=b'{"entry":[]}')
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "WHATSAPP_APP_SECRET is required"
+
+
 def test_whatsapp_webhook_accepts_signed_status_payload(
     tmp_path: Path,
     api_client_builder,
 ):
     body = b'{"entry":[]}'
     secret = "secret"
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     settings = api_client_builder.settings(
         tmp_path,
         whatsapp_app_secret=secret,
@@ -85,8 +108,53 @@ def test_whatsapp_webhook_accepts_signed_status_payload(
     response = client.post(
         "/integrations/whatsapp/webhook",
         content=body,
-        headers={"X-Hub-Signature-256": f"sha256={digest}"},
+        headers={"X-Hub-Signature-256": _sign(body, secret)},
     )
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted"}
+
+
+def test_whatsapp_webhook_rejects_stale_message_timestamp(
+    tmp_path: Path,
+    api_client_builder,
+):
+    secret = "secret"
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": "wamid.1",
+                                    "from": "15551234567",
+                                    "timestamp": str(int(time.time()) - 3600),
+                                    "type": "text",
+                                    "text": {"body": "hello"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    settings = api_client_builder.settings(
+        tmp_path,
+        whatsapp_app_secret=secret,
+        whatsapp_access_token="token",
+        whatsapp_phone_number_id="phone-1",
+    )
+    client = api_client_builder.client(FakeAgent(), settings)
+
+    response = client.post(
+        "/integrations/whatsapp/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, secret)},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Stale webhook event"

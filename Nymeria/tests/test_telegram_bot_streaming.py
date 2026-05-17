@@ -9,6 +9,7 @@ from telegram.error import BadRequest
 
 from nymeria.triggers.telegram_bot import (
     NymeriaTelegramBot,
+    TELEGRAM_COMMAND_ACCESS,
     TELEGRAM_TEXT_LIMIT,
     _StopButtonToken,
     _find_thread_match,
@@ -471,7 +472,12 @@ def test_telegram_help_merges_backend_catalog_with_local_commands():
     assert "/tools_core: Show core tools" in text
     assert "/todo_add: Add a TODO" in text
     assert "/tools_search: Search tools" in text
+    assert "/env_get:" not in text
     assert text.count("/compact:") == 1
+
+
+def test_telegram_env_get_is_not_registered_as_admin_command():
+    assert "env_get" not in TELEGRAM_COMMAND_ACCESS
 
 
 def test_telegram_thread_command_uses_backend_command_service():

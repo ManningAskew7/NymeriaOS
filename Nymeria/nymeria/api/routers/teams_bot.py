@@ -294,22 +294,20 @@ def create_teams_bot_router(
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-        if settings.teams_bot_validate_auth:
-            try:
-                await validate_bot_framework_authorization(
-                    request.headers.get("authorization"),
-                    app_id=settings.teams_bot_app_id or "",
-                    service_url=str(payload.get("serviceUrl") or ""),
-                    openid_config_url=settings.teams_bot_openid_config_url,
-                )
-            except BotAPIError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
         if not settings.teams_bot_app_id or not settings.teams_bot_app_password:
             raise HTTPException(
                 status_code=503,
                 detail="TEAMS_BOT_APP_ID and TEAMS_BOT_APP_PASSWORD are required",
             )
+        try:
+            await validate_bot_framework_authorization(
+                request.headers.get("authorization"),
+                app_id=settings.teams_bot_app_id or "",
+                service_url=str(payload.get("serviceUrl") or ""),
+                openid_config_url=settings.teams_bot_openid_config_url,
+            )
+        except BotAPIError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         background_tasks.add_task(
             _process_teams_webhook,
             payload,

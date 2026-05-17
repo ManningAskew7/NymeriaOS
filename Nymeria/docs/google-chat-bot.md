@@ -28,7 +28,7 @@ GOOGLE_CHAT_AUTH_AUDIENCE_TYPE=app-url
 GOOGLE_CHAT_AUTH_AUDIENCE=
 GOOGLE_CHAT_BOT_NAME=Nymeria
 GOOGLE_CHAT_RESPOND_MODE=mention
-GOOGLE_CHAT_VALIDATE_AUTH=true
+GOOGLE_CHAT_VALIDATE_AUTH=true  # deprecated; validation is always enforced
 GOOGLE_CHAT_SHOW_TOOL_EVENTS=false
 GOOGLE_CHAT_API_BASE_URL=https://chat.googleapis.com/v1
 ```
@@ -99,7 +99,7 @@ Slash-style `/stop` is also accepted when Google Chat sends it as message text.
 
 ## Limits And Security
 
-- Incoming bearer tokens are validated when `GOOGLE_CHAT_VALIDATE_AUTH=true`.
+- Incoming bearer tokens are always validated. `GOOGLE_CHAT_VALIDATE_AUTH` is deprecated and ignored.
 - Google Chat may retry webhook delivery; Nymeria deduplicates recent event IDs.
 - Bot/self messages are ignored.
 - Replies use Google Chat app authentication with scope `https://www.googleapis.com/auth/chat.bot`.
