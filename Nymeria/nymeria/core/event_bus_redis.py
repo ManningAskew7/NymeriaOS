@@ -201,7 +201,10 @@ class RedisEventBus(EventBus):
                 try:
                     self._pubsub.close()
                 except Exception:
-                    pass
+                    logger.debug(
+                        "[REDIS EVENT BUS] failed to close stale pubsub",
+                        exc_info=True,
+                    )
             self._pubsub = self._redis_client.pubsub()
             self._pubsub.subscribe(self.CHANNEL_NAME)
             logger.info("[REDIS EVENT BUS] pubsub recreated and re-subscribed")

@@ -70,6 +70,7 @@ metadata:
   Anthropic-style `Bash(...)` patterns are not interpreted.
 - `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default is `2h`.
 - `allowed-tools` remains advisory/portable and never auto-binds tools.
+- Required tools already present in the current graph are treated as a no-op.
 - Binding is strict. If any required tool is unknown, unloadable, or blocked
   by the admin-only gate, activation fails and no tool config is mutated.
 - Activation may remove required tools from `disabled_tools`, matching
