@@ -376,22 +376,27 @@ def _credential_requirements_from_definition(
             required=value_str == "" or (value_str.startswith("${env:") and _is_secret_name(str(key))),
             sensitive=_is_secret_name(str(key)) or _is_secret_value(value_str),
         )
-    for field in required_config:
-        source = str(field.get("source") or "env")
-        key = str(field.get("header_name") or field.get("env_name") or field.get("name") or "")
+    for required_field in required_config:
+        source = str(required_field.get("source") or "env")
+        key = str(
+            required_field.get("header_name")
+            or required_field.get("env_name")
+            or required_field.get("name")
+            or ""
+        )
         if not key:
             continue
         rid = f"{source}:{key}"
         requirements[rid] = {
             **requirements.get(rid, {}),
             "id": rid,
-            "name": str(field.get("name") or key),
+            "name": str(required_field.get("name") or key),
             "field": key,
             "source": source,
-            "label": field.get("label") or key,
-            "description": field.get("description") or "",
-            "required": bool(field.get("required", True)),
-            "sensitive": bool(field.get("sensitive", False)) or _is_secret_name(key),
+            "label": required_field.get("label") or key,
+            "description": required_field.get("description") or "",
+            "required": bool(required_field.get("required", True)),
+            "sensitive": bool(required_field.get("sensitive", False)) or _is_secret_name(key),
             "provided": False,
             "uses_credential_ref": False,
         }
@@ -564,15 +569,15 @@ def _merge_required_config(
 ) -> List[Dict[str, Any]]:
     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
     order: List[Tuple[str, str]] = []
-    for field in [*first, *second]:
-        key = _required_field_key(field)
+    for required_field in [*first, *second]:
+        key = _required_field_key(required_field)
         if not key[1]:
             continue
         if key not in merged:
             order.append(key)
-            merged[key] = dict(field)
+            merged[key] = dict(required_field)
             continue
-        merged[key] = {**merged[key], **field}
+        merged[key] = {**merged[key], **required_field}
     return [merged[key] for key in order]
 
 

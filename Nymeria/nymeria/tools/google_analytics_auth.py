@@ -10,7 +10,7 @@ for _ENV_PATH in get_env_file_paths():
     try:
         load_dotenv(_ENV_PATH)
     except UnicodeDecodeError:
-        pass
+        pass  # Ignore unreadable env files; other configured env paths may still load.
 
 PROVIDER = "google_analytics"
 _CACHE_FILENAME = "google_analytics.json"

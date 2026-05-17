@@ -249,8 +249,8 @@ def run(host: str = "127.0.0.1", port: int = 8318) -> None:
     """Run the proxy server."""
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(f"  WARNING: Binding to {host} exposes your Claude Max subscription")
-        print(f"  to the network. The proxy has no authentication. Use 127.0.0.1")
-        print(f"  unless you know what you're doing.")
+        print("  to the network. The proxy has no authentication. Use 127.0.0.1")
+        print("  unless you know what you're doing.")
     print(f"Starting Claude Max Proxy on {host}:{port}")
     print(f"  Credentials: {CREDENTIALS_PATH}")
     print(f"  Upstream: {ANTHROPIC_API}")
