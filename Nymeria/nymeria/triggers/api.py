@@ -29,6 +29,7 @@ from ..api.routers.chat import create_chat_router
 from ..api.routers.chat_apps import create_chat_apps_router
 from ..api.routers.commands import create_commands_router
 from ..api.routers.credentials import create_credentials_router
+from ..api.routers.credential_prompts import create_credential_prompts_router
 from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
 from ..api.routers.agent_threads import create_agent_threads_router
@@ -665,6 +666,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     )
     app.include_router(create_devices_router(verify_api_key, get_settings))
     app.include_router(create_credentials_router(verify_api_key, require_admin_user, get_agent))
+    app.include_router(create_credential_prompts_router(verify_api_key, get_agent))
     app.include_router(create_workspace_router(require_admin_user))
     app.include_router(create_rag_router(verify_api_key, get_agent, _require_same_user_or_admin))
     app.include_router(create_memory_router(verify_api_key, get_agent, _require_same_user_or_admin))

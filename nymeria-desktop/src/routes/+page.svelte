@@ -5,6 +5,8 @@
   import { SetupWizard } from '$lib/components/common';
   import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
+  import AuthPromptModal from '$lib/components/credentials/AuthPromptModal.svelte';
+  import { authPromptStore } from '$lib/stores/authPrompt.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
@@ -268,3 +270,6 @@
      responses from the account/admin endpoints stay visible regardless of
      which panel/modal is on top. -->
 <ErrorToast />
+
+<!-- Global auth-prompt modal — opens when the agent calls request_credential. -->
+<AuthPromptModal prompt={authPromptStore.active} onResolved={() => authPromptStore.clear()} />
