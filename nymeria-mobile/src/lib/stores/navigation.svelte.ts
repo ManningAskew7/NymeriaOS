@@ -49,14 +49,17 @@ export async function switchToThread(
     chatStore.setActiveModel(stats?.model ?? null);
     chatStore.setLoadingHistory(false);
 
-    // Stream recovery for active interactive streams
+    // Stream recovery for active interactive streams.
+    // Only reuse the last assistant message when it is still streaming;
+    // a 'complete' assistant message at the tail is the prior turn's reply
+    // and must not absorb a new stream's tool calls / response.
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
     if (hasInteractiveStream) {
       const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-      if (lastMsg?.role !== 'assistant') {
-        chatStore.addAssistantMessage();
-      } else {
+      if (lastMsg?.role === 'assistant' && lastMsg.status === 'streaming') {
         chatStore.setLastMessageStreaming();
+      } else {
+        chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
     }

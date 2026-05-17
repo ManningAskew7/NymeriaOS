@@ -29,7 +29,7 @@ function mergeArtifacts(
 
 const FLUSH_INTERVAL = 48; // ~20 updates/sec
 
-function createChatStore() {
+export function createChatStore() {
   let messages = $state<Message[]>([]);
   let isStreaming = $state(false);
   let activeToolCalls = $state<Map<string, ToolCall>>(new Map());
@@ -48,6 +48,16 @@ function createChatStore() {
   let _thinkingBuffer = '';
   let _lastFlushTime = 0;
   let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Streaming-time mutators (response/thinking/tool steps) must refuse to touch
+  // an assistant message that has already been marked 'complete'. Without this
+  // guard a stream that arrives after a thread-switch recovery flaw could graft
+  // tool calls and response steps onto the previous turn's reply.
+  function isLastAssistantStreaming(): boolean {
+    if (messages.length === 0) return false;
+    const last = messages[messages.length - 1];
+    return last.role === 'assistant' && last.status === 'streaming';
+  }
 
   function setLastAssistantActivityPhase(phase: AssistantActivityPhase) {
     if (messages.length === 0) return;
@@ -168,40 +178,34 @@ function createChatStore() {
 
     appendToLastMessage(content: string) {
       setLastAssistantActivityPhase('typing');
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content: lastMessage.content + content,
-            intermediateContent: lastMessage.intermediateContent || undefined
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: lastMessage.content + content,
+          intermediateContent: lastMessage.intermediateContent || undefined
+        }
+      ];
     },
 
     setLastMessageContent(content: string) {
       setLastAssistantActivityPhase('typing');
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content,
-            intermediateContent: lastMessage.intermediateContent || undefined
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content,
+          intermediateContent: lastMessage.intermediateContent || undefined
+        }
+      ];
     },
 
     setLastMessageComplete() {
@@ -322,8 +326,8 @@ function createChatStore() {
 
       activeToolCalls = new Map(activeToolCalls).set(id, toolCall);
 
-      // Also add to the last assistant message
-      if (messages.length > 0) {
+      // Also add to the last assistant message (only if it's still streaming)
+      if (isLastAssistantStreaming()) {
         const lastIndex = messages.length - 1;
         const lastMessage = messages[lastIndex];
 
@@ -462,22 +466,19 @@ function createChatStore() {
     },
 
     setIntermediateContent(content: string) {
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        // Append to existing intermediateContent (thinking can stream in chunks)
-        const existing = lastMessage.intermediateContent || '';
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            intermediateContent: existing + content
-          }
-        ];
-      }
+      // Append to existing intermediateContent (thinking can stream in chunks)
+      const existing = lastMessage.intermediateContent || '';
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          intermediateContent: existing + content
+        }
+      ];
     },
 
     // === New step-based methods for interleaved thinking/tool ordering ===
@@ -490,7 +491,7 @@ function createChatStore() {
      */
     addThinkingStep(content: string) {
       setLastAssistantActivityPhase('thinking');
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       _thinkingBuffer += content;
 
@@ -507,7 +508,13 @@ function createChatStore() {
 
     /** Flush buffered thinking content into the message steps. */
     _flushThinking() {
-      if (!_thinkingBuffer || messages.length === 0) return;
+      if (!_thinkingBuffer) return;
+      if (!isLastAssistantStreaming()) {
+        // Discard buffered thinking rather than risk grafting it onto a
+        // completed message (e.g. stale flush after the turn already ended).
+        _thinkingBuffer = '';
+        return;
+      }
 
       const buffered = _thinkingBuffer;
       _thinkingBuffer = '';
@@ -554,7 +561,7 @@ function createChatStore() {
      */
     addToolCallStep(id: string, name: string, args: Record<string, unknown>) {
       this._forceFlush();
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
@@ -691,7 +698,7 @@ function createChatStore() {
      */
     addResponseStep(content: string) {
       setLastAssistantActivityPhase('typing');
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       if (_thinkingBuffer) {
         this._forceFlush();
@@ -712,7 +719,11 @@ function createChatStore() {
 
     /** Flush buffered response content into the message steps. */
     _flushResponse() {
-      if (!_responseBuffer || messages.length === 0) return;
+      if (!_responseBuffer) return;
+      if (!isLastAssistantStreaming()) {
+        _responseBuffer = '';
+        return;
+      }
 
       const buffered = _responseBuffer;
       _responseBuffer = '';
@@ -761,20 +772,17 @@ function createChatStore() {
      */
     setResponseContent(content: string) {
       setLastAssistantActivityPhase('typing');
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];
-
-      if (lastMessage.role === 'assistant') {
-        messages = [
-          ...messages.slice(0, lastIndex),
-          {
-            ...lastMessage,
-            content: lastMessage.content + content
-          }
-        ];
-      }
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: lastMessage.content + content
+        }
+      ];
     },
 
     /**
@@ -788,7 +796,7 @@ function createChatStore() {
      */
     reclassifyThinkingAsResponse() {
       this._forceFlush();
-      if (messages.length === 0) return;
+      if (!isLastAssistantStreaming()) return;
 
       const lastIndex = messages.length - 1;
       const lastMessage = messages[lastIndex];

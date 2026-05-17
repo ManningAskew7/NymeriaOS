@@ -57,11 +57,18 @@ export async function switchToThread(
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
 
     if (hasAutonomousTask || hasInteractiveStream) {
+      // Only reuse the last assistant message when it represents the in-flight
+      // turn (status === 'streaming'). History always hydrates messages as
+      // 'complete', so a completed assistant at the tail is the *previous*
+      // turn's reply — the incoming stream is a new turn and needs a fresh
+      // placeholder. Without this, handoff-triggered streams overwrite the
+      // prior reply (tool calls graft onto it, then response steps hide the
+      // old content).
       const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-      if (lastMsg?.role !== 'assistant') {
-        chatStore.addAssistantMessage();
-      } else {
+      if (lastMsg?.role === 'assistant' && lastMsg.status === 'streaming') {
         chatStore.setLastMessageStreaming();
+      } else {
+        chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
       if (hasAutonomousTask) {
