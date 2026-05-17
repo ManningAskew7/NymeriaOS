@@ -275,7 +275,6 @@ TELEGRAM_COMMAND_ACCESS: Mapping[str, str] = {
     "config_get": COMMAND_ACCESS_ADMIN,
     "config_set": COMMAND_ACCESS_ADMIN,
     "env_show": COMMAND_ACCESS_ADMIN,
-    "env_get": COMMAND_ACCESS_ADMIN,
     "env_set": COMMAND_ACCESS_ADMIN,
     # Everything else requires a linked Telegram identity.
 }
@@ -1016,7 +1015,6 @@ class NymeriaTelegramBot:
 
         # Env commands
         command("env_show", self._cmd_env_show)
-        command("env_get", self._cmd_env_get)
         command("env_set", self._cmd_env_set)
 
         # Tools commands
@@ -2296,16 +2294,8 @@ class NymeriaTelegramBot:
         )
 
     async def _cmd_env_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /env_get <key> — get unmasked value."""
-        if not self._parse_args(context):
-            await update.message.reply_text("Usage: /env_get <key>")
-            return
-        await self._send_backend_command(
-            update,
-            context,
-            "env get",
-            require_admin=True,
-        )
+        """Reject the removed /env_get command if called directly."""
+        await update.message.reply_text("Unmasked environment reads are disabled in Telegram.")
 
     async def _cmd_env_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_set <key> <value>."""

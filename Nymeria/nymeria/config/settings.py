@@ -397,7 +397,10 @@ class Settings(BaseSettings):
     )
     teams_bot_validate_auth: bool = Field(
         default=True,
-        description="Validate Bot Framework JWTs on incoming Microsoft Teams webhooks",
+        description=(
+            "Deprecated compatibility setting; Bot Framework JWT validation is always "
+            "enforced on incoming Microsoft Teams webhooks"
+        ),
     )
     teams_bot_show_tool_events: bool = Field(
         default=False,
@@ -441,7 +444,10 @@ class Settings(BaseSettings):
     )
     google_chat_validate_auth: bool = Field(
         default=True,
-        description="Validate Google Chat bearer tokens on incoming webhooks",
+        description=(
+            "Deprecated compatibility setting; Google Chat bearer-token validation is "
+            "always enforced on incoming webhooks"
+        ),
     )
     google_chat_show_tool_events: bool = Field(
         default=False,
@@ -477,7 +483,10 @@ class Settings(BaseSettings):
     )
     line_validate_signature: bool = Field(
         default=True,
-        description="Validate LINE x-line-signature headers on incoming webhooks",
+        description=(
+            "Deprecated compatibility setting; LINE x-line-signature validation is "
+            "always enforced on incoming webhooks"
+        ),
     )
     line_show_tool_events: bool = Field(
         default=False,

@@ -1,6 +1,6 @@
 # Instagram Bot
 
-Nymeria's Instagram integration is an API-hosted Meta Instagram Messaging webhook. It receives professional-account messaging events at `/integrations/instagram/webhook`, verifies `X-Hub-Signature-256` when `INSTAGRAM_APP_SECRET` is configured, resolves the Instagram-scoped sender ID to a Nymeria account, streams the turn through the in-process agent, and replies through the Instagram Messaging API.
+Nymeria's Instagram integration is an API-hosted Meta Instagram Messaging webhook. It receives professional-account messaging events at `/integrations/instagram/webhook`, requires `X-Hub-Signature-256` verification with `INSTAGRAM_APP_SECRET`, resolves the Instagram-scoped sender ID to a Nymeria account, streams the turn through the in-process agent, and replies through the Instagram Messaging API.
 
 There is no standalone `run.py instagram-bot` command and no Docker Compose bot service. The API service hosts the webhook.
 
@@ -98,8 +98,8 @@ Slash-style `/stop` is also accepted.
 
 ## Limits And Security
 
-- Incoming webhooks should be signed with Meta's raw-body `X-Hub-Signature-256` HMAC. Set `INSTAGRAM_APP_SECRET` in production.
-- Meta can redeliver webhook events; Nymeria deduplicates recent message IDs and generated postback IDs.
+- Incoming webhooks must be signed with Meta's raw-body `X-Hub-Signature-256` HMAC. Set `INSTAGRAM_APP_SECRET` before enabling the webhook.
+- Meta can redeliver webhook events; Nymeria rejects stale message/postback timestamps and deduplicates recent message IDs and generated postback IDs.
 - Nymeria only replies to inbound user messages in v1. It does not implement proactive broadcasts or marketing sends.
 - Instagram replies are subject to Meta's messaging policies and response windows.
 - Nymeria sends text-only replies in v1 and splits outgoing messages at 1000 characters.

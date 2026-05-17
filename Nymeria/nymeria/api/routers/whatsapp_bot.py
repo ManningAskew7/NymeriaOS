@@ -22,13 +22,28 @@ from ...triggers.whatsapp_bot import (
     NymeriaWhatsAppBot,
     WhatsAppCloudClient,
     _SeenMessageCache,
+    extract_inbound_messages,
     verify_meta_signature,
 )
+from ...triggers.webhook_security import webhook_timestamp_is_fresh
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
 _WHATSAPP_SEEN_CACHE = _SeenMessageCache()
+
+
+def _require_configured_secret(value: Optional[str], setting_name: str) -> str:
+    secret = (value or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail=f"{setting_name} is required")
+    return secret
+
+
+def _reject_stale_whatsapp_messages(payload: dict[str, Any]) -> None:
+    for message in extract_inbound_messages(payload):
+        if not webhook_timestamp_is_fresh(message.timestamp, unit="seconds"):
+            raise HTTPException(status_code=403, detail="Stale webhook event")
 
 
 class InProcessWhatsAppAPI:
@@ -308,10 +323,14 @@ def create_whatsapp_bot_router(
     ):
         settings = get_settings_fn()
         raw_body = await request.body()
+        app_secret = _require_configured_secret(
+            settings.whatsapp_app_secret,
+            "WHATSAPP_APP_SECRET",
+        )
         if not verify_meta_signature(
             raw_body,
             request.headers.get("x-hub-signature-256"),
-            settings.whatsapp_app_secret,
+            app_secret,
         ):
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
         try:
@@ -320,6 +339,7 @@ def create_whatsapp_bot_router(
             raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        _reject_stale_whatsapp_messages(payload)
         if not settings.whatsapp_access_token or not settings.whatsapp_phone_number_id:
             raise HTTPException(
                 status_code=503,

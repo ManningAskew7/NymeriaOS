@@ -69,7 +69,7 @@ def test_google_chat_webhook_rejects_missing_bearer_token(
     assert response.json()["detail"] == "Missing Google Chat bearer token"
 
 
-def test_google_chat_webhook_accepts_non_message_activity_when_auth_disabled(
+def test_google_chat_webhook_ignores_disabled_auth_toggle(
     tmp_path: Path,
     api_client_builder,
 ):
@@ -85,5 +85,5 @@ def test_google_chat_webhook_accepts_non_message_activity_when_auth_disabled(
         json={"type": "ADDED_TO_SPACE"},
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "accepted"}
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing Google Chat bearer token"

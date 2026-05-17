@@ -1,6 +1,6 @@
 # LINE Bot
 
-Nymeria's LINE integration is an API-hosted Messaging API webhook. It receives LINE webhook events at `/integrations/line/webhook`, verifies `x-line-signature` when enabled, resolves the sender to a Nymeria account, streams the turn through the in-process agent, and replies through the LINE Messaging API push endpoint.
+Nymeria's LINE integration is an API-hosted Messaging API webhook. It receives LINE webhook events at `/integrations/line/webhook`, always verifies `x-line-signature`, resolves the sender to a Nymeria account, streams the turn through the in-process agent, and replies through the LINE Messaging API push endpoint.
 
 There is no standalone `run.py line-bot` command and no Docker Compose bot service. The API service hosts the webhook.
 
@@ -27,7 +27,7 @@ LINE_CHANNEL_SECRET=...
 LINE_BOT_USER_ID=U...
 LINE_BOT_NAME=Nymeria
 LINE_RESPOND_MODE=mention
-LINE_VALIDATE_SIGNATURE=true
+LINE_VALIDATE_SIGNATURE=true  # deprecated; validation is always enforced
 LINE_SHOW_TOOL_EVENTS=false
 LINE_API_BASE_URL=https://api.line.me/v2/bot
 ```
@@ -102,7 +102,7 @@ Slash-style `/stop` is also accepted.
 
 ## Limits And Security
 
-- Incoming webhooks are signed with HMAC-SHA256 over the raw request body. Keep `LINE_VALIDATE_SIGNATURE=true` in production.
+- Incoming webhooks are signed with HMAC-SHA256 over the raw request body. Signature validation is always enforced; `LINE_VALIDATE_SIGNATURE` is deprecated and ignored.
 - LINE can redeliver webhook events; Nymeria deduplicates recent `webhookEventId` values.
 - Replies use push messages so streamed/asynchronous agent turns are not constrained by reply-token timing.
 - Nymeria sends text-only replies in v1 and splits outgoing messages at 5000 characters.

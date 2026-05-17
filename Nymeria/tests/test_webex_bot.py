@@ -184,7 +184,7 @@ def test_signature_verification_uses_webex_hmac_header() -> None:
     secret = "webhook-secret"
     digest = hmac.new(secret.encode(), body, hashlib.sha1).hexdigest()
 
-    assert verify_webex_signature(body, None, None) is True
+    assert verify_webex_signature(body, None, None) is False
     assert verify_webex_signature(body, digest, secret) is True
     assert verify_webex_signature(body, f"sha1={digest}", secret) is True
     assert verify_webex_signature(body, "bad", secret) is False

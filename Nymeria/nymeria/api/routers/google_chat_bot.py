@@ -295,17 +295,6 @@ def create_google_chat_bot_router(
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-        if settings.google_chat_validate_auth:
-            audience = _google_chat_auth_audience(settings, request)
-            try:
-                await validate_googlechat_authorization(
-                    request.headers.get("authorization"),
-                    audience=audience,
-                    audience_type=settings.google_chat_auth_audience_type,
-                )
-            except BotAPIError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
         if not credential_source_present(
             service_account_json=settings.google_chat_service_account_json,
             service_account_file=settings.google_chat_service_account_file,
@@ -318,6 +307,15 @@ def create_google_chat_bot_router(
                     "GOOGLE_CHAT_SERVICE_ACCOUNT_FILE is required"
                 ),
             )
+        audience = _google_chat_auth_audience(settings, request)
+        try:
+            await validate_googlechat_authorization(
+                request.headers.get("authorization"),
+                audience=audience,
+                audience_type=settings.google_chat_auth_audience_type,
+            )
+        except BotAPIError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         background_tasks.add_task(
             _process_google_chat_webhook,
             payload,

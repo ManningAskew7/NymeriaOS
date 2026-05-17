@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 _WEBEX_SEEN_CACHE = _SeenMessageCache()
 
 
+def _require_configured_secret(value: Optional[str], setting_name: str) -> str:
+    secret = (value or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail=f"{setting_name} is required")
+    return secret
+
+
 class InProcessWebexAPI:
     """Nymeria API adapter used by the API-hosted Webex webhook client."""
 
@@ -287,10 +294,14 @@ def create_webex_bot_router(
     ):
         settings = get_settings_fn()
         raw_body = await request.body()
+        webhook_secret = _require_configured_secret(
+            settings.webex_webhook_secret,
+            "WEBEX_WEBHOOK_SECRET",
+        )
         if not verify_webex_signature(
             raw_body,
             request.headers.get("x-spark-signature"),
-            settings.webex_webhook_secret,
+            webhook_secret,
         ):
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
         try:

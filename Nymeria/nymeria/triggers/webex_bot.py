@@ -125,9 +125,9 @@ def verify_webex_signature(
     signature_header: Optional[str],
     webhook_secret: Optional[str],
 ) -> bool:
-    """Verify Webex's X-Spark-Signature header when a webhook secret is set."""
+    """Verify Webex's X-Spark-Signature header."""
     if not webhook_secret:
-        return True
+        return False
     if not signature_header:
         return False
     provided = signature_header.strip()

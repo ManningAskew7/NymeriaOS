@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import time
 from pathlib import Path
 
 
@@ -11,6 +13,11 @@ class FakeAgent:
 
     def sync_agent_tools(self) -> None:
         self.synced_tools += 1
+
+
+def _sign(raw_body: bytes, secret: str) -> str:
+    digest = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
 
 
 def test_instagram_webhook_verification_challenge(
@@ -67,13 +74,29 @@ def test_instagram_webhook_rejects_bad_signature(
     assert response.json()["detail"] == "Invalid webhook signature"
 
 
+def test_instagram_webhook_requires_app_secret(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        instagram_access_token="token",
+        instagram_ig_user_id="ig-1",
+    )
+    client = api_client_builder.client(FakeAgent(), settings)
+
+    response = client.post("/integrations/instagram/webhook", content=b'{"entry":[]}')
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "INSTAGRAM_APP_SECRET is required"
+
+
 def test_instagram_webhook_accepts_signed_empty_payload(
     tmp_path: Path,
     api_client_builder,
 ):
     body = b'{"entry":[]}'
     secret = "secret"
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     settings = api_client_builder.settings(
         tmp_path,
         instagram_app_secret=secret,
@@ -85,7 +108,7 @@ def test_instagram_webhook_accepts_signed_empty_payload(
     response = client.post(
         "/integrations/instagram/webhook",
         content=body,
-        headers={"X-Hub-Signature-256": f"sha256={digest}"},
+        headers={"X-Hub-Signature-256": _sign(body, secret)},
     )
 
     assert response.status_code == 200
@@ -96,10 +119,55 @@ def test_instagram_webhook_requires_ig_access_token(
     tmp_path: Path,
     api_client_builder,
 ):
-    settings = api_client_builder.settings(tmp_path)
+    body = b'{"entry":[]}'
+    secret = "secret"
+    settings = api_client_builder.settings(tmp_path, instagram_app_secret=secret)
     client = api_client_builder.client(FakeAgent(), settings)
 
-    response = client.post("/integrations/instagram/webhook", json={"entry": []})
+    response = client.post(
+        "/integrations/instagram/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, secret)},
+    )
 
     assert response.status_code == 503
     assert response.json()["detail"] == "INSTAGRAM_ACCESS_TOKEN is required"
+
+
+def test_instagram_webhook_rejects_stale_message_timestamp(
+    tmp_path: Path,
+    api_client_builder,
+):
+    secret = "secret"
+    payload = {
+        "entry": [
+            {
+                "id": "ig-1",
+                "messaging": [
+                    {
+                        "sender": {"id": "ig-user-1"},
+                        "recipient": {"id": "ig-1"},
+                        "timestamp": int((time.time() - 3600) * 1000),
+                        "message": {"mid": "m_1", "text": "hello"},
+                    }
+                ],
+            }
+        ]
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    settings = api_client_builder.settings(
+        tmp_path,
+        instagram_app_secret=secret,
+        instagram_access_token="token",
+        instagram_ig_user_id="ig-1",
+    )
+    client = api_client_builder.client(FakeAgent(), settings)
+
+    response = client.post(
+        "/integrations/instagram/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, secret)},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Stale webhook event"

@@ -22,13 +22,28 @@ from ...triggers.instagram_bot import (
     InstagramGraphClient,
     NymeriaInstagramBot,
     _SeenMessageCache,
+    extract_inbound_messages,
     verify_meta_signature,
 )
+from ...triggers.webhook_security import webhook_timestamp_is_fresh
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
 _INSTAGRAM_SEEN_CACHE = _SeenMessageCache()
+
+
+def _require_configured_secret(value: Optional[str], setting_name: str) -> str:
+    secret = (value or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail=f"{setting_name} is required")
+    return secret
+
+
+def _reject_stale_instagram_messages(payload: dict[str, Any]) -> None:
+    for message in extract_inbound_messages(payload):
+        if not webhook_timestamp_is_fresh(message.timestamp, unit="milliseconds"):
+            raise HTTPException(status_code=403, detail="Stale webhook event")
 
 
 class InProcessInstagramAPI:
@@ -308,10 +323,14 @@ def create_instagram_bot_router(
     ):
         settings = get_settings_fn()
         raw_body = await request.body()
+        app_secret = _require_configured_secret(
+            settings.instagram_app_secret,
+            "INSTAGRAM_APP_SECRET",
+        )
         if not verify_meta_signature(
             raw_body,
             request.headers.get("x-hub-signature-256"),
-            settings.instagram_app_secret,
+            app_secret,
         ):
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
         try:
@@ -320,6 +339,7 @@ def create_instagram_bot_router(
             raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        _reject_stale_instagram_messages(payload)
         if not settings.instagram_access_token:
             raise HTTPException(
                 status_code=503,

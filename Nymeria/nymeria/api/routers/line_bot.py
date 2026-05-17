@@ -294,17 +294,13 @@ def create_line_bot_router(
                 status_code=503,
                 detail="LINE_CHANNEL_ACCESS_TOKEN is required",
             )
-        if settings.line_validate_signature:
-            if not settings.line_channel_secret:
-                raise HTTPException(
-                    status_code=503,
-                    detail="LINE_CHANNEL_SECRET is required when LINE_VALIDATE_SIGNATURE=true",
-                )
-            signature = request.headers.get("x-line-signature")
-            if not signature:
-                raise HTTPException(status_code=401, detail="Missing LINE signature")
-            if not validate_line_signature(raw_body, signature, settings.line_channel_secret):
-                raise HTTPException(status_code=401, detail="Invalid LINE signature")
+        if not settings.line_channel_secret:
+            raise HTTPException(status_code=503, detail="LINE_CHANNEL_SECRET is required")
+        signature = request.headers.get("x-line-signature")
+        if not signature:
+            raise HTTPException(status_code=401, detail="Missing LINE signature")
+        if not validate_line_signature(raw_body, signature, settings.line_channel_secret):
+            raise HTTPException(status_code=401, detail="Invalid LINE signature")
 
         try:
             payload = json.loads(raw_body.decode("utf-8") or "{}")

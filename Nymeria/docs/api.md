@@ -368,45 +368,45 @@ for client-specific commands and setup behavior.
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/integrations/whatsapp/webhook` | Meta challenge token | Verifies Meta webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `WHATSAPP_WEBHOOK_VERIFY_TOKEN`. |
-| `POST` | `/integrations/whatsapp/webhook` | Optional Meta signature | Accepts WhatsApp Cloud API message payloads. When `WHATSAPP_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Graph API. |
+| `POST` | `/integrations/whatsapp/webhook` | Required Meta signature | Accepts WhatsApp Cloud API message payloads. Requires `WHATSAPP_APP_SECRET` and a valid `X-Hub-Signature-256`; inbound message timestamps must be fresh before background processing and Graph API replies. |
 
 **Messenger Platform webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/integrations/messenger/webhook` | Meta challenge token | Verifies Messenger webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `MESSENGER_WEBHOOK_VERIFY_TOKEN`. |
-| `POST` | `/integrations/messenger/webhook` | Optional Meta signature | Accepts Messenger Page webhook message and postback payloads. When `MESSENGER_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Messenger Send API. |
+| `POST` | `/integrations/messenger/webhook` | Required Meta signature | Accepts Messenger Page webhook message and postback payloads. Requires `MESSENGER_APP_SECRET` and a valid `X-Hub-Signature-256`; inbound message/postback timestamps must be fresh before background processing and Messenger replies. |
 
 **Instagram Messaging webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/integrations/instagram/webhook` | Meta challenge token | Verifies Instagram webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `INSTAGRAM_WEBHOOK_VERIFY_TOKEN`. |
-| `POST` | `/integrations/instagram/webhook` | Optional Meta signature | Accepts Instagram Messaging webhook message and postback payloads. When `INSTAGRAM_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Instagram Messaging API. |
+| `POST` | `/integrations/instagram/webhook` | Required Meta signature | Accepts Instagram Messaging webhook message and postback payloads. Requires `INSTAGRAM_APP_SECRET` and a valid `X-Hub-Signature-256`; inbound message/postback timestamps must be fresh before background processing and Instagram replies. |
 
 **Webex Messaging webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/integrations/webex/webhook` | Optional Webex signature | Accepts Webex `messages.created` payloads. When `WEBEX_WEBHOOK_SECRET` is set, validates `X-Spark-Signature`, then fetches message details in the background and replies through the Webex Messages API. |
+| `POST` | `/integrations/webex/webhook` | Required Webex signature | Accepts Webex `messages.created` payloads. Requires `WEBEX_WEBHOOK_SECRET` and a valid `X-Spark-Signature`, then fetches message details in the background and replies through the Webex Messages API. |
 
 **Microsoft Teams Bot Framework webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/integrations/teams/webhook` | Bot Framework bearer token | Accepts Teams Bot Framework `message` activities. When `TEAMS_BOT_VALIDATE_AUTH=true`, validates the connector JWT, then processes messages in the background and replies through the Bot Connector REST API. |
+| `POST` | `/integrations/teams/webhook` | Bot Framework bearer token | Accepts Teams Bot Framework `message` activities. Always validates the connector JWT, then processes messages in the background and replies through the Bot Connector REST API. |
 
 **Google Chat webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/integrations/google-chat/webhook` | Google Chat bearer token | Accepts Google Chat `MESSAGE` interaction events. When `GOOGLE_CHAT_VALIDATE_AUTH=true`, validates the Google Chat bearer token, then processes messages in the background and replies through the Google Chat REST API. |
+| `POST` | `/integrations/google-chat/webhook` | Google Chat bearer token | Accepts Google Chat `MESSAGE` interaction events. Always validates the Google Chat bearer token, then processes messages in the background and replies through the Google Chat REST API. |
 
 **LINE Messaging API webhook:**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/integrations/line/webhook` | `x-line-signature` HMAC | Accepts LINE Messaging API webhook events. When `LINE_VALIDATE_SIGNATURE=true`, validates the raw-body HMAC signature, then processes text messages in the background and replies through the LINE push-message API. |
+| `POST` | `/integrations/line/webhook` | `x-line-signature` HMAC | Accepts LINE Messaging API webhook events. Always requires `LINE_CHANNEL_SECRET` and validates the raw-body HMAC signature, then processes text messages in the background and replies through the LINE push-message API. |
 
 ---
 

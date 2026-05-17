@@ -24,7 +24,7 @@ There is no separate `run.py webex-bot` process. The API container owns the webh
    - `resource`: `messages`
    - `event`: `created`
    - `targetUrl`: `https://your-api-host.example.com/integrations/webex/webhook`
-   - `secret`: the same value as `WEBEX_WEBHOOK_SECRET` when signature verification is enabled.
+   - `secret`: the same value as `WEBEX_WEBHOOK_SECRET`.
 4. Set the environment variables below and restart the API container.
 5. Link Webex senders to Nymeria users before sending normal chat traffic.
 
@@ -41,7 +41,8 @@ WEBEX_BOT_EMAIL=nymeria@webex.bot # optional mention stripping helper
 WEBEX_SHOW_TOOL_EVENTS=false
 ```
 
-`WEBEX_WEBHOOK_SECRET` is optional but recommended. When set, POST webhooks must include a valid `X-Spark-Signature` HMAC-SHA1 signature.
+`WEBEX_WEBHOOK_SECRET` is required. POST webhooks must include a valid
+`X-Spark-Signature` HMAC-SHA1 signature.
 
 ## Linking Users
 

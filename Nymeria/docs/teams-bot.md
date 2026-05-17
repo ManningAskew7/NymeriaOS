@@ -24,7 +24,7 @@ TEAMS_BOT_APP_ID=00000000-0000-0000-0000-000000000000
 TEAMS_BOT_APP_PASSWORD=...
 TEAMS_BOT_TENANT_ID=00000000-0000-0000-0000-000000000000
 TEAMS_BOT_RESPOND_MODE=mention
-TEAMS_BOT_VALIDATE_AUTH=true
+TEAMS_BOT_VALIDATE_AUTH=true  # deprecated; validation is always enforced
 TEAMS_BOT_SHOW_TOOL_EVENTS=false
 ```
 
@@ -96,7 +96,7 @@ Other accepted messages are sent to Nymeria as chat turns.
 
 ## Notes
 
-- Incoming Bot Framework bearer tokens are validated when `TEAMS_BOT_VALIDATE_AUTH=true`.
+- Incoming Bot Framework bearer tokens are always validated. `TEAMS_BOT_VALIDATE_AUTH` is deprecated and ignored.
 - Replies use the incoming activity's `serviceUrl`.
 - Duplicate message activities are deduped by activity ID.
 - Replies are chunked below 4000 characters.
