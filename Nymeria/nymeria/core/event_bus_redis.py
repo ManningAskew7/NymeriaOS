@@ -2,6 +2,7 @@
 
 import json
 import logging
+import secrets
 import threading
 from datetime import datetime
 from queue import Full
@@ -23,6 +24,12 @@ class RedisEventBus(EventBus):
 
     Uses Redis pub/sub for real-time cross-container communication.
     Falls back to in-memory behavior if Redis connection fails.
+
+    Resilience model: every ``publish()`` dispatches to local SSE subscribers
+    *before* fanning out to Redis, so even if the Redis subscriber thread is
+    momentarily dead the publishing process still delivers to its own clients.
+    Each published message carries a per-process ``_publisher_id`` so the
+    subscriber loop can drop its own echoes and avoid double-delivery.
     """
 
     CHANNEL_NAME = "nymeria:autonomous_events"
@@ -43,6 +50,9 @@ class RedisEventBus(EventBus):
         self._connected = False
         self._redis_publish_counts: Dict[str, int] = {}
         self._redis_receive_counts: Dict[str, int] = {}
+        # Per-process ID so the subscriber loop can ignore its own echoes
+        # (we already delivered locally in publish()).
+        self._publisher_id = secrets.token_urlsafe(8)
 
         # Try to connect to Redis
         self._connect()
@@ -97,7 +107,13 @@ class RedisEventBus(EventBus):
         self._pubsub.subscribe(self.CHANNEL_NAME)
 
         def subscriber_loop():
-            """Listen for Redis pub/sub messages and dispatch to local subscribers."""
+            """Listen for Redis pub/sub messages and dispatch to local subscribers.
+
+            Recovers from connection drops by recreating the pubsub object and
+            re-subscribing. Without this, a single dropped Redis connection
+            would leave the loop iterating over a dead pubsub forever,
+            silently breaking cross-process event delivery.
+            """
             import time as _time
             while self._running:
                 try:
@@ -110,6 +126,10 @@ class RedisEventBus(EventBus):
 
                         try:
                             data = json.loads(message["data"])
+                            # Skip our own echo — publish() already delivered
+                            # this event to local subscribers directly.
+                            if data.get("_publisher_id") == self._publisher_id:
+                                continue
                             event = AutonomousEvent(
                                 event_type=data["event_type"],
                                 thread_id=data["thread_id"],
@@ -140,10 +160,26 @@ class RedisEventBus(EventBus):
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(f"[REDIS EVENT BUS] Invalid message: {e}")
 
+                    # listen() returned without exception (Redis closed the
+                    # connection or the iterator ended). Rebuild pubsub.
+                    if self._running:
+                        logger.warning(
+                            "[REDIS EVENT BUS] pubsub.listen() exited cleanly; "
+                            "recreating pubsub and re-subscribing"
+                        )
+                        self._recreate_pubsub()
+                        _time.sleep(0.5)
+
                 except Exception as e:
                     if self._running:
-                        logger.debug(f"[REDIS EVENT BUS] Subscriber reconnecting: {e}")
-                        _time.sleep(0.5)
+                        logger.warning(
+                            "[REDIS EVENT BUS] subscriber error %s: %s; "
+                            "recreating pubsub and re-subscribing",
+                            type(e).__name__,
+                            e,
+                        )
+                        self._recreate_pubsub()
+                        _time.sleep(1.0)
 
         self._subscriber_thread = threading.Thread(
             target=subscriber_loop,
@@ -152,6 +188,28 @@ class RedisEventBus(EventBus):
         )
         self._subscriber_thread.start()
         logger.info("[REDIS EVENT BUS] Subscriber thread started")
+
+    def _recreate_pubsub(self) -> None:
+        """Tear down and re-create the pubsub subscription.
+
+        Called when listen() exits or raises so the subscriber loop can
+        recover from a dropped Redis connection without restarting the
+        whole API process.
+        """
+        try:
+            if self._pubsub is not None:
+                try:
+                    self._pubsub.close()
+                except Exception:
+                    pass
+            self._pubsub = self._redis_client.pubsub()
+            self._pubsub.subscribe(self.CHANNEL_NAME)
+            logger.info("[REDIS EVENT BUS] pubsub recreated and re-subscribed")
+        except Exception as exc:
+            logger.error(
+                "[REDIS EVENT BUS] failed to recreate pubsub: %s; will retry on next iteration",
+                exc,
+            )
 
     def _dispatch_local(self, event: AutonomousEvent) -> None:
         """
@@ -208,14 +266,21 @@ class RedisEventBus(EventBus):
 
     def publish(self, event: AutonomousEvent) -> None:
         """
-        Publish an event to Redis (broadcasts to all containers).
+        Publish an event.
 
-        Args:
-            event: The event to publish
+        Delivery is two-step and independent: we always dispatch to local
+        SSE subscribers first, then fan out to other processes via Redis
+        pub/sub. If Redis is unreachable or the subscriber loop is dead,
+        local clients still receive the event. The Redis subscriber loop
+        on *other* processes drops their own echoes via ``_publisher_id``,
+        so the publisher process won't double-deliver to itself.
         """
+        # Always deliver locally first. This is the only path that reaches
+        # SSE subscribers connected to *this* process and must not depend
+        # on Redis being healthy.
+        super().publish(event)
+
         if not self._connected or self._redis_client is None:
-            # Fall back to in-memory publishing
-            super().publish(event)
             return
 
         try:
@@ -224,7 +289,6 @@ class RedisEventBus(EventBus):
                     self._redis_publish_counts,
                     event.event_type,
                 )
-            # Serialize event to JSON
             event_data = {
                 "event_type": event.event_type,
                 "thread_id": event.thread_id,
@@ -232,10 +296,10 @@ class RedisEventBus(EventBus):
                 "task_id": event.task_id,
                 "data": event.data,
                 "timestamp": event.timestamp.isoformat(),
+                "_publisher_id": self._publisher_id,
             }
             message = json.dumps(event_data)
 
-            # Publish to Redis
             receivers = self._redis_client.publish(self.CHANNEL_NAME, message)
             if should_log_stream_event_sample(event.event_type, publish_count):
                 logger.info(
@@ -250,9 +314,11 @@ class RedisEventBus(EventBus):
                 )
 
         except Exception as e:
-            logger.error(f"[REDIS EVENT BUS] Publish failed: {e}, falling back to local")
-            # Fall back to in-memory publishing
-            super().publish(event)
+            logger.error(
+                "[REDIS EVENT BUS] cross-process publish failed: %s "
+                "(local delivery already done)",
+                e,
+            )
 
     def close(self) -> None:
         """Close Redis connections and stop subscriber thread."""
