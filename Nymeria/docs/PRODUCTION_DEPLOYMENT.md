@@ -51,9 +51,13 @@ Docker Compose builds two Nymeria application images:
   work, so they keep the Kali/browser/CLI workstation runtime used by
   shell-capable and browser-capable tools.
 - `nymeria-slim:local` from `Dockerfile.slim` for `watchdog`, `discord-bot`,
-  `telegram-bot`, and `mcp`. These processes are HTTP thin clients over the
-  API and do not need Kali tools, Playwright browsers, Node.js, Claude Code CLI,
-  or test dependencies.
+  `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`,
+  `rocketchat-bot`, `signal-bot`, and `mcp`.
+  These processes are HTTP thin clients over the API and do not need Kali
+  tools, Playwright browsers, Node.js, Claude Code CLI, or test dependencies.
+  WhatsApp Cloud API, Messenger Platform, Instagram Messaging, Webex Messaging,
+  Microsoft Teams, Google Chat, and LINE webhooks are handled by the API
+  container.
 
 Both images install runtime requirements only. Install `requirements-dev.txt`
 on the host when running backend tests, coverage, or Ruff lint checks.
@@ -179,6 +183,32 @@ PERPLEXITY_API_KEY=pplx-...      # Web search
 TELEGRAM_BOT_TOKEN=...           # Telegram notifications
 DISCORD_WEBHOOK_URL=...          # Discord notifications
 SLACK_WEBHOOK_URL=...            # Slack notifications
+MATTERMOST_BASE_URL=...          # Mattermost bot/tools server URL
+MATTERMOST_ACCESS_TOKEN=...      # Mattermost bot account token
+ZULIP_BASE_URL=...               # Zulip realm URL
+ZULIP_EMAIL=...                  # Zulip bot email
+ZULIP_API_KEY=...                # Zulip bot API key
+ROCKETCHAT_BASE_URL=...          # Rocket.Chat server URL
+ROCKETCHAT_USER_ID=...           # Rocket.Chat bot/user ID
+ROCKETCHAT_AUTH_TOKEN=...        # Rocket.Chat bot/user token
+SIGNAL_HTTP_URL=...              # signal-cli-rest-api base URL
+SIGNAL_ACCOUNT=+15551234567      # Signal bot account phone number
+WEBEX_ACCESS_TOKEN=...           # Webex webhook replies
+WEBEX_WEBHOOK_SECRET=...         # Webex webhook HMAC secret
+TEAMS_BOT_APP_ID=...             # Microsoft Teams Bot Framework app ID
+TEAMS_BOT_APP_PASSWORD=...       # Microsoft Teams Bot Framework client secret
+GOOGLE_CHAT_SERVICE_ACCOUNT_FILE=/run/secrets/google-chat-service-account.json # Google Chat replies
+LINE_CHANNEL_ACCESS_TOKEN=...    # LINE Messaging API webhook replies
+LINE_CHANNEL_SECRET=...          # LINE webhook HMAC secret
+WHATSAPP_ACCESS_TOKEN=...        # WhatsApp Cloud API webhook replies
+WHATSAPP_PHONE_NUMBER_ID=...     # WhatsApp Cloud API sender
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=... # Meta webhook challenge token
+MESSENGER_PAGE_ACCESS_TOKEN=...  # Messenger Send API webhook replies
+MESSENGER_PAGE_ID=...            # Facebook Page ID
+MESSENGER_WEBHOOK_VERIFY_TOKEN=... # Messenger webhook challenge token
+INSTAGRAM_ACCESS_TOKEN=...       # Instagram Messaging webhook replies
+INSTAGRAM_IG_USER_ID=...         # Instagram professional account ID
+INSTAGRAM_WEBHOOK_VERIFY_TOKEN=... # Instagram webhook challenge token
 ```
 
 ### CORS for Remote Access
@@ -195,10 +225,40 @@ refuses to start when wildcard origins are configured.
 
 ### Messaging Integrations
 
-Telegram, Discord, and Twitch bots run as dedicated thin-client containers.
-Configure their tokens in `.env.docker` and enable their Docker Compose
-profiles — no external webhook URLs needed. See `docs/telegram-bot.md`,
-`docs/discord-bot.md`, and `docs/twitch-bot.md`.
+Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, and Twitch
+bots run as dedicated bot containers. Configure their tokens in `.env.docker`
+and enable their Docker Compose profiles; those clients do not need external
+webhook URLs. See `docs/telegram-bot.md`, `docs/discord-bot.md`,
+`docs/slack-bot.md`, `docs/matrix-bot.md`, `docs/mattermost-bot.md`,
+`docs/zulip-bot.md`, `docs/rocketchat-bot.md`, `docs/signal-bot.md`, and
+`docs/twitch-bot.md`. Signal additionally requires a separately managed
+`signal-cli-rest-api` daemon in JSON-RPC/SSE mode.
+
+WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE are API-hosted webhook integrations.
+WhatsApp uses the official WhatsApp Business Cloud API at
+`/integrations/whatsapp/webhook`; configure a public HTTPS callback URL in Meta
+and set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, and
+`WHATSAPP_WEBHOOK_VERIFY_TOKEN`; see `docs/whatsapp-bot.md`. Messenger uses
+Meta Messenger Platform webhooks at `/integrations/messenger/webhook`;
+configure a public HTTPS callback URL in Meta and set
+`MESSENGER_PAGE_ACCESS_TOKEN`, `MESSENGER_PAGE_ID`, and
+`MESSENGER_WEBHOOK_VERIFY_TOKEN`; see `docs/messenger-bot.md`. Instagram uses
+Meta Instagram Messaging webhooks at `/integrations/instagram/webhook`;
+configure a public HTTPS callback URL in Meta and set
+`INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_IG_USER_ID`, and
+`INSTAGRAM_WEBHOOK_VERIFY_TOKEN`; see `docs/instagram-bot.md`. Webex uses Webex
+Messaging webhooks at `/integrations/webex/webhook`; configure a public HTTPS
+callback URL in Webex and set `WEBEX_ACCESS_TOKEN` and optionally
+`WEBEX_WEBHOOK_SECRET`; see `docs/webex-bot.md`. Microsoft Teams uses Bot
+Framework message activities at `/integrations/teams/webhook`; configure that
+URL as the bot messaging endpoint and set `TEAMS_BOT_APP_ID` and
+`TEAMS_BOT_APP_PASSWORD`; see `docs/teams-bot.md`. Google Chat uses interaction
+events at `/integrations/google-chat/webhook`; configure that URL as the Chat
+app endpoint and set `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` or
+`GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`; see `docs/google-chat-bot.md`. LINE uses
+Messaging API webhooks at `/integrations/line/webhook`; configure that URL in
+the LINE Developers Console and set `LINE_CHANNEL_ACCESS_TOKEN` and
+`LINE_CHANNEL_SECRET`; see `docs/line-bot.md`.
 
 For event-driven automations from external services (IFTTT, Zapier, etc.),
 use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.md`.
@@ -298,16 +358,57 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 - **Docker images:** `.env.docker` is excluded from the Docker build context; Compose injects it with `--env-file` and bind-mounts it at runtime instead of copying secrets into image layers.
 - **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/` — they are not managed by git-crypt. Never copy them between machines.
 
+## Reverse Proxy (Caddy)
+
+The compose stack ships with a Caddy reverse proxy that terminates TLS and
+fronts the api/mcp containers. Production hosts should expose **only** 80
+and 443 to the public internet — the api (8000) and mcp (8001) ports are
+bound to `127.0.0.1` inside the host and only reachable via SSH tunnel.
+
+### One-time setup
+
+1. Point a DNS A record at the host (e.g. `nymeria.example.com` → host IP).
+2. Set `NYMERIA_HOSTNAME` and `ACME_EMAIL` in `.env.docker`. Caddy will
+   auto-issue a Let's Encrypt cert on first request.
+3. Open 80 and 443 on the host firewall, close 8000 and 8001:
+   ```
+   sudo ufw allow 80/tcp
+   sudo ufw allow 443/tcp
+   sudo ufw delete allow 8000/tcp 2>/dev/null
+   sudo ufw delete allow 8001/tcp 2>/dev/null
+   sudo ufw reload
+   ```
+4. `docker compose up -d caddy` — Caddy joins the `edge` network and is
+   the only host-published service.
+
+If you don't have a domain yet, leave `NYMERIA_HOSTNAME` unset. Caddy
+listens on `:80` over plain HTTP and you can front it with Cloudflare
+Tunnel, Tailscale Funnel, or an SSH tunnel for testing — none of those
+need a public TLS cert.
+
+### Local-dev tunnel
+
+When developing against the live host, SSH-tunnel the API port:
+
+```
+ssh -L 8000:127.0.0.1:8000 nymeria@<host>
+```
+
+The desktop and mobile apps can then point at `http://localhost:8000`
+just as they do for local Docker.
+
 ## Security Considerations
 
 1. **Account tokens**: Per-user bearer tokens (`nym_…`) are minted via `python run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`. Bots/ticker/watchdog authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` are git-crypt encrypted. See `docs/git-crypt.md` for policy, rotation, and history-rewriting decisions.
-3. **CORS**: Restrict origins in production
+3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` (and the local Tauri origins for desktop/mobile clients) — no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
-5. **Network**: Use HTTPS in production (reverse proxy)
-6. **Docker**: Agent-executing Nymeria services use the full Kali-based image by design, while HTTP thin clients use the slim Python image. Compose applies `no-new-privileges:true` and `cap_drop: ALL` to every service. Postgres and Redis run as their built-in non-root users and use read-only root filesystems while keeping their data on named volumes. Redis requires `REDIS_PASSWORD`; unauthenticated containers on the Compose network cannot read or write the event bus.
-7. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted into containers for live sync, so treat host repo access as production-sensitive. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
-8. **Kali Tools**: Use responsibly and only on authorized targets
+5. **Network**: TLS is terminated at the Caddy reverse proxy (above). Only 80/443 should be open on the host firewall; 8000/8001 are loopback-only.
+6. **Container privileges**: Two privilege tiers. **Agent-bearing containers** (api, worker) run as `root` with `cap_drop: ALL` plus three install caps (`DAC_OVERRIDE`, `CHOWN`, `FOWNER`) — exactly what `apt-get install`, `pip install` (system-wide), and `/etc` writes need. This lets the agent extend its own sandbox at runtime via `bash_execute`. **Thin-client containers** (watchdog, mcp, chat bots, caddy) run as the non-root `nymeria` user (uid 999) with `cap_drop: ALL`, `read_only: true` rootfs, and tmpfs for `/tmp` + `/home/nymeria` — they never need to write to the rootfs and shouldn't be able to. `no-new-privileges:true` applies to every service; the kernel rejects `setuid` and `sudo` escalation everywhere.
+7. **Network segmentation**: Two Docker networks — `edge` (proxy + api + mcp + bots + cli-proxy + hexstrike) and `backend` (postgres + redis + api + worker). Bots cannot reach the database directly even if compromised.
+8. **Resource limits**: Every service declares `mem_limit`, `cpus`, and `pids_limit` (see the `x-limits-*` anchors in `docker-compose.yml`). A runaway tool call cannot exhaust host memory or fork-bomb the kernel.
+9. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted **read-only** into containers. A container compromise cannot backdoor the host source tree or rewrite secrets. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
+10. **Kali Tools**: The full image includes nmap, hydra, sqlmap, etc. for `bash_execute` access. Use responsibly and only on authorized targets. Since the container is non-root, nmap loses SYN-scan privileges and falls back to TCP-connect scans.
 
 ## Troubleshooting
 

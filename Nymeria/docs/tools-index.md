@@ -1029,7 +1029,6 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `stackby_delete_rows` | `nymeria/tools/data_table_service_integrations.py` | Delete one or more Stackby rows. |
 | `stackby_get_row` | `nymeria/tools/data_table_service_integrations.py` | Get a Stackby row by ID. |
 | `stackby_list_rows` | `nymeria/tools/data_table_service_integrations.py` | List Stackby rows. |
-| `sticky_note` | `nymeria/tools/sticky_note.py` | Manage the desktop sticky note checklist. The widget auto-refreshes. |
 | `storyblok_delete_story` | `nymeria/tools/content_management_service_integrations.py` | Delete a Storyblok story through the Management API. |
 | `storyblok_get_story` | `nymeria/tools/content_management_service_integrations.py` | Get a Storyblok story by slug/path or management story ID. |
 | `storyblok_list_stories` | `nymeria/tools/content_management_service_integrations.py` | List Storyblok stories from the Content or Management API. |

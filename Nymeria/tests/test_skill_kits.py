@@ -193,7 +193,7 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
         )
         enable_result = tool_enable.func(
             action="enable",
-            tools=["sticky_note"],
+            tools=["memory_clear_all"],
             ttl="4w",
             tool_call_id="call-enable",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
@@ -205,7 +205,7 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
     assert "browser_" in search_result
     assert "[Thread Tool Status]" in status_result
     assert isinstance(enable_result, Command)
-    assert "sticky_note" in agent.thread_config_manager.get_config("thread-a").temporary_tools
+    assert "memory_clear_all" in agent.thread_config_manager.get_config("thread-a").temporary_tools
     assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
 
 
@@ -296,7 +296,10 @@ def test_mcp_install_binds_discovered_tools_and_queues_reload(tmp_path: Path, mo
     monkeypatch.setattr(
         mcp_runtime,
         "prepare_runtime",
-        lambda server_def, install_plan, config_values, log_sink: (server_def, log_sink),
+        lambda server_def, install_plan, **kwargs: (
+            server_def,
+            kwargs.get("log_sink") or [],
+        ),
     )
     monkeypatch.setattr(
         mcp_auth_bridge,
