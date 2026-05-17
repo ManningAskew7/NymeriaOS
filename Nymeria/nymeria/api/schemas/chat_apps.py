@@ -5,10 +5,30 @@ from typing import Literal
 from pydantic import BaseModel
 
 
-class ChatAppProviderField(BaseModel):
-    """Body fragment shared by chatapp endpoints; only Telegram is wired today."""
+ChatAppProvider = Literal[
+    "discord",
+    "telegram",
+    "twitch",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+]
 
-    provider: Literal["telegram"]
+
+class ChatAppProviderField(BaseModel):
+    """Body fragment shared by chatapp endpoints."""
+
+    provider: ChatAppProvider
 
 
 class ChatAppBindCodeRequest(ChatAppProviderField):
@@ -29,7 +49,7 @@ class PlatformLinkCodeRequest(ChatAppProviderField):
 class ChatAppBindingResponse(BaseModel):
     id: int
     thread_id: str
-    provider: Literal["discord", "telegram", "twitch"]
+    provider: ChatAppProvider
     platform_chat_id: str
     created_at: str
     user_telegram_bot_id: int | None = None
@@ -38,7 +58,7 @@ class ChatAppBindingResponse(BaseModel):
 class AdminBindingLookupResponse(BaseModel):
     id: int
     thread_id: str
-    provider: Literal["discord", "telegram", "twitch"]
+    provider: ChatAppProvider
     platform_chat_id: str
     user_id: str
     created_at: str
@@ -47,7 +67,7 @@ class AdminBindingLookupResponse(BaseModel):
 
 class AdminChatAppBindClaimRequest(BaseModel):
     code: str
-    provider: Literal["telegram"]
+    provider: ChatAppProvider
     platform_chat_id: str
     expected_provider_user_id: str
 
@@ -59,7 +79,7 @@ class AdminChatAppBindClaimResponse(BaseModel):
 
 
 class AdminChatAppSwitchRequest(BaseModel):
-    provider: Literal["telegram"]
+    provider: ChatAppProvider
     platform_chat_id: str
     thread_id: str
     user_id: str
@@ -75,13 +95,13 @@ class AdminChatAppSwitchResponse(BaseModel):
 
 class AdminPlatformLinkClaimRequest(BaseModel):
     code: str
-    provider: Literal["telegram"]
+    provider: ChatAppProvider
     platform_user_id: str
 
 
 class AdminPlatformLinkClaimResponse(BaseModel):
     user_id: str
-    provider: Literal["telegram"]
+    provider: ChatAppProvider
     provider_user_id: str
     created_at: str
 

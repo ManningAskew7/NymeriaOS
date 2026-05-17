@@ -339,7 +339,22 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - Quick-action buttons: Process RFQ, Analyse Response, Check Parts
 - Per-staff threads with separate config and notepad
 
-### Slack & Teams
+### Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, WhatsApp, Messenger, Instagram, Webex, Teams, Google Chat & LINE Bots
+- Two-way Slack Socket Mode client with linked-user enforcement, bind codes, and thread-aware replies
+- Two-way Matrix Client-Server API sync client with mention/free-room gating and bind codes
+- Two-way Mattermost WebSocket client with linked-user enforcement, bind codes, and thread-aware replies
+- Two-way Zulip Events API client with linked-user enforcement, bind codes, and stream-topic routing
+- Two-way Rocket.Chat realtime client with linked-user enforcement, bind codes, and thread-aware replies
+- Two-way Signal client via signal-cli-rest-api SSE/JSON-RPC with linked-user enforcement, group mention gating, and bind codes
+- WhatsApp Business Cloud API webhook client hosted by the API service, with linked-user enforcement and direct-chat thread binding
+- Messenger Platform webhook client hosted by the API service, with linked-user enforcement, Page-scoped direct-chat thread binding, and bind codes
+- Instagram Messaging webhook client hosted by the API service, with linked-user enforcement, account-scoped direct-chat thread binding, and bind codes
+- Webex Messaging webhook client hosted by the API service, with linked-user enforcement, direct/group thread routing, and bind codes
+- Microsoft Teams Bot Framework webhook client hosted by the API service, with linked-user enforcement, mention-gated group/channel routing, and bind codes
+- Google Chat HTTPS webhook client hosted by the API service, with linked-user enforcement, mention-gated space/group routing, and bind codes
+- LINE Messaging API webhook client hosted by the API service, with linked-user enforcement, mention-gated group/room routing, and bind codes
+
+### Slack & Teams Trigger Sources
 - Channel monitoring via trigger sources
 - Outbound webhook notifications
 
@@ -511,4 +526,6 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Attachments per message | 4 files | No |
 | Discord messages | 2000 chars | No |
 | Telegram messages | 4096 chars | No |
+| Teams messages | 4000 chars | No |
+| Signal messages | 8000 chars | No |
 | Twitch messages | 500 chars | No |

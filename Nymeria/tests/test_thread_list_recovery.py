@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
@@ -69,7 +71,29 @@ def test_threads_keeps_ownerless_metadata_recovery_rows(tmp_path: Path, api_clie
     assert rows["legacy-thread"]["recovery_sources"] == ["metadata"]
 
 
-def test_threads_use_telegram_platform_for_bound_desktop_threads(tmp_path: Path, api_client_builder):
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "telegram",
+        "slack",
+        "matrix",
+        "whatsapp",
+        "messenger",
+        "webex",
+        "mattermost",
+        "zulip",
+        "rocketchat",
+        "teams",
+        "googlechat",
+        "line",
+        "signal",
+    ],
+)
+def test_threads_use_bound_platform_for_desktop_threads(
+    provider: str,
+    tmp_path: Path,
+    api_client_builder,
+):
     client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
     token = agent.accounts_repo.issue_token("bob")
@@ -78,8 +102,8 @@ def test_threads_use_telegram_platform_for_bound_desktop_threads(tmp_path: Path,
     agent.thread_metadata_manager.upsert_thread("bob", thread_id, title="Bound")
     agent.chat_bindings_repo.create_thread_binding(
         thread_id=thread_id,
-        provider="telegram",
-        platform_chat_id="5551234567",
+        provider=provider,
+        platform_chat_id=f"{provider}:chat-1",
         user_id="bob",
     )
 
@@ -87,11 +111,33 @@ def test_threads_use_telegram_platform_for_bound_desktop_threads(tmp_path: Path,
 
     assert response.status_code == 200
     rows = {row["thread_id"]: row for row in response.json()["threads"]}
-    assert rows[thread_id]["platform"] == "telegram"
+    assert rows[thread_id]["platform"] == provider
     assert rows[thread_id]["callable"] is False
 
 
-def test_threads_keep_telegram_platform_for_bound_callable_threads(tmp_path: Path, api_client_builder):
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "telegram",
+        "slack",
+        "matrix",
+        "whatsapp",
+        "messenger",
+        "webex",
+        "mattermost",
+        "zulip",
+        "rocketchat",
+        "teams",
+        "googlechat",
+        "line",
+        "signal",
+    ],
+)
+def test_threads_keep_bound_platform_for_callable_threads(
+    provider: str,
+    tmp_path: Path,
+    api_client_builder,
+):
     client, agent = _client(tmp_path, api_client_builder)
     agent.accounts_repo.create_user("bob", "bob@example.com", "Aria")
     token = agent.accounts_repo.issue_token("bob")
@@ -103,8 +149,8 @@ def test_threads_keep_telegram_platform_for_bound_callable_threads(tmp_path: Pat
     )
     agent.chat_bindings_repo.create_thread_binding(
         thread_id=thread_id,
-        provider="telegram",
-        platform_chat_id="5551234567",
+        provider=provider,
+        platform_chat_id=f"{provider}:chat-1",
         user_id="bob",
     )
 
@@ -112,7 +158,7 @@ def test_threads_keep_telegram_platform_for_bound_callable_threads(tmp_path: Pat
 
     assert response.status_code == 200
     rows = {row["thread_id"]: row for row in response.json()["threads"]}
-    assert rows[thread_id]["platform"] == "telegram"
+    assert rows[thread_id]["platform"] == provider
     assert rows[thread_id]["callable"] is True
     assert rows[thread_id]["title"] == "TelegramAgent"
 

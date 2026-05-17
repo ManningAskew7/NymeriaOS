@@ -19,7 +19,7 @@ nymeria-desktop/src/lib/components/account/   ← all account UI (mobile mirrors
 ├── AccountTab.svelte            SettingsPanel "Account" tab (self management)
 ├── UsersTab.svelte              SettingsPanel "Users" tab (admin only)
 ├── TokenManagementSection.svelte    list + issue + revoke (+ rotate-all in admin mode)
-├── PlatformLinkingSection.svelte    Discord/Telegram/Twitch ID list + add/remove
+├── PlatformLinkingSection.svelte    chat-platform ID list + add/remove
 ├── CopyOnceTokenDialog.svelte   raw-token-shown-ONCE warning + copy
 ├── avatar.ts                    pure helpers (initials, hash → colour, name fallbacks)
 └── index.ts                     barrel export
@@ -241,7 +241,7 @@ Polymorphic via `mode: 'self' | 'admin'`:
 
 ### `PlatformLinkingSection.svelte`
 
-Always uses the admin endpoints (`GET / POST / DELETE /admin/users/{userId}/platforms`). For self use in `AccountTab` this still works because the section is only rendered for admins viewing themselves. The provider dropdown is hardcoded to `discord | telegram | twitch` matching backend `PlatformIdentityResponse`. Provider ID input is monospace because these are platform-native numeric IDs.
+Always uses the admin endpoints (`GET / POST / DELETE /admin/users/{userId}/platforms`). For self use in `AccountTab` this still works because the section is only rendered for admins viewing themselves. The provider dropdown is hardcoded to the backend chat-app provider union (`discord`, `telegram`, `twitch`, Slack/Matrix/WhatsApp/Messenger/Instagram/Webex/Mattermost/Zulip/Rocket.Chat/Teams/Google Chat/LINE/Signal). Provider ID input is monospace because these are platform-native IDs.
 
 ### `CopyOnceTokenDialog.svelte`
 
@@ -257,7 +257,7 @@ Lives at `components/threads/ConnectTelegramWizard.svelte`. Three-step modal ope
 
 Skips step 1 entirely when the user is already linked, then enters the same bind-code issue + polling path as the newly-linked flow. Uses `chatAppBindingsStore` (`stores/chatAppBindings.svelte.ts`) for the binding cache so the parent `ThreadSettingsPanel` shows the new row immediately on close.
 
-The store + endpoints are intentionally provider-agnostic (`provider: 'telegram'` is a parameter throughout) so future Discord / WhatsApp wizards can be sibling components without backend changes — they slot into the same `thread_platform_bindings` table.
+The store + endpoints are intentionally provider-agnostic (`provider: 'telegram'` is a parameter throughout) so additional chat-app wizards can be sibling components without backend changes; they slot into the same `thread_platform_bindings` table.
 
 ### `ConnectMyTelegramBotWizard.svelte` (BYO bot, sibling of the shared-bot wizard)
 

@@ -205,6 +205,18 @@
       id.startsWith('discord_') ||
       id.startsWith('telegram_') ||
       id.startsWith('slack_') ||
+      id.startsWith('matrix_') ||
+      id.startsWith('whatsapp_') ||
+      id.startsWith('messenger_') ||
+      id.startsWith('instagram_') ||
+      id.startsWith('webex_') ||
+      id.startsWith('mattermost_') ||
+      id.startsWith('zulip_') ||
+      id.startsWith('rocketchat_') ||
+      id.startsWith('teams_') ||
+      id.startsWith('googlechat_') ||
+      id.startsWith('line_') ||
+      id.startsWith('signal_') ||
       id.startsWith('twitch_') ||
       id.startsWith('agent-') ||
       id.startsWith('spawned-')

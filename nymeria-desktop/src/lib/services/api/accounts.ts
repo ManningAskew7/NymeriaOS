@@ -3,6 +3,7 @@ import type {
   AdminUser,
   ChatAppBinding,
   ChatAppBindCodeResponse,
+  ChatAppProvider,
   IssuedTokenResponse,
   MyTelegramBot,
   PlatformIdentity,
@@ -190,7 +191,7 @@ export class AccountsApi extends SystemApi {
 
   async linkUserPlatform(
     userId: string,
-    body: { provider: 'discord' | 'telegram' | 'twitch'; provider_user_id: string }
+    body: { provider: ChatAppProvider; provider_user_id: string }
   ): Promise<PlatformIdentity> {
     const response = await fetch(
       `${this.getBaseUrl()}/admin/users/${encodeURIComponent(userId)}/platforms`,
@@ -204,7 +205,7 @@ export class AccountsApi extends SystemApi {
 
   async unlinkUserPlatform(
     userId: string,
-    provider: 'discord' | 'telegram' | 'twitch',
+    provider: ChatAppProvider,
     providerUserId: string
   ): Promise<{ unlinked: boolean }> {
     const response = await fetch(
@@ -238,7 +239,7 @@ export class AccountsApi extends SystemApi {
    * deep link) to associate their Telegram identity with their Nymeria
    * account. Replaces the previously admin-only `users link-platform` CLI. */
   async requestSelfPlatformLinkCode(
-    provider: 'telegram'
+    provider: ChatAppProvider
   ): Promise<ChatAppBindCodeResponse> {
     const response = await fetch(
       `${this.getBaseUrl()}/me/platform-link-codes`,
@@ -264,7 +265,7 @@ export class AccountsApi extends SystemApi {
    * consumed and the binding row appears. */
   async issueChatAppBindCode(
     threadId: string,
-    provider: 'telegram'
+    provider: ChatAppProvider
   ): Promise<ChatAppBindCodeResponse> {
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/chatapp/bind-code`,

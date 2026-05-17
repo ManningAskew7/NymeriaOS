@@ -20,6 +20,25 @@ class ThreadStatusResponse(BaseModel):
     processing: bool
 
 
+class ThreadOverviewResponse(BaseModel):
+    """Resolved read model for one thread's header/dashboard status."""
+
+    thread: dict[str, Any]
+    status: dict[str, Any]
+    context: dict[str, Any]
+    config_summary: dict[str, Any]
+    llm: dict[str, Any]
+    callable: dict[str, Any]
+    tools: dict[str, Any]
+    mcp: dict[str, Any]
+    skills: dict[str, Any]
+    todos: dict[str, Any]
+    triggers: dict[str, Any]
+    chat_apps: dict[str, Any]
+    user: dict[str, Any]
+    section_errors: dict[str, str] = Field(default_factory=dict)
+
+
 class ThreadBranchRequest(BaseModel):
     """Request model for creating a branch from an existing thread."""
 

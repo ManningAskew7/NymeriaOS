@@ -250,6 +250,156 @@ def test_header_snapshot_builds_full_dashboard_data() -> None:
     assert snapshot.connection_label.startswith("api ok")
 
 
+class OverviewHeaderClient:
+    connection_label = "api http://api.test"
+    base_url = "http://api.test"
+
+    def __init__(self) -> None:
+        self.legacy_called = False
+
+    async def health(self) -> bool:
+        return True
+
+    async def get_thread_overview(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        assert thread_id == "thread-123456"
+        assert user_id == "alice"
+        return {
+            "thread": {
+                "thread_id": thread_id,
+                "title": "Overview Header",
+                "platform": "desktop",
+                "pinned": True,
+            },
+            "context": {
+                "model": "gpt-5.5",
+                "total_tokens": 900,
+                "context_limit": 1000,
+                "usage_percentage": 90,
+                "compaction_count": 3,
+            },
+            "config_summary": {
+                "instructions_present": True,
+                "system_prompt_override_present": True,
+                "inject_todos_in_prompt": True,
+                "inject_profile_in_prompt": True,
+                "show_autonomous_prompts": True,
+                "show_prompt_metadata": True,
+                "telegram_autonomous_delivery": "notify_only",
+                "in_app_notification_level": "all_autonomous",
+            },
+            "llm": {
+                "provider": "openai",
+                "provider_label": "OpenAI API",
+                "model": "gpt-5.5",
+                "api_mode": "responses",
+                "api_mode_label": "responses/v1",
+                "thinking_label": "high",
+            },
+            "callable": {
+                "enabled": True,
+                "name": "Analyst",
+                "team_name": "Ops",
+                "visible_thread_count": 4,
+            },
+            "tools": {
+                "effective_builtin_count": 10,
+                "effective_mcp_count": 2,
+                "effective_callable_count": 4,
+            },
+            "skills": {
+                "active_skill_count": 5,
+                "active_skill_kit_count": 2,
+            },
+            "todos": {
+                "active_count": 2,
+                "first_labels": ["Review PO", "Email supplier"],
+            },
+            "triggers": {
+                "enabled_count": 1,
+                "first_labels": ["Morning brief"],
+            },
+            "user": {
+                "id": "alice",
+                "display_name": "Alice",
+                "role": "admin",
+            },
+            "section_errors": {"mcp": "offline"},
+        }
+
+    async def get_settings(self, *args, **kwargs):
+        self.legacy_called = True
+        raise AssertionError("legacy path should not run")
+
+
+def test_header_snapshot_prefers_thread_overview_payload() -> None:
+    client = OverviewHeaderClient()
+    snapshot = run(build_header_snapshot(make_state(), client))
+
+    assert client.legacy_called is False
+    assert snapshot.thread_title == "Overview Header"
+    assert snapshot.provider == "OpenAI API"
+    assert snapshot.api_type == "responses/v1"
+    assert snapshot.model == "gpt-5.5"
+    assert snapshot.thinking_mode == "high"
+    assert snapshot.context_percent == 90
+    assert snapshot.compaction_count == 3
+    assert snapshot.tool_count == 10
+    assert snapshot.mcp_tool_count == 2
+    assert snapshot.callable_tool_count == 4
+    assert snapshot.skill_count == 5
+    assert snapshot.skill_kit_count == 2
+    assert snapshot.todo_count == 2
+    assert snapshot.trigger_count == 1
+    assert "autonomous prompts" in snapshot.flags
+    assert "prompt metadata" in snapshot.flags
+    assert "telegram notify_only" in snapshot.flags
+    assert "notifications all_autonomous" in snapshot.flags
+    assert snapshot.failures == ("mcp",)
+
+
+class OverviewFailingClient(HeaderFakeClient):
+    async def get_thread_overview(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        raise RuntimeError("overview unavailable")
+
+
+def test_header_snapshot_falls_back_when_overview_fails() -> None:
+    snapshot = run(build_header_snapshot(make_state(), OverviewFailingClient()))
+
+    assert snapshot.thread_title == "Analyst"
+    assert "overview" in snapshot.failures
+
+
+class OverviewMissingPartialClient(HeaderFakeClient):
+    async def get_thread_overview(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        return None
+
+    async def get_thread_config(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        raise RuntimeError("config unavailable")
+
+
+def test_header_snapshot_labels_missing_overview_when_legacy_fallback_fails() -> None:
+    snapshot = run(build_header_snapshot(make_state(), OverviewMissingPartialClient()))
+
+    assert "overview unavailable" in snapshot.failures
+    assert "thread_config" in snapshot.failures
+
+
 class CLIProxyHeaderClient(HeaderFakeClient):
     def __init__(self) -> None:
         super().__init__()
@@ -426,10 +576,8 @@ def test_rich_header_render_contains_dashboard_fields_and_fits_width() -> None:
     )
     output = stream.getvalue()
 
-    assert "Nymeria" in output
-    assert "[ Nymeria ]" in output
+    assert "N Y M E R I A" in output
     assert "┌" in output
-    assert "┼" in output
     assert "╭" not in output
     assert "Procurement Review" in output
     assert "Claude API (messages/v1)" in output
@@ -438,18 +586,14 @@ def test_rich_header_render_contains_dashboard_fields_and_fits_width() -> None:
     assert "thinking adaptive (high)" not in output
     assert "http://api.test" in output
     assert "api ok 24ms" in output
-    assert "tools 8" in output
-    assert "mcp 3" in output
-    assert "kits 1" in output
-    assert "Todos: Review PO, Email, +1 more" in output
-    assert "Triggers: Morning brief" in output
+    assert "8 tools" in output
+    assert "3 mcp" in output
+    assert "1 kits" in output
+    assert "Review PO, Email, +1 more" in output
+    assert "Morning brief" in output
     assert "instructions" in output
     assert "system prompt" in output
     assert all(cell_len(line) <= 79 for line in output.splitlines())
-    title_line = next(line for line in output.splitlines() if "[ Nymeria ]" in line)
-    divider_line = next(line for line in output.splitlines() if "┼" in line)
-    title_center = (title_line.index("[") + title_line.index("]")) / 2
-    assert title_center == divider_line.index("┼")
 
 
 def test_rich_header_caps_width_for_scrollback_resize_stability() -> None:

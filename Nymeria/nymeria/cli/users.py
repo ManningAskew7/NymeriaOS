@@ -19,7 +19,24 @@ from nymeria.core.accounts import (
 )
 
 
-VALID_PROVIDERS = ("discord", "telegram", "twitch")
+VALID_PROVIDERS = (
+    "discord",
+    "telegram",
+    "twitch",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+)
 
 
 def _repo() -> AccountsRepo:
@@ -211,7 +228,7 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
 
     p_link = actions.add_parser(
         "link-platform",
-        help="Link a Discord/Telegram/Twitch identity to a user",
+        help="Link a chat-platform identity to a user",
     )
     p_link.add_argument("email")
     p_link.add_argument("provider", choices=VALID_PROVIDERS)

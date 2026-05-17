@@ -52,6 +52,10 @@ twitchio>=3.2.1
 # Telegram bot (two-way communication)
 python-telegram-bot[rate-limiter]>=22.0
 
+# Slack bot (two-way communication via Socket Mode)
+slack-bolt>=1.22.0
+slack-sdk>=3.35.0
+
 # Symmetric encryption for at-rest secrets (BYO Telegram bot tokens, etc).
 # Already a transitive dep via langchain/google-auth, but pinned explicitly
 # so the secrets layer never silently breaks if upstream drops it.
@@ -64,6 +68,7 @@ PyJWT>=2.8.0
 
 # Google Calendar (native Python — optional tools)
 google-api-python-client>=2.100.0
+google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
 
 # Document extraction (email attachments) + Gemini TTS

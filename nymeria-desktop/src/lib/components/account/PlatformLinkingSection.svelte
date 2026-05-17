@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { PlatformIdentity } from '$lib/types';
+  import type { ChatAppProvider, PlatformIdentity } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
@@ -24,10 +24,23 @@
 
   let { userId, userLabel, canEdit = true }: Props = $props();
 
-  type Provider = 'discord' | 'telegram' | 'twitch';
+  type Provider = ChatAppProvider;
   const PROVIDERS: { value: Provider; label: string }[] = [
     { value: 'discord', label: 'Discord' },
     { value: 'telegram', label: 'Telegram' },
+    { value: 'slack', label: 'Slack' },
+    { value: 'matrix', label: 'Matrix' },
+    { value: 'whatsapp', label: 'WhatsApp' },
+    { value: 'messenger', label: 'Messenger' },
+    { value: 'instagram', label: 'Instagram' },
+    { value: 'webex', label: 'Webex' },
+    { value: 'mattermost', label: 'Mattermost' },
+    { value: 'zulip', label: 'Zulip' },
+    { value: 'rocketchat', label: 'Rocket.Chat' },
+    { value: 'teams', label: 'Microsoft Teams' },
+    { value: 'googlechat', label: 'Google Chat' },
+    { value: 'line', label: 'LINE' },
+    { value: 'signal', label: 'Signal' },
     { value: 'twitch', label: 'Twitch' },
   ];
 
@@ -115,6 +128,19 @@
   function providerColour(p: Provider): string {
     if (p === 'discord') return '#5865F2';
     if (p === 'telegram') return '#229ED9';
+    if (p === 'slack') return '#E01E5A';
+    if (p === 'matrix') return '#0DBD8B';
+    if (p === 'whatsapp') return '#25D366';
+    if (p === 'messenger') return '#0084FF';
+    if (p === 'instagram') return '#E4405F';
+    if (p === 'webex') return '#00BCEB';
+    if (p === 'mattermost') return '#0058CC';
+    if (p === 'zulip') return '#6492FE';
+    if (p === 'rocketchat') return '#F5455C';
+    if (p === 'teams') return '#6264A7';
+    if (p === 'googlechat') return '#1A73E8';
+    if (p === 'line') return '#06C755';
+    if (p === 'signal') return '#3A76F0';
     if (p === 'twitch') return '#9146FF';
     return 'var(--text-muted)';
   }
@@ -138,7 +164,7 @@
     <div class="empty-state">
       <Icon name="info" size={20} />
       <span>
-        No platform identities linked. Link Discord/Telegram/Twitch IDs so the
+        No platform identities linked. Link chat-platform IDs so the
         bots can route those platform users' messages to this account.
       </span>
     </div>
@@ -207,8 +233,7 @@
       {/if}
       <p class="form-hint">
         Provider user IDs are the platform's own snowflake/numeric ID. Get them
-        via Discord right-click → Copy User ID, Telegram via <code>/start</code>
-        with a bot, or Twitch via the Helix API.
+        from the platform account, bot link command, or provider API.
       </p>
     </div>
   {/if}
@@ -376,11 +401,4 @@
     line-height: 1.5;
   }
 
-  .form-hint code {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
-    background: var(--bg-base);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 11px;
-  }
 </style>

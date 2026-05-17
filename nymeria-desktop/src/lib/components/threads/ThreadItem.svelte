@@ -179,6 +179,54 @@
           <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
         </svg>
       </span>
+    {:else if thread.platform === 'matrix'}
+      <span class="platform-icon matrix" title="Matrix">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'whatsapp'}
+      <span class="platform-icon whatsapp" title="WhatsApp">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'messenger'}
+      <span class="platform-icon messenger" title="Messenger">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'webex'}
+      <span class="platform-icon webex" title="Webex">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'mattermost'}
+      <span class="platform-icon mattermost" title="Mattermost">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'zulip'}
+      <span class="platform-icon zulip" title="Zulip">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'rocketchat'}
+      <span class="platform-icon rocketchat" title="Rocket.Chat">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'teams'}
+      <span class="platform-icon teams" title="Microsoft Teams">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'googlechat'}
+      <span class="platform-icon googlechat" title="Google Chat">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'line'}
+      <span class="platform-icon line" title="LINE">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'signal'}
+      <span class="platform-icon signal" title="Signal">
+        <Icon name="chat" size={16} />
+      </span>
+    {:else if thread.platform === 'twitch'}
+      <span class="platform-icon twitch" title="Twitch">
+        <Icon name="chat" size={16} />
+      </span>
     {:else if thread.platform === 'trigger'}
       <span class="platform-icon trigger" title="Trigger">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -395,6 +443,54 @@
 
   .platform-icon.slack {
     color: #E01E5A;
+  }
+
+  .platform-icon.matrix {
+    color: #0DBD8B;
+  }
+
+  .platform-icon.whatsapp {
+    color: #25D366;
+  }
+
+  .platform-icon.messenger {
+    color: #0084FF;
+  }
+
+  .platform-icon.webex {
+    color: #00BCEB;
+  }
+
+  .platform-icon.mattermost {
+    color: #0058CC;
+  }
+
+  .platform-icon.zulip {
+    color: #6492FE;
+  }
+
+  .platform-icon.rocketchat {
+    color: #F5455C;
+  }
+
+  .platform-icon.teams {
+    color: #6264A7;
+  }
+
+  .platform-icon.googlechat {
+    color: #1A73E8;
+  }
+
+  .platform-icon.line {
+    color: #06C755;
+  }
+
+  .platform-icon.signal {
+    color: #3A76F0;
+  }
+
+  .platform-icon.twitch {
+    color: #9146FF;
   }
 
   .platform-icon.trigger {

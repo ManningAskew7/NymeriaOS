@@ -34,6 +34,10 @@ from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
+from ..api.routers.google_chat_bot import create_google_chat_bot_router
+from ..api.routers.instagram_bot import create_instagram_bot_router
+from ..api.routers.line_bot import create_line_bot_router
+from ..api.routers.messenger_bot import create_messenger_bot_router
 from ..api.routers.memory import create_memory_router
 from ..api.routers.mcp_servers import create_mcp_servers_router
 from ..api.routers.rag import create_rag_router
@@ -45,9 +49,12 @@ from ..api.routers.thread_operations import create_thread_operations_router
 from ..api.routers.threads import create_threads_router
 from ..api.routers.todos import create_todos_router
 from ..api.routers.tools import create_tools_router
+from ..api.routers.teams_bot import create_teams_bot_router
 from ..api.routers.unified_tools import create_unified_tools_router
 from ..api.routers.user_tools import create_user_tools_router
 from ..api.routers.voice import create_voice_router
+from ..api.routers.webex_bot import create_webex_bot_router
+from ..api.routers.whatsapp_bot import create_whatsapp_bot_router
 from ..api.routers.workspace import create_workspace_router
 
 logger = logging.getLogger(__name__)
@@ -665,6 +672,62 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
         create_system_router(verify_api_key, require_admin_user, get_agent, get_settings)
     )
     app.include_router(create_devices_router(verify_api_key, get_settings))
+    app.include_router(
+        create_whatsapp_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_messenger_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_instagram_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_webex_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_teams_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_google_chat_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
+    app.include_router(
+        create_line_bot_router(
+            get_agent,
+            get_settings,
+            _require_thread_access,
+            publish_sync_event,
+        )
+    )
     app.include_router(create_credentials_router(verify_api_key, require_admin_user, get_agent))
     app.include_router(create_credential_prompts_router(verify_api_key, get_agent))
     app.include_router(create_workspace_router(require_admin_user))

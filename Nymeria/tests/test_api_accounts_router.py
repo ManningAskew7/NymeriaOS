@@ -238,7 +238,7 @@ def test_admin_account_guards_and_prefix_errors_remain_stable(
     )
     missing_user_tokens = client.get("/admin/users/missing/tokens", headers=headers)
     bad_provider = client.delete(
-        "/admin/users/owner/platforms/slack/123",
+        "/admin/users/owner/platforms/not-a-provider/123",
         headers=headers,
     )
 

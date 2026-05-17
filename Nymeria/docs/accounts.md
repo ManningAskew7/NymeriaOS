@@ -14,7 +14,7 @@ Seven tables in a dedicated SQLite database at `<data_dir>/accounts.db`, split a
 | `users` | Accounts (`id`, `email`, `display_name`, `role`, `disabled`) |
 | `user_tokens` | Bearer tokens (one user can have many, each independently revocable) |
 | `thread_owners` | Maps `thread_id → user_id`. Populated by (a) the desktop's eager `POST /threads/{id}/claim` on new-thread creation, (b) admin first-touch on `/chat` for personal-pattern threads, (c) non-admin first-touch on `/chat` (TOFU), and (d) the startup orphan-backfill sweep. See [Thread ownership](#thread-ownership) below. |
-| `platform_identities` | Maps Discord/Telegram/Twitch user IDs to Nymeria accounts (Step 6) |
+| `platform_identities` | Maps chat-platform user IDs to Nymeria accounts (Step 6) |
 | `thread_platform_bindings` | Per-thread chat-app bindings (e.g. `desktop thread <-> Telegram chat`). Unique on `(provider, thread_id)` and `(provider, platform_chat_id)`. The optional `user_telegram_bot_id` column is null when the binding is served by the shared bot, or the row id of a `user_telegram_bots` entry when served by a user-owned (BYO) bot. |
 | `bind_codes` | Short-lived single-use codes the desktop wizard mints and the bot consumes. Discriminated by `kind` — `platform_link` (link a Telegram identity to a Nymeria account) or `thread_bind` (attach a chat to a thread). 10-min TTL, hashed at rest. |
 | `user_telegram_bots` | User-owned BYO Telegram bots. Tokens are stored as Fernet ciphertext (`bot_token_ciphertext`); plaintext is only handed to the supervisor process inside the `nymeria-telegram-bot` container via the admin endpoint. Encrypted with `NYMERIA_SECRETS_KEY`. |
@@ -67,7 +67,7 @@ python run.py users enable bob@example.com
 # Revoke every token, mint a fresh one
 python run.py users rotate-token bob@example.com
 
-# Link a Discord/Telegram/Twitch identity to a user (enables bot routing)
+# Link a chat-platform identity to a user (enables bot routing)
 python run.py users link-platform bob@example.com discord 123456789
 python run.py users platforms bob@example.com
 python run.py users unlink-platform discord 123456789
@@ -88,7 +88,7 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 | `GET` | `/me/tokens` | — | List your active and revoked tokens (no raw values). |
 | `POST` | `/me/tokens` | `{label?}` | Issue yourself a new token. Raw shown ONCE. |
 | `DELETE` | `/me/tokens/{prefix}` | — | Revoke one of your tokens by hash prefix. |
-| `GET` | `/me/platforms` | — | List your linked Discord/Telegram/Twitch identities. Self-service equivalent of `/admin/users/{id}/platforms`. |
+| `GET` | `/me/platforms` | — | List your linked chat-platform identities. Self-service equivalent of `/admin/users/{id}/platforms`. |
 | `POST` | `/me/platform-link-codes` | `{provider}` | Issue a short-lived code (8 chars, 10-min TTL) the bot consumes to link your platform identity to your Nymeria account. The response includes a `t.me/<bot>?start=link_<code>` deep link when `TELEGRAM_BOT_USERNAME` is set. |
 | `GET` | `/me/telegram-bots` | — | List your BYO Telegram bots (token-paste registrations). No token material returned. |
 | `GET` | `/me/telegram-bots/{id}` | — | Single-bot fetch. The wizard polls this after registration to wait for the supervisor's first heartbeat (`last_seen_at` becomes non-null) before showing the bind step. |
@@ -105,7 +105,7 @@ Every account operation is exposed as a REST endpoint, gated by `require_admin_u
 
 ### Admin chat-app routes (`/admin/chatapp`, `/admin/platform/link-codes`) — bots only
 
-These admin endpoints exist so chat-app bots (Telegram, future Discord) can
+These admin endpoints exist so chat-app bots and webhooks can
 consume the codes the desktop wizard mints and look up the routing map
 without holding per-user tokens. They're not called by the frontend.
 They are rate-limited per admin/service user and endpoint; callers that exceed
@@ -137,7 +137,7 @@ polling, but bounds the impact of a misbehaving bot loop.
 | `POST` | `/admin/users/{id}/tokens` | `{label?}` | Issue a token for the user. Raw shown ONCE. |
 | `POST` | `/admin/users/{id}/tokens/rotate` | `{label?}` | Revoke every active token for the user, mint a fresh one. Raw shown ONCE. |
 | `DELETE` | `/admin/users/{id}/tokens/{prefix}` | — | Revoke a single token by hash prefix. |
-| `GET` | `/admin/users/{id}/platforms` | — | List a user's linked Discord/Telegram/Twitch identities. |
+| `GET` | `/admin/users/{id}/platforms` | — | List a user's linked chat-platform identities. |
 | `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link a platform identity. 409 if already linked to another user. |
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
