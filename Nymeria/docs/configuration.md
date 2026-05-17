@@ -665,11 +665,12 @@ separately.
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
-| `NYMERIA_WORKSPACE_DIR` | `/workspace` | Allowed root for mutating file tools and generated artifacts. `file_write`, `file_edit`, and `claude_code` reject paths outside this directory |
+| `NYMERIA_WORKSPACE_DIR` | `/workspace` | Workspace root for generated artifacts and optional file-tool confinement |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
-| `NYMERIA_ALLOW_SELF_EDIT` | `false` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`. Leave disabled outside trusted maintenance windows |
-| `NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL` | `false` | Enables managed MCP installs that execute downloaded package/bundle code without an external sandbox. Leave disabled for normal operation |
-| `NYMERIA_ALLOW_CLAUDE_CODE_BASH` | `false` | Lets the admin-only `claude_code` tool pass the `Bash` tool to nested Claude Code sessions when `allow_bash=True` |
+| `NYMERIA_CONFINE_FILE_TO_WORKSPACE` | `false` | When true, `file_write` and `file_edit` reject write targets outside `NYMERIA_WORKSPACE_DIR`. False keeps broad personal-assistant file access and relies on deployment sandboxing |
+| `NYMERIA_ALLOW_SELF_EDIT` | `true` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`; set false to disable self-modifying maintenance tools |
+| `NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL` | `true` | Enables managed MCP installs that execute downloaded package/bundle code inside the current backend environment. Set false to require an external sandbox/maintenance workflow |
+| `NYMERIA_ENFORCE_MCP_STDIO_ALLOWLIST` | `false` | When true, MCP stdio launches are restricted to the curated `SAFE_STDIO_COMMANDS` allowlist and unsafe eval flags are rejected |
 
 Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. Source
 launches walk upward looking for Nymeria backend markers such as `run.py`,
@@ -1594,10 +1595,11 @@ API_HOST=0.0.0.0
 API_PORT=8000
 # NYMERIA_API_DOCS=false            # Set true only in trusted local development
 # NYMERIA_DEBUG=false               # Also enables API docs when true
-# NYMERIA_WORKSPACE_DIR=/workspace  # file_write/file_edit/claude_code confinement root
-# NYMERIA_ALLOW_SELF_EDIT=false     # trusted admin maintenance only
-# NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL=false
-# NYMERIA_ALLOW_CLAUDE_CODE_BASH=false
+# NYMERIA_WORKSPACE_DIR=/workspace
+# NYMERIA_CONFINE_FILE_TO_WORKSPACE=false
+# NYMERIA_ALLOW_SELF_EDIT=true
+# NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL=true
+# NYMERIA_ENFORCE_MCP_STDIO_ALLOWLIST=false
 
 # Logging
 LOG_LEVEL=INFO

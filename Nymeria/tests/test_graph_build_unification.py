@@ -138,7 +138,7 @@ def test_sync_async_differ_only_in_checkpointer():
     assert sync_cfg.verbose == async_cfg.verbose
 
 
-def test_default_graph_excludes_capability_expansion_tools():
+def test_default_graph_includes_core_tools_and_excludes_capability_expansion_tools():
     agent = _make_agent()
 
     tools, _ = agent._select_tools_for_graph("u1", "t1")
@@ -146,8 +146,7 @@ def test_default_graph_excludes_capability_expansion_tools():
 
     from nymeria.tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
-    assert {"file_read", "notify"}.issubset(names)
-    assert "bash_execute" not in names
+    assert {"bash_execute", "file_read", "notify"}.issubset(names)
     assert names.isdisjoint(CAPABILITY_EXPANSION_TOOL_NAMES)
 
 

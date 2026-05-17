@@ -73,6 +73,16 @@ def _validate_stdio_launch(command: str, args: List[str]) -> None:
                 f"MCP stdio launcher '{basename}' cannot use unsafe argument '{arg}'"
             )
 
+
+def _should_enforce_stdio_launch_allowlist() -> bool:
+    from ..config import get_settings
+
+    try:
+        return bool(getattr(get_settings(), "nymeria_enforce_mcp_stdio_allowlist", False))
+    except Exception:
+        logger.debug("Failed to read MCP stdio allowlist setting", exc_info=True)
+        return False
+
 # Per-phase timeouts (seconds). MCPToolConfig.startup_timeout_seconds overrides INIT.
 INIT_TIMEOUT_DEFAULT = 10
 LIST_TIMEOUT_DEFAULT = 30
@@ -249,7 +259,8 @@ class MCPServerManager:
                 config.server_id or config.server_command,
             )
 
-        _validate_stdio_launch(config.server_command, config.server_args)
+        if _should_enforce_stdio_launch_allowlist():
+            _validate_stdio_launch(config.server_command, config.server_args)
         cmd = [config.server_command] + config.server_args
 
         cwd = config.working_directory

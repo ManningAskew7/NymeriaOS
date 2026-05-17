@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import filesystem
 from nymeria.tools.file_edit import file_edit
 from nymeria.tools.filesystem import file_write
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
@@ -214,7 +215,12 @@ def test_file_edit_rejects_protected_nymeria_paths(monkeypatch):
     assert result["error"]["type"] == "protected_path"
 
 
-def test_file_edit_rejects_paths_outside_workspace(tmp_path):
+def test_file_edit_rejects_paths_outside_workspace_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        filesystem,
+        "get_settings",
+        lambda: type("Settings", (), {"nymeria_confine_file_to_workspace": True})(),
+    )
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
 
@@ -229,7 +235,12 @@ def test_file_edit_rejects_paths_outside_workspace(tmp_path):
     assert outside.read_text(encoding="utf-8") == "outside\n"
 
 
-def test_file_write_is_confined_to_workspace(tmp_path):
+def test_file_write_is_confined_to_workspace_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        filesystem,
+        "get_settings",
+        lambda: type("Settings", (), {"nymeria_confine_file_to_workspace": True})(),
+    )
     ok = file_write.func("reports/result.txt", "hello")
     denied = file_write.func(str(tmp_path.parent / "outside-write.txt"), "nope")
 
