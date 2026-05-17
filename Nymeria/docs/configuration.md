@@ -1410,8 +1410,10 @@ By default these egress paths are public-internet-only. Loopback, private,
 link-local, reserved, unspecified, multicast, and metadata targets are blocked
 after DNS resolution unless the target is a non-metadata host explicitly listed
 in `HTTP_INTERNAL_ALLOWLIST`. Service-integration base URL validation also
-blocks literal private/metadata targets and honors the domain allow/block lists;
-full DNS pinning for long-lived clients is tracked separately.
+blocks literal private/metadata targets and honors the domain allow/block lists.
+Policy-managed requests pin the request-time socket resolver to the IPs that
+passed DNS policy validation, preserving hostname-based TLS validation while
+closing DNS-rebinding gaps.
 
 ### Autonomous Operation
 

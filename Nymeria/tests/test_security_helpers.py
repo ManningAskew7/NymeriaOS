@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from types import SimpleNamespace
 
 import pytest
@@ -127,6 +128,83 @@ def test_requests_get_with_policy_blocks_private_redirect():
     assert session.calls == 1
     assert exc_info.value.decision.reason == "loopback_network"
     assert exc_info.value.redirect_chain[0]["redirect_url"] == "https://127.0.0.1/admin"
+
+
+def test_requests_get_with_policy_pins_dns_between_check_and_connect(monkeypatch):
+    hostile_ip = "10.0.0.5"
+    pinned_ip = "93.184.216.34"
+    seen_addrinfo = {}
+
+    def hostile_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (hostile_ip, port))]
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+        url = "https://api.example.com/data"
+        is_redirect = False
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            seen_addrinfo["during_request"] = socket.getaddrinfo(
+                "api.example.com",
+                443,
+                type=socket.SOCK_STREAM,
+            )
+            return FakeResponse()
+
+    monkeypatch.setattr(socket, "getaddrinfo", hostile_getaddrinfo)
+
+    response, _redirect_chain, decision = http_policy.requests_get_with_policy(
+        "https://api.example.com/data",
+        session=FakeSession(),
+        config=http_policy.HTTPPolicyConfig(),
+        resolver=lambda host, port: [pinned_ip],
+    )
+
+    assert response.status_code == 200
+    assert decision.resolved_ips == (pinned_ip,)
+    assert seen_addrinfo["during_request"][0][4][0] == pinned_ip
+    assert socket.getaddrinfo("api.example.com", 443)[0][4][0] == hostile_ip
+
+
+def test_httpx_request_with_policy_pins_dns_between_check_and_connect(monkeypatch):
+    hostile_ip = "10.0.0.5"
+    pinned_ip = "93.184.216.34"
+    seen_addrinfo = {}
+
+    def hostile_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (hostile_ip, port))]
+
+    class FakeResponse:
+        is_redirect = False
+        status_code = 200
+        headers = {}
+        url = "https://api.example.com/data"
+
+    class FakeClient:
+        def request(self, *args, **kwargs):
+            seen_addrinfo["during_request"] = socket.getaddrinfo(
+                "api.example.com",
+                443,
+                type=socket.SOCK_STREAM,
+            )
+            return FakeResponse()
+
+    monkeypatch.setattr(socket, "getaddrinfo", hostile_getaddrinfo)
+
+    response, _redirect_chain, decision = http_policy.httpx_request_with_policy(
+        "GET",
+        "https://api.example.com/data",
+        client=FakeClient(),
+        config=http_policy.HTTPPolicyConfig(),
+        resolver=lambda host, port: [pinned_ip],
+    )
+
+    assert response.status_code == 200
+    assert decision.resolved_ips == (pinned_ip,)
+    assert seen_addrinfo["during_request"][0][4][0] == pinned_ip
+    assert socket.getaddrinfo("api.example.com", 443)[0][4][0] == hostile_ip
 
 
 def test_validate_http_egress_url_blocks_literal_private_base_url():

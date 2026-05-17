@@ -260,7 +260,11 @@ def _request_json(
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with httpx.Client(
+            timeout=_HTTP_TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            trust_env=False,
+        ) as client:
             response, _redirect_chain, _policy = httpx_request_with_policy(
                 method,
                 url,
