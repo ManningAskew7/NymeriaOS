@@ -851,7 +851,7 @@ reachable from the backend process.
 | `TEAMS_ACCOUNT_ID` | - | Outlook account ID for Teams (must have ChannelMessage.Send) |
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
 | `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
-| `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file |
+| `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file; used for Google OAuth start and refresh so per-user caches do not persist the app-wide client secret |
 | `_PRV_A_SERVICE_ACCOUNT_FILE` | - | Path to a Google service account JSON file for _PRV_A reference Sheets |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |

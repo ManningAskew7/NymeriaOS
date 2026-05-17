@@ -235,7 +235,9 @@ Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the
 
 If an OAuth token becomes stale, revoked, or attached to the wrong account, use the matching clear tool instead of deleting legacy home-directory files: `calendar_auth_clear`, `google_docs_auth_clear`, `gmail_auth_clear`, `outlook_auth_clear`, or `_prv_b_auth(action="clear")`. With no `account_id`, each OAuth clear tool removes all cached accounts for the current Nymeria user and clears any pending auth flow for that provider; with `account_id`, it removes only that saved account. `calendar_auth_start`, `google_docs_auth_start`, and `gmail_auth_start` also prune expired Google accounts automatically when Google rejects the stored refresh token.
 
-These cache files now migrate into the encrypted credential vault on startup when `NYMERIA_SECRETS_KEY` is configured. The old file helpers still fall back to file storage if the vault key is missing, but production installs should use the vault path.
+These cache files now migrate into the encrypted credential vault on startup when `NYMERIA_SECRETS_KEY` is configured. The old file helpers still fall back to file storage if the vault key is missing, but production installs should use the vault path. File fallback storage creates `data/auth_tokens/<user_id>/` with `0700` permissions and cache files with `0600` permissions.
+
+Google OAuth start flows use PKCE (`S256`). Per-user Google token caches store the user's access/refresh token and OAuth `client_id`, but do not store the app-wide `client_secret`; refresh resolves that secret from the operator-provided `GOOGLE_OAUTH_CREDENTIALS` file.
 
 ## Thread ownership
 

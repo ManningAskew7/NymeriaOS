@@ -267,9 +267,17 @@ def create_credentials_router(
             raise HTTPException(status_code=404, detail="Credential not found")
         _require_manage(user, record)
         deleted = (
-            repo.delete_credential(credential_id, actor_user_id=user.id)
+            repo.delete_credential(
+                credential_id,
+                actor_user_id=user.id,
+                actor_is_admin=user.role == "admin",
+            )
             if hard
-            else repo.disable_credential(credential_id, actor_user_id=user.id)
+            else repo.disable_credential(
+                credential_id,
+                actor_user_id=user.id,
+                actor_is_admin=user.role == "admin",
+            )
         )
         _invalidate_llm_graphs(get_agent_fn, record)
         return {"status": "ok", "deleted": deleted, "hard": hard}

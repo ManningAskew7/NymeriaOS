@@ -367,6 +367,16 @@ def test_seatable_rows_use_app_access_token(monkeypatch):
     assert calls[3]["json_body"] == {"table_name": "People", "rows": [{"Name": "Grace"}]}
 
 
+def test_seatable_sql_identifier_rejects_unsafe_table_names():
+    from nymeria.tools import data_table_service_integrations as tools
+
+    assert tools._seatable_identifier("People 2026") == "People 2026"
+    with pytest.raises(ValueError, match="SeaTable table_name"):
+        tools._seatable_identifier("People` WHERE 1=1 --")
+    with pytest.raises(ValueError, match="SeaTable table_name"):
+        tools._seatable_identifier("People; DROP TABLE People")
+
+
 def test_stackby_rows_use_api_key_header(monkeypatch):
     from nymeria.tools import data_table_service_integrations as tools
 

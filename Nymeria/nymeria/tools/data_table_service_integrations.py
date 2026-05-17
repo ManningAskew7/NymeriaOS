@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Annotated, Any, Optional
 from urllib.parse import parse_qsl, quote, urlparse
 
@@ -25,6 +26,7 @@ _ADALO_BASE_URL = "https://api.adalo.com/v0"
 _KOBO_BASE_URL = "https://kf.kobotoolbox.org"
 _BUBBLE_LIVE_SEGMENT = "/api/1.1"
 _BUBBLE_DEV_SEGMENT = "/version-test/api/1.1"
+_SEATABLE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_ -]{1,128}$")
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -720,7 +722,13 @@ def _seatable_sql_escape(value: str) -> str:
 
 
 def _seatable_identifier(value: str) -> str:
-    return value.replace("`", "``")
+    identifier = value.strip()
+    if not _SEATABLE_IDENTIFIER_RE.fullmatch(identifier):
+        raise ValueError(
+            "SeaTable table_name may only contain letters, numbers, spaces, "
+            "hyphens, and underscores."
+        )
+    return identifier
 
 
 def _seatable_base_context(base_url: str, api_token: str) -> tuple[str, dict[str, str]]:

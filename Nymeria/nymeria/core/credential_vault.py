@@ -561,8 +561,22 @@ class CredentialVaultRepo:
                 for row in rows
             ]
 
-    def delete_credential(self, credential_id: str, *, actor_user_id: Optional[str] = None) -> bool:
+    def delete_credential(
+        self,
+        credential_id: str,
+        *,
+        actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
+    ) -> bool:
         with self._lock, self._connect() as conn:
+            record = self._record_locked(conn, credential_id)
+            if record is None:
+                return False
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
             self._audit_locked(
                 conn,
                 credential_id=credential_id,
@@ -573,9 +587,23 @@ class CredentialVaultRepo:
             conn.commit()
             return cur.rowcount > 0
 
-    def disable_credential(self, credential_id: str, *, actor_user_id: Optional[str] = None) -> bool:
+    def disable_credential(
+        self,
+        credential_id: str,
+        *,
+        actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
+    ) -> bool:
         now = _now()
         with self._lock, self._connect() as conn:
+            record = self._record_locked(conn, credential_id)
+            if record is None or record.status == "disabled":
+                return False
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
             cur = conn.execute(
                 """
                 UPDATE credentials
@@ -677,22 +705,50 @@ class CredentialVaultRepo:
         candidates = {f"{target_type}:*", f"{target_type}:{target_id or ''}"}
         return bool(candidates.intersection(set(allowed)))
 
+    def _record_locked(
+        self,
+        conn: sqlite3.Connection,
+        credential_id: str,
+    ) -> Optional[CredentialRecord]:
+        row = conn.execute("SELECT * FROM credentials WHERE id = ?", (credential_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_record(row, self._secret_field_names(conn, credential_id))
+
+    def _require_actor_can_access(
+        self,
+        record: CredentialRecord,
+        *,
+        actor_user_id: Optional[str],
+        actor_is_admin: bool = False,
+    ) -> None:
+        if actor_user_id is None or actor_is_admin or record.owner_type != "user":
+            return
+        if record.owner_user_id == actor_user_id:
+            return
+        raise CredentialAccessDenied(
+            f"Credential {record.id} is not owned by actor {actor_user_id}"
+        )
+
     def get_secret_field(
         self,
         credential_id: str,
         field_name: str,
         *,
         actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
         target_type: Optional[str] = None,
         target_id: Optional[str] = None,
     ) -> str:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM credentials WHERE id = ?", (credential_id,)
-            ).fetchone()
-            if row is None:
+            record = self._record_locked(conn, credential_id)
+            if record is None:
                 raise CredentialNotFound(credential_id)
-            record = _row_to_record(row, self._secret_field_names(conn, credential_id))
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
             if record.status == "disabled":
                 raise CredentialAccessDenied(f"Credential {credential_id} is disabled")
             if not self._target_allowed(record, target_type, target_id):
