@@ -1510,6 +1510,9 @@ export interface AuthPromptEvent {
   provider: string;
   display_name: string;
   mode: AuthPromptMode;
+  /** Markdown rendered above the form. Use for "Find your key at…" instructions
+   *  and links to provider docs. Empty string when the agent didn't supply any. */
+  description: string;
   fields: AuthPromptField[];
   account_label: string;
   existing_accounts: AuthPromptExistingAccount[];
