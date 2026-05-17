@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import zipfile
+from types import SimpleNamespace
 
+import pytest
 from nymeria.core.mcp_sources import classify_mcp_source, extract_install_source
 from cryptography.fernet import Fernet
 
 from nymeria.core.mcp_runtime import (
+    MCPInstallError,
     analyze_text_source,
     apply_config_values,
     plan_bundle_file,
     plan_text_source,
+    prepare_runtime,
     save_preview,
 )
 from nymeria.tools.definitions.mcp_schema import MCPServerDefinition
@@ -227,6 +231,40 @@ npx -y @example/mcp-server
     assert plan.runtime_type == "npx"
     assert defn.server_command == "npx"
     assert defn.server_args == ["-y", "@example/mcp-server"]
+
+
+def test_prepare_runtime_blocks_unsandboxed_managed_package_installs(monkeypatch):
+    from nymeria.core import mcp_runtime
+
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_settings",
+        lambda: SimpleNamespace(nymeria_allow_unsandboxed_mcp_install=False),
+    )
+    defn, plan = plan_text_source("npx -y @example/mcp-server")
+
+    with pytest.raises(MCPInstallError, match="Managed MCP installs"):
+        prepare_runtime(defn, plan)
+
+
+def test_bundle_download_blocks_private_network_targets(tmp_path, monkeypatch):
+    from nymeria.core import mcp_runtime
+    import requests
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("blocked download should not issue an HTTP request")
+
+    monkeypatch.setattr(requests, "get", fail_get)
+
+    with pytest.raises(MCPInstallError, match="egress policy"):
+        mcp_runtime._download("http://127.0.0.1:8000/server.mcpb", tmp_path / "server.mcpb")
+
+
+def test_mcp_registry_base_url_blocks_private_network():
+    from nymeria.core.mcp_registry_client import OfficialMCPRegistryFetcher, RegistryError
+
+    with pytest.raises(RegistryError, match="egress policy"):
+        OfficialMCPRegistryFetcher(base_url="http://127.0.0.1:8000")
 
 
 def test_shared_source_classifier_covers_install_surfaces():

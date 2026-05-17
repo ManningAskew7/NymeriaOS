@@ -146,7 +146,8 @@ def test_default_graph_excludes_capability_expansion_tools():
 
     from nymeria.tools import CAPABILITY_EXPANSION_TOOL_NAMES
 
-    assert {"bash_execute", "file_read", "notify"}.issubset(names)
+    assert {"file_read", "notify"}.issubset(names)
+    assert "bash_execute" not in names
     assert names.isdisjoint(CAPABILITY_EXPANSION_TOOL_NAMES)
 
 

@@ -10,6 +10,13 @@ from urllib.parse import quote, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import (
+    HTTPPolicyRedirectLimit,
+    HTTPPolicyViolation,
+    httpx_request_with_policy,
+    validate_http_egress_url,
+)
+
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = 30.0
@@ -62,7 +69,11 @@ def _require_absolute_base_url(base_url: str) -> str:
     parsed = urlparse(base_url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base URL must be an absolute http(s) URL")
-    return base_url.strip().rstrip("/")
+    return validate_http_egress_url(
+        base_url.strip().rstrip("/"),
+        label="base URL",
+        resolve_dns=False,
+    )
 
 
 def _gitlab_api_base_url(base_url: str) -> str:
@@ -250,16 +261,20 @@ def _request_json(
 
     try:
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(
+            response, _redirect_chain, _policy = httpx_request_with_policy(
                 method,
                 url,
+                client=client,
                 params=_filtered_params(params),
                 headers=headers,
+                follow_redirects=False,
             )
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
                 return {"status": "ok", "status_code": response.status_code}
             return response.json()
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+        raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
     except httpx.HTTPStatusError as e:
         detail = ""
         try:

@@ -291,7 +291,20 @@ class NymeriaAgent:
             migrate_mcp_encrypted_env_vars,
         )
         accounts_db = self.settings.data_dir / "accounts.db"
-        self.accounts_repo = AccountsRepo(accounts_db)
+        self.accounts_repo = AccountsRepo(
+            accounts_db,
+            token_ttl_days=getattr(self.settings, "account_token_ttl_days", 90),
+            max_active_tokens_per_user=getattr(
+                self.settings,
+                "account_max_active_tokens_per_user",
+                10,
+            ),
+            bootstrap_token_ttl_hours=getattr(
+                self.settings,
+                "account_bootstrap_token_ttl_hours",
+                24,
+            ),
+        )
         self.accounts_repo.ensure_bootstrap_admin(self.settings.data_dir)
         self.chat_bindings_repo = ChatBindingsRepo(accounts_db)
         self.credential_vault = CredentialVaultRepo(accounts_db)

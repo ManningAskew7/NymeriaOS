@@ -413,11 +413,11 @@ Set the API key for your chosen provider:
 | `JINA_DEEPSEARCH_BASE_URL` | Jina AI | Optional Jina DeepSearch API base URL override |
 | `MISP_BASE_URL` | MISP | Optional MISP base URL fallback; credential vault provider `misp` is preferred |
 | `MISP_API_KEY` | MISP | Optional MISP API key fallback |
-| `MISP_ALLOW_UNAUTHORIZED_CERTS` | MISP | Optional flag to allow self-signed MISP certificates |
+| `MISP_ALLOW_UNAUTHORIZED_CERTS` | MISP | Deprecated / ignored. TLS verification is always enforced |
 | `THEHIVE_BASE_URL` | TheHive | Optional TheHive base URL fallback; credential vault provider `thehive` is preferred |
 | `THEHIVE_API_KEY` | TheHive | Optional TheHive API key fallback |
 | `THEHIVE_API_VERSION` | TheHive | Optional TheHive API version hint |
-| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | TheHive | Optional flag to allow self-signed TheHive certificates |
+| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | TheHive | Deprecated / ignored. TLS verification is always enforced |
 | `SECURITYSCORECARD_API_KEY` | SecurityScorecard | Optional SecurityScorecard API key fallback; credential vault provider `securityscorecard` is preferred |
 | `SECURITYSCORECARD_BASE_URL` | SecurityScorecard | Optional SecurityScorecard API base URL override |
 | `ELASTIC_SECURITY_BASE_URL` | Elastic Security | Optional Elastic Security Kibana base URL fallback; credential vault provider `elastic_security` is preferred |
@@ -655,6 +655,9 @@ separately.
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
 | `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `twitch-bot`, `watchdog`, `mcp`, and `service run`; local `api`, `cli`, and `users` development can still start without it. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
+| `ACCOUNT_TOKEN_TTL_DAYS` | `90` | Lifetime for newly issued Nymeria account tokens. Expired tokens are rejected and auto-revoked. |
+| `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
+| `ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS` | `24` | Lifetime for the first-run bootstrap admin token. The plaintext bootstrap token file is also deleted after first successful auth. |
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
@@ -662,7 +665,11 @@ separately.
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
+| `NYMERIA_WORKSPACE_DIR` | `/workspace` | Allowed root for mutating file tools and generated artifacts. `file_write`, `file_edit`, and `claude_code` reject paths outside this directory |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
+| `NYMERIA_ALLOW_SELF_EDIT` | `false` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`. Leave disabled outside trusted maintenance windows |
+| `NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL` | `false` | Enables managed MCP installs that execute downloaded package/bundle code without an external sandbox. Leave disabled for normal operation |
+| `NYMERIA_ALLOW_CLAUDE_CODE_BASH` | `false` | Lets the admin-only `claude_code` tool pass the `Bash` tool to nested Claude Code sessions when `allow_bash=True` |
 
 Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. Source
 launches walk upward looking for Nymeria backend markers such as `run.py`,
@@ -731,7 +738,7 @@ reachable from the backend process.
 |----------|---------|-------------|
 | `BROWSER_FORCE_FALLBACK` | `false` | Skip Playwright and use requests+BeautifulSoup fallback mode for browser navigation/content extraction |
 | `BROWSER_HEADLESS` | auto | Force Playwright headless mode with `true` or visible mode with `false`; unset auto-detects Docker/headless Linux |
-| `BROWSER_VERIFY_SSL` | `true` | Verify TLS certificates for fallback HTTP requests. Set to `false` only for trusted environments with known TLS interception |
+| `BROWSER_VERIFY_SSL` | ignored | Deprecated. TLS verification is always enforced for browser fallback requests |
 
 ### Redis (Docker Only)
 
@@ -1159,11 +1166,11 @@ reachable from the backend process.
 | `JINA_DEEPSEARCH_BASE_URL` | `https://deepsearch.jina.ai/v1` | Jina DeepSearch API base URL |
 | `MISP_BASE_URL` | - | MISP base URL fallback |
 | `MISP_API_KEY` | - | MISP API key fallback |
-| `MISP_ALLOW_UNAUTHORIZED_CERTS` | `false` | Allow self-signed MISP certificates |
+| `MISP_ALLOW_UNAUTHORIZED_CERTS` | ignored | Deprecated. TLS verification is always enforced |
 | `THEHIVE_BASE_URL` | - | TheHive base URL fallback |
 | `THEHIVE_API_KEY` | - | TheHive API key fallback |
 | `THEHIVE_API_VERSION` | `v1` | TheHive API version hint |
-| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | `false` | Allow self-signed TheHive certificates |
+| `THEHIVE_ALLOW_UNAUTHORIZED_CERTS` | ignored | Deprecated. TLS verification is always enforced |
 | `SECURITYSCORECARD_API_KEY` | - | SecurityScorecard API key fallback |
 | `SECURITYSCORECARD_BASE_URL` | `https://api.securityscorecard.io` | SecurityScorecard API base URL |
 | `ELASTIC_SECURITY_BASE_URL` | - | Elastic Security Kibana base URL fallback |
@@ -1385,8 +1392,11 @@ reachable from the backend process.
 
 ### HTTP Tool Egress Policy
 
-These settings apply to `http_request`, `api_discover`, and saved custom HTTP
-tools. The model cannot override them per call.
+These settings apply to `http_request`, `api_discover`, saved custom HTTP
+tools, browser navigation/fallback fetches, RSS trigger polling, MCP registry
+and bundle downloads, MCP HTTP transports, OpenAI image URL fallback fetches,
+and supported service-integration base URLs. The model cannot override them per
+call.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -1396,10 +1406,12 @@ tools. The model cannot override them per call.
 | `HTTP_MAX_REDIRECTS` | `5` | Maximum redirects followed by HTTP tools (0-20) |
 | `HTTP_ALLOW_HTTPS_TO_HTTP_REDIRECT` | `false` | Whether HTTP tools may follow redirects from `https://` to `http://` |
 
-By default HTTP tools are public-internet-only. Loopback, private, link-local,
-reserved, unspecified, multicast, and metadata targets are blocked after DNS
-resolution unless the target is a non-metadata host explicitly listed in
-`HTTP_INTERNAL_ALLOWLIST`.
+By default these egress paths are public-internet-only. Loopback, private,
+link-local, reserved, unspecified, multicast, and metadata targets are blocked
+after DNS resolution unless the target is a non-metadata host explicitly listed
+in `HTTP_INTERNAL_ALLOWLIST`. Service-integration base URL validation also
+blocks literal private/metadata targets and honors the domain allow/block lists;
+full DNS pinning for long-lived clients is tracked separately.
 
 ### Autonomous Operation
 
@@ -1574,6 +1586,10 @@ API_HOST=0.0.0.0
 API_PORT=8000
 # NYMERIA_API_DOCS=false            # Set true only in trusted local development
 # NYMERIA_DEBUG=false               # Also enables API docs when true
+# NYMERIA_WORKSPACE_DIR=/workspace  # file_write/file_edit/claude_code confinement root
+# NYMERIA_ALLOW_SELF_EDIT=false     # trusted admin maintenance only
+# NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL=false
+# NYMERIA_ALLOW_CLAUDE_CODE_BASH=false
 
 # Logging
 LOG_LEVEL=INFO

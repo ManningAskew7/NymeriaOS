@@ -665,6 +665,19 @@ def test_get_settings_does_not_return_provider_secret_fields(
         assert secret not in response.text
 
 
+def test_get_settings_is_admin_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+
+    response = client.get("/settings", headers=_auth(user_token))
+
+    assert response.status_code == 403
+
+
 def test_env_settings_list_masks_provider_and_capability_keys(
     tmp_path: Path,
     monkeypatch,

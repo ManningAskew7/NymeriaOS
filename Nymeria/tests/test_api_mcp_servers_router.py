@@ -216,3 +216,40 @@ def test_mcp_install_requires_confirmation_for_risky_sources(
     assert detail["server"]["install_status"] == "draft"
     assert detail["server"]["enabled"] is False
     assert list(registry.servers) == []
+
+
+def test_mcp_install_confirmed_package_stays_draft_when_unsandboxed_disabled(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    client, agent, registry = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "admin", role="admin")
+
+    from nymeria.core import mcp_runtime
+
+    settings = api_client_builder.settings(tmp_path)
+    monkeypatch.setattr(mcp_runtime, "get_settings", lambda: settings)
+
+    preview = client.post(
+        "/mcp-servers/install/preview",
+        headers=api_client_builder.auth(token),
+        json={"source": "npx -y @example/mcp-server"},
+    )
+    assert preview.status_code == 200
+
+    response = client.post(
+        "/mcp-servers/install",
+        headers=api_client_builder.auth(token),
+        json={
+            "preview_token": preview.json()["preview_token"],
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "draft"
+    assert "Managed MCP installs" in body["discovery_error"]
+    assert body["server"]["install_status"] == "failed"
+    assert registry.discover_calls == []

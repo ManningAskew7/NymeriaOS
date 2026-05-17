@@ -738,7 +738,7 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
-    app.include_router(create_todos_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(create_todos_router(verify_api_key, require_admin_user, _authed_user_id, get_settings))
     app.include_router(create_commands_router(verify_api_key, get_agent, get_settings))
     app.include_router(create_autonomous_stream_router(get_agent, get_settings))
     app.include_router(create_custom_tools_router(require_admin_user, get_agent))

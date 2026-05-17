@@ -113,8 +113,10 @@ def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
     client, agent = _client(tmp_path, api_client_builder)
     owner_token = _create_user(agent, "owner")
     other_token = _create_user(agent, "other")
+    admin_token = _create_user(agent, "admin", role="admin")
     owner_headers = api_client_builder.auth(owner_token)
     other_headers = api_client_builder.auth(other_token)
+    admin_headers = api_client_builder.auth(admin_token)
 
     owner_todo = client.post(
         "/todos",
@@ -136,12 +138,14 @@ def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
         headers=owner_headers,
         params={"user_id": "other", "filter_status": "all"},
     )
-    users_with_todos = client.get("/todos/users", headers=owner_headers)
+    users_denied = client.get("/todos/users", headers=owner_headers)
+    users_with_todos = client.get("/todos/users", headers=admin_headers)
 
     assert owner_list_with_ignored_query.status_code == 200
     listed = owner_list_with_ignored_query.json()
     assert listed["user_id"] == "owner"
     assert [item["task"] for item in listed["items"]] == ["Owner task"]
+    assert users_denied.status_code == 403
     assert users_with_todos.status_code == 200
     assert set(users_with_todos.json()) == {"owner", "other"}
 

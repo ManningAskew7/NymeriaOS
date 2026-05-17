@@ -1249,6 +1249,20 @@ def prepare_runtime(
     log_sink: Optional[List[str]] = None,
 ) -> Tuple[MCPServerDefinition, List[str]]:
     logs: List[str] = log_sink if log_sink is not None else []
+    settings = get_settings()
+    if (
+        (
+            plan.source_type in {"git", "bundle_url", "bundle_upload"}
+            or plan.runtime_type in {"npx", "uvx"}
+        )
+        and not getattr(settings, "nymeria_allow_unsandboxed_mcp_install", False)
+    ):
+        raise MCPInstallError(
+            "Managed MCP installs that execute downloaded package code are disabled. "
+            "Run them in an external sandbox or set "
+            "NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL=true only for a trusted "
+            "admin maintenance window."
+        )
     defn, missing = apply_config_values(
         defn,
         plan,
@@ -1312,8 +1326,22 @@ def prepare_runtime(
 
 
 def _download(url: str, dest: Path) -> None:
-    import requests
-    with requests.get(url, stream=True, timeout=60) as resp:
+    from .http_policy import (
+        HTTPPolicyRedirectLimit,
+        HTTPPolicyViolation,
+        requests_get_with_policy,
+    )
+
+    try:
+        resp, _redirect_chain, _policy = requests_get_with_policy(
+            url,
+            stream=True,
+            timeout=60,
+        )
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+        raise MCPInstallError(f"download blocked by HTTP egress policy: {e}") from e
+
+    with resp:
         if resp.status_code >= 400:
             raise MCPInstallError(f"download failed HTTP {resp.status_code}: {resp.text[:200]}")
         dest.parent.mkdir(parents=True, exist_ok=True)

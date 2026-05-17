@@ -8,27 +8,26 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
-| 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands |
-| 2 | `file_read` | Core | SAFE | On | Read file contents |
-| 3 | `file_write` | Core | MODERATE | On | Write content to files |
-| 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
-| 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
-| 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
-| 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
-| 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
-| 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
-| 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
-| 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
-| 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
-| 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
-| 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
-| 15 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
+| 1 | `file_read` | Core | SAFE | On | Read file contents |
+| 2 | `file_write` | Core | MODERATE | On | Write content to files under `NYMERIA_WORKSPACE_DIR` |
+| 3 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
+| 4 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
+| 5 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
+| 6 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
+| 7 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
+| 8 | `personality_set` | Profile | SAFE | On | Set communication preferences |
+| 9 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
+| 10 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
+| 11 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
+| 12 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
+| 13 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
+| 14 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
 
 > **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
 
-> **Note:** `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `RUNTIME_ADMIN_TOOLS`, `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
+> **Note:** `bash_execute`, `claude_code`, `reload_all`, and `self_modify_rollback` are **not** in core `ALL_TOOLS`. They live in `OPTIONAL_TOOLS` (`reload_all` / `self_modify_rollback` via `RUNTIME_ADMIN_TOOLS`, `bash_execute` and `claude_code` directly) and are in `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` — admins can enable them per-thread, non-admins are blocked at every enable boundary. See `nymeria/tools/__init__.py` for the canonical lists.
 
 > **Tool output guard:** After any tool executes, Nymeria truncates oversized `ToolMessage` content before it is stored in thread history. `TOOL_OUTPUT_MAX_CHARS` defaults to `100000`; larger outputs keep the first ~75k and last ~25k characters with a marker showing the original and omitted sizes.
 
@@ -1109,11 +1108,11 @@ The frontend header count uses `GET /threads/{thread_id}/callable-tools`, which 
 
 ---
 
-## Core System Tools
+## System Tools
 
-### bash_execute
+### bash_execute (Optional, admin-only)
 
-Execute shell commands on the local system.
+Execute shell commands on the local system. **Not loaded by default** — lives in `OPTIONAL_TOOLS` and is gated by `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` (only admins may enable it).
 
 ```python
 bash_execute(command: str, working_directory: Optional[str] = None, timeout_seconds: int = 120)
@@ -1126,7 +1125,7 @@ bash_execute(command: str, working_directory: Optional[str] = None, timeout_seco
 
 **Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
 
-**Security:** MODERATE — runs commands without sandboxing.
+**Security:** MODERATE — runs commands without sandboxing. Enable only for trusted admin maintenance threads.
 
 ---
 
@@ -1139,7 +1138,7 @@ file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = No
 ```
 
 **Parameters:**
-- `file_path` (`str`): Absolute or relative path to the file
+- `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve under `NYMERIA_WORKSPACE_DIR` (default `/workspace`); absolute paths must also stay inside that directory.
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read
 
@@ -1163,9 +1162,9 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `create_directories` (`bool`, default `True`): Create parent directories if they don't exist
 - `append` (`bool`, default `False`): Append to file instead of overwriting
-- `attach` (`bool`, default `False`): Deliver the written file back to chat clients (Telegram, Discord, desktop/mobile artifact viewers). Only files inside `NYMERIA_WORKSPACE_DIR` (default `/workspace`) are attachable. When attach succeeds, the raw tool result includes an `[attach:/path]` tag for backward compatibility and the API emits a structured `workspace_artifact` SSE event.
+- `attach` (`bool`, default `False`): Deliver the written file back to chat clients (Telegram, Discord, desktop/mobile artifact viewers). When attach succeeds, the raw tool result includes an `[attach:/path]` tag for backward compatibility and the API emits a structured `workspace_artifact` SSE event.
 
-**Returns:** Success/error message with character count. When `attach=True` and the file is inside the workspace directory, the raw tool result includes an `[attach:/path]` tag and clients receive a `workspace_artifact` event. If the file is outside the workspace, the write still succeeds but attachment delivery is skipped with an info note.
+**Returns:** Success/error message with character count. Paths outside `NYMERIA_WORKSPACE_DIR` are rejected before writing. When `attach=True`, the raw tool result includes an `[attach:/path]` tag and clients receive a `workspace_artifact` event.
 
 **Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
 
@@ -1200,13 +1199,13 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 **Safety:** Edits are all-or-nothing and written atomically. The tool does not create backups. It preserves the existing file mode and dominant newline style for inserted/replacement text.
 
-**Limits and protected paths:** Same 10 MB text-file limit and protected Nymeria paths as `file_write`.
+**Limits and protected paths:** Same 10 MB text-file limit, workspace confinement, and protected Nymeria paths as `file_write`.
 
 ---
 
 ### ~~file_list~~ (removed)
 
-**Deprecated.** Redundant with `bash_execute` — use `bash_execute("ls -la /path")` or `bash_execute("find /path -name '*.py'")` instead. Removed from `ALL_TOOLS` and `TOOL_METADATA`.
+**Deprecated.** Removed from `ALL_TOOLS` and `TOOL_METADATA`. For trusted maintenance threads, an admin may enable `bash_execute` and use shell listing commands instead.
 
 ---
 
@@ -1268,22 +1267,22 @@ Invoke Claude Code in headless mode to create, modify, or analyze code. **Not lo
 
 ```python
 claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
-            allow_edit: bool = True, allow_bash: bool = True, timeout: int = 300)
+            allow_edit: bool = True, allow_bash: bool = False, timeout: int = 300)
 ```
 
 **Parameters:**
 - `prompt` (`str`): The coding task or question
-- `working_dir` (`Optional[str]`, default `None`): Directory to run in (defaults to current directory)
+- `working_dir` (`Optional[str]`, default `None`): Directory to run in. Defaults to `NYMERIA_WORKSPACE_DIR`; explicit paths must remain inside that workspace.
 - `model` (`str`, default `"sonnet"`): Model — `"sonnet"`, `"opus"`, or `"haiku"`
 - `allow_edit` (`bool`, default `True`): Allow Claude Code to edit files
-- `allow_bash` (`bool`, default `True`): Allow Claude Code to run commands
+- `allow_bash` (`bool`, default `False`): Allow Claude Code to run commands. Requires `NYMERIA_ALLOW_CLAUDE_CODE_BASH=true`.
 - `timeout` (`int`, default `300`): Timeout in seconds
 
 **Returns:** Claude Code's response or error message. Output truncated at 50,000 characters.
 
 **Requires:** `claude` CLI binary in PATH (install with `npm install -g @anthropic-ai/claude-code`).
 
-**Tools passed to Claude Code:** Always includes `Read`. Adds `Edit` if `allow_edit=True`, `Bash` if `allow_bash=True`.
+**Tools passed to Claude Code:** Always includes `Read`. Adds `Edit` if `allow_edit=True`, `Bash` if `allow_bash=True` and the environment escape hatch is enabled.
 
 ---
 
@@ -2284,7 +2283,7 @@ tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str |
 
 **Actions:**
 - `enable` — Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`bash_execute`, `file_read`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
+- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
 - `list_categories` — List all tool categories with tool counts.
 - `status` / `inspect` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
@@ -2969,7 +2968,9 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 **Architecture:** All browser operations run on a dedicated `BrowserThread` to satisfy Playwright's single-thread requirement. Operations are queued and results retrieved via thread-safe queues. The browser persists between calls until explicitly closed.
 
-**Fallback mode:** Set `BROWSER_FORCE_FALLBACK=true` in `.env` to skip Playwright entirely and use requests+BeautifulSoup for navigation and content extraction. Fallback HTTP requests verify TLS certificates by default; set `BROWSER_VERIFY_SSL=false` only in trusted environments with known TLS interception.
+**Network policy:** Browser navigation, Playwright HTTP(S) subrequests, and fallback requests all use Nymeria's HTTP egress policy. Loopback, private, link-local, metadata, and blocked-domain targets are rejected unless explicitly allowed by the operator.
+
+**Fallback mode:** Set `BROWSER_FORCE_FALLBACK=true` in `.env` to skip Playwright entirely and use requests+BeautifulSoup for navigation and content extraction. Fallback HTTP requests always verify TLS certificates; `BROWSER_VERIFY_SSL` is deprecated and ignored.
 
 ---
 
@@ -3145,7 +3146,7 @@ These optional tools reuse the `google_business_profile_auth_start` OAuth connec
 
 ### SelfModify Tools (8)
 
-Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write** and **delete** are restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
+Used internally by SelfModifyAgent. Defined in `core/self_agent.py`. **Read** and **list** operations work on any path within the project root. **Write**, **delete**, and **reload** are disabled unless `NYMERIA_ALLOW_SELF_EDIT=true`, and writes/deletes are still restricted to `nymeria/tools/`, `nymeria/agents/`, and `nymeria/triggers/sources/`.
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
@@ -3190,7 +3191,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 
 The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread. Tool discovery is role-filtered; `hello_test` remains in `OPTIONAL_TOOLS` for admin/test validation but is hidden from non-admin search/listing surfaces and rejected by non-admin enable paths.
 
-**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains tools like `claude_code`, `reload_all`, and `self_modify_rollback`.
+**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains admin-only tools like `bash_execute`, `claude_code`, `reload_all`, and `self_modify_rollback`.
 
 ---
 

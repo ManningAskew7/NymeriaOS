@@ -316,6 +316,21 @@ class TriggerManager:
         store = self._load(user_id)
         return store.get_trigger(trigger_id)
 
+    def find_triggers_by_id(self, trigger_id: str) -> List[Tuple[str, TriggerDefinition]]:
+        """Find trigger-id matches across user stores.
+
+        Trigger IDs are short random values and are unique only within a
+        user's trigger store. Public webhook fires cannot trust a caller's
+        ``?user_id=`` hint, so they search by trigger ID and then authenticate
+        against the trigger's own shared secret before selecting an owner.
+        """
+        matches: List[Tuple[str, TriggerDefinition]] = []
+        for user_id in self.get_all_users_with_triggers():
+            trigger = self.get_trigger(user_id, trigger_id)
+            if trigger is not None:
+                matches.append((user_id, trigger))
+        return matches
+
     def get_all_users_with_triggers(self) -> List[str]:
         """Get user IDs that have trigger files."""
         users = []

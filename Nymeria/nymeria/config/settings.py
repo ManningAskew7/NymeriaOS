@@ -184,6 +184,29 @@ class Settings(BaseSettings):
         default=None,
         description="Admin-role service token used by bots/ticker/watchdog for act-as calls",
     )
+    account_token_ttl_days: int = Field(
+        default=90,
+        ge=1,
+        description="Lifetime, in days, for newly issued Nymeria account tokens",
+    )
+    account_max_active_tokens_per_user: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum non-revoked, non-expired account tokens per user",
+    )
+    account_bootstrap_token_ttl_hours: int = Field(
+        default=24,
+        ge=1,
+        description="Lifetime, in hours, for the first-run bootstrap admin token",
+    )
+    nymeria_allow_self_edit: bool = Field(
+        default=False,
+        description="Allow admin-only self_file_write/delete/reload tools to mutate Nymeria source",
+    )
+    nymeria_allow_unsandboxed_mcp_install: bool = Field(
+        default=False,
+        description="Allow managed MCP installs that execute downloaded package code without an external sandbox",
+    )
 
     # Data directory override (for Docker volumes)
     nymeria_data_dir: Optional[str] = Field(

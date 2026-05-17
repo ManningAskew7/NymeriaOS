@@ -53,7 +53,9 @@ def _base_url(value: str) -> str:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("base URL must be an absolute http(s) URL")
-    return value.strip().rstrip("/")
+    from ..core.http_policy import validate_http_egress_url
+
+    return validate_http_egress_url(value.strip().rstrip("/"), label="base URL", resolve_dns=False)
 
 
 def _parse_json(value: str, *, expected: type, label: str) -> Any:
@@ -304,16 +306,7 @@ def _misp_config(
         tool_name=tool_name,
         config=config,
     ) or _settings_value("misp_api_key")
-    verify = not _truthy(
-        _credential_value(
-            provider="misp",
-            provider_aliases=("misp_api",),
-            field_names=("allow_unauthorized_certs", "allowUnauthorizedCerts", "ignore_ssl_issues"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or str(_settings_value("misp_allow_unauthorized_certs") or "")
-    )
+    verify = True
     if not api_key:
         return "", _setup_hint(
             provider="misp",
@@ -362,16 +355,7 @@ def _thehive_config(
         or _settings_value("thehive_api_version")
         or "v1"
     )
-    verify = not _truthy(
-        _credential_value(
-            provider="thehive",
-            provider_aliases=("the_hive", "thehive_api", "thehive_project"),
-            field_names=("allow_unauthorized_certs", "allowUnauthorizedCerts", "ignore_ssl_issues"),
-            tool_name=tool_name,
-            config=config,
-        )
-        or str(_settings_value("thehive_allow_unauthorized_certs") or "")
-    )
+    verify = True
     if not api_key:
         return "", _setup_hint(
             provider="thehive",

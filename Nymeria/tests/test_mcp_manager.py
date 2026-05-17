@@ -8,9 +8,23 @@ import pytest
 
 from nymeria.core import mcp_servers
 from nymeria.core.custom_tools import CustomToolLoader
-from nymeria.core.mcp_manager import MCPServerManager
+from nymeria.core.mcp_manager import MCPServerManager, _validate_stdio_launch
 from nymeria.core.mcp_manager import get_mcp_manager, shutdown_mcp_manager
 from nymeria.tools.definitions.mcp_schema import MCPToolConfig
+
+
+def test_stdio_launch_enforces_command_allowlist():
+    with pytest.raises(RuntimeError, match="not allowed"):
+        _validate_stdio_launch("/bin/sh", ["-c", "echo unsafe"])
+
+
+def test_stdio_launch_blocks_interpreter_eval_flags():
+    with pytest.raises(RuntimeError, match="unsafe argument"):
+        _validate_stdio_launch("python3", ["-c", "print('unsafe')"])
+
+
+def test_stdio_launch_accepts_versioned_python_interpreter():
+    _validate_stdio_launch(sys.executable, ["server.py"])
 
 
 def test_stdio_startup_failure_includes_recent_stderr(tmp_path):

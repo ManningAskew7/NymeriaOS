@@ -145,9 +145,8 @@ async def _generate_autonomous_sse_events(
                     )
 
                 # Filter by user_id unless the caller requested the firehose
-                # (admin + X-Nymeria-Act-As: *). "default" historically meant
-                # "all" and remains honored for compatibility.
-                if not firehose and user_id != "default" and event.user_id != user_id:
+                # (admin + X-Nymeria-Act-As: *).
+                if not firehose and event.user_id != user_id:
                     filtered_count = bump(filtered_user_counts, event.event_type)
                     if should_log_stream_event_sample(event.event_type, filtered_count):
                         logger.info(

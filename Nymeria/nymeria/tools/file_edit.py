@@ -15,7 +15,7 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, ValidationError
 
-from .filesystem import NYMERIA_PROTECTED_DIRS, _NYMERIA_ROOT
+from .filesystem import NYMERIA_PROTECTED_DIRS, _NYMERIA_ROOT, resolve_workspace_write_path
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +404,15 @@ def file_edit(
         )
 
     try:
-        path = Path(file_path).resolve()
+        path, workspace_error = resolve_workspace_write_path(file_path)
+        if workspace_error:
+            return _error_result(
+                "path_outside_workspace",
+                workspace_error,
+                file_path=file_path,
+                dry_run=dry_run,
+            )
+        assert path is not None
 
         protected_error = _protected_write_error(path)
         if protected_error:

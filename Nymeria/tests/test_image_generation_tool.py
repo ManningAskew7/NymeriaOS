@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 from types import SimpleNamespace
 
+import pytest
+
 from nymeria.core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
 from nymeria.tools import image_generation
 from nymeria.tools.image_generation import image_generate
@@ -44,6 +46,20 @@ def test_openai_adapter_decodes_b64_response(monkeypatch):
     assert captured["api_key"] == "test-openai-key"
     assert captured["prompt"] == "draw a precise icon"
     assert captured["response_format"] == "b64_json"
+
+
+def test_openai_image_url_fetch_blocks_private_network(monkeypatch):
+    import httpx
+
+    def fail_request(*args, **kwargs):
+        raise AssertionError("blocked image URL should not issue an HTTP request")
+
+    monkeypatch.setattr(httpx.Client, "request", fail_request)
+
+    with pytest.raises(RuntimeError, match="egress policy"):
+        image_generation._read_openai_image_bytes(
+            SimpleNamespace(url="http://127.0.0.1:8000/image.png")
+        )
 
 
 def test_gemini_adapter_reads_inline_image_data(monkeypatch):

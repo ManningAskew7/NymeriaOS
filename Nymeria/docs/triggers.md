@@ -64,7 +64,9 @@ Requires Microsoft OAuth — shares auth infrastructure with the Outlook add-in.
 
 Template variables: `{title}`, `{link}`, `{summary}`, `{author}`, `{published}`, `{feed_title}`.
 
-Dependency: `feedparser` (included in requirements).
+RSS polling uses Nymeria's HTTP egress policy, so loopback, private, link-local,
+metadata, and blocked-domain targets are rejected unless explicitly allowed by
+the operator. Dependency: `feedparser` (included in requirements).
 
 ### HTTP Poll
 

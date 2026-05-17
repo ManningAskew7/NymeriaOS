@@ -55,11 +55,23 @@ class RSSSource(BaseTriggerSource):
         url = config["url"]
         max_items = config.get("max_items", 5)
 
-        import httpx
+        from ...core.http_policy import (
+            HTTPPolicyRedirectLimit,
+            HTTPPolicyViolation,
+            httpx_request_with_policy,
+        )
 
         try:
-            resp = httpx.get(url, timeout=15, follow_redirects=True)
+            resp, _redirect_chain, _policy = httpx_request_with_policy(
+                "GET",
+                url,
+                timeout=15,
+                follow_redirects=True,
+            )
             resp.raise_for_status()
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            logger.error(f"rss source: blocked feed URL {url}: {e}")
+            raise
         except Exception as e:
             logger.error(f"rss source: failed to fetch {url}: {e}")
             raise

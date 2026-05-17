@@ -180,6 +180,35 @@ def test_autonomous_sse_filters_by_user_and_unsubscribes_on_close():
     assert bus.get_subscriber_count() == 0
 
 
+def test_autonomous_sse_default_user_is_not_implicit_firehose():
+    queue: Queue = Queue()
+    event_bus = EventBus()
+    queue.put_nowait(
+        AutonomousEvent(
+            event_type="response",
+            thread_id="thread-bob",
+            user_id="bob",
+            data={"content": "hidden"},
+        )
+    )
+    queue.put_nowait(
+        AutonomousEvent(
+            event_type="response",
+            thread_id="thread-default",
+            user_id="default",
+            data={"content": "visible"},
+        )
+    )
+
+    frame, bus = asyncio.run(
+        _next_sse_data(queue=queue, event_bus=event_bus, user_id="default")
+    )
+
+    assert '"content": "visible"' in frame
+    assert "hidden" not in frame
+    assert bus.get_subscriber_count() == 0
+
+
 def test_autonomous_sse_firehose_yields_other_user_events():
     queue: Queue = Queue()
     event_bus = EventBus()

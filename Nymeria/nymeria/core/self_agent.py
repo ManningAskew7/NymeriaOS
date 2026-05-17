@@ -19,6 +19,19 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _self_edit_allowed() -> bool:
+    settings = get_settings()
+    return bool(getattr(settings, "nymeria_allow_self_edit", False))
+
+
+def _self_edit_disabled_error() -> str:
+    return (
+        "[Error]: Self-modification writes are disabled. Set "
+        "NYMERIA_ALLOW_SELF_EDIT=true and enable these admin-only tools only "
+        "for a trusted maintenance thread."
+    )
+
+
 # Self-modification tools (optional — enabled per-thread)
 @tool
 def self_file_read(file_path: str) -> str:
@@ -73,6 +86,9 @@ def self_file_write(file_path: str, content: str) -> str:
     Returns:
         Success or error message
     """
+    if not _self_edit_allowed():
+        return _self_edit_disabled_error()
+
     settings = get_settings()
     project_root = settings.project_root
     tools_dir = project_root / "nymeria" / "tools"
@@ -206,6 +222,9 @@ def self_file_delete(file_path: str) -> str:
     Returns:
         Success or error message
     """
+    if not _self_edit_allowed():
+        return _self_edit_disabled_error()
+
     settings = get_settings()
     project_root = settings.project_root
     tools_dir = project_root / "nymeria" / "tools"
@@ -267,6 +286,9 @@ def self_reload() -> str:
     Returns:
         Updated tool list or error message
     """
+    if not _self_edit_allowed():
+        return _self_edit_disabled_error()
+
     from ..tools.runtime_admin import _do_full_reload
 
     try:

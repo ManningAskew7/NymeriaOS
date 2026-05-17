@@ -460,7 +460,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 
 | Category | Tools |
 |----------|-------|
-| Core System | bash_execute, file_read, file_write, web_search, consult, slash_command |
+| Core System | file_read, file_write, web_search, consult, slash_command |
 | Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
 | Runtime / utility | consult, notify and other currently registered core utilities |

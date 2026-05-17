@@ -4,9 +4,17 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools.file_edit import file_edit
+from nymeria.tools.filesystem import file_write
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
+
+
+@pytest.fixture(autouse=True)
+def workspace_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
 
 
 def _call(path: Path, edits: list[dict], **kwargs):
@@ -191,8 +199,9 @@ def test_file_edit_preserves_crlf_for_inserted_text(tmp_path):
     assert path.read_bytes() == b"alpha\r\nbeta\r\nomega\r\n"
 
 
-def test_file_edit_rejects_protected_nymeria_paths():
+def test_file_edit_rejects_protected_nymeria_paths(monkeypatch):
     project_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(project_root))
     protected_path = project_root / "nymeria" / "core" / "agent.py"
 
     result = _call(
@@ -203,6 +212,30 @@ def test_file_edit_rejects_protected_nymeria_paths():
 
     assert result["ok"] is False
     assert result["error"]["type"] == "protected_path"
+
+
+def test_file_edit_rejects_paths_outside_workspace(tmp_path):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+
+    result = _call(
+        outside,
+        [{"operation": "replace", "old_text": "outside", "new_text": "changed"}],
+        dry_run=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "path_outside_workspace"
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_file_write_is_confined_to_workspace(tmp_path):
+    ok = file_write.func("reports/result.txt", "hello")
+    denied = file_write.func(str(tmp_path.parent / "outside-write.txt"), "nope")
+
+    assert ok.startswith("[Success]")
+    assert (tmp_path / "reports" / "result.txt").read_text(encoding="utf-8") == "hello"
+    assert denied.startswith("[Error]: Path outside workspace")
 
 
 def test_file_edit_is_optional_and_has_metadata():

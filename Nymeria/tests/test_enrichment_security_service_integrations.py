@@ -241,7 +241,7 @@ def test_jina_reader_can_run_without_key(monkeypatch):
     assert captured["headers"]["X-With-Generated-Alt"] == "true"
 
 
-def test_misp_search_attributes_uses_vault_key_and_ssl_flag(tmp_path, monkeypatch):
+def test_misp_search_attributes_enforces_tls_verification(tmp_path, monkeypatch):
     from nymeria.tools import enrichment_security_service_integrations as tools
 
     repo = _repo(tmp_path, monkeypatch)
@@ -282,7 +282,14 @@ def test_misp_search_attributes_uses_vault_key_and_ssl_flag(tmp_path, monkeypatc
     assert captured["url"] == "https://misp.example/attributes/restSearch"
     assert captured["headers"]["Authorization"] == "misp-key"
     assert captured["json_body"] == {"value": "1.2.3.4", "tags": ["tlp:amber", "osint"]}
-    assert captured["verify"] is False
+    assert captured["verify"] is True
+
+
+def test_service_base_url_blocks_private_literal_target():
+    from nymeria.tools import enrichment_security_service_integrations as tools
+
+    with pytest.raises(ValueError, match="blocked by HTTP egress policy"):
+        tools._base_url("http://127.0.0.1:8080")
 
 
 def test_thehive_list_cases_uses_env_key_and_api_root(monkeypatch):
