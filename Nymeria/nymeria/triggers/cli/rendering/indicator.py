@@ -22,7 +22,7 @@ FRAME_INTERVAL_SECONDS = 0.1
 PHASE_LABELS: dict[ActivityPhase, str] = {
     "processing": "Processing...",
     "thinking": "Thinking...",
-    "typing": "Processing...",
+    "typing": "Streaming...",
     "formulating": "Formulating...",
     "processing_results": "Processing results...",
     "waiting": "Waiting...",
@@ -115,7 +115,7 @@ class ActivityIndicator:
     ) -> ActivityRender | None:
         """Render an activity line, or ``None`` when no indicator is visible."""
 
-        if activity is None or not activity.active or activity.phase == "typing":
+        if activity is None or not activity.active:
             return None
 
         render_width = _positive_width(
@@ -181,7 +181,7 @@ def activity_state_from_ui_state(
         )
 
     phase = select_activity_phase(state, now=current_time)
-    if phase is None or phase == "typing":
+    if phase is None:
         return None
 
     assistant = select_last_assistant_message(state)

@@ -24,7 +24,7 @@ def test_phase_labels_match_desktop_text_with_ellipses() -> None:
     assert PHASE_LABELS == {
         "processing": "Processing...",
         "thinking": "Thinking...",
-        "typing": "Processing...",
+        "typing": "Streaming...",
         "formulating": "Formulating...",
         "processing_results": "Processing results...",
         "waiting": "Waiting...",
@@ -48,7 +48,7 @@ def test_processing_and_thinking_become_formulating_after_quiet_timeout() -> Non
     assert activity_state_from_ui_state(state, now=4.01).phase == "formulating"
 
 
-def test_typing_phase_renders_no_activity_indicator() -> None:
+def test_typing_phase_renders_animated_streaming_indicator() -> None:
     caps = FakeTerminalCapabilities()
     indicator = ActivityIndicator()
     state = create_initial_state(thread_id="thread-1", now=0.0)
@@ -59,8 +59,15 @@ def test_typing_phase_renders_no_activity_indicator() -> None:
         now=1.1,
     )
 
-    assert activity_state_from_ui_state(state, now=1.2) is None
-    assert indicator.render_from_state(state, capabilities=caps, now=1.2) is None
+    activity = activity_state_from_ui_state(state, now=1.2)
+    rendered = indicator.render_from_state(state, capabilities=caps, now=1.2)
+
+    assert activity is not None
+    assert activity.phase == "typing"
+    assert rendered is not None
+    assert rendered.phase == "typing"
+    assert rendered.label == "Streaming..."
+    assert rendered.frame in UNICODE_FRAMES
 
 
 def test_queued_state_renders_waiting_without_thinking_content() -> None:
