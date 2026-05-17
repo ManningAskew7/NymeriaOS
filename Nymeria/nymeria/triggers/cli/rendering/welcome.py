@@ -256,7 +256,7 @@ def _snapshot_footers(
         footers.append(
             _footer(
                 "Warning",
-                f"fetch timed out: {', '.join(snapshot.failures)}",
+                f"fetch incomplete: {', '.join(snapshot.failures)}",
                 slot="error",
                 theme=theme,
                 width=body_width,

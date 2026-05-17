@@ -867,9 +867,9 @@ def test_scroll_region_resize_rebuild_clears_scrollback_before_replay() -> None:
     assert ("reset", False) in output.ops
     assert output.ops[-2:] == [("raw", "\x1b7"), ("flush", None)]
     text = ANSI_RE.sub("", render_output.stdout_text)
-    assert "Nymeria" in text
+    assert "N Y M E R I A" in text
     assert "resize check" in text
-    assert text.index("Nymeria") < text.index("resize check")
+    assert text.index("N Y M E R I A") < text.index("resize check")
 
 
 def test_scroll_region_resize_redraw_does_not_overlap_existing_task() -> None:
