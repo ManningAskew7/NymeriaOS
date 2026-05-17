@@ -5,6 +5,26 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel
 
 
+PlatformProvider = Literal[
+    "discord",
+    "telegram",
+    "twitch",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+]
+
+
 class AdminUserResponse(BaseModel):
     id: str
     email: str
@@ -58,13 +78,13 @@ class RotatedTokensResponse(BaseModel):
 
 
 class PlatformIdentityResponse(BaseModel):
-    provider: Literal["discord", "telegram", "twitch"]
+    provider: PlatformProvider
     provider_user_id: str
     created_at: str
 
 
 class PlatformLinkRequest(BaseModel):
-    provider: Literal["discord", "telegram", "twitch"]
+    provider: PlatformProvider
     provider_user_id: str
 
 

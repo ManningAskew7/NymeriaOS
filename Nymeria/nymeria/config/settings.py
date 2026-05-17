@@ -286,6 +286,218 @@ class Settings(BaseSettings):
         default=None,
         description="Slack bot token for two-way communication"
     )
+    slack_app_token: Optional[str] = Field(
+        default=None,
+        description="Slack app-level token for Socket Mode (xapp-...)",
+    )
+    slack_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Slack channel behavior: mention (default) or all",
+    )
+    slack_show_tool_events: bool = Field(
+        default=False,
+        description="Show Slack tool-call/tool-result messages during streaming",
+    )
+
+    # Messaging Platform Credentials - Matrix
+    matrix_homeserver: Optional[str] = Field(
+        default=None,
+        description="Matrix homeserver URL, e.g. https://matrix.org",
+    )
+    matrix_access_token: Optional[str] = Field(
+        default=None,
+        description="Matrix access token for the bot account",
+    )
+    matrix_user_id: Optional[str] = Field(
+        default=None,
+        description="Matrix bot user ID, e.g. @nymeria:example.org",
+    )
+    matrix_password: Optional[str] = Field(
+        default=None,
+        description="Matrix bot password fallback when no access token is configured",
+    )
+    matrix_device_id: Optional[str] = Field(
+        default=None,
+        description="Optional stable Matrix device ID for password login",
+    )
+    matrix_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Matrix room behavior: mention (default) or all",
+    )
+    matrix_free_response_rooms: str = Field(
+        default="",
+        description="Comma-separated Matrix room IDs that respond without bot mention",
+    )
+    matrix_auto_join: bool = Field(
+        default=False,
+        description="Whether the Matrix bot should auto-join invited rooms",
+    )
+    mattermost_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Mattermost channel behavior: mention (default) or all",
+    )
+    mattermost_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Mattermost streaming",
+    )
+    zulip_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Zulip channel behavior: mention (default) or all",
+    )
+    zulip_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Zulip streaming",
+    )
+    rocketchat_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Rocket.Chat room behavior: mention (default) or all",
+    )
+    rocketchat_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Rocket.Chat streaming",
+    )
+    teams_bot_app_id: Optional[str] = Field(
+        default=None,
+        description="Microsoft Teams bot App ID for Bot Framework replies",
+    )
+    teams_bot_app_password: Optional[str] = Field(
+        default=None,
+        description="Microsoft Teams bot client secret for Bot Framework replies",
+    )
+    teams_bot_tenant_id: Optional[str] = Field(
+        default=None,
+        description="Microsoft Teams bot tenant ID used during Azure app setup",
+    )
+    teams_bot_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Microsoft Teams group/channel behavior: mention (default) or all",
+    )
+    teams_bot_validate_auth: bool = Field(
+        default=True,
+        description="Validate Bot Framework JWTs on incoming Microsoft Teams webhooks",
+    )
+    teams_bot_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Microsoft Teams streaming",
+    )
+    teams_bot_token_url: str = Field(
+        default="https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
+        description="Bot Framework OAuth token URL for Microsoft Teams replies",
+    )
+    teams_bot_openid_config_url: str = Field(
+        default="https://login.botframework.com/v1/.well-known/openidconfiguration",
+        description="Bot Framework OpenID metadata URL for incoming Teams webhook JWT validation",
+    )
+    google_chat_service_account_json: Optional[str] = Field(
+        default=None,
+        description="Google Chat service account JSON content or path for app-auth replies",
+    )
+    google_chat_service_account_file: Optional[str] = Field(
+        default=None,
+        description="Google Chat service account JSON file path for app-auth replies",
+    )
+    google_chat_project_number: Optional[str] = Field(
+        default=None,
+        description="Google Cloud project number for Google Chat project-number auth",
+    )
+    google_chat_auth_audience: Optional[str] = Field(
+        default=None,
+        description="Google Chat request auth audience override; defaults to webhook URL",
+    )
+    google_chat_auth_audience_type: Literal["app-url", "project-number"] = Field(
+        default="app-url",
+        description="Google Chat request auth audience type",
+    )
+    google_chat_bot_name: str = Field(
+        default="Nymeria",
+        description="Google Chat bot display name used for mention stripping",
+    )
+    google_chat_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Google Chat space behavior: mention (default) or all",
+    )
+    google_chat_validate_auth: bool = Field(
+        default=True,
+        description="Validate Google Chat bearer tokens on incoming webhooks",
+    )
+    google_chat_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Google Chat streaming",
+    )
+    google_chat_api_base_url: str = Field(
+        default="https://chat.googleapis.com/v1",
+        description="Google Chat REST API base URL",
+    )
+    google_chat_use_adc: bool = Field(
+        default=False,
+        description="Allow Application Default Credentials for Google Chat replies",
+    )
+    line_channel_access_token: Optional[str] = Field(
+        default=None,
+        description="LINE Messaging API channel access token for webhook replies",
+    )
+    line_channel_secret: Optional[str] = Field(
+        default=None,
+        description="LINE Messaging API channel secret for webhook signature validation",
+    )
+    line_bot_user_id: Optional[str] = Field(
+        default=None,
+        description="LINE bot user ID used for mention detection",
+    )
+    line_bot_name: str = Field(
+        default="Nymeria",
+        description="LINE bot display name used for mention stripping",
+    )
+    line_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="LINE group/room behavior: mention (default) or all",
+    )
+    line_validate_signature: bool = Field(
+        default=True,
+        description="Validate LINE x-line-signature headers on incoming webhooks",
+    )
+    line_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during LINE streaming",
+    )
+    line_api_base_url: str = Field(
+        default="https://api.line.me/v2/bot",
+        description="LINE Messaging API base URL",
+    )
+    signal_http_url: Optional[str] = Field(
+        default=None,
+        description="signal-cli-rest-api base URL for the Signal bot",
+    )
+    signal_account: Optional[str] = Field(
+        default=None,
+        description="Signal bot account number in international format",
+    )
+    signal_account_uuid: Optional[str] = Field(
+        default=None,
+        description="Optional Signal bot service UUID for self-message filtering",
+    )
+    signal_respond_mode: Literal["mention", "all"] = Field(
+        default="mention",
+        description="Signal group behavior: mention (default) or all",
+    )
+    signal_allowed_users: str = Field(
+        default="",
+        description="Comma-separated Signal senders allowed before Nymeria link resolution",
+    )
+    signal_allowed_groups: str = Field(
+        default="",
+        description="Comma-separated Signal group IDs allowed before Nymeria routing",
+    )
+    signal_show_tool_events: bool = Field(
+        default=False,
+        description="Show compact tool-call/tool-result messages during Signal streaming",
+    )
+    signal_http_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="Signal JSON-RPC request timeout in seconds",
+    )
 
     # Microsoft Teams notifications (uses Outlook OAuth token + Graph API)
     teams_team_id: Optional[str] = Field(
@@ -888,10 +1100,29 @@ class Settings(BaseSettings):
     telegram_api_base_url: str = Field(default="https://api.telegram.org", description="Telegram Bot API base URL")
     webex_access_token: Optional[str] = Field(default=None, description="Webex access token fallback")
     webex_base_url: str = Field(default="https://webexapis.com/v1", description="Webex API base URL")
+    webex_webhook_secret: Optional[str] = Field(default=None, description="Webex webhook HMAC secret")
+    webex_bot_person_id: Optional[str] = Field(default=None, description="Webex bot person ID override")
+    webex_bot_email: Optional[str] = Field(default=None, description="Webex bot email override")
+    webex_show_tool_events: bool = Field(default=False, description="Show compact tool-call events in Webex bot replies")
     whatsapp_access_token: Optional[str] = Field(default=None, description="WhatsApp Business Cloud access token fallback")
     whatsapp_business_account_id: Optional[str] = Field(default=None, description="WhatsApp Business account ID fallback")
     whatsapp_phone_number_id: Optional[str] = Field(default=None, description="WhatsApp sender phone number ID fallback")
     whatsapp_base_url: str = Field(default="https://graph.facebook.com/v19.0", description="WhatsApp Graph API base URL")
+    whatsapp_webhook_verify_token: Optional[str] = Field(default=None, description="WhatsApp Cloud webhook verification token")
+    whatsapp_app_secret: Optional[str] = Field(default=None, description="Meta app secret for WhatsApp webhook signature verification")
+    whatsapp_show_tool_events: bool = Field(default=False, description="Show compact tool-call events in WhatsApp bot replies")
+    messenger_page_access_token: Optional[str] = Field(default=None, description="Meta Messenger Page access token fallback")
+    messenger_page_id: Optional[str] = Field(default=None, description="Meta Messenger Page ID fallback")
+    messenger_webhook_verify_token: Optional[str] = Field(default=None, description="Meta Messenger webhook verification token")
+    messenger_app_secret: Optional[str] = Field(default=None, description="Meta app secret for Messenger webhook signature verification")
+    messenger_graph_api_base_url: str = Field(default="https://graph.facebook.com/v23.0", description="Meta Messenger Graph API base URL")
+    messenger_show_tool_events: bool = Field(default=False, description="Show compact tool-call events in Messenger bot replies")
+    instagram_access_token: Optional[str] = Field(default=None, description="Meta Instagram Messaging API access token fallback")
+    instagram_ig_user_id: Optional[str] = Field(default=None, description="Instagram professional account ID used for Messaging API replies")
+    instagram_webhook_verify_token: Optional[str] = Field(default=None, description="Meta Instagram webhook verification token")
+    instagram_app_secret: Optional[str] = Field(default=None, description="Meta app secret for Instagram webhook signature verification")
+    instagram_graph_api_base_url: str = Field(default="https://graph.instagram.com/v23.0", description="Meta Instagram Messaging API base URL")
+    instagram_show_tool_events: bool = Field(default=False, description="Show compact tool-call events in Instagram bot replies")
     facebook_access_token: Optional[str] = Field(default=None, description="Facebook Graph API access token fallback")
     facebook_app_secret: Optional[str] = Field(default=None, description="Facebook app secret fallback for appsecret_proof")
     facebook_graph_base_url: str = Field(default="https://graph.facebook.com/v23.0", description="Facebook Graph API base URL")
@@ -1310,6 +1541,32 @@ class Settings(BaseSettings):
             warnings.append(
                 "DISCORD_BOT_TOKEN is set but no LLM API key configured.\n"
                 "  The Discord bot will not be able to process messages."
+            )
+
+        # Slack bot warning
+        if (self.slack_bot_token or self.slack_app_token) and not provider_key:
+            warnings.append(
+                "SLACK_BOT_TOKEN or SLACK_APP_TOKEN is set but no LLM API key configured.\n"
+                "  The Slack bot will not be able to process messages."
+            )
+
+        # Matrix bot warning
+        if (self.matrix_access_token or self.matrix_password) and not provider_key:
+            warnings.append(
+                "MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD is set but no LLM API key configured.\n"
+                "  The Matrix bot will not be able to process messages."
+            )
+
+        if (self.signal_http_url or self.signal_account) and not provider_key:
+            warnings.append(
+                "SIGNAL_HTTP_URL or SIGNAL_ACCOUNT is set but no LLM API key configured.\n"
+                "  The Signal bot will not be able to process messages."
+            )
+
+        if (self.instagram_access_token or self.instagram_ig_user_id) and not provider_key:
+            warnings.append(
+                "INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_IG_USER_ID is set but no LLM API key configured.\n"
+                "  The Instagram bot will not be able to process messages."
             )
 
         # Warnings for optional features

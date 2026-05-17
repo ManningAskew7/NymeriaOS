@@ -35,7 +35,24 @@ TOKEN_BYTES = 32  # entropy of the random part (base64url)
 TOKEN_PATTERN = re.compile(r"nym_[A-Za-z0-9_-]{32,}")
 
 UserRole = Literal["user", "admin"]
-Provider = Literal["discord", "telegram", "twitch"]
+Provider = Literal[
+    "discord",
+    "telegram",
+    "twitch",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+]
 
 
 # ---------------------------------------------------------------------------

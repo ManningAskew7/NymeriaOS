@@ -30,6 +30,19 @@ CommandSurface = Literal[
     "cli",
     "discord",
     "telegram",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
     "twitch",
     "api",
     "agent",
@@ -45,6 +58,19 @@ DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
     "cli",
     "discord",
     "telegram",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
     "api",
     "agent",
 )
@@ -165,11 +191,11 @@ def coerce_value(value_str: str) -> Any:
     try:
         return int(value_str)
     except ValueError:
-        pass
+        pass  # Not an integer; try the next scalar type.
     try:
         return float(value_str)
     except ValueError:
-        pass
+        pass  # Not a float; keep the original string.
     return value_str
 
 

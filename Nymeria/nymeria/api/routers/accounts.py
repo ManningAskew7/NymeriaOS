@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -26,6 +26,7 @@ from ..schemas.accounts import (
     AdminUserUpdateRequest,
     IssuedTokenResponse,
     MeUpdateRequest,
+    PlatformProvider,
     PlatformIdentityResponse,
     PlatformLinkRequest,
     RotatedTokensResponse,
@@ -36,6 +37,7 @@ from ..schemas.accounts import (
 
 
 logger = logging.getLogger(__name__)
+KNOWN_PLATFORM_PROVIDERS = frozenset(get_args(PlatformProvider))
 
 
 def _identity_response(user: AuthenticatedUser) -> dict[str, str]:
@@ -146,7 +148,7 @@ def create_accounts_router(
         """
         Resolve a platform identity to a Nymeria ``user_id``. Admin-only.
         """
-        if provider not in ("discord", "telegram", "twitch"):
+        if provider not in KNOWN_PLATFORM_PROVIDERS:
             raise HTTPException(status_code=400, detail="Unknown provider")
         user_id = get_agent_fn().accounts_repo.resolve_platform(provider, provider_user_id)
         if user_id is None:
@@ -479,7 +481,7 @@ def create_accounts_router(
         provider_user_id: str,
         _admin: AuthenticatedUser = Depends(require_admin_user),
     ):
-        if provider not in ("discord", "telegram", "twitch"):
+        if provider not in KNOWN_PLATFORM_PROVIDERS:
             raise HTTPException(status_code=400, detail="Unknown provider")
         repo = get_agent_fn().accounts_repo
         owner = repo.resolve_platform(provider, provider_user_id)

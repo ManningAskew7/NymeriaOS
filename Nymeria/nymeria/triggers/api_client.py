@@ -368,14 +368,28 @@ class NymeriaAPIClient:
 
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Get token usage and context stats for a thread."""
-        return await self._get(f"/threads/{thread_id}/context", act_as=user_id)
+        return await self._get(f"/threads/{_path_param(thread_id)}/context", act_as=user_id)
+
+    async def get_thread_overview(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """Get resolved thread status/config summary for headers and dashboards."""
+        try:
+            return await self._get(
+                f"/threads/{_path_param(thread_id)}/overview",
+                act_as=user_id,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
 
     async def get_thread_config(
         self, thread_id: str, user_id: Optional[str] = None
     ) -> Optional[dict]:
         """Get per-thread configuration (tools, instructions, etc.)."""
         try:
-            return await self._get(f"/threads/{thread_id}/config", act_as=user_id)
+            return await self._get(f"/threads/{_path_param(thread_id)}/config", act_as=user_id)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return None

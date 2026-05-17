@@ -152,7 +152,7 @@
           <h3>Linked platforms</h3>
         </div>
         <p class="section-hint">
-          Discord/Telegram/Twitch IDs that map to this account. Bots route
+          Chat-platform IDs that map to this account. Bots route
           messages from these platform users back to this Nymeria identity.
         </p>
         <PlatformLinkingSection

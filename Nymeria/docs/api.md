@@ -117,14 +117,14 @@ GET /platform/resolve?provider=<provider>&provider_user_id=<id>
 Authorization: Bearer <admin-token>
 ```
 
-Admin-only. Resolves a Discord/Telegram/Twitch user ID to its linked Nymeria
-`user_id` via the `platform_identities` table. Used by the bot thin clients
-(Discord/Telegram/Twitch) together with `X-Nymeria-Act-As` to route per-user
-traffic without holding raw per-user tokens.
+Admin-only. Resolves a chat-platform user ID to its linked Nymeria `user_id`
+via the `platform_identities` table. Used by bot clients together with
+`X-Nymeria-Act-As` to route per-user traffic without holding raw per-user
+tokens.
 
 | Field | Values |
 |---|---|
-| `provider` | `discord`, `telegram`, `twitch` |
+| `provider` | `discord`, `telegram`, `twitch`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, `signal` |
 | `provider_user_id` | Platform-native user ID (string) |
 
 **Responses:**
@@ -194,7 +194,7 @@ Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex ch
 | `POST` | `/admin/users/{id}/tokens` | `{label?}` | Issue a token for the user. |
 | `POST` | `/admin/users/{id}/tokens/rotate` | `{label?}` | Revoke all + issue one. Returns `RotatedTokensResponse` with `revoked_count`. |
 | `DELETE` | `/admin/users/{id}/tokens/{prefix}` | — | Revoke single by hash prefix. |
-| `GET` | `/admin/users/{id}/platforms` | — | List Discord/Telegram/Twitch identities. |
+| `GET` | `/admin/users/{id}/platforms` | — | List chat-platform identities. |
 | `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
 | `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
 
@@ -320,16 +320,16 @@ See [`accounts.md`](accounts.md) for the data model, bootstrap admin flow, and s
 
 These routes live in `Nymeria/nymeria/api/routers/chat_apps.py`; schemas live
 in `Nymeria/nymeria/api/schemas/chat_apps.py`. The desktop/mobile Chat App
-wizard uses the self-service routes. Telegram bot thin clients use the
+wizard uses the self-service routes. Shared bot/webhook clients use the
 admin/service-token routes, which are rate-limited per admin token and endpoint.
 
 **Self-service — any authenticated user:**
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| `GET` | `/me/platforms` | — | List linked Discord/Telegram/Twitch identities for the caller. |
-| `POST` | `/me/platform-link-codes` | `{provider:"telegram"}` | Issue a 10-minute self-link code and optional `t.me` deep link. |
-| `POST` | `/threads/{thread_id}/chatapp/bind-code` | `{provider:"telegram"}` | Issue a 10-minute thread-bind code. Caller must own the thread and the thread must not already be bound. |
+| `GET` | `/me/platforms` | — | List linked chat-platform identities for the caller. |
+| `POST` | `/me/platform-link-codes` | `{provider:"telegram\|slack\|matrix\|whatsapp\|messenger\|instagram\|webex\|mattermost\|zulip\|rocketchat\|teams\|googlechat\|line\|signal"}` | Issue a 10-minute self-link code. Telegram responses include an optional `t.me` deep link; shared bot providers use the raw `link <code>` command. |
+| `POST` | `/threads/{thread_id}/chatapp/bind-code` | `{provider:"telegram\|slack\|matrix\|whatsapp\|messenger\|instagram\|webex\|mattermost\|zulip\|rocketchat\|teams\|googlechat\|line\|signal"}` | Issue a 10-minute thread-bind code. Caller must own the thread and the thread must not already be bound. |
 | `GET` | `/threads/{thread_id}/chatapp/bindings` | — | List chat-app bindings for a thread the caller owns. |
 | `DELETE` | `/threads/{thread_id}/chatapp/bindings/{binding_id}` | — | Delete a binding owned by the caller and emit sidebar platform sync. |
 | `GET` | `/me/telegram-bots` | — | List user-owned Telegram bots without token material. |
@@ -341,12 +341,12 @@ admin/service-token routes, which are rate-limited per admin token and endpoint.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| `GET` | `/admin/chatapp/bindings` | — | List all bindings, optionally filtered by `?provider=telegram`. |
+| `GET` | `/admin/chatapp/bindings` | — | List all bindings, optionally filtered by `?provider=telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, or `signal`. |
 | `GET` | `/admin/chatapp/bindings/lookup` | — | Resolve by exactly one of `platform_chat_id` or `thread_id`. |
-| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Shared-bot bind-code claim; verifies the Telegram user is linked to the issuing Nymeria user before consuming the code. |
+| `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Shared-bot bind-code claim; verifies the platform user is linked to the issuing Nymeria user before consuming the code. |
 | `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | User-owned bot bind-code claim; authorizes by bot owner instead of platform identity. |
 | `DELETE` | `/admin/chatapp/bindings/by-chat` | — | Remove a binding by `provider` and `platform_chat_id`; optional `user_id` and `user_telegram_bot_id` query params scope bot-initiated deletes to the expected owner/bot. |
-| `POST` | `/admin/chatapp/bindings/switch` | `{provider, platform_chat_id, thread_id, user_id, user_telegram_bot_id?}` | Move a Telegram chat to another existing user-owned non-native thread. |
+| `POST` | `/admin/chatapp/bindings/switch` | `{provider, platform_chat_id, thread_id, user_id, user_telegram_bot_id?}` | Move a chat-app binding to another existing user-owned non-native thread. |
 | `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Consume a self-link code and create the platform identity row. |
 | `GET` | `/admin/telegram-bots` | — | Supervisor-only list of enabled user-owned bots with decrypted tokens. |
 | `POST` | `/admin/telegram-bots/{bot_id}/seen` | — | Supervisor heartbeat update for `last_seen_at`. |
@@ -355,8 +355,58 @@ Bind-code claim routes inspect and authorize before consuming a code. If
 authorization or binding creation fails, the code remains reusable until it
 expires; successful claims consume it.
 
-See [`telegram-bot.md`](telegram-bot.md) for the bot commands, shared-bot flow,
-and BYO bot supervisor behavior.
+See [`telegram-bot.md`](telegram-bot.md), [`slack-bot.md`](slack-bot.md),
+[`matrix-bot.md`](matrix-bot.md), [`mattermost-bot.md`](mattermost-bot.md),
+[`zulip-bot.md`](zulip-bot.md), [`rocketchat-bot.md`](rocketchat-bot.md), [`signal-bot.md`](signal-bot.md),
+[`whatsapp-bot.md`](whatsapp-bot.md), [`messenger-bot.md`](messenger-bot.md), [`instagram-bot.md`](instagram-bot.md), [`webex-bot.md`](webex-bot.md),
+[`teams-bot.md`](teams-bot.md), [`google-chat-bot.md`](google-chat-bot.md), and
+[`line-bot.md`](line-bot.md)
+for client-specific commands and setup behavior.
+
+**WhatsApp Cloud API webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `GET` | `/integrations/whatsapp/webhook` | Meta challenge token | Verifies Meta webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `WHATSAPP_WEBHOOK_VERIFY_TOKEN`. |
+| `POST` | `/integrations/whatsapp/webhook` | Optional Meta signature | Accepts WhatsApp Cloud API message payloads. When `WHATSAPP_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Graph API. |
+
+**Messenger Platform webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `GET` | `/integrations/messenger/webhook` | Meta challenge token | Verifies Messenger webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `MESSENGER_WEBHOOK_VERIFY_TOKEN`. |
+| `POST` | `/integrations/messenger/webhook` | Optional Meta signature | Accepts Messenger Page webhook message and postback payloads. When `MESSENGER_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Messenger Send API. |
+
+**Instagram Messaging webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `GET` | `/integrations/instagram/webhook` | Meta challenge token | Verifies Instagram webhook setup with `hub.mode`, `hub.verify_token`, and `hub.challenge`; `hub.verify_token` must match `INSTAGRAM_WEBHOOK_VERIFY_TOKEN`. |
+| `POST` | `/integrations/instagram/webhook` | Optional Meta signature | Accepts Instagram Messaging webhook message and postback payloads. When `INSTAGRAM_APP_SECRET` is set, validates `X-Hub-Signature-256`, then processes messages in the background and replies through the Instagram Messaging API. |
+
+**Webex Messaging webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/integrations/webex/webhook` | Optional Webex signature | Accepts Webex `messages.created` payloads. When `WEBEX_WEBHOOK_SECRET` is set, validates `X-Spark-Signature`, then fetches message details in the background and replies through the Webex Messages API. |
+
+**Microsoft Teams Bot Framework webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/integrations/teams/webhook` | Bot Framework bearer token | Accepts Teams Bot Framework `message` activities. When `TEAMS_BOT_VALIDATE_AUTH=true`, validates the connector JWT, then processes messages in the background and replies through the Bot Connector REST API. |
+
+**Google Chat webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/integrations/google-chat/webhook` | Google Chat bearer token | Accepts Google Chat `MESSAGE` interaction events. When `GOOGLE_CHAT_VALIDATE_AUTH=true`, validates the Google Chat bearer token, then processes messages in the background and replies through the Google Chat REST API. |
+
+**LINE Messaging API webhook:**
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/integrations/line/webhook` | `x-line-signature` HMAC | Accepts LINE Messaging API webhook events. When `LINE_VALIDATE_SIGNATURE=true`, validates the raw-body HMAC signature, then processes text messages in the background and replies through the LINE push-message API. |
 
 ---
 
@@ -496,6 +546,41 @@ event/reconnect driven.
   "processing": false
 }
 ```
+
+---
+
+### Get Thread Overview
+
+```http
+GET /threads/{thread_id}/overview
+Authorization: Bearer <token>
+```
+
+Resolved read model for CLI headers and dashboards. This endpoint is
+read-only and does not replace `/threads/{thread_id}/config`: `/config` remains
+the editable per-thread config payload, while `/overview` combines the
+effective runtime state and counts that previously required many calls.
+
+Top-level sections:
+
+| Section | Contents |
+|---------|----------|
+| `thread` | id/title/platform/pin/callable/recovery metadata |
+| `status` | processing flag and checkpoint revision |
+| `context` | token counts, context limit, compaction stats, context mode |
+| `config_summary` | customization flags and prompt char counts, not prompt bodies |
+| `llm` | effective provider/model/API mode/thinking labels and secret-safe override flags |
+| `callable` | callable settings and visible callable-thread tools |
+| `tools` | default, disabled, enabled, temporary, MCP, callable, and effective counts |
+| `mcp` | server/tool counts and per-server active/discovered counts |
+| `skills` | installed/global/thread/active skill and Skill Kit summaries |
+| `todos` | per-thread TODO counts, next scheduled item, first labels |
+| `triggers` | per-thread trigger counts, health, and fire metadata |
+| `chat_apps` | bindings, providers, shared-vs-BYO Telegram bot info, delivery modes |
+| `user` | effective authenticated user id/display name/role |
+| `section_errors` | non-fatal section failures keyed by section name |
+
+Raw API keys and full instruction/system-prompt bodies are never returned.
 
 ---
 
@@ -726,8 +811,10 @@ GET /commands?actor=user&surface=desktop
 ```
 
 `actor` may be `user`, `agent`, or `system`. `surface` may be `desktop`,
-`mobile`, `cli`, `discord`, `telegram`, `api`, or `agent` (`twitch` is still
-accepted for compatibility, but the Twitch bot is deprecated). The legacy
+`mobile`, `cli`, `discord`, `telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`,
+`mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, `signal`,
+`api`, or `agent` (`twitch` is still accepted for compatibility, but the Twitch
+bot is deprecated). The legacy
 `source=user|agent|cli` query parameter still works; `actor` and `surface`
 are preferred for new callers. Agent actor hides commands whose metadata marks
 them unavailable to agents. Non-admin users do not see admin-only commands.
@@ -746,7 +833,7 @@ them unavailable to agents. Non-admin users do not see admin-only commands.
     "subcommands": [],
     "aliases": ["/tools_core"],
     "scope": "global",
-    "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "api", "agent"],
+    "surfaces": ["desktop", "mobile", "cli", "discord", "telegram", "slack", "matrix", "whatsapp", "messenger", "instagram", "webex", "mattermost", "zulip", "rocketchat", "teams", "googlechat", "line", "signal", "api", "agent"],
     "agent_allowed": true,
     "requires_thread": false,
     "requires_admin": false,
@@ -1301,7 +1388,7 @@ owned by another user is not returned.
 | `title` | Server-authoritative display title |
 | `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
 | `pinned` | Whether thread is pinned to top |
-| `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"webhook"` |
+| `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"matrix"`, `"whatsapp"`, `"messenger"`, `"instagram"`, `"webex"`, `"mattermost"`, `"zulip"`, `"rocketchat"`, `"teams"`, `"googlechat"`, `"line"`, `"signal"`, `"twitch"`, `"trigger"`, `"webhook"` |
 | `callable` | Whether the saved per-thread config currently marks the thread callable |
 | `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path and the effective caller can open it |
 | `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"metadata"`, `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
@@ -1427,7 +1514,7 @@ Idempotent — safe to call multiple times.
 ```
 
 **Errors:**
-- `400` — `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`). These are inherently multi-user and cannot be per-user-claimed.
+- `400` — `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`, `slack_C...`, `matrix_!room...`, `whatsapp_group_<id>`, `webex_<room>`, `mattermost_<server>_<channel>`, `zulip_<realm>_<stream>`, `rocketchat_<server>_<room>`, `signal_group_<group>`). These are inherently multi-user and cannot be per-user-claimed.
 - `404` — Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
 
 See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the full lifecycle.
@@ -1975,6 +2062,11 @@ Authorization: Bearer <token>
 ```
 
 Returns per-thread configuration including callable settings, custom instructions, LLM overrides, and tool enablement.
+
+Use `GET /threads/{thread_id}/overview` when a caller needs resolved status,
+effective LLM/tool/skill counts, TODO/trigger/chat-app summaries, or a compact
+dashboard/header read model. Use `/config` when editing or exporting the
+thread's saved settings.
 
 ```http
 PATCH /threads/{thread_id}/config

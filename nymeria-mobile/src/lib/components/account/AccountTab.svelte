@@ -137,7 +137,7 @@
           <h3>Linked platforms</h3>
         </div>
         <p class="section-hint">
-          Discord/Telegram/Twitch IDs that route to this account.
+          Chat-platform IDs that route to this account.
         </p>
         <PlatformLinkingSection
           userId={identity.id}

@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, get_args
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,6 +32,7 @@ from ..schemas.chat_apps import (
     ChatAppBindCodeRequest,
     ChatAppBindCodeResponse,
     ChatAppBindingResponse,
+    ChatAppProvider,
     MyTelegramBotResponse,
     PlatformLinkCodeRequest,
     RegisterTelegramBotRequest,
@@ -39,6 +40,7 @@ from ..schemas.chat_apps import (
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
+KNOWN_CHAT_APP_PROVIDERS = frozenset(get_args(ChatAppProvider))
 
 
 def _bot_username_for(provider: str, settings: Settings) -> str | None:
@@ -80,7 +82,7 @@ def _expires_in(seconds: int) -> str:
 
 
 def _require_known_provider(provider: str) -> None:
-    if provider not in ("discord", "telegram", "twitch"):
+    if provider not in KNOWN_CHAT_APP_PROVIDERS:
         raise HTTPException(status_code=400, detail="Unknown provider")
 
 

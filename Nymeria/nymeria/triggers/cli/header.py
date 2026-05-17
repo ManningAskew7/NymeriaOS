@@ -101,6 +101,41 @@ async def build_header_snapshot(
     thread_id = str(getattr(state, "thread_id", "") or "")
     user_id = str(getattr(state, "user_id", "default") or "default")
     local_data = _local_header_data(state, thread_id=thread_id, user_id=user_id)
+    overview_failures: tuple[str, ...] = ()
+    overview_missing = False
+
+    overview_owner = _method_owner(client, "get_thread_overview")
+    if overview_owner is not None:
+        overview_result, health_result = await asyncio.gather(
+            _optional_client_call(
+                client,
+                "get_thread_overview",
+                thread_id,
+                timeout_seconds=timeout_seconds,
+                user_id=user_id,
+            ),
+            build_health_snapshot(
+                client,
+                runtime_config=runtime_config,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
+        if isinstance(overview_result, Mapping):
+            health = health_result
+            if not isinstance(health, HeaderHealthSnapshot):
+                health = HeaderHealthSnapshot(status="unknown")
+            backend_url = health.backend_url or _backend_url(client, runtime_config)
+            return _snapshot_from_overview(
+                overview_result,
+                thread_id=thread_id,
+                user_id=user_id,
+                backend_url=backend_url,
+                health=health if health.backend_url else _with_backend_url(health, backend_url),
+            )
+        if isinstance(overview_result, BaseException):
+            overview_failures = ("overview",)
+        elif overview_result is None:
+            overview_missing = True
 
     tasks = {
         "settings": _optional_client_call(
@@ -221,6 +256,10 @@ async def build_header_snapshot(
     active_todos = _current_thread_active_todos(todos, thread_id)
     enabled_triggers = _current_thread_enabled_triggers(triggers, thread_id)
 
+    legacy_failures = _fetch_failures(results)
+    if overview_missing and legacy_failures:
+        overview_failures = ("overview unavailable",)
+
     backend_url = health.backend_url or _backend_url(client, runtime_config)
     return CLIHeaderSnapshot(
         thread_id=thread_id,
@@ -263,7 +302,7 @@ async def build_header_snapshot(
         flags=_config_flags(thread_config),
         backend_url=backend_url,
         health=health if health.backend_url else _with_backend_url(health, backend_url),
-        failures=_fetch_failures(results),
+        failures=tuple(dict.fromkeys((*overview_failures, *legacy_failures))),
     )
 
 
@@ -309,6 +348,71 @@ async def build_health_snapshot(
         status="ok" if ok else "error",
         backend_url=backend_url,
         latency_ms=latency_ms,
+    )
+
+
+def _snapshot_from_overview(
+    overview: Mapping[str, Any],
+    *,
+    thread_id: str,
+    user_id: str,
+    backend_url: str,
+    health: HeaderHealthSnapshot,
+) -> CLIHeaderSnapshot:
+    thread = _mapping_or(overview.get("thread"), {})
+    context = _mapping_or(overview.get("context"), {})
+    config = _mapping_or(overview.get("config_summary"), {})
+    llm = _mapping_or(overview.get("llm"), {})
+    callable_section = _mapping_or(overview.get("callable"), {})
+    tools = _mapping_or(overview.get("tools"), {})
+    skills = _mapping_or(overview.get("skills"), {})
+    todos = _mapping_or(overview.get("todos"), {})
+    triggers = _mapping_or(overview.get("triggers"), {})
+    user = _mapping_or(overview.get("user"), {})
+    section_errors = _mapping_or(overview.get("section_errors"), {})
+
+    return CLIHeaderSnapshot(
+        thread_id=thread_id,
+        user_id=user_id,
+        user_display_name=str(user.get("display_name") or ""),
+        user_role=str(user.get("role") or ""),
+        thread_title=str(thread.get("title") or compact_id(thread_id)),
+        platform=str(thread.get("platform") or _classify_platform(thread_id)),
+        pinned=bool(thread.get("pinned", False)),
+        callable=bool(callable_section.get("enabled", False)),
+        callable_name=str(callable_section.get("name") or ""),
+        callable_team=str(
+            callable_section.get("team_name")
+            or callable_section.get("team_id")
+            or ""
+        ),
+        provider=str(llm.get("provider_label") or llm.get("provider") or ""),
+        api_type=str(llm.get("api_mode_label") or llm.get("api_mode") or ""),
+        model=str(llm.get("model") or context.get("model") or ""),
+        thinking_mode=str(llm.get("thinking_label") or "off"),
+        context_tokens=_int_or_none(
+            _first_number(context, "total_tokens", "used_tokens", "context_tokens")
+        ),
+        context_limit=_int_or_none(
+            _first_number(context, "context_limit", "max_tokens", "context_window")
+        ),
+        context_percent=_context_percent(context),
+        compaction_count=_int_or_none(
+            _first_number(context, "compaction_count", "compactions")
+        ),
+        tool_count=_int_or_zero(tools.get("effective_builtin_count")),
+        mcp_tool_count=_int_or_zero(tools.get("effective_mcp_count")),
+        callable_tool_count=_int_or_zero(tools.get("effective_callable_count")),
+        skill_count=_int_or_zero(skills.get("active_skill_count")),
+        skill_kit_count=_int_or_zero(skills.get("active_skill_kit_count")),
+        todo_count=_int_or_zero(todos.get("active_count")),
+        todo_labels=tuple(str(item) for item in _string_list(todos.get("first_labels"))[:2]),
+        trigger_count=_int_or_zero(triggers.get("enabled_count")),
+        trigger_labels=tuple(str(item) for item in _string_list(triggers.get("first_labels"))[:2]),
+        flags=_overview_flags(config, callable_section),
+        backend_url=backend_url,
+        health=health,
+        failures=tuple(str(name) for name in section_errors),
     )
 
 
@@ -752,6 +856,38 @@ def _config_flags(thread_config: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(flags)
 
 
+def _overview_flags(
+    config: Mapping[str, Any],
+    callable_section: Mapping[str, Any],
+) -> tuple[str, ...]:
+    flags: list[str] = []
+    if bool(config.get("instructions_present")):
+        flags.append("instructions")
+    if bool(config.get("system_prompt_override_present")):
+        flags.append("system prompt")
+    if bool(config.get("inject_todos_in_prompt")):
+        flags.append("TODOs")
+    if bool(config.get("inject_profile_in_prompt")):
+        flags.append("profile")
+    if bool(callable_section.get("enabled")):
+        name = str(callable_section.get("name") or "callable")
+        flags.append(f"callable {name}")
+        team = callable_section.get("team_name") or callable_section.get("team_id")
+        if team:
+            flags.append(f"team {team}")
+    if bool(config.get("show_autonomous_prompts")):
+        flags.append("autonomous prompts")
+    if bool(config.get("show_prompt_metadata")):
+        flags.append("prompt metadata")
+    delivery = str(config.get("telegram_autonomous_delivery") or "")
+    if delivery and delivery != "full":
+        flags.append(f"telegram {delivery}")
+    notifications = str(config.get("in_app_notification_level") or "")
+    if notifications and notifications != "notify_only":
+        flags.append(f"notifications {notifications}")
+    return tuple(flags)
+
+
 def _context_percent(stats: Mapping[str, Any]) -> float | None:
     percent = _first_number(stats, "usage_percentage", "percent_used", "percent")
     if percent is not None:
@@ -896,6 +1032,14 @@ def _first_number(payload: Mapping[str, Any], *keys: str) -> float | None:
 
 def _int_or_none(value: float | None) -> int | None:
     return None if value is None else int(value)
+
+
+def _int_or_zero(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return 0
 
 
 def _coalesce_bool(*values: Any, default: bool = False) -> bool:

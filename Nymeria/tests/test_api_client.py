@@ -341,6 +341,25 @@ def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
     assert requests[10]["json"] == {"version": 1}
 
 
+def test_api_client_get_thread_overview_uses_act_as_and_encoded_path(monkeypatch):
+    _patch_async_client(monkeypatch)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            await client.get_thread_overview("thread/with space", user_id="user-1")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+    request = FakeAsyncClient.instances[0].requests[0]
+    assert request["method"] == "GET"
+    assert request["url"] == "http://api/threads/thread%2Fwith%20space/overview"
+    assert request["params"] is None
+    assert request["headers"]["X-Nymeria-Act-As"] == "user-1"
+
+
 def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkeypatch):
     _patch_async_client(monkeypatch)
 

@@ -122,6 +122,47 @@ def test_chat_app_routes_keep_tags_and_deep_link_payloads(
     assert bindings.json() == []
 
 
+def test_chat_app_code_routes_accept_shared_bot_providers(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    agent.accounts_repo.claim_thread("desktop-thread", "owner")
+    headers = api_client_builder.auth(token)
+
+    for provider in (
+        "slack",
+        "matrix",
+        "whatsapp",
+        "messenger",
+        "webex",
+        "mattermost",
+        "zulip",
+        "rocketchat",
+        "teams",
+        "googlechat",
+        "line",
+        "signal",
+    ):
+        platform_code = client.post(
+            "/me/platform-link-codes",
+            headers=headers,
+            json={"provider": provider},
+        )
+        thread_code = client.post(
+            "/threads/desktop-thread/chatapp/bind-code",
+            headers=headers,
+            json={"provider": provider},
+        )
+
+        assert platform_code.status_code == 200
+        assert platform_code.json()["bot_username"] is None
+        assert platform_code.json()["deep_link"] is None
+        assert thread_code.status_code == 200
+        assert thread_code.json()["deep_link"] is None
+
+
 def test_admin_claim_rejects_mismatched_identity_without_consuming_code(
     tmp_path: Path,
     api_client_builder,

@@ -27,20 +27,59 @@ from ..schemas.threads import (
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
+    ThreadOverviewResponse,
     ThreadStatusResponse,
 )
+from ..thread_overview import build_thread_overview
 from ..thread_config_helpers import validate_callable_name
 
 logger = logging.getLogger(__name__)
+
+NATIVE_THREAD_PLATFORMS = {
+    "discord",
+    "telegram",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+    "trigger",
+    "twitch",
+}
+CHATAPP_BINDING_PLATFORMS = (
+    "telegram",
+    "slack",
+    "matrix",
+    "whatsapp",
+    "messenger",
+    "instagram",
+    "webex",
+    "mattermost",
+    "zulip",
+    "rocketchat",
+    "teams",
+    "googlechat",
+    "line",
+    "signal",
+)
 
 
 def _bound_chatapp_platform(agent: Any, thread_id: str) -> str | None:
     """Return the sidebar platform implied by an explicit chat-app binding."""
     try:
-        if agent.chat_bindings_repo.lookup_thread_binding_by_thread(
-            "telegram", thread_id
-        ):
-            return "telegram"
+        for provider in CHATAPP_BINDING_PLATFORMS:
+            if agent.chat_bindings_repo.lookup_thread_binding_by_thread(
+                provider, thread_id
+            ):
+                return provider
     except Exception as e:
         logger.warning(
             "Failed to inspect chat-app binding platform for %s: %s",
@@ -58,9 +97,9 @@ def _thread_list_platform(agent: Any, thread_id: str, meta: Any = None) -> str:
         return bound_platform
 
     native_platform = _classify_thread_platform_from_id(thread_id)
-    if native_platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
+    if native_platform in NATIVE_THREAD_PLATFORMS:
         return native_platform
-    if platform in {"discord", "telegram", "slack", "trigger", "twitch"}:
+    if platform in NATIVE_THREAD_PLATFORMS:
         return platform
 
     thread_config_manager = getattr(agent, "thread_config_manager", None)
@@ -288,6 +327,34 @@ def create_threads_router(
     router = APIRouter(tags=["Threads"])
 
     @router.get(
+        "/threads/{thread_id}/overview",
+        response_model=ThreadOverviewResponse,
+    )
+    async def get_thread_overview(
+        thread_id: str,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Get the resolved read model for a thread header/dashboard.
+
+        This keeps /threads/{id}/config as the editable config payload while
+        surfacing effective settings, counts, and subsystem status in one
+        read-only call.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        settings = get_settings_fn()
+        return await run_in_threadpool(
+            build_thread_overview,
+            agent=agent,
+            settings=settings,
+            user=user,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+
+    @router.get(
         "/threads/{thread_id}/status",
         response_model=ThreadStatusResponse,
     )
@@ -392,7 +459,8 @@ def create_threads_router(
         Get platform metadata for a thread.
 
         Parses the thread ID to detect platform origin (desktop, discord,
-        telegram, slack) and returns relevant metadata.
+        telegram, slack, matrix, whatsapp, messenger, instagram, webex, mattermost, zulip, rocketchat,
+        teams, googlechat, line, signal) and returns relevant metadata.
         """
         require_thread_access_fn(user, thread_id)
         if thread_id.startswith("discord_dm_"):
@@ -418,6 +486,128 @@ def create_threads_router(
             return {
                 "platform": "slack",
                 "channel_id": thread_id[len("slack_"):],
+            }
+        if thread_id.startswith("matrix_"):
+            return {
+                "platform": "matrix",
+                "channel_id": thread_id[len("matrix_"):],
+            }
+        if thread_id.startswith("whatsapp_"):
+            return {
+                "platform": "whatsapp",
+                "channel_id": thread_id[len("whatsapp_"):],
+            }
+        if thread_id.startswith("messenger_"):
+            return {
+                "platform": "messenger",
+                "channel_id": thread_id[len("messenger_"):],
+            }
+        if thread_id.startswith("instagram_"):
+            return {
+                "platform": "instagram",
+                "channel_id": thread_id[len("instagram_"):],
+            }
+        if thread_id.startswith("webex_dm_"):
+            return {
+                "platform": "webex",
+                "type": "dm",
+                "channel_id": thread_id[len("webex_dm_"):],
+            }
+        if thread_id.startswith("webex_"):
+            return {
+                "platform": "webex",
+                "type": "room",
+                "channel_id": thread_id[len("webex_"):],
+            }
+        if thread_id.startswith("mattermost_dm_"):
+            return {
+                "platform": "mattermost",
+                "type": "dm",
+                "channel_id": thread_id[len("mattermost_dm_"):],
+            }
+        if thread_id.startswith("mattermost_"):
+            return {
+                "platform": "mattermost",
+                "type": "channel",
+                "channel_id": thread_id[len("mattermost_"):],
+            }
+        if thread_id.startswith("zulip_dm_"):
+            return {
+                "platform": "zulip",
+                "type": "dm",
+                "channel_id": thread_id[len("zulip_dm_"):],
+            }
+        if thread_id.startswith("zulip_"):
+            return {
+                "platform": "zulip",
+                "type": "stream",
+                "channel_id": thread_id[len("zulip_"):],
+            }
+        if thread_id.startswith("rocketchat_dm_"):
+            return {
+                "platform": "rocketchat",
+                "type": "dm",
+                "channel_id": thread_id[len("rocketchat_dm_"):],
+            }
+        if thread_id.startswith("rocketchat_"):
+            return {
+                "platform": "rocketchat",
+                "type": "room",
+                "channel_id": thread_id[len("rocketchat_"):],
+            }
+        if thread_id.startswith("teams_dm_"):
+            return {
+                "platform": "teams",
+                "type": "dm",
+                "channel_id": thread_id[len("teams_dm_"):],
+            }
+        if thread_id.startswith("teams_"):
+            return {
+                "platform": "teams",
+                "type": "conversation",
+                "channel_id": thread_id[len("teams_"):],
+            }
+        if thread_id.startswith("googlechat_dm_"):
+            return {
+                "platform": "googlechat",
+                "type": "dm",
+                "channel_id": thread_id[len("googlechat_dm_"):],
+            }
+        if thread_id.startswith("googlechat_"):
+            return {
+                "platform": "googlechat",
+                "type": "space",
+                "channel_id": thread_id[len("googlechat_"):],
+            }
+        if thread_id.startswith("line_dm_"):
+            return {
+                "platform": "line",
+                "type": "dm",
+                "channel_id": thread_id[len("line_dm_"):],
+            }
+        if thread_id.startswith("line_group_"):
+            return {
+                "platform": "line",
+                "type": "group",
+                "channel_id": thread_id[len("line_group_"):],
+            }
+        if thread_id.startswith("line_room_"):
+            return {
+                "platform": "line",
+                "type": "room",
+                "channel_id": thread_id[len("line_room_"):],
+            }
+        if thread_id.startswith("signal_dm_"):
+            return {
+                "platform": "signal",
+                "type": "dm",
+                "channel_id": thread_id[len("signal_dm_"):],
+            }
+        if thread_id.startswith("signal_group_"):
+            return {
+                "platform": "signal",
+                "type": "group",
+                "channel_id": thread_id[len("signal_group_"):],
             }
         return {"platform": "desktop"}
 
