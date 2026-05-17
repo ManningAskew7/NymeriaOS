@@ -19,6 +19,7 @@ from ..core.http_policy import (
     blocked_network_error,
     evaluate_http_url,
     load_http_policy_config,
+    pinned_dns_resolution,
     redirect_allowed,
 )
 
@@ -332,13 +333,14 @@ def _request_with_policy(
         if not decision.allowed:
             raise _HTTPPolicyBlocked(decision, redirect_chain)
 
-        response = client.request(
-            current_method,
-            current_url,
-            headers=headers or None,
-            params=current_params or None,
-            **current_body_kwargs,
-        )
+        with pinned_dns_resolution(decision):
+            response = client.request(
+                current_method,
+                current_url,
+                headers=headers or None,
+                params=current_params or None,
+                **current_body_kwargs,
+            )
 
         if not follow_redirects or not response.is_redirect:
             return response, redirect_chain, decision.to_dict()
@@ -524,6 +526,8 @@ def _http_request_impl(
             timeout=timeout_seconds,
             follow_redirects=False,
             transport=transport,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            trust_env=False,
         ) as client:
             response, redirect_chain, policy = _request_with_policy(
                 client,

@@ -378,7 +378,12 @@ class MCPServerManager:
 
         # Not using base_url: httpx appends a trailing slash on empty paths which
         # some MCP servers reject. We POST directly to config.url each request.
-        client = httpx.Client(headers=headers, timeout=None)
+        client = httpx.Client(
+            headers=headers,
+            timeout=None,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            trust_env=False,
+        )
         conn = MCPConnection(config=config, http_client=client)
 
         init_timeout = config.startup_timeout_seconds or INIT_TIMEOUT_DEFAULT

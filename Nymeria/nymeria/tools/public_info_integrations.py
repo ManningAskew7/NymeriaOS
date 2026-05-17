@@ -57,7 +57,12 @@ def _get_json(url: str, params: Optional[dict[str, Any]] = None, headers: Option
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT, headers=headers) as client:
+        with httpx.Client(
+            timeout=_HTTP_TIMEOUT,
+            headers=headers,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            trust_env=False,
+        ) as client:
             response, _redirect_chain, _policy = httpx_request_with_policy(
                 "GET",
                 url,
@@ -83,7 +88,13 @@ def _get_text(url: str, *, verify: bool = True) -> str:
     import httpx
 
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=False, verify=True) as client:
+        with httpx.Client(
+            timeout=_HTTP_TIMEOUT,
+            follow_redirects=False,
+            verify=True,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            trust_env=False,
+        ) as client:
             response, _redirect_chain, _policy = httpx_request_with_policy(
                 "GET",
                 url,

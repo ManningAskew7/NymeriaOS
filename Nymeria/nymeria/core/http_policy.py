@@ -12,6 +12,7 @@ import logging
 import re
 import socket
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Optional
@@ -400,15 +401,16 @@ def requests_get_with_policy(
         decision = evaluate_http_url(current_url, config=policy_config, resolver=resolver)
         _raise_if_blocked(decision, redirect_chain)
 
-        response = requester.get(
-            current_url,
-            headers=headers,
-            params=current_params,
-            stream=stream,
-            timeout=timeout,
-            verify=verify,
-            allow_redirects=False,
-        )
+        with pinned_dns_resolution(decision):
+            response = requester.get(
+                current_url,
+                headers=headers,
+                params=current_params,
+                stream=stream,
+                timeout=timeout,
+                verify=verify,
+                allow_redirects=False,
+            )
 
         if not follow_redirects or not getattr(response, "is_redirect", False):
             return response, redirect_chain, decision
@@ -459,19 +461,24 @@ def httpx_request_with_policy(
     current_url = str(url or "").strip()
     current_kwargs = dict(request_kwargs)
     owned_client = client is None
-    http_client = client or httpx.Client(follow_redirects=False)
+    http_client = client or httpx.Client(
+        follow_redirects=False,
+        limits=httpx.Limits(max_keepalive_connections=0),
+        trust_env=False,
+    )
 
     try:
         while True:
             decision = evaluate_http_url(current_url, config=policy_config, resolver=resolver)
             _raise_if_blocked(decision, redirect_chain)
 
-            response = http_client.request(
-                current_method,
-                current_url,
-                follow_redirects=False,
-                **current_kwargs,
-            )
+            with pinned_dns_resolution(decision):
+                response = http_client.request(
+                    current_method,
+                    current_url,
+                    follow_redirects=False,
+                    **current_kwargs,
+                )
 
             if not follow_redirects or not response.is_redirect:
                 return response, redirect_chain, decision
@@ -543,6 +550,104 @@ def redact_secrets(value: Any) -> Any:
 
 
 _audit_lock = threading.Lock()
+_dns_pin_lock = threading.RLock()
+
+
+def _coerce_port(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return socket.getservbyname(str(value))
+        except OSError:
+            return None
+
+
+def _addrinfo_for_pinned_ip(
+    ip_text: str,
+    port: int,
+    family: int,
+    socktype: int,
+    proto: int,
+) -> Optional[tuple[Any, ...]]:
+    try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return None
+    ip_family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    if family not in {0, ip_family}:
+        return None
+    if socktype not in {0, socket.SOCK_STREAM}:
+        return None
+    if proto not in {0, socket.IPPROTO_TCP}:
+        return None
+    sockaddr = (ip_text, port, 0, 0) if ip.version == 6 else (ip_text, port)
+    return (
+        ip_family,
+        socktype or socket.SOCK_STREAM,
+        proto or socket.IPPROTO_TCP,
+        "",
+        sockaddr,
+    )
+
+
+@contextmanager
+def pinned_dns_resolution(decision: HTTPPolicyDecision):
+    """
+    Force the request-time resolver to use the IPs approved by policy.
+
+    requests/httpx keep the URL hostname for Host, SNI, and certificate checks,
+    but their socket layer would otherwise perform a second DNS lookup during
+    connect. This scoped resolver pin closes the DNS-rebinding gap for
+    policy-managed synchronous requests.
+    """
+    if not decision.host or decision.port is None or not decision.resolved_ips:
+        yield
+        return
+
+    target_host = _normalize_host(decision.host)
+    target_port = decision.port
+    pinned_ips = decision.resolved_ips
+    original_getaddrinfo = socket.getaddrinfo
+
+    def pinned_getaddrinfo(
+        host: Any,
+        port: Any,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ):
+        requested_host = _normalize_host(str(host))
+        requested_port = _coerce_port(port)
+        if requested_host == target_host and requested_port == target_port:
+            infos = [
+                info
+                for ip_text in pinned_ips
+                if (
+                    info := _addrinfo_for_pinned_ip(
+                        ip_text,
+                        target_port,
+                        family,
+                        type,
+                        proto,
+                    )
+                )
+                is not None
+            ]
+            if infos:
+                return infos
+            raise socket.gaierror(socket.EAI_NONAME, "No pinned address for requested family")
+        return original_getaddrinfo(host, port, family, type, proto, flags)
+
+    with _dns_pin_lock:
+        socket.getaddrinfo = pinned_getaddrinfo
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
 
 
 def audit_http_event(event: dict[str, Any]) -> None:
