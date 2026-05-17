@@ -1481,6 +1481,65 @@ export interface CredentialSetupSessionRequest {
   metadata?: Record<string, unknown>;
 }
 
+// Auth-prompt SSE event — emitted by the agent's request_credential tool.
+// The desktop renders an AuthPromptModal in response.
+
+export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'form';
+
+export interface AuthPromptField {
+  name: string;
+  label: string;
+  secret: boolean;
+  kind?: 'password' | 'text' | 'textarea';
+  placeholder?: string;
+  help?: string;
+}
+
+export interface AuthPromptExistingAccount {
+  credential_id: string;
+  name: string;
+  account_label: string | null;
+  status: CredentialStatus;
+  last_used_at: string | null;
+  last_tested_at: string | null;
+}
+
+export interface AuthPromptEvent {
+  prompt_id: string;
+  credential_id: string;
+  provider: string;
+  display_name: string;
+  mode: AuthPromptMode;
+  fields: AuthPromptField[];
+  account_label: string;
+  existing_accounts: AuthPromptExistingAccount[];
+  timeout_seconds: number;
+}
+
+export interface AuthPromptSubmitRequest {
+  secret_fields: Record<string, string>;
+  account_label?: string | null;
+}
+
+export interface AuthPromptSubmitResponse {
+  ok: boolean;
+  status: 'active' | 'test_failed' | string;
+  attempts: number;
+  error?: string | null;
+  credential?: Credential | null;
+}
+
+export interface AuthPromptResolvedEvent {
+  prompt_id: string;
+  credential_id: string;
+  status: 'active' | string;
+}
+
+export interface AuthPromptCancelledEvent {
+  prompt_id: string;
+  reason: 'user_exited' | 'cancelled' | 'tool_timeout' | string;
+}
+
 export interface CredentialBinding {
   id: string;
   credentialId: string;

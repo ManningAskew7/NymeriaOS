@@ -13,6 +13,7 @@ import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
+import { authPromptStore } from './authPrompt.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
 import { isTodoTool } from '$lib/utils/todoTools';
@@ -622,6 +623,50 @@ function createAutonomousStore() {
           bufferPendingEvent(event);
         }
         break;
+
+      case 'auth_prompt': {
+        // Per-user filtering already happens at the SSE generator; opening
+        // unconditionally is safe. The modal is global (not thread-scoped):
+        // even if the user navigated away from the thread that issued the
+        // prompt, they should still be able to complete it.
+        const promptId = event.prompt_id as string | undefined;
+        if (!promptId) break;
+        authPromptStore.open({
+          prompt_id: promptId,
+          credential_id: (event.credential_id as string) || '',
+          provider: (event.provider as string) || '',
+          display_name: (event.display_name as string) || (event.provider as string) || '',
+          mode: (event.mode as 'api_key' | 'pat' | 'oauth' | 'form') || 'api_key',
+          fields: (event.fields as Array<{
+            name: string;
+            label: string;
+            secret: boolean;
+            kind?: 'password' | 'text' | 'textarea';
+            placeholder?: string;
+            help?: string;
+          }>) || [],
+          account_label: (event.account_label as string) || '',
+          existing_accounts: (event.existing_accounts as Array<{
+            credential_id: string;
+            name: string;
+            account_label: string | null;
+            status: string;
+            last_used_at: string | null;
+            last_tested_at: string | null;
+          }>) || [],
+          timeout_seconds: (event.timeout_seconds as number) || 180,
+        });
+        break;
+      }
+
+      case 'auth_prompt_resolved':
+      case 'auth_prompt_cancelled': {
+        const promptId = event.prompt_id as string | undefined;
+        if (promptId) {
+          authPromptStore.clearById(promptId);
+        }
+        break;
+      }
 
       case 'response':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {

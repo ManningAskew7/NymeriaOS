@@ -141,6 +141,7 @@ from .tool_search import tool_enable, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
 from .auth_manager import auth_manager, AUTH_MANAGER_TOOLS
+from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
 from ._prv_b import _PRV_TOOLS_B
 from .skill_config import (
     skill_config,
@@ -1385,6 +1386,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
     + AUTH_MANAGER_TOOLS
+    + REQUEST_CREDENTIAL_TOOLS
     + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
     + SKILL_KIT_CREATE_TOOLS
@@ -2774,6 +2776,8 @@ __all__ = [
     "TOOL_CREATE_TOOLS",
     "auth_manager",
     "AUTH_MANAGER_TOOLS",
+    "request_credential",
+    "REQUEST_CREDENTIAL_TOOLS",
     "_PRV_TOOLS_B",
     "skill_config",
     "skill_kit_create",
