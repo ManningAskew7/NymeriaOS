@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 180
 _MIN_TIMEOUT_SECONDS = 15
 _MAX_TIMEOUT_SECONDS = 270  # Stay under SafeToolNode's 300s default
+_MAX_DESCRIPTION_CHARS = 2000  # Bound the markdown payload sent over SSE
 
 
 def _generic_fields(provider: str) -> list[dict[str, Any]]:
@@ -107,6 +108,7 @@ async def request_credential(
     kind: str = "api_key",
     account_label: str = "",
     display_name: str = "",
+    description: str = "",
     fields: Optional[list[dict[str, Any]]] = None,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
@@ -128,10 +130,20 @@ async def request_credential(
             for the same provider.
         display_name: Optional human-readable name shown in the modal title.
             Defaults to ``provider``.
+        description: Optional instructions shown above the form (markdown
+            supported: bold, lists, links). USE THIS for non-obvious
+            services to tell the user where to find the credential.
+            Example: ``"Get your API key at [Sendgrid → Settings → API
+            Keys](https://app.sendgrid.com/settings/api_keys). Choose
+            'Full Access' or 'Restricted'."`` Since the modal is modal
+            (blocks chat), good instructions here prevent the user from
+            having to dismiss and ask for help.
         fields: Optional schema of secret fields, each
-            ``{name, label, secret, placeholder, help}``. Omit to use a
-            single ``value`` field. Phase 3 will auto-resolve this from a
-            provider descriptor registry.
+            ``{name, label, secret, placeholder, help, kind}``. ``kind`` is
+            ``"password"`` (default for secret=True), ``"text"``, or
+            ``"textarea"`` (use for multiline values like service-account
+            JSON). Omit to use a single ``value`` field. Phase 3 will
+            auto-resolve this from a provider descriptor registry.
         timeout_seconds: How long to wait for the user (15-270, default 180).
             On timeout the credential remains in ``pending_setup`` so the
             user can finish later in Settings → Connections.
@@ -180,6 +192,10 @@ async def request_credential(
 
     pending_fields = _safe_fields(fields) if fields else _generic_fields(label_display)
 
+    safe_description = (description or "").strip()
+    if len(safe_description) > _MAX_DESCRIPTION_CHARS:
+        safe_description = safe_description[:_MAX_DESCRIPTION_CHARS]
+
     existing_accounts = _existing_accounts_for(repo, user_id, provider_norm)
 
     record = repo.create_credential(
@@ -214,6 +230,7 @@ async def request_credential(
         "provider": provider_norm,
         "display_name": label_display,
         "mode": kind_norm,
+        "description": safe_description,
         "fields": pending_fields,
         "account_label": account_label.strip(),
         "existing_accounts": existing_accounts,

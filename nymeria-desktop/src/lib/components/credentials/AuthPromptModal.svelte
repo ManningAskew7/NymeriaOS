@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/services/api';
   import type { AuthPromptEvent, AuthPromptField } from '$lib/types';
+  import { renderMarkdown } from '$lib/utils/markdown';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import Modal from '../common/Modal.svelte';
@@ -82,12 +83,51 @@
     if (field.kind === 'textarea') return 'textarea';
     return field.secret ? 'password' : 'text';
   }
+
+  let descriptionHtml = $derived(
+    prompt?.description ? renderMarkdown(prompt.description) : ''
+  );
+
+  async function handleDescriptionClick(event: MouseEvent) {
+    // Intercept anchor clicks so http(s) links open in the OS browser
+    // rather than navigating the Tauri webview.
+    const anchor = (event.target as HTMLElement | null)?.closest('a');
+    if (!anchor) return;
+    const href = anchor.getAttribute('href');
+    if (!href) return;
+    if (/^https?:\/\//i.test(href)) {
+      event.preventDefault();
+      try {
+        const { openUrl } = await import('@tauri-apps/plugin-opener');
+        await openUrl(href);
+      } catch {
+        // Fallback for browser/dev contexts where the opener plugin is unavailable.
+        window.open(href, '_blank', 'noopener,noreferrer');
+      }
+    }
+  }
 </script>
 
 <Modal title={prompt ? `Connect ${prompt.display_name}` : ''} {isOpen} onClose={handleClose}>
   {#if prompt}
     {@const showLabelEditor = prompt.existing_accounts.length > 0 || prompt.account_label}
     <form onsubmit={handleSubmit} class="auth-form">
+      {#if descriptionHtml}
+        <!-- Description is markdown rendered by the shared marked instance.
+             Source: the agent that called request_credential (LLM output).
+             Click handler delegates to inner <a> tags so http(s) links open
+             in the OS browser; keyboard Enter on a focused link triggers a
+             synthetic click that bubbles to this handler. -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="description"
+          role="region"
+          aria-label="Connection instructions"
+          onclick={handleDescriptionClick}
+        >{@html descriptionHtml}</div>
+      {/if}
+
       {#if prompt.existing_accounts.length > 0}
         <div class="existing-banner">
           <Icon name="info" size={14} />
@@ -177,6 +217,39 @@
     flex-direction: column;
     gap: var(--spacing-md);
     min-width: min(440px, 80vw);
+  }
+
+  .description {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+  }
+
+  .description :global(p) {
+    margin: 0 0 var(--spacing-xs) 0;
+  }
+
+  .description :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .description :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  .description :global(ul),
+  .description :global(ol) {
+    margin: var(--spacing-xs) 0;
+    padding-left: var(--spacing-lg);
+  }
+
+  .description :global(code) {
+    background: var(--bg-subtle);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.9em;
   }
 
   .existing-banner {
