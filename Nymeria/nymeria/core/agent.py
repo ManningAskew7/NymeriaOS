@@ -2240,12 +2240,12 @@ class NymeriaAgent:
 
         if getattr(self, "tool_registry", None):
             try:
-                for tool in self.tool_registry.all_tools():
+                for tool in self.tool_registry.get_all_tools():
                     if tool.name not in merged:
                         merged[tool.name] = tool
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "tool_registry.all_tools() failed during superset build: %s", exc
+                    "tool_registry.get_all_tools() failed during superset build: %s", exc
                 )
 
         try:

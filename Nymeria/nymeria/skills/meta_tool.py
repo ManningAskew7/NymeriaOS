@@ -301,7 +301,12 @@ def create_skill_meta_tool(
             # The next agent step's resolver will rebind these tools.
             body += (
                 "\n\n---\n"
-                "[Skill Kit tools bound; available on the next step]"
+                "[Skill Kit tools bound; available starting next step]\n"
+                "These tools were NOT bound before this Skill Kit activation — "
+                "earlier turns of this conversation did not have access to them. "
+                "See the binding-result block above for the exact bound-list "
+                "delta; trust those counts over any assumption that the tools "
+                "were already available."
             )
 
         if binding_cap_hit:

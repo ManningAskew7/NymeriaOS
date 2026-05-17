@@ -590,6 +590,19 @@ def bind_tools_for_thread(
             new_temporary[name] = TemporaryToolEntry(expires_at=expires_at)
         newly_added.append(name)
 
+    # Bound-list anchoring for the model. In dynamic-binding mode the model
+    # has no "tool list changed" sentinel and can fall into a wrong inference
+    # like "the tool's in my list now, so I must have had it earlier." Giving
+    # it concrete before/after counts in the result text makes the state
+    # change unambiguous. Computed against the same union graph-build uses:
+    # (default-bound ∪ enabled ∪ live-temporary) − disabled.
+    live_temp_before = {n for n in original_temporary}
+    live_temp_after = {n for n in new_temporary}
+    prior_bound_names = (default_bound | set(original_enabled) | live_temp_before) - set(original_disabled)
+    new_bound_names = (default_bound | new_enabled | live_temp_after) - new_disabled
+    prior_count = len(prior_bound_names)
+    new_count = len(new_bound_names)
+
     tc.enabled_tools = sorted(new_enabled)
     tc.disabled_tools = sorted(new_disabled)
     tc.temporary_tools = new_temporary
@@ -696,9 +709,16 @@ def bind_tools_for_thread(
         # Dynamic-binding mode: tools are already in the graph's superset
         # and the model node will rebind them on its next step. No reload
         # round-trip needed.
+        delta = new_count - prior_count
         lines.append(
-            "[Tools bound; available on the next step] You may call the "
-            "newly-enabled tool(s) in your next thought without waiting."
+            "[Tools bound; available starting next step]\n"
+            "These tool(s) were NOT in your bound list before this call — "
+            "earlier turns of this conversation did not have access to them. "
+            "They become callable on your next thought.\n"
+            f"Your bound list: {prior_count} → {new_count} tool(s)"
+            + (f" (+{delta} new binding)." if delta > 0 else ".")
+            + " Trust this result over any assumption about earlier-turn "
+            "availability; do not second-guess this as a redundant enable."
         )
     elif reload_tools and cap_hit:
         lines.append(
