@@ -1,0 +1,50 @@
+# Caddyfile — Nymeria reverse proxy.
+#
+# Compose env vars (consumed at startup via {$VAR:default} substitution):
+#   NYMERIA_HOSTNAME  Public DNS hostname for the deployment. Default `:80`
+#                     keeps the proxy in plain-HTTP mode for local/private
+#                     deployments fronted by Cloudflare Tunnel / Tailscale
+#                     Funnel / an SSH tunnel.
+#   ACME_EMAIL        Optional Let's Encrypt contact email. Add a global
+#                     `email` line below when you set this.
+#
+# When NYMERIA_HOSTNAME is a real public domain, Caddy auto-issues and
+# renews a free Let's Encrypt cert on first request to that hostname.
+
+# Primary public site. Proxies / to api, /mcp/* to mcp.
+{$NYMERIA_HOSTNAME::80} {
+	# MCP server (SSE / HTTP streaming).
+	reverse_proxy /mcp/* mcp:8001 {
+		flush_interval -1
+		transport http {
+			read_timeout 24h
+			write_timeout 24h
+		}
+	}
+
+	# Everything else goes to the API. SSE endpoints under /api/threads/*/events
+	# also flow through here; flush_interval -1 keeps streaming responsive.
+	reverse_proxy api:8000 {
+		flush_interval -1
+		transport http {
+			read_timeout 24h
+			write_timeout 24h
+		}
+	}
+
+	# Conservative response headers. HSTS only kicks in when on a real
+	# domain with HTTPS; it's a no-op for the default :80 host.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	encode zstd gzip
+
+	log {
+		output stdout
+		format console
+	}
+}

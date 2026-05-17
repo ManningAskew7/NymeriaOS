@@ -22,7 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN mkdir -p /data /workspace
+
+# Create non-root user matching the full image (uid/gid 999) so the shared
+# /data and /workspace named volumes line up across both image variants.
+RUN groupadd -r -g 999 nymeria \
+    && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria \
+    && mkdir -p /data /workspace \
+    && chown -R nymeria:nymeria /app /data /workspace
 
 COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
@@ -32,13 +38,15 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove gcc g++ make \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+COPY --chown=nymeria:nymeria . .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV NYMERIA_DATA_DIR=/data
 ENV NYMERIA_WORKSPACE_DIR=/workspace
 ENV PATH="/usr/local/bin:$PATH"
+
+USER nymeria
 
 # The concrete command is supplied by docker-compose.yml.
 CMD ["python", "run.py", "watchdog"]

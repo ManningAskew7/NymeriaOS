@@ -34,7 +34,7 @@ services:
       start_period: 45s
       retries: 5
     networks:
-      - nymeria-network
+      - edge
 
   hexstrike-mcp:
     <<: *security-hardening
@@ -70,4 +70,4 @@ services:
       start_period: 30s
       retries: 5
     networks:
-      - nymeria-network
+      - edge

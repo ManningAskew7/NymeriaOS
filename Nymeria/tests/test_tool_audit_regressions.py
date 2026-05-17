@@ -809,8 +809,8 @@ def test_hello_test_is_developer_only_in_tool_discovery():
     assert "hello_test" in admin_core_results
 
     allowed, blocked = filter_developer_only_tools(
-        ["hello_test", "sticky_note"],
+        ["hello_test", "memory_clear_all"],
         "user",
     )
-    assert allowed == {"sticky_note"}
+    assert allowed == {"memory_clear_all"}
     assert blocked == {"hello_test"}

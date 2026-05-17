@@ -530,10 +530,10 @@ def bind_tools_for_thread(
         # adds to disabled_tools without touching enabled_tools/temporary_tools),
         # un-disable should restore preserved state AS-IS; the requested `ttl`
         # must NOT bleed into this path and overwrite a preserved permanent or
-        # TTL entry. Mixed-batch example: enable([hello_test, sticky_note],
+        # TTL entry. Mixed-batch example: enable([hello_test, memory_clear_all],
         # ttl="never") where hello_test is a TTL-to-permanent promotion and
-        # sticky_note is a disabled-with-preserved-TTL: the "never" was
-        # intended for hello_test, so sticky_note's 18m TTL must survive intact.
+        # memory_clear_all is a disabled-with-preserved-TTL: the "never" was
+        # intended for hello_test, so memory_clear_all's 18m TTL must survive intact.
         #
         # Only write fresh state when there's genuinely nothing to restore:
         # no default binding, no permanent entry, no TTL entry. Expired TTL

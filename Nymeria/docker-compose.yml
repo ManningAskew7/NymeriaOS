@@ -13,6 +13,49 @@ x-security-hardening: &security-hardening
   cap_drop:
     - ALL
 
+# Filesystem hardening for AGENT-bearing containers (api/worker/twitch-bot).
+# These run NymeriaAgent + bash_execute and need a writable rootfs so the
+# agent can install language-level packages, modify system config, and
+# extend its own toolbox at runtime. The container boundary (non-root +
+# cap_drop ALL + no-new-privileges) is the security boundary; an attacker
+# who compromises the agent stays trapped at uid 999 inside the container.
+x-agent-fs: &agent-fs
+  tmpfs:
+    - /tmp
+
+# Filesystem hardening for THIN-CLIENT containers (watchdog, mcp, bots,
+# caddy). These talk to the API over HTTP and never need to write to the
+# rootfs. Locking them down prevents an attacker who compromises a chat
+# integration from persisting a backdoor inside the container image layer.
+x-thin-client-fs: &thin-client-fs
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /home/nymeria
+
+# Resource limits. Tuned for a 2GB / 1 vCPU droplet running the core
+# services plus a couple of optional bots. The sum overcommits the host
+# on purpose — limits are caps, not reservations, and most services idle
+# well under their headroom. Per-container PID limits cap fork-bomb-style
+# blast radius from a compromised tool call.
+x-limits-full: &limits-full
+  mem_limit: 1536m
+  memswap_limit: 1536m
+  cpus: 1.5
+  pids_limit: 256
+
+x-limits-slim: &limits-slim
+  mem_limit: 384m
+  memswap_limit: 384m
+  cpus: 0.5
+  pids_limit: 128
+
+x-limits-infra: &limits-infra
+  mem_limit: 256m
+  memswap_limit: 256m
+  cpus: 0.5
+  pids_limit: 64
+
 x-nymeria-full-image: &nymeria-full-image
   image: nymeria-full:local
   build:
@@ -32,8 +75,9 @@ services:
 
   # PostgreSQL Database
   postgres:
-    <<: *security-hardening
-    image: postgres:15-alpine
+    <<: [*security-hardening, *limits-infra]
+    # Digest pinned 2026-05-17. Bump via scripts/update-image-digests.sh.
+    image: postgres:15-alpine@sha256:df7bca0066e6f60cc3dd32faa70caddec20e2c22b58932f79498e5704b23854a
     container_name: nymeria-postgres
     restart: unless-stopped
     user: postgres
@@ -53,12 +97,13 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - nymeria-network
+      - backend
 
   # Redis Event Bus
   redis:
-    <<: *security-hardening
-    image: redis:7-alpine
+    <<: [*security-hardening, *limits-infra]
+    # Digest pinned 2026-05-17. Bump via scripts/update-image-digests.sh.
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: nymeria-redis
     restart: unless-stopped
     user: redis
@@ -81,18 +126,78 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - nymeria-network
+      - backend
+
+  # ============================================================================
+  # Reverse Proxy
+  # ============================================================================
+
+  # Caddy fronts the public internet. Terminates TLS via Let's Encrypt
+  # (set NYMERIA_HOSTNAME + ACME_EMAIL in .env.docker), proxies to api on
+  # /, /api/* and /mcp/* to mcp. The api and mcp containers expose their
+  # ports on 127.0.0.1 only — Caddy is the only externally-reachable
+  # service on the host. UFW should accept 80 and 443 and deny 8000/8001.
+  caddy:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim]
+    # Digest pinned 2026-05-17. Bump via scripts/update-image-digests.sh.
+    image: caddy:2-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+    container_name: nymeria-caddy
+    restart: unless-stopped
+    # NET_BIND_SERVICE is the one Linux capability a reverse proxy
+    # legitimately needs that the cap_drop: ALL baseline strips. Without
+    # it the caddy process (even as root inside the image) cannot bind to
+    # ports 80/443. This is the standard production pattern.
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NYMERIA_HOSTNAME: ${NYMERIA_HOSTNAME:-:80}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # auto-issued certs + ACME account state
+      - caddy_config:/config   # Caddy's own runtime config snapshots
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # Hit the proxy itself on :80 — passes if Caddy is serving and
+      # successfully proxying to api (which has its own /health).
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - edge
 
   # ============================================================================
   # Nymeria Services (Kali Linux)
   # ============================================================================
 
   api:
-    <<: [*security-hardening, *nymeria-full-image]
+    <<: [*security-hardening, *agent-fs, *limits-full, *nymeria-full-image]
     container_name: nymeria-api
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
+    # Agent-bearing container: runs as root with DAC_OVERRIDE/CHOWN/FOWNER
+    # so the agent's bash_execute tool can apt-install runtime packages,
+    # write to /etc, chown files, etc. — the kinds of self-extension a
+    # capable assistant needs. This is the Hermes pattern: the container
+    # boundary itself is the security boundary (cap_drop ALL except these
+    # three; bind-mounted source is :ro; no docker socket; network is
+    # segmented). Thin-client containers (bots, mcp, watchdog, caddy)
+    # stay non-root + read-only — only api and worker get this privilege.
+    user: "0:0"
+    cap_add:
+      - DAC_OVERRIDE  # bypass DAC checks (apt's dpkg lock, /etc writes)
+      - CHOWN         # set file ownership during package install
+      - FOWNER        # operate on files owned by other uids
+      - SETUID        # apt's http method drops privileges to _apt
+      - SETGID        # same — required for apt-get install to work
     # OAuth token caches are now per-user at /data/auth_tokens/<user_id>/
     # (see docs/accounts.md). Existing global caches in /data/auth_tokens/
     # get migrated to /data/auth_tokens/default/ by the agent at boot.
@@ -105,8 +210,11 @@ services:
     # on Docker Desktop (Win/Mac) AND Linux Docker.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # API is fronted by Caddy on :443. We still bind 8000 on the host but
+    # only on the loopback interface so it's reachable via SSH tunnel for
+    # local development without being exposed to the public internet.
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment: &api-env
       # System timezone (matches USER_TIMEZONE for consistent bash/OS time)
       TZ: ${USER_TIMEZONE:-UTC}
@@ -178,6 +286,77 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
+      SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
+      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
+      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
+      MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
+      MATRIX_DEVICE_ID: ${MATRIX_DEVICE_ID:-}
+      MATRIX_RESPOND_MODE: ${MATRIX_RESPOND_MODE:-mention}
+      MATRIX_FREE_RESPONSE_ROOMS: ${MATRIX_FREE_RESPONSE_ROOMS:-}
+      MATRIX_AUTO_JOIN: ${MATRIX_AUTO_JOIN:-false}
+      WEBEX_ACCESS_TOKEN: ${WEBEX_ACCESS_TOKEN:-}
+      WEBEX_BASE_URL: ${WEBEX_BASE_URL:-https://webexapis.com/v1}
+      WEBEX_WEBHOOK_SECRET: ${WEBEX_WEBHOOK_SECRET:-}
+      WEBEX_BOT_PERSON_ID: ${WEBEX_BOT_PERSON_ID:-}
+      WEBEX_BOT_EMAIL: ${WEBEX_BOT_EMAIL:-}
+      WEBEX_SHOW_TOOL_EVENTS: ${WEBEX_SHOW_TOOL_EVENTS:-false}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_BASE_URL: ${WHATSAPP_BASE_URL:-https://graph.facebook.com/v19.0}
+      WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_SHOW_TOOL_EVENTS: ${WHATSAPP_SHOW_TOOL_EVENTS:-false}
+      MESSENGER_PAGE_ACCESS_TOKEN: ${MESSENGER_PAGE_ACCESS_TOKEN:-}
+      MESSENGER_PAGE_ID: ${MESSENGER_PAGE_ID:-}
+      MESSENGER_WEBHOOK_VERIFY_TOKEN: ${MESSENGER_WEBHOOK_VERIFY_TOKEN:-}
+      MESSENGER_APP_SECRET: ${MESSENGER_APP_SECRET:-}
+      MESSENGER_GRAPH_API_BASE_URL: ${MESSENGER_GRAPH_API_BASE_URL:-https://graph.facebook.com/v23.0}
+      MESSENGER_SHOW_TOOL_EVENTS: ${MESSENGER_SHOW_TOOL_EVENTS:-false}
+      INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN:-}
+      INSTAGRAM_IG_USER_ID: ${INSTAGRAM_IG_USER_ID:-}
+      INSTAGRAM_WEBHOOK_VERIFY_TOKEN: ${INSTAGRAM_WEBHOOK_VERIFY_TOKEN:-}
+      INSTAGRAM_APP_SECRET: ${INSTAGRAM_APP_SECRET:-}
+      INSTAGRAM_GRAPH_API_BASE_URL: ${INSTAGRAM_GRAPH_API_BASE_URL:-https://graph.instagram.com/v23.0}
+      INSTAGRAM_SHOW_TOOL_EVENTS: ${INSTAGRAM_SHOW_TOOL_EVENTS:-false}
+      TEAMS_BOT_APP_ID: ${TEAMS_BOT_APP_ID:-}
+      TEAMS_BOT_APP_PASSWORD: ${TEAMS_BOT_APP_PASSWORD:-}
+      TEAMS_BOT_TENANT_ID: ${TEAMS_BOT_TENANT_ID:-}
+      TEAMS_BOT_RESPOND_MODE: ${TEAMS_BOT_RESPOND_MODE:-mention}
+      TEAMS_BOT_VALIDATE_AUTH: ${TEAMS_BOT_VALIDATE_AUTH:-true}
+      TEAMS_BOT_SHOW_TOOL_EVENTS: ${TEAMS_BOT_SHOW_TOOL_EVENTS:-false}
+      TEAMS_BOT_TOKEN_URL: ${TEAMS_BOT_TOKEN_URL:-https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token}
+      TEAMS_BOT_OPENID_CONFIG_URL: ${TEAMS_BOT_OPENID_CONFIG_URL:-https://login.botframework.com/v1/.well-known/openidconfiguration}
+      GOOGLE_CHAT_SERVICE_ACCOUNT_JSON: ${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_CHAT_SERVICE_ACCOUNT_FILE: ${GOOGLE_CHAT_SERVICE_ACCOUNT_FILE:-}
+      GOOGLE_CHAT_PROJECT_NUMBER: ${GOOGLE_CHAT_PROJECT_NUMBER:-}
+      GOOGLE_CHAT_AUTH_AUDIENCE: ${GOOGLE_CHAT_AUTH_AUDIENCE:-}
+      GOOGLE_CHAT_AUTH_AUDIENCE_TYPE: ${GOOGLE_CHAT_AUTH_AUDIENCE_TYPE:-app-url}
+      GOOGLE_CHAT_BOT_NAME: ${GOOGLE_CHAT_BOT_NAME:-Nymeria}
+      GOOGLE_CHAT_RESPOND_MODE: ${GOOGLE_CHAT_RESPOND_MODE:-mention}
+      GOOGLE_CHAT_VALIDATE_AUTH: ${GOOGLE_CHAT_VALIDATE_AUTH:-true}
+      GOOGLE_CHAT_SHOW_TOOL_EVENTS: ${GOOGLE_CHAT_SHOW_TOOL_EVENTS:-false}
+      GOOGLE_CHAT_API_BASE_URL: ${GOOGLE_CHAT_API_BASE_URL:-https://chat.googleapis.com/v1}
+      GOOGLE_CHAT_USE_ADC: ${GOOGLE_CHAT_USE_ADC:-false}
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
+      LINE_BOT_USER_ID: ${LINE_BOT_USER_ID:-}
+      LINE_BOT_NAME: ${LINE_BOT_NAME:-Nymeria}
+      LINE_RESPOND_MODE: ${LINE_RESPOND_MODE:-mention}
+      LINE_VALIDATE_SIGNATURE: ${LINE_VALIDATE_SIGNATURE:-true}
+      LINE_SHOW_TOOL_EVENTS: ${LINE_SHOW_TOOL_EVENTS:-false}
+      LINE_API_BASE_URL: ${LINE_API_BASE_URL:-https://api.line.me/v2/bot}
+      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:-}
+      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:-}
+      SIGNAL_ACCOUNT_UUID: ${SIGNAL_ACCOUNT_UUID:-}
+      SIGNAL_RESPOND_MODE: ${SIGNAL_RESPOND_MODE:-mention}
+      SIGNAL_ALLOWED_USERS: ${SIGNAL_ALLOWED_USERS:-}
+      SIGNAL_ALLOWED_GROUPS: ${SIGNAL_ALLOWED_GROUPS:-}
+      SIGNAL_SHOW_TOOL_EVENTS: ${SIGNAL_SHOW_TOOL_EVENTS:-false}
+      SIGNAL_HTTP_TIMEOUT: ${SIGNAL_HTTP_TIMEOUT:-30.0}
       # Google OAuth
       GOOGLE_OAUTH_CREDENTIALS: ${GOOGLE_OAUTH_CREDENTIALS:-}
       _PRV_A_SERVICE_ACCOUNT_FILE: ${_PRV_A_SERVICE_ACCOUNT_FILE:-}
@@ -202,10 +381,10 @@ services:
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
-      - ./nymeria:/app/nymeria        # Bind mount: live code sync
+      - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
       - ./tests:/app/tests:ro         # Bind mount: focused backend tests for live validation
-      - ./run.py:/app/run.py          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
+      - ./run.py:/app/run.py:ro          # Bind mount: live entry point
+      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
       - ./google_credentials.json:/app/google_credentials.json:ro  # Google OAuth creds
       - ../nymeria-desktop/build:/app/frontend:ro  # Outlook add-in / web UI frontend
@@ -221,38 +400,44 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge       # reachable by Caddy and bot containers
+      - backend    # for postgres + redis access
 
   worker:
-    <<: [*security-hardening, *nymeria-full-image]
+    <<: [*security-hardening, *agent-fs, *limits-full, *nymeria-full-image]
     container_name: nymeria-worker
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
+    # See api service for design rationale. The worker runs scheduled-TODO
+    # invocations of the same agent, so it needs the same install caps.
+    user: "0:0"
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
     dns:
       - 8.8.8.8
       - 1.1.1.1
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: >-
-      bash -c "
-        mkdir -p /data/auth_tokens &&
-        for f in .microsoft_mcp_token_cache.json .google_docs_token_cache.json .google_calendar_token_cache.json; do
-          [ ! -f /data/auth_tokens/$$f ] && [ ! -L /root/$$f ] && [ -f /root/$$f ] && mv /root/$$f /data/auth_tokens/$$f;
-          [ ! -f /data/auth_tokens/$$f ] && echo '{}' > /data/auth_tokens/$$f;
-          ln -sf /data/auth_tokens/$$f /root/$$f;
-        done &&
-        exec python run.py worker
-      "
+    # Legacy /root/<token>.json symlink migration removed — the agent's
+    # accounts bootstrap (nymeria/core/accounts.py) now handles legacy
+    # auth-token paths and migrates them under /data/auth_tokens/<user_id>/.
+    # Required because the container no longer runs as root and /root/ is
+    # not writable from uid 999.
+    command: ["python", "run.py", "worker"]
     environment:
       <<: *api-env
       WORKER_MODE: "true"
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
-      - ./nymeria:/app/nymeria        # Bind mount: live code sync
-      - ./run.py:/app/run.py          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
+      - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
+      - ./run.py:/app/run.py:ro          # Bind mount: live entry point
+      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       postgres:
@@ -266,11 +451,12 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge       # so bots/api can call worker health endpoints
+      - backend    # for postgres + redis access (ticker, checkpointer)
 
   # Watchdog thin-client worker (polls API for stale TODOs)
   watchdog:
-    <<: [*security-hardening, *nymeria-slim-image]
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
     container_name: nymeria-watchdog
     restart: unless-stopped
     command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
@@ -278,9 +464,9 @@ services:
       <<: *api-env
     volumes:
       - nymeria_data:/data                    # for kill-switch file at /data/flags/watchdog-off
-      - ./nymeria:/app/nymeria                # Bind mount: live code sync
-      - ./run.py:/app/run.py                  # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker        # Bind mount: settings persist across restarts
+      - ./nymeria:/app/nymeria:ro                # Bind mount: live code sync
+      - ./run.py:/app/run.py:ro                  # Bind mount: live entry point
+      - ./.env.docker:/app/.env.docker:ro        # Bind mount: settings persist across restarts
     depends_on:
       api:
         condition: service_healthy
@@ -291,11 +477,11 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
   # Discord Bot for two-way communication
   discord-bot:
-    <<: [*security-hardening, *nymeria-slim-image]
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
     container_name: nymeria-discord-bot
     restart: unless-stopped
     dns:
@@ -311,9 +497,9 @@ services:
       DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}
     volumes:
       - nymeria_data:/data
-      - ./nymeria:/app/nymeria
-      - ./run.py:/app/run.py
-      - ./.env.docker:/app/.env.docker
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -324,11 +510,11 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
   # Telegram Bot for two-way communication
   telegram-bot:
-    <<: [*security-hardening, *nymeria-slim-image]
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
     container_name: nymeria-telegram-bot
     restart: unless-stopped
     dns:
@@ -343,9 +529,9 @@ services:
       TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
     volumes:
       - nymeria_data:/data
-      - ./nymeria:/app/nymeria
-      - ./run.py:/app/run.py
-      - ./.env.docker:/app/.env.docker
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -356,60 +542,227 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
-  # Twitch Bot for chat integration
-  twitch-bot:
-    <<: [*security-hardening, *nymeria-full-image]
-    container_name: nymeria-twitch-bot
+  # Slack Bot for two-way communication
+  slack-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-slack-bot
     restart: unless-stopped
     dns:
       - 8.8.8.8
       - 1.1.1.1
-    command: ["python", "run.py", "twitch-bot"]
+    command: ["python", "run.py", "slack-bot", "--api-url", "http://nymeria-api:8000"]
     profiles:
-      - twitch  # Only starts when explicitly enabled: docker compose --profile twitch up -d
+      - slack  # Only starts when explicitly enabled: docker compose --profile slack up -d
     environment:
       <<: *api-env
-      COMPACT_THRESHOLD: ${TWITCH_COMPACT_THRESHOLD:-0.2}
-      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
-      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
-      TWITCH_BOT_ACCESS_TOKEN: ${TWITCH_BOT_ACCESS_TOKEN:-}
-      TWITCH_BOT_REFRESH_TOKEN: ${TWITCH_BOT_REFRESH_TOKEN:-}
-      TWITCH_BOT_USER_ID: ${TWITCH_BOT_USER_ID:-}
-      TWITCH_BROADCASTER_TOKEN: ${TWITCH_BROADCASTER_TOKEN:-}
-      TWITCH_BROADCASTER_REFRESH_TOKEN: ${TWITCH_BROADCASTER_REFRESH_TOKEN:-}
-      TWITCH_CHANNEL: ${TWITCH_CHANNEL:-}
-      TWITCH_SYSTEM_PROMPT: ${TWITCH_SYSTEM_PROMPT:-}
-      TWITCH_BUFFER_SIZE: ${TWITCH_BUFFER_SIZE:-500}
-      TWITCH_PULSE_ENABLED: ${TWITCH_PULSE_ENABLED:-true}
-      TWITCH_PULSE_INTERVAL: ${TWITCH_PULSE_INTERVAL:-300}
-      TWITCH_PULSE_MESSAGE_COUNT: ${TWITCH_PULSE_MESSAGE_COUNT:-100}
-      TWITCH_COMMAND_CONTEXT_COUNT: ${TWITCH_COMMAND_CONTEXT_COUNT:-50}
-      TWITCH_RESPOND_MODE: ${TWITCH_RESPOND_MODE:-command}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN is required for slack-bot service}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?SLACK_APP_TOKEN is required for slack-bot service}
+      SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
+      SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
     volumes:
       - nymeria_data:/data
-      - nymeria_workspace:/workspace
-      - ./nymeria:/app/nymeria
-      - ./run.py:/app/run.py
-      - ./.env.docker:/app/.env.docker
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "twitch-bot"]
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "slack-bot", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
+
+  # Matrix Bot for two-way communication
+  matrix-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-matrix-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "matrix-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - matrix  # Only starts when explicitly enabled: docker compose --profile matrix up -d
+    environment:
+      <<: *api-env
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:?MATRIX_HOMESERVER is required for matrix-bot service}
+      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
+      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
+      MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
+      MATRIX_DEVICE_ID: ${MATRIX_DEVICE_ID:-}
+      MATRIX_RESPOND_MODE: ${MATRIX_RESPOND_MODE:-mention}
+      MATRIX_FREE_RESPONSE_ROOMS: ${MATRIX_FREE_RESPONSE_ROOMS:-}
+      MATRIX_AUTO_JOIN: ${MATRIX_AUTO_JOIN:-false}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "matrix-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
+
+  # Mattermost Bot for two-way communication
+  mattermost-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-mattermost-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "mattermost-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - mattermost  # Only starts when explicitly enabled: docker compose --profile mattermost up -d
+    environment:
+      <<: *api-env
+      MATTERMOST_BASE_URL: ${MATTERMOST_BASE_URL:?MATTERMOST_BASE_URL is required for mattermost-bot service}
+      MATTERMOST_ACCESS_TOKEN: ${MATTERMOST_ACCESS_TOKEN:?MATTERMOST_ACCESS_TOKEN is required for mattermost-bot service}
+      MATTERMOST_RESPOND_MODE: ${MATTERMOST_RESPOND_MODE:-mention}
+      MATTERMOST_SHOW_TOOL_EVENTS: ${MATTERMOST_SHOW_TOOL_EVENTS:-false}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "mattermost-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
+
+  # Zulip Bot for two-way communication
+  zulip-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-zulip-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "zulip-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - zulip  # Only starts when explicitly enabled: docker compose --profile zulip up -d
+    environment:
+      <<: *api-env
+      ZULIP_BASE_URL: ${ZULIP_BASE_URL:?ZULIP_BASE_URL is required for zulip-bot service}
+      ZULIP_EMAIL: ${ZULIP_EMAIL:?ZULIP_EMAIL is required for zulip-bot service}
+      ZULIP_API_KEY: ${ZULIP_API_KEY:?ZULIP_API_KEY is required for zulip-bot service}
+      ZULIP_RESPOND_MODE: ${ZULIP_RESPOND_MODE:-mention}
+      ZULIP_SHOW_TOOL_EVENTS: ${ZULIP_SHOW_TOOL_EVENTS:-false}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "zulip-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
+
+  # Rocket.Chat Bot for two-way communication
+  rocketchat-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-rocketchat-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command: ["python", "run.py", "rocketchat-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - rocketchat  # Only starts when explicitly enabled: docker compose --profile rocketchat up -d
+    environment:
+      <<: *api-env
+      ROCKETCHAT_BASE_URL: ${ROCKETCHAT_BASE_URL:?ROCKETCHAT_BASE_URL is required for rocketchat-bot service}
+      ROCKETCHAT_USER_ID: ${ROCKETCHAT_USER_ID:?ROCKETCHAT_USER_ID is required for rocketchat-bot service}
+      ROCKETCHAT_AUTH_TOKEN: ${ROCKETCHAT_AUTH_TOKEN:?ROCKETCHAT_AUTH_TOKEN is required for rocketchat-bot service}
+      ROCKETCHAT_RESPOND_MODE: ${ROCKETCHAT_RESPOND_MODE:-mention}
+      ROCKETCHAT_SHOW_TOOL_EVENTS: ${ROCKETCHAT_SHOW_TOOL_EVENTS:-false}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "rocketchat-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
+
+  # Signal Bot for two-way communication through signal-cli-rest-api
+  signal-bot:
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
+    container_name: nymeria-signal-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "run.py", "signal-bot", "--api-url", "http://nymeria-api:8000"]
+    profiles:
+      - signal  # Only starts when explicitly enabled: docker compose --profile signal up -d
+    environment:
+      <<: *api-env
+      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:?SIGNAL_HTTP_URL is required for signal-bot service}
+      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:?SIGNAL_ACCOUNT is required for signal-bot service}
+      SIGNAL_ACCOUNT_UUID: ${SIGNAL_ACCOUNT_UUID:-}
+      SIGNAL_RESPOND_MODE: ${SIGNAL_RESPOND_MODE:-mention}
+      SIGNAL_ALLOWED_USERS: ${SIGNAL_ALLOWED_USERS:-}
+      SIGNAL_ALLOWED_GROUPS: ${SIGNAL_ALLOWED_GROUPS:-}
+      SIGNAL_SHOW_TOOL_EVENTS: ${SIGNAL_SHOW_TOOL_EVENTS:-false}
+      SIGNAL_HTTP_TIMEOUT: ${SIGNAL_HTTP_TIMEOUT:-30.0}
+    volumes:
+      - nymeria_data:/data
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      - ./.env.docker:/app/.env.docker:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "signal-bot", "--api-url", "http://nymeria-api:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - edge
 
   # MCP Server for agent-to-agent communication
   mcp:
-    <<: [*security-hardening, *nymeria-slim-image]
+    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
     container_name: nymeria-mcp
     restart: unless-stopped
     dns:
@@ -418,16 +771,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["python", "run.py", "mcp", "--http", "--host", "0.0.0.0", "--port", "8001", "--api-url", "http://nymeria-api:8000"]
+    # MCP is fronted by Caddy at /mcp; host port stays bound to loopback
+    # only so a future-tunnel use case still works without exposing 8001.
     ports:
-      - "${MCP_PORT:-8001}:8001"
+      - "127.0.0.1:${MCP_PORT:-8001}:8001"
     environment:
       <<: *api-env
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
-      - ./nymeria:/app/nymeria        # Bind mount: live code sync
-      - ./run.py:/app/run.py          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker  # Bind mount: settings persist across restarts
+      - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
+      - ./run.py:/app/run.py:ro          # Bind mount: live entry point
+      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
     depends_on:
       api:
         condition: service_healthy
@@ -442,7 +797,7 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
   # ============================================================================
   # Voice Services (optional, GPU required)
@@ -477,7 +832,7 @@ services:
       start_period: 120s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
   # Faster-Whisper — Local speech-to-text with OpenAI-compatible API
   faster-whisper:
@@ -507,7 +862,7 @@ services:
       start_period: 60s
       retries: 3
     networks:
-      - nymeria-network
+      - edge
 
 # ============================================================================
 # Volumes
@@ -522,6 +877,13 @@ volumes:
     driver: local
   nymeria_workspace:
     driver: local
+  # Caddy persists auto-issued TLS certs (and ACME account state) in /data
+  # so they survive container restarts and image rebuilds — losing this
+  # volume forces Let's Encrypt re-issuance and may hit rate limits.
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
   qwen3_tts_models:
     driver: local
   whisper_models:
@@ -532,5 +894,14 @@ volumes:
 # ============================================================================
 
 networks:
-  nymeria-network:
+  # Edge network: the proxy + everything the proxy reaches (api, mcp) plus
+  # the chat bots / worker / watchdog that need outbound network and api
+  # access. Reachable from caddy on 80/443.
+  edge:
+    driver: bridge
+  # Backend network: data plane only. Postgres and Redis live here, plus
+  # the services that legitimately speak SQL/RESP (api, worker, twitch-bot).
+  # Chat bots and mcp are intentionally NOT on backend — a compromised
+  # bot can call the api over HTTP but cannot touch the database directly.
+  backend:
     driver: bridge

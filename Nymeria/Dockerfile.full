@@ -80,8 +80,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd -r nymeria && useradd -r -g nymeria -m -s /bin/bash nymeria
+# Create non-root user. uid/gid pinned to 999 so the Docker named volumes
+# (which carry forward this ownership from the image's chown below) line up
+# with the runtime USER directive at the bottom of the file.
+RUN groupadd -r -g 999 nymeria \
+    && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria
 
 # Set up Python symlinks
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
@@ -123,12 +126,11 @@ ENV NYMERIA_DATA_DIR=/data
 ENV NYMERIA_WORKSPACE_DIR=/workspace
 ENV PATH="/usr/local/bin:$PATH"
 
-# NOTE: Running as root for full elevated privileges
-# This is appropriate for security research environments (Kali)
-# The nymeria user exists but we intentionally stay as root for:
-# - Full access to security tools (nmap, etc.)
-# - Unrestricted bash_execute commands
-# - Ability to modify system files when needed
+# Drop privileges. All persistent writes target /data and /workspace which
+# are owned by nymeria:nymeria (see chown above). bash_execute and shell-out
+# tools run as uid 999 — nmap loses SYN-scan privileges (falls back to TCP
+# connect), apt-get and writes to /etc/ fail. Intentional for production.
+USER nymeria
 
 # Expose ports
 # 8000 - REST API

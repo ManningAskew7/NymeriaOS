@@ -247,7 +247,7 @@ def spawn_thread(
             the base personality. Also used as the callable tool's
             description if provided.
         optional_tools: List of OPTIONAL tool names to enable on the new
-            thread (e.g. ["sticky_note", "browser_navigate"]). Core tools
+            thread (e.g. ["memory_clear_all", "browser_navigate"]). Core tools
             are inherited automatically; only list EXTRAS. Use
             Skill(name="self-improve") then tool_search(query="...") to
             discover names.
