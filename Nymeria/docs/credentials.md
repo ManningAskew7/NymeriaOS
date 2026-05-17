@@ -155,6 +155,9 @@ allowed target `llm_provider:<provider>` or `llm_provider:*`.
 
 - **Ownership**: Each credential is `user`-owned (scoped to one user) or
   `system`-owned (shared). User credentials are only visible to their owner.
+  Repository methods also enforce owner/admin checks when decrypting,
+  disabling, or deleting user-owned credentials, so callers do not rely only
+  on router-level guards.
 - **Allowed targets**: A list like `["native_tool:todoist_tasks", "mcp_server:my-server"]`
   restricts which consumers can decrypt. `"*"` or empty list = unrestricted.
   Supported target strings include `native_tool:<name>`, `mcp_server:<id>`,

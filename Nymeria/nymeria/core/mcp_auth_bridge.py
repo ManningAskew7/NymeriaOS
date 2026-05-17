@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -67,11 +68,21 @@ def _google_auth_library_credentials(account: dict) -> dict:
 
 
 def _write_google_auth_library_credentials(account: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(_google_auth_library_credentials(account), indent=2),
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        logger.debug("Failed to chmod Gmail MCP credentials directory %s", path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(_google_auth_library_credentials(account), fh, indent=2)
+            fh.write("\n")
+    finally:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            logger.debug("Failed to chmod Gmail MCP credentials file %s", path)
 
 
 def _refresh_if_needed(account: dict) -> tuple[bool, str]:

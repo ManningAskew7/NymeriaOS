@@ -714,7 +714,7 @@ Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defau
 | Pre-clear | Before `POST /threads/{id}/clear` deletes checkpoints | `Agent._pre_trim_memory_flush` |
 | Delete cleanup | During the full `DELETE /threads/{id}` cascade | `MemoryIndex.delete_by_thread` plus thread-bound resource cleanup |
 
-Agents query the index via the `rag_search` tool. Users can opt out at any time via the RAG settings API or frontend settings UI; the migration watermark prevents re-flipping.
+Agents query the index via the `rag_search` tool. When retrieved chunks are inserted into hidden prompt context, they are marked as untrusted reference data and rendered as JSONL records so stored conversation text is not interpreted as new instructions. Users can opt out at any time via the RAG settings API or frontend settings UI; the migration watermark prevents re-flipping.
 
 ---
 
@@ -798,6 +798,7 @@ JSON files store user memories:
 - Location: `data/users/{user_id}/profile.json`
 - Thread-safe with atomic file operations guarded by a per-user `KeyedRLockMap` lock
 - Contains: memories, personality_overrides, timestamps
+- Prompt injection guard: profile memories and personality overrides are injected into prompts as explicitly untrusted JSONL records, not Markdown instructions.
 
 ### Audit Logs
 

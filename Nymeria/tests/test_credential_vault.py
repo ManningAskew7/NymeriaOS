@@ -22,6 +22,7 @@ def _repo(tmp_path, monkeypatch) -> CredentialVaultRepo:
     db_path = tmp_path / "accounts.db"
     accounts = AccountsRepo(db_path)
     accounts.create_user("alice", "alice@example.com", "Alice")
+    accounts.create_user("bob", "bob@example.com", "Bob")
     return CredentialVaultRepo(db_path)
 
 
@@ -57,6 +58,47 @@ def test_secret_fields_are_not_exposed_and_resolve_by_reference(tmp_path, monkey
             target_type="custom_tool",
             target_id="wrong_tool",
         )
+
+
+def test_secret_field_access_is_owner_scoped_in_repo(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice API",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["*"],
+        secret_fields={"value": "alice-secret"},
+        created_by_user_id="alice",
+    )
+
+    assert repo.get_secret_field(record.id, "value", actor_user_id="alice") == "alice-secret"
+    with pytest.raises(CredentialAccessDenied):
+        repo.get_secret_field(record.id, "value", actor_user_id="bob")
+
+
+def test_delete_and_disable_are_owner_scoped_in_repo(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice API",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["*"],
+        secret_fields={"value": "alice-secret"},
+        created_by_user_id="alice",
+    )
+
+    with pytest.raises(CredentialAccessDenied):
+        repo.disable_credential(record.id, actor_user_id="bob")
+    assert repo.get_credential(record.id).status == "active"
+
+    assert repo.disable_credential(record.id, actor_user_id="bob", actor_is_admin=True) is True
+    with pytest.raises(CredentialAccessDenied):
+        repo.delete_credential(record.id, actor_user_id="bob")
+    assert repo.delete_credential(record.id, actor_user_id="bob", actor_is_admin=True) is True
 
 
 def test_legacy_cache_round_trips_through_vault(tmp_path, monkeypatch):

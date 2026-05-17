@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import time
 from types import SimpleNamespace
 
@@ -66,6 +67,8 @@ def test_gmail_mcp_preset_sets_paths_and_exports_token(tmp_path, monkeypatch):
     assert exported["access_token"] == "access-token"
     assert exported["refresh_token"] == "refresh-token"
     assert exported["scope"] == " ".join(cache["accounts"]["acct"]["scopes"])
+    assert stat.S_IMODE(credentials_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(credentials_path.stat().st_mode) == 0o600
     assert any("Exported Google Gmail auth connection" in line for line in logs)
 
 

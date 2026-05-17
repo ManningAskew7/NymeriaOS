@@ -1290,7 +1290,7 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 
 Three unified primitives — `memory_add`, `memory_edit`, `memory_read` — cover both global user-profile facts and per-thread notepad content. The `scope` argument selects which store:
 
-- `scope="global"` — keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread. Storage: `data/users/{user_id}/profile.json`.
+- `scope="global"` — keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json`.
 - `scope="thread"` — free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
 
 Empty `content` (in `memory_add`) or empty `replace` whose result empties the entry (in `memory_edit`) deletes cleanly: profile rows are popped, notepad files are unlinked. There is no separate `memory_forget` because the storage layer treats blank-as-delete, so edit-to-blank leaves no zombie entries.
@@ -1323,6 +1323,7 @@ memory_add(scope="thread", content="")                             # deletes the
 - `scope="global"` upserts into `UserProfile.memories` and re-indexes in the RAG store if RAG is enabled.
 - `scope="thread"` overwrites the notepad (replace semantics; for append-style writes, read-then-add).
 - Notepad max size: 50 KB. Profile max entries: 100. Profile values are truncated to 1000 chars.
+- Prompt injection guard: profile values are rendered as data, not Markdown instructions; embedded commands, role changes, and tool requests must not be followed by the model.
 
 ---
 
@@ -1409,6 +1410,8 @@ rag_search(query: str, max_results: int = 5)
 - `max_results` (`int`, default `5`): Maximum results (clamped 1-10)
 
 **Returns:** Formatted results with content type, relevance score, and content. Results filtered by user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`).
+
+When retrieved RAG chunks are included in hidden prompt context, they are marked as untrusted reference data and rendered as JSONL records rather than Markdown instructions.
 
 **Indexing is automatic.** As of 2026-04, `opt_in.rag_enabled` defaults to `True` for new profiles, and existing profiles are migrated to `True` on first load (one-time, watermarked by `opt_in.rag_migrated`). Conversation turns are indexed in four places, in this order of frequency:
 

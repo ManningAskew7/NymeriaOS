@@ -18,6 +18,8 @@ one place.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.server
 import json
 import logging
@@ -62,6 +64,7 @@ class OAuthFlow:
     token_uri: str
     redirect_uri: str
     started_at: float
+    code_verifier: Optional[str] = None
     auth_code: Optional[str] = None
     auth_error: Optional[str] = None
     completed: bool = False
@@ -253,8 +256,31 @@ def cache_path(user_id: str, cache_filename: str) -> Path:
 
     settings = get_settings()
     path = settings.data_dir / "auth_tokens" / safe_user_id(user_id) / cache_filename
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     return path
+
+
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        logger.debug("Failed to chmod private auth-cache directory %s", path)
+
+
+def _write_private_json(path: Path, data: dict) -> None:
+    _ensure_private_dir(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+    finally:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            logger.debug("Failed to chmod private auth-cache file %s", path)
 
 
 def load_token_cache(user_id: str, cache_filename: str) -> dict:
@@ -273,7 +299,11 @@ def load_token_cache(user_id: str, cache_filename: str) -> dict:
     path = cache_path(user_id, cache_filename)
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            try:
+                path.chmod(0o600)
+            except OSError:
+                logger.debug("Failed to chmod existing token cache file %s", path)
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             logger.warning("Failed to read token cache file", exc_info=True)
     return {}
@@ -295,7 +325,7 @@ def save_token_cache(user_id: str, cache_filename: str, cache: dict) -> None:
         logger.debug("Credential vault token-cache save unavailable; using file cache", exc_info=True)
 
     path = cache_path(user_id, cache_filename)
-    path.write_text(json.dumps(cache, indent=2))
+    _write_private_json(path, cache)
 
 
 def delete_token_cache(user_id: str, cache_filename: str) -> bool:
@@ -334,6 +364,35 @@ def get_google_credentials_path() -> Optional[str]:
     return None
 
 
+def _load_google_oauth_client_config() -> dict[str, Any]:
+    creds_path = get_google_credentials_path()
+    if not creds_path:
+        return {}
+    try:
+        with open(creds_path, encoding="utf-8") as f:
+            client_config = json.load(f)
+    except Exception:
+        logger.debug("Failed to load Google OAuth credentials file", exc_info=True)
+        return {}
+    creds_data = client_config.get("installed") or client_config.get("web")
+    return creds_data if isinstance(creds_data, dict) else {}
+
+
+def _resolve_google_client_secret(client_id: Optional[str]) -> Optional[str]:
+    if not client_id:
+        return None
+    creds_data = _load_google_oauth_client_config()
+    if creds_data.get("client_id") == client_id:
+        secret = creds_data.get("client_secret")
+        return str(secret) if secret else None
+    return None
+
+
+def _pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 def fetch_google_user_info(access_token: str) -> Tuple[str, str]:
     """Return ``(email, display_name)``. Falls back to placeholders on error."""
     try:
@@ -368,12 +427,18 @@ def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
     if not refresh_token:
         return "invalid", "no refresh token stored"
 
+    client_secret = account.get("client_secret") or _resolve_google_client_secret(
+        account.get("client_id")
+    )
+    if not client_secret:
+        return "unavailable", "Google OAuth client secret is unavailable"
+
     creds = Credentials(
         token=account.get("access_token"),
         refresh_token=refresh_token,
         token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=account.get("client_id"),
-        client_secret=account.get("client_secret"),
+        client_secret=client_secret,
         scopes=account.get("scopes", list(scopes)),
     )
 
@@ -402,6 +467,7 @@ def refresh_google_account(account: dict, scopes: list) -> Tuple[str, str]:
     )
     if creds.refresh_token:
         account["refresh_token"] = creds.refresh_token
+    account.pop("client_secret", None)
     return "refreshed", ""
 
 
@@ -567,7 +633,9 @@ def get_google_credentials(
         refresh_token=account.get("refresh_token"),
         token_uri=account.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=account.get("client_id"),
-        client_secret=account.get("client_secret"),
+        client_secret=account.get("client_secret") or _resolve_google_client_secret(
+            account.get("client_id")
+        ),
         scopes=account.get("scopes", list(scopes)),
     )
 
@@ -754,6 +822,7 @@ def _exchange_and_save_google_flow(
         flow.client_secret,
         flow.redirect_uri,
         flow.token_uri,
+        flow.code_verifier,
     )
     if not success:
         return False, f"[Error]: {token_data}"
@@ -868,6 +937,7 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
 
             import secrets
 
+            code_verifier = secrets.token_urlsafe(64)
             flow = OAuthFlow(
                 user_id=user_id,
                 provider=spec.provider,
@@ -877,6 +947,7 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
                 token_uri=token_uri,
                 redirect_uri="",
                 started_at=time.time(),
+                code_verifier=code_verifier,
             )
             register_flow(flow)
             port = start_callback_server(flow)
@@ -890,6 +961,8 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
                 "access_type": "offline",
                 "prompt": "consent",
                 "state": flow.state_param,
+                "code_challenge": _pkce_challenge(code_verifier),
+                "code_challenge_method": "S256",
             }
             auth_url = auth_uri + "?" + urllib.parse.urlencode(params)
 
@@ -1086,23 +1159,23 @@ def exchange_code_for_tokens(
     client_secret: str,
     redirect_uri: str,
     token_uri: str = "https://oauth2.googleapis.com/token",
+    code_verifier: Optional[str] = None,
 ) -> Tuple[bool, Any]:
     """Exchange an authorization code for ``(access_token, refresh_token)``.
 
     Returns ``(True, token_data_dict)`` on success or ``(False, error_string)``.
     """
     try:
-        response = httpx.post(
-            token_uri,
-            data={
-                "code": auth_code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-            timeout=30,
-        )
+        data = {
+            "code": auth_code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+        if code_verifier:
+            data["code_verifier"] = code_verifier
+        response = httpx.post(token_uri, data=data, timeout=30)
         if response.status_code != 200:
             return False, f"Token exchange failed ({response.status_code}): {response.text}"
         return True, response.json()
@@ -1141,7 +1214,6 @@ def save_google_account(
         "refresh_token": refresh_token,
         "token_uri": token_uri,
         "client_id": client_id,
-        "client_secret": client_secret,
         "scopes": list(scopes),
         "expires_at": time.time() + expires_in,
     }
