@@ -1503,6 +1503,12 @@ In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`
 | `STT_LANGUAGE` | - | Language hint (ISO 639-1, e.g., `en`) |
 | `VOICE_DEFAULT_THREAD_ID` | - | Default thread for voice/watch interactions (falls back to `watch-default`) |
 
+The optional local voice Docker profile publishes `qwen3-tts` and
+`faster-whisper` on `127.0.0.1` only. Operators must set
+`QWEN3_TTS_IMAGE` and `FASTER_WHISPER_IMAGE` to digest-pinned image
+references (`repo@sha256:...`) before starting `--profile voice`; the compose
+defaults are invalid placeholders to avoid pulling mutable `:latest` images.
+
 **Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech — e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
 
 ---

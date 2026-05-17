@@ -350,12 +350,12 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 
 ## Secrets Management
 
-`Nymeria/.env.docker` and other secret files are encrypted at rest in the repo via [git-crypt](https://github.com/AGWA/git-crypt). After `git-crypt unlock`, they are transparent in the working tree and bind-mounted directly into containers.
+`Nymeria/.env.docker` and other secret files are encrypted at rest in the repo via [git-crypt](https://github.com/AGWA/git-crypt). After `git-crypt unlock`, they are transparent in the working tree. Compose reads `.env.docker` with `--env-file` and injects only the variables each service declares; the full env file is not bind-mounted into containers.
 
 - **Fresh clone:** `git-crypt unlock /path/to/nymeria-gitcrypt.key`, or copy `.env.docker.example` and fill in your own keys.
 - **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected — only commit when updating the shared baseline.
 - **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
-- **Docker images:** `.env.docker` is excluded from the Docker build context; Compose injects it with `--env-file` and bind-mounts it at runtime instead of copying secrets into image layers.
+- **Docker images:** `.env.docker` is excluded from the Docker build context. Compose injects selected values with `--env-file` instead of copying or mounting the full secret file into containers.
 - **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/` — they are not managed by git-crypt. Never copy them between machines.
 
 ## Reverse Proxy (Caddy)
@@ -404,10 +404,10 @@ just as they do for local Docker.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` (and the local Tauri origins for desktop/mobile clients) — no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: TLS is terminated at the Caddy reverse proxy (above). Only 80/443 should be open on the host firewall; 8000/8001 are loopback-only.
-6. **Container privileges**: Two privilege tiers. **Agent-bearing containers** (api, worker) run as `root` with `cap_drop: ALL` plus three install caps (`DAC_OVERRIDE`, `CHOWN`, `FOWNER`) — exactly what `apt-get install`, `pip install` (system-wide), and `/etc` writes need. This lets the agent extend its own sandbox at runtime via `bash_execute`. **Thin-client containers** (watchdog, mcp, chat bots, caddy) run as the non-root `nymeria` user (uid 999) with `cap_drop: ALL`, `read_only: true` rootfs, and tmpfs for `/tmp` + `/home/nymeria` — they never need to write to the rootfs and shouldn't be able to. `no-new-privileges:true` applies to every service; the kernel rejects `setuid` and `sudo` escalation everywhere.
+6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Agent-bearing containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (watchdog, mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
 7. **Network segmentation**: Two Docker networks — `edge` (proxy + api + mcp + bots + cli-proxy + hexstrike) and `backend` (postgres + redis + api + worker). Bots cannot reach the database directly even if compromised.
 8. **Resource limits**: Every service declares `mem_limit`, `cpus`, and `pids_limit` (see the `x-limits-*` anchors in `docker-compose.yml`). A runaway tool call cannot exhaust host memory or fork-bomb the kernel.
-9. **Bind mounts**: `./nymeria`, `run.py`, and `.env.docker` are mounted **read-only** into containers. A container compromise cannot backdoor the host source tree or rewrite secrets. `.env.docker` must stay out of image layers and is ignored by the Docker build context.
+9. **Bind mounts**: `./nymeria` and `run.py` are mounted **read-only** into containers for live code sync. `.env.docker` is not mounted; services receive only the selected environment variables declared in Compose. `.env.docker` stays out of image layers and is ignored by the Docker build context.
 10. **Kali Tools**: The full image includes nmap, hydra, sqlmap, etc. for `bash_execute` access. Use responsibly and only on authorized targets. Since the container is non-root, nmap loses SYN-scan privileges and falls back to TCP-connect scans.
 
 ## Troubleshooting
@@ -435,9 +435,8 @@ docker exec nymeria-api playwright install chromium
 Ensure code/data mounts are intact in `docker-compose.yml`:
 ```yaml
 volumes:
-  - ./nymeria:/app/nymeria
-  - ./run.py:/app/run.py
-  - ./.env.docker:/app/.env.docker
+  - ./nymeria:/app/nymeria:ro
+  - ./run.py:/app/run.py:ro
   - nymeria_data:/data
 ```
 
@@ -449,4 +448,4 @@ docker compose --env-file .env.docker build
 docker compose --env-file .env.docker up -d
 ```
 
-Self-modifications and runtime config are preserved by bind-mounted code/config files (`./nymeria`, `run.py`, `.env.docker`) plus the `nymeria_data` volume. Re-apply carefully after upstream upgrades if merge conflicts occur. Compose tags the shared app images as `nymeria-full:local` and `nymeria-slim:local`, so rebuilding updates the grouped services instead of creating separate duplicate images for each command.
+Self-modifications and runtime data are preserved by the `nymeria_data` and `nymeria_workspace` volumes. Source bind mounts (`./nymeria`, `run.py`) are read-only inside containers; update host files through normal git workflows and rebuild/restart. Compose tags the shared app images as `nymeria-full:local` and `nymeria-slim:local`, so rebuilding updates the grouped services instead of creating separate duplicate images for each command.

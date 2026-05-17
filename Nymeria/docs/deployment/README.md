@@ -27,7 +27,7 @@ The slim shape is the **default** the codebase has always supported — it's how
 - Multi-container: `api`, `worker`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots
 - Postgres + Redis for durability and cross-process events
 - Caddy reverse proxy with automatic Let's Encrypt TLS
-- Hardened: non-root containers for thin clients, capability-dropped agent containers, network segmentation, read-only source bind mounts, resource limits
+- Hardened: non-root/capability-dropped app containers, minimal thin-client env, network segmentation, read-only source bind mounts, resource limits
 - Install: `docker compose --env-file .env.docker up -d`
 
 The Docker stack is what you reach for in production. It has stronger isolation, can host more concurrent users, and survives container failures cleanly. See [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md) for the operator's guide.

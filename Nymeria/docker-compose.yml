@@ -13,12 +13,11 @@ x-security-hardening: &security-hardening
   cap_drop:
     - ALL
 
-# Filesystem hardening for AGENT-bearing containers (api/worker/twitch-bot).
-# These run NymeriaAgent + bash_execute and need a writable rootfs so the
-# agent can install language-level packages, modify system config, and
-# extend its own toolbox at runtime. The container boundary (non-root +
-# cap_drop ALL + no-new-privileges) is the security boundary; an attacker
-# who compromises the agent stays trapped at uid 999 inside the container.
+# Filesystem hardening for AGENT-bearing containers (api/worker).
+# These run NymeriaAgent and keep a writable rootfs for workspace/package
+# caches, but still run as the Dockerfile's non-root `nymeria` user with
+# cap_drop ALL + no-new-privileges. Runtime system package installation is
+# intentionally not supported in the production compose profile.
 x-agent-fs: &agent-fs
   tmpfs:
     - /tmp
@@ -67,6 +66,15 @@ x-nymeria-slim-image: &nymeria-slim-image
   build:
     context: .
     dockerfile: Dockerfile.slim
+
+x-thin-client-env: &thin-client-env
+  TZ: ${USER_TIMEZONE:-UTC}
+  NYMERIA_SERVICE_TOKEN: ${NYMERIA_SERVICE_TOKEN:-}
+  NYMERIA_DATA_DIR: /data
+  USER_TIMEZONE: ${USER_TIMEZONE:-UTC}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_PROFILES: ${LOG_PROFILES:-}
+  LOG_MODULES: ${LOG_MODULES:-}
 
 services:
   # ============================================================================
@@ -183,21 +191,9 @@ services:
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
-    # Agent-bearing container: runs as root with DAC_OVERRIDE/CHOWN/FOWNER
-    # so the agent's bash_execute tool can apt-install runtime packages,
-    # write to /etc, chown files, etc. — the kinds of self-extension a
-    # capable assistant needs. This is the Hermes pattern: the container
-    # boundary itself is the security boundary (cap_drop ALL except these
-    # three; bind-mounted source is :ro; no docker socket; network is
-    # segmented). Thin-client containers (bots, mcp, watchdog, caddy)
-    # stay non-root + read-only — only api and worker get this privilege.
-    user: "0:0"
-    cap_add:
-      - DAC_OVERRIDE  # bypass DAC checks (apt's dpkg lock, /etc writes)
-      - CHOWN         # set file ownership during package install
-      - FOWNER        # operate on files owned by other uids
-      - SETUID        # apt's http method drops privileges to _apt
-      - SETGID        # same — required for apt-get install to work
+    # Agent-bearing container: runs as the Dockerfile's non-root `nymeria`
+    # user. cap_drop ALL + no-new-privileges is the production boundary;
+    # runtime apt/dpkg installs are intentionally not available here.
     # OAuth token caches are now per-user at /data/auth_tokens/<user_id>/
     # (see docs/accounts.md). Existing global caches in /data/auth_tokens/
     # get migrated to /data/auth_tokens/default/ by the agent at boot.
@@ -384,7 +380,6 @@ services:
       - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
       - ./tests:/app/tests:ro         # Bind mount: focused backend tests for live validation
       - ./run.py:/app/run.py:ro          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
       - ./google_credentials.json:/app/google_credentials.json:ro  # Google OAuth creds
       - ../nymeria-desktop/build:/app/frontend:ro  # Outlook add-in / web UI frontend
@@ -409,15 +404,8 @@ services:
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
-    # See api service for design rationale. The worker runs scheduled-TODO
-    # invocations of the same agent, so it needs the same install caps.
-    user: "0:0"
-    cap_add:
-      - DAC_OVERRIDE
-      - CHOWN
-      - FOWNER
-      - SETUID
-      - SETGID
+    # See api service for non-root/capability rationale. The worker runs
+    # scheduled-TODO invocations of the same agent.
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -437,7 +425,6 @@ services:
       - nymeria_workspace:/workspace
       - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
       - ./run.py:/app/run.py:ro          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       postgres:
@@ -461,12 +448,15 @@ services:
     restart: unless-stopped
     command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
     environment:
-      <<: *api-env
+      <<: *thin-client-env
+      WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
+      WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-5}
+      TODO_STALENESS_MINUTES: ${TODO_STALENESS_MINUTES:-20}
+      NYMERIA_WATCHDOG_DISABLED: ${NYMERIA_WATCHDOG_DISABLED:-}
     volumes:
       - nymeria_data:/data                    # for kill-switch file at /data/flags/watchdog-off
       - ./nymeria:/app/nymeria:ro                # Bind mount: live code sync
       - ./run.py:/app/run.py:ro                  # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker:ro        # Bind mount: settings persist across restarts
     depends_on:
       api:
         condition: service_healthy
@@ -491,15 +481,14 @@ services:
     profiles:
       - discord  # Only starts when explicitly enabled: docker compose --profile discord up -d
     environment:
-      <<: *api-env
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?DISCORD_BOT_TOKEN is required for discord-bot service}
+      <<: *thin-client-env
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       DISCORD_MODE: ${DISCORD_MODE:-gateway}
       DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -524,14 +513,13 @@ services:
     profiles:
       - telegram  # Only starts when explicitly enabled: docker compose --profile telegram up -d
     environment:
-      <<: *api-env
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required for telegram-bot service}
+      <<: *thin-client-env
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -556,16 +544,15 @@ services:
     profiles:
       - slack  # Only starts when explicitly enabled: docker compose --profile slack up -d
     environment:
-      <<: *api-env
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN is required for slack-bot service}
-      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?SLACK_APP_TOKEN is required for slack-bot service}
+      <<: *thin-client-env
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
       SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
       SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -590,8 +577,8 @@ services:
     profiles:
       - matrix  # Only starts when explicitly enabled: docker compose --profile matrix up -d
     environment:
-      <<: *api-env
-      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:?MATRIX_HOMESERVER is required for matrix-bot service}
+      <<: *thin-client-env
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
       MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
       MATRIX_USER_ID: ${MATRIX_USER_ID:-}
       MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
@@ -603,7 +590,6 @@ services:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -628,16 +614,15 @@ services:
     profiles:
       - mattermost  # Only starts when explicitly enabled: docker compose --profile mattermost up -d
     environment:
-      <<: *api-env
-      MATTERMOST_BASE_URL: ${MATTERMOST_BASE_URL:?MATTERMOST_BASE_URL is required for mattermost-bot service}
-      MATTERMOST_ACCESS_TOKEN: ${MATTERMOST_ACCESS_TOKEN:?MATTERMOST_ACCESS_TOKEN is required for mattermost-bot service}
+      <<: *thin-client-env
+      MATTERMOST_BASE_URL: ${MATTERMOST_BASE_URL:-}
+      MATTERMOST_ACCESS_TOKEN: ${MATTERMOST_ACCESS_TOKEN:-}
       MATTERMOST_RESPOND_MODE: ${MATTERMOST_RESPOND_MODE:-mention}
       MATTERMOST_SHOW_TOOL_EVENTS: ${MATTERMOST_SHOW_TOOL_EVENTS:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -662,17 +647,16 @@ services:
     profiles:
       - zulip  # Only starts when explicitly enabled: docker compose --profile zulip up -d
     environment:
-      <<: *api-env
-      ZULIP_BASE_URL: ${ZULIP_BASE_URL:?ZULIP_BASE_URL is required for zulip-bot service}
-      ZULIP_EMAIL: ${ZULIP_EMAIL:?ZULIP_EMAIL is required for zulip-bot service}
-      ZULIP_API_KEY: ${ZULIP_API_KEY:?ZULIP_API_KEY is required for zulip-bot service}
+      <<: *thin-client-env
+      ZULIP_BASE_URL: ${ZULIP_BASE_URL:-}
+      ZULIP_EMAIL: ${ZULIP_EMAIL:-}
+      ZULIP_API_KEY: ${ZULIP_API_KEY:-}
       ZULIP_RESPOND_MODE: ${ZULIP_RESPOND_MODE:-mention}
       ZULIP_SHOW_TOOL_EVENTS: ${ZULIP_SHOW_TOOL_EVENTS:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -697,17 +681,16 @@ services:
     profiles:
       - rocketchat  # Only starts when explicitly enabled: docker compose --profile rocketchat up -d
     environment:
-      <<: *api-env
-      ROCKETCHAT_BASE_URL: ${ROCKETCHAT_BASE_URL:?ROCKETCHAT_BASE_URL is required for rocketchat-bot service}
-      ROCKETCHAT_USER_ID: ${ROCKETCHAT_USER_ID:?ROCKETCHAT_USER_ID is required for rocketchat-bot service}
-      ROCKETCHAT_AUTH_TOKEN: ${ROCKETCHAT_AUTH_TOKEN:?ROCKETCHAT_AUTH_TOKEN is required for rocketchat-bot service}
+      <<: *thin-client-env
+      ROCKETCHAT_BASE_URL: ${ROCKETCHAT_BASE_URL:-}
+      ROCKETCHAT_USER_ID: ${ROCKETCHAT_USER_ID:-}
+      ROCKETCHAT_AUTH_TOKEN: ${ROCKETCHAT_AUTH_TOKEN:-}
       ROCKETCHAT_RESPOND_MODE: ${ROCKETCHAT_RESPOND_MODE:-mention}
       ROCKETCHAT_SHOW_TOOL_EVENTS: ${ROCKETCHAT_SHOW_TOOL_EVENTS:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -734,9 +717,9 @@ services:
     profiles:
       - signal  # Only starts when explicitly enabled: docker compose --profile signal up -d
     environment:
-      <<: *api-env
-      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:?SIGNAL_HTTP_URL is required for signal-bot service}
-      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:?SIGNAL_ACCOUNT is required for signal-bot service}
+      <<: *thin-client-env
+      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:-}
+      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:-}
       SIGNAL_ACCOUNT_UUID: ${SIGNAL_ACCOUNT_UUID:-}
       SIGNAL_RESPOND_MODE: ${SIGNAL_RESPOND_MODE:-mention}
       SIGNAL_ALLOWED_USERS: ${SIGNAL_ALLOWED_USERS:-}
@@ -747,7 +730,6 @@ services:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
       - ./run.py:/app/run.py:ro
-      - ./.env.docker:/app/.env.docker:ro
     depends_on:
       api:
         condition: service_healthy
@@ -776,13 +758,12 @@ services:
     ports:
       - "127.0.0.1:${MCP_PORT:-8001}:8001"
     environment:
-      <<: *api-env
+      <<: *thin-client-env
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
       - ./nymeria:/app/nymeria:ro        # Bind mount: live code sync
       - ./run.py:/app/run.py:ro          # Bind mount: live entry point
-      - ./.env.docker:/app/.env.docker:ro  # Bind mount: settings persist across restarts
     depends_on:
       api:
         condition: service_healthy
@@ -807,13 +788,15 @@ services:
   # Qwen3-TTS — Local text-to-speech with OpenAI-compatible API
   qwen3-tts:
     <<: *security-hardening
-    image: ghcr.io/groxaxo/qwen3-tts-openai-fastapi:latest
+    # Placeholder digest intentionally fails if the voice profile is started
+    # without an operator-pinned image. Set QWEN3_TTS_IMAGE=repo@sha256:...
+    image: "${QWEN3_TTS_IMAGE:-ghcr.io/groxaxo/qwen3-tts-openai-fastapi@sha256:0000000000000000000000000000000000000000000000000000000000000000}"
     container_name: nymeria-qwen3-tts
     restart: unless-stopped
     profiles:
       - voice
     ports:
-      - "${TTS_PORT:-8880}:8000"
+      - "127.0.0.1:${TTS_PORT:-8880}:8000"
     deploy:
       resources:
         reservations:
@@ -837,13 +820,15 @@ services:
   # Faster-Whisper — Local speech-to-text with OpenAI-compatible API
   faster-whisper:
     <<: *security-hardening
-    image: fedirz/faster-whisper-server:latest
+    # Placeholder digest intentionally fails if the voice profile is started
+    # without an operator-pinned image. Set FASTER_WHISPER_IMAGE=repo@sha256:...
+    image: "${FASTER_WHISPER_IMAGE:-fedirz/faster-whisper-server@sha256:0000000000000000000000000000000000000000000000000000000000000000}"
     container_name: nymeria-faster-whisper
     restart: unless-stopped
     profiles:
       - voice
     ports:
-      - "${STT_PORT:-8003}:8000"
+      - "127.0.0.1:${STT_PORT:-8003}:8000"
     deploy:
       resources:
         reservations:
