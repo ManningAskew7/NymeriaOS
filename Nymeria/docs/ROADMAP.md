@@ -65,7 +65,7 @@ Any thread with `callable=True` becomes a directly invocable tool. Replaces the 
 
 Trigger system that fires agent prompts or actions in response to events.
 
-**Source types:** `webhook` (generic incoming), `outlook_email` (polls for new emails)
+**Source types:** `webhook` (generic incoming), `outlook_email` (polls Microsoft Graph), `rss`, `http_poll`, `slack` (Events API), `teams` (Microsoft Teams events)
 
 **Components:** `core/trigger_manager.py`, `triggers/sources/base.py`, trigger tools (`trigger_config`, `trigger_info`)
 

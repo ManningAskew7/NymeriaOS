@@ -2,7 +2,11 @@
 LLM Provider Abstraction
 
 Makes it easy to swap between different LLM providers without changing agent code.
-Supports OpenRouter, OpenAI, Anthropic, and custom providers.
+Dispatches to: Anthropic (native ``anthropic_messages`` API), OpenAI, OpenRouter,
+any of the 130+ OpenAI-chat-compatible providers registered in
+``nymeria/config/llm_providers.py`` (xAI, Gemini, Groq, DeepSeek, Mistral, Azure,
+Together, Fireworks, Perplexity, Ollama, LM Studio, llama.cpp, etc.), CLIProxy
+(auto-detected from ``LLM_BASE_URL``), and arbitrary custom ``LLM`` objects.
 """
 
 import asyncio

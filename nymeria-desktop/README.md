@@ -104,7 +104,7 @@ The Settings panel (⚙️ in sidebar) provides four configuration tabs:
 - Changes apply instantly
 
 ### LLM
-- Provider selection (Anthropic, OpenAI, OpenRouter)
+- Provider selection — choose from any of the 130+ providers exposed by the backend's `/settings/llm/providers` endpoint (Anthropic native, plus OpenAI/OpenRouter/xAI/Gemini/Groq/DeepSeek/Mistral/Azure/Together/Fireworks/Perplexity/Ollama/LM Studio/etc. via the OpenAI-chat path). See `Nymeria/nymeria/config/llm_providers.py` for the full registry.
 - Model selection with custom model ID support
 - Temperature slider
 - **Advanced Settings** (collapsible):
@@ -159,29 +159,44 @@ nymeria-desktop/
 │   ├── lib/
 │   │   ├── components/
 │   │   │   ├── layout/        # AppShell, Sidebar, MainPanel, RightPanel
-│   │   │   ├── chat/          # ChatContainer, MessageBubble, ToolCallCard, InputBar, StreamingText
-│   │   │   ├── threads/       # ThreadList, ThreadItem, FolderItem
-│   │   │   ├── todos/         # TodoFeed, TodoItem (collapsible with countdown badges)
-│   │   │   ├── dashboard/     # ActivityFeed, ActivityItem
+│   │   │   ├── chat/          # MessageBubble, InputBar, StreamingText, ThinkingBlock,
+│   │   │   │                  #   ToolCallCard, ContextStatusBar, FilePreview
+│   │   │   ├── threads/       # ThreadList, ThreadItem, ThreadHeader,
+│   │   │   │                  #   ThreadSettingsPanel and config tabs
+│   │   │   ├── account/       # AccountBadge, AccountMenu, AccountSwitcher, etc.
+│   │   │   ├── credentials/   # CredentialManagerPanel
+│   │   │   ├── tools/         # ToolManagementPanel, MCPManagementPanel,
+│   │   │   │                  #   MCPInstallModal, ToolForm, ToolTestPanel
+│   │   │   ├── skills/        # SkillsPanel, SkillsMarketplacePanel, SkillCard
+│   │   │   ├── todos/         # TodoFeed, TodoForm, TodoItem
+│   │   │   ├── triggers/      # TriggerFeed, TriggerItem, TriggerSetupWizard,
+│   │   │   │                  #   TriggerConfigTab, TriggerHistoryPanel
+│   │   │   ├── outlook/       # Outlook add-in integration
+│   │   │   ├── dashboard/     # ActivityFeed, ConnectionStatus, ScheduledTasksFeed
 │   │   │   ├── notifications/ # NotificationCenter, NotificationItem
-│   │   │   └── common/        # Button, Icon, Spinner, Collapsible, Modal, SettingsPanel, SetupWizard
+│   │   │   └── common/        # Button, Spinner, Modal, SettingsPanel, SetupWizard,
+│   │   │                      #   ErrorToast, CLIProxyPanel
 │   │   ├── services/
-│   │   │   └── api.svelte.ts      # REST + SSE streaming client
-│   │   ├── stores/                # Svelte 5 runes state
-│   │   │   ├── chat.svelte.ts     # Chat messages and streaming
-│   │   │   ├── threads.svelte.ts  # Conversation threads, folders, sort mode
-│   │   │   ├── config.svelte.ts   # API configuration + theme + setup state
-│   │   │   ├── todos.svelte.ts    # TODO items (includes scheduledTodos for dashboard)
-│   │   │   ├── activity.svelte.ts # Activity log feed (polls every 30s)
-│   │   │   ├── autonomous.svelte.ts # SSE connection for autonomous task events
-│   │   │   └── notifications.svelte.ts # Notification center
-│   │   ├── themes.ts              # Theme definitions and applicator
-│   │   └── types/                 # TypeScript definitions
+│   │   │   ├── api.svelte.ts  # Compat entrypoint; re-exports from api/
+│   │   │   └── api/           # Typed API facade (one file per domain):
+│   │   │                      #   index.ts builds NymeriaAPI via mixin inheritance
+│   │   │                      #   over base, system, accounts, chat, threads, todos,
+│   │   │                      #   tools, mcp, thread-config, skills, triggers,
+│   │   │                      #   commands, reporting
+│   │   ├── stores/            # Svelte 5 runes stores (~25 files), including
+│   │   │                      #   chat, threads, todos, config, credentials, tools,
+│   │   │                      #   skills, mcpServers, triggers, threadConfig,
+│   │   │                      #   autonomous, activity, notifications, models, ui,
+│   │   │                      #   backendProcess, cliproxy, connections, outlook,
+│   │   │                      #   syncPoll
+│   │   ├── themes.ts          # Theme definitions and applicator
+│   │   ├── types/             # TypeScript definitions
+│   │   └── utils/             # Markdown rendering, file processing, IDs, todo helpers
 │   ├── routes/
 │   │   └── +page.svelte
-│   ├── app.css                    # CSS variables + global styles
+│   ├── app.css
 │   └── app.html
-├── src-tauri/                     # Rust backend
+├── src-tauri/                 # Rust backend (Tauri 2.x)
 │   ├── src/main.rs
 │   └── tauri.conf.json
 ├── package.json

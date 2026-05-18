@@ -100,6 +100,7 @@ backups/
 *.backup
 *.log
 Nymeria/planning/
+strategy-notes/
 
 # === Migration rollback snapshots — contain live OAuth tokens ===
 # Keep these on disk for emergency rollback, never check them in.

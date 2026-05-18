@@ -37,7 +37,7 @@ The Docker stack is what you reach for in production. It has stronger isolation,
 Everything user-facing:
 - All agent features — tools, skills, dynamic tool binding, scheduled TODOs, thread branches, memory index, credential vault
 - All LLM provider integrations
-- All chat-app bot integrations (Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, Rocketchat)
+- All chat-app bot integrations — native protocols: Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, Rocket.Chat, Twitch; API-hosted webhook runtimes: WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, LINE
 - The web UI, the desktop app, the mobile app
 - Multi-user accounts
 - Multi-agent thread teams
