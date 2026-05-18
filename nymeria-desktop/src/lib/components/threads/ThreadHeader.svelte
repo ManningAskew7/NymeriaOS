@@ -30,7 +30,6 @@
   function openInBrowser() {
     const url = window.location.origin + window.location.pathname;
     const office = (globalThis as typeof globalThis & { Office?: OfficeBridge }).Office;
-    // In Outlook, use Office.js to open in the system default browser
     if (office?.context?.ui?.openBrowserWindow) {
       office.context.ui.openBrowserWindow(url);
     } else {
@@ -64,6 +63,8 @@
 
   let activeSkillCount = $state<number | null>(null);
   let activeSkillTooltip = $state('');
+  let activeKitCount = $state<number | null>(null);
+  let activeKitTooltip = $state('');
   let activeSkillRequestId = 0;
   let callableCount = $state<number | null>(null);
   let callableTooltip = $state('');
@@ -83,21 +84,30 @@
     const requestId = ++activeSkillRequestId;
     activeSkillCount = null;
     activeSkillTooltip = '';
+    activeKitCount = null;
+    activeKitTooltip = '';
 
     api.getThreadActiveSkills(threadId)
       .then((response) => {
         if (requestId !== activeSkillRequestId) return;
-        const names = response.skills.map((skill) => skill.name);
-        activeSkillCount = names.length;
-        activeSkillTooltip = names.length
-          ? `${names.length} active skill${names.length !== 1 ? 's' : ''}: ${names.join(', ')}`
+        const skillNames = response.skills.filter((s) => !s.is_skill_kit).map((s) => s.name);
+        const kitNames = response.skills.filter((s) => s.is_skill_kit).map((s) => s.name);
+        activeSkillCount = skillNames.length;
+        activeSkillTooltip = skillNames.length
+          ? `${skillNames.length} active skill${skillNames.length !== 1 ? 's' : ''}: ${skillNames.join(', ')}`
           : 'No active skills';
+        activeKitCount = kitNames.length;
+        activeKitTooltip = kitNames.length
+          ? `${kitNames.length} active kit${kitNames.length !== 1 ? 's' : ''}: ${kitNames.join(', ')}`
+          : 'No active kits';
       })
       .catch((err) => {
         if (requestId !== activeSkillRequestId) return;
         console.warn('[ThreadHeader] Failed to load active skills:', err);
         activeSkillCount = null;
         activeSkillTooltip = '';
+        activeKitCount = null;
+        activeKitTooltip = '';
       });
 
     void enabledSkillsKey;
@@ -194,73 +204,112 @@
     const preview = threadConfig.instructions.substring(0, 80);
     return preview + (threadConfig.instructions.length > 80 ? '...' : '');
   });
+
+  type MetaPart = {
+    id: string;
+    text: string;
+    tooltip?: string;
+    variant?: 'default' | 'reduced' | 'accent';
+  };
+
+  const metaParts = $derived.by<MetaPart[]>(() => {
+    const parts: MetaPart[] = [];
+
+    if (effectiveModel) {
+      parts.push({
+        id: 'model',
+        text: effectiveModel.name,
+        tooltip: `${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`,
+        variant: effectiveModel.isOverride ? 'accent' : 'default',
+      });
+    }
+    if (activeToolCount !== null) {
+      parts.push({
+        id: 'tools',
+        text: `${activeToolCount} tools`,
+        tooltip: toolsTooltip,
+        variant: disabledNonMcpCount > 0 ? 'reduced' : 'default',
+      });
+    }
+    if (activeMcpToolCount !== null) {
+      parts.push({
+        id: 'mcp',
+        text: `${activeMcpToolCount} MCP`,
+        tooltip: mcpTooltip,
+        variant: disabledMcpCount > 0 ? 'reduced' : 'default',
+      });
+    }
+    if (callableCount !== null && callableCount > 0) {
+      parts.push({
+        id: 'callables',
+        text: `${callableCount} callable`,
+        tooltip: callableTooltip,
+        variant: 'default',
+      });
+    }
+    if (activeSkillCount !== null && activeSkillCount > 0) {
+      parts.push({
+        id: 'skills',
+        text: `${activeSkillCount} skill${activeSkillCount !== 1 ? 's' : ''}`,
+        tooltip: activeSkillTooltip,
+        variant: 'default',
+      });
+    }
+    if (activeKitCount !== null && activeKitCount > 0) {
+      parts.push({
+        id: 'kits',
+        text: `${activeKitCount} kit${activeKitCount !== 1 ? 's' : ''}`,
+        tooltip: activeKitTooltip,
+        variant: 'default',
+      });
+    }
+    if (triggerCount > 0) {
+      parts.push({
+        id: 'triggers',
+        text: `${triggerCount} trigger${triggerCount !== 1 ? 's' : ''}`,
+        tooltip: `${triggerCount} active trigger${triggerCount !== 1 ? 's' : ''}`,
+        variant: 'default',
+      });
+    }
+    if (hasInstructions) {
+      parts.push({
+        id: 'instructions',
+        text: 'instructions',
+        tooltip: instructionsTooltip,
+        variant: 'default',
+      });
+    }
+    if (isCallable) {
+      parts.push({
+        id: 'callable',
+        text: 'callable',
+        tooltip: 'This thread can be called by other threads',
+        variant: 'accent',
+      });
+    }
+    return parts;
+  });
 </script>
 
-<div class="thread-header">
-  <div class="header-info">
-    <span class="thread-title">{thread.title}</span>
+<header class="thread-header">
+  <h2 class="title" title={thread.title}>{thread.title}</h2>
 
-    <div class="header-badges">
-      {#if effectiveModel}
-        <span
-          class="badge model-badge"
-          class:default={!effectiveModel.isOverride}
-          class:override={effectiveModel.isOverride}
-          title="{effectiveModel.full} ({effectiveModel.isOverride ? 'thread override' : 'default'})"
-        >
-          {effectiveModel.name}
-        </span>
-      {/if}
-      {#if activeToolCount !== null}
-        <span
-          class="badge tools-badge"
-          class:reduced={disabledNonMcpCount > 0}
-          title={toolsTooltip}
-        >
-          {activeToolCount} tools
-        </span>
-      {/if}
-      {#if activeMcpToolCount !== null}
-        <span class="badge mcp-badge" class:reduced={disabledMcpCount > 0} title={mcpTooltip}>
-          {activeMcpToolCount} MCP
-        </span>
-      {/if}
-      {#if callableCount !== null && callableCount > 0}
-        <span class="badge callables-badge" title={callableTooltip}>
-          {callableCount} callable{callableCount !== 1 ? 's' : ''}
-        </span>
-      {/if}
-      {#if activeSkillCount !== null}
-        <span class="badge skills-badge" title={activeSkillTooltip}>
-          {activeSkillCount} skill{activeSkillCount !== 1 ? 's' : ''}
-        </span>
-      {/if}
-      {#if triggerCount > 0}
-        <span class="badge triggers-badge" title="{triggerCount} active trigger{triggerCount !== 1 ? 's' : ''}">
-          {triggerCount} trigger{triggerCount !== 1 ? 's' : ''}
-        </span>
-      {/if}
-      {#if hasInstructions}
-        <span class="badge instructions-badge" title={instructionsTooltip}>
-          instructions
-        </span>
-      {/if}
-      {#if isCallable}
-        <span class="badge callable-badge" title="Callable thread">
-          <span class="callable-chevron">&lt;</span>
-          Callable
-        </span>
-      {/if}
+  {#if metaParts.length > 0}
+    <div class="meta">
+      {#each metaParts as part (part.id)}
+        <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{part.text}</span>
+      {/each}
     </div>
-  </div>
+  {/if}
 
-  <div class="header-actions">
+  <div class="actions">
     {#if outlookStore.isOutlookMode}
       <button
-        class="action-btn"
+        class="icon-btn"
         onclick={popOut}
         title="Pop out to resizable window"
         type="button"
+        aria-label="Pop out"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="15 3 21 3 21 9" />
@@ -269,10 +318,11 @@
         </svg>
       </button>
       <button
-        class="action-btn"
+        class="icon-btn"
         onclick={openInBrowser}
         title="Open in full browser"
         type="button"
+        aria-label="Open in browser"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10" />
@@ -282,179 +332,153 @@
       </button>
     {/if}
     <button
-      class="settings-btn"
+      class="icon-btn cog"
       class:active={threadConfig?.hasCustomizations ?? false}
       onclick={onOpenSettings}
       title="Thread settings"
       type="button"
+      aria-label="Thread settings"
     >
       <Icon name="cog" size={16} />
     </button>
   </div>
-</div>
+</header>
 
 <style>
   .thread-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: var(--spacing-sm) var(--spacing-md);
+    gap: var(--spacing-md);
+    padding: 4px 6px 4px var(--spacing-md);
+    background: var(--bg-elevated);
     border-bottom: 1px solid var(--border-default);
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    min-height: 40px;
     flex-shrink: 0;
+    min-height: 34px;
   }
 
-  .header-info {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    min-width: 0;
-    flex: 1;
-  }
-
-  .thread-title {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
+  .title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
     color: var(--text-primary);
+    letter-spacing: -0.005em;
+    line-height: 1.25;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 45%;
   }
 
-  .header-badges {
+  .meta {
     display: flex;
     align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 1px 6px;
-    font-size: 10px;
-    font-weight: 500;
-    border-radius: var(--radius-full);
+    gap: 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.25;
+    letter-spacing: 0.005em;
+    min-width: 0;
+    overflow: hidden;
     white-space: nowrap;
+    flex: 1 1 auto;
   }
 
-  .model-badge.override {
-    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-    color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-  }
-
-  .model-badge.default {
-    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-    color: var(--text-muted);
-    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
-  }
-
-  .tools-badge {
-    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-    color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-  }
-
-  .tools-badge.reduced {
-    background: color-mix(in srgb, var(--warning, #f59e0b) 20%, transparent);
-    color: var(--warning, #f59e0b);
-    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
-  }
-
-  .mcp-badge {
-    background: color-mix(in srgb, var(--info, #38bdf8) 18%, transparent);
-    color: var(--info, #38bdf8);
-    border: 1px solid color-mix(in srgb, var(--info, #38bdf8) 30%, transparent);
-  }
-
-  .mcp-badge.reduced {
-    background: color-mix(in srgb, var(--warning, #f59e0b) 18%, transparent);
-    color: var(--warning, #f59e0b);
-    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
-  }
-
-  .callables-badge {
-    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-    color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-  }
-
-  .skills-badge {
-    background: color-mix(in srgb, var(--success, #10b981) 16%, transparent);
-    color: var(--success, #10b981);
-    border: 1px solid color-mix(in srgb, var(--success, #10b981) 28%, transparent);
-  }
-
-  .triggers-badge {
-    background: color-mix(in srgb, var(--success, #10b981) 20%, transparent);
-    color: var(--success, #10b981);
-    border: 1px solid color-mix(in srgb, var(--success, #10b981) 30%, transparent);
-  }
-
-  .instructions-badge {
-    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-    color: var(--text-muted);
-    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
-  }
-
-  .callable-badge {
-    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-    color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-    display: inline-flex;
-    align-items: center;
-  }
-
-  .callable-chevron {
-    font-weight: 700;
-    font-size: 11px;
-    margin-right: 2px;
-    line-height: 1;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-  }
-
-  .action-btn {
-    padding: 6px;
-    color: var(--text-muted);
-    border-radius: var(--radius-sm);
-    transition: all var(--transition-fast);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .action-btn:hover {
-    background: var(--bg-hover);
-    color: var(--accent-primary);
-  }
-
-  .settings-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    transition: all var(--transition-fast);
+  .meta-part {
+    position: relative;
     flex-shrink: 0;
+    cursor: default;
+    font-variant-numeric: tabular-nums;
+    padding-left: 11px;
+    --dot-color: var(--text-muted);
   }
 
-  .settings-btn:hover {
+  .meta-part::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--dot-color);
+    transform: translateY(-50%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot-color) 35%, transparent);
+    transition: box-shadow var(--transition-fast);
+  }
+
+  .meta-part:hover::before {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-color) 18%, transparent);
+  }
+
+  .meta-part--model { --dot-color: var(--accent-primary); }
+  .meta-part--tools { --dot-color: var(--success); }
+  .meta-part--mcp { --dot-color: var(--info); }
+  .meta-part--callables { --dot-color: var(--accent-secondary); }
+  .meta-part--skills { --dot-color: var(--accent-primary); }
+  .meta-part--kits { --dot-color: color-mix(in srgb, var(--accent-primary) 55%, var(--text-muted)); }
+  .meta-part--triggers { --dot-color: var(--warning); }
+  .meta-part--instructions { --dot-color: var(--text-muted); }
+  .meta-part--callable { --dot-color: var(--accent-primary); }
+
+  .meta-part.reduced {
+    color: var(--warning);
+    --dot-color: var(--warning);
+  }
+
+  .meta-part.accent {
+    color: var(--accent-primary);
+    font-weight: 500;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+
+  .icon-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition:
+      color var(--transition-fast),
+      background var(--transition-fast);
+  }
+
+  .icon-btn :global(svg) {
+    display: block;
+  }
+
+  .icon-btn:hover {
     color: var(--accent-primary);
     background: var(--bg-hover);
-    transform: rotate(30deg);
   }
 
-  .settings-btn.active {
+  .icon-btn:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+  }
+
+  .icon-btn.cog :global(svg) {
+    transition: transform var(--transition-fast);
+  }
+
+  .icon-btn.cog:hover :global(svg) {
+    transform: rotate(45deg);
+  }
+
+  .icon-btn.cog.active {
     color: var(--accent-primary);
   }
 </style>
