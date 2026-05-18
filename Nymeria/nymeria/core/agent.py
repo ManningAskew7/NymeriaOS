@@ -1,11 +1,7 @@
 """NymeriaAgent - main agent wrapper around the vendored LangGraph runtime."""
 
 import asyncio
-import json
 import logging
-import mimetypes
-import os
-import re
 import threading
 import time
 from pathlib import Path
@@ -184,8 +180,6 @@ class ThreadLockManager:
             return False
         return True
 
-
-_ATTACH_TAG_PATTERN = re.compile(r"\[attach:(.+?)\]")
 
 # Global reference to the current agent instance (for tools that need to trigger reload)
 _current_agent: Optional["NymeriaAgent"] = None
@@ -790,7 +784,11 @@ class NymeriaAgent:
         from .agent_prompt import append_mode_rules
         return append_mode_rules(self, prompt, is_autonomous)
 
-    def _get_time_context(self, is_autonomous: bool = False, trigger_override: str = None) -> str:
+    def _get_time_context(
+        self,
+        is_autonomous: bool = False,
+        trigger_override: Optional[str] = None,
+    ) -> str:
         from .agent_prompt import get_time_context_for_agent
         return get_time_context_for_agent(self, is_autonomous, trigger_override)
 
@@ -923,196 +921,47 @@ class NymeriaAgent:
 
     @staticmethod
     def _extract_http_status_code(error: Exception) -> Optional[int]:
-        """Best-effort extraction of HTTP status code from provider exceptions."""
-        status_code = getattr(error, "status_code", None)
-        if isinstance(status_code, int):
-            return status_code
-
-        response = getattr(error, "response", None)
-        response_status = getattr(response, "status_code", None) if response else None
-        if isinstance(response_status, int):
-            return response_status
-
-        match = re.search(r"error code:\s*(\d{3})", str(error), re.IGNORECASE)
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                return None
-
-        return None
+        from .agent_results import extract_http_status_code
+        return extract_http_status_code(error)
 
     def _classify_stream_exception(self, error: Exception) -> Dict[str, Any]:
-        """Map raw exceptions into frontend-friendly structured error payloads."""
-        raw_message = str(error)
-        status_code = self._extract_http_status_code(error)
-        lower = raw_message.lower()
-
-        if (
-            status_code == 402
-            or "error code: 402" in lower
-            or "requires more credits" in lower
-        ):
-            requested_tokens = None
-            affordable_tokens = None
-            token_match = re.search(
-                r"requested up to\s+(\d+)\s+tokens.*?can only afford\s+(\d+)",
-                raw_message,
-                re.IGNORECASE,
-            )
-            if token_match:
-                try:
-                    requested_tokens = int(token_match.group(1))
-                    affordable_tokens = int(token_match.group(2))
-                except ValueError:
-                    requested_tokens = None
-                    affordable_tokens = None
-
-            details: Dict[str, Any] = {
-                "provider": "openrouter",
-                "http_status": 402,
-            }
-            if requested_tokens is not None:
-                details["requested_max_tokens"] = requested_tokens
-            if affordable_tokens is not None:
-                details["affordable_max_tokens"] = affordable_tokens
-
-            message = (
-                "OpenRouter rejected the request due to insufficient credit/token budget. "
-                "Reduce max output tokens (for example set LLM_MAX_TOKENS lower) "
-                "or increase your OpenRouter credit limit, then retry."
-            )
-            if requested_tokens is not None and affordable_tokens is not None:
-                message = (
-                    f"{message} Requested up to {requested_tokens} tokens, "
-                    f"but only {affordable_tokens} were affordable."
-                )
-
-            return {
-                "type": "error",
-                "content": message,
-                "code": "openrouter_insufficient_credits",
-                "details": details,
-            }
-
-        details = {"http_status": status_code} if status_code is not None else {}
-        return {
-            "type": "error",
-            "content": f"An error occurred: {raw_message}",
-            "code": "agent_runtime_error",
-            "details": details,
-        }
+        from .agent_results import classify_stream_exception
+        return classify_stream_exception(error)
 
     @classmethod
     def _parse_subagent_error_marker(cls, result: str) -> Optional[Dict[str, Any]]:
-        """Parse structured sub-agent error markers from tool output."""
-        if not isinstance(result, str):
-            return None
-        if not result.startswith(cls.SUBAGENT_ERROR_MARKER_PREFIX):
-            return None
-
-        first_line = result.splitlines()[0]
-        payload_json = first_line[len(cls.SUBAGENT_ERROR_MARKER_PREFIX):].strip()
-        if not payload_json:
-            return None
-
-        try:
-            payload = json.loads(payload_json)
-            if isinstance(payload, dict):
-                return payload
-            return None
-        except Exception:
-            return None
+        from .agent_results import parse_subagent_error_marker
+        return parse_subagent_error_marker(result)
 
     @classmethod
     def _strip_subagent_error_marker(cls, result: str) -> str:
-        """Remove structured marker line from tool output for frontend display."""
-        if not isinstance(result, str):
-            return str(result)
-        if not result.startswith(cls.SUBAGENT_ERROR_MARKER_PREFIX):
-            return result
-
-        lines = result.splitlines()
-        cleaned = "\n".join(lines[1:]).strip()
-        if cleaned:
-            return cleaned
-
-        payload = cls._parse_subagent_error_marker(result)
-        if payload:
-            message = payload.get("message")
-            if isinstance(message, str) and message.strip():
-                return message.strip()
-        return result
+        from .agent_results import strip_subagent_error_marker
+        return strip_subagent_error_marker(result)
 
     @staticmethod
     def _get_workspace_dir() -> Path:
-        """Return the root directory exposed by the workspace download API."""
-        return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
+        from .agent_results import get_workspace_dir
+        return get_workspace_dir()
 
     @classmethod
     def _strip_attach_tags(cls, result: str) -> str:
-        """Remove legacy attach markers from tool output shown to clients."""
-        if not isinstance(result, str):
-            return str(result)
-        cleaned = _ATTACH_TAG_PATTERN.sub("", result)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        return cleaned.strip()
+        from .agent_results import strip_attach_tags
+        return strip_attach_tags(result)
 
     @classmethod
     def _clean_tool_result_for_display(cls, result: str) -> str:
-        """Remove internal markers from a tool result before streaming it to UIs."""
-        return cls._strip_attach_tags(cls._strip_subagent_error_marker(result))
+        from .agent_results import clean_tool_result_for_display
+        return clean_tool_result_for_display(result)
 
     @staticmethod
     def _serialize_workspace_artifact(path: Path) -> Dict[str, Any]:
-        """Build metadata for a downloadable workspace artifact."""
-        mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        return {
-            "path": str(path),
-            "name": path.name,
-            "mime_type": mime_type,
-            "size_bytes": path.stat().st_size,
-        }
+        from .agent_results import serialize_workspace_artifact
+        return serialize_workspace_artifact(path)
 
     @classmethod
     def _extract_workspace_artifacts(cls, result: str) -> List[Dict[str, Any]]:
-        """Extract valid workspace artifacts from legacy attach tags."""
-        if not isinstance(result, str):
-            return []
-
-        workspace_dir = cls._get_workspace_dir()
-        artifacts: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-
-        for raw_path in _ATTACH_TAG_PATTERN.findall(result):
-            candidates = [Path(raw_path)]
-            if not Path(raw_path).is_absolute():
-                candidates.append(workspace_dir / raw_path)
-
-            resolved_path: Optional[Path] = None
-            for candidate in candidates:
-                try:
-                    candidate_resolved = candidate.resolve()
-                except Exception:
-                    continue
-                if not candidate_resolved.is_relative_to(workspace_dir):
-                    continue
-                if not candidate_resolved.is_file():
-                    continue
-                resolved_path = candidate_resolved
-                break
-
-            if resolved_path is None:
-                logger.debug("Ignoring non-downloadable attach path: %s", raw_path)
-                continue
-
-            resolved_str = str(resolved_path)
-            if resolved_str in seen:
-                continue
-            seen.add(resolved_str)
-            artifacts.append(cls._serialize_workspace_artifact(resolved_path))
-
-        return artifacts
+        from .agent_results import extract_workspace_artifacts
+        return extract_workspace_artifacts(result)
 
     def _tool_result_extra_events(
         self,
@@ -1120,56 +969,8 @@ class NymeriaAgent:
         raw_result: str,
         tool_call_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Build extra stream events for structured tool results."""
-        events: List[Dict[str, Any]] = []
-
-        payload = self._parse_subagent_error_marker(raw_result)
-        if payload:
-            code = payload.get("code")
-            message = payload.get("message")
-            metadata = payload.get("metadata", {})
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            if code == "subagent_iteration_limit":
-                max_iterations = metadata.get("max_iterations", 0)
-                tool_call_count = metadata.get("tool_call_count", 0)
-                agent_name = metadata.get("agent_name") or tool_name
-                reason = metadata.get("reason") or TURN_SAFETY_REASON_MAX_ITERATIONS
-                repeated_tool_name = metadata.get("repeated_tool_name")
-                repeated_count = metadata.get("repeated_count")
-
-                event = {
-                    "type": "iteration_limit",
-                    "scope": "sub_agent",
-                    "agent_name": agent_name,
-                    "reason": reason if isinstance(reason, str) and reason else TURN_SAFETY_REASON_MAX_ITERATIONS,
-                    "max_iterations": max_iterations if isinstance(max_iterations, int) and max_iterations > 0 else 0,
-                    "tool_call_count": tool_call_count if isinstance(tool_call_count, int) and tool_call_count > 0 else None,
-                    "content": message if isinstance(message, str) and message.strip()
-                    else f"{agent_name} hit its iteration limit.",
-                }
-                if isinstance(repeated_tool_name, str) and repeated_tool_name:
-                    event["repeated_tool_name"] = repeated_tool_name
-                if isinstance(repeated_count, int) and repeated_count > 0:
-                    event["repeated_count"] = repeated_count
-
-                if event["max_iterations"] <= 0:
-                    event["max_iterations"] = 30
-                if event["tool_call_count"] is None:
-                    event.pop("tool_call_count")
-
-                events.append(event)
-
-        for artifact in self._extract_workspace_artifacts(raw_result):
-            events.append({
-                "type": "workspace_artifact",
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                **artifact,
-            })
-
-        return events
+        from .agent_results import tool_result_extra_events
+        return tool_result_extra_events(tool_name, raw_result, tool_call_id)
 
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """Extract token usage from the latest AIMessage's metadata."""
@@ -1952,7 +1753,7 @@ class NymeriaAgent:
         thread_id: str = "default",
         user_id: str = "default",
         _is_self_invoke: bool = False,
-        _trigger_override: str = None,
+        _trigger_override: Optional[str] = None,
     ) -> str:
         """
         Send a message and get a response (non-streaming).
@@ -2316,7 +2117,7 @@ class NymeriaAgent:
         images: Optional[List[Dict[str, str]]] = None,
         force_unsupported_attachments: bool = False,
         _is_self_invoke: bool = False,
-        _trigger_override: str = None,
+        _trigger_override: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
