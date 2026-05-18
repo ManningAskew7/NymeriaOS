@@ -37,6 +37,7 @@ from .config import LLMConfig
 from nymeria.config.llm_providers import (
     get_llm_provider_spec,
     is_openai_compatible_provider,
+    is_provider_verified,
     normalize_llm_provider,
     provider_requires_api_key,
     provider_supports_responses,
@@ -80,6 +81,7 @@ _RESPONSES_REASONING_FALLBACK_EVENTS = {
     "response.reasoning.delta",
 }
 _RESPONSES_CONVERTER_FALLBACK_WARNED: set[str] = set()
+_UNVERIFIED_PROVIDER_WARNED: set[str] = set()
 _LANGCHAIN_ANTHROPIC_PROXY_PATCH_MAX_MAJOR = 2
 _LANGCHAIN_ANTHROPIC_PROXY_CONTEXT_MARKER = "context_management.model_dump"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -356,6 +358,31 @@ def _warn_responses_converter_fallback(reason: str) -> None:
         "Text and plaintext reasoning deltas will stream, but final usage "
         "metadata may be reduced until the LangChain adapter is updated.",
         reason,
+    )
+
+
+def _warn_if_unverified_provider(provider: str) -> None:
+    """Warn once per provider when the user picks an unverified provider.
+
+    Only ``anthropic``, ``openai``, and ``openrouter`` are smoke-tested in
+    Nymeria today. Every other entry in ``llm_providers.py`` is OpenAI-chat
+    "compatible" on paper but the divergent corners (tool-call deltas,
+    response_format, finish_reason, usage shape) have not been exercised — so
+    the user should know that hitting one is at-your-own-risk until verified.
+    """
+    spec = get_llm_provider_spec(provider)
+    if spec is None or spec.verified:
+        return
+    if provider in _UNVERIFIED_PROVIDER_WARNED:
+        return
+    _UNVERIFIED_PROVIDER_WARNED.add(provider)
+    logger.warning(
+        "[LLM] Provider %r (%s) is not yet verified end-to-end in Nymeria. "
+        "OpenAI-compatible chat completions vary by upstream (tool calls, "
+        "streaming, response_format), so expect rough edges until smoke-tested. "
+        "Verified providers: anthropic, openai, openrouter.",
+        provider,
+        spec.label,
     )
 
 
@@ -1068,6 +1095,8 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
     provider = normalize_llm_provider(config.provider)
     if provider != config.provider:
         config = dataclass_replace(config, provider=provider)
+
+    _warn_if_unverified_provider(provider)
 
     if (
         config.openai_api_mode
