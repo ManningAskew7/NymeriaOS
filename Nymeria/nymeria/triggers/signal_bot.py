@@ -207,9 +207,13 @@ def render_signal_mentions(message: str, mentions: Any) -> str:
         identifier = item.get("number") or item.get("uuid") or item.get("name")
         if not identifier:
             continue
+        raw_start = item.get("start")
+        raw_length = item.get("length")
+        if raw_start is None or raw_length is None:
+            continue
         try:
-            start = int(item.get("start"))
-            length = int(item.get("length"))
+            start = int(raw_start)
+            length = int(raw_length)
         except (TypeError, ValueError):
             continue
         if start < 0 or length <= 0:

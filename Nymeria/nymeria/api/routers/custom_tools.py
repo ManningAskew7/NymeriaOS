@@ -230,6 +230,11 @@ def create_custom_tools_router(
 
         try:
             if definition.implementation_type == "http":
+                if definition.http_config is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Tool '{tool_id}' is type 'http' but has no http_config",
+                    )
                 result = await execute_http_tool(
                     definition.http_config,
                     request.params,
@@ -238,6 +243,11 @@ def create_custom_tools_router(
                     actor_user_id=user.id,
                 )
             elif definition.implementation_type == "mcp":
+                if definition.mcp_config is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Tool '{tool_id}' is type 'mcp' but has no mcp_config",
+                    )
                 result = await loader.mcp_manager.call_tool(
                     definition.mcp_config,
                     request.params,

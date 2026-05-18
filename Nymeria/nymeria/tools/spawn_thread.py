@@ -605,6 +605,7 @@ def spawn_thread(
         from ..core.thread_branch import ThreadBranchError, branch_thread
         from ..config.settings import get_settings
 
+        assert parent_thread_id is not None  # guarded by mode_norm == "branched" check above
         try:
             branch_thread(
                 agent=agent,

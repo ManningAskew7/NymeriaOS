@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from html import unescape
-from typing import Annotated, Optional, List
+from typing import Annotated, Any, Optional, List
 
 import httpx
 from langchain_core.runnables import RunnableConfig
@@ -1224,7 +1224,7 @@ def outlook_forward_email(
         addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
         return [{"emailAddress": {"address": a}} for a in addresses]
 
-    data = {
+    data: dict[str, Any] = {
         "toRecipients": parse_recipients(to),
     }
     if comment:

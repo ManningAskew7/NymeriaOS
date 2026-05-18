@@ -351,7 +351,7 @@ def microsoft_todo_list_tasks(
         return "[Error]: list_id is required."
     try:
         limit = _limit(top, max_value=100)
-        params = {"$top": limit}
+        params: dict[str, Any] = {"$top": limit}
         filter_value = _task_status_filter(status)
         if filter_value:
             params["$filter"] = filter_value

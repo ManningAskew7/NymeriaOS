@@ -58,7 +58,8 @@ def _handle_model_set(state: "CLIState", args: List[str]) -> None:
             tc.llm_config.model = model_id
 
     state.thread_config_manager.save_config(tc)
-    state.agent.invalidate_thread_config_cache(state.thread_id)
+    if state.agent is not None:
+        state.agent.invalidate_thread_config_cache(state.thread_id)
     state.console.print(f"[green]Model set to: {model_id}[/green]")
 
 

@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 def _handle_context(state: "CLIState", args: List[str]) -> None:
     """Show context window usage statistics."""
+    if state.agent is None:
+        state.console.print("[red]Not available in API mode.[/red]")
+        return
     stats = state.agent.get_context_stats(state.thread_id)
 
     usage_pct = stats.get("usage_percentage", 0)
@@ -51,6 +54,9 @@ def _handle_context(state: "CLIState", args: List[str]) -> None:
 
 def _handle_compact(state: "CLIState", args: List[str]) -> None:
     """Trigger manual compaction with spinner."""
+    if state.agent is None:
+        state.console.print("[red]Not available in API mode.[/red]")
+        return
     with state.console.status("[dim]Compacting...[/dim]", spinner="dots"):
         try:
             result = asyncio.run(

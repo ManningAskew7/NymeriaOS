@@ -551,6 +551,7 @@ def trigger_config(
         ]
         if missing:
             return f"[Error]: create requires: {', '.join(missing)}."
+        assert name is not None and source_type is not None and action_type is not None
         return _trigger_create(
             name=name,
             source_type=source_type,

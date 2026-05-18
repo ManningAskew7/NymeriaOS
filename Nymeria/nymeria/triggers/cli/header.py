@@ -1054,7 +1054,8 @@ def _model_dump(value: Any) -> dict[str, Any]:
         return {}
     dump = getattr(value, "model_dump", None)
     if callable(dump):
-        return dump(mode="json")
+        result = dump(mode="json")
+        return result  # type: ignore[return-value]  # getattr-based dispatch; model_dump returns dict
     if isinstance(value, Mapping):
         return dict(value)
     return dict(vars(value))

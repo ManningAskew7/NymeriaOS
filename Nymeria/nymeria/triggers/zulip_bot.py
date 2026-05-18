@@ -165,9 +165,13 @@ def message_from_event(event: Mapping[str, Any]) -> Optional[ZulipMessage]:
     raw = event.get("message")
     if not isinstance(raw, Mapping):
         return None
+    raw_id = raw.get("id")
+    raw_sender_id = raw.get("sender_id")
+    if raw_id is None or raw_sender_id is None:
+        return None
     try:
-        message_id = int(raw.get("id"))
-        sender_id = int(raw.get("sender_id"))
+        message_id = int(raw_id)
+        sender_id = int(raw_sender_id)
     except (TypeError, ValueError):
         return None
     flags = raw.get("flags")
@@ -340,8 +344,11 @@ class NymeriaZulipBot:
 
     async def start(self) -> None:
         identity = await self.zulip.get_me()
+        raw_user_id = identity.get("user_id")
+        if raw_user_id is None:
+            raise RuntimeError("Zulip account identity could not be resolved.") from None
         try:
-            self.bot_user_id = int(identity.get("user_id"))
+            self.bot_user_id = int(raw_user_id)
         except (TypeError, ValueError):
             raise RuntimeError("Zulip account identity could not be resolved.") from None
         self.bot_email = str(identity.get("email") or self.bot_email)

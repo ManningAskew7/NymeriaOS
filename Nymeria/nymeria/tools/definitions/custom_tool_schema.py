@@ -171,7 +171,7 @@ class CustomToolDefinition(BaseModel):
         required = []
 
         for name, param in self.parameters.items():
-            prop = {
+            prop: Dict[str, Any] = {
                 "type": param.type,
                 "description": param.description,
             }

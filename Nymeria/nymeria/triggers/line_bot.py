@@ -150,9 +150,13 @@ def strip_line_mentions(
             is_bot_user = bot_user_id and str(item.get("userId") or "") == bot_user_id
             if not is_self and not is_bot_user:
                 continue
+            raw_index = item.get("index")
+            raw_length = item.get("length")
+            if raw_index is None or raw_length is None:
+                continue
             try:
-                index = int(item.get("index"))
-                length = int(item.get("length"))
+                index = int(raw_index)
+                length = int(raw_length)
             except (TypeError, ValueError):
                 continue
             if index >= 0 and length > 0:

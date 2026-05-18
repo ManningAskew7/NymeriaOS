@@ -25,6 +25,8 @@ class ChatCog(commands.Cog):
     @app_commands.describe(message="Your message to Nymeria")
     async def cmd_ask(self, interaction: discord.Interaction, message: str):
         await interaction.response.defer()
+        if interaction.channel_id is None:
+            return
         thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
         user_id = await self.bot._resolve_or_reject_interaction(interaction)
         if user_id is None:
@@ -61,6 +63,8 @@ class ChatCog(commands.Cog):
     )
     async def cmd_compact(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        if interaction.channel_id is None:
+            return
         thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
         user_id = await self.bot._resolve_or_reject_interaction(interaction)
         if user_id is None:

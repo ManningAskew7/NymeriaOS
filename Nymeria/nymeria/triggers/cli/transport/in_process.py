@@ -528,7 +528,8 @@ def _thread_payload(agent: Any, thread_id: str, meta: Any) -> dict[str, Any]:
 def _model_dump(value: Any) -> dict[str, Any]:
     dump = getattr(value, "model_dump", None)
     if callable(dump):
-        return dump(mode="json")
+        result = dump(mode="json")
+        return result  # type: ignore[return-value]  # getattr-based dispatch; model_dump returns dict
     if isinstance(value, Mapping):
         return copy.deepcopy(dict(value))
     return copy.deepcopy(vars(value))

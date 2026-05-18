@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 def _user_role(state: "CLIState") -> str:
     try:
+        if state.agent is None:
+            return "user"
         user = state.agent.accounts_repo.get_user_by_id(state.user_id)
         return user.role if user else "user"
     except Exception:
@@ -95,7 +97,8 @@ def _handle_tools_enable(state: "CLIState", args: list[str]) -> None:
         tc.disabled_tools.remove(tool_name)
 
     state.thread_config_manager.save_config(tc)
-    state.agent.invalidate_thread_config_cache(state.thread_id)
+    if state.agent is not None:
+        state.agent.invalidate_thread_config_cache(state.thread_id)
     state.console.print(f"[green]Enabled: {tool_name}[/green]")
 
 
@@ -118,7 +121,8 @@ def _handle_tools_disable(state: "CLIState", args: list[str]) -> None:
         tc.enabled_tools.remove(tool_name)
 
     state.thread_config_manager.save_config(tc)
-    state.agent.invalidate_thread_config_cache(state.thread_id)
+    if state.agent is not None:
+        state.agent.invalidate_thread_config_cache(state.thread_id)
     state.console.print(f"[green]Disabled: {tool_name}[/green]")
 
 

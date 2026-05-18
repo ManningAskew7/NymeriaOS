@@ -518,7 +518,7 @@ def dropbox_search(
         api_base, _, headers = _dropbox_config("dropbox_search", config)
         if isinstance(headers, str):
             return headers
-        options = {"filename_only": bool(filename_only), "max_results": _limit(limit, default=25, max_value=1000)}
+        options: dict[str, Any] = {"filename_only": bool(filename_only), "max_results": _limit(limit, default=25, max_value=1000)}
         clean_path = _path(path, allow_root=True)
         if clean_path:
             options["path"] = clean_path

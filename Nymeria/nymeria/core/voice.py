@@ -125,7 +125,12 @@ class GeminiTTSService:
             ),
         )
 
-        audio_part = response.candidates[0].content.parts[0]
+        if not response.candidates:
+            raise VoiceServiceError("Gemini TTS returned no candidates")
+        candidate_content = response.candidates[0].content
+        if candidate_content is None or not candidate_content.parts:
+            raise VoiceServiceError("Gemini TTS returned no content")
+        audio_part = candidate_content.parts[0]
         if not audio_part.inline_data or not audio_part.inline_data.data:
             raise VoiceServiceError("Gemini TTS returned empty audio data")
         mime = audio_part.inline_data.mime_type or "audio/L16"

@@ -911,8 +911,8 @@ def jwt_sign_claims(
             payload["exp"] = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in_seconds))
         alg = _jwt_algorithm(tool_name="jwt_sign_claims", config=config, requested=algorithm)
         key = _jwt_key(algorithm=alg, purpose="sign", tool_name="jwt_sign_claims", config=config)
-        if key and key.startswith("[Error]:"):
-            return key
+        if not key or key.startswith("[Error]:"):
+            return key or "[Error]: No JWT key configured."
         return jwt.encode(payload, key, algorithm=alg, headers=headers)
     except Exception as exc:
         logger.debug("jwt_sign_claims failed", exc_info=True)
@@ -946,8 +946,8 @@ def jwt_verify_token(
 
         alg = _jwt_algorithm(tool_name="jwt_verify_token", config=config, requested=algorithm)
         key = _jwt_key(algorithm=alg, purpose="verify", tool_name="jwt_verify_token", config=config)
-        if key and key.startswith("[Error]:"):
-            return key
+        if not key or key.startswith("[Error]:"):
+            return key or "[Error]: No JWT key configured."
         payload = jwt.decode(
             token.strip(),
             key,

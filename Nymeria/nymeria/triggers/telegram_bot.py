@@ -602,8 +602,11 @@ class NymeriaTelegramBot:
             entry_bot_id = e.get("user_telegram_bot_id")
             if entry_bot_id != self.user_telegram_bot_id:
                 continue
+            raw_chat_id = e.get("platform_chat_id")
+            if raw_chat_id is None:
+                continue
             try:
-                chat_id = int(e.get("platform_chat_id"))
+                chat_id = int(raw_chat_id)
             except (TypeError, ValueError):
                 continue
             thread_id = e.get("thread_id")
@@ -727,6 +730,7 @@ class NymeriaTelegramBot:
         await app.initialize()
         await self._post_init(app)
         await app.start()
+        assert app.updater is not None, "Application.updater must be set after build()"
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
     async def stop_async(self) -> None:
@@ -1075,7 +1079,12 @@ class NymeriaTelegramBot:
         so background tasks (e.g. the autonomous SSE listener) can use this
         helper without a Telegram update context.
         """
-        bot = context.bot if context is not None else self._application.bot
+        if context is not None:
+            bot = context.bot
+        elif self._application is not None:
+            bot = self._application.bot
+        else:
+            raise RuntimeError("Application not initialized")
         try:
             return await bot.send_message(
                 chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, **kwargs
@@ -1120,7 +1129,12 @@ class NymeriaTelegramBot:
         if result is None:
             return False
         raw_bytes, filename, content_type = result
-        bot = context.bot if context is not None else self._application.bot
+        if context is not None:
+            bot = context.bot
+        elif self._application is not None:
+            bot = self._application.bot
+        else:
+            raise RuntimeError("Application not initialized")
         buf = io.BytesIO(raw_bytes)
         buf.name = filename
         try:
@@ -1154,6 +1168,8 @@ class NymeriaTelegramBot:
             require_admin=require_admin,
         )
         if user_id is None:
+            return
+        if update.effective_chat is None or update.message is None:
             return
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
@@ -1579,6 +1595,8 @@ class NymeriaTelegramBot:
 
         With no payload, behave as the original welcome message.
         """
+        if update.message is None:
+            return
         args = context.args or []
         if args:
             payload = args[0]
@@ -1684,6 +1702,7 @@ class NymeriaTelegramBot:
                 # needed. This means the wizard's "paste token → bind"
                 # flow works even for users with no Telegram identity
                 # linked to their Nymeria account.
+                assert self.user_telegram_bot_id is not None
                 result = await self.api.claim_thread_bind_code_via_bot(
                     code=code,
                     provider="telegram",
@@ -1920,6 +1939,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ask <message>."""
+        if update.message is None or update.effective_chat is None:
+            return
         message_text = self._parse_args(context)
         if not message_text:
             await update.message.reply_text("Usage: /ask <your message>")
@@ -1951,6 +1972,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /compact."""
+        if update.message is None or update.effective_chat is None:
+            return
         chat_id = update.effective_chat.id
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
@@ -2004,6 +2027,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export [markdown|json|txt]."""
+        if update.message is None or update.effective_chat is None:
+            return
         chat_id = update.effective_chat.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
         user_id = await self._resolve_or_reject_update(update)
@@ -2120,6 +2145,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /restart [bot|api] — admin-gated."""
+        if update.message is None:
+            return
         # Restart affects every user, so non-admins are rejected even if
         # they're linked Nymeria users.
         user_id = await self._resolve_or_reject_update(update, require_admin=True)
@@ -2151,6 +2178,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_showtools(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /showtools — toggle tool call display."""
+        if update.message is None or update.effective_chat is None:
+            return
         chat_id = update.effective_chat.id
         currently_shown = self._show_tool_calls.get(chat_id, False)
         new_state = not currently_shown
@@ -2165,6 +2194,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help."""
+        if update.effective_chat is None:
+            return
         chat_id = update.effective_chat.id
         user_id = None
         if update.effective_user is not None:
@@ -2211,6 +2242,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_todo_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_add <task> [| <schedule>] [| <repeat>] [| <notes>]."""
+        if update.message is None:
+            return
         raw = self._parse_args(context)
         if not raw:
             await update.message.reply_text(
@@ -2227,6 +2260,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_todo_complete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_complete <id>."""
+        if update.message is None:
+            return
         todo_id = self._parse_args(context)
         if not todo_id:
             await update.message.reply_text("Usage: /todo_complete <todo_id>")
@@ -2236,6 +2271,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_todo_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /todo_delete <id>."""
+        if update.message is None:
+            return
         todo_id = self._parse_args(context)
         if not todo_id:
             await update.message.reply_text("Usage: /todo_delete <todo_id>")
@@ -2258,6 +2295,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_get <key>."""
+        if update.message is None:
+            return
         if not self._parse_args(context):
             await update.message.reply_text("Usage: /config_get <key>")
             return
@@ -2270,6 +2309,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_config_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /config_set <key> <value>."""
+        if update.message is None:
+            return
         if len(context.args or []) < 2:
             await update.message.reply_text("Usage: /config_set <key> <value>")
             return
@@ -2295,10 +2336,14 @@ class NymeriaTelegramBot:
 
     async def _cmd_env_get(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Reject the removed /env_get command if called directly."""
+        if update.message is None:
+            return
         await update.message.reply_text("Unmasked environment reads are disabled in Telegram.")
 
     async def _cmd_env_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /env_set <key> <value>."""
+        if update.message is None:
+            return
         if len(context.args or []) < 2:
             await update.message.reply_text("Usage: /env_set <key> <value>")
             return
@@ -2327,6 +2372,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_search <query>."""
+        if update.message is None or update.effective_chat is None:
+            return
         user_id = await self._resolve_or_reject_update(update)
         if user_id is None:
             return
@@ -2349,6 +2396,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_category <name>."""
+        if update.message is None:
+            return
         cat_name = self._parse_args(context)
         if not cat_name:
             await update.message.reply_text("Usage: /tools_category <name>")
@@ -2358,6 +2407,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_enable <name>."""
+        if update.message is None:
+            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_enable <tool_or_category>")
@@ -2367,6 +2418,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_tools_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tools_disable <name>."""
+        if update.message is None:
+            return
         name = self._parse_args(context)
         if not name:
             await update.message.reply_text("Usage: /tools_disable <tool_or_category>")
@@ -2384,6 +2437,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_memory_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_save <key> <value>."""
+        if update.message is None:
+            return
         args = context.args or []
         if len(args) < 2:
             await update.message.reply_text("Usage: /memory_save <key> <value>")
@@ -2392,6 +2447,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_memory_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_forget <key>."""
+        if update.message is None:
+            return
         key = self._parse_args(context)
         if not key:
             await update.message.reply_text("Usage: /memory_forget <key>")
@@ -2400,6 +2457,8 @@ class NymeriaTelegramBot:
 
     async def _cmd_memory_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /memory_search <query>."""
+        if update.message is None:
+            return
         query = self._parse_args(context)
         if not query:
             await update.message.reply_text("Usage: /memory_search <query>")
@@ -2422,7 +2481,8 @@ class NymeriaTelegramBot:
         """
         raw = self._parse_args(context)
         if not raw:
-            await update.message.reply_text("Usage: /notepad_write <content>")
+            if update.message is not None:
+                await update.message.reply_text("Usage: /notepad_write <content>")
             return
 
         await self._send_backend_command(update, context, "notepad write")
@@ -2498,6 +2558,8 @@ class NymeriaTelegramBot:
             return
 
         chat = update.effective_chat
+        if chat is None or update.effective_user is None:
+            return
         is_dm = chat.type == "private"
 
         if not is_dm:
@@ -2562,6 +2624,8 @@ class NymeriaTelegramBot:
         unsupported MIME types, download failures).
         """
         msg = update.message
+        if msg is None:
+            return [], []
         attachments: List[Dict[str, Any]] = []
         errors: List[str] = []
 

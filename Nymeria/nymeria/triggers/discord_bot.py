@@ -255,6 +255,8 @@ class NymeriaDiscordBot(commands.Bot):
         command_text = command if command.startswith("/") else f"/{command}"
         if args.strip():
             command_text = f"{command_text} {args.strip()}"
+        if interaction.channel_id is None:
+            return None
         thread_id = make_thread_id(interaction.guild_id, interaction.channel_id)
 
         try:
@@ -629,6 +631,7 @@ class NymeriaDiscordBot(commands.Bot):
 
     async def on_ready(self) -> None:
         """Called when the bot is connected and ready."""
+        assert self.user is not None, "Bot user must be set after login"
         logger.info(f"Discord bot ready as {self.user} (ID: {self.user.id})")
         print(f"\nDiscord bot ready as {self.user}")
         print(f"  Bot ID: {self.user.id}")
@@ -641,6 +644,7 @@ class NymeriaDiscordBot(commands.Bot):
         self._start_health_heartbeat()
 
         # Sync per-guild only (instant updates, no duplicates).
+        assert self.application_id is not None, "application_id must be set after login"
         await self.http.bulk_upsert_global_commands(self.application_id, payload=[])
         logger.info("Global commands cleared from Discord")
         for guild in self.guilds:

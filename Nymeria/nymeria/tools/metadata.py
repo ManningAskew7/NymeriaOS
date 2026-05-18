@@ -1006,6 +1006,7 @@ def _collection_tool_names(collection: Any) -> Set[str]:
 def _tools_package() -> Any:
     import importlib
 
+    assert __package__ is not None  # always set inside a package
     return importlib.import_module(__package__)
 
 

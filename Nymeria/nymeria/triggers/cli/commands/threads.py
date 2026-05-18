@@ -66,7 +66,7 @@ def _get_checkpoint_thread_ids(state: "CLIState") -> List[str]:
         except Exception as e:
             logger.warning(f"Failed to query thread IDs from SQLite: {e}")
 
-    elif settings.database_backend == "postgres":
+    elif settings.database_backend == "postgres" and settings.postgres_uri:
         try:
             import psycopg  # type: ignore[import-untyped]
             with psycopg.connect(settings.postgres_uri) as conn:
@@ -221,9 +221,10 @@ def _handle_delete(state: "CLIState", args: List[str]) -> None:
         tc = state.thread_config_manager.get_config(tid)
         was_callable = tc.callable if tc else False
         state.thread_config_manager.delete_config(tid)
-        state.agent.invalidate_thread_config_cache(tid)
-        if was_callable:
-            state.agent.sync_agent_tools()
+        if state.agent is not None:
+            state.agent.invalidate_thread_config_cache(tid)
+            if was_callable:
+                state.agent.sync_agent_tools()
     except Exception as e:
         logger.warning(f"Failed to delete thread config for {tid}: {e}")
 
@@ -237,6 +238,9 @@ def _handle_info(state: "CLIState", args: List[str]) -> None:
     model = state.get_effective_model()
 
     # Context stats
+    if state.agent is None:
+        state.console.print("[red]Not available in API mode.[/red]")
+        return
     stats = state.agent.get_context_stats(tid)
     usage_pct = stats.get("usage_percentage", 0)
     total = stats.get("total_tokens", 0)

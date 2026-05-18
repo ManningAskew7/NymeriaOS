@@ -334,9 +334,12 @@ def create_mcp_servers_router(
             agent.thread_config_manager.save_config(tc)
             agent.invalidate_thread_config_cache(thread_id)
 
+        saved_server = registry.get_server(request.id)
+        if saved_server is None:
+            raise HTTPException(404, detail=f"MCP server '{request.id}' not found after save")
         result = {
             "status": "ok",
-            "server": registry.get_server(request.id).model_dump(mode="json"),
+            "server": saved_server.model_dump(mode="json"),
             "discovered_tools": len(discovered),
         }
         if discovery_error:
@@ -404,9 +407,12 @@ def create_mcp_servers_router(
         agent = get_agent_fn()
         agent.reload_mcp_server_tools()
 
+        updated_server = registry.get_server(server_id)
+        if updated_server is None:
+            raise HTTPException(404, detail=f"MCP server '{server_id}' not found after update")
         result = {
             "status": "ok",
-            "server": registry.get_server(server_id).model_dump(mode="json"),
+            "server": updated_server.model_dump(mode="json"),
             "discovered_tools": len(discovered),
         }
         if discovery_error:

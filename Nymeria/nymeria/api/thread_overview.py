@@ -1054,9 +1054,8 @@ def _chat_apps_section(
 def _model_dump(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        return dump(mode="json")
+    if hasattr(value, "model_dump"):
+        return dict(value.model_dump(mode="json"))
     if isinstance(value, dict):
         return dict(value)
     return dict(vars(value))

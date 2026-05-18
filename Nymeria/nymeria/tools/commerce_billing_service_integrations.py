@@ -2605,7 +2605,7 @@ def magento_create_customer(
             "firstname": firstname.strip(),
             "lastname": lastname.strip(),
         }
-        body = {"customer": customer}
+        body: dict[str, Any] = {"customer": customer}
         if password:
             body["password"] = password
         base_url, headers_or_error = _magento_config("magento_create_customer", config)

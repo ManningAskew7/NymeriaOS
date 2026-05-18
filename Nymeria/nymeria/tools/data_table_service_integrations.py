@@ -396,7 +396,7 @@ def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     return _base_url(api_base), _bearer_headers(api_token)
 
 
-def _cockpit_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+def _cockpit_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, Any] | str]:
     provider_aliases = ("cockpit_api", "cockpitApi")
     base = _credential_value(
         provider="cockpit",

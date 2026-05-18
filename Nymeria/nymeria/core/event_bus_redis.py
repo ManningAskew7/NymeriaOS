@@ -103,6 +103,8 @@ class RedisEventBus(EventBus):
             return
 
         self._running = True
+        if self._redis_client is None:
+            return
         self._pubsub = self._redis_client.pubsub()
         self._pubsub.subscribe(self.CHANNEL_NAME)
 
@@ -117,6 +119,8 @@ class RedisEventBus(EventBus):
             import time as _time
             while self._running:
                 try:
+                    if self._pubsub is None:
+                        break
                     for message in self._pubsub.listen():
                         if not self._running:
                             return
@@ -205,6 +209,8 @@ class RedisEventBus(EventBus):
                         "[REDIS EVENT BUS] failed to close stale pubsub",
                         exc_info=True,
                     )
+            if self._redis_client is None:
+                return
             self._pubsub = self._redis_client.pubsub()
             self._pubsub.subscribe(self.CHANNEL_NAME)
             logger.info("[REDIS EVENT BUS] pubsub recreated and re-subscribed")
