@@ -55,6 +55,22 @@ metadata:
 Use bash_execute only if needed.
 """
 
+MIXED_KIT_MD = """---
+name: mixed-kit
+description: Requires one existing tool and one newly bound tool.
+metadata:
+  nymeria:
+    required_tools:
+      - bash_execute
+      - memory_clear_all
+    tool_ttl: 30m
+---
+
+# Mixed Kit
+
+Use bash_execute and memory_clear_all.
+"""
+
 SELF_IMPROVE_REQUIRED_TOOLS = [
     "tool_search",
     "tool_enable",
@@ -459,7 +475,33 @@ def test_skill_meta_tool_required_tools_already_bound_returns_body(tmp_path: Pat
     assert isinstance(result, str)
     assert "Bash Kit" in result
     assert "No binding changes" in result
+    assert "Skipped already-enabled required tool(s): bash_execute" in result
     assert agent._pending_tool_reload == {}
+
+
+def test_skill_meta_tool_reports_added_and_skipped_required_tools(tmp_path: Path):
+    skill_dir = _write_skill(tmp_path, "mixed-kit", MIXED_KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill], thread_tool_names=["bash_execute"])
+        result = skill_tool.func(
+            "mixed-kit",
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, Command)
+    messages = result.update["messages"]
+    content = messages[0].content
+    assert "Added/un-disabled required tool(s): memory_clear_all" in content
+    assert "Skipped already-enabled required tool(s): bash_execute" in content
+    assert "Newly loaded: memory_clear_all" in content
+    assert agent._pending_tool_reload["thread-a"]["new_tools"] == ["memory_clear_all"]
 
 
 def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):

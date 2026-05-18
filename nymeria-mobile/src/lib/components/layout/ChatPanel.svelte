@@ -174,12 +174,14 @@
     activeMcpToolCount !== null || activeSkillCount !== null ||
     triggerCount > 0 || hasInstructions || isCallable
   );
+  const chatStreamCommandRoots = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit']);
 
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const trimmed = message.trim();
-    if (trimmed.startsWith('/') && trimmed !== '/compact' && (!attachments || attachments.length === 0)) {
+    const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
+    if (trimmed.startsWith('/') && !chatStreamCommandRoots.has(slashRoot) && (!attachments || attachments.length === 0)) {
       if (!threadsStore.currentThreadId) {
         const thread = threadsStore.createThread();
         threadsStore.selectThread(thread.id);

@@ -69,8 +69,14 @@ metadata:
 - `required_tools` must be exact Nymeria tool names. Categories, globs, and
   Anthropic-style `Bash(...)` patterns are not interpreted.
 - `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default is `2h`.
+- `internal: true` under `metadata.nymeria` keeps a skill available to code
+  paths such as `/goal` while hiding it from user-facing `/skill`, `/kit`,
+  and `/skills list` surfaces.
 - `allowed-tools` remains advisory/portable and never auto-binds tools.
-- Required tools already present in the current graph are treated as a no-op.
+- Required tools already present in the current graph are treated as a no-op
+  and listed in the activation result as skipped already-enabled tools.
+- The activation result lists newly added/un-disabled required tools separately
+  from tools skipped because they were already enabled.
 - Binding is strict. If any required tool is unknown, unloadable, or blocked
   by the admin-only gate, activation fails and no tool config is mutated.
 - Activation may remove required tools from `disabled_tools`, matching
@@ -80,6 +86,46 @@ If a Skill Kit binds a new tool, the current graph invocation ends with
 `Command(goto=END)`, Nymeria rebuilds the graph, emits a `tool_reload` event
 with `source="skill_kit"` and `skill_name`, then resumes the same user turn
 with the new tools callable.
+
+### Slash-command activation
+
+User-facing skill activation uses fixed slash-command roots so skill names
+cannot collide with built-in commands:
+
+- `/skill <name>` activates a markdown-only skill on the current thread and
+  sends its SKILL.md body into the current model turn.
+- `/skill <name> <prompt>` does the same and appends the prompt under the skill
+  body before the turn reaches the model. File and image attachments remain
+  attached to the same turn.
+- `/skill <name> off` deactivates a markdown-only skill on the current thread.
+- `/kit <name>` activates a Skill Kit on the current thread using the kit's
+  `tool_ttl`, binds its required tools, and sends the kit body into the current
+  model turn.
+- `/kit <name> <ttl>` activates it with a one-time TTL override such as `30m`,
+  `1h`, `24h`, or `permanent`.
+- `/kit <name> <ttl> <prompt>` uses the TTL override and appends the prompt
+  under the kit body before the turn reaches the model.
+- `/kit <name> <prompt>` uses the kit's default TTL and treats the tail as the
+  prompt when the first tail token is not a valid TTL.
+- `/kit <name> off` deactivates it on the current thread, removing the skill
+  from `ThreadConfig.enabled_skills` and evicting the kit's temporary tools.
+- `/skills` or `/skills list` lists visible skills and kits with
+  active/inactive status for the current thread.
+- `/skills show <name>` returns the installed skill body without activating it.
+- `/skills off all` deactivates every visible active skill or kit on the
+  current thread.
+
+Skills or kits marked with:
+
+```yaml
+metadata:
+  nymeria:
+    internal: true
+```
+
+are not activatable through `/skill` or `/kit` and do not appear in normal
+`/skills` listings, but remain inspectable through `/skills show <name>` for
+debugging.
 
 ### Bundled self-improve Skill Kit
 

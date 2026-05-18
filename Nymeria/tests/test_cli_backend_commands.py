@@ -53,7 +53,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def command_info(name: str, *, category: str = "Memory") -> dict[str, Any]:
+def command_info(
+    name: str,
+    *,
+    category: str = "Memory",
+    execution_kind: str = "command",
+) -> dict[str, Any]:
     path = name.split()
     return {
         "id": ".".join(path),
@@ -62,7 +67,7 @@ def command_info(name: str, *, category: str = "Memory") -> dict[str, Any]:
         "usage": f"/{name}",
         "description": f"Backend {name}",
         "category": category,
-        "execution_kind": "command",
+        "execution_kind": execution_kind,
         "aliases": [],
     }
 
@@ -139,6 +144,31 @@ def test_backend_provider_adds_new_group_subcommands_to_help_once():
     assert labels.count("/todos list") == 1
     assert "/todos add" in labels
     assert "/help [query]" in labels
+
+
+def test_backend_provider_registers_chat_stream_commands_for_cli_forwarding():
+    registry = CommandRegistry(include_builtins=False)
+    BackendCommandProvider(
+        [
+            command_info(
+                "skill",
+                category="Skills",
+                execution_kind="chat_stream",
+            )
+        ]
+    ).register(registry)
+
+    client = _FakeCommandClient()
+    result = run(
+        registry.dispatch_async(
+            make_context(client, ListCommandOutputSink()),
+            "/skill draft-helper polish this",
+        )
+    )
+
+    assert result.ok is True
+    assert result.payload["chat_stream_command"] == "/skill draft-helper polish this"
+    assert client.calls == []
 
 
 def test_backend_provider_rejects_unmanaged_local_conflict():

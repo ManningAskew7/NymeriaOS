@@ -19,6 +19,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from .time_utils import parse_tool_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
 
 GROUPED = {"config", "env", "tools", "memory", "notepad", "todos"}
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
+SKILL_SHOW_MAX_CHARS = 12_000
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,14 @@ class ParsedCommand:
     rest: str
     definition: CommandDefinition | None
     matched_input_len: int = 0
+
+
+@dataclass(frozen=True)
+class SkillSlashResult:
+    success: bool
+    should_stream: bool
+    message: str
+    skill_name: str | None = None
 
 
 def _path_param(value: Any) -> str:
@@ -1660,6 +1670,58 @@ class CommandService:
             danger_level="normal",
         )
         self.register(
+            "skill",
+            description="Use a markdown-only skill with an optional prompt",
+            category="Skills",
+            usage="/skill <name> [prompt]",
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "kit",
+            description="Use a Skill Kit with optional TTL and prompt",
+            category="Skills",
+            usage="/kit <name> [ttl] [prompt]",
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "skills",
+            description="List skills visible on this thread",
+            category="Skills",
+            usage="/skills",
+            requires_thread=True,
+        )
+        self.register(
+            "skills list",
+            description="List skills visible on this thread",
+            category="Skills",
+            usage="/skills list",
+            aliases=("skills_list",),
+            requires_thread=True,
+        )
+        self.register(
+            "skills show",
+            description="Show a skill's markdown body without activating it",
+            category="Skills",
+            usage="/skills show <name>",
+            aliases=("skills_show",),
+        )
+        self.register(
+            "skills off all",
+            description="Deactivate every visible skill active on this thread",
+            category="Skills",
+            usage="/skills off all",
+            aliases=("skills_off_all",),
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
             "memory list",
             description="List saved memories",
             category="Memory",
@@ -1790,6 +1852,128 @@ class CommandService:
             mutates_state=True,
             danger_level="dangerous",
         )
+        self.register(
+            "orchestrate",
+            description=(
+                "Decompose a goal into tasks and delegate execution to forked "
+                "worker threads. Activates the 'orchestrate' skill kit on this thread."
+            ),
+            category="Orchestration",
+            usage="/orchestrate <objective>",
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "orchestrate clear",
+            description="Exit orchestrate mode and evict its tools from this thread.",
+            category="Orchestration",
+            aliases=("orchestrate_clear",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "orchestrate status",
+            description="Show orchestrate mode status and active worker threads.",
+            category="Orchestration",
+            aliases=("orchestrate_status",),
+            requires_thread=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal",
+            description=(
+                "Start a supervised goal. The worker (this thread) decomposes "
+                "the objective into tasks; a separate supervisor thread holds "
+                "the authority to mark tasks complete after the user approves."
+            ),
+            category="Goals",
+            usage="/goal <objective>",
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal approve",
+            description=(
+                "Approve the proposed task list and spawn the supervisor thread."
+            ),
+            category="Goals",
+            aliases=("goal_approve",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal cancel",
+            description="Abort a goal that is still pending approval.",
+            category="Goals",
+            aliases=("goal_cancel",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal clear",
+            description=(
+                "Abort an active goal, deactivate the worker kit, and delete "
+                "the supervisor thread."
+            ),
+            category="Goals",
+            aliases=("goal_clear",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal pause",
+            description="Pause an active goal; the loop stops until resumed.",
+            category="Goals",
+            aliases=("goal_pause",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal resume",
+            description="Resume a paused goal and continue from where it stopped.",
+            category="Goals",
+            aliases=("goal_resume",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal status",
+            description=(
+                "Show the active goal's status, task list, and circuit-breaker counters."
+            ),
+            category="Goals",
+            aliases=("goal_status",),
+            requires_thread=True,
+            execution_kind="chat_stream",
+            note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "goal edit",
+            description="(reserved) Replace the proposed task list.",
+            category="Goals",
+            aliases=("goal_edit",),
+            requires_thread=True,
+            mutates_state=True,
+            execution_kind="chat_stream",
+            note="Reserved; not yet implemented.",
+        )
 
     def validate_registry(self) -> None:
         seen_ids: set[str] = set()
@@ -1825,6 +2009,43 @@ class CommandService:
                     )
                 seen_aliases[alias_path] = command_id
 
+    def _resolve_agent(self, agent: Any | None = None) -> Any | None:
+        if agent is not None:
+            return agent
+        try:
+            from .agent import get_current_agent
+
+            return get_current_agent()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _skill_manager(self, agent: Any | None = None) -> Any | None:
+        resolved = self._resolve_agent(agent)
+        if resolved is None:
+            return None
+        return getattr(resolved, "skill_manager", None)
+
+    def _visible_slash_skills(
+        self,
+        user_id: str | None,
+        *,
+        agent: Any | None = None,
+        include_internal: bool = False,
+    ) -> list[Any]:
+        skill_manager = self._skill_manager(agent)
+        if skill_manager is None:
+            return []
+        try:
+            skills = skill_manager.list_installed(user_id=user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("failed to list installed skills for slash commands: %s", e)
+            return []
+        return [
+            skill
+            for skill in skills
+            if include_internal or not getattr(skill, "is_internal", False)
+        ]
+
     def list_commands(
         self,
         source: str | None = "user",
@@ -1833,12 +2054,15 @@ class CommandService:
         surface: str | None = None,
         is_admin: bool | None = None,
         include_hidden: bool = False,
+        user_id: str | None = None,
+        agent: Any | None = None,
     ) -> list[CommandInfo]:
         effective_actor = (actor or _actor_from_source(source)).lower()
         effective_surface = surface or _surface_from_source(source)
+        definitions = list(self._commands.values())
         return [
             self._to_info(cmd)
-            for cmd in sorted(self._commands.values(), key=lambda c: (c.category, c.name))
+            for cmd in sorted(definitions, key=lambda c: (c.category, c.name))
             if self._is_visible(
                 cmd,
                 actor=effective_actor,
@@ -1907,12 +2131,16 @@ class CommandService:
         actor: str | None = None,
         surface: str | None = None,
         is_admin: bool | None = None,
+        user_id: str | None = None,
+        agent: Any | None = None,
     ) -> str:
         commands = self.list_commands(
             source,
             actor=actor,
             surface=surface,
             is_admin=is_admin,
+            user_id=user_id,
+            agent=agent,
         )
         lines = ["## Nymeria Slash Commands", ""]
         categories = sorted({cmd.category for cmd in commands})
@@ -2080,6 +2308,8 @@ class CommandService:
                     actor=actor,
                     surface=ctx.effective_surface,
                     is_admin=ctx.is_admin,
+                    user_id=ctx.user_id,
+                    agent=getattr(api, "agent", None),
                 ),
                 command_label,
                 level="info",
@@ -2112,9 +2342,10 @@ class CommandService:
         try:
             raw_output = await method(parsed.args, parsed.rest)
             success, markdown = _format_legacy_output(raw_output)
+            limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
             return CommandResult(
                 success,
-                _truncate(markdown),
+                _truncate(markdown, limit=limit),
                 command_label,
                 level="success" if success else "error",
             )
@@ -2137,6 +2368,299 @@ def get_command_service() -> CommandService:
         _COMMAND_SERVICE = CommandService()
     return _COMMAND_SERVICE
 
+
+# ─── Skill kit activation/deactivation from slash commands ─────────────────
+#
+# Skill kits are skills with `required_tools` in their frontmatter; activating
+# one binds those tools into `ThreadConfig.temporary_tools` with the kit's
+# `tool_ttl`. The standard path is the agent invoking the `Skill` meta-tool,
+# but slash commands (e.g. `/orchestrate`, `/goal`) also need to activate kits.
+# These helpers are shared by every slash command that wants kit semantics —
+# they mirror what `skills/meta_tool.py` does for the agent-driven path.
+
+
+def activate_skill_kit(
+    *,
+    agent: Any,
+    thread_id: str,
+    user_id: str,
+    skill_name: str,
+    reason: str = "slash command activation",
+    ttl_override: str | None = None,
+) -> tuple[bool, str]:
+    """Activate a skill or Skill Kit on a thread from a slash command.
+
+    Adds the skill to ``ThreadConfig.enabled_skills``. If the skill declares
+    ``required_tools``, those tools are also bound into
+    ``ThreadConfig.temporary_tools`` with the kit's ``tool_ttl`` or a one-shot
+    override. ``bind_tools_for_thread`` queues the graph rebuild on success,
+    so the next agent turn picks up the new tools automatically.
+
+    Returns ``(ok, message)``.
+    """
+    if not thread_id:
+        return False, "[Error]: No active thread; cannot activate skill."
+
+    skill_manager = getattr(agent, "skill_manager", None)
+    if skill_manager is None:
+        return False, "[Error]: Skill manager unavailable; cannot activate skill."
+
+    try:
+        skill = skill_manager.get(skill_name, user_id=user_id)
+    except Exception as e:
+        return False, f"[Error]: Skill manager lookup failed: {e}"
+
+    if skill is None:
+        return False, f"[Error]: Skill '{skill_name}' not found."
+
+    try:
+        from ..tools.skill_config import _activate_skill_on_thread
+
+        _activate_skill_on_thread(agent, thread_id, skill_name)
+    except Exception as e:
+        return False, f"[Error]: Failed to add skill to thread: {e}"
+
+    if not skill.is_skill_kit:
+        return True, f"[Success]: Skill '{skill_name}' activated."
+
+    try:
+        from ..tools.tool_search import bind_tools_for_thread
+    except Exception as e:
+        return False, f"[Error]: tool_search unavailable: {e}"
+
+    binding = bind_tools_for_thread(
+        list(skill.required_tools),
+        "",  # category not used; we pass explicit tool names
+        thread_id,
+        user_id,
+        ttl=ttl_override or skill.tool_ttl,
+        strict=True,
+        source="slash_command",
+        skill_name=skill_name,
+        reason=reason,
+    )
+    if not binding.ok:
+        return False, (
+            f"[Error]: Skill '{skill_name}' was added to enabled_skills, "
+            f"but tool binding failed:\n{binding.text}"
+        )
+
+    return True, (
+        f"[Success]: Skill kit '{skill_name}' activated.\n{binding.text}"
+    )
+
+
+def deactivate_skill_kit(
+    *,
+    agent: Any,
+    thread_id: str,
+    user_id: str | None = None,
+    skill_name: str,
+) -> tuple[bool, str]:
+    """Deactivate a skill or Skill Kit on a thread.
+
+    Removes the skill from ``ThreadConfig.enabled_skills``. For Skill Kits,
+    evicts required tools from ``ThreadConfig.temporary_tools``. The graph
+    rebuilds on the next turn naturally as the tool set has changed.
+
+    Returns ``(ok, message)``.
+    """
+    if not thread_id:
+        return False, "[Error]: No active thread; cannot deactivate skill."
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        return False, f"[Error]: No thread config for {thread_id}."
+
+    changed = False
+    if skill_name in tc.enabled_skills:
+        tc.enabled_skills = [n for n in tc.enabled_skills if n != skill_name]
+        changed = True
+
+    evicted: list[str] = []
+    skill = None
+    skill_manager = getattr(agent, "skill_manager", None)
+    if skill_manager is not None:
+        try:
+            skill = skill_manager.get(skill_name, user_id=user_id)
+        except Exception:
+            skill = None
+
+    if skill is not None and skill.is_skill_kit:
+        for tool_name in skill.required_tools:
+            if tool_name in tc.temporary_tools:
+                del tc.temporary_tools[tool_name]
+                evicted.append(tool_name)
+                changed = True
+
+    if changed:
+        if not agent.thread_config_manager.save_config(tc):
+            return False, "[Error]: Failed to save thread config after deactivate."
+        if hasattr(agent, "invalidate_thread_config_cache"):
+            try:
+                agent.invalidate_thread_config_cache(thread_id)
+            except Exception:
+                logger.debug(
+                    "invalidate_thread_config_cache failed after deactivate",
+                    exc_info=True,
+                )
+
+    label = "Skill kit" if skill is not None and skill.is_skill_kit else "Skill"
+    msg_parts = [f"[Success]: {label} '{skill_name}' deactivated."]
+    if evicted:
+        msg_parts.append(f"Evicted tools: {', '.join(evicted)}.")
+    elif not changed:
+        msg_parts = [f"[Info]: {label} '{skill_name}' was not active."]
+    return True, " ".join(msg_parts)
+
+
+def build_skill_slash_prompt(
+    *,
+    skill: Any,
+    user_prompt: str,
+    has_attachments: bool = False,
+) -> str:
+    """Build the model-facing prompt for `/skill` and `/kit` chat routing."""
+    prompt = user_prompt.strip()
+    if not prompt and has_attachments:
+        prompt = "Use the attached files/images as the user request."
+    elif not prompt:
+        prompt = "Use this skill for the current turn."
+
+    attachment_note = (
+        "\n\nThe user attached files/images to this request. Treat them as part "
+        "of the prompt and inspect them as needed."
+        if has_attachments
+        else ""
+    )
+    body = str(getattr(skill, "body", "") or "").strip() or "(No skill body.)"
+    return (
+        f"[Skill slash command: {skill.name}]\n\n"
+        "Apply this SKILL.md body for the current turn:\n\n"
+        f"{body}\n\n"
+        "---\n\n"
+        "User request:\n"
+        f"{prompt}{attachment_note}"
+    )
+
+
+def prepare_skill_slash_command(
+    *,
+    agent: Any,
+    thread_id: str,
+    user_id: str,
+    mode: Literal["skill", "kit"],
+    rest: str,
+    has_attachments: bool = False,
+) -> SkillSlashResult:
+    """Prepare `/skill` or `/kit` chat-stream handling.
+
+    Returns ``should_stream=True`` when the caller should pass ``message`` into
+    the normal agent stream. Returns ``should_stream=False`` for usage errors
+    and deactivation responses that should be emitted directly.
+    """
+    args = _split_args(rest)
+    if not args:
+        usage = (
+            "/skill <name> [prompt]"
+            if mode == "skill"
+            else "/kit <name> [ttl] [prompt]"
+        )
+        return SkillSlashResult(
+            False,
+            False,
+            f"[Error]: Usage: `{usage}`.",
+        )
+
+    skill_name = args[0].strip().lower()
+    tail = _split_rest_after_tokens(rest, 1)
+    tail_args = _split_args(tail)
+
+    skill_manager = getattr(agent, "skill_manager", None)
+    if skill_manager is None:
+        return SkillSlashResult(
+            False,
+            False,
+            "[Error]: Skill manager unavailable.",
+            skill_name,
+        )
+    try:
+        skill = skill_manager.get(skill_name, user_id=user_id)
+    except Exception as e:  # noqa: BLE001
+        return SkillSlashResult(
+            False,
+            False,
+            f"[Error]: Skill manager lookup failed: {e}",
+            skill_name,
+        )
+    if skill is None or getattr(skill, "is_internal", False):
+        noun = "Skill Kit" if mode == "kit" else "Skill"
+        return SkillSlashResult(
+            False,
+            False,
+            f"[Error]: {noun} '{skill_name}' not found.",
+            skill_name,
+        )
+
+    is_kit = bool(getattr(skill, "is_skill_kit", False))
+    if mode == "skill" and is_kit:
+        return SkillSlashResult(
+            False,
+            False,
+            f"[Error]: '{skill_name}' is a Skill Kit. Use `/kit {skill_name}`.",
+            skill_name,
+        )
+    if mode == "kit" and not is_kit:
+        return SkillSlashResult(
+            False,
+            False,
+            f"[Error]: '{skill_name}' is a markdown-only skill. Use `/skill {skill_name}`.",
+            skill_name,
+        )
+
+    if len(tail_args) == 1 and tail_args[0].lower() == "off":
+        ok, msg = deactivate_skill_kit(
+            agent=agent,
+            thread_id=thread_id,
+            user_id=user_id,
+            skill_name=skill_name,
+        )
+        return SkillSlashResult(ok, False, msg, skill_name)
+
+    ttl_override: str | None = None
+    prompt = tail
+    if mode == "kit" and tail_args:
+        try:
+            ttl_key, _ = parse_tool_ttl(tail_args[0])
+            ttl_override = ttl_key
+            prompt = _split_rest_after_tokens(tail, 1)
+        except ValueError:
+            ttl_override = None
+            prompt = tail
+
+    ok, msg = activate_skill_kit(
+        agent=agent,
+        thread_id=thread_id,
+        user_id=user_id,
+        skill_name=skill_name,
+        reason=f"/{mode} {skill_name}",
+        ttl_override=ttl_override,
+    )
+    if not ok:
+        return SkillSlashResult(False, False, msg, skill_name)
+
+    return SkillSlashResult(
+        True,
+        True,
+        build_skill_slash_prompt(
+            skill=skill,
+            user_prompt=prompt,
+            has_attachments=has_attachments,
+        ),
+        skill_name,
+    )
+
+
 class _CommandExecutor:
     """Per-request command executor with the migrated command bodies."""
 
@@ -2150,10 +2674,111 @@ class _CommandExecutor:
             return None
         return "[Error]: This command requires an active thread. Send a message first."
 
+    def _agent(self) -> Any | None:
+        agent = getattr(self.api, "agent", None)
+        if agent is not None:
+            return agent
+        return get_command_service()._resolve_agent()
+
     # ── Help ──────────────────────────────────────────────────────────────
 
     async def _cmd_help(self, args: list[str], rest: str) -> str:
-        return get_command_service()._help_markdown("user")
+        return get_command_service()._help_markdown(
+            "user",
+            user_id=self.user_id,
+            agent=self._agent(),
+        )
+
+    # ── Skills ────────────────────────────────────────────────────────────
+
+    async def _cmd_skills(self, args: list[str], rest: str) -> str:
+        if not args or args == ["list"]:
+            return await self._cmd_skills_list([], "")
+        if args[0] == "show":
+            return await self._cmd_skills_show(args[1:], rest)
+        if args == ["off", "all"]:
+            return await self._cmd_skills_off_all([], "")
+        return (
+            "[Error]: Usage: `/skills`, `/skills list`, "
+            "`/skills show <name>`, or `/skills off all`."
+        )
+
+    async def _cmd_skills_list(self, args: list[str], rest: str) -> str:
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+
+        agent = self._agent()
+        if agent is None:
+            return "[Error]: No current NymeriaAgent is available for skill commands."
+
+        service = get_command_service()
+        skills = service._visible_slash_skills(self.user_id, agent=agent)
+        if not skills:
+            return "[Info]: No user-activatable skills are installed."
+
+        tc = agent.thread_config_manager.get_config(self.thread_id)
+        active = set(tc.enabled_skills or []) if tc is not None else set()
+
+        lines = ["Skills on this thread:", ""]
+        for skill in skills:
+            status = "active" if skill.name in active else "inactive"
+            kind = "kit" if skill.is_skill_kit else "skill"
+            ttl = f"; ttl: `{skill.tool_ttl}`" if skill.is_skill_kit else ""
+            lines.append(f"- `{skill.name}` - {kind}, {status}{ttl}; {skill.description}")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_skills_show(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: `/skills show <name>`."
+
+        agent = self._agent()
+        service = get_command_service()
+        skill_manager = service._skill_manager(agent)
+        if skill_manager is None:
+            return "[Error]: Skill manager unavailable."
+
+        skill_name = args[0].strip().lower()
+        try:
+            skill = skill_manager.get(skill_name, user_id=self.user_id)
+        except Exception as e:  # noqa: BLE001
+            return f"[Error]: Skill manager lookup failed: {e}"
+        if skill is None:
+            return f"[Error]: Skill '{skill_name}' not found."
+
+        return skill.body.strip() or f"# {skill.name}\n\n(No body.)"
+
+    async def _cmd_skills_off_all(self, args: list[str], rest: str) -> str:
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+
+        agent = self._agent()
+        if agent is None:
+            return "[Error]: No current NymeriaAgent is available for skill commands."
+
+        service = get_command_service()
+        skills = service._visible_slash_skills(self.user_id, agent=agent)
+        tc = agent.thread_config_manager.get_config(self.thread_id)
+        active = set(tc.enabled_skills or []) if tc is not None else set()
+        active_skills = [skill for skill in skills if skill.name in active]
+        if not active_skills:
+            return "[Info]: No visible skills are active on this thread."
+
+        lines: list[str] = []
+        had_error = False
+        for skill in active_skills:
+            ok, msg = deactivate_skill_kit(
+                agent=agent,
+                thread_id=self.thread_id,
+                user_id=self.user_id,
+                skill_name=skill.name,
+            )
+            had_error = had_error or not ok
+            lines.append(f"- `{skill.name}`: {msg}")
+
+        prefix = "[Error]:" if had_error else "[Success]:"
+        return prefix + " Deactivated skills:\n" + "\n".join(lines)
 
     # ── Status / inspection ───────────────────────────────────────────────
 

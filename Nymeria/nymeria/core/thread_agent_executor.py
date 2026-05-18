@@ -105,6 +105,25 @@ def _run_callable_stream(
             f"task_id={task_id}, user={caller_user_id}, task={task[:80]}..."
         )
 
+        # Refresh the temporary-lifetime idle clock for the thread being invoked.
+        # The owner may differ from the caller (cross-user callables), so we
+        # resolve the owner from the accounts repo before updating metadata.
+        try:
+            from ..tools.spawn_thread import refresh_thread_activity
+
+            owner_id = None
+            get_owner = getattr(agent.accounts_repo, "get_thread_owner", None)
+            if callable(get_owner):
+                owner_id = get_owner(thread_id)
+            refresh_thread_activity(
+                agent, owner_id or caller_user_id, thread_id
+            )
+        except Exception:
+            logger.debug(
+                "Activity refresh failed for callable target",
+                exc_info=True,
+            )
+
         started_published = False
 
         def handle_chunk(chunk: Dict[str, Any], collection) -> None:

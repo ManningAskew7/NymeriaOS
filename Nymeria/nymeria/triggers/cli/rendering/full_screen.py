@@ -454,7 +454,8 @@ class FullScreenPromptToolkitShell:
     def _handle_composer_submission(self, submission: ComposerSubmission) -> bool:
         message = submission.message.strip()
         if message.startswith("/") and self.command_registry is not None:
-            return self._handle_command_submission(message)
+            if not _is_chat_stream_command(self.command_registry, message):
+                return self._handle_command_submission(message)
 
         try:
             loop = asyncio.get_running_loop()
@@ -509,6 +510,10 @@ class FullScreenPromptToolkitShell:
             prompt, model = fast_prompt
             self._set_status_notice(f"Fast turn ({model})")
             await self.run_fast_chat_turn(prompt, model)
+            return result
+        chat_stream_command = _chat_stream_command_from_result(result)
+        if chat_stream_command:
+            await self.run_chat_turn(chat_stream_command)
         return result
 
     async def _dispatch_command_action(self, action: Any) -> None:
@@ -991,6 +996,22 @@ def _queued_notice(count: int) -> str:
     if count == 1:
         return "Queued message (1)"
     return f"Queued messages ({count})"
+
+
+def _chat_stream_command_from_result(result: Any) -> str:
+    payload = getattr(result, "payload", {}) or {}
+    command = payload.get("chat_stream_command")
+    return str(command or "").strip()
+
+
+def _is_chat_stream_command(registry: Any, raw_input: str) -> bool:
+    try:
+        match = registry.resolve(raw_input)
+    except Exception:  # noqa: BLE001 - fall back to normal command handling.
+        return False
+    command = getattr(match, "command", None)
+    metadata = getattr(command, "metadata", {}) or {}
+    return str(metadata.get("execution_kind") or "") == "chat_stream"
 
 
 def _first_status_line(text: str) -> str:

@@ -1216,6 +1216,15 @@ class _RichReplPromptToolkitShell:
         if not message:
             return
         if message.startswith("/"):
+            if _is_chat_stream_command(self.cli_app.registry, message):
+                attachments = tuple(getattr(submission, "attachments", ()) or ())
+                await self.cli_app._send_message_async(
+                    message,
+                    self.renderer,
+                    attachments=attachments,
+                    runtime=self.runtime,
+                )
+                return
             await self.cli_app._dispatch_command_async(
                 message,
                 self.capabilities,
@@ -2073,6 +2082,11 @@ class CLIApp:
             )
             return
 
+        chat_stream_command = _chat_stream_command_from_result(result)
+        if chat_stream_command:
+            self._send_message(chat_stream_command, renderer)
+            return
+
         retry_message = result.payload.get("retry_message")
         if retry_message and isinstance(retry_message, str):
             self._send_message(retry_message, renderer)
@@ -2154,6 +2168,18 @@ class CLIApp:
                     capabilities=capabilities,
                     runtime=None,
                 )
+            return
+
+        chat_stream_command = _chat_stream_command_from_result(result)
+        if chat_stream_command:
+            if runtime is not None:
+                await self._send_message_async(
+                    chat_stream_command,
+                    renderer,
+                    runtime=runtime,
+                )
+            else:
+                self._send_message(chat_stream_command, renderer)
             return
 
         retry_message = result.payload.get("retry_message")
@@ -2990,6 +3016,22 @@ def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:
     from .commands.fast import fast_prompt_payload
 
     return fast_prompt_payload(result)
+
+
+def _chat_stream_command_from_result(result: Any) -> str:
+    payload = getattr(result, "payload", {}) or {}
+    command = payload.get("chat_stream_command")
+    return str(command or "").strip()
+
+
+def _is_chat_stream_command(registry: Any, raw_input: str) -> bool:
+    try:
+        match = registry.resolve(raw_input)
+    except Exception:  # noqa: BLE001 - fall back to normal command handling.
+        return False
+    command = getattr(match, "command", None)
+    metadata = getattr(command, "metadata", {}) or {}
+    return str(metadata.get("execution_kind") or "") == "chat_stream"
 
 
 def _set_renderer_active_model(renderer: Any, model: str) -> None:

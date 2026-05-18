@@ -45,6 +45,66 @@ def _attachment_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
     ]
 
 
+def _spawn_goal_supervisor(
+    agent: Any, user_id: str, worker_thread_id: str, goal: Any
+) -> tuple[str | None, str | None]:
+    """Spawn a fresh callable thread to serve as the supervisor for ``goal``.
+
+    Returns ``(supervisor_thread_id, None)`` on success or
+    ``(None, error_message)`` on failure.
+    """
+    import re
+
+    from ...tools.spawn_thread import spawn_thread as _spawn_tool  # noqa: WPS433
+
+    instructions = (
+        f"You are the supervisor for goal {goal.goal_id} (objective: "
+        f'"{goal.objective[:120]}"). You receive review requests from the '
+        "worker thread; verify each one independently against the task's "
+        "criterion, then call `mark_task_done(task_id)` to approve or "
+        "`provide_review_feedback(task_id, feedback)` to send refinement "
+        'guidance. Load `Skill(name="goal-supervisor")` for the full playbook.'
+    )
+    title = f"Supervisor: {goal.objective[:60]}"
+
+    config = {
+        "configurable": {
+            "thread_id": worker_thread_id,
+            "user_id": user_id,
+        }
+    }
+
+    try:
+        result = _spawn_tool.invoke(
+            {
+                "title": title,
+                "instructions": instructions,
+                "mode": "fresh",
+                "lifetime": "temporary",
+                "idle_timeout_hours": 48,
+                "make_callable": True,
+                "optional_tools": ["web_search", "http_request", "tool_search"],
+            },
+            config=config,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "Failed to spawn supervisor for goal %s", goal.goal_id
+        )
+        return None, f"spawn_thread raised: {e}"
+
+    if isinstance(result, str) and result.startswith("[Error]"):
+        return None, result
+
+    match = re.search(r"thread_id=(spawned-[A-Za-z0-9-]+)", str(result))
+    if not match:
+        return None, (
+            f"Could not parse supervisor thread_id from spawn result: "
+            f"{str(result)[:200]}"
+        )
+    return match.group(1), None
+
+
 def _legacy_image_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
     if not request.images:
         return None
@@ -305,6 +365,449 @@ def create_chat_router(
                 },
             )
 
+        # Default the user-visible chat-history text to the message the user
+        # actually typed. The /orchestrate and /goal intercepts below may
+        # rewrite `message` (for the agent's first turn) while keeping
+        # `display_message` pointing at the user's original input.
+        display_message = message
+
+        sse_headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+
+        def _slash_sse_response(content: str, target_thread_id: str):
+            """Return a StreamingResponse that emits a single response chunk
+            and a done event. Used by /orchestrate and /goal subcommand
+            handlers that report state without triggering an agent turn."""
+
+            async def _gen():
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "response",
+                            "content": content,
+                            "thread_id": target_thread_id,
+                        }
+                    )
+                    + "\n\n"
+                )
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"type": "done", "thread_id": target_thread_id}
+                    )
+                    + "\n\n"
+                )
+
+            return StreamingResponse(
+                _gen(),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+
+        # Handle /skill and /kit slash commands (chat_stream execution).
+        # /skill <name> [prompt] activates a markdown-only skill, prepends
+        # its body to the prompt, then continues through the normal agent
+        # stream. /kit <name> [ttl] [prompt] does the same for Skill Kits
+        # after binding required tools.
+        skill_tokens = msg_stripped.split(maxsplit=1)
+        if skill_tokens and skill_tokens[0] in {"/skill", "/kit"}:
+            from ...core.command_service import prepare_skill_slash_command
+
+            raw_parts = message.strip().split(maxsplit=1)
+            rest = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            prepared = prepare_skill_slash_command(
+                agent=agent,
+                thread_id=thread_id,
+                user_id=user_id,
+                mode="kit" if skill_tokens[0] == "/kit" else "skill",
+                rest=rest,
+                has_attachments=bool(request.attachments or request.images),
+            )
+            if not prepared.success or not prepared.should_stream:
+                return _slash_sse_response(prepared.message, thread_id)
+            message = prepared.message
+            msg_stripped = message.strip().lower()
+
+        # Handle /orchestrate slash command (chat_stream execution).
+        # /orchestrate <objective>  → activate the orchestrate skill kit,
+        #     then fall through to the regular agent.astream flow with a
+        #     rewritten kickoff message so the agent starts orchestrating.
+        # /orchestrate clear        → deactivate the kit and report.
+        # /orchestrate status       → report current state without activating.
+        orch_tokens = msg_stripped.split(maxsplit=1)
+        if orch_tokens and orch_tokens[0] == "/orchestrate":
+            from ...core.command_service import (
+                activate_skill_kit,
+                deactivate_skill_kit,
+            )
+
+            raw_parts = message.strip().split(maxsplit=1)
+            rest = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            rest_lower = rest.lower()
+
+            if not rest:
+                return _slash_sse_response(
+                    "[Error]: Usage: `/orchestrate <objective>` to start, "
+                    "`/orchestrate status` to inspect, "
+                    "`/orchestrate clear` to exit.",
+                    thread_id,
+                )
+
+            if rest_lower == "clear":
+                _, msg_text = deactivate_skill_kit(
+                    agent=agent,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    skill_name="orchestrate",
+                )
+                return _slash_sse_response(msg_text, thread_id)
+
+            if rest_lower == "status":
+                tc = agent.thread_config_manager.get_config(thread_id)
+                is_active = bool(
+                    tc and "orchestrate" in (tc.enabled_skills or [])
+                )
+                msg_text = (
+                    "[Info]: Orchestrate mode is ACTIVE on this thread. "
+                    "Use `/orchestrate clear` to exit."
+                    if is_active
+                    else "[Info]: Orchestrate mode is not active. "
+                    "Use `/orchestrate <objective>` to start."
+                )
+                return _slash_sse_response(msg_text, thread_id)
+
+            # Main form: /orchestrate <objective>. Activate the kit, then
+            # rewrite `message` so the regular agent.astream flow below kicks
+            # off the agent's first orchestrator turn. The user-typed text is
+            # preserved on `display_message` so chat history still shows the
+            # original `/orchestrate <objective>` line.
+            ok, activation_msg = activate_skill_kit(
+                agent=agent,
+                thread_id=thread_id,
+                user_id=user_id,
+                skill_name="orchestrate",
+                reason="/orchestrate kickoff",
+            )
+            if not ok:
+                return _slash_sse_response(activation_msg, thread_id)
+
+            message = (
+                f"[Orchestrator mode activated.] Goal to orchestrate: {rest}\n\n"
+                "Load the orchestrate skill kit (call "
+                '`Skill(name="orchestrate")`) to read the playbook, decompose '
+                "the goal into tasks via `nym_todo`, present the task list to "
+                "the user for approval, then begin delegating to forked workers."
+            )
+            msg_stripped = message.strip().lower()
+
+        # Handle /goal slash command (chat_stream execution).
+        # The /goal lifecycle is more involved than /orchestrate because it
+        # has a two-phase activation (pending_approval → active) with a
+        # supervisor-thread spawn at the approval step, plus pause/resume/clear
+        # state transitions.
+        goal_tokens = msg_stripped.split(maxsplit=1)
+        if goal_tokens and goal_tokens[0] == "/goal":
+            from ...core.command_service import (
+                activate_skill_kit,
+                deactivate_skill_kit,
+            )
+            from ...core.goal_manager import (
+                GoalNotFoundError,
+                GoalStateError,
+                get_goal_manager,
+            )
+
+            raw_parts = message.strip().split(maxsplit=1)
+            rest = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+
+            if not rest:
+                return _slash_sse_response(
+                    "[Error]: Usage: `/goal <objective>` to start, "
+                    "`/goal approve` to start work, `/goal status` to inspect, "
+                    "`/goal pause`/`/goal resume`/`/goal clear` to control, "
+                    "`/goal cancel` aborts before approval.",
+                    thread_id,
+                )
+
+            gm = get_goal_manager()
+            if gm is None:
+                return _slash_sse_response(
+                    "[Error]: Goal manager not available on this server.",
+                    thread_id,
+                )
+
+            sub_token, _, sub_rest = rest.partition(" ")
+            sub_lower = sub_token.lower()
+
+            # ── /goal status ─────────────────────────────────────────────
+            if sub_lower == "status":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Info]: No active goal on this thread. "
+                        "Use `/goal <objective>` to start one.",
+                        thread_id,
+                    )
+                lines = [
+                    f"Goal {goal.goal_id} — status: **{goal.status}**",
+                    f"Objective: {goal.objective}",
+                    "",
+                    f"Turns used: {goal.turns_used}/{goal.max_turns}",
+                    f"Consecutive rejections: {goal.consecutive_rejections}",
+                ]
+                if goal.helper_thread_id:
+                    lines.append(f"Supervisor: {goal.helper_thread_id}")
+                if goal.last_pause_reason:
+                    lines.append(f"Last pause reason: {goal.last_pause_reason}")
+                lines.append("")
+                lines.append("Tasks:")
+                if not goal.tasks:
+                    lines.append("  (none yet — worker proposes tasks before approval)")
+                else:
+                    for i, t in enumerate(goal.tasks, 1):
+                        marker = {
+                            "pending": "[ ]",
+                            "in_progress": "[~]",
+                            "awaiting_review": "[?]",
+                            "done": "[x]",
+                        }.get(t.status, "[ ]")
+                        crit_str = (
+                            f" — criterion: {t.criterion}"
+                            if t.criterion
+                            else ""
+                        )
+                        lines.append(
+                            f"  {marker} {i}. {t.description}{crit_str}"
+                        )
+                return _slash_sse_response(
+                    "[Info]: " + "\n".join(lines), thread_id
+                )
+
+            # ── /goal approve ───────────────────────────────────────────
+            if sub_lower == "approve":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Error]: No active goal to approve.", thread_id
+                    )
+                if goal.status != "pending_approval":
+                    return _slash_sse_response(
+                        f"[Error]: Goal {goal.goal_id} is "
+                        f"`{goal.status}`, not awaiting approval.",
+                        thread_id,
+                    )
+                if not goal.tasks:
+                    return _slash_sse_response(
+                        "[Error]: Goal has no tasks yet. Wait for the worker "
+                        "to propose tasks via `propose_task` before approving.",
+                        thread_id,
+                    )
+
+                supervisor_id, err = _spawn_goal_supervisor(
+                    agent, user_id, thread_id, goal
+                )
+                if supervisor_id is None:
+                    return _slash_sse_response(
+                        f"[Error]: Could not spawn supervisor: {err}",
+                        thread_id,
+                    )
+
+                ok_kit, kit_msg = activate_skill_kit(
+                    agent=agent,
+                    thread_id=supervisor_id,
+                    user_id=user_id,
+                    skill_name="goal-supervisor",
+                    reason=f"/goal approve {goal.goal_id}",
+                )
+                if not ok_kit:
+                    return _slash_sse_response(
+                        f"[Error]: Supervisor spawned ({supervisor_id}) but "
+                        f"kit activation failed: {kit_msg}",
+                        thread_id,
+                    )
+
+                try:
+                    gm.approve_goal(user_id, goal.goal_id, supervisor_id)
+                except (GoalStateError, GoalNotFoundError) as e:
+                    return _slash_sse_response(
+                        f"[Error]: {e}", thread_id
+                    )
+
+                message = (
+                    f"[Goal {goal.goal_id} approved.] Supervisor thread "
+                    f"`{supervisor_id}` is ready to receive review requests. "
+                    "Start executing the first pending task. When you "
+                    "believe it meets its criterion, call "
+                    "`request_review(task_id, summary, evidence)` to "
+                    "escalate. The supervisor returns either an approval "
+                    "(task done, move on) or refinement feedback (retry)."
+                )
+                msg_stripped = message.strip().lower()
+
+            # ── /goal cancel ────────────────────────────────────────────
+            elif sub_lower == "cancel":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Info]: No active goal to cancel.", thread_id
+                    )
+                if goal.status != "pending_approval":
+                    return _slash_sse_response(
+                        f"[Error]: Goal {goal.goal_id} is already "
+                        f"`{goal.status}`. Use `/goal clear` to abort an "
+                        "approved goal instead.",
+                        thread_id,
+                    )
+                gm.clear_goal(user_id, goal.goal_id)
+                deactivate_skill_kit(
+                    agent=agent,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    skill_name="goal-worker",
+                )
+                return _slash_sse_response(
+                    f"[Success]: Pending goal {goal.goal_id} cancelled. "
+                    "Worker kit deactivated.",
+                    thread_id,
+                )
+
+            # ── /goal clear ─────────────────────────────────────────────
+            elif sub_lower == "clear":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Info]: No active goal on this thread.", thread_id
+                    )
+                gm.clear_goal(user_id, goal.goal_id)
+                deactivate_skill_kit(
+                    agent=agent,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    skill_name="goal-worker",
+                )
+                supervisor_id = goal.helper_thread_id
+                if supervisor_id:
+                    try:
+                        from ...tools.spawn_thread import _delete_spawned
+
+                        _delete_spawned(
+                            agent=agent,
+                            target_thread_id=supervisor_id,
+                            user_id=user_id,
+                            caller_thread_id=None,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to delete supervisor %s on /goal clear",
+                            supervisor_id,
+                        )
+                return _slash_sse_response(
+                    f"[Success]: Goal {goal.goal_id} cleared. "
+                    + (
+                        f"Supervisor {supervisor_id} deleted."
+                        if supervisor_id
+                        else "(no supervisor was spawned)"
+                    ),
+                    thread_id,
+                )
+
+            # ── /goal pause ─────────────────────────────────────────────
+            elif sub_lower == "pause":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Error]: No active goal to pause.", thread_id
+                    )
+                try:
+                    gm.pause_goal(
+                        user_id, goal.goal_id, reason="user requested pause"
+                    )
+                except GoalStateError as e:
+                    return _slash_sse_response(
+                        f"[Error]: {e}", thread_id
+                    )
+                return _slash_sse_response(
+                    f"[Success]: Goal {goal.goal_id} paused. "
+                    "Use `/goal resume` to continue.",
+                    thread_id,
+                )
+
+            # ── /goal resume ────────────────────────────────────────────
+            elif sub_lower == "resume":
+                goal = gm.get_active_goal_for_thread(user_id, thread_id)
+                if goal is None:
+                    return _slash_sse_response(
+                        "[Error]: No goal on this thread.", thread_id
+                    )
+                try:
+                    gm.resume_goal(user_id, goal.goal_id)
+                except GoalStateError as e:
+                    return _slash_sse_response(
+                        f"[Error]: {e}", thread_id
+                    )
+                message = (
+                    f"[Goal {goal.goal_id} resumed.] Continue from where you "
+                    "left off. The next pending or in-progress task is the "
+                    "one to work on; consult `nym_todo_list` or the goal "
+                    "task list if you need a reminder."
+                )
+                msg_stripped = message.strip().lower()
+
+            # ── /goal edit ──────────────────────────────────────────────
+            elif sub_lower == "edit":
+                return _slash_sse_response(
+                    "[Info]: `/goal edit` is not yet implemented. To change "
+                    "the plan before approval, ask the agent to call "
+                    "`propose_task` for new items or run `/goal cancel` and "
+                    "restart with a refined objective.",
+                    thread_id,
+                )
+
+            # ── /goal <objective> (default) ────────────────────────────
+            else:
+                existing = gm.get_active_goal_for_thread(user_id, thread_id)
+                if existing is not None:
+                    return _slash_sse_response(
+                        f"[Error]: This thread already has an active goal "
+                        f"`{existing.goal_id}` (status: {existing.status}). "
+                        f"Use `/goal status` to inspect or `/goal clear` to "
+                        f"abort before starting a new one.",
+                        thread_id,
+                    )
+                try:
+                    goal = gm.create_goal(user_id, thread_id, rest)
+                except GoalStateError as e:
+                    return _slash_sse_response(
+                        f"[Error]: {e}", thread_id
+                    )
+                ok, activation_msg = activate_skill_kit(
+                    agent=agent,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    skill_name="goal-worker",
+                    reason="/goal kickoff",
+                )
+                if not ok:
+                    gm.clear_goal(user_id, goal.goal_id)
+                    return _slash_sse_response(activation_msg, thread_id)
+
+                message = (
+                    f"[Goal {goal.goal_id} initiated.] Objective: {rest}\n\n"
+                    "Load the goal-worker skill kit (call "
+                    '`Skill(name="goal-worker")`) to read the playbook. '
+                    "Decompose the objective into tasks via `propose_task` "
+                    "(each with a clear `description` and verifiable "
+                    "`criterion`). Present the task list to the user and "
+                    "wait for `/goal approve` before executing — only then "
+                    "does the supervisor thread exist and `request_review` "
+                    "become callable."
+                )
+                msg_stripped = message.strip().lower()
+
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
 
@@ -317,7 +820,7 @@ def create_chat_router(
                 event_type="message_added",
                 thread_id=thread_id,
                 user_id=user_id,
-                data={"role": "user", "content": message},
+                data={"role": "user", "content": display_message},
                 origin_client_id=client_id,
             )
 
@@ -600,6 +1103,29 @@ def create_chat_router(
                 require_thread_access_fn(user, mention_resolution.thread_id)
                 thread_id = mention_resolution.thread_id
                 message = mention_resolution.message
+
+        msg_stripped = message.strip().lower()
+        skill_tokens = msg_stripped.split(maxsplit=1)
+        if skill_tokens and skill_tokens[0] in {"/skill", "/kit"}:
+            from ...core.command_service import prepare_skill_slash_command
+
+            raw_parts = message.strip().split(maxsplit=1)
+            rest = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            prepared = prepare_skill_slash_command(
+                agent=agent,
+                thread_id=thread_id,
+                user_id=user_id,
+                mode="kit" if skill_tokens[0] == "/kit" else "skill",
+                rest=rest,
+                has_attachments=bool(request.attachments or request.images),
+            )
+            if not prepared.success or not prepared.should_stream:
+                return ChatResponse(
+                    response=prepared.message,
+                    thread_id=thread_id,
+                    tool_call_count=0,
+                )
+            message = prepared.message
 
         response = agent.chat(
             message,

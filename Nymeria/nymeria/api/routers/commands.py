@@ -94,6 +94,8 @@ def create_commands_router(
                 actor=actor,
                 surface=surface,
                 is_admin=user.role == "admin",
+                user_id=user.id,
+                agent=get_agent_fn() if get_agent_fn is not None else None,
             )
         ]
 

@@ -155,13 +155,13 @@
   // kickoff in one round-trip. Keep this list in sync with the
   // `execution_kind="chat_stream"` registrations in command_service.py.
   // TODO: make this data-driven via api.listCommands() with execution_kind.
-  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal']);
+  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit']);
 
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
     const trimmed = message.trim();
-    const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0] : '';
+    const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
     const isChatStreamCommand = CHAT_STREAM_COMMAND_ROOTS.has(slashRoot);
 
     if (trimmed.startsWith('/') && !isChatStreamCommand && (!attachments || attachments.length === 0)) {
