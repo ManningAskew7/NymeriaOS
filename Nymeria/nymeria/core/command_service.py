@@ -355,6 +355,45 @@ def parse_command(raw: str) -> tuple[Optional[str], Optional[str], list[str], st
     return command, subcommand, args, rest
 
 
+def _consume_option(
+    args: list[str],
+    option: str,
+    *,
+    default: str,
+) -> tuple[str, list[str], str]:
+    """Pull ``--key value`` out of ``args``.
+
+    Returns ``(selected_value, remaining_args, error_message)``. ``error_message``
+    is empty on success. If the option appears multiple times, the last wins.
+    """
+    remaining: list[str] = []
+    selected = default
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                return selected, list(args), f"{option} requires a value."
+            selected = args[index + 1]
+            index += 2
+            continue
+        remaining.append(arg)
+        index += 1
+    return selected, remaining, ""
+
+
+def _consume_flag(args: list[str], flag: str) -> tuple[bool, list[str]]:
+    """Pull a boolean ``--flag`` out of ``args``."""
+    remaining: list[str] = []
+    present = False
+    for arg in args:
+        if arg == flag:
+            present = True
+        else:
+            remaining.append(arg)
+    return present, remaining
+
+
 def _truncate(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
@@ -1722,6 +1761,244 @@ class CommandService:
             danger_level="normal",
         )
         self.register(
+            "skills search",
+            description="Search a skills marketplace for installable skills",
+            category="Skills",
+            usage="/skills search [query] [--source <source>]",
+            aliases=("skills_search",),
+        )
+        self.register(
+            "skills install",
+            description="Install a skill from a marketplace",
+            category="Skills",
+            usage="/skills install <name> [--source <source>] [--scope user|global]",
+            aliases=("skills_install",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "skills enable",
+            description="Enable a skill on this thread (default) or globally",
+            category="Skills",
+            usage="/skills enable [--global] <name>",
+            aliases=("skills_enable",),
+            mutates_state=True,
+        )
+        self.register(
+            "skills disable",
+            description="Disable a skill on this thread (default) or globally",
+            category="Skills",
+            usage="/skills disable [--global] <name>",
+            aliases=("skills_disable",),
+            mutates_state=True,
+        )
+        self.register(
+            "skills inspect",
+            description="Show full skill details (metadata, scope, tools, references)",
+            category="Skills",
+            usage="/skills inspect <name>",
+            aliases=("skills_inspect",),
+        )
+        self.register(
+            "mcp",
+            description="MCP server management commands",
+            category="MCP",
+            usage="/mcp list|status|logs|discover|test|remove|retry [...]",
+            requires_admin=True,
+        )
+        self.register(
+            "mcp list",
+            description="List configured MCP servers",
+            category="MCP",
+            usage="/mcp list",
+            aliases=("mcp_list",),
+            requires_admin=True,
+        )
+        self.register(
+            "mcp status",
+            description="Show MCP server status, with errors if any",
+            category="MCP",
+            usage="/mcp status [server-id]",
+            aliases=("mcp_status",),
+            requires_admin=True,
+        )
+        self.register(
+            "mcp logs",
+            description="Show install logs for an MCP server",
+            category="MCP",
+            usage="/mcp logs <server-id> [limit]",
+            aliases=("mcp_logs",),
+            requires_admin=True,
+        )
+        self.register(
+            "mcp discover",
+            description="Force tool rediscovery for an MCP server",
+            category="MCP",
+            usage="/mcp discover <server-id>",
+            aliases=("mcp_discover",),
+            requires_admin=True,
+            mutates_state=True,
+        )
+        self.register(
+            "mcp test",
+            description="Test connectivity to an MCP server",
+            category="MCP",
+            usage="/mcp test <server-id>",
+            aliases=("mcp_test",),
+            requires_admin=True,
+        )
+        self.register(
+            "mcp remove",
+            description="Remove an MCP server and its tools",
+            category="MCP",
+            usage="/mcp remove <server-id>",
+            aliases=("mcp_remove", "mcp_rm", "mcp_delete"),
+            requires_admin=True,
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "mcp retry",
+            description="Retry setup for a draft or failed MCP server",
+            category="MCP",
+            usage="/mcp retry <server-id>",
+            aliases=("mcp_retry",),
+            requires_admin=True,
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "triggers",
+            description="Event-trigger automation commands",
+            category="Automation",
+            usage="/triggers list|enable|disable|delete|history [...]",
+        )
+        self.register(
+            "triggers list",
+            description="List configured event triggers",
+            category="Automation",
+            usage="/triggers list [--enabled-only] [--thread <id>]",
+            aliases=("triggers_list",),
+        )
+        self.register(
+            "triggers enable",
+            description="Enable an event trigger",
+            category="Automation",
+            usage="/triggers enable <trigger-id>",
+            aliases=("triggers_enable",),
+            mutates_state=True,
+        )
+        self.register(
+            "triggers disable",
+            description="Disable an event trigger",
+            category="Automation",
+            usage="/triggers disable <trigger-id>",
+            aliases=("triggers_disable",),
+            mutates_state=True,
+        )
+        self.register(
+            "triggers delete",
+            description="Delete an event trigger permanently",
+            category="Automation",
+            usage="/triggers delete <trigger-id>",
+            aliases=("triggers_delete",),
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "triggers history",
+            description="Show recent trigger execution history",
+            category="Automation",
+            usage="/triggers history [trigger-id] [--limit N]",
+            aliases=("triggers_history",),
+        )
+        self.register(
+            "account",
+            description="Inspect account, tokens, and linked platforms",
+            category="Personal",
+            usage="/account current|tokens|platforms",
+            aliases=("acct",),
+        )
+        self.register(
+            "account current",
+            description="Show details for the current user",
+            category="Personal",
+            usage="/account current",
+            aliases=("account_current", "account_me"),
+        )
+        self.register(
+            "account tokens",
+            description="List API tokens for the current user",
+            category="Personal",
+            usage="/account tokens",
+            aliases=("account_tokens",),
+        )
+        self.register(
+            "account tokens issue",
+            description="Issue a new API token for the current user",
+            category="Personal",
+            usage="/account tokens issue [label]",
+            aliases=("account_tokens_issue",),
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "account tokens revoke",
+            description="Revoke an API token by hash prefix",
+            category="Personal",
+            usage="/account tokens revoke <hash-prefix>",
+            aliases=("account_tokens_revoke",),
+            mutates_state=True,
+            danger_level="dangerous",
+        )
+        self.register(
+            "account platforms",
+            description="List chat platforms linked to the current user",
+            category="Personal",
+            usage="/account platforms",
+            aliases=("account_platforms",),
+        )
+        self.register(
+            "activity",
+            description="Show recent activity and notifications",
+            category="Personal",
+            usage="/activity list|notifications",
+        )
+        self.register(
+            "activity list",
+            description="Show the most recent activity entries",
+            category="Personal",
+            usage="/activity list [limit] [--type TYPE] [--thread ID]",
+            aliases=("activity_list", "activity_recent"),
+        )
+        self.register(
+            "activity notifications",
+            description="Show notifications and unread count",
+            category="Personal",
+            usage="/activity notifications",
+            aliases=("activity_notifications",),
+        )
+        self.register(
+            "doctor",
+            description="Run server-side diagnostics (auth + model)",
+            category="System",
+            usage="/doctor [auth|model]",
+        )
+        self.register(
+            "doctor auth",
+            description="Show the resolved identity for the current request",
+            category="System",
+            usage="/doctor auth",
+            aliases=("doctor_auth",),
+        )
+        self.register(
+            "doctor model",
+            description="Show LLM provider/model diagnostics",
+            category="System",
+            usage="/doctor model",
+            aliases=("doctor_model",),
+        )
+        self.register(
             "memory list",
             description="List saved memories",
             category="Memory",
@@ -2699,8 +2976,10 @@ class _CommandExecutor:
         if args == ["off", "all"]:
             return await self._cmd_skills_off_all([], "")
         return (
-            "[Error]: Usage: `/skills`, `/skills list`, "
-            "`/skills show <name>`, or `/skills off all`."
+            "[Error]: Usage: `/skills`, `/skills list`, `/skills show <name>`, "
+            "`/skills off all`, `/skills search [query]`, "
+            "`/skills install <name>`, `/skills enable [--global] <name>`, "
+            "`/skills disable [--global] <name>`, or `/skills inspect <name>`."
         )
 
     async def _cmd_skills_list(self, args: list[str], rest: str) -> str:
@@ -2779,6 +3058,730 @@ class _CommandExecutor:
 
         prefix = "[Error]:" if had_error else "[Success]:"
         return prefix + " Deactivated skills:\n" + "\n".join(lines)
+
+    async def _cmd_skills_search(self, args: list[str], rest: str) -> str:
+        source, remaining, error = _consume_option(args, "--source", default="anthropic")
+        if error:
+            return f"[Error]: {error}"
+        query = " ".join(remaining).strip() or None
+
+        from ..skills.marketplace import MarketplaceError, get_fetcher
+
+        try:
+            fetcher = get_fetcher(source)
+        except (NotImplementedError, MarketplaceError) as exc:
+            return f"[Error]: {exc}"
+
+        try:
+            entries = fetcher.list(query)
+        except MarketplaceError as exc:
+            return f"[Error]: Marketplace search failed: {exc}"
+        except Exception as exc:  # noqa: BLE001 - surface fetcher errors
+            return f"[Error]: Marketplace search failed: {exc}"
+
+        if not entries:
+            return f"[Info]: No marketplace skills matched on source '{source}'."
+
+        lines = [f"Marketplace Skills ({source}): {len(entries)} found", ""]
+        for entry in entries[:50]:
+            description = (entry.description or "").strip().splitlines()
+            short = description[0] if description else ""
+            lines.append(f"- `{entry.name}` — {short}")
+        if len(entries) > 50:
+            lines.append(f"... and {len(entries) - 50} more")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_skills_install(self, args: list[str], rest: str) -> str:
+        scope, args, error = _consume_option(args, "--scope", default="user")
+        if error:
+            return f"[Error]: {error}"
+        source, args, error = _consume_option(args, "--source", default="anthropic")
+        if error:
+            return f"[Error]: {error}"
+        if not args:
+            return (
+                "[Error]: Usage: /skills install <name> "
+                "[--source <source>] [--scope user|global]"
+            )
+        if scope not in ("user", "global"):
+            return "[Error]: --scope must be 'user' or 'global'."
+        name = args[0]
+
+        agent = self._agent()
+        if agent is None:
+            return "[Error]: No current NymeriaAgent is available for skill commands."
+        skill_manager = getattr(agent, "skill_manager", None)
+        if skill_manager is None:
+            return "[Error]: Skill manager unavailable."
+
+        from ..skills.marketplace import MarketplaceError, get_fetcher
+
+        try:
+            fetcher = get_fetcher(source)
+        except (NotImplementedError, MarketplaceError) as exc:
+            return f"[Error]: {exc}"
+
+        target_dir = skill_manager.target_dir(
+            scope,
+            user_id=self.user_id if scope == "user" else None,
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            skill = fetcher.fetch(name, target_dir)
+        except MarketplaceError as exc:
+            return f"[Error]: Install failed: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: Install failed: {exc}"
+
+        skill_manager.reload()
+        return f"[Success]: Installed skill '{skill.name}' (scope: {scope})."
+
+    async def _cmd_skills_enable(self, args: list[str], rest: str) -> str:
+        return await self._set_skill_state(args, enabled=True)
+
+    async def _cmd_skills_disable(self, args: list[str], rest: str) -> str:
+        return await self._set_skill_state(args, enabled=False)
+
+    async def _set_skill_state(self, args: list[str], *, enabled: bool) -> str:
+        global_scope, args = _consume_flag(args, "--global")
+        verb = "enable" if enabled else "disable"
+        if not args:
+            return f"[Error]: Usage: /skills {verb} [--global] <name>"
+        name = args[0]
+
+        agent = self._agent()
+        if agent is None:
+            return "[Error]: No current NymeriaAgent is available for skill commands."
+
+        if global_scope:
+            profile_manager = getattr(agent, "profile_manager", None)
+            if profile_manager is None:
+                return "[Error]: Profile manager unavailable."
+            profile = profile_manager.get_profile(self.user_id)
+            current = list(getattr(profile, "enabled_global_skills", []) or [])
+            if enabled:
+                if name not in current:
+                    current.append(name)
+            else:
+                current = [item for item in current if item != name]
+            profile.enabled_global_skills = sorted(set(current))
+            profile_manager.save_profile(profile)
+            action = "Enabled globally" if enabled else "Disabled globally"
+            return f"[Success]: {action}: {name}"
+
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+
+        tc = await self.api.get_thread_config(self.thread_id)
+        enabled_skills = list((tc or {}).get("enabled_skills", []) or [])
+        disabled_skills = list((tc or {}).get("disabled_skills", []) or [])
+        if enabled:
+            if name not in enabled_skills:
+                enabled_skills.append(name)
+            disabled_skills = [item for item in disabled_skills if item != name]
+        else:
+            if name not in disabled_skills:
+                disabled_skills.append(name)
+            enabled_skills = [item for item in enabled_skills if item != name]
+
+        await self.api.update_thread_config(
+            self.thread_id,
+            user_id=self.user_id,
+            enabled_skills=enabled_skills,
+            disabled_skills=disabled_skills,
+        )
+        action = "Enabled" if enabled else "Disabled"
+        return f"[Success]: {action}: {name}"
+
+    async def _cmd_skills_inspect(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /skills inspect <name>"
+
+        agent = self._agent()
+        service = get_command_service()
+        skill_manager = service._skill_manager(agent)
+        if skill_manager is None:
+            return "[Error]: Skill manager unavailable."
+
+        skill_name = args[0].strip().lower()
+        try:
+            skill = skill_manager.get(skill_name, user_id=self.user_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: Skill manager lookup failed: {exc}"
+        if skill is None:
+            return f"[Error]: Skill '{skill_name}' not found."
+
+        scripts = skill.list_scripts() if hasattr(skill, "list_scripts") else []
+        references = skill.list_references() if hasattr(skill, "list_references") else []
+        rows = [
+            ("Name", skill.name),
+            ("Scope", skill.scope),
+            ("Kit", "yes" if getattr(skill, "is_skill_kit", False) else "no"),
+            ("Required tools", ", ".join(skill.required_tools) or "—"),
+            ("Allowed tools", ", ".join(skill.allowed_tools) or "—"),
+            ("Scripts", ", ".join(scripts) or "—"),
+            ("References", ", ".join(references) or "—"),
+            ("Path", str(skill.path)),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = ["Skill", ""]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        description = (skill.description or "").strip()
+        if description:
+            lines.append("")
+            lines.append(f"Description: {description}")
+        return "[Info]: " + "\n".join(lines)
+
+    # ── MCP servers ───────────────────────────────────────────────────────
+
+    async def _cmd_mcp(self, args: list[str], rest: str) -> str:
+        if not args or args == ["list"]:
+            return await self._cmd_mcp_list([], "")
+        return (
+            "[Error]: Usage: /mcp list|status|logs|discover|test|remove|retry [...]"
+        )
+
+    async def _cmd_mcp_list(self, args: list[str], rest: str) -> str:
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        servers = registry.get_all_servers()
+        if not servers:
+            return "[Info]: No MCP servers configured."
+
+        lines = [
+            f"MCP Servers: {len(servers)} configured",
+            "",
+            "| ID | State | Tools | Name |",
+            "|---|---|---|---|",
+        ]
+        for server in sorted(servers, key=lambda s: s.id):
+            state = server.install_status or ("enabled" if server.enabled else "disabled")
+            tool_count = len(server.discovered_tools or [])
+            name = server.name or server.id
+            lines.append(f"| `{server.id}` | {state} | {tool_count} | {name} |")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_mcp_status(self, args: list[str], rest: str) -> str:
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        if args:
+            server = registry.get_server(args[0])
+            if server is None:
+                return f"[Error]: MCP server '{args[0]}' not found."
+            rows = [
+                ("ID", server.id),
+                ("Name", server.name or ""),
+                ("Enabled", "yes" if server.enabled else "no"),
+                ("Install status", server.install_status or ""),
+                ("Tools", len(server.discovered_tools or [])),
+                ("Last error", (server.last_error or "")[:200]),
+            ]
+            width = max(len(label) for label, _ in rows)
+            lines = [f"MCP Server `{server.id}`", ""]
+            for label, value in rows:
+                lines.append(f"  {label:<{width}}  {value}")
+            recent_logs = list(server.install_logs or [])[-5:]
+            if recent_logs:
+                lines.append("")
+                lines.append("Recent logs:")
+                lines.extend(f"  {line}" for line in recent_logs)
+            return "[Info]: " + "\n".join(lines)
+
+        servers = registry.get_all_servers()
+        if not servers:
+            return "[Info]: No MCP servers configured."
+
+        lines = ["MCP Servers", ""]
+        for server in sorted(servers, key=lambda s: s.id):
+            state = server.install_status or ("enabled" if server.enabled else "disabled")
+            err = f" — error: {server.last_error}" if server.last_error else ""
+            lines.append(f"- `{server.id}`: {state}{err}")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_mcp_logs(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /mcp logs <server-id> [limit]"
+
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        server_id = args[0]
+        try:
+            limit = max(1, int(args[1])) if len(args) > 1 else 20
+        except (TypeError, ValueError):
+            limit = 20
+
+        registry = get_mcp_server_registry()
+        server = registry.get_server(server_id)
+        if server is None:
+            return f"[Error]: MCP server '{server_id}' not found."
+
+        logs = list(server.install_logs or [])
+        if not logs:
+            return f"[Info]: No install logs for `{server_id}`."
+        selected = logs[-limit:]
+        lines = [f"Install logs for `{server_id}` (last {len(selected)} of {len(logs)})", ""]
+        lines.extend(f"- {line}" for line in selected)
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_mcp_discover(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /mcp discover <server-id>"
+
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        server_id = args[0]
+        registry = get_mcp_server_registry()
+        server = registry.get_server(server_id)
+        if server is None:
+            return f"[Error]: MCP server '{server_id}' not found."
+
+        agent = self._agent()
+        try:
+            discovered = registry.discover_tools(server_id)
+        except Exception as exc:  # noqa: BLE001 - discovery errors surface as markdown
+            server.install_status = "failed"
+            server.enabled = False
+            server.last_error = str(exc)
+            registry.save_server(server)
+            if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
+                agent.reload_mcp_server_tools()
+            return f"[Error]: Tool discovery failed for `{server_id}`: {exc}"
+
+        if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
+            agent.reload_mcp_server_tools()
+        count = len(discovered)
+        return f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} for `{server_id}`."
+
+    async def _cmd_mcp_test(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /mcp test <server-id>"
+
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        server_id = args[0]
+        registry = get_mcp_server_registry()
+        server = registry.get_server(server_id)
+        if server is None:
+            return f"[Error]: MCP server '{server_id}' not found."
+
+        try:
+            result = registry.test_connection(server_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: MCP test failed for `{server_id}`: {exc}"
+
+        result_dict = result if isinstance(result, dict) else {}
+        status = str(result_dict.get("status") or "ok")
+        tools_count = result_dict.get("tools_count") or result_dict.get("toolsCount") or ""
+        error = str(result_dict.get("error") or "")
+        if status.casefold() in {"ok", "success", "connected"} and not error:
+            suffix = f" ({tools_count} tools)" if str(tools_count) else ""
+            return f"[Success]: MCP test passed: `{server_id}`{suffix}"
+        return f"[Error]: MCP test failed for `{server_id}`: {error or result}"
+
+    async def _cmd_mcp_remove(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /mcp remove <server-id>"
+
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        server_id = args[0]
+        registry = get_mcp_server_registry()
+        if not registry.delete_server(server_id):
+            return f"[Error]: MCP server '{server_id}' not found."
+
+        agent = self._agent()
+        if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
+            agent.reload_mcp_server_tools()
+        return f"[Success]: Removed MCP server `{server_id}`."
+
+    async def _cmd_mcp_retry(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /mcp retry <server-id>"
+
+        from ..core.mcp_runtime import MCPInstallPlan
+        from ..core.mcp_servers import get_mcp_server_registry
+
+        server_id = args[0]
+        registry = get_mcp_server_registry()
+        server = registry.get_server(server_id)
+        if server is None:
+            return f"[Error]: MCP server '{server_id}' not found."
+        if not server.install_plan:
+            return f"[Error]: MCP server `{server_id}` has no install plan to retry."
+
+        # The full retry flow uses _run_mcp_install on the API router with
+        # admin-confirmation, credential bindings, and thread auto-enable.
+        # Surface a guidance message rather than re-implementing it half-way
+        # here; the desktop UI exposes the rich retry flow.
+        plan = MCPInstallPlan.from_dict(server.install_plan)
+        try:
+            discovered = registry.discover_tools(server_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: Retry failed for `{server_id}`: {exc}"
+        server.install_status = "ready" if discovered else "draft"
+        server.last_error = ""
+        registry.save_server(server)
+        agent = self._agent()
+        if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
+            agent.reload_mcp_server_tools()
+        return (
+            f"[Success]: Retried `{server_id}` "
+            f"(runtime: {plan.runtime_type}); "
+            f"discovered {len(discovered)} tool(s)."
+        )
+
+    # ── Event triggers ────────────────────────────────────────────────────
+
+    def _trigger_manager(self) -> Any:
+        from ..tools.triggers import _get_trigger_manager
+
+        return _get_trigger_manager()
+
+    async def _cmd_triggers(self, args: list[str], rest: str) -> str:
+        if not args or args == ["list"]:
+            return await self._cmd_triggers_list([], "")
+        return (
+            "[Error]: Usage: /triggers list|enable|disable|delete|history [...]"
+        )
+
+    async def _cmd_triggers_list(self, args: list[str], rest: str) -> str:
+        enabled_only, args = _consume_flag(args, "--enabled-only")
+        thread_id, args, error = _consume_option(args, "--thread", default="")
+        if error:
+            return f"[Error]: {error}"
+        if thread_id == "current":
+            thread_id = self.thread_id
+
+        manager = self._trigger_manager()
+        triggers = manager.get_triggers(self.user_id) or []
+
+        if enabled_only:
+            triggers = [t for t in triggers if t.enabled]
+        if thread_id:
+            triggers = [t for t in triggers if t.thread_id == thread_id]
+        if not triggers:
+            return "[Info]: No triggers found."
+
+        lines = [
+            f"Triggers: {len(triggers)} total",
+            "",
+            "| ID | Status | Source | Action | Name |",
+            "|---|---|---|---|---|",
+        ]
+        for t in sorted(triggers, key=lambda item: item.id):
+            status = "enabled" if t.enabled else "disabled"
+            action_type = getattr(t.action, "type", "?") if t.action else "?"
+            lines.append(
+                f"| `{t.id}` | {status} | {t.source_type} | {action_type} | {t.name} |"
+            )
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_triggers_enable(self, args: list[str], rest: str) -> str:
+        return await self._set_trigger_enabled(args, enabled=True)
+
+    async def _cmd_triggers_disable(self, args: list[str], rest: str) -> str:
+        return await self._set_trigger_enabled(args, enabled=False)
+
+    async def _set_trigger_enabled(self, args: list[str], *, enabled: bool) -> str:
+        verb = "enable" if enabled else "disable"
+        if not args:
+            return f"[Error]: Usage: /triggers {verb} <trigger-id>"
+        trigger_id = args[0]
+        manager = self._trigger_manager()
+        if not manager.update_trigger(self.user_id, trigger_id, enabled=enabled):
+            return f"[Error]: Trigger '{trigger_id}' not found."
+        action = "Enabled" if enabled else "Disabled"
+        return f"[Success]: {action} trigger `{trigger_id}`."
+
+    async def _cmd_triggers_delete(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /triggers delete <trigger-id>"
+        trigger_id = args[0]
+        manager = self._trigger_manager()
+        if not manager.delete_trigger(self.user_id, trigger_id):
+            return f"[Error]: Trigger '{trigger_id}' not found."
+        manager.delete_executions_for_triggers(self.user_id, [trigger_id])
+        return f"[Success]: Deleted trigger `{trigger_id}`."
+
+    async def _cmd_triggers_history(self, args: list[str], rest: str) -> str:
+        limit_str, remaining, error = _consume_option(args, "--limit", default="20")
+        if error:
+            return f"[Error]: {error}"
+        try:
+            limit = max(1, int(limit_str))
+        except (TypeError, ValueError):
+            limit = 20
+        trigger_id = remaining[0] if remaining else None
+
+        manager = self._trigger_manager()
+        executions = manager.get_executions(
+            self.user_id,
+            trigger_id=trigger_id,
+            limit=limit,
+        )
+        if not executions:
+            scope = f" for `{trigger_id}`" if trigger_id else ""
+            return f"[Info]: No trigger executions found{scope}."
+
+        lines = [
+            f"Trigger executions: {len(executions)}"
+            + (f" for `{trigger_id}`" if trigger_id else ""),
+            "",
+        ]
+        for entry in executions:
+            timestamp = entry.get("triggered_at") or entry.get("timestamp") or ""
+            tid = entry.get("trigger_id") or "?"
+            status = entry.get("status") or entry.get("result") or "?"
+            summary = (entry.get("summary") or entry.get("message") or "")[:120]
+            lines.append(f"- {timestamp} `{tid}` — {status}: {summary}")
+        return "[Info]: " + "\n".join(lines)
+
+    # ── Account ───────────────────────────────────────────────────────────
+
+    def _accounts_repo(self) -> Any | None:
+        agent = self._agent()
+        if agent is None:
+            return None
+        return getattr(agent, "accounts_repo", None)
+
+    async def _cmd_account(self, args: list[str], rest: str) -> str:
+        if not args or args == ["current"]:
+            return await self._cmd_account_current([], "")
+        return "[Error]: Usage: /account current|tokens|platforms"
+
+    async def _cmd_account_current(self, args: list[str], rest: str) -> str:
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Error]: Account repository unavailable."
+        user = repo.get_user_by_id(self.user_id)
+        if user is None:
+            return f"[Error]: User '{self.user_id}' not found."
+        rows = [
+            ("Selected user", self.user_id),
+            ("ID", getattr(user, "id", "")),
+            ("Email", getattr(user, "email", "")),
+            ("Display name", getattr(user, "display_name", "")),
+            ("Role", getattr(user, "role", "")),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = ["Current account", ""]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_account_tokens(self, args: list[str], rest: str) -> str:
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Error]: Account repository unavailable."
+        tokens = repo.list_tokens_for_user(self.user_id) or []
+        if not tokens:
+            return "[Info]: No API tokens issued."
+        lines = [
+            f"API tokens: {len(tokens)}",
+            "",
+            "| Prefix | Label | Created | Last used | Revoked |",
+            "|---|---|---|---|---|",
+        ]
+        for token in tokens:
+            prefix = getattr(token, "token_hash_prefix", "")
+            label = getattr(token, "label", "") or ""
+            created = getattr(token, "created_at", "") or ""
+            last_used = getattr(token, "last_used_at", "") or ""
+            revoked = getattr(token, "revoked_at", "") or ""
+            lines.append(f"| `{prefix}` | {label} | {created} | {last_used} | {revoked} |")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_account_tokens_issue(self, args: list[str], rest: str) -> str:
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Error]: Account repository unavailable."
+        label = " ".join(args).strip() or None
+        try:
+            raw_token = repo.issue_token(self.user_id, label=label)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: Could not issue token: {exc}"
+        prefix = raw_token[:8] if isinstance(raw_token, str) else ""
+        lines = [
+            f"[Success]: Issued API token (prefix `{prefix}`).",
+            "",
+            "Raw token (shown only once — save it now):",
+            "",
+            "```",
+            str(raw_token),
+            "```",
+        ]
+        return "\n".join(lines)
+
+    async def _cmd_account_tokens_revoke(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /account tokens revoke <hash-prefix>"
+        prefix = args[0]
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Error]: Account repository unavailable."
+        revoked = bool(repo.revoke_token(self.user_id, prefix))
+        if not revoked:
+            return f"[Error]: No matching token for prefix `{prefix}`."
+        return f"[Success]: Revoked token `{prefix}`."
+
+    async def _cmd_account_platforms(self, args: list[str], rest: str) -> str:
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Error]: Account repository unavailable."
+        platforms = repo.list_platforms_for_user(self.user_id) or []
+        if not platforms:
+            return "[Info]: No linked chat platforms."
+        lines = [
+            f"Linked platforms: {len(platforms)}",
+            "",
+            "| Provider | Provider user ID | Created |",
+            "|---|---|---|",
+        ]
+        for p in platforms:
+            provider = getattr(p, "provider", "")
+            puid = getattr(p, "provider_user_id", "")
+            created = getattr(p, "created_at", "") or ""
+            lines.append(f"| {provider} | `{puid}` | {created} |")
+        return "[Info]: " + "\n".join(lines)
+
+    # ── Activity / notifications ──────────────────────────────────────────
+
+    async def _cmd_activity(self, args: list[str], rest: str) -> str:
+        if not args or args in (["list"], ["recent"]):
+            return await self._cmd_activity_list([], "")
+        if args == ["notifications"]:
+            return await self._cmd_activity_notifications([], "")
+        return (
+            "[Error]: Usage: /activity list [limit] [--type TYPE] [--thread ID] "
+            "or /activity notifications"
+        )
+
+    async def _cmd_activity_list(self, args: list[str], rest: str) -> str:
+        from ..core.activity_log import ActivityType, get_activity_log
+
+        limit = 20
+        activity_type_str: str | None = None
+        thread_id: str | None = None
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg.isdigit():
+                limit = max(1, int(arg))
+            elif arg == "--type" and index + 1 < len(args):
+                activity_type_str = args[index + 1]
+                index += 1
+            elif arg == "--thread" and index + 1 < len(args):
+                value = args[index + 1]
+                thread_id = self.thread_id if value.casefold() in {"current", "."} else value
+                index += 1
+            else:
+                return f"[Error]: Unknown activity option: {arg}"
+            index += 1
+
+        type_filter = None
+        if activity_type_str:
+            try:
+                type_filter = ActivityType(activity_type_str)
+            except ValueError:
+                return f"[Error]: Invalid activity type: {activity_type_str}"
+
+        log = get_activity_log()
+        entries = log.get_entries(
+            self.user_id,
+            limit=limit,
+            activity_type=type_filter,
+            thread_id=thread_id,
+        )
+        if not entries:
+            return "[Info]: No recent activity."
+
+        lines = [
+            f"Recent activity: {len(entries)}",
+            "",
+            "| Time | Type | Thread | Message |",
+            "|---|---|---|---|",
+        ]
+        for entry in entries:
+            ts = str(getattr(entry, "timestamp", "") or "")[:19]
+            etype = getattr(entry.type, "value", str(entry.type)) if entry.type else ""
+            tid = (getattr(entry, "thread_id", "") or "")[:8]
+            msg = (getattr(entry, "message", "") or "").replace("\n", " ")[:80]
+            lines.append(f"| {ts} | {etype} | `{tid}` | {msg} |")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_activity_notifications(self, args: list[str], rest: str) -> str:
+        from ..core.notifications import get_notification_store
+
+        store = get_notification_store()
+        notifications = store.get_all(self.user_id, limit=50) or []
+        unread = store.get_unread_count(self.user_id)
+        if not notifications:
+            return f"[Info]: No notifications. (Unread: {unread})"
+
+        lines = [
+            f"Notifications ({unread} unread): {len(notifications)} total",
+            "",
+            "| ID | Read | Summary |",
+            "|---|---|---|",
+        ]
+        for n in notifications:
+            nid = (getattr(n, "id", "") or "")[:8]
+            read = "yes" if getattr(n, "read", False) else "no"
+            summary = (getattr(n, "summary", "") or "").replace("\n", " ")[:80]
+            lines.append(f"| `{nid}` | {read} | {summary} |")
+        return "[Info]: " + "\n".join(lines)
+
+    # ── Doctor (server-side diagnostics) ──────────────────────────────────
+
+    async def _cmd_doctor(self, args: list[str], rest: str) -> str:
+        if args == ["auth"]:
+            return await self._cmd_doctor_auth([], "")
+        if args == ["model"]:
+            return await self._cmd_doctor_model([], "")
+        if args:
+            return "[Error]: Usage: /doctor [auth|model]"
+        auth = await self._cmd_doctor_auth([], "")
+        model = await self._cmd_doctor_model([], "")
+        return f"{auth}\n\n{model}"
+
+    async def _cmd_doctor_auth(self, args: list[str], rest: str) -> str:
+        repo = self._accounts_repo()
+        if repo is None:
+            return "[Info]: Auth\n  Selected user  " + self.user_id
+        user = repo.get_user_by_id(self.user_id)
+        rows = [
+            ("Selected user", self.user_id),
+            ("Resolved ID", getattr(user, "id", "") if user else ""),
+            ("Display name", getattr(user, "display_name", "") if user else ""),
+            ("Role", getattr(user, "role", "") if user else ""),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = ["Auth", ""]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_doctor_model(self, args: list[str], rest: str) -> str:
+        try:
+            settings = await self.api.get_settings(user_id=self.user_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Error]: Could not load settings: {exc}"
+        settings_dict = settings if isinstance(settings, dict) else {}
+        rows = [
+            ("Provider", settings_dict.get("llm_provider", "")),
+            ("Model", settings_dict.get("llm_model", "")),
+            ("Base URL", str(settings_dict.get("llm_base_url", ""))[:80]),
+            ("Status", "available"),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = ["Model", ""]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        return "[Info]: " + "\n".join(lines)
 
     # ── Status / inspection ───────────────────────────────────────────────
 
