@@ -216,7 +216,8 @@ class DiagnosticEvent(CLIStreamEvent):
 
 
 NormalizedEvent: TypeAlias = (
-    ThinkingEvent
+    CLIStreamEvent
+    | ThinkingEvent
     | ToolCallDeltaEvent
     | ToolCallEvent
     | ToolResultEvent

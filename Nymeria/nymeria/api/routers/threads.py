@@ -296,7 +296,7 @@ def _thread_list_payload(
     )
     is_callable = bool(tc and tc.callable)
     payload["callable"] = is_callable
-    if is_callable and tc.callable_name:
+    if is_callable and tc is not None and tc.callable_name:
         payload["title"] = tc.callable_name
         payload["title_source"] = "callable"
     payload["recovered"] = recovered

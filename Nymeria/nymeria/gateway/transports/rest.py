@@ -66,6 +66,8 @@ class RESTTransport(BaseTransport):
     def _run_server(self) -> None:
         """Run the Uvicorn server (called from background thread)."""
         try:
+            if self._server is None:
+                raise RuntimeError("REST transport server not initialized")
             self._server.run()
         except Exception as e:
             logger.error(f"REST transport error: {e}", exc_info=True)

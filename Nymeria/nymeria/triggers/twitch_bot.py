@@ -216,8 +216,8 @@ class NymeriaTwitchBot(commands.Bot):
     ):
         super().__init__(
             client_id=client_id,
-            client_secret=client_secret,
-            bot_id=bot_user_id,
+            client_secret=client_secret or "",
+            bot_id=bot_user_id or "",
             prefix="!",
         )
 
@@ -324,14 +324,14 @@ class NymeriaTwitchBot(commands.Bot):
         self.loop = asyncio.get_running_loop()
         # Add the bot's user token for authentication
         if self._access_token:
-            await self.add_token(self._access_token, self._refresh_token)
+            await self.add_token(self._access_token, self._refresh_token or "")
             logger.info("Added bot access token")
         else:
             logger.warning("No access token provided — bot may not be able to authenticate")
 
         # Add the broadcaster's token (needed for channel:bot scope)
         if self._broadcaster_token:
-            await self.add_token(self._broadcaster_token, self._broadcaster_refresh_token)
+            await self.add_token(self._broadcaster_token, self._broadcaster_refresh_token or "")
             logger.info("Added broadcaster token")
 
 
@@ -439,8 +439,8 @@ class NymeriaTwitchBot(commands.Bot):
         # Buffer the message
         chatter = payload.chatter
         msg = ChatMessage(
-            username=chatter.name if chatter else "unknown",
-            display_name=getattr(chatter, "display_name", chatter.name) if chatter else "unknown",
+            username=(chatter.name or "unknown") if chatter else "unknown",
+            display_name=(getattr(chatter, "display_name", None) or chatter.name or "unknown") if chatter else "unknown",
             message=payload.text or "",
             timestamp=getattr(payload, "timestamp", None) or datetime.now(timezone.utc),
             user_id=str(chatter.id) if chatter else "0",
@@ -627,7 +627,7 @@ class NymeriaTwitchBot(commands.Bot):
             return  # Silently ignore when stopped
 
         # Extract question (everything after "!ask ")
-        question = ctx.message.text or ""
+        question = (ctx.message.text if ctx.message else None) or ""
         if question.lower().startswith("!ask"):
             question = question[4:].strip()
 
@@ -712,7 +712,7 @@ class NymeriaTwitchBot(commands.Bot):
         ):
             return  # Silently ignore non-privileged users
 
-        text = (ctx.message.text or "").strip()
+        text = ((ctx.message.text if ctx.message else None) or "").strip()
         arg = text.split(maxsplit=1)[1].strip().lower() if " " in text else ""
 
         if arg == "on":

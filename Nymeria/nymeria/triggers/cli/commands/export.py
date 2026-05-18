@@ -215,7 +215,7 @@ def _render_json(
     messages: list[Mapping[str, Any]],
     thread_meta: Mapping[str, Any] | None,
 ) -> str:
-    export = {
+    export: dict[str, Any] = {
         "version": 1,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "thread_id": thread_id,

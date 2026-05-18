@@ -86,6 +86,8 @@ class InfoCog(commands.Cog):
         format: Optional[app_commands.Choice[str]] = None,
     ):
         await interaction.response.defer(ephemeral=True)
+        if interaction.channel_id is None:
+            return
         thread_id = make_thread_id(
             interaction.guild_id, interaction.channel_id
         )

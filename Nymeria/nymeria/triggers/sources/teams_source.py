@@ -94,6 +94,9 @@ class TeamsSource(BaseTriggerSource):
         import httpx
 
         account_id = config.get("account_id")
+        if not isinstance(account_id, str):
+            logger.debug("teams source: no account_id configured, skipping")
+            return []
         team_id = config["team_id"]
         channel_id = config["channel_id"]
         keyword_filter = config.get("keyword_filter")

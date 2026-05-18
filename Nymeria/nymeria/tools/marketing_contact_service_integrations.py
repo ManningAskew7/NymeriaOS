@@ -379,8 +379,8 @@ def _lemlist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         tool_name=tool_name,
         config=config,
     )
-    if token_or_error.startswith("[Error]:"):
-        return base, token_or_error
+    if not token_or_error or token_or_error.startswith("[Error]:"):
+        return base, token_or_error or "[Error]: No Lemlist credential found."
     return base, {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -494,7 +494,7 @@ def _emelia_graphql(
     url, headers_or_error = _emelia_graphql_url(tool_name, config)
     if isinstance(headers_or_error, str):
         return headers_or_error
-    body = {"query": query}
+    body: dict[str, Any] = {"query": query}
     if operation_name:
         body["operationName"] = operation_name
     if variables is not None:
@@ -522,8 +522,8 @@ def _actionnetwork_config(tool_name: str, config: Optional[RunnableConfig]) -> t
         tool_name=tool_name,
         config=config,
     )
-    if token_or_error.startswith("[Error]:"):
-        return base, token_or_error
+    if not token_or_error or token_or_error.startswith("[Error]:"):
+        return base, token_or_error or "[Error]: No Action Network credential found."
     return base, {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -594,8 +594,8 @@ def _autopilot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         tool_name=tool_name,
         config=config,
     )
-    if key_or_error.startswith("[Error]:"):
-        return base, key_or_error
+    if not key_or_error or key_or_error.startswith("[Error]:"):
+        return base, key_or_error or "[Error]: No Autopilot credential found."
     return base, {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -617,8 +617,8 @@ def _egoi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         tool_name=tool_name,
         config=config,
     )
-    if key_or_error.startswith("[Error]:"):
-        return base, key_or_error
+    if not key_or_error or key_or_error.startswith("[Error]:"):
+        return base, key_or_error or "[Error]: No E-goi credential found."
     return base, {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -1048,7 +1048,7 @@ def iterable_track_event(
     base, auth = _iterable_config("iterable_track_event", config)
     if isinstance(auth, str):
         return auth
-    body = {
+    body: dict[str, Any] = {
         "eventName": event_name.strip(),
         "dataFields": _json_object(data_fields_json, field_name="data_fields_json"),
     }
@@ -1230,7 +1230,7 @@ def segment_identify(
     base, auth = _segment_config("segment_identify", config)
     if isinstance(auth, str):
         return auth
-    body = {
+    body: dict[str, Any] = {
         "traits": _json_object(traits_json, field_name="traits_json"),
         "context": _json_object(context_json, field_name="context_json"),
         "integrations": _json_object(integrations_json, field_name="integrations_json"),
@@ -1793,7 +1793,7 @@ def mailerlite_create_subscriber(
     base, auth = _mailerlite_config("mailerlite_create_subscriber", config)
     if isinstance(auth, str):
         return auth
-    body = {"email": email, "name": name, "fields": _json_object(fields_json, field_name="fields_json")}
+    body: dict[str, Any] = {"email": email, "name": name, "fields": _json_object(fields_json, field_name="fields_json")}
     group_list = _csv_to_list(groups)
     if group_list:
         body["groups"] = group_list

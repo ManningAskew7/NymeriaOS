@@ -476,11 +476,17 @@ class MCPServerManager:
                 self._stdio_error_detail(conn, "MCP server process has died")
             )
 
+        proc = conn.process
+        if proc is None or proc.stdin is None:
+            raise RuntimeError(
+                self._stdio_error_detail(conn, "MCP server process or stdin not available")
+            )
+
         request_bytes = (json.dumps(request) + "\n").encode("utf-8")
 
         try:
-            conn.process.stdin.write(request_bytes)
-            conn.process.stdin.flush()
+            proc.stdin.write(request_bytes)
+            proc.stdin.flush()
         except (BrokenPipeError, OSError) as e:
             if not conn.is_alive():
                 raise RuntimeError(
@@ -496,6 +502,12 @@ class MCPServerManager:
         expected_id = request.get("id")
         deadline = time.time() + timeout
 
+        stdout = proc.stdout
+        if stdout is None:
+            raise RuntimeError(
+                self._stdio_error_detail(conn, "MCP server stdout not available")
+            )
+
         while time.time() < deadline:
             if not conn.is_alive():
                 raise RuntimeError(
@@ -503,17 +515,17 @@ class MCPServerManager:
                 )
             try:
                 if sys.platform == "win32":
-                    conn.process.stdout.flush()
-                    line = conn.process.stdout.readline()
+                    stdout.flush()
+                    line = stdout.readline()
                     if not line:
                         time.sleep(0.01)
                         continue
                 else:
                     import select
-                    readable, _, _ = select.select([conn.process.stdout], [], [], 0.1)
+                    readable, _, _ = select.select([stdout], [], [], 0.1)
                     if not readable:
                         continue
-                    line = conn.process.stdout.readline()
+                    line = stdout.readline()
                     if not line:
                         continue
             except Exception as e:
@@ -558,10 +570,13 @@ class MCPServerManager:
     ) -> None:
         if not conn.is_alive():
             return
+        proc = conn.process
+        if proc is None or proc.stdin is None:
+            return
         notification_bytes = (json.dumps(notification) + "\n").encode("utf-8")
         try:
-            conn.process.stdin.write(notification_bytes)
-            conn.process.stdin.flush()
+            proc.stdin.write(notification_bytes)
+            proc.stdin.flush()
         except (BrokenPipeError, OSError):
             pass  # pipe may already be closed
 
@@ -745,6 +760,8 @@ class MCPServerManager:
                         conn.process.kill()
 
             # Close pipes to unblock the stderr drain thread.
+            if conn.process is None:
+                return
             for stream in (conn.process.stdin, conn.process.stdout, conn.process.stderr):
                 try:
                     if stream:

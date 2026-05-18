@@ -49,7 +49,7 @@ def _result_payload(result: CommandResult) -> dict[str, Any]:
 
 
 def _message_payload(message: CommandMessage) -> dict[str, Any]:
-    output = {
+    output: dict[str, Any] = {
         "level": message.level,
         "content": message.content,
     }

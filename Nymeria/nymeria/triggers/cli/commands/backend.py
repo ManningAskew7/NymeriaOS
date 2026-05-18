@@ -87,6 +87,7 @@ class BackendCommandProvider:
         if root is None:
             registry.register(_backend_group_command(path[0], info))
             root = registry.get(path[0])
+            assert root is not None, f"Failed to register group command {path[0]}"
 
         proxy = _backend_command(info, path, parent=root.name)
         existing = root.subcommands.get(path[1])

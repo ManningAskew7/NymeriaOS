@@ -290,6 +290,7 @@ def nym_todo(
         )
         if success:
             item = todo_list.get_item(todo_id)
+            assert item is not None  # update_item succeeded, so item must exist
             logger.info(f"TODO updated for user {user_id}: {todo_id}")
 
             # Auto-reschedule recurring TODOs marked as done
@@ -308,8 +309,8 @@ def nym_todo(
                         status=TodoStatus.PENDING,
                     )
                     item = todo_list.get_item(todo_id)
-                    if item:
-                        item.last_execution = recurrence_anchor
+                    assert item is not None  # just updated, must exist
+                    item.last_execution = recurrence_anchor
                     logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync to schedule database

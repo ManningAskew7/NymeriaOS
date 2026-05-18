@@ -127,8 +127,9 @@ def _ensure_marketplace_indexed(agent, source: str) -> tuple[str, str | None]:
     if now - last < _MARKETPLACE_INDEX_TTL_SECONDS:
         return namespace, None
 
+    from ..skills.marketplace import get_fetcher, MarketplaceError
+
     try:
-        from ..skills.marketplace import get_fetcher, MarketplaceError
         fetcher = get_fetcher(source)
         entries = fetcher.list(query=None)
     except NotImplementedError as e:
@@ -219,8 +220,8 @@ def search_skills(
         if index is None:
             # Index unavailable — fall through to direct substring match against
             # the marketplace list.
+            from ..skills.marketplace import get_fetcher, MarketplaceError
             try:
-                from ..skills.marketplace import get_fetcher, MarketplaceError
                 fetcher = get_fetcher("anthropic")
                 entries = fetcher.list(query=q or None)
             except (MarketplaceError, NotImplementedError) as e:
@@ -297,8 +298,8 @@ def install_skill(
             logger.warning("install_skill: admin check failed: %s", e)
             return f"[error] install_skill: caller verification failed: {e}"
 
+    from ..skills.marketplace import get_fetcher, MarketplaceError
     try:
-        from ..skills.marketplace import get_fetcher, MarketplaceError
         fetcher = get_fetcher(source)
     except MarketplaceError as e:
         return f"[error] {e}"
@@ -534,7 +535,8 @@ def skill_manage(
         )
         if isinstance(enabled_result, Command):
             try:
-                messages = enabled_result.update.get("messages", [])
+                update = enabled_result.update or {}
+                messages = update.get("messages", [])
                 content = str(messages[0].content) if messages else ""
             except Exception:
                 content = ""

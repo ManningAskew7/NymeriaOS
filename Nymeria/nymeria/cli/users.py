@@ -246,7 +246,7 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def dispatch(args: argparse.Namespace) -> int:
-    action = getattr(args, "action", None)
+    action: str | None = getattr(args, "action", None)
     handlers = {
         "add": _cmd_add,
         "list": _cmd_list,
@@ -257,6 +257,9 @@ def dispatch(args: argparse.Namespace) -> int:
         "unlink-platform": _cmd_unlink_platform,
         "platforms": _cmd_list_platforms,
     }
+    if action is None:
+        print("[error] No users action specified", file=sys.stderr)
+        return 2
     handler = handlers.get(action)
     if handler is None:
         print(f"[error] Unknown users action: {action}", file=sys.stderr)

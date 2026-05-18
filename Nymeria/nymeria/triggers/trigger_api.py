@@ -233,7 +233,9 @@ def create_trigger_router(
                 for c in body.conditions
             ]
             manager.update_trigger(user_id, trigger.id, conditions=conditions)
-            trigger = manager.get_trigger(user_id, trigger.id)
+            refreshed = manager.get_trigger(user_id, trigger.id)
+            if refreshed is not None:
+                trigger = refreshed
 
         # Create thread metadata only when trigger has its own thread (not bound to existing)
         if not body.thread_id:
@@ -346,6 +348,8 @@ def create_trigger_router(
             raise HTTPException(status_code=404, detail="Trigger not found")
 
         trigger = manager.get_trigger(user_id, trigger_id)
+        if trigger is None:
+            raise HTTPException(status_code=404, detail="Trigger not found after update")
         return TriggerResponse.from_definition(trigger)
 
     @router.delete("/{trigger_id}", status_code=204)

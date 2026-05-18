@@ -322,7 +322,7 @@ def raindrop_create_bookmark(
         base, headers_or_error = _raindrop_config("raindrop_create_bookmark", config)
         if isinstance(headers_or_error, str):
             return headers_or_error
-        body = {
+        body: dict[str, Any] = {
             "link": link.strip(),
             "collection": {"$id": _id(collection_id)},
         }

@@ -157,6 +157,9 @@ def _handle_exit(state: "CLIState", args: List[str]) -> None:
 
 def _handle_history(state: "CLIState", args: List[str]) -> None:
     """Show conversation history."""
+    if state.agent is None:
+        state.console.print("[red]Not available in API mode.[/red]")
+        return
     history = state.agent.get_conversation_history(state.thread_id)
     if not history:
         state.console.print("[dim]No conversation history.[/dim]")

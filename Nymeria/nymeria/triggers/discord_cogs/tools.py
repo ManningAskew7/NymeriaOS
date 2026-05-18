@@ -103,6 +103,8 @@ class ToolsCog(commands.Cog):
         user_id = await self.bot._resolve_or_reject_interaction(interaction)
         if user_id is None:
             return
+        if interaction.channel_id is None:
+            return
         try:
             thread_id = make_thread_id(
                 interaction.guild_id, interaction.channel_id
@@ -143,6 +145,8 @@ class ToolsCog(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
         """Autocomplete for tool/category names."""
+        if interaction.channel_id is None:
+            return []
         try:
             cat_data = await self.bot.api.get_tool_categories()
             categories = cat_data.get("categories", {})

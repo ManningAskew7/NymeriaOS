@@ -485,6 +485,7 @@ class FullScreenPromptToolkitShell:
         return True
 
     async def _run_command(self, raw_input: str) -> CommandResult:
+        assert self.command_registry is not None
         output = ListCommandOutputSink()
         context = CommandContext(
             client=self.client,

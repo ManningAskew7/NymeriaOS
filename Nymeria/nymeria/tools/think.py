@@ -80,9 +80,9 @@ def consult(
 
     messages.append({"role": "user", "content": user_content})
 
-    try:
-        import httpx
+    import httpx
 
+    try:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

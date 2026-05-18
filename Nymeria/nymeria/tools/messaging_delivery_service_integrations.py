@@ -1473,7 +1473,7 @@ def mailjet_send_email(
         variables = _parse_json(variables_json, expected=dict, label="variables_json")
         if variables:
             message["Variables"] = variables
-        body = {"Messages": [message]}
+        body: dict[str, Any] = {"Messages": [message]}
         if sandbox_mode:
             body["SandboxMode"] = True
         base_url, headers_or_error = _mailjet_email_config("mailjet_send_email", config)

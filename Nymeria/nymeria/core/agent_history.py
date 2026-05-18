@@ -882,7 +882,7 @@ def _append_tool_call_steps(
                 "content": text_content,
             })
         for tc in msg.tool_calls:
-            tool_call_id = tc.get("id", "")
+            tool_call_id = tc.get("id") or ""
             current_turn["steps"].append(
                 _tool_call_step(
                     tool_call_id=tool_call_id,

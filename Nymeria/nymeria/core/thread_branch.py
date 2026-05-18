@@ -538,7 +538,8 @@ def _thread_owner(agent: Any, thread_id: str) -> str | None:
     getter = getattr(agent.accounts_repo, "get_thread_owner", None)
     if not callable(getter):
         return None
-    return getter(thread_id)
+    result = getter(thread_id)
+    return str(result) if result is not None else None
 
 
 def _cleanup_failed_branch(

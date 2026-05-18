@@ -234,6 +234,7 @@ def create_skill_meta_tool(
         binding_text = ""
         binding_reload_queued = False
         binding_cap_hit = False
+        binding = None
         if skill.required_tools:
             from ..tools.tool_search import bind_tools_for_thread
             from ..tools.utils import get_thread_id, get_user_id
@@ -324,7 +325,7 @@ def create_skill_meta_tool(
                     "to enable those tools on this thread before proceeding."
                 )
 
-        if binding_reload_queued:
+        if binding_reload_queued and binding is not None:
             if should_emit_reload_command(binding.reload_tools):
                 body += (
                     "\n\n---\n"

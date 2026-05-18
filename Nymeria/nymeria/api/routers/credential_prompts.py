@@ -162,6 +162,11 @@ def create_credential_prompts_router(
             )
 
         final_record = repo.get_credential(updated.id)
+        if final_record is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Credential {updated.id} not found after save",
+            )
         coordinator.resolve(
             prompt_id,
             {
@@ -183,10 +188,11 @@ def create_credential_prompts_router(
                 "status": "active",
             },
         )
+        prompt_state = coordinator.get(prompt_id)
         return CredentialPromptSubmitResponse(
             ok=True,
             status="active",
-            attempts=coordinator.get(prompt_id).attempts if coordinator.get(prompt_id) else 0,
+            attempts=prompt_state.attempts if prompt_state else 0,
             credential=credential_to_response(final_record),
         )
 

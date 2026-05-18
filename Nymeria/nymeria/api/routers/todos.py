@@ -336,6 +336,11 @@ def create_todos_router(
             # Re-fetch the updated item (still in memory)
             updated_item = todo_list.get_item(todo_id)
 
+        if updated_item is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TODO '{todo_id}' not found after update",
+            )
         # Sync schedule AFTER atomic_update saves the file
         # (sync_schedule_to_db reads from disk, so file must be saved first)
         todo_manager.sync_schedule_to_db(user_id, updated_item.id, schedule_db)
@@ -444,6 +449,11 @@ def create_todos_router(
 
             # Re-fetch the updated item
             item = todo_list.get_item(todo_id)
+            if item is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"TODO '{todo_id}' not found after completion",
+                )
 
             # Sync schedule
             if has_recurrence and item.scheduled_for:

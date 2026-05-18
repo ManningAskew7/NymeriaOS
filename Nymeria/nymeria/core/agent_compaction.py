@@ -708,6 +708,7 @@ class CompactionManager:
             max_workers=1,
             thread_name_prefix="nymeria-compact-summary",
         )
+        future: Optional[concurrent.futures.Future] = None
         try:
             future = executor.submit(
                 graph.invoke,
@@ -722,7 +723,8 @@ class CompactionManager:
                 thread_id,
                 COMPACTION_TIMEOUT_SECONDS,
             )
-            future.cancel()
+            if future is not None:
+                future.cancel()
             return None
         except Exception as e:
             logger.error(

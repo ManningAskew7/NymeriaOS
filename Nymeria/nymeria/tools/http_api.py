@@ -486,6 +486,7 @@ def _http_request_impl(
     normalized_url, url_error = _normalize_url(url)
     if url_error:
         return _request_error("validation_error", url_error)
+    assert normalized_url is not None  # guaranteed when url_error is None
 
     parsed_headers, header_error = _coerce_headers(headers)
     if header_error:
@@ -856,7 +857,7 @@ def _extract_spec_urls_from_text(text: str, base_url: str, limit: int = 20) -> l
                 continue
             absolute = urljoin(base_url, candidate)
             normalized, error = _normalize_url(absolute)
-            if error or normalized in seen:
+            if error or normalized is None or normalized in seen:
                 continue
             seen.add(normalized)
             urls.append(normalized)
@@ -949,6 +950,7 @@ def _api_discover_impl(
             found=False,
             error={"type": "validation_error", "message": base_error},
         )
+    assert normalized_base is not None  # guaranteed when base_error is None
 
     if docs_url:
         candidate_docs_url = docs_url if urlparse(docs_url).scheme else urljoin(normalized_base.rstrip("/") + "/", docs_url)

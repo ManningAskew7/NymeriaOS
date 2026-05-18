@@ -13,7 +13,7 @@ import os
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, NoReturn, Optional
 from urllib.parse import quote
 
 import httpx
@@ -237,7 +237,7 @@ def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> s
     return str(exc)
 
 
-def _raise_http_status(status_code: int, detail: str) -> None:
+def _raise_http_status(status_code: int, detail: str) -> NoReturn:
     """Raise an HTTPStatusError compatible with the legacy command executor."""
     request = httpx.Request("COMMAND", "nymeria://command-service")
     response = httpx.Response(
@@ -1135,6 +1135,8 @@ class CommandBackendClient:
                 todo_manager.sync_schedule_to_db(target_user_id, todo_id, schedule_db)
             else:
                 schedule_db.remove_scheduled(todo_id)
+            if item is None:
+                _raise_http_status(404, f"TODO '{todo_id}' not found after completion")
             return _todo_to_response(item).model_dump(mode="json")
 
     async def delete_todo(self, user_id: str, todo_id: str) -> dict:

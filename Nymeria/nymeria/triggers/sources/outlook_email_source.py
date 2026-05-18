@@ -153,6 +153,9 @@ class OutlookEmailSource(BaseTriggerSource):
         from nymeria.tools.outlook_email import get_access_token, GRAPH_BASE
 
         account_id = config.get("account_id")
+        if not isinstance(account_id, str):
+            logger.debug("outlook_email source: no account_id configured, skipping")
+            return []
         folder = config.get("folder", "inbox")
         unread_only = config.get("unread_only", True)
         from_filter = config.get("from_filter")

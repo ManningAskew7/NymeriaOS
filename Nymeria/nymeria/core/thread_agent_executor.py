@@ -318,7 +318,7 @@ def _run_callable_stream(
 
 
 def invoke(thread_id: str, task: str, caller_user_id: str, callable_name: str,
-           trigger_override: str = None) -> str:
+           trigger_override: str | None = None) -> str:
     """Delegate a task to a callable thread via NymeriaAgent.astream().
 
     Streams events in real-time to the event bus so the frontend can display
@@ -407,6 +407,8 @@ def handoff(
             scheduled_for=scheduled_for.strip(),
         )
 
+    if agent is None:
+        return "[Error]: NymeriaAgent not initialized."
     if if_busy == "error" and agent._thread_locks.is_thread_busy(thread_id):
         return (
             f"[Busy]: {callable_name} is busy on thread '{thread_id}'. "

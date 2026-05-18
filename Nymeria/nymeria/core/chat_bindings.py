@@ -275,7 +275,7 @@ class ChatBindingsRepo:
             except sqlite3.IntegrityError as e:
                 raise BindingAlreadyExists(str(e)) from e
             return ThreadPlatformBinding(
-                id=int(cur.lastrowid),
+                id=int(cur.lastrowid or 0),
                 thread_id=thread_id,
                 provider=provider,
                 platform_chat_id=str(platform_chat_id),
@@ -370,7 +370,7 @@ class ChatBindingsRepo:
                 raise BindingAlreadyExists(str(e)) from e
             return (
                 ThreadPlatformBinding(
-                    id=int(cur.lastrowid),
+                    id=int(cur.lastrowid or 0),
                     thread_id=thread_id,
                     provider=provider,
                     platform_chat_id=chat_id,
@@ -650,7 +650,7 @@ class ChatBindingsRepo:
             except sqlite3.IntegrityError as e:
                 raise BotAlreadyRegistered(str(e)) from e
             return UserTelegramBot(
-                id=int(cur.lastrowid),
+                id=int(cur.lastrowid or 0),
                 owner_user_id=owner_user_id,
                 bot_username=bot_username,
                 enabled=True,

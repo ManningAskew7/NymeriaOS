@@ -329,6 +329,12 @@ class BrowserThread:
         if command != "close" and self._page is None:
             self._ensure_page()
 
+        if command == "close":
+            self._cleanup()
+            return "closed"
+
+        assert self._page is not None  # guaranteed by _ensure_page()
+
         if command == "navigate":
             url = args["url"]
             logger.info(f"Navigating to {url}")
@@ -395,15 +401,12 @@ class BrowserThread:
             self._page.keyboard.press(args["key"])
             return "pressed"
 
-        elif command == "close":
-            self._cleanup()
-            return "closed"
-
         else:
             raise ValueError(f"Unknown command: {command}")
 
     def _ensure_page(self):
         """Ensure browser and page are ready."""
+        assert self._playwright is not None  # set by _run() before commands execute
         if self._browser is None or not self._browser.is_connected():
             headless = _should_run_headless()
             logger.info(f"Launching Chromium in {'headless' if headless else 'visible'} mode")

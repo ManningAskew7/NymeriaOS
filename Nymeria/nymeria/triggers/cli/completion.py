@@ -9,6 +9,8 @@ from typing import Sequence
 def _collect_subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
     """Extract subcommand name → sub-parser mapping."""
     result: dict[str, argparse.ArgumentParser] = {}
+    if parser._subparsers is None:
+        return result
     for action in parser._subparsers._actions:
         if isinstance(action, argparse._SubParsersAction):
             for name, subparser in action.choices.items():
@@ -134,11 +136,12 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
     for name, subparser in sorted(subcommands.items()):
         desc = (subparser.description or "").split("\n")[0].strip()
         if not desc:
-            for action in parser._subparsers._actions:
-                if isinstance(action, argparse._SubParsersAction):
-                    help_text = action.choices.get(name)
-                    if help_text and hasattr(help_text, "description"):
-                        desc = (help_text.description or "").split("\n")[0].strip()
+            if parser._subparsers is not None:
+                for action in parser._subparsers._actions:
+                    if isinstance(action, argparse._SubParsersAction):
+                        help_text = action.choices.get(name)
+                        if help_text and hasattr(help_text, "description"):
+                            desc = (help_text.description or "").split("\n")[0].strip()
             if not desc:
                 desc = name
         desc = desc.replace("'", "'\\''")
@@ -229,14 +232,15 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
 
     for name, subparser in sorted(subcommands.items()):
         desc = name
-        for action in parser._subparsers._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                sp = action.choices.get(name)
-                if sp:
-                    raw = getattr(sp, "description", "") or ""
-                    first = raw.split("\n")[0].strip()
-                    if first:
-                        desc = first
+        if parser._subparsers is not None:
+            for action in parser._subparsers._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    sp = action.choices.get(name)
+                    if sp:
+                        raw = getattr(sp, "description", "") or ""
+                        first = raw.split("\n")[0].strip()
+                        if first:
+                            desc = first
         desc = desc.replace("'", "\\'")
         lines.append(
             f"complete -c nymeria -c run.py -n __nymeria_no_subcommand "
