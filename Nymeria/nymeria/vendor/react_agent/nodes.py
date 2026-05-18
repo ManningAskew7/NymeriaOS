@@ -12,14 +12,15 @@ import json
 import logging
 import time
 from dataclasses import dataclass, replace
-from typing import Any, List, Callable, Optional
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, HumanMessage, ToolMessage
+from typing import Any, Callable, List, Literal, Optional, cast
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, SystemMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
+from pydantic import BaseModel
 
 from .cliproxy import CLIPROXY_BILLING_SYSTEM_BLOCK, looks_like_cliproxy_url
 from .state import AgentState
@@ -1168,6 +1169,160 @@ class SafeToolNode(ToolNode):
         self._tool_timeout = tool_timeout if tool_timeout is not None else self.DEFAULT_TOOL_TIMEOUT
         self._on_timeout = on_timeout  # Optional callback: fn(input_dict, config=None) -> None
         self._tool_output_max_chars = tool_output_max_chars
+        self._json_arg_expectations: dict[str, dict[str, set[str]]] = {}
+
+    @staticmethod
+    def _resolve_json_schema_ref(ref: str, root_schema: dict[str, Any]) -> dict[str, Any] | None:
+        if not ref.startswith("#/"):
+            return None
+        target: Any = root_schema
+        for raw_part in ref[2:].split("/"):
+            part = raw_part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(target, dict) or part not in target:
+                return None
+            target = target[part]
+        return target if isinstance(target, dict) else None
+
+    @classmethod
+    def _schema_allows_json_type(
+        cls,
+        field_schema: dict[str, Any],
+        json_type: str,
+        root_schema: dict[str, Any],
+        seen_refs: set[str] | None = None,
+    ) -> bool:
+        schema_type = field_schema.get("type")
+        if schema_type == json_type:
+            return True
+        if isinstance(schema_type, list) and json_type in schema_type:
+            return True
+
+        ref = field_schema.get("$ref")
+        if isinstance(ref, str):
+            seen_refs = seen_refs or set()
+            if ref in seen_refs:
+                return False
+            resolved = cls._resolve_json_schema_ref(ref, root_schema)
+            if resolved is not None:
+                return cls._schema_allows_json_type(
+                    resolved,
+                    json_type,
+                    root_schema,
+                    seen_refs | {ref},
+                )
+
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            variants = field_schema.get(union_key)
+            if isinstance(variants, list) and any(
+                isinstance(variant, dict)
+                and cls._schema_allows_json_type(
+                    variant,
+                    json_type,
+                    root_schema,
+                    seen_refs,
+                )
+                for variant in variants
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _tool_schema(tool: BaseTool) -> dict[str, Any]:
+        for attr in ("tool_call_schema", "args_schema"):
+            schema_obj = getattr(tool, attr, None)
+            if schema_obj is None:
+                continue
+            if isinstance(schema_obj, dict):
+                return schema_obj
+            if hasattr(schema_obj, "model_json_schema"):
+                try:
+                    return schema_obj.model_json_schema()
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Failed to inspect tool schema for %s via %s",
+                        getattr(tool, "name", "<unknown>"),
+                        attr,
+                        exc_info=True,
+                    )
+        return {}
+
+    def _json_arg_types_for_tool(self, tool: BaseTool) -> dict[str, set[str]]:
+        cached = self._json_arg_expectations.get(tool.name)
+        if cached is not None:
+            return cached
+
+        schema = self._tool_schema(tool)
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        expectations: dict[str, set[str]] = {}
+        if isinstance(properties, dict):
+            for arg_name, field_schema in properties.items():
+                if not isinstance(field_schema, dict):
+                    continue
+                expected: set[str] = set()
+                if self._schema_allows_json_type(field_schema, "array", schema):
+                    expected.add("array")
+                if self._schema_allows_json_type(field_schema, "object", schema):
+                    expected.add("object")
+                if expected:
+                    expectations[arg_name] = expected
+
+        self._json_arg_expectations[tool.name] = expectations
+        return expectations
+
+    def _normalize_tool_call_args(self, call: ToolCall) -> ToolCall:
+        tool_name = call.get("name")
+        tool = self.tools_by_name.get(tool_name) if isinstance(tool_name, str) else None
+        args = call.get("args")
+        if tool is None or not isinstance(args, dict):
+            return call
+
+        expectations = self._json_arg_types_for_tool(tool)
+        if not expectations:
+            return call
+
+        normalized_args = args
+        for arg_name, value in args.items():
+            expected_types = expectations.get(arg_name)
+            if not expected_types or not isinstance(value, str):
+                continue
+            raw = value.strip()
+            if not raw or raw[0] not in "[{":
+                continue
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            parsed_type = None
+            if isinstance(parsed, list):
+                parsed_type = "array"
+            elif isinstance(parsed, dict):
+                parsed_type = "object"
+            if parsed_type is None or parsed_type not in expected_types:
+                continue
+
+            if normalized_args is args:
+                normalized_args = dict(args)
+            normalized_args[arg_name] = parsed
+            logger.debug(
+                "Decoded JSON-encoded tool argument: tool=%s arg=%s type=%s",
+                tool_name,
+                arg_name,
+                parsed_type,
+            )
+
+        if normalized_args is args:
+            return call
+        normalized_call = cast(ToolCall, dict(call))
+        normalized_call["args"] = normalized_args
+        return normalized_call
+
+    def _parse_input(
+        self,
+        input: list[AnyMessage] | dict[str, Any] | BaseModel,
+    ) -> tuple[list[ToolCall], Literal["list", "dict", "tool_calls"]]:
+        tool_calls, input_type = super()._parse_input(input)
+        return [self._normalize_tool_call_args(call) for call in tool_calls], input_type
 
     def _notify_timeout(self, input, config=None) -> None:
         """Invoke the timeout hook while preserving legacy one-argument hooks."""

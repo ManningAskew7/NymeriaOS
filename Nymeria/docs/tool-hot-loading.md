@@ -59,6 +59,32 @@ routes to `END` when the latest tool-result batch contains that marker;
 otherwise it routes back to the agent normally. This guards the reload boundary
 even when LangGraph also sees a regular post-tools edge.
 
+## Tool-Call Argument Boundary
+
+On 2026-05-18, `tool_enable(action="enable", tools=["random_cat_fact"], ttl="30m")`
+regressed with Claude Opus 4.6 through CLIProxy: the model/provider path emitted
+the `tools` argument as the JSON-encoded string `"[\"random_cat_fact\"]"` instead
+of a JSON array. Pydantic correctly rejected that value before `tool_enable`
+executed because the tool schema expects `tools: Optional[List[str]]`.
+
+The schema and tool signature were unchanged, and `tool_enable(action="status")`
+continued to work. That isolated the failure to list-typed tool-call arguments
+at the LLM/tool-adapter boundary, not to dynamic tool binding itself.
+
+`SafeToolNode` now normalizes this boundary before dispatch:
+
+- It inspects the target tool's JSON schema.
+- It only attempts JSON decoding for fields whose schema allows `array` or
+  `object`.
+- It only replaces the value when the decoded value has the expected JSON type.
+- It leaves scalar string fields unchanged, including strings that merely look
+  JSON-like but are not schema-declared arrays or objects.
+
+This is intentionally a narrow guard. Pydantic still performs final validation,
+and dependency pins in `requirements*.txt` and `pyproject.toml` prevent silent
+LangChain/LangGraph/provider adapter drift from changing this behavior again
+without an explicit update.
+
 ## Skill Kit Binding
 
 Skill Kits use the same reload path as `tool_enable`. When `Skill(name=...)`
