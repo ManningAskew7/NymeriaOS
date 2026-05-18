@@ -119,7 +119,6 @@ Nymeria/
 │   │   ├── todo_schedule_db.py  # SQLite schedule index for polling
 │   │   ├── ticker.py       # Global polling thread for scheduled TODO execution
 │   │   ├── event_bus.py    # Pub/sub for streaming autonomous events to frontend
-│   │   ├── response_handler.py  # Autonomous response data model
 │   │   ├── activity_log.py # Activity feed logging
 │   │   ├── notifications.py # Push notification storage
 │   │   ├── thread_deletion.py # Thread cascade deletion (TODOs, triggers, callable bindings)
@@ -136,27 +135,25 @@ Nymeria/
 │   │   ├── claude_code.py  # Claude Code integration
 │   │   ├── memory.py       # User memory + RAG search tools
 │   │   ├── todo.py         # TODO management with scheduling
-│   │   ├── custom_tools.py # Custom tool CRUD/runtime support
+│   │   ├── tool_create.py  # User-defined HTTP/MCP tool creation
 │   │   ├── notify.py       # Unified Telegram/Discord/Slack notifications
 │   │   ├── triggers.py     # Event-driven trigger CRUD
 │   │   ├── browser.py      # Native Playwright browser automation (9 tools)
 │   │   ├── outlook_auth.py # Microsoft OAuth authentication (4 tools)
 │   │   └── outlook_email.py # Outlook email via Graph API (13 tools)
-│   ├── agents/             # Callable-thread tool helpers and built-in agent presets
+│   ├── agents/             # Callable-thread tool helpers
 │   │   ├── __init__.py
-│   │   ├── tool_factory.py # Generates direct tool bindings for callable threads
-│   │   ├── browser_agent.py
-│   │   ├── outlook_agent.py
-│   │   ├── calendar_agent.py
-│   │   └── self_modify_agent.py
+│   │   └── tool_factory.py # Generates direct tool bindings for callable threads
 │   ├── triggers/           # CLI, API, and event-driven interfaces
 │   │   ├── cli/            # Interactive terminal (app.py, input.py, state.py, commands/, rendering/)
 │   │   ├── api.py          # FastAPI REST server + /autonomous/stream SSE
 │   │   ├── trigger_api.py  # Trigger CRUD endpoints (mounted on the FastAPI app)
-│   │   ├── webhook.py      # Incoming webhook handlers (Telegram/Discord/Slack)
-│   │   ├── discord_bot.py  # Discord gateway bot
-│   │   ├── telegram_bot.py # Telegram polling bot (shared + per-user BYO)
-│   │   ├── twitch_bot.py   # TwitchIO bot with pulse/moderation support
+│   │   ├── discord_bot.py  # Discord gateway bot (+ matrix_bot, mattermost_bot,
+│   │   │                   #   zulip_bot, rocketchat_bot, signal_bot, slack_bot,
+│   │   │                   #   telegram_bot, twitch_bot for native-protocol bots;
+│   │   │                   #   whatsapp_bot, messenger_bot, instagram_bot, webex_bot,
+│   │   │                   #   teams_bot, google_chat_bot, line_bot as API-hosted
+│   │   │                   #   webhook runtimes)
 │   │   ├── watchdog_worker.py # Thin-client watchdog worker
 │   │   └── sources/        # Event-driven trigger source plugins
 │   │       ├── base.py     # Abstract TriggerSource

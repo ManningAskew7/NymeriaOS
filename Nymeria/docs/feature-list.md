@@ -162,7 +162,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ---
 
-## 5. Tool System (90+ Tools)
+## 5. Tool System (1,200+ Tools)
 
 ### Core Tools (Always Loaded)
 
@@ -278,11 +278,12 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ## 9. Multi-Model & External Reasoning
 
 ### Provider Support
-- **Anthropic** (native) — Claude Opus, Sonnet, Haiku
-- **OpenAI** — GPT-4o and compatible
-- **OpenRouter** — 200+ models
-- **Local LLMs** — llama.cpp, KoboldCpp, LM Studio, Ollama via OpenAI-compatible API
-- **CLIProxyAPI** — Proxy for Claude Max subscription access
+130+ providers registered in `nymeria/config/llm_providers.py`. Categories:
+- **Anthropic** (native `anthropic_messages` API) — Claude Opus, Sonnet, Haiku
+- **OpenAI-chat-compatible registry** — OpenAI, OpenRouter (200+ models), xAI, Google (Gemini + Vertex), Groq, DeepSeek, Mistral, Azure OpenAI, Azure Foundry, Together, Fireworks, Perplexity, Cohere, and ~120 more
+- **Local LLMs** — llama.cpp, KoboldCpp, LM Studio, Ollama via the OpenAI-chat path
+- **CLIProxyAPI** — Proxy for Claude Max subscription access (auto-detected from `LLM_BASE_URL`)
+- **Per-thread overrides** — `core/thread_config.py` `ThreadLLMConfig` (provider/model/base_url/api_key)
 
 ### Consult Tool
 - **Cross-model second opinion** — Ask Gemini 3 Pro / 2.5 Pro / 2.5 Flash via OpenRouter
@@ -433,12 +434,25 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 ### Docker Compose Stack
 | Container | Port | Purpose |
 |-----------|------|---------|
-| nymeria-api | 8000 | FastAPI REST API + SSE streaming |
+| nymeria-api | 8000 | FastAPI REST API + SSE streaming (also hosts WhatsApp/Messenger/Instagram/Webex/Teams/Google Chat/LINE webhook runtimes) |
 | nymeria-worker | — | Ticker daemon for autonomous tasks |
+| nymeria-watchdog | — | Thin-client watchdog worker |
 | nymeria-mcp | 8001 | MCP server (HTTP mode) |
 | nymeria-postgres | 5432 | PostgreSQL 15 |
 | nymeria-redis | 6379 | Redis event bus |
-| cli-proxy-api | 8317 | CLIProxyAPI (Claude Max subscription proxy) |
+| nymeria-caddy | 80/443 | Reverse proxy / TLS terminator |
+| nymeria-discord-bot | — | Discord gateway bot |
+| nymeria-telegram-bot | — | Telegram bot |
+| nymeria-slack-bot | — | Slack bot |
+| nymeria-matrix-bot | — | Matrix bot |
+| nymeria-mattermost-bot | — | Mattermost bot |
+| nymeria-zulip-bot | — | Zulip bot |
+| nymeria-rocketchat-bot | — | Rocket.Chat bot |
+| nymeria-signal-bot | — | Signal bot |
+| nymeria-qwen3-tts | — | TTS service |
+| nymeria-faster-whisper | — | STT service |
+
+CLIProxyAPI runs as a separate stack from `/opt/NymeriaOS/CLIProxyAPI-main/` (not part of `Nymeria/docker-compose.yml`). The Twitch bot runs as a standalone runtime, not a compose service.
 
 ### Other Modes
 - **Local dev** — `python run.py api|cli|worker|mcp`

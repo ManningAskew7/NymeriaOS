@@ -36,9 +36,9 @@ Nymeria is organized into:
 - Sync and async streaming paths
 - Custom tool loading and hot reload
 
-Execution limits:
-- Main agent max iterations: `70`
-- Callable-thread default max iterations: `25`
+Execution limits (`core/agent.py`):
+- `MAIN_AGENT_MAX_ITERATIONS = 500`
+- `CALLABLE_DEFAULT_MAX_ITERATIONS = 300`
 
 ### Time and Context
 
@@ -92,9 +92,13 @@ Ticker behavior (`core/ticker.py`):
 
 ### Triggered Work
 
-Event-driven automation is supported by trigger sources:
-- `webhook`
-- `outlook_email`
+Event-driven automation is supported by trigger sources (`triggers/sources/`):
+- `webhook` (generic incoming)
+- `outlook_email` (polls Microsoft Graph for new mail)
+- `rss` (feed polling)
+- `http_poll` (generic HTTP polling)
+- `slack` (Slack Events API source)
+- `teams` (Microsoft Teams events source)
 
 Triggers can perform actions:
 - `agent_prompt`
