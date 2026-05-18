@@ -8,26 +8,6 @@ from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 
-_LOCAL_OVERRIDES = {
-    "compact",
-    "exit",
-    "help",
-    "thread",
-}
-
-_BACKEND_OVERRIDES = {
-    "context",
-    "model",
-    "memory forget",
-    "memory list",
-    "memory save",
-    "memory search",
-    "tools core",
-    "tools disable",
-    "tools enable",
-    "tools optional",
-}
-
 _CLI_CATEGORY_MAP = {
     "LLM": "Model",
     "Memory": "Personal",
@@ -78,15 +58,19 @@ class BackendCommandProvider:
         return cls.from_service()
 
     def register(self, registry: CommandRegistry) -> None:
+        """Register every backend command as a CLI proxy.
+
+        Collisions with local CLI commands are handled by the registry's
+        backend-wins-over-local rule (see ``CommandRegistry.register``).
+        Protected builtins (``/help``, ``/cls``, ``/exit``) are preserved by
+        the registry's builtin protection. No whitelists are needed here.
+        """
         for info in self.commands:
             execution_kind = str(info.get("execution_kind") or "command")
             if execution_kind not in {"command", "chat_stream"}:
                 continue
             path = _path(info)
             if not path:
-                continue
-            if path[0] in _LOCAL_OVERRIDES:
-                _mark_local_override(registry, path)
                 continue
             self._register_path(registry, info, path)
 
@@ -97,49 +81,18 @@ class BackendCommandProvider:
         path: tuple[str, ...],
     ) -> None:
         if len(path) == 1:
-            self._register_root(registry, info, path)
+            registry.register(_backend_command(info, path))
             return
         root = registry.get(path[0])
         if root is None:
-            root = _backend_group_command(path[0], info)
-            registry.register(root)
-
-        existing = root.subcommands.get(path[1])
-        label = " ".join(path)
-        if existing is not None and label not in _BACKEND_OVERRIDES:
-            raise ValueError(
-                f"CLI command /{label} conflicts with backend command /{label}; "
-                "declare an explicit override before registering it."
-            )
+            registry.register(_backend_group_command(path[0], info))
+            root = registry.get(path[0])
 
         proxy = _backend_command(info, path, parent=root.name)
+        existing = root.subcommands.get(path[1])
         if existing is not None:
             proxy.aliases = sorted({*proxy.aliases, *existing.aliases})
         root.subcommands[path[1]] = proxy
-
-    def _register_root(
-        self,
-        registry: CommandRegistry,
-        info: Mapping[str, Any],
-        path: tuple[str, ...],
-    ) -> None:
-        existing = registry.get(path[0])
-        if existing is None:
-            registry.register(_backend_command(info, path))
-            return
-        label = path[0]
-        if label not in _BACKEND_OVERRIDES:
-            raise ValueError(
-                f"CLI command /{label} conflicts with backend command /{label}; "
-                "declare an explicit override before registering it."
-            )
-        proxy = _backend_command(info, path)
-        existing.description = proxy.description
-        existing.usage = proxy.usage
-        existing.handler = proxy.handler
-        existing.handler_mode = proxy.handler_mode
-        existing.category = proxy.category
-        existing.metadata.update(proxy.metadata)
 
 
 def register(registry: CommandRegistry) -> None:
@@ -164,7 +117,7 @@ def _backend_group_command(root: str, info: Mapping[str, Any]) -> Command:
         handler=_handle_group,
         handler_mode="context",
         category=category,
-        metadata={"backend_group": True},
+        metadata={"backend_command": True, "backend_group": True},
     )
 
 
@@ -301,13 +254,6 @@ def _alias_belongs_to_parent(alias: str, parent: str | None) -> bool:
         return " " not in alias.strip().lstrip("/")
     normalized = alias.strip().lstrip("/")
     return normalized.startswith(f"{parent} ")
-
-
-def _mark_local_override(registry: CommandRegistry, path: tuple[str, ...]) -> None:
-    command = registry.get(path[0])
-    if command is None:
-        return
-    command.metadata.setdefault("backend_override", " ".join(path))
 
 
 __all__ = ["BackendCommandProvider", "register"]

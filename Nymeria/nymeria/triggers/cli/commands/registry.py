@@ -110,7 +110,20 @@ class CommandRegistry:
         )
 
     def register(self, command: Command) -> None:
-        """Register a command and its aliases."""
+        """Register a command and its aliases.
+
+        Resolution rules when a command with the same name already exists:
+
+        1. **Builtins win.** `_PROTECTED_BUILTINS` (help/cls/exit) cannot be
+           replaced by non-builtin registrations; only their aliases merge in.
+        2. **Backend wins over local.** When one side has
+           ``metadata["backend_command"] = True`` and the other does not, the
+           backend command takes the root (handler/description/aliases) and
+           the local side's subcommands are merged in for any name the backend
+           hasn't already claimed. This is order-independent.
+        3. **Otherwise, replace.** Last registration wins for same-tier
+           collisions (two locals or two backend entries).
+        """
 
         normalized = _normalize_token(command.name)
         if not normalized:
@@ -127,6 +140,26 @@ class CommandRegistry:
         ):
             self._merge_aliases(existing, command.aliases)
             return
+
+        if existing is not None:
+            existing_is_backend = bool(existing.metadata.get("backend_command"))
+            incoming_is_backend = bool(command.metadata.get("backend_command"))
+            if existing_is_backend and not incoming_is_backend:
+                # Backend root already registered; merge in any local
+                # subcommands the backend has not already claimed.
+                for sub_name, sub in command.subcommands.items():
+                    existing.subcommands.setdefault(sub_name, sub)
+                return
+            if incoming_is_backend and not existing_is_backend:
+                # Backend overrides local root, but local subcommands survive
+                # under it for any name the backend has not claimed.
+                for sub_name, sub in existing.subcommands.items():
+                    command.subcommands.setdefault(sub_name, sub)
+                self._remove_aliases_for(existing.name)
+                self._commands[normalized] = command
+                for alias in command.aliases:
+                    self._aliases[_normalize_token(alias)] = normalized
+                return
 
         if existing is not None:
             self._remove_aliases_for(existing.name)
