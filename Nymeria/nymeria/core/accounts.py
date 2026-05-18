@@ -170,7 +170,8 @@ CREATE TABLE IF NOT EXISTS user_tokens (
     revoked_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_tokens_user ON user_tokens(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_tokens_expires ON user_tokens(expires_at);
+-- idx_user_tokens_expires is created in _migrate_token_expiry after the
+-- column exists; legacy DBs predate expires_at and would crash here.
 
 CREATE TABLE IF NOT EXISTS thread_owners (
     thread_id  TEXT PRIMARY KEY,
