@@ -418,12 +418,12 @@ def test_hexstrike_dockerfile_drops_to_non_root_user() -> None:
     assert user_directives[-1] == "USER hexstrike"
 
 
-def test_security_sensitive_dependency_floors_are_bumped() -> None:
+def test_security_sensitive_dependency_floors_or_pins_are_bumped() -> None:
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     expected = {
         "fastapi>=0.136.1,<1.0.0",
         "starlette>=1.0.0,<2.0.0",
-        "pydantic>=2.9.2,<3.0.0",
+        "pydantic==2.13.4",
         "httpx>=0.27.1,<1.0.0",
         "requests>=2.32.0,<3.0.0",
         "urllib3>=2.2.2,<3.0.0",
