@@ -1217,6 +1217,7 @@ def create_settings_router(
                 docs_url=spec.docs_url,
                 notes=spec.notes,
                 aliases=list(spec.aliases),
+                verified=spec.verified,
             )
             for spec in list_llm_provider_specs()
         ]

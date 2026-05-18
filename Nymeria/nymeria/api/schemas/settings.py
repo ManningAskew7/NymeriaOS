@@ -27,6 +27,7 @@ class LLMProviderSpecResponse(BaseModel):
     docs_url: Optional[str] = None
     notes: str = ""
     aliases: list[str] = Field(default_factory=list)
+    verified: bool = False
 
 
 class ServerSettingsResponse(BaseModel):

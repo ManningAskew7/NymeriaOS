@@ -42,6 +42,11 @@ class LLMProviderSpec:
     docs_url: str | None = None
     notes: str = ""
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    # End-to-end smoke-tested in Nymeria (tool calls + streaming).
+    # Default False — chat-completions "compatibility" is uneven across providers
+    # (tool_call deltas, response_format, finish_reason, usage), so any provider
+    # we haven't actually exercised should warn the user at startup.
+    verified: bool = False
 
 
 def _spec(
@@ -61,6 +66,7 @@ def _spec(
     requires_base_url: bool = False,
     api_format: str = "openai_chat",
     supports_chat_completions: bool = True,
+    verified: bool = False,
 ) -> LLMProviderSpec:
     return LLMProviderSpec(
         id=provider_id,
@@ -78,6 +84,7 @@ def _spec(
         requires_api_key=requires_api_key,
         default_api_mode=default_api_mode,
         requires_base_url=requires_base_url,
+        verified=verified,
     )
 
 
@@ -97,6 +104,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         api_format="anthropic_messages",
         supports_chat_completions=False,
         aliases=("claude",),
+        verified=True,
     ),
     _spec(
         "openai",
@@ -107,6 +115,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://platform.openai.com/docs/api-reference/chat/create",
         supports_responses=True,
         default_api_mode="responses",
+        verified=True,
     ),
     _spec(
         "openrouter",
@@ -117,6 +126,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://openrouter.ai/docs/api-reference/chat-completion",
         supports_responses=True,
         default_api_mode="responses",
+        verified=True,
     ),
     _spec(
         "azure-openai",
@@ -813,6 +823,12 @@ def provider_supports_responses(provider: str | None) -> bool:
 def provider_requires_api_key(provider: str | None) -> bool:
     spec = get_llm_provider_spec(provider)
     return True if spec is None else spec.requires_api_key
+
+
+def is_provider_verified(provider: str | None) -> bool:
+    """Return True if the provider has been smoke-tested end-to-end in Nymeria."""
+    spec = get_llm_provider_spec(provider)
+    return bool(spec and spec.verified)
 
 
 def provider_default_api_mode(provider: str | None) -> ApiMode:
