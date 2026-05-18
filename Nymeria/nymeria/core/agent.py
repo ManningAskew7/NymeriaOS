@@ -12,7 +12,6 @@ from langchain_core.tools import BaseTool
 
 from ..vendor.react_agent import (
     CheckpointerConfig,
-    LLMFallbackConfig,
     LLMConfig,
     ToolRegistry,
 )
@@ -25,12 +24,6 @@ from ..vendor.react_agent.nodes import (
 )
 
 from ..config import Settings, get_settings
-from ..config.llm_providers import (
-    ALL_LLM_PROVIDERS,
-    normalize_llm_provider,
-    resolve_provider_api_key,
-    resolve_provider_base_url,
-)
 from ..config.model_capabilities import get_context_limit
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
@@ -49,59 +42,9 @@ from .todo_schedule_db import TodoScheduleDB
 from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
-from .llm_credentials import (
-    get_llm_provider_credential,
-    resolve_credential_references,
-)
 from ..skills import SkillManager
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_thread_llm_override(thread_value: Any, global_value: Any) -> Any:
-    """Resolve a thread LLM override against its global fallback."""
-    if thread_value is None:
-        return global_value
-    if isinstance(thread_value, str) and thread_value == "":
-        return global_value
-    return thread_value
-
-
-_FALLBACK_PROVIDER_PREFIXES = {"custom", *ALL_LLM_PROVIDERS.keys()}
-
-
-def _parse_llm_fallback_models(value: Any) -> list[str]:
-    """Parse comma/newline-separated fallback model settings."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        raw_items = value.replace("\n", ",").split(",")
-    elif isinstance(value, (list, tuple)):
-        raw_items = value
-    else:
-        raw_items = [value]
-
-    models: list[str] = []
-    seen: set[str] = set()
-    for item in raw_items:
-        model = str(item or "").strip()
-        if not model or model in seen:
-            continue
-        seen.add(model)
-        models.append(model)
-    return models
-
-
-def _split_llm_fallback_ref(
-    value: str,
-    default_provider: str,
-) -> tuple[str, str]:
-    """Split provider:model fallback refs while preserving model IDs with colons."""
-    prefix, separator, remainder = str(value or "").partition(":")
-    provider = normalize_llm_provider(prefix.strip().casefold())
-    if separator and provider in _FALLBACK_PROVIDER_PREFIXES and remainder.strip():
-        return provider, remainder.strip()
-    return str(default_provider or "").strip(), str(value or "").strip()
 
 
 class ThreadLockManager:
@@ -1125,224 +1068,8 @@ class NymeriaAgent:
         }
 
     def _get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
-        """Build LLMConfig with per-thread overrides applied on top of global settings."""
-        tc = None
-        if thread_id:
-            tc_obj = self.thread_config_manager.get_config(thread_id)
-            if tc_obj:
-                tc = tc_obj.llm_config
-
-        def resolve(attr: str, global_value: Any) -> Any:
-            thread_value = getattr(tc, attr, None) if tc else None
-            return _resolve_thread_llm_override(thread_value, global_value)
-
-        provider = normalize_llm_provider(resolve("provider", self.settings.llm_provider))
-        global_provider = normalize_llm_provider(self.settings.llm_provider)
-        model = resolve("model", self.settings.llm_model)
-        temperature = resolve("temperature", self.settings.llm_temperature)
-        max_tokens = resolve("max_tokens", self.settings.llm_max_tokens)
-        extended_thinking = resolve("extended_thinking", self.settings.llm_extended_thinking)
-        reasoning_effort = resolve("reasoning_effort", self.settings.llm_reasoning_effort)
-        use_model_defaults = resolve("use_model_defaults", self.settings.llm_use_model_defaults)
-
-        top_p = self.settings.llm_top_p
-        frequency_penalty = self.settings.llm_frequency_penalty
-        presence_penalty = self.settings.llm_presence_penalty
-
-        # When use_model_defaults is enabled, don't send temperature/top_p/frequency_penalty/
-        # presence_penalty — let the provider apply model-specific optimal defaults.
-        if use_model_defaults:
-            temperature = None
-            top_p = None
-            frequency_penalty = None
-            presence_penalty = None
-
-        owner_user_id = (
-            self.accounts_repo.get_thread_owner(thread_id)
-            if thread_id and hasattr(self, "accounts_repo")
-            else None
-        )
-        credential_vault = getattr(self, "credential_vault", None)
-
-        provider_credentials: dict[str, Any] = {}
-
-        def vault_credential_for(credential_provider: str):
-            credential_provider = normalize_llm_provider(credential_provider)
-            if credential_provider not in provider_credentials:
-                provider_credentials[credential_provider] = get_llm_provider_credential(
-                    credential_provider,
-                    vault=credential_vault,
-                    owner_user_id=owner_user_id,
-                    thread_id=thread_id or None,
-                )
-            return provider_credentials[credential_provider]
-
-        def resolve_explicit_secret(value: str | None, credential_provider: str) -> str | None:
-            return resolve_credential_references(
-                value,
-                vault=credential_vault,
-                owner_user_id=owner_user_id,
-                provider=credential_provider,
-                thread_id=thread_id or None,
-            )
-
-        provider_credential = vault_credential_for(provider)
-
-        # Resolve base_url: per-thread override > global when the thread is using
-        # the global provider. Empty string ("") = explicit direct API.
-        if tc and tc.base_url is not None:
-            base_url = resolve_explicit_secret(tc.base_url or None, provider)
-        elif provider != global_provider:
-            # Per-thread provider differs from global. CLIProxy hosts both the
-            # anthropic OAuth path (port 8317 root) and the openai-compat path
-            # (port 8317 + /v1) on the same container, so derive the matching
-            # URL from the global one when it points at CLIProxy. Without this,
-            # the "Anthropic (Subscription)" per-thread option silently falls
-            # through to api.anthropic.com direct + ANTHROPIC_DIRECT_API_KEY,
-            # billing per-token instead of using the subscription.
-            global_url = (self.settings.llm_base_url or "").rstrip("/")
-            if (
-                provider == "anthropic"
-                and global_url
-                and ("cli-proxy" in global_url or "cliproxy" in global_url)
-            ):
-                base_url = global_url[:-3] if global_url.endswith("/v1") else global_url
-            else:
-                base_url = None
-        else:
-            base_url = resolve_explicit_secret(self.settings.llm_base_url, provider)
-
-        if not base_url and provider_credential and provider_credential.base_url:
-            base_url = provider_credential.base_url
-        if not base_url:
-            base_url = resolve_provider_base_url(
-                provider,
-                settings=self.settings,
-                include_default=False,
-            )
-
-        # Resolve API key: per-thread override → per-provider env key →
-        # generic proxy-mode key (global provider). Lets a thread point at a
-        # different CLIProxy sidecar with its own auth without touching
-        # global settings, while preserving today's behavior when no override
-        # is set.
-        api_key_override = resolve("api_key", None)
-        if api_key_override is not None:
-            api_key = resolve_explicit_secret(api_key_override, provider)
-        elif provider_credential and provider_credential.api_key:
-            api_key = provider_credential.api_key
-        else:
-            if provider == "anthropic":
-                # A configured Anthropic base_url means CLIProxy or another
-                # proxy; it expects ANTHROPIC_API_KEY (usually cpx-*). Only use
-                # ANTHROPIC_DIRECT_API_KEY for direct Anthropic calls.
-                api_key = (
-                    self.settings.anthropic_api_key
-                    if base_url
-                    else (
-                        self.settings.anthropic_direct_api_key
-                        or self.settings.anthropic_api_key
-                    )
-                )
-            else:
-                api_key = resolve_provider_api_key(provider, settings=self.settings)
-
-        def base_url_for_provider(fallback_provider: str) -> str | None:
-            if fallback_provider == provider:
-                return base_url
-            global_url = (self.settings.llm_base_url or "").rstrip("/")
-            fallback_credential = vault_credential_for(fallback_provider)
-            if fallback_provider == global_provider:
-                resolved_global_base = resolve_explicit_secret(
-                    self.settings.llm_base_url,
-                    fallback_provider,
-                )
-                if resolved_global_base:
-                    return resolved_global_base
-            if global_url and ("cli-proxy" in global_url or "cliproxy" in global_url):
-                if fallback_provider == "anthropic":
-                    return global_url[:-3] if global_url.endswith("/v1") else global_url
-                if fallback_provider == "openai":
-                    return global_url if global_url.endswith("/v1") else f"{global_url}/v1"
-            if fallback_credential and fallback_credential.base_url:
-                return fallback_credential.base_url
-            env_base_url = resolve_provider_base_url(
-                fallback_provider,
-                settings=self.settings,
-                include_default=False,
-            )
-            if env_base_url:
-                return env_base_url
-            return None
-
-        def api_key_for_provider(
-            fallback_provider: str,
-            fallback_base_url: str | None,
-        ) -> str | None:
-            if fallback_provider == provider and api_key_override is not None:
-                return resolve_explicit_secret(api_key_override, fallback_provider)
-            fallback_credential = vault_credential_for(fallback_provider)
-            if fallback_credential and fallback_credential.api_key:
-                return fallback_credential.api_key
-            if fallback_provider == "anthropic":
-                return (
-                    self.settings.anthropic_api_key
-                    if fallback_base_url
-                    else (
-                        self.settings.anthropic_direct_api_key
-                        or self.settings.anthropic_api_key
-                    )
-                )
-            return resolve_provider_api_key(fallback_provider, settings=self.settings)
-
-        fallbacks: list[LLMFallbackConfig] = []
-        for fallback_ref in _parse_llm_fallback_models(
-            getattr(self.settings, "llm_fallback_models", "")
-        ):
-            fallback_provider, fallback_model = _split_llm_fallback_ref(
-                fallback_ref,
-                str(provider),
-            )
-            if not fallback_model or (
-                fallback_provider == provider and fallback_model == model
-            ):
-                continue
-            fallback_base_url = base_url_for_provider(fallback_provider)
-            fallbacks.append(
-                LLMFallbackConfig(
-                    provider=fallback_provider,
-                    model=fallback_model,
-                    api_key=api_key_for_provider(
-                        fallback_provider,
-                        fallback_base_url,
-                    ),
-                    base_url=fallback_base_url,
-                    openai_api_mode=resolve(
-                        "openai_api_mode",
-                        self.settings.openai_api_mode,
-                    ),
-                )
-            )
-
-        return LLMConfig(
-            provider=provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            top_k=self.settings.llm_top_k,
-            frequency_penalty=frequency_penalty,
-            presence_penalty=presence_penalty,
-            reasoning_effort=reasoning_effort,
-            extended_thinking=extended_thinking,
-            openai_api_mode=resolve("openai_api_mode", self.settings.openai_api_mode),
-            stream_max_retries=self.settings.llm_stream_max_retries,
-            stream_retry_initial_delay=self.settings.llm_stream_retry_initial_delay,
-            stream_retry_max_delay=self.settings.llm_stream_retry_max_delay,
-            fallbacks=fallbacks,
-        )
+        from .agent_llm_config import get_llm_config_for_thread
+        return get_llm_config_for_thread(self, thread_id)
 
     def _get_team_scoped_callable_threads(
         self,
