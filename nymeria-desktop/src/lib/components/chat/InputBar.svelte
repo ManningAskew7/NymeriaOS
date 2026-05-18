@@ -45,6 +45,7 @@
   let commandsLoaded = $state(false);
   let commandsLoading = $state(false);
   let highlightedCommandIndex = $state(0);
+  let paletteRef = $state<HTMLDivElement | null>(null);
 
   // When insertText changes, append it to the input and notify parent
   $effect(() => {
@@ -82,7 +83,7 @@
   let filteredCommands = $derived(
     isCommandNameEntry
       ? (() => {
-          if (!slashQuery) return commands.slice(0, 8);
+          if (!slashQuery) return commands;
           const prefix: typeof commands = [];
           const nameSub: typeof commands = [];
           const descOnly: typeof commands = [];
@@ -96,7 +97,7 @@
               descOnly.push(cmd);
             }
           }
-          return [...prefix, ...nameSub, ...descOnly].slice(0, 8);
+          return [...prefix, ...nameSub, ...descOnly];
         })()
       : []
   );
@@ -117,6 +118,14 @@
     if (highlightedCommandIndex >= filteredCommands.length) {
       highlightedCommandIndex = 0;
     }
+  });
+
+  $effect(() => {
+    void highlightedCommandIndex;
+    void filteredCommands;
+    if (!paletteRef) return;
+    const active = paletteRef.children[highlightedCommandIndex] as HTMLElement | undefined;
+    active?.scrollIntoView({ block: 'nearest' });
   });
 
   async function loadCommands() {
@@ -357,7 +366,7 @@
   />
 
   {#if showCommandPalette}
-    <div class="command-palette">
+    <div class="command-palette" bind:this={paletteRef}>
       {#each filteredCommands as command, index (command.name)}
         <button
           type="button"
