@@ -293,19 +293,25 @@ def test_graph_cache_hash_mismatch_removes_stale_entry():
 
 
 def test_toolset_mutators_delegate_default_graph_rebuild():
-    """Tool-set mutation paths go through the shared cache rebuild helper."""
-    from nymeria.core.agent import NymeriaAgent
+    """Tool-set mutation paths go through the shared cache rebuild helper.
 
-    method_names = [
-        "register_tool",
-        "register_tools",
-        "sync_agent_tools",
-        "reload_mcp_server_tools",
-        "reload_custom_tools",
-        "reload_tools",
+    ``register_tool``/``register_tools`` stay on ``NymeriaAgent``; the other
+    four mutators now live as module-level functions in ``agent_tools`` and
+    are exposed on the class as thin facades. Inspect the implementation
+    location, not the facade.
+    """
+    from nymeria.core.agent import NymeriaAgent
+    from nymeria.core import agent_tools
+
+    implementations = [
+        NymeriaAgent.register_tool,
+        NymeriaAgent.register_tools,
+        agent_tools.sync_agent_tools,
+        agent_tools.reload_mcp_server_tools,
+        agent_tools.reload_custom_tools,
+        agent_tools.reload_tools,
     ]
 
-    for method_name in method_names:
-        method = getattr(NymeriaAgent, method_name)
-        assert "_rebuild_default_graphs" in _called_method_names(method)
-        assert _direct_graph_rebuild_ops(method) == []
+    for impl in implementations:
+        assert "_rebuild_default_graphs" in _called_method_names(impl)
+        assert _direct_graph_rebuild_ops(impl) == []

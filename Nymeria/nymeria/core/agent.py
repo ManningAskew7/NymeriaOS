@@ -6,7 +6,6 @@ import logging
 import mimetypes
 import os
 import re
-import sys
 import threading
 import time
 from datetime import datetime
@@ -49,7 +48,6 @@ from .agent_history import (
 )
 from .agent_streaming import GraphStreamProcessor
 from .agent_compaction import CompactionManager
-from .time_utils import ensure_aware_utc, utc_now
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
@@ -2238,481 +2236,54 @@ class NymeriaAgent:
                 self.abort_with_cascade(thread_id)
 
     def sync_agent_tools(self) -> List[str]:
-        """
-        Sync callable thread tools into the tool registry.
-
-        Rebuilds the registry with ALL_TOOLS + callable thread tools + custom tools.
-        Call this after creating/deleting callable threads.
-
-        Note: per-user graph builds source callable thread tools directly from
-        the per-user-filtered ``thread_config_manager`` (see
-        ``_build_graph_with_prompt``). ``_callable_tool_thread_map`` remains a
-        legacy fallback for timeout hooks that run without runnable config;
-        normal timeout handling resolves against the current user/thread scope.
-
-        Returns:
-            List of callable thread tool names now in the registry
-        """
-        from ..agents.tool_factory import get_callable_thread_tools
-        from ..tools import ALL_TOOLS
-
-        # Get callable thread tools (from threads with callable=True)
-        thread_tools = get_callable_thread_tools(self.thread_config_manager)
-        thread_tool_names = {t.name for t in thread_tools}
-
-        # Rebuild callable tool -> thread_id map (for auto-abort on timeout)
-        # Build locally then assign atomically so readers never see a partial map
-        new_map: Dict[str, str] = {}
-        for tc in self.thread_config_manager.list_callable_threads():
-            if tc.callable_name:
-                new_map[tc.callable_name] = tc.thread_id
-        self._callable_tool_thread_map = new_map
-
-        # Rebuild the tool registry: core + callable thread tools
-        combined = list(ALL_TOOLS) + thread_tools
-        self.tool_registry = ToolRegistry()
-        self.tool_registry.register_all(combined)
-
-        # Re-register custom tools
-        self._load_custom_tools()
-
-        # Re-register MCP server tools
-        self._load_mcp_server_tools()
-
-        self._rebuild_default_graphs()
-        try:
-            from .tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
-        except Exception:
-            logger.debug("Failed to mark tool search index dirty", exc_info=True)
-
-        all_names = list(thread_tool_names)
-        logger.info(f"Synced agent tools: {all_names} ({len(thread_tools)} callable threads, {len(combined)} total tools)")
-        return all_names
+        from .agent_tools import sync_agent_tools
+        return sync_agent_tools(self)
 
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
-        """Remove cached graphs for a specific thread after its config changes."""
-        with self._graph_cache_lock:
-            keys_to_remove = [k for k in self._user_graphs if k[1] == thread_id]
-            for k in keys_to_remove:
-                del self._user_graphs[k]
-            keys_to_remove = [
-                k
-                for k in self._async_user_graphs
-                if (k[2] if len(k) > 2 else k[1]) == thread_id
-            ]
-            for k in keys_to_remove:
-                del self._async_user_graphs[k]
-        logger.debug(f"Invalidated graph cache for thread {thread_id}")
+        from .agent_tools import invalidate_thread_config_cache
+        invalidate_thread_config_cache(self, thread_id)
 
     def _resolve_temporary_tools(self, tc) -> set:
-        """Evict expired TTL'd tool entries, persist, and return the live set.
-
-        Runs at graph-build time only. Tools that were live when the current
-        graph was built stay callable for the whole invocation — no surprise
-        mid-turn eviction.
-        """
-        if tc is None or not getattr(tc, "temporary_tools", None):
-            return set()
-        now = utc_now()
-        live = {
-            name: entry
-            for name, entry in tc.temporary_tools.items()
-            if ensure_aware_utc(entry.expires_at) > now
-        }
-        if len(live) != len(tc.temporary_tools):
-            evicted = set(tc.temporary_tools) - set(live)
-            logger.info(
-                f"Thread {tc.thread_id}: TTL evicting {len(evicted)} tool(s): "
-                f"{', '.join(sorted(evicted))}"
-            )
-            tc.temporary_tools = live
-            self.thread_config_manager.save_config(tc)
-        return set(live.keys())
+        from .agent_tools import resolve_temporary_tools
+        return resolve_temporary_tools(self, tc)
 
     def _load_custom_tools(self) -> int:
-        """Load custom tools from the custom_tools directory.
-
-        Returns:
-            Number of custom tools loaded.
-        """
-        try:
-            from .custom_tools import get_custom_tool_loader
-
-            self._custom_tool_loader = get_custom_tool_loader()
-            old_custom_names = set(getattr(self._custom_tool_loader, "_tools", {}).keys())
-            for name in old_custom_names:
-                self.tool_registry.unregister(name)
-            custom_tools = self._custom_tool_loader.load_all()
-
-            if custom_tools:
-                self.tool_registry.register_all(custom_tools)
-                logger.info(f"Loaded {len(custom_tools)} custom tool(s)")
-
-            return len(custom_tools)
-        except Exception as e:
-            logger.error(f"Failed to load custom tools: {e}", exc_info=True)
-            return 0
+        from .agent_tools import load_custom_tools
+        return load_custom_tools(self)
 
     def _unregister_existing_mcp_tools(self) -> set[str]:
-        """Remove previously registered dynamic MCP wrappers from the live registry."""
-        existing = {
-            tool.name
-            for tool in self.tool_registry.get_all_tools()
-            if getattr(tool, "name", "").startswith("mcp__")
-        }
-        for name in existing:
-            self.tool_registry.unregister(name)
-        return existing
+        from .agent_tools import unregister_existing_mcp_tools
+        return unregister_existing_mcp_tools(self)
 
     def _prune_mcp_tool_bindings(self, live_tool_names: set[str]) -> int:
-        """Remove unavailable MCP tool names from defaults and thread configs."""
-        removed = 0
-
-        try:
-            for user_id in self.profile_manager.list_users():
-                with self.profile_manager.atomic_update(user_id) as profile:
-                    defaults = profile.tool_preferences.default_thread_tools
-                    if defaults is None:
-                        continue
-                    filtered = [
-                        name
-                        for name in defaults
-                        if not name.startswith("mcp__") or name in live_tool_names
-                    ]
-                    removed += len(defaults) - len(filtered)
-                    profile.tool_preferences.default_thread_tools = filtered
-        except Exception:
-            logger.debug("Failed to prune MCP defaults", exc_info=True)
-
-        try:
-            for thread_id in self.thread_config_manager.list_configured_threads():
-                tc = self.thread_config_manager.get_config(thread_id)
-                if tc is None:
-                    continue
-                original_enabled = list(tc.enabled_tools)
-                original_disabled = list(tc.disabled_tools)
-                original_temporary = dict(tc.temporary_tools)
-                tc.enabled_tools = [
-                    name
-                    for name in tc.enabled_tools
-                    if not name.startswith("mcp__") or name in live_tool_names
-                ]
-                tc.disabled_tools = [
-                    name
-                    for name in tc.disabled_tools
-                    if not name.startswith("mcp__") or name in live_tool_names
-                ]
-                tc.temporary_tools = {
-                    name: entry
-                    for name, entry in tc.temporary_tools.items()
-                    if not name.startswith("mcp__") or name in live_tool_names
-                }
-                removed += len(original_enabled) - len(tc.enabled_tools)
-                removed += len(original_disabled) - len(tc.disabled_tools)
-                removed += len(original_temporary) - len(tc.temporary_tools)
-                if (
-                    tc.enabled_tools != original_enabled
-                    or tc.disabled_tools != original_disabled
-                    or tc.temporary_tools != original_temporary
-                ):
-                    self.thread_config_manager.save_config(tc)
-                    if hasattr(self, "_graph_cache_lock"):
-                        self.invalidate_thread_config_cache(tc.thread_id)
-        except Exception:
-            logger.debug("Failed to prune MCP thread bindings", exc_info=True)
-
-        if removed:
-            logger.info("Pruned %d stale MCP tool binding(s)", removed)
-        return removed
+        from .agent_tools import prune_mcp_tool_bindings
+        return prune_mcp_tool_bindings(self, live_tool_names)
 
     def _load_mcp_server_tools(self) -> int:
-        """Load MCP server tools from the mcp_servers directory.
-
-        Returns:
-            Number of MCP server tools loaded.
-        """
-        try:
-            from .mcp_servers import get_mcp_server_registry
-            from ..tools.metadata import (
-                clear_mcp_server_tool_metadata,
-                register_mcp_server_tool_metadata,
-            )
-
-            registry = get_mcp_server_registry()
-            self._unregister_existing_mcp_tools()
-            mcp_tools = registry.get_all_tools()
-            live_names = {tool.name for tool in mcp_tools}
-
-            # Metadata covers every discovered tool across every installed
-            # server — even ones whose defn.enabled is False — so that the
-            # frontend's per-tool toggle list validates against the full set.
-            # defn.enabled still gates whether the tool is actually callable
-            # (via get_all_tools()'s filter), but a name not yet "live" should
-            # still be a known name the defaults endpoint will accept.
-            clear_mcp_server_tool_metadata()
-            for defn in registry.get_all_servers():
-                for dt in defn.discovered_tools:
-                    tool_name = f"mcp__{defn.id}__{dt.name}"
-                    register_mcp_server_tool_metadata(
-                        tool_name,
-                        dt.description,
-                        live=tool_name in live_names,
-                        enabled=bool(defn.enabled),
-                        server_id=defn.id,
-                        install_status=defn.install_status,
-                    )
-            self._prune_mcp_tool_bindings(live_names)
-
-            if mcp_tools:
-                self.tool_registry.register_all(mcp_tools)
-                logger.info(f"Loaded {len(mcp_tools)} MCP server tool(s)")
-
-            return len(mcp_tools)
-        except Exception as e:
-            logger.error(f"Failed to load MCP server tools: {e}", exc_info=True)
-            return 0
+        from .agent_tools import load_mcp_server_tools
+        return load_mcp_server_tools(self)
 
     def reload_mcp_server_tools(self) -> List[str]:
-        """Reload MCP server tools and rebuild graphs.
-
-        Returns:
-            List of MCP server tool names loaded.
-        """
-        try:
-            from .mcp_servers import reload_mcp_server_registry
-            from ..tools.metadata import (
-                clear_mcp_server_tool_metadata,
-                register_mcp_server_tool_metadata,
-            )
-
-            registry = reload_mcp_server_registry()
-            self._unregister_existing_mcp_tools()
-            mcp_tools = registry.get_all_tools()
-            live_names = {tool.name for tool in mcp_tools}
-
-            # See _load_mcp_server_tools: register metadata for every
-            # discovered tool regardless of defn.enabled, so the UI's defaults
-            # validation accepts names for installed-but-not-yet-enabled
-            # servers.
-            clear_mcp_server_tool_metadata()
-            for defn in registry.get_all_servers():
-                for dt in defn.discovered_tools:
-                    tool_name = f"mcp__{defn.id}__{dt.name}"
-                    register_mcp_server_tool_metadata(
-                        tool_name,
-                        dt.description,
-                        live=tool_name in live_names,
-                        enabled=bool(defn.enabled),
-                        server_id=defn.id,
-                        install_status=defn.install_status,
-                    )
-            self._prune_mcp_tool_bindings(live_names)
-
-            # Re-register tools
-            if mcp_tools:
-                self.tool_registry.register_all(mcp_tools)
-
-            self._rebuild_default_graphs()
-            try:
-                from .tool_search_index import mark_tool_search_dirty
-
-                mark_tool_search_dirty()
-            except Exception:
-                logger.debug("Failed to mark tool search index dirty", exc_info=True)
-
-            tool_names = [t.name for t in mcp_tools]
-            logger.info(f"MCP server tools reloaded: {tool_names}")
-            return tool_names
-        except Exception as e:
-            logger.error(f"Failed to reload MCP server tools: {e}", exc_info=True)
-            return []
+        from .agent_tools import reload_mcp_server_tools
+        return reload_mcp_server_tools(self)
 
     def _rebuild_default_graphs(self) -> None:
-        """Drop cached per-thread graphs and rebuild the shared defaults.
-
-        Call after any mutation that could change the tool set visible to a
-        graph build: default_thread_tools saved, MCP server enable/install/
-        delete, custom-tool reload. Subsequent thread messages rebuild their
-        graph lazily from the up-to-date registry + profile.
-        """
-        self._user_graphs.clear()
-        self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(self._base_system_prompt)
+        from .agent_tools import rebuild_default_graphs
+        rebuild_default_graphs(self)
 
     def reload_custom_tools(self) -> List[str]:
-        """Reload only custom tools.
-
-        This is lighter weight than reload_tools() and only affects
-        custom tool definitions, not built-in tools.
-
-        Returns:
-            List of custom tool names loaded.
-        """
-        try:
-            from .custom_tools import get_custom_tool_loader
-
-            loader = get_custom_tool_loader()
-            old_custom_names = set(getattr(loader, "_tools", {}).keys())
-            for name in old_custom_names:
-                self.tool_registry.unregister(name)
-            custom_tools = loader.load_all()
-
-            # Re-register custom tools (they replace existing ones with same name)
-            if custom_tools:
-                self.tool_registry.register_all(custom_tools)
-
-            self._rebuild_default_graphs()
-            try:
-                from .tool_search_index import mark_tool_search_dirty
-
-                mark_tool_search_dirty()
-            except Exception:
-                logger.debug("Failed to mark tool search index dirty", exc_info=True)
-
-            tool_names = [t.name for t in custom_tools]
-            logger.info(f"Custom tools reloaded: {tool_names}")
-            return tool_names
-
-        except Exception as e:
-            logger.error(f"Failed to reload custom tools: {e}", exc_info=True)
-            return []
+        from .agent_tools import reload_custom_tools
+        return reload_custom_tools(self)
 
     def reload_tools(self) -> List[str]:
-        """
-        Hot-reload all tools from the tools module.
-
-        This re-imports all tools (picking up any new files) and rebuilds the agent's
-        graphs so new tools become available on the NEXT message turn.
-
-        New core tools (added to ALL_TOOLS) are automatically registered in each
-        user's default_thread_tools so they appear as enabled by default.  Removed
-        core tools are cleaned out of the list as well.
-
-        NOTE: Due to how LangGraph works, newly created tools are NOT available
-        in the same conversation turn. The current turn's graph was captured at
-        the start of the turn. New tools will work on the next user message.
-
-        Returns:
-            List of tool names now available
-        """
-        import importlib
-        import pkgutil
-        from .. import tools as tools_module
-
-        logger.info("Reloading tools module...")
-
-        # Snapshot current ALL_TOOLS before reload (for diff)
-        old_core_names = {
-            t.name for t in getattr(tools_module, 'ALL_TOOLS', [])
-        }
-
-        # Get all submodule names (including newly created files)
-        tools_path = Path(tools_module.__file__).parent
-        submodules = [name for _, name, _ in pkgutil.iter_modules([str(tools_path)])]
-        logger.info(f"Found tool submodules on disk: {submodules}")
-
-        # Process each submodule - reload existing, import new
-        for submod_name in submodules:
-            full_name = f"nymeria.tools.{submod_name}"
-            if full_name in sys.modules:
-                # Existing module - reload it
-                try:
-                    importlib.reload(sys.modules[full_name])
-                    logger.debug(f"Reloaded existing: {full_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to reload {full_name}: {e}")
-            else:
-                # New module - import it
-                try:
-                    importlib.import_module(full_name)
-                    logger.info(f"Imported new module: {full_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to import new module {full_name}: {e}")
-
-        # Reload the main tools module (__init__.py) to pick up new exports
-        importlib.reload(tools_module)
-        from ..tools.metadata import refresh_builtin_tool_metadata
-
-        # Get ALL_TOOLS directly from the reloaded module object
-        # (using 'from ..tools import ALL_TOOLS' could get cached references)
-        ALL_TOOLS = getattr(tools_module, 'ALL_TOOLS', [])
-        refresh_builtin_tool_metadata()
-        new_core_names = {t.name for t in ALL_TOOLS}
-        logger.info(f"ALL_TOOLS after reload: {list(new_core_names)}")
-
-        # Auto-sync default_thread_tools for all users
-        self._sync_default_thread_tools(old_core_names, new_core_names)
-
-        # Get callable thread tools
-        from ..agents.tool_factory import get_callable_thread_tools
-        thread_tools = get_callable_thread_tools(self.thread_config_manager)
-
-        # Clear and re-register all tools (core + callable thread tools)
-        combined_tools = list(ALL_TOOLS) + thread_tools
-        self.tool_registry = ToolRegistry()
-        self.tool_registry.register_all(combined_tools)
-
-        # Reload custom tools as well
-        custom_count = self._load_custom_tools()
-        logger.info(f"Reloaded {custom_count} custom tool(s)")
-
-        self._rebuild_default_graphs()
-        try:
-            from .tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
-        except Exception:
-            logger.debug("Failed to mark tool search index dirty", exc_info=True)
-
-        tool_list = self.tool_registry.list_tools()
-        tool_names = [t["name"] for t in tool_list]
-        logger.info(f"Tools reloaded successfully. Available ({len(tool_names)}): {tool_names}")
-        return tool_names
+        from .agent_tools import reload_tools
+        return reload_tools(self)
 
     def _sync_default_thread_tools(
         self, old_core: set, new_core: set
     ) -> None:
-        """Sync each user's default_thread_tools after a core tool change.
-
-        - Newly added core tools are appended so they're enabled by default.
-        - Removed core tools are cleaned out to avoid stale entries.
-        - Users whose default_thread_tools is None (legacy mode) are skipped.
-        """
-        from ..tools import CAPABILITY_EXPANSION_TOOL_NAMES
-
-        added = new_core - old_core
-        removed = (old_core - new_core) | set(CAPABILITY_EXPANSION_TOOL_NAMES)
-        if not added and not removed:
-            return
-
-        if added:
-            logger.info(f"New core tools detected: {added}")
-        if removed:
-            logger.info(f"Removed core tools detected: {removed}")
-
-        for user_id in self.profile_manager.list_users():
-            try:
-                profile = self.profile_manager.get_profile(user_id)
-                dt = profile.tool_preferences.default_thread_tools
-                if dt is None:
-                    continue  # legacy mode — no explicit list to update
-
-                current = set(dt)
-                updated = (current | added) - removed
-                if updated != current:
-                    with self.profile_manager.atomic_update(user_id) as p:
-                        p.tool_preferences.default_thread_tools = sorted(updated)
-                    logger.info(
-                        f"Updated default_thread_tools for user {user_id}: "
-                        f"+{added & updated} -{removed & current}"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to sync default_thread_tools for {user_id}: {e}"
-                )
+        from .agent_tools import sync_default_thread_tools
+        sync_default_thread_tools(self, old_core, new_core)
 
     def chat(
         self,
