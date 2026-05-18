@@ -435,7 +435,6 @@ def register(registry: CommandRegistry) -> None:
     """Register skill commands."""
     registry.register(Command(
         name="skills",
-        aliases=["/skill"],
         description="Manage skills",
         usage="/skills list",
         handler=_handle_skills_root,

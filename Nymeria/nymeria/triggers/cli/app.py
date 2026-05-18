@@ -1351,6 +1351,13 @@ class CLIApp:
             usage,
         )
 
+        # Backend commands register first so they always win at the root
+        # level. Local CLI commands either target a name the backend never
+        # claims (truly frontend-local: theme, clipboard, etc.) or contribute
+        # subcommands that get merged under a backend-owned root. See
+        # CommandRegistry.register for the merge rules.
+        backend.register(self.registry)
+
         system.register(self.registry)
         connection.register(self.registry)
         context.register(self.registry)
@@ -1375,7 +1382,6 @@ class CLIApp:
         conversation.register(self.registry)
         reasoning.register(self.registry)
         usage.register(self.registry)
-        backend.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
