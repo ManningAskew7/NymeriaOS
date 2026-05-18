@@ -74,7 +74,7 @@ def test_flag_off_uses_legacy_build_path():
         captured["kwargs"] = kwargs
         return MagicMock()
 
-    with patch("nymeria.core.agent.create_graph", side_effect=capture):
+    with patch("nymeria.core.agent_graph.create_graph", side_effect=capture):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     assert "dynamic_tool_resolver" not in captured["kwargs"]
@@ -90,7 +90,7 @@ def test_flag_on_passes_resolver_and_superset_to_create_graph():
         captured["tools_len"] = len(tools) if tools else 0
         return MagicMock()
 
-    with patch("nymeria.core.agent.create_graph", side_effect=capture):
+    with patch("nymeria.core.agent_graph.create_graph", side_effect=capture):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     assert "dynamic_tool_resolver" in captured["kwargs"]
@@ -105,7 +105,7 @@ def test_flag_on_populates_superset_name_set_on_agent():
     """should_emit_reload_command reads _current_tool_superset_names; it
     must be populated by every dynamic graph build."""
     agent = _make_agent(dynamic=True)
-    with patch("nymeria.core.agent.create_graph", return_value=MagicMock()):
+    with patch("nymeria.core.agent_graph.create_graph", return_value=MagicMock()):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     assert agent._current_tool_superset_names
@@ -150,7 +150,7 @@ def test_async_build_path_also_branches_on_flag():
         captured["has_resolver"] = "dynamic_tool_resolver" in kwargs
         return MagicMock()
 
-    with patch("nymeria.core.agent.create_graph", side_effect=capture):
+    with patch("nymeria.core.agent_graph.create_graph", side_effect=capture):
         agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     assert captured["has_resolver"] is True
@@ -171,7 +171,7 @@ def test_legacy_reload_path_unchanged_when_flag_off():
     ensuring backwards-compat: should_emit_reload_command's defensive check
     falls back to True when the set is empty."""
     agent = _make_agent(dynamic=False)
-    with patch("nymeria.core.agent.create_graph", return_value=MagicMock()):
+    with patch("nymeria.core.agent_graph.create_graph", return_value=MagicMock()):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     # Flag off → no superset population.

@@ -102,7 +102,7 @@ def test_select_tools_shared_by_both_build_paths():
         return result
 
     with patch.object(type(agent), "_select_tools_for_graph", tracking_select):
-        with patch("nymeria.core.agent.create_graph", return_value=MagicMock()):
+        with patch("nymeria.core.agent_graph.create_graph", return_value=MagicMock()):
             agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
             agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
@@ -121,7 +121,7 @@ def test_sync_async_differ_only_in_checkpointer():
         configs_seen.append(config)
         return MagicMock()
 
-    with patch("nymeria.core.agent.create_graph", side_effect=capture_create_graph):
+    with patch("nymeria.core.agent_graph.create_graph", side_effect=capture_create_graph):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
         agent._build_async_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 

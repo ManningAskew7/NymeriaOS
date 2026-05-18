@@ -1979,12 +1979,11 @@ class CLIApp:
         runtime: _RichReplRuntime | None = None,
     ) -> None:
         """Inner REPL loop, run inside patch_stdout context."""
-        if use_prompt_toolkit:
-            from .input import get_prompt
-
         while self.state.running:
             try:
                 if use_prompt_toolkit:
+                    from .input import get_prompt
+
                     prompt = get_prompt(
                         self.state,
                         busy=bool(runtime and runtime.busy),
