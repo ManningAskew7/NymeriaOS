@@ -142,6 +142,10 @@ class Skill(BaseModel):
         return bool(self.required_tools)
 
     @property
+    def is_internal(self) -> bool:
+        return bool(self._nymeria_metadata.get("internal", False))
+
+    @property
     def has_scripts(self) -> bool:
         scripts = self.path / "scripts"
         return scripts.is_dir() and any(scripts.iterdir())

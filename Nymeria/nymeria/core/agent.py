@@ -390,6 +390,11 @@ class NymeriaAgent:
         # Initialize TODO manager
         self.todo_manager = TodoManager(self.settings.data_dir)
 
+        # Initialize Goal manager (supervised /goal execution).
+        from .goal_manager import GoalManager, set_goal_manager
+        self.goal_manager = GoalManager(self.settings.data_dir)
+        set_goal_manager(self.goal_manager)
+
         # Initialize per-thread config manager
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
 

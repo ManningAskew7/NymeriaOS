@@ -243,6 +243,12 @@ def create_skill_meta_tool(
                 for tool_name in skill.required_tools
                 if not thread_tools_provided or tool_name not in thread_tools_set
             ]
+            already_bound_required_tools = [
+                tool_name
+                for tool_name in skill.required_tools
+                if thread_tools_provided and tool_name in thread_tools_set
+            ]
+            binding_summary_lines: list[str] = []
             if missing_required_tools:
                 binding = bind_tools_for_thread(
                     missing_required_tools,
@@ -266,10 +272,31 @@ def create_skill_meta_tool(
                 binding_text = binding.text
                 binding_reload_queued = bool(binding.reload_tools and not binding.cap_hit)
                 binding_cap_hit = bool(binding.cap_hit)
+                binding_summary_lines.append(
+                    "Added/un-disabled required tool(s): "
+                    + (
+                        ", ".join(sorted(binding.reload_tools))
+                        if binding.reload_tools
+                        else "none"
+                    )
+                )
             else:
                 binding_text = (
                     "[Success]: Required tools already bound on this thread.\n"
                     "No binding changes; nothing to reload."
+                )
+                binding_summary_lines.append("Added/un-disabled required tool(s): none")
+            if already_bound_required_tools:
+                binding_summary_lines.append(
+                    "Skipped already-enabled required tool(s): "
+                    + ", ".join(sorted(already_bound_required_tools))
+                )
+            if binding_summary_lines:
+                binding_text = (
+                    "Skill Kit dependency summary:\n"
+                    + "\n".join(f"  {line}" for line in binding_summary_lines)
+                    + "\n"
+                    + binding_text
                 )
             body += (
                 "\n\n---\n"

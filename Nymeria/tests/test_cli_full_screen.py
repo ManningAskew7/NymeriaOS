@@ -7,6 +7,8 @@ from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, simple_respo
 
 from nymeria.triggers.cli.commands import CommandRegistry
 from nymeria.triggers.cli.commands import system as system_commands
+from nymeria.triggers.cli.commands.backend import BackendCommandProvider
+from nymeria.triggers.cli.input import ComposerSubmission
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
@@ -119,6 +121,70 @@ def test_full_screen_shell_streams_turn_into_transcript_and_ready_status() -> No
     assert "──── Nymeria " in shell.transcript.text
     assert "\n  Hello there." in shell.transcript.text
     assert "Ready" in shell._status_text()
+
+
+def test_full_screen_shell_routes_backend_chat_stream_command_to_chat() -> None:
+    registry = CommandRegistry()
+    BackendCommandProvider(
+        [
+            {
+                "id": "skill",
+                "name": "skill",
+                "path": ["skill"],
+                "usage": "/skill <name> [prompt]",
+                "description": "Use a skill",
+                "category": "Skills",
+                "execution_kind": "chat_stream",
+                "aliases": [],
+            }
+        ]
+    ).register(registry)
+    client = FakeAgentClient(default_stream=simple_response_events(("ok",)))
+    shell = make_shell(client=client)
+    shell.command_registry = registry
+
+    result = run(shell._run_command("/skill draft-helper polish this"))
+
+    assert result.ok is True
+    assert client.chat_requests[0].message == "/skill draft-helper polish this"
+    assert client.chat_requests[0].thread_id == "thread-1"
+
+
+def test_full_screen_composer_preserves_chat_stream_command_attachments() -> None:
+    registry = CommandRegistry()
+    BackendCommandProvider(
+        [
+            {
+                "id": "kit",
+                "name": "kit",
+                "path": ["kit"],
+                "usage": "/kit <name> [ttl] [prompt]",
+                "description": "Use a kit",
+                "category": "Skills",
+                "execution_kind": "chat_stream",
+                "aliases": [],
+            }
+        ]
+    ).register(registry)
+    client = FakeAgentClient(default_stream=simple_response_events(("ok",)))
+    shell = make_shell(client=client)
+    shell.command_registry = registry
+
+    async def submit() -> None:
+        assert shell._handle_composer_submission(
+            ComposerSubmission(
+                message="/kit work-kit 1h inspect this",
+                attachments=({"file_name": "note.txt"},),
+            )
+        )
+        task = shell._current_turn_task
+        assert task is not None
+        await task
+
+    run(submit())
+
+    assert client.chat_requests[0].message == "/kit work-kit 1h inspect this"
+    assert client.chat_requests[0].attachments == ({"file_name": "note.txt"},)
 
 
 def test_full_screen_transcript_header_shows_live_activity_phase() -> None:

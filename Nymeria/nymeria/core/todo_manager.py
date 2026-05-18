@@ -71,6 +71,13 @@ class TodoItem(BaseModel):
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Recurrence pattern: 'hourly', 'daily', 'weekly', 'monthly'")
 
+    # /goal integration: when set, this TODO is part of a supervised goal and
+    # cannot be transitioned to `done` by anyone but the goal's supervisor
+    # thread. Worker-side `nym_todo(status="done", ...)` calls are refused;
+    # only `mark_task_done` (in goal_tools.py) and its authority check can
+    # flip a goal-locked TODO to done.
+    goal_id: Optional[str] = Field(default=None, description="Parent goal_id when this TODO is goal-locked")
+
     @field_validator("created_at", "updated_at", "scheduled_for", "last_execution")
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:

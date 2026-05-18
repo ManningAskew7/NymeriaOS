@@ -276,6 +276,11 @@ class Ticker:
         self._archive_interval = 3600  # 1 hour
         self._last_archive_check: float = 0.0
 
+        # Idle-sweep: delete temporary-lifetime spawned threads whose
+        # idle_timeout_hours has elapsed since their last activity.
+        self._spawn_sweep_interval = 1800  # 30 minutes
+        self._last_spawn_sweep_check: float = 0.0
+
     def start(self) -> None:
         """Start the ticker thread."""
         if self._running:
@@ -351,6 +356,7 @@ class Ticker:
 
             self._maybe_submit_archive(now)
             self._maybe_submit_trigger_poll(now)
+            self._maybe_submit_spawn_sweep(now)
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -416,6 +422,36 @@ class Ticker:
             self._archive_completed_todos()
         except Exception as e:
             logger.error(f"Archive completed TODOs error: {e}", exc_info=True)
+
+    def _maybe_submit_spawn_sweep(self, now: float) -> bool:
+        """Submit idle-thread sweep without occupying autonomous workers."""
+        if now - self._last_spawn_sweep_check < self._spawn_sweep_interval:
+            return False
+
+        self._last_spawn_sweep_check = now
+        if self._housekeeping_executor:
+            try:
+                self._housekeeping_executor.submit(self._run_spawn_sweep)
+            except Exception as e:
+                logger.debug(f"Spawn sweep submit skipped: {e}")
+                return False
+            return True
+
+        self._run_spawn_sweep()
+        return True
+
+    def _run_spawn_sweep(self) -> None:
+        """Execute the idle-thread sweep with exception isolation."""
+        try:
+            from ..tools.spawn_thread import sweep_idle_spawned_threads
+
+            deleted = sweep_idle_spawned_threads(self.agent)
+            if deleted:
+                logger.info(
+                    f"Spawn idle-sweep deleted {deleted} temporary thread(s)"
+                )
+        except Exception as e:
+            logger.error(f"Spawn idle-sweep error: {e}", exc_info=True)
 
     def _archive_completed_todos(self) -> None:
         """Archive completed TODOs older than the configured retention for all users."""

@@ -6,7 +6,7 @@ Spawned threads are callable (invocable as tools) by default, so the parent
 can re-invoke them later. Supports two actions:
 
   action="create" (default): Create a new thread. Optionally dispatches an
-      initial_message and blocks until the child responds.
+      prompt and blocks until the child responds.
   action="delete": Remove a previously-spawned thread (metadata, config,
       checkpoints, notepad, and callable-tool registration). Only the thread
       that originally spawned it can delete it.
@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_SPAWN_DEPTH = 3
 DEFAULT_MAX_SPAWNS_PER_HOUR = 10
 RATE_WINDOW_SECONDS = 3600
+
+VALID_MODES = ("fresh", "branched")
+VALID_LIFETIMES = ("permanent", "temporary")
+DEFAULT_IDLE_TIMEOUT_HOURS = 24
+PLATFORM_META_LIFETIME = "lifetime"
+PLATFORM_META_IDLE_TIMEOUT = "idle_timeout_hours"
+PLATFORM_META_LAST_ACTIVE = "last_active_at"
 
 # Process-local rate limiter: parent_thread_id -> list of spawn timestamps.
 # Intentionally not persisted — process restart breaks any active spawn loop,
@@ -204,6 +211,121 @@ def _delete_spawned(
     return f"[Deleted]: thread_id={target_thread_id}"
 
 
+def refresh_thread_activity(agent, user_id: str, thread_id: str) -> None:
+    """Reset the idle-timeout clock for a temporary-lifetime spawned thread.
+
+    Called when the thread is invoked or runs a turn. No-op if the thread
+    is not flagged as temporary, so callers don't need to check first.
+    """
+    try:
+        meta = agent.thread_metadata_manager.get_thread(user_id, thread_id)
+    except Exception:
+        return
+    if meta is None or not meta.platform_meta:
+        return
+    if meta.platform_meta.get(PLATFORM_META_LIFETIME) != "temporary":
+        return
+
+    from ..core.time_utils import utc_now as _utc_now
+
+    updated = dict(meta.platform_meta)
+    updated[PLATFORM_META_LAST_ACTIVE] = _utc_now().isoformat()
+    try:
+        agent.thread_metadata_manager.upsert_thread(
+            user_id, thread_id, platform_meta=updated
+        )
+    except Exception:
+        logger.debug(
+            f"refresh_thread_activity: upsert failed for {thread_id}",
+            exc_info=True,
+        )
+
+
+def sweep_idle_spawned_threads(agent) -> int:
+    """Delete temporary-lifetime spawned threads whose idle window has elapsed.
+
+    Iterates every user's thread metadata store, identifies threads flagged
+    ``lifetime=temporary`` whose ``last_active_at`` is older than their
+    ``idle_timeout_hours``, and deletes them via the standard ``_delete_spawned``
+    path (config, metadata, checkpoints, notepad, callable registration).
+
+    Returns the number of threads deleted. Intended to be called periodically
+    from the Ticker's housekeeping executor.
+    """
+    from datetime import datetime, timezone
+
+    from ..core.time_utils import utc_now as _utc_now
+
+    deleted = 0
+    try:
+        metadata_dir = agent.thread_metadata_manager.metadata_dir
+    except AttributeError:
+        return 0
+    if not metadata_dir.exists():
+        return 0
+
+    now = _utc_now()
+    for path in sorted(metadata_dir.glob("*.json")):
+        user_id = path.stem
+        if not user_id:
+            continue
+        try:
+            store = agent.thread_metadata_manager.get_store(user_id)
+        except Exception:
+            logger.debug(
+                f"sweep_idle_spawned_threads: failed to load store for {user_id}",
+                exc_info=True,
+            )
+            continue
+
+        for thread_id, meta in list(store.threads.items()):
+            if not meta.platform_meta:
+                continue
+            if meta.platform_meta.get(PLATFORM_META_LIFETIME) != "temporary":
+                continue
+            try:
+                idle_hours = int(
+                    meta.platform_meta.get(PLATFORM_META_IDLE_TIMEOUT, "0")
+                )
+            except (TypeError, ValueError):
+                continue
+            if idle_hours < 1:
+                continue
+
+            last_active_str = meta.platform_meta.get(PLATFORM_META_LAST_ACTIVE)
+            if last_active_str:
+                try:
+                    last_active = datetime.fromisoformat(last_active_str)
+                except (TypeError, ValueError):
+                    continue
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+            else:
+                last_active = meta.created_at
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+
+            elapsed_hours = (now - last_active).total_seconds() / 3600.0
+            if elapsed_hours < idle_hours:
+                continue
+
+            try:
+                _delete_spawned(
+                    agent=agent,
+                    target_thread_id=thread_id,
+                    user_id=user_id,
+                    caller_thread_id=None,
+                )
+                deleted += 1
+            except Exception:
+                logger.warning(
+                    f"sweep_idle_spawned_threads: delete failed for {thread_id}",
+                    exc_info=True,
+                )
+
+    return deleted
+
+
 @tool
 def spawn_thread(
     title: Optional[str] = None,
@@ -218,15 +340,18 @@ def spawn_thread(
     llm_max_tokens: Optional[int] = None,
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
-    initial_message: Optional[str] = None,
+    prompt: Optional[str] = None,
     action: str = "create",
     delete_thread_id: Optional[str] = None,
+    mode: str = "fresh",
+    lifetime: str = "permanent",
+    idle_timeout_hours: Optional[int] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """Create or delete a conversation thread with scoped configuration.
 
-    Two modes via the `action` parameter:
+    Two actions via the `action` parameter:
 
       action="create" (default): Create a new thread. It appears in the
           desktop sidebar inside a "Spawned by Nymeria" folder. By default
@@ -264,9 +389,20 @@ def spawn_thread(
         llm_provider, llm_model, llm_temperature, llm_max_tokens,
         llm_extended_thinking, llm_reasoning_effort: Optional LLM overrides
             for this thread. Omit to inherit global settings.
-        initial_message: If provided, dispatches this message to the new
+        prompt: If provided, dispatches this message to the new
             thread and BLOCKS until the child returns its response. The
             child's response becomes part of this tool's output.
+        mode: 'fresh' (default) creates an empty thread. 'branched' forks
+            the calling thread's checkpoint history and configuration via
+            branch_thread() — the new thread starts with the parent's full
+            conversation context, then your overrides are layered on top.
+        lifetime: 'permanent' (default) is normal long-lived behaviour.
+            'temporary' marks the thread for automatic idle cleanup; the
+            worker ticker deletes it after `idle_timeout_hours` of inactivity
+            (i.e. no callable invocations and no own turns).
+        idle_timeout_hours: Only meaningful when lifetime='temporary'.
+            Defaults to 24 hours. Activity is recorded each time the thread
+            is invoked or runs a turn.
 
     Args (delete mode):
         delete_thread_id: Required for delete. The spawned thread's ID
@@ -275,7 +411,7 @@ def spawn_thread(
 
     Returns (create):
         Preamble with the new thread_id, the callable tool name (if
-        make_callable=True), and, if initial_message was provided,
+        make_callable=True), and, if prompt was provided,
         the child thread's response text.
 
     Returns (delete):
@@ -320,6 +456,30 @@ def spawn_thread(
         return "[Error]: title is required when action='create' and cannot be empty."
     title = title.strip()[:80]
 
+    mode_norm = (mode or "fresh").strip().lower()
+    if mode_norm not in VALID_MODES:
+        return f"[Error]: Unknown mode '{mode}'. Use {' or '.join(repr(m) for m in VALID_MODES)}."
+
+    lifetime_norm = (lifetime or "permanent").strip().lower()
+    if lifetime_norm not in VALID_LIFETIMES:
+        return f"[Error]: Unknown lifetime '{lifetime}'. Use {' or '.join(repr(value) for value in VALID_LIFETIMES)}."
+
+    pre_warnings: List[str] = []
+    if lifetime_norm == "temporary":
+        if idle_timeout_hours is None:
+            idle_timeout_hours_resolved: Optional[int] = DEFAULT_IDLE_TIMEOUT_HOURS
+        elif idle_timeout_hours < 1:
+            return "[Error]: idle_timeout_hours must be >= 1."
+        else:
+            idle_timeout_hours_resolved = int(idle_timeout_hours)
+    else:
+        idle_timeout_hours_resolved = None
+        if idle_timeout_hours is not None:
+            pre_warnings.append("idle_timeout_hours ignored when lifetime='permanent'")
+
+    if mode_norm == "branched" and not parent_thread_id:
+        return "[Error]: mode='branched' requires a parent thread; call this from inside a thread."
+
     max_depth = int(
         os.environ.get("NYMERIA_MAX_SPAWN_DEPTH", DEFAULT_MAX_SPAWN_DEPTH)
     )
@@ -337,7 +497,7 @@ def spawn_thread(
         if err:
             return err
 
-    warnings: List[str] = []
+    warnings: List[str] = list(pre_warnings)
     enabled_set: set = set()
 
     if tool_categories:
@@ -441,26 +601,86 @@ def spawn_thread(
         else:
             callable_description = f"Invoke the '{title}' spawned thread"
 
-    try:
-        tc = ThreadConfig(
-            thread_id=new_thread_id,
-            instructions=instructions.strip() if instructions else None,
-            enabled_tools=sorted(enabled_set),
-            disabled_tools=sorted(disabled_list),
-            llm_config=llm_config,
-            callable=bool(make_callable),
-            callable_name=callable_name,
-            callable_description=callable_description,
-        )
-    except Exception as e:
-        return f"[Error]: Invalid configuration: {str(e)}"
+    if mode_norm == "branched":
+        from ..core.thread_branch import ThreadBranchError, branch_thread
+        from ..config.settings import get_settings
 
-    if not agent.thread_config_manager.save_config(tc):
-        return "[Error]: Failed to save thread config."
+        try:
+            branch_thread(
+                agent=agent,
+                settings=get_settings(),
+                user_id=user_id,
+                source_thread_id=parent_thread_id,
+                title=title,
+                new_thread_id=new_thread_id,
+            )
+        except ThreadBranchError as e:
+            return f"[Error]: Failed to branch parent thread: {e}"
+        except Exception as e:
+            logger.exception("spawn_thread: branched-mode branch failed")
+            return f"[Error]: Failed to branch parent thread: {e}"
+
+        cloned = agent.thread_config_manager.get_config(new_thread_id)
+        if cloned is None:
+            return "[Error]: Branched thread config missing after branch."
+
+        merged_enabled = sorted(set(cloned.enabled_tools or []) | enabled_set)
+        merged_disabled = sorted(
+            set(cloned.disabled_tools or []) | set(disabled_list)
+        )
+        try:
+            tc = cloned.model_copy(
+                update={
+                    "thread_id": new_thread_id,
+                    "instructions": (
+                        instructions.strip()
+                        if instructions
+                        else cloned.instructions
+                    ),
+                    "enabled_tools": merged_enabled,
+                    "disabled_tools": merged_disabled,
+                    "llm_config": llm_config if llm_config else cloned.llm_config,
+                    "callable": bool(make_callable),
+                    "callable_name": callable_name if make_callable else None,
+                    "callable_description": (
+                        callable_description if make_callable else None
+                    ),
+                }
+            )
+        except Exception as e:
+            return f"[Error]: Invalid branched configuration overrides: {str(e)}"
+
+        if not agent.thread_config_manager.save_config(tc):
+            return "[Error]: Failed to save branched thread config."
+    else:
+        try:
+            tc = ThreadConfig(
+                thread_id=new_thread_id,
+                instructions=instructions.strip() if instructions else None,
+                enabled_tools=sorted(enabled_set),
+                disabled_tools=sorted(disabled_list),
+                llm_config=llm_config,
+                callable=bool(make_callable),
+                callable_name=callable_name,
+                callable_description=callable_description,
+            )
+        except Exception as e:
+            return f"[Error]: Invalid configuration: {str(e)}"
+
+        if not agent.thread_config_manager.save_config(tc):
+            return "[Error]: Failed to save thread config."
 
     platform_meta: Dict[str, str] = {"spawn_depth": str(new_depth)}
     if parent_thread_id:
         platform_meta["spawn_parent"] = parent_thread_id
+    if lifetime_norm == "temporary":
+        from ..core.time_utils import utc_now as _utc_now
+
+        platform_meta[PLATFORM_META_LIFETIME] = "temporary"
+        platform_meta[PLATFORM_META_IDLE_TIMEOUT] = str(
+            idle_timeout_hours_resolved
+        )
+        platform_meta[PLATFORM_META_LAST_ACTIVE] = _utc_now().isoformat()
 
     try:
         agent.thread_metadata_manager.upsert_thread(
@@ -513,6 +733,15 @@ def spawn_thread(
         logger.warning(f"spawn_thread: thread_created publish failed: {e}")
 
     preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
+    if mode_norm == "branched":
+        preamble_lines.append(
+            f"Mode: branched from {parent_thread_id} (inherits checkpoint history)."
+        )
+    if lifetime_norm == "temporary":
+        preamble_lines.append(
+            f"Lifetime: temporary (auto-deletes after "
+            f"{idle_timeout_hours_resolved}h of inactivity)."
+        )
     if make_callable and callable_name:
         preamble_lines.append(
             f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
@@ -533,7 +762,7 @@ def spawn_thread(
     )
     preamble = "\n".join(preamble_lines)
 
-    if not initial_message or not initial_message.strip():
+    if not prompt or not prompt.strip():
         return preamble
 
     response = _invoke_spawned(
@@ -541,7 +770,7 @@ def spawn_thread(
         child_thread_id=new_thread_id,
         parent_thread_id=parent_thread_id,
         title=title,
-        task=initial_message.strip(),
+        task=prompt.strip(),
         user_id=user_id,
     )
     return f"{preamble}\n\n{response}"

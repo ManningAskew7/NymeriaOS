@@ -79,7 +79,8 @@ class BackendCommandProvider:
 
     def register(self, registry: CommandRegistry) -> None:
         for info in self.commands:
-            if str(info.get("execution_kind") or "command") != "command":
+            execution_kind = str(info.get("execution_kind") or "command")
+            if execution_kind not in {"command", "chat_stream"}:
                 continue
             path = _path(info)
             if not path:
@@ -175,6 +176,7 @@ def _backend_command(
 ) -> Command:
     usage = str(info.get("usage") or f"/{' '.join(path)}")
     command_id = str(info.get("id") or ".".join(path))
+    execution_kind = str(info.get("execution_kind") or "command")
     aliases = [
         str(alias)
         for alias in info.get("aliases", [])
@@ -182,6 +184,8 @@ def _backend_command(
     ]
 
     async def _handler(context: CommandContext, args: list[str]) -> CommandResult:
+        if execution_kind == "chat_stream":
+            return _chat_stream_command_result(path, args)
         return await _execute_backend_command(context, path, args)
 
     return Command(
@@ -196,6 +200,21 @@ def _backend_command(
             "backend_command": True,
             "backend_command_id": command_id,
             "backend_path": path,
+            "execution_kind": execution_kind,
+        },
+    )
+
+
+def _chat_stream_command_result(
+    path: tuple[str, ...],
+    args: list[str],
+) -> CommandResult:
+    raw_command = "/" + " ".join((*path, *[str(arg) for arg in args])).strip()
+    return CommandResult.completed(
+        command_path=path,
+        payload={
+            "chat_stream_command": raw_command,
+            "backend_command": True,
         },
     )
 

@@ -24,7 +24,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
 | 15 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
 
-> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. See `docs/skills.md`.
+> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
 > **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
 
@@ -2553,6 +2553,9 @@ slash_command(command: str)
 - `/env get PERPLEXITY_API_KEY` — fetch unmasked secret
 - `/memory save color "deep blue"` — save a user memory
 - `/tools enable browser` — turn on a category on this thread
+- `/skill <name> [prompt]` — activate a markdown-only skill for this turn
+- `/kit <name> [ttl] [prompt]` — activate a visible Skill Kit and bind tools
+- `/skills list` — show skill and Skill Kit activation status on the current thread
 - `/todos add Check logs | 2h | daily` — scheduled repeating TODO
 - `/notepad write replace:new notepad contents` — overwrite the thread notepad
 
@@ -2880,9 +2883,12 @@ spawn_thread(
     llm_max_tokens: Optional[int] = None,
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
-    initial_message: Optional[str] = None,
+    prompt: Optional[str] = None,
     action: str = "create",
     delete_thread_id: Optional[str] = None,
+    mode: str = "fresh",
+    lifetime: str = "permanent",
+    idle_timeout_hours: Optional[int] = None,
 )
 ```
 
@@ -2895,12 +2901,15 @@ spawn_thread(
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
 - `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot — the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
 - `llm_*`: Optional LLM overrides. Omit to inherit global settings.
-- `initial_message`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
+- `prompt`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
+- `mode` (default `"fresh"`): `"fresh"` builds an empty thread. `"branched"` forks the calling thread's full checkpoint history and configuration via `branch_thread()`; the new thread starts with the parent's conversation context, then the spawn-thread overrides are layered on top. Requires a parent thread.
+- `lifetime` (default `"permanent"`): `"permanent"` is normal long-lived behaviour. `"temporary"` flags the thread for automatic idle cleanup; the worker ticker deletes it after `idle_timeout_hours` of inactivity (no callable invocations, no own turns).
+- `idle_timeout_hours`: Only meaningful when `lifetime="temporary"`. Defaults to 24 hours. Activity is recorded each time the thread is invoked.
 
 **Create returns:**
 - Preamble with the new `thread_id` (`spawned-{slug}-{rand8}`).
 - If `make_callable=True`: the generated callable tool name (e.g. `spawned_research_a3f21c9d`) the parent can invoke later.
-- If `initial_message` provided: the child's response text appended.
+- If `prompt` provided: the child's response text appended.
 - A reminder of the `action="delete"` call needed to remove the thread.
 
 **Delete mode (`action="delete"`):**

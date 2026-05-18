@@ -24,7 +24,7 @@ agent, delegated workflow, or callable tool backed by a thread.
 3. Keep tool access narrow. Pass only the tools needed for the helper's role.
    Use exact Nymeria tool names already known from the current context or
    discover them before spawning.
-4. If the helper should run immediately, include an `initial_message` or invoke
+4. If the helper should run immediately, include a `prompt` or invoke
    the returned callable tool after the spawn completes.
 5. When updating or replacing an existing helper, inspect the current thread
    config and preserve user-authored instructions unless the user asked for a
