@@ -98,6 +98,7 @@ dev = [
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
   "ruff>=0.15.0",
+  "pyrefly>=1.0.0",
 ]
 all = [
   "langgraph-checkpoint-postgres==3.1.0",
@@ -111,6 +112,7 @@ all = [
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
   "ruff>=0.15.0",
+  "pyrefly>=1.0.0",
 ]
 
 [project.scripts]
@@ -140,3 +142,15 @@ nymeria = [
   "triggers/**/*.md",
   "vendor/react_agent/*.md",
 ]
+
+[tool.pyrefly]
+project-includes = ["nymeria/**/*.py"]
+project-excludes = [
+    "nymeria/vendor/**",
+    "nymeria/skills_bundled/**",
+    "**/__pycache__/**",
+    "**/.venv/**",
+    "**/build/**",
+    "**/dist/**",
+]
+python-version = "3.11"
