@@ -4,9 +4,19 @@ export type ProviderOption = { value: string; label: string };
 export type SettingsDisplayProvider = string;
 export type ThreadDisplayProvider = string;
 
-export const HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS: ProviderOption[] = [
+// Smoke-tested end-to-end in Nymeria (matches `verified=True` in
+// nymeria/config/llm_providers.py). The synthetic display values
+// (anthropic_proxy, anthropic_direct, openai_custom) all resolve to a
+// verified backend provider via fromSettingsDisplayProvider.
+export const VERIFIED_PROVIDER_OPTIONS: ProviderOption[] = [
+  { value: 'anthropic_proxy', label: 'Anthropic (Subscription)' },
+  { value: 'anthropic_direct', label: 'Anthropic (Direct API)' },
+  { value: 'openai', label: 'OpenAI (Direct)' },
+  { value: 'openai_custom', label: 'OpenAI (Custom base URL)' },
   { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'openai', label: 'OpenAI' },
+];
+
+export const HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'azure-foundry', label: 'Azure AI Foundry' },
   { value: 'xai', label: 'xAI' },
   { value: 'google', label: 'Google Gemini' },
