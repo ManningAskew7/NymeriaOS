@@ -24,6 +24,7 @@
     DEFAULT_OPENAI_CLIPROXY_BASE_URL,
     HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
     LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
+    VERIFIED_PROVIDER_OPTIONS,
     fromSettingsDisplayProvider as fromDisplayProvider,
     isLocalBaseUrl,
     isManagedBaseUrl,
@@ -759,16 +760,18 @@
         <div class="field">
           <label for="llm-provider">Provider</label>
           <select id="llm-provider" bind:value={displayProvider}>
-            <option value="anthropic_proxy">Anthropic (Subscription)</option>
-            <option value="anthropic_direct">Anthropic (Direct API)</option>
-            <option value="openai_custom">OpenAI (Custom base URL)</option>
-            <option value="local_openai">Local LLM (OpenAI-compatible)</option>
-            <optgroup label="Hosted OpenAI-compatible">
+            <optgroup label="Verified">
+              {#each VERIFIED_PROVIDER_OPTIONS as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Other hosted (unverified)">
               {#each HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
                 <option value={option.value}>{option.label}</option>
               {/each}
             </optgroup>
-            <optgroup label="Local / self-hosted">
+            <optgroup label="Local / self-hosted (unverified)">
+              <option value="local_openai">Local LLM (OpenAI-compatible)</option>
               {#each LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
                 <option value={option.value}>{option.label}</option>
               {/each}
