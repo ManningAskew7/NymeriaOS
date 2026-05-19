@@ -40,6 +40,7 @@ from .checkpointer_config import (
     build_checkpointer_config,
     enumerate_checkpoint_thread_ids,
 )
+from .agent_streaming_input import prepare_astream_input
 from ..skills import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -1210,156 +1211,6 @@ class NymeriaAgent:
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
 
-    def _prepare_astream_input(
-        self,
-        *,
-        message_with_context: str,
-        thread_id: str,
-        attachments: Optional[List[Dict[str, str]]],
-        images: Optional[List[Dict[str, str]]],
-        force_unsupported_attachments: bool,
-        is_self_invoke: bool,
-    ) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
-        """Build the LangGraph input state for a streaming turn."""
-        context_summary_for_ui: Optional[str] = None
-        pending_summary = self.get_pending_summary(thread_id)
-        if pending_summary:
-            message_with_context = self._compaction.format_user_resume(
-                message_with_context,
-                pending_summary,
-            )
-            context_summary_for_ui = pending_summary
-            logger.info(f"Thread {thread_id}: Attached pending summary to user message")
-
-        pending_notepad = self._compaction.pop_pending_notepad(thread_id)
-        if pending_notepad:
-            message_with_context += self._format_notepad_section(pending_notepad)
-            logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
-
-        all_attachments = list(attachments or [])
-        if images:
-            for img in images:
-                all_attachments.append({
-                    "file_type": "image",
-                    "data_url": img["data_url"],
-                    "mime_type": img["mime_type"]
-                })
-
-        if not all_attachments:
-            if is_self_invoke:
-                human_msg = _create_human_message(
-                    message_with_context,
-                    internal=True,
-                    internal_type="autonomous_wakeup",
-                )
-            else:
-                human_msg = HumanMessage(content=message_with_context)
-            return {"messages": [human_msg]}, context_summary_for_ui, None
-
-        from ..config.model_capabilities import (
-            evaluate_attachment_compatibility,
-            infer_mime_type,
-            normalize_attachment_file_type,
-        )
-
-        llm_cfg = self._get_llm_config_for_thread(thread_id)
-        effective_provider = llm_cfg.provider or self.settings.llm_provider
-        effective_model = llm_cfg.model or self.settings.llm_model
-
-        compatibility = evaluate_attachment_compatibility(
-            effective_model,
-            effective_provider,
-            all_attachments,
-        )
-
-        if not compatibility["compatible"] and not force_unsupported_attachments:
-            unsupported = ", ".join(compatibility["unsupported_modalities"])
-            warning_text = " ".join(compatibility["warnings"]).strip()
-            message = (
-                f"Current model ({effective_model}) may not support these attachments "
-                f"(unsupported modalities: {unsupported or 'unknown'})."
-            )
-            if warning_text:
-                message = f"{message} {warning_text}"
-
-            return None, context_summary_for_ui, {
-                "type": "error",
-                "content": message,
-            }
-
-        if compatibility["warnings"]:
-            logger.info(
-                "Thread %s attachment warnings for model %s: %s",
-                thread_id,
-                effective_model,
-                compatibility["warnings"],
-            )
-
-        import base64 as b64
-
-        content = [{"type": "text", "text": message_with_context}]
-        for att in all_attachments:
-            mime_type = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
-            file_type = normalize_attachment_file_type(
-                att.get("file_type", ""),
-                mime_type,
-                att.get("file_name", ""),
-            )
-            data_url = att["data_url"]
-
-            if "," in data_url:
-                base64_data = data_url.split(",", 1)[1]
-            else:
-                base64_data = data_url
-
-            if file_type == "image":
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": att["data_url"]},
-                })
-            elif mime_type == "application/pdf":
-                content.append({
-                    "type": "file",
-                    "source_type": "base64",
-                    "mime_type": mime_type,
-                    "data": base64_data,
-                })
-            elif mime_type in ("text/plain", "text/markdown", "text/csv"):
-                try:
-                    text_content = b64.b64decode(base64_data).decode("utf-8")
-                    filename = mime_type.split("/")[-1].upper()
-                    content.append({
-                        "type": "text",
-                        "text": (
-                            f"\n\n--- Attached {filename} file ---\n"
-                            f"{text_content}\n--- End of file ---\n"
-                        ),
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to decode text file: {e}")
-                    content.append({
-                        "type": "text",
-                        "text": f"\n\n[Failed to read attached text file: {e}]\n",
-                    })
-            else:
-                return None, context_summary_for_ui, {
-                    "type": "error",
-                    "content": (
-                        "Unsupported attachment type. Supported types are images and "
-                        "documents (PDF, TXT, MD, CSV)."
-                    ),
-                }
-
-        if is_self_invoke:
-            human_msg = _create_human_message(
-                content,
-                internal=True,
-                internal_type="autonomous_wakeup",
-            )
-        else:
-            human_msg = HumanMessage(content=content)
-        return {"messages": [human_msg]}, context_summary_for_ui, None
-
     async def astream(
         self, message: str, thread_id: str = "default", user_id: str = "default",
         attachments: Optional[List[Dict[str, str]]] = None,
@@ -1496,7 +1347,8 @@ class NymeriaAgent:
                         exc_info=True,
                     )
 
-            input_state, context_summary_for_ui, input_error = self._prepare_astream_input(
+            input_state, context_summary_for_ui, input_error = prepare_astream_input(
+                self,
                 message_with_context=message_with_context,
                 thread_id=thread_id,
                 attachments=attachments,
