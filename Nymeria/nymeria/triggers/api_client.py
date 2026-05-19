@@ -184,6 +184,9 @@ class NymeriaAPIClient:
         trigger_override: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         force_unsupported_attachments: bool = False,
+        source: Optional[str] = None,
+        source_id: Optional[str] = None,
+        source_label: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
@@ -211,6 +214,12 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
+        if source:
+            body["source"] = source
+        if source_id:
+            body["source_id"] = source_id
+        if source_label:
+            body["source_label"] = source_label
         async with self._client_for_loop().stream(
             "POST",
             self._url("/chat"),

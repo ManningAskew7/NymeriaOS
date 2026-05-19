@@ -279,6 +279,15 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",
+    # Sub-turn prompt-queue events. Mirroring these onto the
+    # autonomous bus lets ``/autonomous/stream`` subscribers see when a
+    # busy thread halted to absorb a queued prompt, even if they
+    # weren't the queuer.
+    "prompt_queued",
+    "prompt_injected",
+    "prompt_absorbed",
+    "turn_halted",
+    "fanout_dropped",
 })
 
 

@@ -826,7 +826,7 @@ def _invoke_spawned(
 
         def handle_chunk(chunk: Dict[str, Any], _collection) -> None:
             nonlocal started_published
-            if not started_published and chunk.get("type") != "queued":
+            if not started_published and chunk.get("type") not in ("queued", "prompt_queued"):
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=child_thread_id,

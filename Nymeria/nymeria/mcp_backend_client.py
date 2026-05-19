@@ -167,6 +167,9 @@ class NymeriaBackendClient:
         force_unsupported_attachments: bool = False,
         is_self_invoke: bool = False,
         trigger_override: Optional[str] = None,
+        source: Optional[str] = "mcp",
+        source_id: Optional[str] = None,
+        source_label: Optional[str] = "mcp-client",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         body: Dict[str, Any] = {
             "message": message,
@@ -182,6 +185,12 @@ class NymeriaBackendClient:
             body["is_self_invoke"] = True
         if trigger_override:
             body["trigger_override"] = trigger_override
+        if source:
+            body["source"] = source
+        if source_id:
+            body["source_id"] = source_id
+        if source_label:
+            body["source_label"] = source_label
 
         async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT) as client:
             async with client.stream(

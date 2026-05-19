@@ -99,6 +99,9 @@ def test_chat_sync_uses_authenticated_user_not_body_user_id(
             "user_id": "alice",
             "_is_self_invoke": True,
             "_trigger_override": "watchdog",
+            "source": "user",
+            "source_id": None,
+            "source_label": "alice",
         }
     ]
     assert agent.accounts_repo.get_thread_owner("thread-sync") == "alice"
@@ -177,6 +180,9 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
             "force_unsupported_attachments": True,
             "_is_self_invoke": False,
             "_trigger_override": None,
+            "source": "user",
+            "source_id": None,
+            "source_label": "alice",
         }
     ]
     assert agent.thread_metadata_manager.auto_title_calls == [

@@ -20,7 +20,6 @@ from ...core.thread_classification import (
     is_shared_channel as _is_shared_channel_thread,
 )
 from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
-from ...tools import ALL_TOOLS
 from ..schemas.threads import (
     ThreadBranchRequest,
     ThreadBranchResponse,
@@ -31,7 +30,6 @@ from ..schemas.threads import (
     ThreadStatusResponse,
 )
 from ..thread_overview import build_thread_overview
-from ..thread_config_helpers import validate_callable_name
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +611,15 @@ def create_threads_router(
 
     @router.get("/threads")
     async def list_threads(
+        owned_only: bool = Query(
+            False,
+            description=(
+                "If true, return only threads owned by the user — skip the "
+                "checkpoint/metadata/resource recovery enrichment. Recommended "
+                "for cleanup workflows and automated tests where seeing "
+                "orphaned cross-user checkpoints would be surprising or unsafe."
+            ),
+        ),
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
@@ -623,10 +630,25 @@ def create_threads_router(
         thread-bound resources so all surfaces see the same thread list. The
         resource pass intentionally surfaces old partially-deleted threads so
         the desktop can show and delete them instead of hiding wake-up paths.
+
+        When ``owned_only=true`` the resource pass and all admin bypasses are
+        skipped — the response contains only threads recorded in
+        ``thread_owners`` for the authenticated user. Cleanup tooling should
+        prefer this mode so a stray admin role cannot delete other users'
+        recovered checkpoints.
         """
         agent = get_agent_fn()
         settings = get_settings_fn()
         owned_ids = set(agent.accounts_repo.list_threads_for_user(user_id))
+
+        if owned_only:
+            store = agent.thread_metadata_manager.get_store(user_id)
+            threads = [
+                _thread_list_payload(agent, tid, store.threads.get(tid))
+                for tid in sorted(owned_ids)
+            ]
+            return {"threads": threads, "total": len(threads)}
+
         all_checkpoint_ids = _get_checkpoint_thread_ids(settings)
         checkpoint_ids = [t for t in all_checkpoint_ids if t in owned_ids]
         checkpoint_set = set(checkpoint_ids)
@@ -696,36 +718,13 @@ def create_threads_router(
         if title_source:
             fields["title_source"] = title_source
 
-        if request.title is not None:
-            tc = agent.thread_config_manager.get_config(thread_id)
-            if tc and tc.callable:
-                new_name = request.title.strip()
-                if not new_name:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot rename callable thread to empty title",
-                    )
-                validate_callable_name(new_name)
-                core_tool_names = {t.name for t in ALL_TOOLS}
-                if new_name in core_tool_names:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Callable name '{new_name}' conflicts with a core tool name",
-                    )
-                owned = set(agent.accounts_repo.list_threads_for_user(user_id))
-                existing = agent.thread_config_manager.get_callable_thread_by_name(
-                    new_name, owned_thread_ids=owned
-                )
-                if existing is not None and existing.thread_id != thread_id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Callable name '{new_name}' is already used by thread {existing.thread_id}",
-                    )
-                tc.callable_name = new_name
-                agent.thread_config_manager.save_config(tc)
-                agent.invalidate_thread_config_cache(thread_id)
-                agent.sync_agent_tools()
-                fields["title_source"] = "callable"
+        # NOTE: title is purely a display string and is independent of
+        # ``callable_name`` (the LLM tool binding). To rename the binding,
+        # callers must update ``callable_name`` explicitly via
+        # PATCH /threads/{id}/config. The list_threads payload still derives
+        # the display title from ``callable_name`` for callable threads
+        # (see _thread_list_payload), so the user-visible invariant is
+        # preserved by the read path without coupling the write paths.
 
         meta = agent.thread_metadata_manager.upsert_thread(
             user_id, thread_id, **fields

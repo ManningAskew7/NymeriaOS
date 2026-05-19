@@ -72,6 +72,30 @@ class ChatRequest(BaseModel):
             "events for frontend classification."
         ),
     )
+    source: str | None = Field(
+        default=None,
+        description=(
+            "Logical origin of this prompt -- 'user', 'trigger', 'callable', "
+            "'ticker', 'watchdog', 'mcp'. Routes the prompt through the "
+            "sub-turn pending-prompt queue when the target thread is busy. "
+            "Defaults to 'user' (or 'ticker' when is_self_invoke=True is the "
+            "only signal)."
+        ),
+    )
+    source_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable id of the source for queued-prompt metadata (e.g. "
+            "trigger.id, todo.id, caller_thread.id)."
+        ),
+    )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable label for the queued-prompt metadata header "
+            "(e.g. trigger.name, todo task excerpt, caller_thread title)."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):

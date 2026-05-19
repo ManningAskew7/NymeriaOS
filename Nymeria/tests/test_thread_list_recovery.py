@@ -314,3 +314,89 @@ def test_admin_chatapp_switch_rejects_native_platform_targets(
     )
 
     assert response.status_code == 400
+
+
+def _seed_checkpoint_rows(settings, thread_ids: list[str]) -> None:
+    """Insert minimal rows into the checkpoints table for the orphan-visibility tests."""
+    import sqlite3
+
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.executemany(
+            "INSERT INTO checkpoints (thread_id) VALUES (?)",
+            [(tid,) for tid in thread_ids],
+        )
+        conn.commit()
+
+
+def test_list_threads_owned_only_excludes_orphan_checkpoints_for_admin(
+    tmp_path: Path, api_client_builder
+):
+    """
+    Admin users see every orphan checkpoint thread when listing with default
+    options — intentional, so operators can inspect them. owned_only=true
+    must opt out of that behaviour so cleanup tooling, regression suites, and
+    other automated callers never accidentally enumerate other users' threads
+    just because their token has the admin role.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    settings = api_client_builder.settings(tmp_path)
+    agent.accounts_repo.create_user(
+        "admin-user", "admin@example.com", "Admin", role="admin"
+    )
+    token = agent.accounts_repo.issue_token("admin-user")
+
+    # admin-user owns one thread, the database also has two orphan
+    # checkpoint threads belonging to nobody recorded in thread_owners.
+    agent.accounts_repo.claim_thread("mine", "admin-user")
+    agent.thread_metadata_manager.upsert_thread("admin-user", "mine", title="Mine")
+    _seed_checkpoint_rows(
+        settings, ["mine", "orphan-checkpoint-a", "orphan-checkpoint-b"]
+    )
+
+    default_response = client.get(
+        "/threads", headers={"Authorization": f"Bearer {token}"}
+    )
+    owned_response = client.get(
+        "/threads?owned_only=true", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert default_response.status_code == 200
+    assert owned_response.status_code == 200
+
+    default_ids = {row["thread_id"] for row in default_response.json()["threads"]}
+    owned_ids = {row["thread_id"] for row in owned_response.json()["threads"]}
+
+    # Default behaviour: admin sees the orphans (operator inspection).
+    assert "orphan-checkpoint-a" in default_ids
+    assert "orphan-checkpoint-b" in default_ids
+    # owned_only behaviour: admin sees only their owned thread.
+    assert owned_ids == {"mine"}
+
+
+def test_list_threads_owned_only_for_regular_user_returns_owned_only(
+    tmp_path: Path, api_client_builder
+):
+    """
+    Regular users already don't see orphan checkpoints (no admin bypass), but
+    owned_only=true still correctly returns only the threads they own — even
+    when their thread_metadata store has lingering rows pointing at threads
+    they no longer own (e.g. zombie metadata from a deleted callable thread).
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    settings = api_client_builder.settings(tmp_path)
+    agent.accounts_repo.create_user("u", "u@example.com", "U")
+    token = agent.accounts_repo.issue_token("u")
+
+    agent.accounts_repo.claim_thread("owned", "u")
+    agent.thread_metadata_manager.upsert_thread("u", "owned", title="Owned")
+    # A lingering metadata row with no owner — would normally appear as a
+    # recovered thread in the default response.
+    agent.thread_metadata_manager.upsert_thread("u", "lingering", title="Lingering")
+
+    owned_response = client.get(
+        "/threads?owned_only=true", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert owned_response.status_code == 200
+    ids = {row["thread_id"] for row in owned_response.json()["threads"]}
+    assert ids == {"owned"}

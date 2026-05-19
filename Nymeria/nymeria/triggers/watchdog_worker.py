@@ -252,6 +252,8 @@ class WatchdogWorker:
                     user_id=user_id,
                     is_self_invoke=True,
                     trigger_override="watchdog",
+                    source="watchdog",
+                    source_label="watchdog",
                 ):
                     ctype = chunk.get("type")
                     if ctype == "response":

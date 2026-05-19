@@ -45,6 +45,7 @@ from .triggers import (
     TRIGGER_TOOLS,
 )
 from .hello_test import hello_test
+from .regression_echo import regression_echo
 from .google_docs import GOOGLE_DOCS_TOOLS
 from .google_sheets import GOOGLE_SHEETS_TOOLS
 from .google_workspace_service_integrations import (
@@ -1368,7 +1369,7 @@ _PRV_TOOLS_A = (
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
 OPTIONAL_TOOLS = {t.name: t for t in (
-    [claude_code, hello_test, memory_clear_all, rag_settings]
+    [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
     + GMAIL_AUTH_TOOLS

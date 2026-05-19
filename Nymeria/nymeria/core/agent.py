@@ -79,7 +79,7 @@ def _create_human_message(
     Returns:
         HumanMessage with appropriate additional_kwargs
     """
-    kwargs = {}
+    kwargs: Dict[str, Any] = {}
     if internal:
         kwargs["internal"] = True
         if internal_type:
@@ -244,6 +244,7 @@ class NymeriaAgent:
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
 
         # Initialize Agent Skills manager (SKILL.md progressive-disclosure bundles)
+        self.skill_manager: SkillManager | None
         try:
             from ..skills.embedding_index import SkillEmbeddingIndex
             skill_index_db = self.settings.skills_dir / "index.db"
@@ -938,6 +939,9 @@ class NymeriaAgent:
         user_id: str = "default",
         _is_self_invoke: bool = False,
         _trigger_override: Optional[str] = None,
+        source: Optional[str] = None,
+        source_id: Optional[str] = None,
+        source_label: Optional[str] = None,
     ) -> str:
         """
         Send a message and get a response (non-streaming).
@@ -948,6 +952,9 @@ class NymeriaAgent:
             user_id: User ID for profile/memory access
             _is_self_invoke: Internal flag, True when called by scheduler (skips auto-cancel)
             _trigger_override: If provided, use as the trigger label (e.g. for callable thread invocations)
+            source: Logical origin -- see ``astream`` docstring.
+            source_id: Stable id of the source (optional).
+            source_label: Human-readable label (optional).
 
         Returns:
             Agent's response as a string
@@ -955,14 +962,90 @@ class NymeriaAgent:
         if not message.strip():
             return "Please provide a message."
 
-        # Acquire per-thread lock (blocks if another request is using this thread)
-        lock = self._thread_locks.get_lock(thread_id)
-        if not lock.acquire(timeout=self.settings.lock_timeout):
-            logger.warning(f"Thread {thread_id}: Lock acquisition timed out in chat()")
-            return "Thread is busy with another request. Please try again."
+        from .pending_prompt_queue import (
+            PendingPromptQueueClosingError,
+            get_pending_queue,
+            make_pending_prompt,
+            queued_prompt_header,
+            _SENTINEL_PROMPT_ABSORBED,
+        )
 
+        if source is None:
+            source = "ticker" if _is_self_invoke else "user"
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+
+        backend = get_pending_queue()
+
+        # Acquire per-thread lock. Non-blocking first so we can route
+        # contention through the pending-prompt queue (which absorbs us
+        # at the holder's next sub-turn boundary rather than blocking).
+        lock = self._thread_locks.get_lock(thread_id)
+        acquired = lock.acquire(blocking=False)
+        if not acquired and backend.is_releasing(thread_id):
+            acquired = lock.acquire(timeout=self.settings.lock_timeout)
+            if not acquired:
+                logger.warning(f"Thread {thread_id}: Lock acquisition timed out in chat()")
+                return "Thread is busy with another request. Please try again."
+        if not acquired:
+            label = source_label or user_id
+            pending = make_pending_prompt(
+                message=message,
+                source=source,
+                source_id=source_id,
+                source_label=label,
+                user_id=user_id,
+                is_autonomous=is_autonomous_source,
+                fanout_mailbox=None,
+                consumer_loop=None,
+            )
+            try:
+                backend.enqueue(thread_id, pending)
+            except PendingPromptQueueClosingError:
+                acquired = lock.acquire(timeout=self.settings.lock_timeout)
+                if not acquired:
+                    logger.warning(f"Thread {thread_id}: Lock acquisition timed out in chat()")
+                    return "Thread is busy with another request. Please try again."
+            if not acquired:
+                woken = pending.notify_event.wait(timeout=self.settings.lock_timeout)
+                if pending.abandoned:
+                    return "Turn was aborted before this message could be processed."
+                if not woken:
+                    logger.warning(
+                        f"Thread {thread_id}: queued chat() prompt timed out"
+                    )
+                    return "Thread is busy with another request. Please try again."
+                # Absorbed by the holder. Read the most recent AI message
+                # from the checkpoint -- that is the response to our prompt
+                # (or to a batch that included it). This is best-effort:
+                # any reader sees the holder's response.
+                try:
+                    graph = self._get_graph_for_user(
+                        user_id,
+                        is_autonomous=is_autonomous_source,
+                        thread_id=thread_id,
+                    )
+                    config = self._graph_run_config(thread_id, user_id, callbacks=[])
+                    state = graph.get_state(config)
+                    messages = state.values.get("messages", []) if state else []
+                    for msg in reversed(messages):
+                        if isinstance(msg, AIMessage) and msg.content:
+                            response, _ = _extract_content_parts(msg.content)
+                            return response
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: failed to read response after queue absorb: {e}"
+                    )
+                return (
+                    "Your prompt was queued and absorbed by the running turn. "
+                    "Check the thread history for the response."
+                )
+            # else: the previous holder was already releasing; we acquired
+            # the lock via the closing-error fallback. Fall through to the
+            # holder path below so the prompt runs as the next normal turn.
+
+        completed_normally = False
         try:
-            holder = "autonomous" if _is_self_invoke else "user"
+            holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
             if not _is_self_invoke:
@@ -1058,6 +1141,78 @@ class NymeriaAgent:
                     graph = reload_graph
                 self._pending_tool_reload.pop(thread_id, None)
 
+                # Sync drain loop. If a prompt was queued mid-turn,
+                # route_after_tools halted the graph; drain, inject as
+                # HumanMessages, and re-invoke until the queue empties.
+                # Same shape as the astream drain loop, sync flavor.
+                # Always consume the halt observation to keep the
+                # counter from carrying over into the next turn.
+                _halt_count = backend.consume_halt_observation(thread_id)
+                while True:
+                    pending_batch = backend.drain(thread_id)
+                    if not pending_batch:
+                        break
+                    new_messages = [
+                        _create_human_message(
+                            f"{queued_prompt_header(p)}\n\n{p.message}",
+                            internal=p.is_autonomous,
+                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
+                        )
+                        for p in pending_batch
+                    ]
+                    try:
+                        graph.update_state(config, {"messages": new_messages})
+                        result = graph.invoke({"messages": []}, config=config)
+                        messages = result.get("messages", [])
+
+                        reload_count = 0
+                        while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
+                            reload_info = self._pending_tool_reload.pop(thread_id, None)
+                            if not reload_info:
+                                break
+                            reload_count += 1
+                            self._turn_reload_count[thread_id] = reload_count
+                            new_tools = reload_info.get("new_tools", [])
+                            logger.info(
+                                f"[CHAT] Thread {thread_id}: queued prompt tool reload "
+                                f"#{reload_count} — {len(new_tools)} new tool(s): "
+                                f"{', '.join(new_tools)}"
+                            )
+                            self.invalidate_thread_config_cache(thread_id)
+                            reload_graph = self._get_graph_for_user(
+                                user_id,
+                                is_autonomous=_is_self_invoke,
+                                thread_id=thread_id,
+                            )
+                            resume_msg = self._create_tool_reload_resume_message(reload_info)
+                            result = reload_graph.invoke(
+                                {"messages": [resume_msg]},
+                                config=config,
+                            )
+                            messages = result.get("messages", [])
+                            graph = reload_graph
+                    except Exception as e:
+                        logger.warning(
+                            f"Thread {thread_id}: chat() drain inject failed: {e}",
+                            exc_info=True,
+                        )
+                        for p in pending_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put({
+                                    "type": "error",
+                                    "code": "inject_failed",
+                                    "content": f"Failed to inject queued prompt: {e}",
+                                })
+                                p.fanout_mailbox.close()
+                            p.notify_event.set()
+                        break
+                    for p in pending_batch:
+                        if p.fanout_mailbox is not None:
+                            p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
+                            p.fanout_mailbox.close()
+                        p.notify_event.set()
+                    backend.consume_halt_observation(thread_id)
+
                 # Extract the final AI response
                 response = "No response generated."
                 for msg in reversed(messages):
@@ -1105,6 +1260,54 @@ class NymeriaAgent:
                 if self.settings.context_management == "sliding_window":
                     self.trim_context_window(thread_id, user_id=user_id)
 
+                # Close the enqueue window before releasing the lock. Any
+                # contender that races with this phase waits for the lock and
+                # runs as the next turn; prompts that already queued are drained
+                # one final time so they are not stranded.
+                backend.begin_release(thread_id)
+                backend.consume_halt_observation(thread_id)
+                while True:
+                    pending_batch = backend.drain(thread_id)
+                    if not pending_batch:
+                        break
+                    new_messages = [
+                        _create_human_message(
+                            f"{queued_prompt_header(p)}\n\n{p.message}",
+                            internal=p.is_autonomous,
+                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
+                        )
+                        for p in pending_batch
+                    ]
+                    try:
+                        graph.update_state(config, {"messages": new_messages})
+                        result = graph.invoke({"messages": []}, config=config)
+                        messages = result.get("messages", [])
+                    except Exception as e:
+                        logger.warning(
+                            f"Thread {thread_id}: final chat() queued prompt drain failed: {e}",
+                            exc_info=True,
+                        )
+                        for p in pending_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put({
+                                    "type": "error",
+                                    "code": "inject_failed",
+                                    "content": f"Failed to inject queued prompt: {e}",
+                                })
+                                p.fanout_mailbox.close()
+                            p.notify_event.set()
+                        break
+                    for p in pending_batch:
+                        if p.fanout_mailbox is not None:
+                            p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
+                            p.fanout_mailbox.close()
+                        p.notify_event.set()
+                    for msg in reversed(messages):
+                        if isinstance(msg, AIMessage) and msg.content:
+                            response, _ = _extract_content_parts(msg.content)
+                            break
+
+                completed_normally = True
                 return response
 
             except Exception as e:
@@ -1140,10 +1343,26 @@ class NymeriaAgent:
                 error_event = self._classify_stream_exception(e)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
+            if not completed_normally:
+                try:
+                    drained = backend.clear(thread_id, abandoned=True)
+                    if drained:
+                        logger.info(
+                            "[CHAT] Thread %s: Defensively drained %d queued prompt(s) in finally",
+                            thread_id,
+                            drained,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[CHAT] Thread %s: Defensive queue drain failed: %s",
+                        thread_id,
+                        e,
+                    )
             self._turn_reload_count.pop(thread_id, None)
             self._pending_tool_reload.pop(thread_id, None)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
+            backend.end_release(thread_id)
 
     async def astream(
         self, message: str, thread_id: str = "default", user_id: str = "default",
@@ -1152,6 +1371,9 @@ class NymeriaAgent:
         force_unsupported_attachments: bool = False,
         _is_self_invoke: bool = False,
         _trigger_override: Optional[str] = None,
+        source: Optional[str] = None,
+        source_id: Optional[str] = None,
+        source_label: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -1165,37 +1387,198 @@ class NymeriaAgent:
             message: User message
             thread_id: Conversation thread ID for persistence
             user_id: User ID for profile/memory access
+            source: Logical origin of the prompt -- one of
+                "user", "trigger", "callable", "ticker", "watchdog",
+                "mcp". Defaults to "user" (or "ticker" when
+                _is_self_invoke=True is left as the only signal).
+                Used by the pending-prompt queue to (a) decide whether
+                a queued prompt is autonomous (filtered from history)
+                and (b) pick the fanout mode on contention.
+            source_id: Stable id of the source (trigger.id, todo.id,
+                caller_thread.id, ...).  May be ``None``.
+            source_label: Human-readable label included in the queued
+                prompt's metadata header (trigger.name, todo task
+                excerpt, caller_thread title, ...).
 
         Yields:
-            Same event types as stream()
+            Same event types as stream(), plus the queue-related
+            events ``prompt_queued``, ``prompt_injected``,
+            ``prompt_absorbed``, ``turn_halted``, ``fanout_dropped``
+            and the legacy ``queued`` alias.
         """
         if not message.strip():
             yield {"type": "error", "content": "Please provide a message."}
             return
 
+        from .pending_prompt_queue import (
+            FanoutMailbox,
+            PendingPromptQueueClosingError,
+            get_pending_queue,
+            make_pending_prompt,
+            _SENTINEL_PROMPT_ABSORBED,
+        )
+
+        # Resolve canonical source. Callers pass source explicitly; the
+        # legacy ``_is_self_invoke`` flag stays as a back-stop for
+        # call sites that haven't been updated yet.
+        if source is None:
+            source = "ticker" if _is_self_invoke else "user"
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+        # Sources that observe the holder's stream after injection.
+        observes_stream = source in {"user", "callable", "mcp"}
+
+        backend = get_pending_queue()
+
         # Acquire per-thread lock (try non-blocking first to detect contention)
         lock = self._thread_locks.get_lock(thread_id)
         acquired = await asyncio.to_thread(lock.acquire, False)
-        if not acquired:
-            # Thread is busy - notify caller and wait with context
-            queued_data: Dict[str, Any] = {"type": "queued", "content": "Waiting for autonomous task to finish..."}
-            lock_info = self._thread_locks.get_lock_info(thread_id)
-            if lock_info:
-                queued_data["holder"] = lock_info.get("holder")
-                queued_data["held_seconds"] = lock_info.get("held_seconds", 0)
-            yield queued_data
+        if not acquired and backend.is_releasing(thread_id):
+            yield {
+                "type": "queued",
+                "content": "Waiting for current turn to finish...",
+            }
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(lock.acquire),
                     timeout=self.settings.lock_timeout,
                 )
+                acquired = True
             except asyncio.TimeoutError:
                 logger.warning(f"Thread {thread_id}: Lock acquisition timed out in astream()")
                 yield {"type": "error", "content": "Thread is busy. Please try again."}
                 return
+        if not acquired:
+            # Thread is busy. Queue the prompt instead of blocking on the
+            # lock -- the running turn will halt at the next sub-turn
+            # boundary (route_after_tools) and drain us in.
+            if attachments or images:
+                # Attachments bypass ``prepare_astream_input`` (which is
+                # where compatibility/multimodal building lives today),
+                # so v1 rejects them at enqueue time rather than try to
+                # re-run that pipeline at drain time. Revisit when a
+                # real use case appears.
+                yield {
+                    "type": "error",
+                    "code": "queue_attachments_unsupported",
+                    "content": (
+                        "Thread is busy. Prompts with attachments or "
+                        "images cannot be queued; retry once the "
+                        "current turn finishes."
+                    ),
+                }
+                return
 
+            consumer_loop = asyncio.get_running_loop()
+            fanout_mailbox = (
+                FanoutMailbox(consumer_loop) if observes_stream else None
+            )
+            label = source_label or user_id
+            pending = make_pending_prompt(
+                message=message,
+                source=source,
+                source_id=source_id,
+                source_label=label,
+                user_id=user_id,
+                is_autonomous=is_autonomous_source,
+                fanout_mailbox=fanout_mailbox,
+                consumer_loop=consumer_loop,
+            )
+            position = 0
+            try:
+                position = backend.enqueue(thread_id, pending)
+            except PendingPromptQueueClosingError:
+                # The holder is past its final drain and about to release.
+                # Do not strand this prompt in the queue; take the lock as the
+                # next regular turn instead.
+                if fanout_mailbox is not None:
+                    fanout_mailbox.close()
+                yield {
+                    "type": "queued",
+                    "content": "Waiting for current turn to finish...",
+                }
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(lock.acquire),
+                        timeout=self.settings.lock_timeout,
+                    )
+                    acquired = True
+                except asyncio.TimeoutError:
+                    logger.warning(f"Thread {thread_id}: Lock acquisition timed out in astream()")
+                    yield {"type": "error", "content": "Thread is busy. Please try again."}
+                    return
+            else:
+                acquired = False
+
+            if acquired:
+                pass
+            else:
+                lock_info = self._thread_locks.get_lock_info(thread_id)
+                holder_label = lock_info.get("holder") if lock_info else None
+                held_seconds = lock_info.get("held_seconds", 0) if lock_info else 0
+
+                # Emit BOTH the legacy ``queued`` event (so existing
+                # consumers like api/routers/chat.py:909's task_started
+                # gate keep working) and the new ``prompt_queued`` event
+                # (richer info). Drop ``queued`` once frontends pick up
+                # ``prompt_queued``.
+                yield {
+                    "type": "queued",
+                    "content": "Waiting for current turn to halt...",
+                    "holder": holder_label,
+                    "held_seconds": held_seconds,
+                }
+                yield {
+                    "type": "prompt_queued",
+                    "position": position,
+                    "holder": holder_label,
+                    "held_seconds": held_seconds,
+                    "source": source,
+                }
+
+                if fanout_mailbox is not None:
+                    # Stream-observing path: fan-in the holder's events.
+                    while True:
+                        evt = await fanout_mailbox.get()
+                        if evt.get("type") == _SENTINEL_PROMPT_ABSORBED:
+                            yield {
+                                "type": "prompt_absorbed",
+                                "thread_id": thread_id,
+                            }
+                            return
+                        if evt.get("type") == "error":
+                            yield evt
+                            return
+                        yield evt
+                else:
+                    # Fire-and-forget path: just wait for absorption.
+                    wait_ok = await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        pending.notify_event.wait,
+                        self.settings.lock_timeout,
+                    )
+                    if pending.abandoned:
+                        yield {
+                            "type": "error",
+                            "code": "aborted",
+                            "content": "Turn aborted.",
+                        }
+                        return
+                    if not wait_ok:
+                        logger.warning(
+                            "Thread %s: queued prompt wait timed out in astream()",
+                            thread_id,
+                        )
+                        yield {
+                            "type": "error",
+                            "content": "Thread is busy. Please try again.",
+                        }
+                        return
+                    yield {"type": "prompt_absorbed", "thread_id": thread_id}
+                    return
+
+        completed_normally = False
         try:
-            holder = "autonomous" if _is_self_invoke else "user"
+            holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
             # Clear any stale abort signal and capture the event for this run
@@ -1380,6 +1763,195 @@ class NymeriaAgent:
                 # into the next turn.
                 self._pending_tool_reload.pop(thread_id, None)
 
+                # ---------------------------------------------------------
+                # Sub-turn prompt-queue drain loop.
+                # If route_after_tools observed a non-empty queue and
+                # ended the graph early, this is where we (a) report
+                # the halt, (b) inject the queued HumanMessages, and
+                # (c) re-drive the graph so the model absorbs them.
+                # The loop repeats until a turn finishes with an empty
+                # queue. See docs/api.md "Sub-Turn Steering".
+                # ---------------------------------------------------------
+                from .pending_prompt_queue import (
+                    queued_prompt_header as _queued_prompt_header,
+                    _SENTINEL_PROMPT_ABSORBED,
+                )
+                from .agent_streaming import drive_with_fanout
+
+                halt_count = backend.consume_halt_observation(thread_id)
+                if halt_count > 0:
+                    halt_evt = {
+                        "type": "turn_halted",
+                        "reason": "pending_prompts",
+                        "count": halt_count,
+                    }
+                    yield halt_evt
+                    # No mailboxes attached yet (drain hasn't happened
+                    # for this batch); just yield to the holder's
+                    # consumer.
+
+                while not abort_event.is_set():
+                    pending_batch = backend.drain(thread_id)
+                    if not pending_batch:
+                        # We are about to leave the last drain point before
+                        # releasing the lock. Close the queue first, then drain
+                        # once more; prompts that race after this point should
+                        # wait for the lock and run as the next normal turn.
+                        backend.begin_release(thread_id)
+                        pending_batch = backend.drain(thread_id)
+                        if not pending_batch:
+                            break
+                    rejected_batch = [p for p in pending_batch if p.user_id != user_id]
+                    if rejected_batch:
+                        for p in rejected_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put({
+                                    "type": "error",
+                                    "code": "cross_user_queue_unsupported",
+                                    "content": (
+                                        "This thread is busy with another user's turn. "
+                                        "Retry once the current turn finishes."
+                                    ),
+                                })
+                                p.fanout_mailbox.close()
+                            p.abandoned = True
+                            p.notify_event.set()
+                        pending_batch = [p for p in pending_batch if p.user_id == user_id]
+                        if not pending_batch:
+                            continue
+
+                    inject_evt = {
+                        "type": "prompt_injected",
+                        "count": len(pending_batch),
+                        "sources": [p.source for p in pending_batch],
+                    }
+                    yield inject_evt
+                    for p in pending_batch:
+                        if p.fanout_mailbox is not None:
+                            p.fanout_mailbox.put(inject_evt)
+
+                    # Build one HumanMessage per drained prompt so
+                    # per-prompt visibility/history semantics survive
+                    # the absorption (autonomous prompts stay
+                    # internal=True; user prompts stay visible).
+                    new_messages = [
+                        _create_human_message(
+                            f"{_queued_prompt_header(p)}\n\n{p.message}",
+                            internal=p.is_autonomous,
+                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
+                        )
+                        for p in pending_batch
+                    ]
+
+                    try:
+                        await graph.aupdate_state(config, {"messages": new_messages})
+
+                        # Re-drive the graph with ``{"messages": []}`` (NOT
+                        # None) so it re-enters at the entrypoint reading
+                        # the now-updated checkpoint state. Passing None
+                        # makes ``astream_events`` read state without
+                        # re-entering the graph entrypoint.
+                        async for evt in drive_with_fanout(
+                            stream_processor,
+                            graph,
+                            {"messages": []},
+                            pending_batch,
+                        ):
+                            yield evt
+
+                        # A queued prompt can itself enable tools. Process
+                        # reloads before absorbing the prompt so its SSE
+                        # consumer sees the reload event and resumed stream.
+                        reload_count = 0
+                        while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
+                            if abort_event.is_set():
+                                break
+                            reload_info = self._pending_tool_reload.pop(thread_id, None)
+                            if not reload_info:
+                                break
+                            reload_count += 1
+                            self._turn_reload_count[thread_id] = reload_count
+                            new_tools = reload_info.get("new_tools", [])
+                            ttl_key = reload_info.get("ttl", "2h")
+                            ttl_seconds = reload_info.get("ttl_seconds")
+                            reload_source = reload_info.get("source") or "tool_search"
+                            skill_name = reload_info.get("skill_name")
+                            reason = reload_info.get("reason")
+
+                            logger.info(
+                                f"[ASTREAM] Thread {thread_id}: queued prompt tool reload "
+                                f"#{reload_count} — {len(new_tools)} new tool(s): "
+                                f"{', '.join(new_tools)} (ttl={ttl_key})"
+                            )
+                            reload_evt = {
+                                "type": "tool_reload",
+                                "tools": new_tools,
+                                "ttl": ttl_key,
+                                "ttl_seconds": ttl_seconds,
+                                "source": reload_source,
+                                "skill_name": skill_name,
+                                "reason": reason,
+                            }
+                            yield reload_evt
+                            for p in pending_batch:
+                                if p.fanout_mailbox is not None:
+                                    p.fanout_mailbox.put(reload_evt)
+
+                            self.invalidate_thread_config_cache(thread_id)
+                            reload_graph = self._get_async_graph_for_user(
+                                user_id,
+                                is_autonomous=_is_self_invoke,
+                                thread_id=thread_id,
+                            )
+                            resume_msg = self._create_tool_reload_resume_message(reload_info)
+                            async for evt in drive_with_fanout(
+                                stream_processor,
+                                reload_graph,
+                                {"messages": [resume_msg]},
+                                pending_batch,
+                            ):
+                                yield evt
+                            graph = reload_graph
+                    except Exception as e:
+                        logger.warning(
+                            "Thread %s: queued prompt drive failed: %s",
+                            thread_id,
+                            e,
+                            exc_info=True,
+                        )
+                        # Wake queuers with an error so they don't hang.
+                        for p in pending_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put({
+                                    "type": "error",
+                                    "code": "inject_failed",
+                                    "content": f"Failed to inject queued prompt: {e}",
+                                })
+                                p.fanout_mailbox.close()
+                            p.notify_event.set()
+                        raise
+                    else:
+                        # Signal absorption: sentinel into each mailbox (so
+                        # fanout consumers exit), then wake any
+                        # notify_event waiters.
+                        for p in pending_batch:
+                            if p.fanout_mailbox is not None:
+                                p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
+                                p.fanout_mailbox.close()
+                            p.notify_event.set()
+
+                    # Another batch may have piled up during the
+                    # re-drive; the halt counter will hold any new
+                    # observations.
+                    halt_count = backend.consume_halt_observation(thread_id)
+                    if halt_count > 0:
+                        halt_evt = {
+                            "type": "turn_halted",
+                            "reason": "pending_prompts",
+                            "count": halt_count,
+                        }
+                        yield halt_evt
+
                 # Track token usage for auto-compact
                 # Get messages from state to extract usage metadata
                 try:
@@ -1452,6 +2024,7 @@ class NymeriaAgent:
 
                 _elapsed = time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
+                completed_normally = True
 
             except Exception as e:
                 _elapsed = time.monotonic() - _stream_start
@@ -1508,10 +2081,31 @@ class NymeriaAgent:
                 pass  # abort_event/graph/config not yet assigned (early exit)
             except Exception as e:
                 logger.warning(f"[ASTREAM] Thread {thread_id}: Failed to patch dangling tool calls in finally: {e}")
+            # Defensive queue drain: if the holder dies unexpectedly
+            # (uncaught exception, GeneratorExit, etc.) any queued
+            # prompts would otherwise hang their queuers until
+            # lock_timeout. Clear with ``abandoned=True`` so blocked
+            # queuers wake up with an explicit error.
+            if not completed_normally:
+                try:
+                    drained = backend.clear(thread_id, abandoned=True)
+                    if drained:
+                        logger.info(
+                            "[ASTREAM] Thread %s: Defensively drained %d queued prompt(s) in finally",
+                            thread_id,
+                            drained,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[ASTREAM] Thread %s: Defensive queue drain failed: %s",
+                        thread_id,
+                        e,
+                    )
             self._turn_reload_count.pop(thread_id, None)
             self._pending_tool_reload.pop(thread_id, None)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
+            backend.end_release(thread_id)
 
     def get_conversation_history(
         self,

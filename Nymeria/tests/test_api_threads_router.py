@@ -7,7 +7,6 @@ from typing import Any
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, ThreadLLMConfig
 from nymeria.core.thread_metadata import ThreadMetadataManager
-from nymeria.tools import ALL_TOOLS
 from nymeria.triggers import api as api_module
 
 
@@ -237,11 +236,21 @@ def test_thread_status_falls_back_to_graph_state_for_memory_backend(
     }
 
 
-def test_thread_metadata_rename_callable_validates_conflicts_and_publishes_event(
+def test_thread_metadata_title_update_on_callable_thread_allows_spaces_and_preserves_callable_name(
     tmp_path: Path,
     monkeypatch,
     api_client_builder,
 ):
+    """
+    Title is a display string and is independent of callable_name.
+
+    Pre-fix, the metadata handler re-derived callable_name from the new
+    title, which (a) rejected any title containing spaces/punctuation with
+    HTTP 400, and (b) silently rewrote the LLM tool binding when the caller
+    only intended to relabel the thread. The fix decouples the two: titles
+    accept any free-form string and callable_name is unchanged. Callers that
+    want to rename the binding must call PATCH /threads/{id}/config.
+    """
     events: list[dict[str, Any]] = []
 
     def capture_sync_event(**kwargs):
@@ -251,70 +260,85 @@ def test_thread_metadata_rename_callable_validates_conflicts_and_publishes_event
     client, agent = _client(tmp_path, api_client_builder)
     token = _create_user(agent, "owner")
     target = "callable-target"
-    existing = "callable-existing"
     agent.accounts_repo.claim_thread(target, "owner")
-    agent.accounts_repo.claim_thread(existing, "owner")
     agent.thread_config_manager.save_config(
         ThreadConfig(thread_id=target, callable=True, callable_name="Helper")
     )
-    agent.thread_config_manager.save_config(
-        ThreadConfig(thread_id=existing, callable=True, callable_name="ExistingHelper")
-    )
 
-    invalid = client.patch(
-        f"/threads/{target}/metadata",
-        headers=api_client_builder.auth(token),
-        json={"title": "bad name"},
-    )
-    duplicate = client.patch(
-        f"/threads/{target}/metadata",
-        headers=api_client_builder.auth(token),
-        json={"title": "ExistingHelper"},
-    )
-    core_conflict = client.patch(
-        f"/threads/{target}/metadata",
-        headers=api_client_builder.auth(token),
-        json={"title": ALL_TOOLS[0].name},
-    )
-    renamed = client.patch(
+    free_form_title = client.patch(
         f"/threads/{target}/metadata",
         headers={
             **api_client_builder.auth(token),
             "X-Nymeria-Client-Id": "desktop-1",
         },
-        json={"title": "RenamedHelper", "pinned": True},
+        json={"title": "CT-01 child (callable: helper)", "pinned": True},
     )
 
-    assert invalid.status_code == 400
-    assert "Invalid callable name" in invalid.json()["detail"]
-    assert duplicate.status_code == 409
-    assert "already used by thread callable-existing" in duplicate.json()["detail"]
-    assert core_conflict.status_code == 400
-    assert "conflicts with a core tool name" in core_conflict.json()["detail"]
-    assert renamed.status_code == 200
-    body = renamed.json()
-    assert body["title"] == "RenamedHelper"
-    assert body["title_source"] == "callable"
+    assert free_form_title.status_code == 200
+    body = free_form_title.json()
+    assert body["title"] == "CT-01 child (callable: helper)"
+    assert body["title_source"] == "user"
     assert body["pinned"] is True
 
     saved = agent.thread_config_manager.get_config(target)
     assert saved is not None
-    assert saved.callable_name == "RenamedHelper"
-    assert agent.invalidated == [target]
-    assert agent.synced_tools == 1
+    assert saved.callable_name == "Helper", (
+        "callable_name must not be re-derived from a title update"
+    )
+    assert agent.invalidated == [], "title-only update should not invalidate config cache"
+    assert agent.synced_tools == 0, "title-only update should not touch the tool registry"
     assert events == [
         {
             "event_type": "thread_updated",
             "thread_id": target,
             "user_id": "owner",
             "data": {
-                "title": "RenamedHelper",
-                "title_source": "callable",
+                "title": "CT-01 child (callable: helper)",
+                "title_source": "user",
                 "pinned": True,
             },
             "origin_client_id": "desktop-1",
         }
     ]
+
+
+def test_thread_metadata_title_does_not_collide_with_other_callables(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """
+    Display titles are not unique within a user. Two callable threads can both
+    be titled 'Helper Workshop' even if one is bound as callable_name 'helper'
+    and the other as 'workshop' — uniqueness only matters for callable_name,
+    which is checked at PATCH /threads/{id}/config.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    target = "callable-target"
+    other = "callable-other"
+    agent.accounts_repo.claim_thread(target, "owner")
+    agent.accounts_repo.claim_thread(other, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=target, callable=True, callable_name="helper")
+    )
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=other, callable=True, callable_name="workshop")
+    )
+
+    response = client.patch(
+        f"/threads/{target}/metadata",
+        headers=api_client_builder.auth(token),
+        json={"title": "workshop"},
+    )
+
+    # Title 'workshop' would collide with the other thread's callable_name
+    # under the pre-fix behaviour (HTTP 409). Post-fix, titles are free-form.
+    assert response.status_code == 200
+    assert response.json()["title"] == "workshop"
+    # The callable binding is unchanged.
+    saved = agent.thread_config_manager.get_config(target)
+    assert saved is not None
+    assert saved.callable_name == "helper"
 
 
 def test_thread_branch_clones_checkpoints_config_and_metadata(

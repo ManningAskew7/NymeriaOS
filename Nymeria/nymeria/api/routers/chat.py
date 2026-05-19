@@ -45,6 +45,21 @@ def _attachment_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
     ]
 
 
+def _agent_prompt_source(request: ChatRequest) -> tuple[str, str | None, str | None]:
+    """Resolve queue source metadata from trusted server-side signals.
+
+    Normal interactive chat is always ``user`` even if a client sends a
+    ``source`` field. In-cluster autonomous callers already mark requests with
+    ``is_self_invoke``; only that path may pass richer source metadata.
+    """
+    if not request.is_self_invoke or not request.source:
+        return "user", None, None
+    source = request.source
+    if source not in {"trigger", "ticker", "watchdog", "callable", "mcp"}:
+        source = "ticker"
+    return source, request.source_id, request.source_label
+
+
 def _spawn_goal_supervisor(
     agent: Any, user_id: str, worker_thread_id: str, goal: Any
 ) -> tuple[str | None, str | None]:
@@ -867,6 +882,7 @@ def create_chat_router(
             try:
                 attachments = _attachment_dicts(request)
                 images = _legacy_image_dicts(request)
+                prompt_source, prompt_source_id, prompt_source_label = _agent_prompt_source(request)
 
                 client_disconnected = False
                 if dispatched_target is not None:
@@ -892,6 +908,9 @@ def create_chat_router(
                     force_unsupported_attachments=request.force_unsupported_attachments,
                     _is_self_invoke=request.is_self_invoke,
                     _trigger_override=request.trigger_override,
+                    source=prompt_source,
+                    source_id=prompt_source_id,
+                    source_label=prompt_source_label or user_id,
                 ):
                     # If client disconnected, stop yielding SSE events but keep
                     # consuming the generator so the agent finishes its work.
@@ -908,10 +927,12 @@ def create_chat_router(
 
                     # Publish task_started on the first non-queued chunk so the
                     # frontend handoff happens only after the thread lock is acquired.
+                    # Accept either the legacy ``queued`` event or the new
+                    # ``prompt_queued`` event emitted by the sub-turn queue.
                     if (
                         autonomous_task_id
                         and not autonomous_started
-                        and chunk.get("type") != "queued"
+                        and chunk.get("type") not in ("queued", "prompt_queued")
                     ):
                         publish_autonomous_event_fn(
                             event_type="task_started",
@@ -1127,12 +1148,16 @@ def create_chat_router(
                 )
             message = prepared.message
 
+        prompt_source, prompt_source_id, prompt_source_label = _agent_prompt_source(request)
         response = agent.chat(
             message,
             thread_id=thread_id,
             user_id=user_id,
             _is_self_invoke=request.is_self_invoke,
             _trigger_override=request.trigger_override,
+            source=prompt_source,
+            source_id=prompt_source_id,
+            source_label=prompt_source_label or user_id,
         )
         tool_call_count = getattr(agent, "_last_chat_tool_calls", 0)
         return ChatResponse(
