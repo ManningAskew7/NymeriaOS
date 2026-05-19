@@ -815,6 +815,36 @@ function createAutonomousStore() {
         threadsStore.deleteThreadLocal(event.thread_id);
         break;
 
+      // ================================================================
+      // Mid-turn pending-prompt drain on an autonomous holder.
+      // The interactive path handles these in MainPanel.svelte for
+      // user-started turns. For TODO/trigger-started turns there is no
+      // interactive chatStream, so we have to convert queued prompts
+      // into real user bubbles here too.
+      // ================================================================
+      case 'prompt_injected': {
+        if (!isCurrentThread || !isOurTask) break;
+        const data = event.data as { count: number; sources?: string[] };
+        const injected = chatStore.consumeQueuedPrompts(data.count);
+        chatStore.flushStreamingBuffers();
+        chatStore.setLastMessageComplete();
+        chatStore.clearActiveToolCalls();
+        for (const p of injected) {
+          chatStore.addUserMessage(p.content);
+        }
+        chatStore.addAssistantMessage();
+        break;
+      }
+
+      case 'prompt_queued':
+      case 'prompt_absorbed':
+      case 'turn_halted':
+      case 'fanout_dropped':
+        // Lifecycle signals already surfaced by the per-prompt queue stream
+        // in queueOnBusyThread(); acknowledged here so the default-branch
+        // debugLog doesn't flag them as unknown.
+        break;
+
       default:
         debugLog('[Autonomous] Unknown event type:', event.type);
     }
