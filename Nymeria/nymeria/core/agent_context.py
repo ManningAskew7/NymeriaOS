@@ -203,8 +203,7 @@ def trim_context_window(
 
         # Pre-compaction memory flush: Index messages about to be removed in RAG
         # This preserves important context that would otherwise be lost
-        flush_memories_before_trim(
-            agent,
+        agent._flush_memories_before_trim(
             user_id=user_id,
             thread_id=thread_id,
             messages_to_remove=messages_to_remove,
