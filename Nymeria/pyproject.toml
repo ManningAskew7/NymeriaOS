@@ -97,6 +97,9 @@ firebase = [
 dev = [
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
+  "pytest-asyncio>=0.26.0",
+  "pytest-timeout>=2.3.0",
+  "pytest-xdist>=3.5.0",
   "ruff>=0.15.0",
   "pyrefly>=1.0.0",
 ]
@@ -111,6 +114,9 @@ all = [
   "firebase-admin>=6.0.0",
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
+  "pytest-asyncio>=0.26.0",
+  "pytest-timeout>=2.3.0",
+  "pytest-xdist>=3.5.0",
   "ruff>=0.15.0",
   "pyrefly>=1.0.0",
 ]
@@ -154,3 +160,28 @@ project-excludes = [
     "**/dist/**",
 ]
 python-version = "3.11"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config"
+asyncio_mode = "strict"
+xfail_strict = true
+timeout = 30
+markers = [
+    "slow: marks tests as slow (deselect with -m 'not slow')",
+    "integration: marks tests requiring external services",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.coverage.run]
+branch = true
+source = ["nymeria"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
