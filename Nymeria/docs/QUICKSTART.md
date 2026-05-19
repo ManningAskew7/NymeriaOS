@@ -233,7 +233,30 @@ If you are offline or intentionally testing without provider access, use
 
 ## Step 4: Start the Backend
 
-For a source checkout:
+For solo/local use the simplest path is `python run.py slim`, which runs
+the API, ticker, MCP, and watchdog in a single process backed by SQLite —
+no Docker, no Redis, no Postgres:
+
+```bash
+python run.py slim
+```
+
+You should see:
+```
+Starting Nymeria SLIM (single-process) on 127.0.0.1:8000...
+  - Mode: SQLite + in-process ticker + embedded MCP
+  - MCP endpoint: http://127.0.0.1:8000/mcp
+```
+
+`python run.py slim` writes an internal `data/SLIM_SERVICE_TOKEN.txt`
+(mode 0600) on first boot so embedded MCP, the watchdog, and trigger fires
+can authenticate against the API in the same process. That is NOT the
+human bootstrap token — paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
+Setup Wizard, not `SLIM_SERVICE_TOKEN.txt`. See
+[deployment/slim.md](deployment/slim.md) for the full launcher reference.
+
+For multi-process / Docker deployments (separate API + worker + MCP
+containers backed by Postgres and Redis), use:
 
 ```bash
 python run.py api
@@ -242,10 +265,12 @@ python run.py api
 When installed as a package, use:
 
 ```bash
+nymeria slim
+# or
 nymeria api
 ```
 
-You should see:
+`nymeria api` prints:
 ```
 Starting Nymeria API server on 0.0.0.0:8000...
   - API docs: disabled (set NYMERIA_API_DOCS=true to enable)

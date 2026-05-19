@@ -58,6 +58,17 @@ OpenAI, or OpenRouter key. The `default` user ID lines up with existing
 per-user file paths (`data/todos/default.json`, `data/profiles/default.json`,
 etc.) so no data migration is needed for the first user.
 
+### Slim-launcher service token (`data/SLIM_SERVICE_TOKEN.txt`)
+
+`python run.py slim` provisions a separate `bot-service` admin user and
+persists its raw token at `data/SLIM_SERVICE_TOKEN.txt` (mode `0600`). This
+token authenticates same-process MCP, watchdog, trigger-fire, and
+command-service calls; it is verified against the accounts repo on every
+boot and rotated automatically if invalid. It is an **internal service
+credential**, not a human bootstrap token — do not paste it into the Setup
+Wizard. See [deployment/slim.md](deployment/slim.md) for the full launcher
+reference.
+
 ## CLI (legacy — unmaintained)
 
 > **Status:** the `users` CLI predates the HTTP Admin API and is no longer actively tested. Prefer the HTTP endpoints (next section) for anything beyond first-boot bootstrap. The CLI is kept around because it operates directly on the accounts DB and so still works when the API is down.

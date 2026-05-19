@@ -48,6 +48,7 @@ mcp = FastMCP(
 )
 
 _backend_url_override: Optional[str] = None
+_service_token_override: Optional[str] = None
 _client: Optional[NymeriaBackendClient] = None
 
 
@@ -61,10 +62,20 @@ def _resolve_api_url(api_url: Optional[str] = None) -> str:
     return "http://localhost:8000"
 
 
-def configure_backend(api_url: Optional[str] = None) -> None:
-    """Configure the API URL used by subsequent MCP tool calls."""
-    global _backend_url_override, _client
+def configure_backend(
+    api_url: Optional[str] = None,
+    service_token: Optional[str] = None,
+) -> None:
+    """Configure the API URL (and optionally service token) used by MCP tool calls.
+
+    ``service_token`` takes precedence over ``settings.nymeria_service_token``
+    when resolving the bearer used for backend requests. Slim mode passes it
+    explicitly so the embedded MCP ASGI app uses the same internally
+    provisioned token even when nothing has been written to environment yet.
+    """
+    global _backend_url_override, _service_token_override, _client
     _backend_url_override = api_url.rstrip("/") if api_url else None
+    _service_token_override = service_token.strip() if service_token else None
     _client = None
 
 
@@ -73,8 +84,11 @@ def _get_client() -> NymeriaBackendClient:
     global _client
     from nymeria.config import get_settings
 
-    settings = get_settings()
-    service_token = settings.nymeria_service_token
+    if _service_token_override:
+        service_token = _service_token_override
+    else:
+        settings = get_settings()
+        service_token = settings.nymeria_service_token
     if not service_token:
         raise RuntimeError(
             "NYMERIA_SERVICE_TOKEN is required for the MCP thin client. "
@@ -863,6 +877,30 @@ async def nymeria_rag_search(query: str, max_results: int = 5, user_id: str = "d
 # =============================================================================
 
 
+def create_mcp_asgi_app(
+    api_url: Optional[str] = None,
+    service_token: Optional[str] = None,
+):
+    """Return a Streamable HTTP ASGI app suitable for mounting at ``/mcp``.
+
+    Configures the backend client (base URL and optional service token
+    override), forces the embedded streamable HTTP route to ``"/"`` so the
+    public endpoint ends up at exactly ``/mcp`` (without ``/mcp/mcp``) when
+    mounted, and returns the ASGI callable.
+    """
+    configure_backend(api_url=api_url, service_token=service_token)
+    # FastMCP's streamable HTTP app serves its endpoint at this path relative
+    # to wherever it is mounted. Using "/" means the mount point itself is the
+    # endpoint; using "/mcp" (the default) would produce /mcp/mcp under our
+    # mount.
+    mcp.settings.streamable_http_path = "/"
+    logger.info(
+        "Creating Nymeria MCP ASGI app for embedded mount; api=%s",
+        _resolve_api_url(),
+    )
+    return mcp.streamable_http_app()
+
+
 def run_stdio(api_url: Optional[str] = None) -> None:
     """Run the MCP server in STDIO mode."""
     configure_backend(api_url)
@@ -876,6 +914,10 @@ def run_http(host: str = "127.0.0.1", port: int = 8001, api_url: Optional[str] =
     logger.info("Starting Nymeria MCP server in HTTP mode on %s:%s; api=%s", host, port, _resolve_api_url())
     mcp.settings.host = host
     mcp.settings.port = port
+    # Standalone HTTP mode keeps the historical /mcp endpoint. create_mcp_asgi_app
+    # rewrites this for embedded slim-mode mounts; reset it here so successive
+    # run_http() calls in the same process behave identically.
+    mcp.settings.streamable_http_path = "/mcp"
     mcp.run(transport="streamable-http")
 
 
