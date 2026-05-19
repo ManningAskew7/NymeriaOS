@@ -17,6 +17,8 @@ from nymeria.core.ticker import Ticker
 from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from nymeria.core.trigger_manager import TriggerManager
+from nymeria.core.turn_executor import LocalAgentExecutor
+from nymeria.core.user_profile import UserProfileManager
 from nymeria.core import ticker as ticker_module
 from nymeria.api.schemas.settings import ServerSettingsResponse, ServerSettingsUpdate
 
@@ -35,6 +37,7 @@ class FakeAgent:
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
         self.trigger_manager = TriggerManager(data_dir)
         self.thread_config_manager = FakeThreadConfigManager()
+        self.profile_manager = UserProfileManager(data_dir)
         self.settings = settings
 
     def sync_agent_tools(self):
@@ -42,6 +45,32 @@ class FakeAgent:
 
     async def astream(self, *args, **kwargs):
         raise RuntimeError("boom")
+
+
+def _make_ticker(
+    agent: "FakeAgent",
+    schedule_db=None,
+    *,
+    poll_interval: int = Ticker.DEFAULT_POLL_INTERVAL,
+) -> Ticker:
+    """Build the new-form Ticker from a FakeAgent for these tests.
+
+    Wraps the agent in a LocalAgentExecutor so existing ``agent.astream``
+    monkey-patches still drive the ticker. ``busy_agent=agent`` preserves
+    the slim-mode behavior these tests originally exercised (the trigger
+    busy check and the post-turn sliding-window trim path).
+    """
+    return Ticker(
+        executor=LocalAgentExecutor(agent),
+        settings=agent.settings,
+        schedule_db=schedule_db if schedule_db is not None else agent._schedule_db,
+        todo_manager=agent.todo_manager,
+        thread_config_manager=agent.thread_config_manager,
+        profile_manager=agent.profile_manager,
+        poll_interval=poll_interval,
+        busy_agent=agent,
+        spawn_sweeper=None,
+    )
 
 
 def _agent(tmp_path: Path, api_client_builder) -> FakeAgent:
@@ -173,7 +202,7 @@ def test_todo_write_endpoints_succeed_after_execution_marker_clears(
 
 def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path, api_client_builder):
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+    ticker = _make_ticker(agent)
     todo = _add_todo(agent)
     entry = ScheduledTodoEntry(
         todo_id=todo.id,
@@ -192,7 +221,7 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path, 
 def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Path, api_client_builder):
     agent = _agent(tmp_path, api_client_builder)
     agent.settings.todo_auto_archive_days = 3
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+    ticker = _make_ticker(agent)
 
     with agent.todo_manager.atomic_update("owner") as todo_list:
         old_done = todo_list.add_item("Old completed", thread_id="thread-1")
@@ -217,7 +246,7 @@ def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Pa
 
 def test_ticker_uses_async_stream_and_forwards_reload_events(tmp_path: Path, monkeypatch, api_client_builder):
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+    ticker = _make_ticker(agent)
     todo = _add_todo(agent)
     entry = ScheduledTodoEntry(
         todo_id=todo.id,
@@ -304,7 +333,7 @@ def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, mon
         def get_due(self, before: float):
             return [entry]
 
-    ticker = Ticker(agent, DueSchedule(), agent.todo_manager, poll_interval=1)
+    ticker = _make_ticker(agent, schedule_db=DueSchedule(), poll_interval=1)
     ticker._executor = ThreadPoolExecutor(max_workers=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -340,7 +369,7 @@ def test_trigger_poll_does_not_occupy_autonomous_worker_pool(tmp_path: Path, mon
 def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch, api_client_builder):
     """An exception in _check_triggers resets the guard flag."""
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager)
+    ticker = _make_ticker(agent)
 
     def exploding_triggers():
         raise RuntimeError("source network timeout")
@@ -356,7 +385,7 @@ def test_trigger_poll_exception_clears_running_flag(tmp_path: Path, monkeypatch,
 def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch, api_client_builder):
     """A second trigger poll is not submitted while one is in progress."""
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker = _make_ticker(agent, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
     call_count = 0
@@ -385,7 +414,7 @@ def test_trigger_poll_skipped_when_already_running(tmp_path: Path, monkeypatch, 
 def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path, api_client_builder):
     """A shutdown-time submit failure does not leave polling permanently stuck."""
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker = _make_ticker(agent, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
     ticker._housekeeping_executor.shutdown(wait=True)
 
@@ -396,7 +425,7 @@ def test_trigger_poll_failed_submit_clears_running_flag(tmp_path: Path, api_clie
 def test_archive_runs_off_main_loop(tmp_path: Path, monkeypatch, api_client_builder):
     """_archive_completed_todos runs in housekeeping, not inline."""
     agent = _agent(tmp_path, api_client_builder)
-    ticker = Ticker(agent, agent._schedule_db, agent.todo_manager, poll_interval=1)
+    ticker = _make_ticker(agent, poll_interval=1)
     ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
 
     archive_thread_ids: list[int] = []

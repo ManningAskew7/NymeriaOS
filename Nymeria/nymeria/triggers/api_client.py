@@ -187,6 +187,9 @@ class NymeriaAPIClient:
         source: Optional[str] = None,
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
+        publish_autonomous_events: Optional[bool] = None,
+        trigger_id: Optional[str] = None,
+        trigger_name: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
@@ -200,6 +203,18 @@ class NymeriaAPIClient:
 
         ``attachments`` carries multimodal file payloads; same shape as
         :meth:`chat`.
+
+        ``publish_autonomous_events`` lets the Docker worker tell the API
+        to suppress its own autonomous SSE mirroring (task_started,
+        chunk fan-out, task_completed, notifications) for this call —
+        the worker is the sole publisher with stable task IDs. Pass
+        False from worker-owned ticker/trigger relays; leave None to
+        accept the API default (True).
+
+        Autonomous self-invoke calls switch to a no-read-timeout pool so
+        a queued prompt waiting on a busy thread can drain whenever the
+        running turn halts at its next sub-turn boundary, even if that
+        takes longer than the regular five-minute window.
         """
         body: Dict[str, Any] = {
             "message": message,
@@ -220,12 +235,19 @@ class NymeriaAPIClient:
             body["source_id"] = source_id
         if source_label:
             body["source_label"] = source_label
+        if trigger_id:
+            body["trigger_id"] = trigger_id
+        if trigger_name:
+            body["trigger_name"] = trigger_name
+        if publish_autonomous_events is not None:
+            body["publish_autonomous_events"] = publish_autonomous_events
+        stream_timeout = _SSE_TIMEOUT if is_self_invoke else _CHAT_TIMEOUT
         async with self._client_for_loop().stream(
             "POST",
             self._url("/chat"),
             headers=self._headers_for(user_id),
             json=body,
-            timeout=_CHAT_TIMEOUT,
+            timeout=stream_timeout,
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

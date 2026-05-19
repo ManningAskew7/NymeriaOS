@@ -26,6 +26,7 @@ from .time_utils import ensure_aware_utc, utc_now
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
+    from .turn_executor import TurnExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -666,10 +667,15 @@ class TriggerManager:
         self,
         trigger: TriggerDefinition,
         event: dict,
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | TurnExecutor",
         user_id: str,
     ) -> None:
-        """Execute a trigger's action with event data interpolated into templates."""
+        """Execute a trigger's action with event data interpolated into templates.
+
+        ``agent`` may be a local ``NymeriaAgent`` (slim) or any
+        ``TurnExecutor`` (Docker worker, which uses ``APIClientExecutor``
+        to relay the turn into the API runtime).
+        """
         action = trigger.action
         template_vars = {
             **event,
@@ -713,7 +719,7 @@ class TriggerManager:
         self,
         trigger: TriggerDefinition,
         events: List[dict],
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | TurnExecutor",
         user_id: str,
     ) -> None:
         """Execute a trigger's action for a batch of events.
@@ -829,7 +835,7 @@ class TriggerManager:
         self,
         config: dict,
         template_vars: dict,
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | TurnExecutor",
         user_id: str,
         trigger: TriggerDefinition,
     ) -> None:
@@ -884,7 +890,7 @@ class TriggerManager:
 
     def _stream_live(
         self,
-        agent: "NymeriaAgent",
+        agent: "NymeriaAgent | TurnExecutor",
         prompt: str,
         thread_id: str,
         user_id: str,
@@ -904,16 +910,23 @@ class TriggerManager:
         Returns (response_parts, thinking_parts, iteration_limit_hit).
         """
         from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
+        from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
         from .stream_bridge import stream_and_collect
 
         started_published = False
 
         def handle_chunk(chunk: Dict[str, Any], collection) -> None:
             nonlocal started_published
+            # Skip queue-meta events when deciding whether the API has
+            # actually started working on our prompt. The autonomous
+            # queuer in agent.astream() observes fanout, so prompt_injected
+            # and prompt_absorbed arrive on this stream before any
+            # response chunks — firing task_started on those would publish
+            # an empty trigger completion. See pending_prompt_queue.py.
             if (
                 not started_published
                 and task_started_data is not None
-                and chunk.get("type") not in ("queued", "prompt_queued")
+                and chunk.get("type") not in PENDING_QUEUE_META_EVENT_TYPES
             ):
                 publish_autonomous_event(
                     event_type="task_started",

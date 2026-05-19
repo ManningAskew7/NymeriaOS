@@ -404,11 +404,23 @@ class NymeriaAgent:
         # Initialize and start ticker for scheduled TODO execution
         self._ticker: Optional[Ticker] = None
         if enable_ticker:
+            from .turn_executor import LocalAgentExecutor
+
+            def _local_spawn_sweeper() -> int:
+                from ..tools.spawn_thread import sweep_idle_spawned_threads
+
+                return sweep_idle_spawned_threads(self)
+
             self._ticker = Ticker(
-                self,
-                self._schedule_db,
-                self.todo_manager,
+                executor=LocalAgentExecutor(self),
+                settings=self.settings,
+                schedule_db=self._schedule_db,
+                todo_manager=self.todo_manager,
+                thread_config_manager=self.thread_config_manager,
+                profile_manager=self.profile_manager,
                 poll_interval=self.settings.ticker_poll_interval,
+                busy_agent=self,
+                spawn_sweeper=_local_spawn_sweeper,
             )
             self._ticker.start()
             set_ticker(self._ticker)
@@ -1425,7 +1437,16 @@ class NymeriaAgent:
             source = "ticker" if _is_self_invoke else "user"
         is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
         # Sources that observe the holder's stream after injection.
-        observes_stream = source in {"user", "callable", "mcp"}
+        # Autonomous sources (ticker / trigger / watchdog) MUST observe so the
+        # queued prompt's response chunks are fanned to the worker's HTTP
+        # stream — otherwise the worker publishes ``task_completed`` with
+        # empty content because the model output was yielded on the holder's
+        # stream, not the worker's. See ``pending_prompt_queue.py`` top
+        # docstring for the fanout protocol.
+        observes_stream = source in {
+            "user", "callable", "mcp",
+            "trigger", "ticker", "watchdog",
+        }
 
         backend = get_pending_queue()
 

@@ -4,7 +4,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import Callable, NoReturn, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -543,12 +543,30 @@ def _validate_cors_settings(settings: Settings) -> None:
         )
 
 
-def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
+def create_api_app(
+    agent: Optional[NymeriaAgent] = None,
+    *,
+    slim_mode: bool = False,
+    slim_base_url: Optional[str] = None,
+    enable_slim_mcp: bool = True,
+    enable_slim_watchdog: bool = True,
+) -> FastAPI:
     """
     Create the FastAPI application.
 
     Args:
         agent: Optional agent instance (creates default if not provided)
+        slim_mode: True when launched via ``python run.py slim``. Forces the
+            in-process ticker on (Redis must already be off), mounts the
+            embedded MCP ASGI app at ``/mcp``, bootstraps an internal admin
+            service token, and registers an async watchdog as a startup task.
+        slim_base_url: Loopback URL slim-mode internal clients should use to
+            reach this very process (e.g. ``http://127.0.0.1:8000``). Used
+            by the embedded MCP backend client and the slim watchdog client.
+        enable_slim_mcp: Debug escape hatch — set False to skip mounting MCP
+            in slim mode.
+        enable_slim_watchdog: Debug escape hatch — set False to skip the
+            in-process watchdog task even when ``WATCHDOG_ENABLED=true``.
 
     Returns:
         Configured FastAPI application
@@ -563,6 +581,10 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     # Disable ticker in the API container to prevent duplicate task execution.
     # Initialize Redis event bus if configured (needed to receive worker events via SSE)
     disable_ticker = settings.redis_enabled and bool(settings.redis_url)
+    if slim_mode:
+        # Slim runs everything in one process. The run.py launcher has already
+        # forced Redis off via env overrides before settings were cached.
+        disable_ticker = False
     if disable_ticker:
         from ..core.event_bus import create_event_bus, set_event_bus
         event_bus = create_event_bus(settings)
@@ -575,6 +597,30 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
             tools=list(ALL_TOOLS),
             enable_ticker=not disable_ticker,
         )
+
+    # Slim mode bootstraps an internal admin token so same-process MCP /
+    # watchdog / trigger-fire / command-service calls can authenticate
+    # without manual operator provisioning. The token is persisted at
+    # ``data/SLIM_SERVICE_TOKEN.txt`` (mode 0600) and reused on later boots.
+    slim_service_token: Optional[str] = None
+    if slim_mode:
+        from ..core.service_bootstrap import ensure_slim_service_token
+
+        slim_service_token = ensure_slim_service_token(
+            _agent.accounts_repo,
+            settings.data_dir,
+            configured_token=settings.nymeria_service_token,
+        )
+        # Mutate the cached settings instance and process env so every
+        # consumer that reads either path (MCP client, command service,
+        # trigger-fire helpers) picks the slim token up automatically.
+        try:
+            object.__setattr__(settings, "nymeria_service_token", slim_service_token)
+        except Exception:
+            settings.nymeria_service_token = slim_service_token  # type: ignore[attr-defined]
+        os.environ["NYMERIA_SERVICE_TOKEN"] = slim_service_token
+        if slim_base_url:
+            os.environ["NYMERIA_API_URL"] = slim_base_url
 
     # Initialize FCM if enabled
     if settings.fcm_enabled and settings.fcm_credentials_json:
@@ -816,6 +862,43 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     _agent.sync_agent_tools()
 
     # ========================================================================
+    # Slim-mode wiring (embedded MCP + in-process watchdog)
+    #
+    # MCP must be mounted before the frontend catch-all route is registered,
+    # otherwise the SPA fallback can swallow /mcp/* requests.
+    # ========================================================================
+    if slim_mode and enable_slim_mcp:
+        from ..mcp_server import create_mcp_asgi_app, mcp as fastmcp_app
+
+        mcp_app = create_mcp_asgi_app(
+            api_url=slim_base_url,
+            service_token=slim_service_token,
+        )
+        app.mount("/mcp", mcp_app, name="slim-mcp")
+        # FastMCP's Streamable HTTP transport requires its session-manager
+        # task group to be running. The sub-app declares its own lifespan,
+        # but Starlette's Mount does not auto-propagate sub-app lifespans,
+        # so we enter the session manager's run() context from the parent
+        # FastAPI lifespan instead.
+        _register_slim_mcp_lifecycle(app, fastmcp_app)
+
+    if slim_mode and enable_slim_watchdog:
+        _register_slim_watchdog_lifecycle(
+            app,
+            settings=settings,
+            base_url=slim_base_url,
+            service_token=slim_service_token,
+        )
+
+    # In Docker, scheduled TODOs / triggers are driven by the worker
+    # container (which now relays turns back into this API), so the
+    # ticker doesn't run here. Spawned-thread idle cleanup used to ride
+    # along on the ticker; preserve it via a dedicated housekeeping task
+    # so temporary callable threads still get reaped on schedule.
+    if disable_ticker:
+        _register_spawn_thread_housekeeping_lifecycle(app, agent_getter=get_agent)
+
+    # ========================================================================
     # Frontend static hosting (Outlook add-in / web UI)
     # ========================================================================
 
@@ -826,7 +909,208 @@ def create_api_app(agent: Optional[NymeriaAgent] = None) -> FastAPI:
     return app
 
 
-def run_api(host: str = "0.0.0.0", port: int = 8000, agent: Optional[NymeriaAgent] = None) -> None:
+def _register_slim_mcp_lifecycle(app: FastAPI, fastmcp_app) -> None:
+    """Enter the FastMCP session manager's task group during app startup.
+
+    FastMCP's ``streamable_http_app()`` returns a Starlette app whose lifespan
+    starts the StreamableHTTPSessionManager. When that Starlette app is
+    mounted into a parent FastAPI via ``app.mount("/mcp", ...)``, the parent's
+    lifespan does NOT propagate to the sub-app, so we must drive the session
+    manager's task group ourselves or every MCP request fails with
+    ``RuntimeError: Task group is not initialized``.
+    """
+    import contextlib
+
+    state: dict[str, object] = {"stack": None}
+
+    async def _start_mcp_session_manager() -> None:
+        # ``session_manager`` is lazily created the first time
+        # ``streamable_http_app()`` is called; ``create_mcp_asgi_app`` has
+        # already done that before we get here.
+        session_manager = fastmcp_app.session_manager
+        stack = contextlib.AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            await stack.enter_async_context(session_manager.run())
+        except Exception:
+            await stack.aclose()
+            raise
+        state["stack"] = stack
+        logger.info("Slim MCP session manager started")
+
+    async def _stop_mcp_session_manager() -> None:
+        stack = state.get("stack")
+        if stack is None:
+            return
+        try:
+            await stack.aclose()  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
+            logger.warning("Slim MCP session manager shutdown error: %s", exc)
+        state["stack"] = None
+        logger.info("Slim MCP session manager stopped")
+
+    app.router.add_event_handler("startup", _start_mcp_session_manager)
+    app.router.add_event_handler("shutdown", _stop_mcp_session_manager)
+
+
+def _register_slim_watchdog_lifecycle(
+    app: FastAPI,
+    *,
+    settings: Settings,
+    base_url: Optional[str],
+    service_token: Optional[str],
+) -> None:
+    """Wire startup/shutdown event handlers for the in-process watchdog."""
+    import asyncio
+
+    async def _start_slim_watchdog() -> None:
+        # Import lazily so the stubs swapped in by tests via monkeypatch take
+        # effect even when the test patches the module-level attribute after
+        # this factory is imported.
+        from . import api_client as api_client_module
+        from . import watchdog_worker as watchdog_module
+
+        if not settings.watchdog_enabled:
+            logger.info("Slim watchdog skipped: WATCHDOG_ENABLED=false")
+            return
+        if not service_token:
+            logger.warning("Slim watchdog skipped: no service token available")
+            return
+
+        # base_url is required for the API client; the slim launcher always
+        # passes one, but fall back to a sane local default if a caller
+        # constructs the app directly without it.
+        client_base_url = base_url or f"http://127.0.0.1:{settings.api_port}"
+        client = api_client_module.NymeriaAPIClient(
+            base_url=client_base_url,
+            api_key=service_token,
+        )
+        worker = watchdog_module.WatchdogWorker(client=client, settings=settings)
+        task = asyncio.create_task(worker.run())
+        app.state.slim_watchdog_worker = worker
+        app.state.slim_watchdog_client = client
+        app.state.slim_watchdog_task = task
+        logger.info("Slim watchdog started (in-process task)")
+
+    async def _stop_slim_watchdog() -> None:
+        worker = getattr(app.state, "slim_watchdog_worker", None)
+        task = getattr(app.state, "slim_watchdog_task", None)
+        client = getattr(app.state, "slim_watchdog_client", None)
+        if worker is not None:
+            worker.stop()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass  # Cancellation result is intentionally discarded during shutdown.
+            except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
+                logger.warning("Slim watchdog task exited with error: %s", exc)
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Slim watchdog client close failed: %s", exc)
+        logger.info("Slim watchdog stopped")
+
+    app.router.add_event_handler("startup", _start_slim_watchdog)
+    app.router.add_event_handler("shutdown", _stop_slim_watchdog)
+
+
+def _register_spawn_thread_housekeeping_lifecycle(
+    app: FastAPI,
+    *,
+    agent_getter: Callable[[], NymeriaAgent],
+) -> None:
+    """Run periodic spawned-thread idle cleanup when the API owns no ticker.
+
+    Slim runs the cleanup from the in-process ticker's housekeeping
+    executor. In Docker, the worker container drives scheduling but no
+    longer holds a local agent, so it can't sweep spawned threads
+    safely (and ``agent.sync_agent_tools()`` afterward has to run in
+    the process that actually serves chat). This task replaces that
+    code path with an API-side, 30-minute heartbeat that mirrors the
+    ticker's existing cadence.
+    """
+    import asyncio
+
+    SWEEP_INTERVAL_SECONDS = 1800  # 30 minutes (matches Ticker._spawn_sweep_interval)
+    stop_event: "asyncio.Event | None" = None
+    task: "asyncio.Task[None] | None" = None
+
+    async def _housekeeping_loop(event: asyncio.Event) -> None:
+        from ..tools.spawn_thread import sweep_idle_spawned_threads
+
+        # Short startup delay so we don't race the agent's first
+        # ``sync_agent_tools()`` call during app boot.
+        try:
+            await asyncio.wait_for(event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            pass  # Expected — first heartbeat tick fires after the delay.
+
+        while not event.is_set():
+            try:
+                agent = agent_getter()
+                deleted = sweep_idle_spawned_threads(agent)
+                if deleted:
+                    logger.info(
+                        "Spawn idle-sweep deleted %d temporary thread(s)",
+                        deleted,
+                    )
+                    # Resync tool registry so the callable-thread tool list
+                    # reflects the deletions on the next prompt.
+                    try:
+                        agent.sync_agent_tools()
+                    except Exception:
+                        logger.exception(
+                            "Failed to sync agent tools after spawn sweep"
+                        )
+            except Exception:
+                logger.exception("Spawn-thread housekeeping pass failed")
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=SWEEP_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                pass  # Normal heartbeat tick.
+
+    async def _start() -> None:
+        nonlocal stop_event, task
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(_housekeeping_loop(stop_event))
+        app.state.spawn_housekeeping_task = task
+        app.state.spawn_housekeeping_stop = stop_event
+        logger.info("Spawn-thread housekeeping task started (Docker mode)")
+
+    async def _stop() -> None:
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    app.router.add_event_handler("startup", _start)
+    app.router.add_event_handler("shutdown", _stop)
+
+
+def run_api(
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    agent: Optional[NymeriaAgent] = None,
+    *,
+    slim_mode: bool = False,
+    slim_base_url: Optional[str] = None,
+    enable_slim_mcp: bool = True,
+    enable_slim_watchdog: bool = True,
+) -> None:
     """
     Run the API server.
 
@@ -834,8 +1118,18 @@ def run_api(host: str = "0.0.0.0", port: int = 8000, agent: Optional[NymeriaAgen
         host: Host to bind to
         port: Port to listen on
         agent: Optional agent instance
+        slim_mode: Enable slim single-process mode (embedded MCP + watchdog).
+        slim_base_url: Loopback URL internal slim clients should use.
+        enable_slim_mcp: Disable to skip mounting MCP in slim mode.
+        enable_slim_watchdog: Disable to skip the in-process watchdog task.
     """
     import uvicorn
 
-    app = create_api_app(agent)
+    app = create_api_app(
+        agent,
+        slim_mode=slim_mode,
+        slim_base_url=slim_base_url,
+        enable_slim_mcp=enable_slim_mcp,
+        enable_slim_watchdog=enable_slim_watchdog,
+    )
     uvicorn.run(app, host=host, port=port)

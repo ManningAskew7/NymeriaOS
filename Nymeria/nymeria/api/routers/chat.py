@@ -26,6 +26,7 @@ from ...core.notification_dispatch import (
     create_autonomous_notification as default_create_autonomous_notification,
     should_notify_autonomous as default_should_notify_autonomous,
 )
+from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from ..schemas.chat import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -842,9 +843,19 @@ def create_chat_router(
         # Autonomous task bookends: publish task_started/task_completed to Redis so
         # /autonomous/stream subscribers see watchdog/ticker activity live. Matches
         # the event pattern the former in-process watchdog emitted.
+        #
+        # Worker-relayed calls (Docker scheduler) carry
+        # ``publish_autonomous_events=False`` because the worker publishes
+        # bookends/chunks itself using stable task IDs (todo.id /
+        # trigger-<id>). Suppressing the API-side mirror via a None task_id
+        # gates task_started, the chunk fan-out, task_completed and the
+        # autonomous notification in one place.
+        should_publish_autonomous = (
+            request.is_self_invoke and request.publish_autonomous_events
+        )
         autonomous_task_id = (
             f"{request.trigger_override or 'autonomous'}-{thread_id}"
-            if request.is_self_invoke
+            if should_publish_autonomous
             else None
         )
         # Defer task_started publish until the first non-queued chunk arrives.
@@ -925,14 +936,17 @@ def create_chat_router(
                             )
                         continue
 
-                    # Publish task_started on the first non-queued chunk so the
-                    # frontend handoff happens only after the thread lock is acquired.
-                    # Accept either the legacy ``queued`` event or the new
-                    # ``prompt_queued`` event emitted by the sub-turn queue.
+                    # Publish task_started on the first non-queue-meta chunk
+                    # so the frontend handoff happens only after the thread
+                    # lock is acquired AND a real content event arrives.
+                    # Queue-meta events (queued / prompt_queued /
+                    # prompt_injected / prompt_absorbed / turn_halted /
+                    # fanout_dropped) signal queue transitions, not the
+                    # start of work.
                     if (
                         autonomous_task_id
                         and not autonomous_started
-                        and chunk.get("type") not in ("queued", "prompt_queued")
+                        and chunk.get("type") not in PENDING_QUEUE_META_EVENT_TYPES
                     ):
                         publish_autonomous_event_fn(
                             event_type="task_started",

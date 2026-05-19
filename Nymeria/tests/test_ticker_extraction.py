@@ -23,6 +23,8 @@ from nymeria.core.ticker import (
 )
 from nymeria.core.todo_manager import TodoManager
 from nymeria.core.todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
+from nymeria.core.turn_executor import LocalAgentExecutor
+from nymeria.core.user_profile import UserProfileManager
 from nymeria.core import ticker as ticker_module
 
 
@@ -200,6 +202,7 @@ class FakeAgent:
     def __init__(self, data_dir: Path):
         self.todo_manager = TodoManager(data_dir)
         self.thread_config_manager = FakeThreadConfigManager()
+        self.profile_manager = UserProfileManager(data_dir)
         self.settings = FakeSettings()
         self.settings.data_dir = data_dir
         self._schedule_db = TodoScheduleDB(data_dir / "todo_schedule.db")
@@ -210,7 +213,17 @@ class FakeAgent:
 
 def _make_ticker(tmp_path: Path):
     agent = FakeAgent(tmp_path)
-    return Ticker(agent, agent._schedule_db, agent.todo_manager), agent
+    ticker = Ticker(
+        executor=LocalAgentExecutor(agent),
+        settings=agent.settings,
+        schedule_db=agent._schedule_db,
+        todo_manager=agent.todo_manager,
+        thread_config_manager=agent.thread_config_manager,
+        profile_manager=agent.profile_manager,
+        busy_agent=agent,
+        spawn_sweeper=None,
+    )
+    return ticker, agent
 
 
 def _add_todo(agent: FakeAgent, user_id: str = "owner"):

@@ -14,10 +14,14 @@ The module also defines a tiny cross-loop-safe mailbox primitive
 different event loop in the callable-thread / ticker case) can observe
 the live events of the holder's turn after its prompt is injected.
 
-v1 ships only the in-memory backend. A v2 Redis backend will implement
-the same protocol so the cross-process Docker case (api <-> worker) can
-slot in via ``create_pending_queue(settings)`` without touching
-hot-path code.
+v1 ships only the in-memory backend, and that is now sufficient for
+both supported shapes: in slim everything runs in one process, and in
+Docker the worker no longer instantiates ``NymeriaAgent`` -- it relays
+TODO and trigger turns to the API container via HTTP, so the queue is
+always process-local to the one process that actually runs the agent.
+The ``PendingPromptQueueBackend`` protocol stays in place so a Redis
+backend could still slot in later (e.g. for multi-replica API), but
+that is no longer required to close the original cross-process gap.
 """
 
 from __future__ import annotations
@@ -416,6 +420,22 @@ _SENTINEL_PROMPT_ABSORBED = "prompt_absorbed_sentinel"
 
 
 PENDING_QUEUE_EVENT_TYPES = frozenset({
+    EVENT_PROMPT_QUEUED,
+    EVENT_PROMPT_INJECTED,
+    EVENT_PROMPT_ABSORBED,
+    EVENT_TURN_HALTED,
+    EVENT_FANOUT_DROPPED,
+})
+
+
+# Queue-meta event types that autonomous publishers (ticker, trigger
+# manager) must NOT use to fire ``task_started``. These signal queue
+# state transitions, not the start of actual model work for the queued
+# prompt. The legacy ``queued`` alias (emitted alongside ``prompt_queued``
+# for back-compat in agent.py:_yield_queued_events) is included so it
+# never accidentally triggers an early ``task_started``.
+PENDING_QUEUE_META_EVENT_TYPES = frozenset({
+    "queued",  # legacy alias for prompt_queued
     EVENT_PROMPT_QUEUED,
     EVENT_PROMPT_INJECTED,
     EVENT_PROMPT_ABSORBED,

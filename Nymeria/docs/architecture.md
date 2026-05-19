@@ -242,6 +242,31 @@ When Nymeria starts, the Ticker:
 1. Rebuilds schedule index from TODO JSON files (`rebuild_from_todos()`)
 2. Recovers any missed scheduled TODOs that were due during downtime
 
+**Single Agent Runtime (Docker):**
+In Docker, the `worker` container schedules TODOs and trigger polls but no
+longer constructs a `NymeriaAgent`. Every turn it dispatches is relayed to
+the `api` container via `POST /chat`, mirroring the existing thin-client
+watchdog pattern. The `api` container is therefore the single agent
+runtime in both shapes (slim runs it in-process, Docker runs it in the
+API container), which keeps the in-memory `ThreadLockManager` and
+`PendingPromptQueue` authoritative for cross-source contention. The
+abstraction lives in `nymeria/core/turn_executor.py`:
+
+- `LocalAgentExecutor` (slim, API container) — calls `agent.astream(...)`
+  directly.
+- `APIClientExecutor` (Docker worker) — wraps `NymeriaAPIClient` and
+  POSTs to `/chat` with `publish_autonomous_events=False`. The worker
+  remains the sole publisher of autonomous SSE events for its own
+  TODOs (using `todo.id` as the stable task id) and triggers (using
+  `trigger-<id>`); the API would otherwise mint `f"autonomous-{thread_id}"`
+  and emit duplicate events.
+
+Spawned-thread idle cleanup (`sweep_idle_spawned_threads`) follows the
+runtime: slim runs it from the ticker's housekeeping executor (via an
+injected `spawn_sweeper` closure over the local agent); Docker runs it
+from a 30-minute API-side housekeeping task registered by
+`create_api_app` when the in-process ticker is disabled.
+
 ---
 
 ### 4.2 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)

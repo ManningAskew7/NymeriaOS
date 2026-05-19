@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -22,13 +22,18 @@ from .activity_log import ActivityType, log_activity
 from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
+from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
+from .turn_executor import TurnExecutor
 
 if TYPE_CHECKING:
+    from ..config.settings import Settings
     from .agent import NymeriaAgent
+    from .thread_config import ThreadConfigManager
+    from .user_profile import UserProfileManager
 
 logger = logging.getLogger(__name__)
 
@@ -236,23 +241,52 @@ class Ticker:
 
     def __init__(
         self,
-        agent: "NymeriaAgent",
+        executor: TurnExecutor,
+        settings: "Settings",
         schedule_db: TodoScheduleDB,
         todo_manager: TodoManager,
+        thread_config_manager: "ThreadConfigManager",
+        profile_manager: "UserProfileManager",
+        *,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        busy_agent: Optional["NymeriaAgent"] = None,
+        spawn_sweeper: Optional[Callable[[], int]] = None,
     ):
         """
         Initialize the ticker.
 
         Args:
-            agent: NymeriaAgent instance for executing tasks
-            schedule_db: TodoScheduleDB instance for polling scheduled TODOs
-            todo_manager: TodoManager for accessing TODO data
-            poll_interval: Seconds between polls (from settings)
+            executor: ``TurnExecutor`` used to run scheduled TODOs and
+                trigger actions. In slim, this wraps the local agent; in
+                Docker, it routes calls to the API container.
+            settings: Resolved ``Settings`` for poll caps, archive
+                window, context management, etc.
+            schedule_db: ``TodoScheduleDB`` for polling scheduled TODOs.
+            todo_manager: ``TodoManager`` for accessing TODO data.
+            thread_config_manager: Per-thread config store (used for
+                autonomous notification routing and trigger context).
+            profile_manager: User profile store (used for RAG opt-in
+                checks when indexing completion summaries).
+            poll_interval: Seconds between polls (from settings).
+            busy_agent: Optional ``NymeriaAgent`` for in-process busy
+                checks and post-turn sliding-window trimming. Slim
+                passes the local agent. The Docker worker passes None
+                because the API runtime handles contention via its own
+                ``ThreadLockManager`` + pending-prompt queue.
+            spawn_sweeper: Optional callable that performs spawned-
+                thread idle cleanup (returns deleted count). Slim
+                passes a closure over its local agent; Docker passes
+                None because the cleanup runs API-side via a
+                housekeeping task.
         """
-        self.agent = agent
+        self._turn_executor = executor
+        self.settings = settings
         self.schedule_db = schedule_db
         self.todo_manager = todo_manager
+        self.thread_config_manager = thread_config_manager
+        self.profile_manager = profile_manager
+        self._busy_agent = busy_agent
+        self._spawn_sweeper = spawn_sweeper
         self.poll_interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -290,7 +324,7 @@ class Ticker:
         self._running = True
 
         # Initialize thread pool for parallel autonomous execution
-        max_workers = self.agent.settings.max_concurrent_autonomous or None  # 0 = None = unlimited
+        max_workers = self.settings.max_concurrent_autonomous or None  # 0 = None = unlimited
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="NymeriaTicker"
         )
@@ -441,11 +475,16 @@ class Ticker:
         return True
 
     def _run_spawn_sweep(self) -> None:
-        """Execute the idle-thread sweep with exception isolation."""
-        try:
-            from ..tools.spawn_thread import sweep_idle_spawned_threads
+        """Execute the idle-thread sweep with exception isolation.
 
-            deleted = sweep_idle_spawned_threads(self.agent)
+        The Docker worker passes ``spawn_sweeper=None`` because cleanup runs
+        API-side via a housekeeping task (the worker has no local agent to
+        sweep against). Slim injects a closure over its local agent.
+        """
+        if self._spawn_sweeper is None:
+            return
+        try:
+            deleted = self._spawn_sweeper()
             if deleted:
                 logger.info(
                     f"Spawn idle-sweep deleted {deleted} temporary thread(s)"
@@ -455,7 +494,7 @@ class Ticker:
 
     def _archive_completed_todos(self) -> None:
         """Archive completed TODOs older than the configured retention for all users."""
-        days_old = getattr(getattr(self.agent, "settings", None), "todo_auto_archive_days", 7)
+        days_old = getattr(self.settings, "todo_auto_archive_days", 7)
         users = self.todo_manager.get_all_users_with_todos()
         for user_id in users:
             with self.todo_manager.atomic_update(user_id) as todo_list:
@@ -478,7 +517,11 @@ class Ticker:
         logger.info(f"[TRIGGER POLL] Checking triggers for {len(users)} user(s): {users}")
 
         for user_id in users:
-            fired = manager.check_triggers(user_id, agent=self.agent)
+            # In slim, ``busy_agent`` is the local agent so check_triggers can
+            # short-circuit on a busy thread before allocating a worker slot.
+            # In Docker, the worker passes None — the API handles contention
+            # in agent.astream() via its pending-prompt queue.
+            fired = manager.check_triggers(user_id, agent=self._busy_agent)
             logger.info(f"[TRIGGER POLL] user={user_id}: {len(fired)} trigger(s) fired")
             for trigger, events in fired:
                 logger.info(
@@ -487,10 +530,16 @@ class Ticker:
                 )
                 if self._executor:
                     self._executor.submit(
-                        manager.fire_action_batch, trigger, events, self.agent, user_id
+                        manager.fire_action_batch,
+                        trigger,
+                        events,
+                        self._turn_executor,
+                        user_id,
                     )
                 else:
-                    manager.fire_action_batch(trigger, events, self.agent, user_id)
+                    manager.fire_action_batch(
+                        trigger, events, self._turn_executor, user_id
+                    )
 
     def _check_and_execute(self) -> None:
         """Check for due scheduled TODOs and execute them."""
@@ -545,7 +594,7 @@ class Ticker:
         return calculate_next_recurrence_time(recurrence, from_time)
 
     def _should_create_autonomous_notification(self, thread_id: str) -> bool:
-        return should_notify_autonomous(thread_id, self.agent.thread_config_manager)
+        return should_notify_autonomous(thread_id, self.thread_config_manager)
 
     def _execute_scheduled_todo(self, entry: ScheduledTodoEntry) -> None:
         """Execute a scheduled TODO via the agent stream.
@@ -650,9 +699,16 @@ class Ticker:
         def on_chunk(chunk: dict, collection: StreamCollection) -> None:
             nonlocal started_published
             # Hold task_started until astream actually owns the thread
-            # lock — otherwise a `queued` chunk would flip the frontend
-            # into autonomous-streaming mode mid-conversation.
-            if not started_published and chunk.get("type") not in ("queued", "prompt_queued"):
+            # lock AND a real content event arrives. Queue-meta events
+            # (queued, prompt_queued, prompt_injected, prompt_absorbed,
+            # turn_halted, fanout_dropped) signal queue transitions, not
+            # the start of model work — firing task_started on them
+            # would flip the frontend into autonomous-streaming mode
+            # before the worker actually has a response.
+            if (
+                not started_published
+                and chunk.get("type") not in PENDING_QUEUE_META_EVENT_TYPES
+            ):
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=thread_id,
@@ -672,7 +728,7 @@ class Ticker:
             renderer.render_chunk(chunk)
 
         stream_result = stream_and_collect(
-            self.agent,
+            self._turn_executor,
             astream_kwargs={
                 "message": prompt,
                 "thread_id": thread_id,
@@ -731,7 +787,7 @@ class Ticker:
             self._log_continuation_chunk(todo.id, chunk)
 
         continuation_result = stream_and_collect(
-            self.agent,
+            self._turn_executor,
             astream_kwargs={
                 "message": continuation_prompt,
                 "thread_id": thread_id,
@@ -864,8 +920,8 @@ class Ticker:
                 thread_id=thread_id,
                 task_id=todo.id,
                 summary=notification_summary,
-                settings=self.agent.settings,
-                thread_config_manager=self.agent.thread_config_manager,
+                settings=self.settings,
+                thread_config_manager=self.thread_config_manager,
             )
             try:
                 _console.print(f"[yellow]Notification sent: {notification_summary}[/yellow]")
@@ -921,13 +977,19 @@ class Ticker:
     def _trim_context_if_needed(
         self, entry: ScheduledTodoEntry, thread_id: str,
     ) -> None:
-        if self.agent.settings.context_management != "sliding_window":
+        # Post-turn sliding-window trim. Only available when we have an
+        # in-process agent (slim). Docker workers pass busy_agent=None;
+        # the API's astream() runs its own start-of-turn trim before
+        # each turn, so skipping here just defers cleanup by one cycle.
+        if self._busy_agent is None:
             return
-        cycle_count = self.agent.get_context_cycle_count(thread_id)
-        max_cycles = self.agent.settings.sliding_window_cycles
+        if self.settings.context_management != "sliding_window":
+            return
+        cycle_count = self._busy_agent.get_context_cycle_count(thread_id)
+        max_cycles = self.settings.sliding_window_cycles
         if cycle_count <= max_cycles:
             return
-        messages_removed = self.agent.trim_context_window(
+        messages_removed = self._busy_agent.trim_context_window(
             thread_id, max_cycles, user_id=entry.user_id,
         )
         if messages_removed > 0:
@@ -977,8 +1039,8 @@ class Ticker:
             thread_id=thread_id,
             task_id=todo.id,
             summary=f"Task failed: {str(error)[:180]}",
-            settings=self.agent.settings,
-            thread_config_manager=self.agent.thread_config_manager,
+            settings=self.settings,
+            thread_config_manager=self.thread_config_manager,
         )
 
         retry_count = self._retry_counts.get(todo.id, 0) + 1
@@ -1067,7 +1129,7 @@ class Ticker:
         """
         try:
             # Check if RAG is enabled for user
-            profile = self.agent.profile_manager.get_profile(user_id)
+            profile = self.profile_manager.get_profile(user_id)
             if not profile.opt_in.rag_enabled:
                 return
 
@@ -1077,7 +1139,7 @@ class Ticker:
 
             # Get or create memory index
             safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
-            db_path = self.agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+            db_path = self.settings.data_dir / "users" / safe_user_id / "memory.db"
             memory_index = MemoryIndex(db_path)
 
             # Index the TODO completion

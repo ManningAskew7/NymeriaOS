@@ -96,6 +96,19 @@ class ChatRequest(BaseModel):
             "(e.g. trigger.name, todo task excerpt, caller_thread title)."
         ),
     )
+    publish_autonomous_events: bool = Field(
+        default=True,
+        description=(
+            "For trusted self-invoke callers, whether /chat should mirror "
+            "task_started, agent stream chunks, task_completed, and "
+            "autonomous notifications onto the autonomous event bus. "
+            "Defaults to True so existing watchdog and webhook-fire paths "
+            "keep their API-owned publishing. The Docker worker container "
+            "sets this to False because it publishes those events itself "
+            "with stable task IDs (todo.id / trigger-<id>) and would "
+            "otherwise emit duplicates."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
