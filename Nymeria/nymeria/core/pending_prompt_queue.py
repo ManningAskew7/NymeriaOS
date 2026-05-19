@@ -386,19 +386,27 @@ def make_pending_prompt(
     )
 
 
-def isoformat_enqueued_at(prompt: PendingPrompt) -> str:
-    """Render ``prompt.enqueued_at`` as ISO 8601 UTC (no microseconds)."""
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(prompt.enqueued_at, tz=timezone.utc).replace(
-        microsecond=0
-    ).isoformat()
+# Maps ``PendingPrompt.source`` to the human-readable trigger label shown in
+# the drained-prompt header. Mirrors ``get_time_context`` in ``prompts.py`` so
+# a drained sub-turn reads consistently with a freshly-started turn.
+_SOURCE_LABELS = {
+    "ticker": "Scheduled TODO",
+    "user": "User Message",
+    "trigger": "Event Trigger",
+    "callable": "Callable Thread",
+    "mcp": "MCP Client",
+    "watchdog": "Watchdog",
+}
 
 
 def queued_prompt_header(prompt: PendingPrompt) -> str:
     """Build the metadata header prefixed to each drained prompt's HumanMessage."""
+    from .time_utils import format_user_time
+
+    label = _SOURCE_LABELS.get(prompt.source, prompt.source.capitalize())
     return (
-        f"[Queued prompt from {prompt.source} '{prompt.source_label}' "
-        f"received {isoformat_enqueued_at(prompt)} while you were mid-turn.]"
+        f"[Time: {format_user_time(prompt.enqueued_at)}]\n"
+        f"[Trigger: {label}]"
     )
 
 

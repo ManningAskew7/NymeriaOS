@@ -4,7 +4,6 @@ Contains mode-specific rules and system prompt building utilities.
 """
 
 import json
-from datetime import datetime
 
 
 # Rules for interactive mode (responding to user messages)
@@ -75,10 +74,7 @@ def get_time_context(
     Returns:
         Formatted time context string to prepend to messages
     """
-    from .time_utils import get_user_tz
-
-    user_tz = get_user_tz()
-    now = datetime.now(user_tz)
+    from .time_utils import format_user_time
 
     if trigger_override:
         trigger = trigger_override
@@ -88,7 +84,7 @@ def get_time_context(
         trigger = "User Message"
 
     return (
-        f"[Time: {now.strftime('%A, %B %d, %Y at %I:%M %p')} ({user_tz.key})]\n"
+        f"[Time: {format_user_time()}]\n"
         f"[Trigger: {trigger}]"
     )
 
