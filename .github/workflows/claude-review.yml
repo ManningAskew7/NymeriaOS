@@ -12,6 +12,10 @@ on:
   pull_request_review_comment:
     types: [created]
 
+concurrency:
+  group: claude-review-${{ github.event.workflow_run.head_sha || github.event.comment.id || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   # ── PR Review: uses the official action (posts inline comments) ──
   pr-review:

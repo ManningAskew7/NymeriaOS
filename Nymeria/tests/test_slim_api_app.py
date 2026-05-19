@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -205,7 +206,7 @@ def test_create_api_app_slim_starts_and_stops_watchdog(
         for _ in range(50):
             if worker.started.is_set():
                 break
-            asyncio.run(asyncio.sleep(0.02))
+            time.sleep(0.02)
         assert worker.started.is_set() is True
         assert worker.stop_called is False
         assert _StubAPIClient.instances[0].closed is False
