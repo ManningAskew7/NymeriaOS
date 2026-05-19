@@ -63,7 +63,7 @@
     {:else}
       {#if threadsStore.lastSyncError}
         <div class="sync-error-banner">
-          <p>Couldn't sync threads from backend — showing cached data.</p>
+          <p>Couldn't sync threads from backend. Showing cached data.</p>
           <button type="button" disabled={retryingSync} onclick={handleRetrySync}>
             {retryingSync ? 'Retrying…' : 'Retry'}
           </button>

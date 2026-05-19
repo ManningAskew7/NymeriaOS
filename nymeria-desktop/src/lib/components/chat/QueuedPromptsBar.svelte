@@ -39,7 +39,7 @@
     <div class="queued-header">
       <Icon name="clock" size={12} />
       <span>{prompts.length === 1 ? '1 prompt queued' : `${prompts.length} prompts queued`}</span>
-      <span class="queued-hint">— will send at the next sub-turn halt</span>
+      <span class="queued-hint">(will send at the next sub-turn halt)</span>
     </div>
     <ul class="queued-list">
       {#each prompts as prompt (prompt.id)}
