@@ -158,7 +158,7 @@ export class ChatApi extends CredentialsApi {
    * controller (separate from chatStream's module-level one) so cancelling
    * a queued prompt does not abort the primary stream and vice-versa.
    * Only lifecycle events (prompt_queued / prompt_injected / prompt_absorbed
-   * / error) are yielded — content events arrive on the holder's stream and
+   * / error) are yielded. Content events arrive on the holder's stream and
    * would otherwise be rendered twice.
    */
   async *queuePromptStream(

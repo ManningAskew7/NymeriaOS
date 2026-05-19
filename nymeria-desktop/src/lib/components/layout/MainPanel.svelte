@@ -248,7 +248,7 @@
             chatStore.setPendingPromptStatus(promptId, 'error', data.message);
             return;
           }
-          // queued / turn_halted / fanout_dropped / prompt_injected — ignore
+          // queued / turn_halted / fanout_dropped / prompt_injected: ignore
         }
       }
     } catch (err) {
@@ -615,9 +615,9 @@
       insertText={pendingInsertText}
       onInsertConsumed={() => { pendingInsertText = ''; }}
       placeholder={chatStore.isQueued
-        ? 'Type to queue — sends when current turn finishes'
+        ? 'Type to queue (sends when current turn finishes)'
         : chatStore.isStreaming
-          ? 'Type to queue — sends at the next sub-turn halt'
+          ? 'Type to queue (sends at the next sub-turn halt)'
           : 'Type a message...'}
     />
   </div>

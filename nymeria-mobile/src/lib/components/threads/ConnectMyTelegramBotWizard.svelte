@@ -204,7 +204,7 @@
     <p>
       Your bot is registered as
       <strong>@{registeredBot?.bot_username ?? '…'}</strong>. The server
-      is starting its polling loop now — usually under 15 seconds.
+      is starting its polling loop now (usually under 15 seconds).
     </p>
     <div class="muted small">
       Waiting for the bot to come online…
