@@ -49,7 +49,7 @@ def check_iteration_limit_hit(
     max_iterations: int,
 ) -> bool:
     """Check if routing stopped because the turn exceeded max_iterations."""
-    return analyze_turn_safety(agent, messages, max_iterations).should_stop
+    return agent._analyze_turn_safety(messages, max_iterations).should_stop
 
 
 def analyze_turn_safety(
@@ -91,9 +91,9 @@ def graph_run_config(
     user_id: str,
     callbacks: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
-    max_iterations = max_iterations_for_thread(agent, thread_id)
+    max_iterations = agent._max_iterations_for_thread(thread_id)
     config: Dict[str, Any] = {
-        "recursion_limit": recursion_limit_for_iterations(max_iterations),
+        "recursion_limit": agent._recursion_limit_for_iterations(max_iterations),
         "configurable": {"thread_id": thread_id, "user_id": user_id},
     }
     if callbacks is not None:
@@ -127,7 +127,7 @@ def turn_safety_event(
         "type": "iteration_limit",
         "scope": scope,
         "reason": safety.reason or TURN_SAFETY_REASON_MAX_ITERATIONS,
-        "content": turn_safety_content(agent, safety),
+        "content": agent._turn_safety_content(safety),
         "max_iterations": safety.max_iterations,
         "tool_call_count": safety.tool_call_count,
     }
