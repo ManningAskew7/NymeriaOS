@@ -16,10 +16,6 @@ from ..vendor.react_agent import (
     ToolRegistry,
 )
 from ..vendor.react_agent.nodes import (
-    TURN_SAFETY_REASON_MAX_ITERATIONS,
-    TURN_SAFETY_REASON_REPEATED_TOOL_RESULT,
-    TurnSafetyResult,
-    analyze_turn_safety,
     is_context_overflow_error,
 )
 
@@ -761,51 +757,25 @@ class NymeriaAgent:
 
     @staticmethod
     def _count_current_turn_tool_calls(messages: List) -> int:
-        """Count tool-call AI messages since the most recent HumanMessage."""
-        current_turn_messages = []
-        for msg in reversed(messages):
-            if isinstance(msg, HumanMessage):
-                break
-            current_turn_messages.append(msg)
+        from .agent_safety import count_current_turn_tool_calls
+        return count_current_turn_tool_calls(messages)
 
-        return sum(
-            len(msg.tool_calls) for msg in current_turn_messages
-            if isinstance(msg, AIMessage) and msg.tool_calls
-        )
+    def _check_iteration_limit_hit(self, messages: List, max_iterations: int) -> bool:
+        from .agent_safety import check_iteration_limit_hit
+        return check_iteration_limit_hit(self, messages, max_iterations)
 
-    @classmethod
-    def _check_iteration_limit_hit(cls, messages: List, max_iterations: int) -> bool:
-        """Check if routing stopped because the turn exceeded max_iterations."""
-        return cls._analyze_turn_safety(messages, max_iterations).should_stop
-
-    @classmethod
-    def _analyze_turn_safety(
-        cls,
-        messages: List,
-        max_iterations: int,
-    ) -> TurnSafetyResult:
-        """Return turn safety status using the same logic as the graph router."""
-        return analyze_turn_safety(
-            messages,
-            max_iterations=max_iterations,
-            repeated_tool_result_limit=cls.TURN_SAME_TOOL_RESULT_LIMIT,
-        )
+    def _analyze_turn_safety(self, messages: List, max_iterations: int):
+        from .agent_safety import analyze_turn_safety
+        return analyze_turn_safety(self, messages, max_iterations)
 
     @staticmethod
     def _recursion_limit_for_iterations(max_iterations: int) -> int:
-        """LangGraph recursion must have room for agent/tool node pairs."""
-        return max(150, (max_iterations * 2) + 25)
+        from .agent_safety import recursion_limit_for_iterations
+        return recursion_limit_for_iterations(max_iterations)
 
     def _max_iterations_for_thread(self, thread_id: Optional[str]) -> int:
-        if not thread_id:
-            return self.MAIN_AGENT_MAX_ITERATIONS
-        try:
-            tc = self.thread_config_manager.get_config(thread_id)
-            if tc and tc.callable and tc.callable_name:
-                return tc.callable_max_iterations or self.CALLABLE_DEFAULT_MAX_ITERATIONS
-        except Exception as e:
-            logger.debug(f"Could not resolve max iterations for thread {thread_id}: {e}")
-        return self.MAIN_AGENT_MAX_ITERATIONS
+        from .agent_safety import max_iterations_for_thread
+        return max_iterations_for_thread(self, thread_id)
 
     def _graph_run_config(
         self,
@@ -813,51 +783,16 @@ class NymeriaAgent:
         user_id: str,
         callbacks: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
-        max_iterations = self._max_iterations_for_thread(thread_id)
-        config: Dict[str, Any] = {
-            "recursion_limit": self._recursion_limit_for_iterations(max_iterations),
-            "configurable": {"thread_id": thread_id, "user_id": user_id},
-        }
-        if callbacks is not None:
-            config["callbacks"] = callbacks
-        return config
+        from .agent_safety import graph_run_config
+        return graph_run_config(self, thread_id, user_id, callbacks=callbacks)
 
-    @classmethod
-    def _turn_safety_content(cls, safety: TurnSafetyResult) -> str:
-        if safety.reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
-            tool_name = safety.repeated_tool_name or "a tool"
-            repeat_count = safety.repeated_count or cls.TURN_SAME_TOOL_RESULT_LIMIT
-            return (
-                f"Stopped because `{tool_name}` was called with the same arguments "
-                f"and returned the same result {repeat_count} times in a row. "
-                "This looks like a runaway tool loop, so I stopped before running it again."
-            )
+    def _turn_safety_content(self, safety) -> str:
+        from .agent_safety import turn_safety_content
+        return turn_safety_content(self, safety)
 
-        return (
-            f"I reached the maximum number of steps "
-            f"({safety.max_iterations}) and had to stop. "
-            "My task may be incomplete — you can ask me to continue where I left off."
-        )
-
-    @classmethod
-    def _turn_safety_event(
-        cls,
-        safety: TurnSafetyResult,
-        scope: str = "main_agent",
-    ) -> Dict[str, Any]:
-        event: Dict[str, Any] = {
-            "type": "iteration_limit",
-            "scope": scope,
-            "reason": safety.reason or TURN_SAFETY_REASON_MAX_ITERATIONS,
-            "content": cls._turn_safety_content(safety),
-            "max_iterations": safety.max_iterations,
-            "tool_call_count": safety.tool_call_count,
-        }
-        if safety.repeated_tool_name:
-            event["repeated_tool_name"] = safety.repeated_tool_name
-        if safety.repeated_count:
-            event["repeated_count"] = safety.repeated_count
-        return event
+    def _turn_safety_event(self, safety, scope: str = "main_agent") -> Dict[str, Any]:
+        from .agent_safety import turn_safety_event
+        return turn_safety_event(self, safety, scope=scope)
 
     @staticmethod
     def _extract_http_status_code(error: Exception) -> Optional[int]:
