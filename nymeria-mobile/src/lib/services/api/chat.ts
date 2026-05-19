@@ -152,6 +152,111 @@ export class ChatApi extends CredentialsApi {
       currentStreamThreadId = null;
     }
   }
+  /**
+   * Submit a prompt to a thread that may be mid-turn. Uses its own abort
+   * controller so cancelling a queued prompt does not abort the primary stream
+   * and vice-versa. Only lifecycle events (prompt_queued / prompt_injected /
+   * prompt_absorbed / error) are yielded — content events arrive on the
+   * holder's stream and would otherwise be rendered twice.
+   */
+  async *queuePromptStream(
+    message: string,
+    threadId: string,
+    abortController: AbortController,
+    attachments?: FileAttachment[]
+  ): AsyncGenerator<SSEEvent> {
+    const url = `${this.getBaseUrl()}/chat`;
+    const requestBody: Record<string, unknown> = {
+      message,
+      thread_id: threadId,
+      stream: true
+    };
+
+    if (attachments && attachments.length > 0) {
+      requestBody.attachments = attachments.map((att) => ({
+        file_type: att.type,
+        data_url: att.dataUrl,
+        mime_type: att.mimeType,
+        file_name: att.name
+      }));
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        ...this.getHeaders(),
+        Accept: 'text/event-stream'
+      },
+      body: JSON.stringify(requestBody),
+      signal: abortController.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      yield {
+        type: 'error',
+        data: {
+          message: `API error: ${response.status} - ${errorText}`,
+          code: response.status.toString()
+        },
+        timestamp: new Date()
+      };
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      yield {
+        type: 'error',
+        data: { message: 'No response body', code: 'NO_BODY' },
+        timestamp: new Date()
+      };
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const LIFECYCLE: ReadonlySet<string> = new Set([
+      'prompt_queued',
+      'prompt_injected',
+      'prompt_absorbed',
+      'queued',
+      'turn_halted',
+      'fanout_dropped',
+      'error'
+    ]);
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const event = this.parseSSEEvent(parsed);
+            if (event && LIFECYCLE.has(event.type)) {
+              yield event;
+              if (event.type === 'prompt_absorbed' || event.type === 'error') {
+                return;
+              }
+            }
+          } catch (e) {
+            console.error('Failed to parse queued SSE event:', e, jsonStr);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   async validateThreadAttachments(
     threadId: string,
     attachments: FileAttachment[]
@@ -338,6 +443,59 @@ export class ChatApi extends CredentialsApi {
               message: (data.content as string) || 'Waiting for autonomous task to finish...',
               holder: (data.holder as string) || undefined,
               heldSeconds: (data.held_seconds as number) || undefined
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'prompt_queued':
+          return {
+            type: 'prompt_queued',
+            data: {
+              position: (data.position as number) ?? 0,
+              holder: (data.holder as string) || undefined,
+              heldSeconds: (data.held_seconds as number) || undefined,
+              source: (data.source as string) || 'user'
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'prompt_injected':
+          return {
+            type: 'prompt_injected',
+            data: {
+              count: (data.count as number) ?? 1,
+              sources: (data.sources as string[]) || []
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'prompt_absorbed':
+          return {
+            type: 'prompt_absorbed',
+            data: {},
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'turn_halted':
+          return {
+            type: 'turn_halted',
+            data: {
+              reason: (data.reason as string) || 'pending_prompts',
+              count: (data.count as number) ?? 0
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'fanout_dropped':
+          return {
+            type: 'fanout_dropped',
+            data: {
+              reason: (data.reason as string) || 'unknown'
             },
             timestamp: new Date(),
             threadId
