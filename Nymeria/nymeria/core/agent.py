@@ -19,10 +19,9 @@ from ..vendor.react_agent.nodes import (
 )
 
 from ..config import Settings, get_settings
-from ..config.model_capabilities import get_context_limit
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
-from .token_usage import extract_from_message, extract_last_from_messages
+from .token_usage import extract_last_from_messages
 from .agent_history import (
     extract_content_parts as _extract_content_parts,
 )
@@ -679,79 +678,14 @@ class NymeriaAgent:
         return self._compaction.has_pending_summary(thread_id)
 
     def _rehydrate_token_usage(self, thread_id: str) -> None:
-        """
-        Estimate token usage from checkpoint messages when tracker has no data.
-
-        This handles the case where the server was restarted and the in-memory
-        token tracker is empty, but the thread has conversation history in the
-        checkpoint database with usage metadata.
-        """
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = self._default_graph.get_state(config)
-            messages = state.values.get("messages", [])
-
-            total_input = 0
-            total_output = 0
-            last_input = 0
-            last_output = 0
-
-            for msg in messages:
-                if not isinstance(msg, AIMessage):
-                    continue
-                inp, out = extract_from_message(msg)
-                total_input += inp
-                total_output += out
-
-            last_input, last_output = extract_last_from_messages(messages)
-
-            if total_input or total_output:
-                # Record with last-call values (sets both last_* and adds to cumulative)
-                self._token_tracker.record_usage(thread_id, last_input, last_output)
-                # Patch cumulative totals to reflect full history
-                usage = self._token_tracker.get_usage(thread_id)
-                usage.total_input_tokens = total_input
-                usage.total_output_tokens = total_output
-                logger.debug(f"Rehydrated token usage for thread {thread_id}: cumulative={total_input}+{total_output}, last_call={last_input}+{last_output}")
-        except Exception as e:
-            logger.debug(f"Could not rehydrate token usage for thread {thread_id}: {e}")
+        """Estimate token usage from checkpoint messages when tracker has no data."""
+        from .agent_context_stats import rehydrate_token_usage
+        rehydrate_token_usage(self, thread_id)
 
     def get_context_stats(self, thread_id: str) -> Dict[str, Any]:
-        """
-        Get context window usage statistics for a thread.
-
-        Args:
-            thread_id: Thread identifier
-
-        Returns:
-            Dict with context stats
-        """
-        usage = self._token_tracker.get_usage(thread_id)
-
-        # If tracker has no data for this thread, try rehydrating from checkpoint
-        if usage.context_tokens == 0 and usage.total_tokens == 0:
-            self._rehydrate_token_usage(thread_id)
-            usage = self._token_tracker.get_usage(thread_id)
-
-        # Use per-thread effective model for correct context limit calculation
-        llm_config = self._get_llm_config_for_thread(thread_id)
-        effective_model = llm_config.model
-        model_limit = get_context_limit(effective_model)
-        context_used = usage.context_tokens  # Last call's prompt_tokens = actual window usage
-
-        return {
-            "thread_id": thread_id,
-            "model": effective_model,
-            "total_tokens": context_used,
-            "input_tokens": usage.last_input_tokens,
-            "output_tokens": usage.last_output_tokens,
-            "cumulative_tokens": usage.total_tokens,
-            "context_limit": model_limit,
-            "usage_percentage": round(context_used / model_limit * 100, 1) if model_limit else 0,
-            "compaction_count": usage.compaction_count,
-            "last_compaction": usage.last_compaction_at.isoformat() if usage.last_compaction_at else None,
-            "context_management": self.settings.context_management,
-        }
+        """Get context window usage statistics for a thread."""
+        from .agent_context_stats import get_context_stats as _get_context_stats
+        return _get_context_stats(self, thread_id)
 
     def _get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
         from .agent_llm_config import get_llm_config_for_thread
