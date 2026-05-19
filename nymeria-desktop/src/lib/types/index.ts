@@ -520,12 +520,29 @@ export type SSEEventType =
   | 'error'
   | 'done'
   | 'queued'
+  | 'prompt_queued'
+  | 'prompt_injected'
+  | 'prompt_absorbed'
+  | 'turn_halted'
+  | 'fanout_dropped'
   | 'compacting'
   | 'compact_result'
   | 'compacted'
   | 'context_attached'
   | 'iteration_limit'
   | 'tool_reload';
+
+export type PendingPromptStatus = 'sending' | 'queued' | 'error';
+
+export interface PendingPrompt {
+  id: string;
+  content: string;
+  attachments?: FileAttachment[];
+  status: PendingPromptStatus;
+  errorMessage?: string;
+  position?: number;
+  timestamp: Date;
+}
 
 export interface SSEEvent {
   type: SSEEventType;

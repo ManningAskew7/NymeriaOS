@@ -2,6 +2,7 @@
   import ChatContainer from '$lib/components/chat/ChatContainer.svelte';
   import InputBar from '$lib/components/chat/InputBar.svelte';
   import ContextStatusBar from '$lib/components/chat/ContextStatusBar.svelte';
+  import QueuedPromptsBar from '$lib/components/chat/QueuedPromptsBar.svelte';
   import QuickActions from '$lib/components/outlook/QuickActions.svelte';
   import { ThreadHeader, ThreadSettingsPanel } from '$lib/components/threads';
   import { Button, Modal } from '$lib/components/common';
@@ -158,11 +159,22 @@
   const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit']);
 
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
-    if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
+    if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
     const isChatStreamCommand = CHAT_STREAM_COMMAND_ROOTS.has(slashRoot);
+
+    // While streaming: queue the prompt sub-turn-style. Slash commands and
+    // attachments cannot be queued (backend rejects), so fall back to today's
+    // "do nothing" gate for those cases.
+    if (chatStore.isStreaming) {
+      if (attachments && attachments.length > 0) return;
+      if (trimmed.startsWith('/') && !isChatStreamCommand) return;
+      if (!threadsStore.currentThreadId) return;
+      void queueOnBusyThread(trimmed);
+      return;
+    }
 
     if (trimmed.startsWith('/') && !isChatStreamCommand && (!attachments || attachments.length === 0)) {
       if (!threadsStore.currentThreadId) {
@@ -204,6 +216,46 @@
     }
 
     await streamMessage(message, attachments);
+  }
+
+  /**
+   * Send a follow-up prompt that the agent should pick up at its next sub-turn
+   * halt. Adds the prompt to chatStore.pendingPrompts and POSTs in the
+   * background using the queue lifecycle endpoint. Lifecycle events update the
+   * prompt's status; the primary stream's `prompt_injected` handler converts
+   * it into a real user message at injection time.
+   */
+  async function queueOnBusyThread(message: string) {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId) return;
+    const promptId = chatStore.addPendingPrompt(message);
+    const controller = new AbortController();
+    chatStore.registerPendingPromptAbort(promptId, controller);
+    try {
+      for await (const event of api.queuePromptStream(message, threadId, controller)) {
+        switch (event.type) {
+          case 'prompt_queued': {
+            const data = event.data as { position: number };
+            chatStore.setPendingPromptStatus(promptId, 'queued', undefined, data.position);
+            break;
+          }
+          case 'prompt_absorbed':
+            // primary stream already converted this prompt to a user message
+            chatStore.removePendingPrompt(promptId);
+            return;
+          case 'error': {
+            const data = event.data as { message: string; code?: string };
+            chatStore.setPendingPromptStatus(promptId, 'error', data.message);
+            return;
+          }
+          // queued / turn_halted / fanout_dropped / prompt_injected — ignore
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      const msg = err instanceof Error ? err.message : 'Queue request failed';
+      chatStore.setPendingPromptStatus(promptId, 'error', msg);
+    }
   }
 
   /**
@@ -425,6 +477,32 @@
         break;
       }
 
+      case 'turn_halted': {
+        const data = event.data as { reason: string; count: number };
+        debugLog(`[MainPanel] turn_halted reason=${data.reason} count=${data.count}`);
+        break;
+      }
+
+      case 'prompt_injected': {
+        // Holder is draining queued prompts. Close the current assistant
+        // bubble, materialize each queued prompt as a user message in FIFO
+        // order, and open a new assistant placeholder for the sub-turn.
+        const data = event.data as { count: number; sources?: string[] };
+        const injected = chatStore.consumeQueuedPrompts(data.count);
+        chatStore.flushStreamingBuffers();
+        chatStore.setLastMessageComplete();
+        chatStore.clearActiveToolCalls();
+        for (const p of injected) {
+          chatStore.addUserMessage(p.content);
+        }
+        chatStore.addAssistantMessage();
+        break;
+      }
+
+      case 'prompt_absorbed':
+      case 'fanout_dropped':
+        break;
+
       case 'compacting': {
         const data = event.data as { message: string };
         chatStore.setCompacting(true, data.message);
@@ -530,15 +608,16 @@
   <ContextStatusBar />
 
   <div class="input-area">
+    <QueuedPromptsBar />
     <InputBar
       onSend={handleSendMessage}
-      disabled={chatStore.isStreaming}
+      disabled={false}
       insertText={pendingInsertText}
       onInsertConsumed={() => { pendingInsertText = ''; }}
       placeholder={chatStore.isQueued
-        ? 'Waiting for autonomous task to finish...'
+        ? 'Type to queue — sends when current turn finishes'
         : chatStore.isStreaming
-          ? 'Waiting for response...'
+          ? 'Type to queue — sends at the next sub-turn halt'
           : 'Type a message...'}
     />
   </div>

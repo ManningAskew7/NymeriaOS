@@ -1,4 +1,4 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact, DispatchInfo } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact, DispatchInfo, PendingPrompt, PendingPromptStatus } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
 
@@ -34,6 +34,8 @@ function createChatStore() {
   let contextStats = $state<ContextStats | null>(null);
   let activeModel = $state<string | null>(null);
   let isQueued = $state(false);
+  let pendingPrompts = $state<PendingPrompt[]>([]);
+  const pendingPromptAborts = new Map<string, AbortController>();
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
@@ -83,6 +85,9 @@ function createChatStore() {
     },
     get isQueued() {
       return isQueued;
+    },
+    get pendingPrompts() {
+      return pendingPrompts;
     },
     get isLoadingHistory() {
       return isLoadingHistory;
@@ -304,6 +309,11 @@ function createChatStore() {
     setStreaming(streaming: boolean) {
       if (!streaming) this._forceFlush();
       isStreaming = streaming;
+    },
+
+    /** Public transition hook for stream handlers that need pending text visible now. */
+    flushStreamingBuffers() {
+      this._forceFlush();
     },
 
     setLoadingHistory(loading: boolean) {
@@ -632,6 +642,7 @@ function createChatStore() {
       contextStats = null;
       activeModel = null;
       isQueued = false;
+      this.clearPendingPrompts();
     },
 
     /**
@@ -649,6 +660,7 @@ function createChatStore() {
       lastCompactResult = null;
       contextAttachedMessage = null;
       _lastFlushTime = 0;
+      this.clearPendingPrompts();
     },
 
     removeMessage(messageId: string) {
@@ -695,6 +707,7 @@ function createChatStore() {
 
       isStreaming = false;
       activeToolCalls = new Map();
+      this.clearPendingPrompts();
 
       // Signal the backend to abort and clean up checkpoint (fire-and-forget)
       if (threadId) {
@@ -761,6 +774,7 @@ function createChatStore() {
       isQueued = false;
       isCompacting = false;
       compactingMessage = '';
+      this.clearPendingPrompts();
 
       const notice: Message = {
         id: generateId(),
@@ -840,6 +854,77 @@ function createChatStore() {
 
     setQueued(queued: boolean) {
       isQueued = queued;
+    },
+
+    addPendingPrompt(content: string, attachments?: FileAttachment[]): string {
+      const id = generateId();
+      pendingPrompts = [
+        ...pendingPrompts,
+        {
+          id,
+          content,
+          attachments,
+          status: 'sending',
+          timestamp: new Date()
+        }
+      ];
+      return id;
+    },
+
+    setPendingPromptStatus(
+      id: string,
+      status: PendingPromptStatus,
+      errorMessage?: string,
+      position?: number
+    ) {
+      pendingPrompts = pendingPrompts.map((p) =>
+        p.id === id
+          ? { ...p, status, errorMessage, position: position ?? p.position }
+          : p
+      );
+    },
+
+    removePendingPrompt(id: string) {
+      pendingPrompts = pendingPrompts.filter((p) => p.id !== id);
+      const ctrl = pendingPromptAborts.get(id);
+      if (ctrl) {
+        try { ctrl.abort(); } catch { /* already aborted */ }
+        pendingPromptAborts.delete(id);
+      }
+    },
+
+    consumeQueuedPrompts(n: number): PendingPrompt[] {
+      if (n <= 0) return [];
+      const consumed: PendingPrompt[] = [];
+      const remaining: PendingPrompt[] = [];
+      for (const p of pendingPrompts) {
+        if (consumed.length < n && p.status !== 'error') {
+          consumed.push(p);
+        } else {
+          remaining.push(p);
+        }
+      }
+      pendingPrompts = remaining;
+      for (const p of consumed) {
+        const ctrl = pendingPromptAborts.get(p.id);
+        if (ctrl) {
+          try { ctrl.abort(); } catch { /* already aborted */ }
+          pendingPromptAborts.delete(p.id);
+        }
+      }
+      return consumed;
+    },
+
+    registerPendingPromptAbort(id: string, controller: AbortController) {
+      pendingPromptAborts.set(id, controller);
+    },
+
+    clearPendingPrompts() {
+      for (const ctrl of pendingPromptAborts.values()) {
+        try { ctrl.abort(); } catch { /* already aborted */ }
+      }
+      pendingPromptAborts.clear();
+      pendingPrompts = [];
     }
   };
 }

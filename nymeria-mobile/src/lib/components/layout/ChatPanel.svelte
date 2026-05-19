@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from '$lib/components/common/Icon.svelte';
-  import { ChatContainer, InputBar, ContextStatusBar } from '$lib/components/chat';
+  import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar } from '$lib/components/chat';
   import { ThreadSettingsPanel } from '$lib/components/threads';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -181,6 +181,18 @@
 
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
+
+    // While streaming: queue the prompt sub-turn-style. Slash commands and
+    // attachments cannot be queued (backend rejects), so fall back to the
+    // pre-existing gate for those cases.
+    if (chatStore.isStreaming) {
+      if (attachments && attachments.length > 0) return;
+      if (trimmed.startsWith('/') && !chatStreamCommandRoots.has(slashRoot)) return;
+      if (!threadsStore.currentThreadId) return;
+      void queueOnBusyThread(trimmed);
+      return;
+    }
+
     if (trimmed.startsWith('/') && !chatStreamCommandRoots.has(slashRoot) && (!attachments || attachments.length === 0)) {
       if (!threadsStore.currentThreadId) {
         const thread = threadsStore.createThread();
@@ -233,6 +245,42 @@
       chatStore.setLastMessageComplete();
       chatStore.setStreaming(false);
       chatStore.clearActiveToolCalls();
+    }
+  }
+
+  /**
+   * Send a follow-up prompt that the agent should pick up at its next sub-turn
+   * halt. Adds the prompt to chatStore.pendingPrompts and POSTs in the
+   * background using the queue lifecycle endpoint.
+   */
+  async function queueOnBusyThread(message: string) {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId) return;
+    const promptId = chatStore.addPendingPrompt(message);
+    const controller = new AbortController();
+    chatStore.registerPendingPromptAbort(promptId, controller);
+    try {
+      for await (const event of api.queuePromptStream(message, threadId, controller)) {
+        switch (event.type) {
+          case 'prompt_queued': {
+            const data = event.data as { position: number };
+            chatStore.setPendingPromptStatus(promptId, 'queued', undefined, data.position);
+            break;
+          }
+          case 'prompt_absorbed':
+            chatStore.removePendingPrompt(promptId);
+            return;
+          case 'error': {
+            const data = event.data as { message: string };
+            chatStore.setPendingPromptStatus(promptId, 'error', data.message);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      const msg = err instanceof Error ? err.message : 'Queue request failed';
+      chatStore.setPendingPromptStatus(promptId, 'error', msg);
     }
   }
 
@@ -305,6 +353,26 @@
 
       case 'queued':
         chatStore.setQueued(true);
+        break;
+
+      case 'turn_halted':
+        break;
+
+      case 'prompt_injected': {
+        const data = event.data as { count: number; sources?: string[] };
+        const injected = chatStore.consumeQueuedPrompts(data.count);
+        chatStore.flushStreamingBuffers();
+        chatStore.setLastMessageComplete();
+        chatStore.clearActiveToolCalls();
+        for (const p of injected) {
+          chatStore.addUserMessage(p.content);
+        }
+        chatStore.addAssistantMessage();
+        break;
+      }
+
+      case 'prompt_absorbed':
+      case 'fanout_dropped':
         break;
 
       case 'compacting':
@@ -444,6 +512,8 @@
 
   <!-- Context stats (model, tokens, usage) -->
   <ContextStatusBar />
+
+  <QueuedPromptsBar />
 
   <!-- Input bar -->
   <InputBar

@@ -266,3 +266,64 @@ describe('chatStore — handoff regression scenario', () => {
     expect(store.messages[0].content).toBe('REPLACEMENT');
   });
 });
+
+describe('chatStore — pending prompts queue', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('addPendingPrompt appends in FIFO order with status sending', () => {
+    const id1 = store.addPendingPrompt('first');
+    const id2 = store.addPendingPrompt('second');
+    expect(store.pendingPrompts.map((p) => p.id)).toEqual([id1, id2]);
+    expect(store.pendingPrompts.every((p) => p.status === 'sending')).toBe(true);
+  });
+
+  it('setPendingPromptStatus updates the matching entry only', () => {
+    const id = store.addPendingPrompt('first');
+    store.addPendingPrompt('second');
+    store.setPendingPromptStatus(id, 'queued', undefined, 3);
+    const updated = store.pendingPrompts.find((p) => p.id === id);
+    expect(updated?.status).toBe('queued');
+    expect(updated?.position).toBe(3);
+    const other = store.pendingPrompts.find((p) => p.id !== id);
+    expect(other?.status).toBe('sending');
+  });
+
+  it('consumeQueuedPrompts pops in FIFO order and skips errored entries', () => {
+    const a = store.addPendingPrompt('a');
+    const b = store.addPendingPrompt('b');
+    const c = store.addPendingPrompt('c');
+    store.setPendingPromptStatus(b, 'error', 'boom');
+
+    const consumed = store.consumeQueuedPrompts(1);
+    expect(consumed.map((p) => p.id)).toEqual([a]);
+    // The errored entry remains, so does c.
+    expect(store.pendingPrompts.map((p) => p.id)).toEqual([b, c]);
+  });
+
+  it('consumeQueuedPrompts caps at n', () => {
+    store.addPendingPrompt('a');
+    store.addPendingPrompt('b');
+    store.addPendingPrompt('c');
+    const consumed = store.consumeQueuedPrompts(2);
+    expect(consumed.map((p) => p.content)).toEqual(['a', 'b']);
+    expect(store.pendingPrompts.map((p) => p.content)).toEqual(['c']);
+  });
+
+  it('clearPendingPrompts empties the list', () => {
+    store.addPendingPrompt('a');
+    store.addPendingPrompt('b');
+    store.clearPendingPrompts();
+    expect(store.pendingPrompts).toHaveLength(0);
+  });
+
+  it('removePendingPrompt deletes by id', () => {
+    const a = store.addPendingPrompt('a');
+    const b = store.addPendingPrompt('b');
+    store.removePendingPrompt(a);
+    expect(store.pendingPrompts.map((p) => p.id)).toEqual([b]);
+  });
+});

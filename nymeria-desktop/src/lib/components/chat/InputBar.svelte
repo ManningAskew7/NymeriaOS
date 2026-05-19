@@ -66,8 +66,13 @@
   });
 
   let isStreaming = $derived(chatStore.isStreaming);
+  // Backend rejects attachments on queued prompts (agent.astream queue-attachments-unsupported),
+  // so when streaming we only allow text-only follow-ups to be queued.
+  let canSendWhileStreaming = $derived(inputValue.trim().length > 0 && pendingFiles.length === 0);
   let canSend = $derived(
-    (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled && !isStreaming
+    isStreaming
+      ? !disabled && canSendWhileStreaming
+      : (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled
   );
   let isCommandNameEntry = $derived(inputValue.startsWith('/') && !/\s/.test(inputValue.slice(1)));
   let slashQuery = $derived(
@@ -152,22 +157,21 @@
   }
 
   function handleSubmit() {
-    if ((inputValue.trim() || pendingFiles.length > 0) && !disabled && !isStreaming) {
-      onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
-      inputValue = '';
-      pendingFiles = [];
-      if (textareaRef) {
-        textareaRef.style.height = 'auto';
-      }
+    if (!canSend) return;
+    onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
+    inputValue = '';
+    pendingFiles = [];
+    if (textareaRef) {
+      textareaRef.style.height = 'auto';
     }
   }
 
-  function handleButtonClick() {
-    if (isStreaming) {
-      chatStore.stopGenerating(threadsStore.currentThreadId ?? undefined);
-    } else {
-      handleSubmit();
-    }
+  function handleSendClick() {
+    handleSubmit();
+  }
+
+  function handleStopClick() {
+    chatStore.stopGenerating(threadsStore.currentThreadId ?? undefined);
   }
 
   function handleKeyDown(event: KeyboardEvent) {
@@ -195,7 +199,7 @@
       }
     }
 
-    // Cmd/Ctrl + Enter to send
+    // Cmd/Ctrl + Enter to send (queues if a turn is already streaming)
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
       handleSubmit();
@@ -416,17 +420,24 @@
       </Button>
     {/if}
 
-    <Button
-      variant={isStreaming ? 'danger' : 'primary'}
-      size="md"
-      onclick={handleButtonClick}
-      disabled={!canSend && !isStreaming}
-    >
-      {#if isStreaming}
+    {#if isStreaming}
+      <Button
+        variant="danger"
+        size="md"
+        onclick={handleStopClick}
+        title="Stop the current turn"
+      >
         <Icon name="stop" size={14} />
-      {:else}
-        <Icon name="send" size={18} />
-      {/if}
+      </Button>
+    {/if}
+    <Button
+      variant="primary"
+      size="md"
+      onclick={handleSendClick}
+      disabled={!canSend}
+      title={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
+    >
+      <Icon name="send" size={18} />
     </Button>
   </div>
 

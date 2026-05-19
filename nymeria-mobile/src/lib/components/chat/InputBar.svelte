@@ -42,8 +42,13 @@
   let highlightedCommandIndex = $state(0);
 
   let isStreaming = $derived(chatStore.isStreaming);
+  // Backend rejects attachments on queued prompts, so while streaming we only
+  // allow text-only follow-ups to be queued.
+  let canSendWhileStreaming = $derived(inputValue.trim().length > 0 && pendingFiles.length === 0);
   let canSend = $derived(
-    (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled && !isStreaming
+    isStreaming
+      ? !disabled && canSendWhileStreaming
+      : (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled
   );
   let isCommandNameEntry = $derived(inputValue.startsWith('/') && !/\s/.test(inputValue.slice(1)));
   let slashQuery = $derived(
@@ -102,23 +107,22 @@
   }
 
   function handleSubmit() {
-    if ((inputValue.trim() || pendingFiles.length > 0) && !disabled && !isStreaming) {
-      hapticImpact('light');
-      onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
-      inputValue = '';
-      pendingFiles = [];
-      if (textareaRef) {
-        textareaRef.style.height = 'auto';
-      }
+    if (!canSend) return;
+    hapticImpact('light');
+    onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
+    inputValue = '';
+    pendingFiles = [];
+    if (textareaRef) {
+      textareaRef.style.height = 'auto';
     }
   }
 
-  function handleButtonClick() {
-    if (isStreaming) {
-      chatStore.stopGenerating(threadsStore.currentThreadId ?? undefined);
-    } else {
-      handleSubmit();
-    }
+  function handleSendClick() {
+    handleSubmit();
+  }
+
+  function handleStopClick() {
+    chatStore.stopGenerating(threadsStore.currentThreadId ?? undefined);
   }
 
   function handleKeyDown(event: KeyboardEvent) {
@@ -328,17 +332,22 @@
       class="message-input"
     ></textarea>
 
+    {#if isStreaming}
+      <button
+        class="send-btn streaming"
+        onclick={handleStopClick}
+        title="Stop the current turn"
+      >
+        <Icon name="stop" size={16} />
+      </button>
+    {/if}
     <button
       class="send-btn"
-      class:streaming={isStreaming}
-      onclick={handleButtonClick}
-      disabled={!canSend && !isStreaming}
+      onclick={handleSendClick}
+      disabled={!canSend}
+      title={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
     >
-      {#if isStreaming}
-        <Icon name="stop" size={16} />
-      {:else}
-        <Icon name="send" size={20} />
-      {/if}
+      <Icon name="send" size={20} />
     </button>
   </div>
 </div>
