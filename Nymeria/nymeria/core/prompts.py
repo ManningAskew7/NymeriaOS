@@ -60,7 +60,10 @@ def format_untrusted_json_record(
     return json.dumps(safe_record, ensure_ascii=True, sort_keys=True)
 
 
-def get_time_context(is_autonomous: bool = False, trigger_override: str = None) -> str:
+def get_time_context(
+    is_autonomous: bool = False,
+    trigger_override: str | None = None,
+) -> str:
     """
     Get current time context in the user's configured timezone.
 
@@ -92,8 +95,8 @@ def get_time_context(is_autonomous: bool = False, trigger_override: str = None) 
 
 def get_full_context_metadata(
     is_autonomous: bool = False,
-    rag_context: list = None,
-    trigger_override: str = None,
+    rag_context: list | None = None,
+    trigger_override: str | None = None,
 ) -> str:
     """
     Build full hidden metadata including time, trigger, and RAG context.

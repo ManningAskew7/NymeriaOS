@@ -295,7 +295,7 @@ def append_mode_rules(
 def get_time_context_for_agent(
     agent: "NymeriaAgent",
     is_autonomous: bool = False,
-    trigger_override: str = None,
+    trigger_override: Optional[str] = None,
 ) -> str:
     """Get current time context. Delegates to prompts.get_time_context()."""
     return get_time_context(is_autonomous, trigger_override=trigger_override)
