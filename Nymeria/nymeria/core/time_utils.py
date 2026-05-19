@@ -23,6 +23,25 @@ def get_user_tz() -> ZoneInfo:
     return ZoneInfo(get_settings().user_timezone)
 
 
+def format_user_time(value: "datetime | float | None" = None) -> str:
+    """Format a datetime or epoch float in the user's timezone.
+
+    Output shape: ``"Tuesday, May 19, 2026 at 11:58 PM (Australia/Sydney)"``.
+    Used wherever a turn or queued-prompt header surfaces a wall-clock time to
+    the model so the format stays consistent across entry points.
+    """
+    user_tz = get_user_tz()
+    if value is None:
+        now = datetime.now(user_tz)
+    elif isinstance(value, datetime):
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            value = value.replace(tzinfo=timezone.utc)
+        now = value.astimezone(user_tz)
+    else:
+        now = datetime.fromtimestamp(float(value), tz=timezone.utc).astimezone(user_tz)
+    return f"{now.strftime('%A, %B %d, %Y at %I:%M %p')} ({user_tz.key})"
+
+
 def utc_now() -> datetime:
     """Return the current time as a timezone-aware UTC datetime."""
     return datetime.now(timezone.utc)

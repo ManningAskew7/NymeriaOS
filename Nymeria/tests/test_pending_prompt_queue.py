@@ -16,7 +16,6 @@ from nymeria.core.pending_prompt_queue import (
     create_pending_queue,
     get_pending_queue,
     make_pending_prompt,
-    queued_prompt_header,
     reset_pending_queue_for_tests,
     set_pending_queue,
 )
@@ -209,14 +208,60 @@ def test_clear_pushes_error_into_attached_mailbox():
     asyncio.run(_scenario())
 
 
-def test_queued_prompt_header_format():
+def test_queued_prompt_header_format(monkeypatch):
+    # Pin enqueued_at to a fixed UTC instant and force the user TZ to UTC so
+    # the strftime output is deterministic across hosts.
+    import zoneinfo
+
+    from nymeria.core import pending_prompt_queue as ppq
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("UTC"),
+    )
+
     prompt = _make_prompt("hello")
     prompt.source = "trigger"
     prompt.source_label = "Daily Brief"
-    header = queued_prompt_header(prompt)
-    assert "[Queued prompt from trigger 'Daily Brief'" in header
-    assert "received " in header
-    assert "while you were mid-turn." in header
+    prompt.enqueued_at = 1747663080.0  # 2025-05-19 13:58:00 UTC
+
+    header = ppq.queued_prompt_header(prompt)
+
+    # Two-line header: [Time: ...]\n[Trigger: <label>]
+    assert header == (
+        "[Time: Monday, May 19, 2025 at 01:58 PM (UTC)]\n"
+        "[Trigger: Event Trigger]"
+    )
+    assert "Queued prompt" not in header
+    assert "mid-turn" not in header
+    assert "Daily Brief" not in header  # source_label no longer surfaced in header
+
+
+def test_queued_prompt_header_source_label_mapping(monkeypatch):
+    import zoneinfo
+
+    from nymeria.core import pending_prompt_queue as ppq
+
+    monkeypatch.setattr(
+        "nymeria.core.time_utils.get_user_tz",
+        lambda: zoneinfo.ZoneInfo("UTC"),
+    )
+
+    cases = {
+        "ticker": "Scheduled TODO",
+        "user": "User Message",
+        "trigger": "Event Trigger",
+        "callable": "Callable Thread",
+        "mcp": "MCP Client",
+        "watchdog": "Watchdog",
+        # Unknown sources fall back to capitalize() so the header never crashes.
+        "novel-source": "Novel-source",
+    }
+
+    for source, expected_label in cases.items():
+        prompt = _make_prompt("x", source=source)
+        header = ppq.queued_prompt_header(prompt)
+        assert f"[Trigger: {expected_label}]" in header, (source, header)
 
 
 def test_pending_prompt_is_dataclass_with_defaults():
