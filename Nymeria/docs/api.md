@@ -792,12 +792,63 @@ Returns the callable thread tools actually available from that caller thread aft
 | `context_attached` | Previous context summary attached to this message | `summary` |
 | `compacting` | Context summary generation has started | `message` |
 | `compacted` | Context was compacted; async streams may resume afterward | `messages_removed`, `auto_resumed`, `summary` |
-| `queued` | Thread is busy with another turn; client should wait | `content` |
+| `queued` | Legacy: thread is busy with another turn; client should wait. Now emitted alongside `prompt_queued`; will be dropped once frontends adopt the new event. | `content`, `holder`, `held_seconds` |
+| `prompt_queued` | Prompt was placed on the per-thread sub-turn queue because the thread was busy. The currently-running turn will halt at its next sub-turn boundary and absorb the queued prompt. | `position`, `holder`, `held_seconds`, `source` |
+| `turn_halted` | The running turn observed pending queued prompts and ended early at the post-tools boundary; the drain loop is about to inject the queued prompts. | `reason`, `count` |
+| `prompt_injected` | One or more queued prompts have been turned into HumanMessages and appended to the checkpoint; the graph is being re-driven to absorb them. | `count`, `sources` |
+| `prompt_absorbed` | The queuer's specific prompt finished being absorbed. Mirrors the holder's full event stream to the queuer's connection in real time leading up to this. | `thread_id` |
+| `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
-| `error` | Error message | `content` |
+| `error` | Error message | `content`, optional `code` (e.g. `aborted`, `queue_attachments_unsupported`, `cross_user_queue_unsupported`, `queue_overflow`) |
 | `done` | Stream complete | `context_stats`, `model` (when available) |
 
 All events include `thread_id` for correlation.
+
+### Sub-Turn Steering (v1 same-process scope)
+
+When a new prompt (user chat, callable thread, MCP, watchdog, trigger,
+or scheduled TODO) arrives while a thread is mid-turn, it is queued
+per-thread; the running turn observes the queue at every
+post-tools boundary in its ReAct loop and halts to absorb the
+queued prompts. `astream()` then drains the queue, builds one
+`HumanMessage` per pending prompt (with a metadata header naming the
+source and arrival time), `aupdate_state`s them into the checkpoint,
+and re-drives the graph so the model sees the new context without
+re-entering the entrypoint or losing tool state.
+
+Interactive queuers (user chat, callable threads, MCP) attach a
+cross-loop-safe mailbox to their pending entry; the holder's stream
+events fan out to that mailbox, so a queuer's SSE connection sees the
+holder's response in real time once injection happens. The queuer's
+own stream emits `prompt_queued` first, then mirrors holder events,
+and ends with `prompt_absorbed`. Fire-and-forget queuers (triggers,
+ticker, watchdog) wait on a `threading.Event` and skip the mailbox.
+
+Queued prompts with attachments/images are rejected at enqueue time
+with `error.code=queue_attachments_unsupported` (the queue bypasses
+`prepare_astream_input` which is where multimodal compatibility lives
+today; v2 may revisit). Aborting a thread with `POST /threads/{id}/stop`
+clears the queue and wakes blocked queuers with `error.code=aborted`.
+The process-local FIFO is bounded to 256 prompts per thread; if it
+overflows, the oldest blocked queuer is woken with
+`error.code=queue_overflow`. If a prompt arrives while the holder is
+past its final drain point and releasing the lock, it is not queued:
+the caller waits for the lock and runs as the next normal turn.
+
+Queued prompts are only absorbed into a holder running for the same
+`user_id`. If another user's prompt races a shared-channel turn, it is
+rejected with `error.code=cross_user_queue_unsupported` and should be
+retried after the current turn finishes; this avoids running one user's
+prompt through another user's memory/tool-credential context.
+
+**v1 scope is process-local.** The pending-prompt queue lives in
+memory inside each Python process. Docker deployments run `api` and
+`worker` as separate processes; a prompt queued via `POST /chat`
+(landing in `api`) cannot steer a turn currently executing inside
+`worker` (e.g. a scheduled-TODO turn). Same-process paths -- user
+chat, watchdog, MCP, callable threads, and webhook/RSS triggers --
+do steer in-flight turns. A v2 Redis-backed backend is planned via
+the same `PendingPromptQueueBackend` protocol to close this gap.
 
 ### Command Service
 

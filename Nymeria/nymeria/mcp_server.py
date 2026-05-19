@@ -8,9 +8,12 @@ and uses X-Nymeria-Act-As for user-scoped operations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -194,15 +197,239 @@ async def nymeria_chat(
         return _error_result(exc)
 
 
+# Background chat dispatch state: lets a caller fire a chat and return before
+# the SSE stream finishes, so a second tool call (typically another chat
+# against the same thread) can observe the first one's busy state. The state
+# is process-local; that is fine for the single nymeria-mcp container.
+_BACKGROUND_CHATS: Dict[str, Dict[str, Any]] = {}
+_BACKGROUND_CHATS_MAX = 64
+_BACKGROUND_CHATS_TTL_SECONDS = 600
+
+
+def _evict_old_background_chats() -> None:
+    """Drop completed dispatches older than the TTL; cap the live set."""
+    now = time.time()
+    stale = [
+        did
+        for did, ctx in _BACKGROUND_CHATS.items()
+        if ctx["done_event"].is_set()
+        and ctx.get("completed_at")
+        and (now - ctx["completed_at"]) > _BACKGROUND_CHATS_TTL_SECONDS
+    ]
+    for did in stale:
+        _BACKGROUND_CHATS.pop(did, None)
+    if len(_BACKGROUND_CHATS) > _BACKGROUND_CHATS_MAX:
+        finished = sorted(
+            (
+                (did, ctx)
+                for did, ctx in _BACKGROUND_CHATS.items()
+                if ctx["done_event"].is_set()
+            ),
+            key=lambda kv: kv[1].get("completed_at") or 0,
+        )
+        for did, _ in finished[: len(_BACKGROUND_CHATS) - _BACKGROUND_CHATS_MAX]:
+            _BACKGROUND_CHATS.pop(did, None)
+
+
+@mcp.tool()
+async def nymeria_chat_background(
+    message: str,
+    thread_id: str,
+    user_id: str = "default",
+    capture_window_ms: int = 800,
+    source: Optional[str] = None,
+    is_self_invoke: bool = False,
+) -> Dict[str, Any]:
+    """
+    Dispatch a chat in the background; return after capturing early SSE events.
+
+    Returns as soon as EITHER:
+      - ``capture_window_ms`` elapses, OR
+      - the stream surfaces a queue/error/done signal
+        (``prompt_queued`` / ``error`` / ``done``).
+
+    The stream keeps running server-side. Pass the returned ``dispatch_id``
+    to ``nymeria_chat_collect`` to wait for completion and fetch the full
+    event list.
+
+    Designed for sub-turn-queue regression specs: start a slow holder, return
+    as soon as the lock is acquired, then dispatch a queuer that observes the
+    busy state.
+
+    Parameters mirror ``nymeria_chat`` plus:
+    - ``capture_window_ms``: how long to wait for early events before
+      returning (50–10000ms; defaults to 800).
+    - ``source`` / ``is_self_invoke``: pass through to ChatRequest (use to
+      exercise source-spoof handling at chat.py:_agent_prompt_source).
+    """
+    if not message or not message.strip():
+        return {"error": "message is required"}
+    if not thread_id:
+        return {
+            "error": "thread_id is required (background dispatch needs an existing thread)"
+        }
+
+    _evict_old_background_chats()
+    window_ms = max(50, min(10_000, int(capture_window_ms)))
+    dispatch_id = uuid.uuid4().hex[:12]
+    started_at = time.time()
+    ctx: Dict[str, Any] = {
+        "dispatch_id": dispatch_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "started_at": started_at,
+        "completed_at": None,
+        "events": [],
+        "done_event": asyncio.Event(),
+        "error": None,
+    }
+    _BACKGROUND_CHATS[dispatch_id] = ctx
+
+    resolved_source = source if source is not None else "mcp"
+
+    async def _consume() -> None:
+        try:
+            client = _get_client()
+            async for evt in client.stream_chat(
+                message=message,
+                user_id=user_id,
+                thread_id=thread_id,
+                is_self_invoke=is_self_invoke,
+                source=resolved_source,
+            ):
+                ctx["events"].append(evt)
+                if evt.get("type") in ("done", "error"):
+                    break
+        except Exception as exc:
+            ctx["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            ctx["completed_at"] = time.time()
+            ctx["done_event"].set()
+
+    asyncio.create_task(_consume())
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + window_ms / 1000.0
+    while True:
+        if ctx["done_event"].is_set():
+            break
+        if loop.time() >= deadline:
+            break
+        types_seen = {e.get("type") for e in ctx["events"]}
+        if "prompt_queued" in types_seen or "error" in types_seen:
+            break
+        await asyncio.sleep(0.05)
+
+    return {
+        "dispatch_id": dispatch_id,
+        "thread_id": thread_id,
+        "status": "done" if ctx["done_event"].is_set() else "running",
+        "early_events": list(ctx["events"]),
+        "error": ctx.get("error"),
+    }
+
+
+@mcp.tool()
+async def nymeria_chat_collect(
+    dispatch_id: str,
+    timeout_seconds: int = 90,
+) -> Dict[str, Any]:
+    """
+    Wait for a ``nymeria_chat_background`` dispatch to finish; return all events.
+
+    On success: ``{status: "done", events: [...], thread_id, dispatch_id, error}``.
+    On timeout: ``{status: "timeout", events: [...partial...], error: "timeout ..."}``
+    — the background task keeps running; you can call collect again.
+
+    Use this when you need the holder's full transcript (turn_halted,
+    prompt_injected, final response, done) or when you need to confirm
+    the queuer's stream actually reached prompt_absorbed.
+    """
+    ctx = _BACKGROUND_CHATS.get(dispatch_id)
+    if ctx is None:
+        return {
+            "error": (
+                f"dispatch_id {dispatch_id!r} not found "
+                "(already evicted, expired, or never created)"
+            )
+        }
+    try:
+        await asyncio.wait_for(
+            ctx["done_event"].wait(),
+            timeout=max(1, int(timeout_seconds)),
+        )
+    except asyncio.TimeoutError:
+        return {
+            "dispatch_id": dispatch_id,
+            "thread_id": ctx["thread_id"],
+            "status": "timeout",
+            "events": list(ctx["events"]),
+            "error": "timeout waiting for completion",
+        }
+    return {
+        "dispatch_id": dispatch_id,
+        "thread_id": ctx["thread_id"],
+        "status": "done",
+        "events": list(ctx["events"]),
+        "error": ctx.get("error"),
+    }
+
+
+@mcp.tool()
+async def nymeria_fire_trigger(
+    trigger_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    secret: Optional[str] = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """
+    Fire a webhook trigger via ``POST /triggers/fire/{trigger_id}``.
+
+    The MCP authenticates as the service token and acts-as ``user_id``,
+    so ``secret`` is optional for in-cluster regression use. External
+    callers still need the per-trigger shared secret.
+
+    Returns ``{status, trigger_id, trigger_name, action_type}`` on success,
+    or the backend's error body for HTTP 429 cooldown / 404 not-found /
+    403 invalid-secret.
+    """
+    if not trigger_id:
+        return {"error": "trigger_id is required"}
+    params: Dict[str, Any] = {"user_id": user_id}
+    if secret:
+        params["secret"] = secret
+    return await _json_call(
+        "POST",
+        f"/triggers/fire/{_enc(trigger_id)}",
+        user_id=user_id,
+        body=payload if payload is not None else {},
+        params=params,
+    )
+
+
 # =============================================================================
 # Thread Management
 # =============================================================================
 
 
 @mcp.tool()
-async def nymeria_list_threads(user_id: str = "default") -> Dict[str, Any]:
-    """List threads visible to a user, including metadata."""
-    return await _json_call("GET", "/threads", user_id=user_id)
+async def nymeria_list_threads(
+    user_id: str = "default",
+    owned_only: bool = False,
+) -> Dict[str, Any]:
+    """
+    List threads visible to a user, including metadata.
+
+    Set ``owned_only=True`` to skip the checkpoint/metadata/resource recovery
+    enrichment and return only threads recorded as owned by ``user_id``.
+    Recommended for cleanup workflows and automated tests: without it, admin
+    users see every orphan checkpoint thread in the database (intended for
+    operator inspection, but easy to mistake for user-owned threads).
+    """
+    params: Dict[str, Any] = {}
+    if owned_only:
+        params["owned_only"] = "true"
+    return await _json_call("GET", "/threads", user_id=user_id, params=params or None)
 
 
 @mcp.tool()

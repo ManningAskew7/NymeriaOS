@@ -4,16 +4,38 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, AsyncGenerator, Callable, Iterable, Optional
+from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional
 
 from .agent_history import (
     InlineThinkingTextStripper,
     extract_reasoning_text_from_block,
     strip_inline_thinking_text,
 )
+from .pending_prompt_queue import PendingPrompt
 
 
 logger = logging.getLogger(__name__)
+
+
+async def drive_with_fanout(
+    stream_processor: "GraphStreamProcessor",
+    graph_obj: Any,
+    input_state: dict[str, Any],
+    pending_prompts: List[PendingPrompt],
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Drive one graph invocation, mirroring each event into queuer mailboxes.
+
+    Each pending prompt with an attached ``fanout_mailbox`` receives
+    every event the holder yields, so the queuer's SSE consumer sees
+    the live response in real time -- even though the holder and
+    queuer run on different event loops. ``FanoutMailbox.put`` is
+    explicitly cross-loop-safe (uses ``call_soon_threadsafe``).
+    """
+    async for evt in stream_processor.drive(graph_obj, input_state):
+        for prompt in pending_prompts:
+            if prompt.fanout_mailbox is not None:
+                prompt.fanout_mailbox.put(evt)
+        yield evt
 
 
 TOOL_CALL_CONTENT_DELTA_TYPES = frozenset({

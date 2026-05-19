@@ -1527,10 +1527,44 @@ def _latest_tool_batch_queued_reload(messages: List[BaseMessage]) -> bool:
     return latest_tool_batch_queued_reload(messages)
 
 
-def route_after_tools(state: AgentState) -> str:
-    """Route after tool execution, stopping immediately for queued reloads."""
+def route_after_tools(state: AgentState, config=None) -> str:
+    """Route after tool execution.
+
+    Stops the graph immediately if either:
+
+    1. The just-finished tool batch flagged a queued tool-reload
+       (in-turn rebind path).
+    2. The pending-prompt queue for this thread is non-empty -- a new
+       prompt arrived mid-turn and the agent should halt at this
+       sub-turn boundary so ``astream()`` can drain it, inject one
+       ``HumanMessage`` per prompt, and re-drive the graph.
+
+    LangGraph's ``RunnableCallable`` auto-injects ``config`` when the
+    routing function's signature accepts it. The ``config`` parameter
+    is intentionally untyped here -- ``RunnableCallable`` only injects
+    when the annotation is ``RunnableConfig``, ``Optional[RunnableConfig]``,
+    or absent (see ``langgraph/_internal/_runnable.py``
+    ``KWARGS_CONFIG_KEYS``). Leaving it bare keeps the injection
+    working without dragging a ``RunnableConfig`` import into this
+    module.
+    """
     if _latest_tool_batch_queued_reload(state["messages"]):
         return "end"
+
+    if config:
+        configurable = config.get("configurable") or {}
+        thread_id = configurable.get("thread_id")
+        if thread_id:
+            # Function-local import keeps the vendored fork independent
+            # of ``nymeria.core.*`` at module load time -- see
+            # [[feedback_extraction_circular_imports]].
+            from ...core.pending_prompt_queue import get_pending_queue
+            backend = get_pending_queue()
+            pending = backend.size(thread_id)
+            if pending > 0:
+                backend.mark_halt_observed(thread_id, pending)
+                return "end"
+
     return "agent"
 
 

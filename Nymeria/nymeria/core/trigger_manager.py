@@ -107,7 +107,7 @@ class TriggerExecution(BaseModel):
     trigger_id: str = ""
     trigger_name: str = ""
     timestamp: datetime = Field(default_factory=utc_now)
-    status: Literal["success", "error", "partial", "deferred"] = "success"
+    status: Literal["success", "error", "partial", "deferred", "queued"] = "success"
     event_count: int = 1
     events_summary: str = ""
     response_summary: str = ""
@@ -537,25 +537,35 @@ class TriggerManager:
                     and agent is not None
                     and agent._thread_locks.is_thread_busy(thread_id)
                 ):
-                    # Cap pending to 50 events to prevent unbounded growth.
-                    # Keep the most recent events when truncating -- stale
-                    # alerts are less useful than fresh ones.
-                    trigger.pending_events = (trigger.pending_events + events)[-50:]
-                    lock_info = agent._thread_locks.get_lock_info(thread_id)
-                    held = lock_info.get("held_seconds", "?") if lock_info else "?"
-                    logger.info(
-                        f"[TRIGGER] Thread {thread_id} is busy (held {held}s), "
-                        f"deferring {len(events)} event(s) for trigger "
-                        f"'{trigger.name}' ({trigger.id})"
+                    # Thread is busy: route through the pending-prompt
+                    # queue so the running turn halts at its next
+                    # sub-turn boundary and absorbs us. Falls back to
+                    # the old "defer to pending_events" path only when
+                    # enqueue fails or the queue backend is missing.
+                    enqueued = self._enqueue_busy_trigger(
+                        trigger=trigger,
+                        events=events,
+                        agent=agent,
+                        user_id=user_id,
+                        thread_id=thread_id,
                     )
-                    self.log_execution(user_id, TriggerExecution(
-                        trigger_id=trigger.id,
-                        trigger_name=trigger.name,
-                        event_count=len(events),
-                        events_summary=f"Deferred: thread busy (held {held}s)",
-                        action_type=trigger.action.type,
-                        status="deferred",
-                    ))
+                    if not enqueued:
+                        trigger.pending_events = (trigger.pending_events + events)[-50:]
+                        lock_info = agent._thread_locks.get_lock_info(thread_id)
+                        held = lock_info.get("held_seconds", "?") if lock_info else "?"
+                        logger.info(
+                            f"[TRIGGER] Thread {thread_id} is busy (held {held}s), "
+                            f"deferring {len(events)} event(s) for trigger "
+                            f"'{trigger.name}' ({trigger.id})"
+                        )
+                        self.log_execution(user_id, TriggerExecution(
+                            trigger_id=trigger.id,
+                            trigger_name=trigger.name,
+                            event_count=len(events),
+                            events_summary=f"Deferred: thread busy (held {held}s)",
+                            action_type=trigger.action.type,
+                            status="deferred",
+                        ))
                     continue
 
                 trigger.last_fired = now
@@ -563,6 +573,92 @@ class TriggerManager:
                 results.append((trigger, events))
 
         return results
+
+    def _enqueue_busy_trigger(
+        self,
+        *,
+        trigger: TriggerDefinition,
+        events: List[dict],
+        agent: "NymeriaAgent",
+        user_id: str,
+        thread_id: str,
+    ) -> bool:
+        """Enqueue the templated agent prompt for a busy thread.
+
+        Returns True if at least one prompt was enqueued (so the caller
+        can advance ``last_fired`` / ``fire_count``); False on any
+        failure, signalling the caller should fall back to the legacy
+        ``pending_events`` defer path.
+
+        Each event is templated and enqueued separately so per-event
+        history visibility is preserved (the same way fire_action would
+        have rendered them before batching).
+        """
+        try:
+            from .pending_prompt_queue import get_pending_queue, make_pending_prompt
+        except Exception as e:
+            logger.debug(
+                f"Pending-prompt queue unavailable, falling back to defer: {e}"
+            )
+            return False
+
+        action = trigger.action
+        template = (
+            action.config.get("prompt_template")
+            or action.config.get("prompt")
+            or "Trigger {trigger_name} fired."
+        )
+        backend = get_pending_queue()
+        enqueued = 0
+        for event in events:
+            template_vars = {
+                **event,
+                "trigger_id": trigger.id,
+                "trigger_name": trigger.name,
+                "fired_at": utc_now().isoformat(),
+            }
+            prompt_text = _safe_format(template, template_vars)
+            pending = make_pending_prompt(
+                message=prompt_text,
+                source="trigger",
+                source_id=trigger.id,
+                source_label=trigger.name,
+                user_id=user_id,
+                is_autonomous=True,
+                fanout_mailbox=None,
+                consumer_loop=None,
+            )
+            try:
+                backend.enqueue(thread_id, pending)
+                enqueued += 1
+            except Exception as e:
+                logger.warning(
+                    f"Failed to enqueue trigger event for {trigger.id}: {e}"
+                )
+
+        if not enqueued:
+            return False
+
+        lock_info = agent._thread_locks.get_lock_info(thread_id)
+        held = lock_info.get("held_seconds", "?") if lock_info else "?"
+        logger.info(
+            f"[TRIGGER] Thread {thread_id} busy (held {held}s); "
+            f"queued {enqueued} prompt(s) for trigger "
+            f"'{trigger.name}' ({trigger.id})"
+        )
+        self.log_execution(user_id, TriggerExecution(
+            trigger_id=trigger.id,
+            trigger_name=trigger.name,
+            event_count=enqueued,
+            events_summary=f"Queued: thread busy (held {held}s)",
+            action_type=trigger.action.type,
+            status="queued",
+        ))
+        # Advance ``last_fired`` so the cooldown clock starts now and
+        # we don't immediately re-enqueue on the next poll cycle.
+        trigger.last_fired = utc_now()
+        trigger.fire_count += enqueued
+        return True
 
     # -- action execution -------------------------------------------------
 
@@ -693,6 +789,8 @@ class TriggerManager:
                     "trigger_name": trigger.name,
                     "batch_size": len(events),
                 },
+                source_id=trigger.id,
+                source_label=trigger.name,
             )
             response = "".join(response_parts)
 
@@ -763,6 +861,8 @@ class TriggerManager:
                 "trigger_id": trigger.id,
                 "trigger_name": trigger.name,
             },
+            source_id=trigger.id,
+            source_label=trigger.name,
         )
         response = "".join(response_parts)
 
@@ -791,6 +891,8 @@ class TriggerManager:
         task_id: str,
         attachments: Optional[List[Dict[str, str]]] = None,
         task_started_data: Optional[Dict[str, Any]] = None,
+        source_id: Optional[str] = None,
+        source_label: Optional[str] = None,
     ) -> Tuple[List[str], List[str], bool]:
         """Stream through the agent, publishing each event live.
 
@@ -811,7 +913,7 @@ class TriggerManager:
             if (
                 not started_published
                 and task_started_data is not None
-                and chunk.get("type") != "queued"
+                and chunk.get("type") not in ("queued", "prompt_queued")
             ):
                 publish_autonomous_event(
                     event_type="task_started",
@@ -856,15 +958,21 @@ class TriggerManager:
             error_code = chunk.get("code", "unknown")
             return error_content or f"Trigger stream error (code={error_code})"
 
+        astream_kwargs: Dict[str, Any] = {
+            "message": prompt,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "_is_self_invoke": True,
+            "attachments": attachments,
+            "source": "trigger",
+        }
+        if source_id is not None:
+            astream_kwargs["source_id"] = source_id
+        if source_label is not None:
+            astream_kwargs["source_label"] = source_label
         result = stream_and_collect(
             agent,
-            astream_kwargs={
-                "message": prompt,
-                "thread_id": thread_id,
-                "user_id": user_id,
-                "_is_self_invoke": True,
-                "attachments": attachments,
-            },
+            astream_kwargs=astream_kwargs,
             on_chunk=handle_chunk,
             error_message_factory=stream_error_message,
         )

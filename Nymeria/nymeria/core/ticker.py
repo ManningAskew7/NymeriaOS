@@ -652,7 +652,7 @@ class Ticker:
             # Hold task_started until astream actually owns the thread
             # lock — otherwise a `queued` chunk would flip the frontend
             # into autonomous-streaming mode mid-conversation.
-            if not started_published and chunk.get("type") != "queued":
+            if not started_published and chunk.get("type") not in ("queued", "prompt_queued"):
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=thread_id,
@@ -678,6 +678,9 @@ class Ticker:
                 "thread_id": thread_id,
                 "user_id": entry.user_id,
                 "_is_self_invoke": True,
+                "source": "ticker",
+                "source_id": todo.id,
+                "source_label": (todo.task or "scheduled task")[:80],
             },
             on_chunk=on_chunk,
             error_message_factory=_stream_error_message,
@@ -734,6 +737,9 @@ class Ticker:
                 "thread_id": thread_id,
                 "user_id": entry.user_id,
                 "_is_self_invoke": True,
+                "source": "ticker",
+                "source_id": todo.id,
+                "source_label": (todo.task or "scheduled task")[:80],
             },
             on_chunk=on_continuation_chunk,
             error_message_factory=_stream_error_message,

@@ -571,6 +571,9 @@ def create_trigger_router(
                     trigger_id, trigger_name,
                 )
                 return
+            import json as _json
+
+            was_queued = False
             try:
                 with httpx.Client(timeout=300) as client:
                     with client.stream(
@@ -588,16 +591,36 @@ def create_trigger_router(
                             "trigger_override": "trigger",
                             "trigger_id": trigger_id,
                             "trigger_name": trigger_name,
+                            # Source attribution so the sub-turn pending-prompt
+                            # queue tags this fire as a trigger (not a user
+                            # prompt) when the target thread is busy. Required
+                            # for queued-prompt header rendering and execution
+                            # log status=queued reporting.
+                            "source": "trigger",
+                            "source_id": trigger_id,
+                            "source_label": trigger_name,
                         },
                     ) as resp:
                         resp.raise_for_status()
-                        for _line in resp.iter_lines():
-                            pass
+                        # Peek the SSE stream for a ``prompt_queued`` event so
+                        # we can record execution.status="queued" when the
+                        # target thread was busy. Body content is otherwise
+                        # discarded.
+                        for line in resp.iter_lines():
+                            if was_queued or not line.startswith("data: "):
+                                continue
+                            try:
+                                evt = _json.loads(line[6:])
+                            except (ValueError, TypeError):
+                                continue
+                            if isinstance(evt, dict) and evt.get("type") == "prompt_queued":
+                                was_queued = True
                 elapsed = _time.monotonic() - start
-                execution.status = "success"
+                execution.status = "queued" if was_queued else "success"
                 logger.info(
                     f"[TRIGGER] Fired via /chat: trigger={trigger_name} ({trigger_id}), "
-                    f"thread={thread_id}, elapsed={elapsed:.1f}s"
+                    f"thread={thread_id}, elapsed={elapsed:.1f}s, "
+                    f"status={execution.status}"
                 )
             except Exception as e:
                 execution.status = "error"

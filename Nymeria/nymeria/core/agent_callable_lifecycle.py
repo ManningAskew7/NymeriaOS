@@ -88,8 +88,23 @@ def is_ancestor_invocation(
 
 
 def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
-    """Signal abort on a thread and recursively on all its active callable children."""
+    """Signal abort on a thread and recursively on all its active callable children.
+
+    Also clears the per-thread pending-prompt queue with
+    ``abandoned=True`` so any blocked queuers (user chat, callable
+    threads, MCP) wake up with an explicit ``aborted`` error event
+    instead of hanging on the lock_timeout.
+    """
     agent._thread_locks.signal_abort(thread_id)
+    try:
+        from .pending_prompt_queue import get_pending_queue
+        cleared = get_pending_queue().clear(thread_id, abandoned=True)
+        if cleared:
+            logger.info(
+                f"Abort on thread {thread_id} cleared {cleared} pending prompt(s)"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to clear pending prompts on abort for {thread_id}: {e}")
     with agent._invocations_lock:
         children = set(agent._active_callable_invocations.get(thread_id, ()))
     for child_id in children:

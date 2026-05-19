@@ -128,7 +128,7 @@ def _run_callable_stream(
 
         def handle_chunk(chunk: Dict[str, Any], collection) -> None:
             nonlocal started_published
-            if not started_published and chunk.get("type") != "queued":
+            if not started_published and chunk.get("type") not in ("queued", "prompt_queued"):
                 publish_autonomous_event(
                     event_type="task_started",
                     thread_id=thread_id,
@@ -187,6 +187,9 @@ def _run_callable_stream(
                 "user_id": caller_user_id,
                 "_is_self_invoke": is_self_invoke,
                 "_trigger_override": trigger_override,
+                "source": "callable",
+                "source_id": task_id,
+                "source_label": callable_name,
             },
             on_chunk=handle_chunk,
             error_message_factory=stream_error_message,
