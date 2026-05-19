@@ -11,7 +11,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 
 from ..vendor.react_agent import (
-    CheckpointerConfig,
     LLMConfig,
     ToolRegistry,
 )
@@ -36,6 +35,11 @@ from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
 from .thread_lock_manager import ThreadLockManager
+from .checkpointer_config import (
+    build_async_checkpointer_config,
+    build_checkpointer_config,
+    enumerate_checkpoint_thread_ids,
+)
 from ..skills import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -301,7 +305,7 @@ class NymeriaAgent:
         # claim entirely, leaving such threads ownerless and invisible to
         # /threads). Idempotent — backfill_threads is INSERT OR IGNORE.
         try:
-            checkpoint_tids = self._enumerate_checkpoint_thread_ids()
+            checkpoint_tids = enumerate_checkpoint_thread_ids(self.settings)
             if checkpoint_tids:
                 from .thread_classification import is_shared_channel
 
@@ -383,8 +387,8 @@ class NymeriaAgent:
         self._current_tool_superset_names: set = set()
 
         # Build default checkpointer config (shared across all graphs)
-        self._checkpointer_config = self._build_checkpointer_config()
-        self._async_checkpointer_config = self._build_async_checkpointer_config()
+        self._checkpointer_config = build_checkpointer_config(self.settings)
+        self._async_checkpointer_config = build_async_checkpointer_config(self.settings)
 
         # Build default graph (for users with no memories)
         self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
@@ -431,41 +435,6 @@ class NymeriaAgent:
             f"model={self.settings.llm_model}, tools={self.tool_registry.list_tools()}"
         )
 
-    def _enumerate_checkpoint_thread_ids(self) -> List[str]:
-        """Return distinct thread_ids present in the checkpoint database.
-
-        Used by the startup ownership backfill. Tolerates missing tables
-        and connection errors (returns empty list with a warning).
-        """
-        backend = self.settings.database_backend
-        if backend == "sqlite":
-            import sqlite3 as _sqlite3
-            try:
-                conn = _sqlite3.connect(str(self.settings.db_path))
-                try:
-                    rows = conn.execute(
-                        "SELECT DISTINCT thread_id FROM checkpoints"
-                    ).fetchall()
-                    return [r[0] for r in rows]
-                finally:
-                    conn.close()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Enumerate checkpoint thread_ids (sqlite) failed: %s", e)
-                return []
-        if backend == "postgres":
-            import psycopg  # type: ignore[import-untyped]
-            if not self.settings.postgres_uri:
-                return []
-            try:
-                with psycopg.connect(self.settings.postgres_uri) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                        return [row[0] for row in cur.fetchall()]
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Enumerate checkpoint thread_ids (postgres) failed: %s", e)
-                return []
-        return []
-
     def _prepare_tool_reload_state_for_turn(self, thread_id: str, caller: str) -> None:
         from .agent_tool_reload import prepare_tool_reload_state_for_turn
         return prepare_tool_reload_state_for_turn(self, thread_id, caller)
@@ -481,58 +450,6 @@ class NymeriaAgent:
     def _create_tool_reload_resume_message(self, reload_info: dict) -> HumanMessage:
         from .agent_tool_reload import create_tool_reload_resume_message
         return create_tool_reload_resume_message(self, reload_info)
-
-    def _build_checkpointer_config(self) -> CheckpointerConfig:
-        """Build the checkpointer configuration."""
-        backend = self.settings.database_backend
-
-        if backend == "postgres":
-            if not self.settings.postgres_uri:
-                raise ValueError("POSTGRES_URI required when database_backend=postgres")
-            logger.info("Using PostgreSQL for conversation persistence")
-            return CheckpointerConfig(
-                backend="postgres",
-                postgres_uri=self.settings.postgres_uri,
-            )
-        elif backend == "sqlite":
-            db_path = self.settings.db_path
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Using SQLite for conversation persistence: {db_path}")
-            return CheckpointerConfig(
-                backend="sqlite",
-                sqlite_path=str(db_path),
-            )
-        else:  # memory
-            logger.info("Using in-memory storage (conversations will not persist)")
-            return CheckpointerConfig(backend="memory")
-
-    def _build_async_checkpointer_config(self) -> CheckpointerConfig:
-        """Build async checkpointer config for async streaming.
-
-        Uses the shared async checkpoint wrapper around Nymeria's durable sync
-        saver, ensuring sync and async paths share one serialization path and
-        checkpoint store. WAL mode enables concurrent SQLite read/write access.
-        """
-        backend = self.settings.database_backend
-
-        if backend == "postgres":
-            # Postgres supports async natively
-            if not self.settings.postgres_uri:
-                raise ValueError("POSTGRES_URI required when database_backend=postgres")
-            return CheckpointerConfig(
-                backend="postgres",
-                postgres_uri=self.settings.postgres_uri,
-            )
-        elif backend == "sqlite":
-            # sqlite_async still resolves to the shared async checkpoint wrapper.
-            db_path = self.settings.db_path
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            return CheckpointerConfig(
-                backend="sqlite_async",
-                sqlite_path=str(db_path),
-            )
-        else:  # memory
-            return CheckpointerConfig(backend="memory")
 
     def _build_user_profile_section(self, user_id: str) -> str:
         from .agent_prompt import build_user_profile_section
