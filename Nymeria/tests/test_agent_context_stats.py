@@ -72,13 +72,14 @@ def _fake_agent(
         usages.append(second_usage)
 
     record_calls: list[tuple[str, int, int]] = []
+    get_usage_calls = 0
 
     def _get_usage(_tid):
+        nonlocal get_usage_calls
         # Return usages[i] for the i-th call, sticking on the last entry.
-        idx = min(len(record_calls) + _get_usage.call_count, len(usages) - 1)
-        _get_usage.call_count += 1
+        idx = min(len(record_calls) + get_usage_calls, len(usages) - 1)
+        get_usage_calls += 1
         return usages[idx]
-    _get_usage.call_count = 0  # type: ignore[attr-defined]
 
     def _record(tid, last_in, last_out):
         record_calls.append((tid, last_in, last_out))
