@@ -50,7 +50,7 @@ wikipedia>=1.4.0  # wikipedia_search optional tool
 wolframalpha>=5.0.0  # wolfram_alpha_query optional tool
 
 # Agent Skills — SKILL.md frontmatter parser
-PyYAML>=6.0.2,<7.0.0
+PyYAML>=6.0.3,<7.0.0
 
 # Utilities
 python-multipart>=0.0.12
