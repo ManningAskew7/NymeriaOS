@@ -204,6 +204,10 @@
     filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.25));
   }
 
+  :global(html[data-theme='light']) .brand-mark {
+    filter: invert(1);
+  }
+
   .logo {
     font-size: var(--font-size-xl);
     font-weight: 700;
