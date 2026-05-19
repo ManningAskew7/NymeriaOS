@@ -383,6 +383,17 @@ Poll-sourced triggers that fire into a busy thread store events in `pending_even
 
 **Redis round-trip:** When `RedisEventBus.publish()` is called, it publishes to Redis only — local dispatch happens via the subscriber thread receiving the message back from Redis. This means API container events round-trip through Redis to reach that same container's SSE subscribers. Adds a few ms of latency but is what makes cross-container delivery work.
 
+**Docker trigger firing (single agent runtime):** In Docker, the worker
+container schedules polls but no longer runs the agent. When a poll-based
+trigger fires, the worker calls `/chat` on the API container with
+`publish_autonomous_events=False` and `trigger_id` / `trigger_name`
+populated. The worker keeps publishing `task_started` /
+`task_completed` and mirroring agent stream chunks itself with the
+stable task id `f"trigger-{trigger.id}"`; the API suppresses its own
+autonomous mirroring for the call to avoid duplicates. Webhook fires
+(`POST /triggers/fire/{id}`) are unaffected — they already enter the
+API directly and use `publish_autonomous_events=True` (the default).
+
 ## Code Map
 
 Which file does what, for quick navigation:

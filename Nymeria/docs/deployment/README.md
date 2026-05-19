@@ -17,11 +17,14 @@ NymeriaOS supports two deployment shapes from the same codebase. Pick the one th
 - One Python process
 - SQLite for all data
 - In-memory event bus
+- Embedded MCP endpoint at `/mcp` and an in-process watchdog task
 - No external services required (no Postgres, no Redis)
 - Agent runs as the OS user that started it — has whatever filesystem access you do
-- Install: `git clone … && uv venv && uv pip install -e . && python run.py api`
+- Install: `git clone … && uv venv && uv pip install -e . && python run.py slim`
 
 The slim shape is the **default** the codebase has always supported — it's how the project is developed. It is suitable for individuals and small teams (rule of thumb: comfortable up to ~10 active users; heavy concurrent writes start queueing past that).
+
+See [slim.md](slim.md) for the full launcher reference, token-file map, and Docker-vs-slim caveats.
 
 ### Docker stack
 - Multi-container: `api`, `worker`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots
@@ -52,10 +55,21 @@ The slim shape is not a stripped-down product. It runs the same code in a smalle
 | Event bus | In-memory | Redis pub/sub (or Postgres LISTEN/NOTIFY) |
 | Concurrency ceiling | ~10 active users | 100+ active users |
 | Process isolation | One process | Per-service containers |
+| Agent runtime | In-process (the one process) | API container only; `worker` schedules and relays turns to the API |
 | Network segmentation | None | `edge` + `backend` networks |
 | TLS / public URL | Bring your own (see [remote-access.md](remote-access.md)) | Bundled Caddy |
 | Container security boundary | N/A (runs on host) | Cap-dropped, non-root, read-only rootfs where possible |
 | Bot containers | Run as separate processes (systemd units) | Run as containers |
+
+The Docker `worker` container is a scheduler + event relay: it polls
+scheduled TODOs and poll-based triggers, then POSTs to `/chat` on the
+API container with `publish_autonomous_events=False` so the worker
+stays the sole publisher of autonomous SSE events (with stable
+`todo.id` / `trigger-<id>` task ids). The API runs the agent. This
+keeps the in-memory `ThreadLockManager` and `PendingPromptQueue`
+authoritative for cross-source contention without any distributed
+locking. See [architecture.md](../architecture.md) §4 and
+`nymeria/core/turn_executor.py` for the abstraction.
 
 ## Remote access
 

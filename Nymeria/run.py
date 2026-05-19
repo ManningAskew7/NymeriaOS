@@ -6,6 +6,7 @@ Usage:
     python run.py cli          # Start CLI interface
     python run.py api          # Start REST API server
     python run.py api --port 8080  # Start API on custom port
+    python run.py slim         # Start single-process local launcher (API + MCP + watchdog)
     python run.py doctor           # Diagnose local configuration
     python run.py worker           # Start worker (ticker only, for Docker)
     python run.py discord-bot     # Start Discord bot (gateway mode)
@@ -30,6 +31,7 @@ import sys
 import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Optional
 
 import os
 
@@ -405,6 +407,98 @@ def run_api(args: argparse.Namespace) -> None:
     start_api(host=host, port=port)
 
 
+def _slim_loopback_host(bind_host: str) -> str:
+    """Return a concrete connectable host for in-process slim clients."""
+    if bind_host in ("0.0.0.0", "::"):
+        return "127.0.0.1"
+    return bind_host
+
+
+def _apply_slim_runtime_env(
+    host: str,
+    port: int,
+    data_dir: Optional[str] = None,
+) -> str:
+    """Set env overrides for slim mode and return the loopback base URL.
+
+    Slim mode collapses the Docker stack into one process: SQLite for
+    persistence, no Redis event bus, watchdog as an async task, and MCP
+    mounted on the same FastAPI app. The env values are set BEFORE
+    ``get_settings()`` is called so the cached Pydantic Settings instance
+    sees the correct values. Any caller that has already imported settings
+    must call ``get_settings.cache_clear()`` afterwards.
+    """
+    loopback_host = _slim_loopback_host(host)
+    base_url = f"http://{loopback_host}:{port}"
+
+    os.environ["DATABASE_BACKEND"] = "sqlite"
+    os.environ["REDIS_ENABLED"] = "false"
+    # Clearing REDIS_URL prevents the API from initializing the cross-process
+    # event bus even if .env.docker has set one for the regular api command.
+    os.environ.pop("REDIS_URL", None)
+    os.environ["API_HOST"] = host
+    os.environ["API_PORT"] = str(port)
+    os.environ["NYMERIA_API_URL"] = base_url
+    if data_dir:
+        os.environ["NYMERIA_DATA_DIR"] = data_dir
+
+    # If settings were loaded earlier (e.g. by `_load_environment()` callers
+    # or argparse imports), reset the cache so the slim overrides take effect.
+    try:
+        from nymeria.config import get_settings
+
+        get_settings.cache_clear()
+    except Exception:
+        pass
+
+    return base_url
+
+
+def run_slim(args: argparse.Namespace) -> None:
+    """Run the single-process slim launcher (API + ticker + MCP + watchdog)."""
+    host = getattr(args, "host", None) or "127.0.0.1"
+    port = int(getattr(args, "port", None) or 8000)
+    data_dir = getattr(args, "data_dir", None)
+    enable_mcp = not getattr(args, "no_mcp", False)
+    enable_watchdog = not getattr(args, "no_watchdog", False)
+
+    base_url = _apply_slim_runtime_env(host, port, data_dir=data_dir)
+
+    from nymeria.triggers.api import run_api as start_api
+    from nymeria.config import get_settings
+
+    settings = get_settings()
+
+    print(f"Starting Nymeria SLIM (single-process) on {host}:{port}...")
+    print("  - Mode: SQLite + in-process ticker + embedded MCP")
+    print(f"  - Internal API URL: {base_url}")
+    print(f"  - Data directory: {settings.data_dir}")
+    if enable_mcp:
+        print(f"  - MCP endpoint: {base_url}/mcp")
+    else:
+        print("  - MCP: disabled (--no-mcp)")
+    if settings.watchdog_enabled and enable_watchdog:
+        print(
+            f"  - Watchdog: in-process (interval={settings.watchdog_interval_minutes}m, "
+            f"staleness={settings.todo_staleness_minutes}m)"
+        )
+    elif not settings.watchdog_enabled:
+        print("  - Watchdog: disabled (WATCHDOG_ENABLED=false)")
+    else:
+        print("  - Watchdog: disabled (--no-watchdog)")
+    if settings.api_docs_enabled:
+        print(f"  - Docs: {base_url}/docs")
+
+    start_api(
+        host=host,
+        port=port,
+        slim_mode=True,
+        slim_base_url=base_url,
+        enable_slim_mcp=enable_mcp,
+        enable_slim_watchdog=enable_watchdog,
+    )
+
+
 def run_service(args: argparse.Namespace) -> None:
     """Handle service subcommand (foreground gateway mode)."""
     run_gateway_foreground(args)
@@ -426,52 +520,123 @@ def run_doctor(args: argparse.Namespace) -> int:
 
 def run_worker(args: argparse.Namespace) -> None:
     """
-    Run the worker (ticker only, no API server).
+    Run the worker (scheduler-only thin client for Docker deployments).
 
-    This is designed for Docker deployments where the API and worker
-    run in separate containers, sharing state via PostgreSQL and Redis.
+    The worker polls scheduled TODOs and poll-based trigger sources, but no
+    longer constructs a ``NymeriaAgent``. Every turn it dispatches is
+    relayed to the API container via ``POST /chat`` (with
+    ``publish_autonomous_events=False`` so the worker stays the sole
+    publisher of autonomous SSE bookends). This keeps the in-memory
+    ``ThreadLockManager`` and ``PendingPromptQueue`` process-local to the
+    one process that runs the agent — the API.
     """
-    from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
+    import asyncio
+    import time
+    import urllib.error
+    import urllib.request
+
     from nymeria.config import get_settings
     from nymeria.core.event_bus import create_event_bus, set_event_bus
     from nymeria.core.service_health import write_service_heartbeat
+    from nymeria.core.thread_config import ThreadConfigManager
+    from nymeria.core.ticker import Ticker
+    from nymeria.core.todo_manager import TodoManager
+    from nymeria.core.todo_schedule_db import TodoScheduleDB
+    from nymeria.core.turn_executor import APIClientExecutor
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.triggers.api_client import NymeriaAPIClient
 
     settings = get_settings()
 
     # The ticker fires triggers through the API with service-token auth.
     _require_service_token(settings, "the worker (ticker)")
 
-    print("Starting Nymeria Worker (ticker mode)...")
+    api_url = (
+        getattr(args, "api_url", None)
+        or os.environ.get("NYMERIA_API_URL")
+        or "http://nymeria-api:8000"
+    )
+
+    print("Starting Nymeria Worker (scheduler-only thin client)...")
+    print(f"  - API URL: {api_url}")
     print(f"  - Ticker poll interval: {settings.ticker_poll_interval}s")
     print(f"  - Watchdog enabled: {settings.watchdog_enabled}")
     print(f"  - Redis enabled: {settings.redis_enabled}")
     print(f"  - Data directory: {settings.data_dir}")
 
-    # Initialize Redis event bus if configured
+    # Initialize Redis event bus if configured (worker still publishes
+    # task_started / agent stream chunks / task_completed for the TODOs
+    # and triggers it dispatches — the API call carries
+    # publish_autonomous_events=False so we don't get duplicates).
     if settings.redis_enabled and settings.redis_url:
         event_bus = create_event_bus(settings)
         set_event_bus(event_bus)
         print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
 
-    # Initialize FCM if enabled
+    # Initialize FCM if enabled (for autonomous notifications, dispatched
+    # by the same notification helpers the ticker uses).
     if settings.fcm_enabled and settings.fcm_credentials_json:
         from nymeria.core.fcm import _init_firebase
         if _init_firebase(settings.fcm_credentials_json):
             print("  - FCM push notifications: enabled")
 
-    # Create agent with all tools (this starts the ticker)
-    agent = NymeriaAgent(tools=list(ALL_TOOLS))
+    # Wait briefly for the API container to become healthy before we
+    # start firing TODOs. Without this, a TODO whose scheduled_for is
+    # recovered at boot will fail with a connection refused before the
+    # API has finished initializing; the ticker would then burn its
+    # retry budget. Mirrors the watchdog's 5-second initial wait.
+    health_url = api_url.rstrip("/") + "/health"
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(health_url, timeout=2) as resp:
+                if 200 <= resp.status < 300:
+                    print("  - API health: ok")
+                    break
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(1)
+    else:
+        print(
+            "  - API health: unreachable after 30s — continuing anyway, the "
+            "ticker will retry per-TODO until the API comes up."
+        )
 
-    # Sync callable thread tools into the registry
-    agent.sync_agent_tools()
+    client = NymeriaAPIClient(base_url=api_url, api_key=settings.nymeria_service_token)
+    executor = APIClientExecutor(client, publish_autonomous_events=False)
+
+    schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
+    todo_manager = TodoManager(settings.data_dir)
+    thread_config_manager = ThreadConfigManager(settings.data_dir)
+    profile_manager = UserProfileManager(settings.data_dir)
+
+    ticker = Ticker(
+        executor=executor,
+        settings=settings,
+        schedule_db=schedule_db,
+        todo_manager=todo_manager,
+        thread_config_manager=thread_config_manager,
+        profile_manager=profile_manager,
+        poll_interval=settings.ticker_poll_interval,
+        busy_agent=None,
+        spawn_sweeper=None,
+    )
+
+    # Rebuild schedule index and recover missed schedules on startup,
+    # matching what NymeriaAgent.__init__ does in slim mode.
+    indexed = ticker.rebuild_schedule_index()
+    if indexed > 0:
+        print(f"  - Indexed {indexed} scheduled TODO(s)")
+    recovered = ticker.recover_missed_schedules()
+    if recovered > 0:
+        print(f"  - Found {recovered} missed scheduled TODO(s)")
+
+    ticker.start()
 
     def write_worker_heartbeat() -> None:
-        ticker = agent._ticker
-        ticker_thread = getattr(ticker, "_thread", None) if ticker else None
+        ticker_thread = getattr(ticker, "_thread", None)
         ticker_running = bool(
-            ticker
-            and getattr(ticker, "_running", False)
+            getattr(ticker, "_running", False)
             and ticker_thread is not None
             and ticker_thread.is_alive()
         )
@@ -484,16 +649,26 @@ def run_worker(args: argparse.Namespace) -> None:
                     ticker_thread is not None and ticker_thread.is_alive()
                 ),
                 "poll_interval_seconds": settings.ticker_poll_interval,
+                "api_url": api_url,
             },
         )
 
     write_worker_heartbeat()
 
-    # Handle shutdown signals
+    async def _close_executor() -> None:
+        try:
+            await executor.aclose()
+        except Exception:
+            pass  # Best-effort during shutdown.
+
     def signal_handler(signum, frame):
         print("\nShutdown signal received, stopping ticker...")
-        if agent._ticker:
-            agent._ticker.stop()
+        ticker.stop()
+        try:
+            asyncio.run(_close_executor())
+        except RuntimeError:
+            # An asyncio loop may already be torn down; ignore.
+            pass
         # Force exit — ThreadPoolExecutor threads are non-daemon and
         # would otherwise keep the process alive indefinitely.
         import os
@@ -504,15 +679,16 @@ def run_worker(args: argparse.Namespace) -> None:
 
     print("\nWorker running. Press Ctrl+C to stop.")
 
-    # Keep the process alive
     try:
         while True:
-            import time
             write_worker_heartbeat()
             time.sleep(10)
     except KeyboardInterrupt:
-        if agent._ticker:
-            agent._ticker.stop()
+        ticker.stop()
+        try:
+            asyncio.run(_close_executor())
+        except RuntimeError:
+            pass
         print("\nWorker stopped.")
 
 
@@ -1184,6 +1360,7 @@ Examples:
     python run.py cli -r abc -m "hello"  # Oneshot message to specific thread
     python run.py api                # Start API server (default port 8000)
     python run.py api -p 8080        # Start API on port 8080
+    python run.py slim               # Single-process local launcher (no Docker/Redis/Postgres)
     python run.py doctor             # Diagnose local configuration
     python run.py discord-bot       # Start Discord bot (gateway mode)
     python run.py mcp                # Start MCP server (STDIO mode)
@@ -1357,10 +1534,53 @@ Examples:
         help="Port to listen on (default from settings)",
     )
 
+    # Slim subcommand — single-process local launcher
+    slim_parser = subparsers.add_parser(
+        "slim",
+        help="Start single-process local launcher (API + ticker + MCP + watchdog)",
+    )
+    slim_parser.add_argument(
+        "--host",
+        "-H",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
+    )
+    slim_parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=8000,
+        help="Port to listen on (default: 8000)",
+    )
+    slim_parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Runtime data directory (writes NYMERIA_DATA_DIR before settings load)",
+    )
+    slim_parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Skip mounting the embedded MCP server at /mcp",
+    )
+    slim_parser.add_argument(
+        "--no-watchdog",
+        action="store_true",
+        help="Skip the in-process watchdog task even when WATCHDOG_ENABLED=true",
+    )
+
     # Worker subcommand
-    subparsers.add_parser(
+    worker_parser = subparsers.add_parser(
         "worker",
         help="Start worker (ticker only, for Docker deployments)"
+    )
+    worker_parser.add_argument(
+        "--api-url",
+        default=None,
+        help=(
+            "URL of the Nymeria API container the worker relays TODO and "
+            "trigger turns to (default: $NYMERIA_API_URL or "
+            "http://nymeria-api:8000)"
+        ),
     )
 
     # Init subcommand
@@ -1647,6 +1867,15 @@ def main() -> None:
     args = parser.parse_args()
     service_token_required = _service_token_requirement(args) is not None
 
+    # Slim mode applies its env overrides BEFORE any settings cache load so the
+    # validator and the API both see SQLite/Redis-off/loopback values.
+    if args.command == "slim":
+        _apply_slim_runtime_env(
+            host=getattr(args, "host", None) or "127.0.0.1",
+            port=int(getattr(args, "port", None) or 8000),
+            data_dir=getattr(args, "data_dir", None),
+        )
+
     # Setup logging (except for service commands and STDIO MCP, which must keep
     # stdout reserved for JSON-RPC messages. The MCP server configures stderr
     # logging internally so client transports are not corrupted.
@@ -1657,13 +1886,17 @@ def main() -> None:
         from nymeria.config import get_settings
         _require_launch_mode_service_token(args, get_settings())
 
+    # Slim bootstraps its own internal service token, so the generic
+    # "NYMERIA_SERVICE_TOKEN not set" warning is misleading there.
+    suppress_service_token_warning = service_token_required or args.command == "slim"
+
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help
     if args.command == "cli":
         if getattr(args, "transport", "api") == "local":
-            validate_config(suppress_service_token_warning=service_token_required)
-    elif args.command in ("api", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "twitch-bot", "watchdog", "service"):
-        validate_config(suppress_service_token_warning=service_token_required)
+            validate_config(suppress_service_token_warning=suppress_service_token_warning)
+    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "twitch-bot", "watchdog", "service"):
+        validate_config(suppress_service_token_warning=suppress_service_token_warning)
     elif args.command == "users":
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
         # check so the admin can provision users before the API is configured.
@@ -1674,6 +1907,8 @@ def main() -> None:
         run_cli(args)
     elif args.command == "api":
         run_api(args)
+    elif args.command == "slim":
+        run_slim(args)
     elif args.command == "worker":
         run_worker(args)
     elif args.command == "init":

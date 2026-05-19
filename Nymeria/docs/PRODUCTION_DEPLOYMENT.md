@@ -323,6 +323,22 @@ When Redis is enabled, the API container creates the event bus connection and ru
 
 The worker (`python run.py worker`) should only run one instance to avoid duplicate scheduled-task execution.
 
+In Docker the worker is a **scheduler-only thin client**: it polls due TODOs
+and poll-based trigger sources, then relays each turn to the API container
+via `POST /chat` (mirroring the watchdog). It no longer constructs a
+`NymeriaAgent`, so its memory footprint drops by roughly the size of the
+tool registry + LLM client + MCP runtime (~50–150MB freed). The API
+container's footprint grows by a comparable amount because it now serves
+autonomous turns in addition to user chat. The `docker-compose.yml`
+resource limits were not tuned in this PR — adjust the `api` container's
+memory limit upward and the `worker` container's downward to match the
+new shape if you're running close to limits.
+
+The worker waits up to 30s on `/health` at startup before claiming the
+first scheduled TODO, so the API doesn't need to be ready before the
+worker container boots — but the scheduled-TODO floor is API uptime,
+not worker uptime. Plan API restarts accordingly.
+
 ## Backup & Recovery
 
 ### Data Locations

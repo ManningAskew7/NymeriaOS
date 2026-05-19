@@ -379,15 +379,16 @@ def test_ticker_should_notify_delegates_to_shared_helper(monkeypatch):
         lambda tid, tcm: (calls.append((tid, tcm)), True)[-1],
     )
 
-    fake_agent = MagicMock()
-    fake_agent.thread_config_manager = MagicMock()
+    # After AGENT-019, the ticker holds the thread_config_manager directly
+    # (DI), no longer reaches through ``self.agent``.
+    fake_thread_config_manager = MagicMock()
     ticker = ticker_mod.Ticker.__new__(ticker_mod.Ticker)
-    ticker.agent = fake_agent
+    ticker.thread_config_manager = fake_thread_config_manager
 
     result = ticker._should_create_autonomous_notification("thread-x")
     assert result is True
     assert calls[0][0] == "thread-x"
-    assert calls[0][1] is fake_agent.thread_config_manager
+    assert calls[0][1] is fake_thread_config_manager
 
 
 def test_notify_tool_imports_senders_from_dispatch():
