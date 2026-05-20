@@ -116,6 +116,7 @@ def finalize_oauth_credential(
     prompt: PendingPrompt,
     descriptor: OAuthProviderDescriptor,
     token_data: dict[str, Any],
+    source: str = "oauth_callback",
     repo: Optional[CredentialVaultRepo] = None,
 ) -> OAuthFinalizeResult:
     """Promote the pending credential to ``active`` and resolve the future.
@@ -123,6 +124,10 @@ def finalize_oauth_credential(
     ``token_data`` is the JSON body from a successful token-exchange (auth-code)
     or device-code poll. Required keys: ``access_token``. Optional:
     ``refresh_token``, ``expires_in``, ``scope`` (space-separated).
+
+    ``source`` is stamped on ``metadata["source"]`` so operators can tell
+    whether the token landed via the browser callback or the device-code
+    poller. Use ``"oauth_device_flow"`` for the latter.
     """
     coordinator = get_auth_prompt_coordinator()
     if repo is None:
@@ -189,7 +194,7 @@ def finalize_oauth_credential(
             "scopes": granted_scopes,
             "expires_at": expires_at_iso,
             "token_uri": descriptor.token_uri,
-            "source": "oauth_callback",
+            "source": source,
             "userinfo_sub": sub,
         }
     )
