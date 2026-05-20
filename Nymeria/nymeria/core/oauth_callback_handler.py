@@ -185,6 +185,8 @@ def finalize_oauth_credential(
         )
 
     metadata = dict(current.metadata or {})
+    oauth_state = metadata.get("_oauth_state") or {}
+    client_id_from_state = oauth_state.get("client_id") if isinstance(oauth_state, dict) else None
     metadata.update(
         {
             "provider_id": descriptor.provider_id,
@@ -198,8 +200,14 @@ def finalize_oauth_credential(
             "userinfo_sub": sub,
         }
     )
+    if client_id_from_state and not metadata.get("client_id"):
+        # Stash the client_id at the top level so refresh paths in
+        # auth_cache_utils can find it without re-reading _oauth_state
+        # (which gets popped below).
+        metadata["client_id"] = str(client_id_from_state)
     metadata.pop("oauth_pending", None)
     metadata.pop("oauth_state", None)
+    metadata.pop("_oauth_state", None)
 
     secret_fields = {"access_token": access_token}
     if refresh_token:

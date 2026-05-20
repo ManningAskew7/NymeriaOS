@@ -200,7 +200,7 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
         if isinstance(body, dict):
             return body
     except Exception:
-        pass
+        logger.debug("device-code poll response was not valid JSON", exc_info=True)
     return {}
 
 

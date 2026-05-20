@@ -14,8 +14,13 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from .outlook_auth import load_token_cache, save_token_cache
+from . import auth_cache_utils as auth_utils
 from .utils import get_user_id
+
+# Legacy Microsoft token cache filename. The new vault flow stores tokens under
+# provider="outlook" in the credentials table, but legacy files at
+# data/auth_tokens/<user>/microsoft.json remain as a fallback until Phase 8.
+_OUTLOOK_CACHE_FILENAME = "microsoft.json"
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +83,13 @@ def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict
 
     Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first account.
     All reads are scoped to the Nymeria ``user_id``; another user's Microsoft
-    accounts are invisible.
+    accounts are invisible. Vault-stored credentials win over legacy files on
+    account_id collision.
     """
-    cache = load_token_cache(user_id)
-    accounts = cache.get("accounts", {})
+    source = auth_utils.resolve_oauth_cache(
+        user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
+    )
+    accounts = source.cache.get("accounts", {})
 
     if not accounts:
         return None
@@ -114,7 +122,10 @@ def try_complete_pending_auth(user_id: str) -> bool:
     """
     import os
 
-    cache = load_token_cache(user_id)
+    # The legacy device-code "pending_auth" cookie only ever lived in the
+    # file/legacy_cache half; the new vault flow does not use it. Read the
+    # legacy cache directly so we don't accidentally consult vault rows.
+    cache = auth_utils.load_token_cache(user_id, _OUTLOOK_CACHE_FILENAME)
     pending = cache.get("pending_auth")
 
     if not pending:
@@ -179,7 +190,7 @@ def try_complete_pending_auth(user_id: str) -> bool:
             if "pending_auth" in cache:
                 del cache["pending_auth"]
 
-            save_token_cache(user_id, cache)
+            auth_utils.save_token_cache(user_id, _OUTLOOK_CACHE_FILENAME, cache)
             logger.info(f"Auto-completed pending auth for {email}")
             return True
 
@@ -190,15 +201,28 @@ def try_complete_pending_auth(user_id: str) -> bool:
 
 
 def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional[str]:
-    """Get a valid access token for this Nymeria user, refreshing if needed."""
-    cache = load_token_cache(user_id)
+    """Get a valid access token for this Nymeria user, refreshing if needed.
+
+    Vault-stored credentials (kind=oauth_token, provider=outlook) win over
+    legacy ``microsoft.json`` files on account_id collision. Refreshes write
+    back to whichever store the account originated from via the persist
+    callback returned by ``resolve_oauth_cache``.
+    """
+    source = auth_utils.resolve_oauth_cache(
+        user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
+    )
+    cache = source.cache
     accounts = cache.get("accounts", {})
 
     if not accounts:
-        # Try to complete any pending auth first
+        # Try to complete any pending auth first (legacy device-code flow only)
         if try_complete_pending_auth(user_id):
-            # Reload cache after completing auth
-            cache = load_token_cache(user_id)
+            # Reload via the resolver so we pick up either the freshly written
+            # legacy account or, eventually, a vault row.
+            source = auth_utils.resolve_oauth_cache(
+                user_id, "outlook", cache_filename=_OUTLOOK_CACHE_FILENAME
+            )
+            cache = source.cache
             accounts = cache.get("accounts", {})
 
         if not accounts:
@@ -256,7 +280,7 @@ def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional
             account["expires_at"] = time.time() + data.get("expires_in", 3600)
 
             cache["accounts"][aid] = account
-            save_token_cache(user_id, cache)
+            source.persist(cache)
 
             return account["access_token"]
     except Exception as e:
