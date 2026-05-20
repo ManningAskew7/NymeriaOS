@@ -191,6 +191,10 @@
     prompt?.description ? renderMarkdown(prompt.description) : ''
   );
 
+  let instructionsHtml = $derived(
+    prompt?.instructions ? renderMarkdown(prompt.instructions) : ''
+  );
+
   async function handleDescriptionClick(event: MouseEvent) {
     // Intercept anchor clicks so http(s) links open in the OS browser
     // rather than navigating the Tauri webview.
@@ -221,9 +225,23 @@
       <div
         class="description"
         role="region"
-        aria-label="Connection instructions"
+        aria-label="Connection summary"
         onclick={handleDescriptionClick}
       >{@html descriptionHtml}</div>
+    {/if}
+
+    {#if instructionsHtml}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="instructions"
+        role="region"
+        aria-label="Step by step instructions from the agent"
+        onclick={handleDescriptionClick}
+      >
+        <div class="instructions-label">Steps from Nymeria</div>
+        <div class="instructions-body">{@html instructionsHtml}</div>
+      </div>
     {/if}
 
     {#if prompt.existing_accounts.length > 0}
@@ -427,6 +445,56 @@
   }
 
   .description :global(code) {
+    background: var(--bg-subtle);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.9em;
+  }
+
+  .instructions {
+    border-left: 3px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-subtle));
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: var(--spacing-sm) var(--spacing-md);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+  }
+
+  .instructions-label {
+    font-size: var(--font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    margin-bottom: var(--spacing-xs);
+    font-weight: 600;
+  }
+
+  .instructions-body :global(p) {
+    margin: 0 0 var(--spacing-xs) 0;
+  }
+
+  .instructions-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .instructions-body :global(ol),
+  .instructions-body :global(ul) {
+    margin: var(--spacing-xs) 0;
+    padding-left: var(--spacing-lg);
+  }
+
+  .instructions-body :global(li) {
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .instructions-body :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  .instructions-body :global(code) {
     background: var(--bg-subtle);
     padding: 2px 4px;
     border-radius: 3px;

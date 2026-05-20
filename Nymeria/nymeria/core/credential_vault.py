@@ -622,6 +622,55 @@ class CredentialVaultRepo:
             conn.commit()
             return cur.rowcount > 0
 
+    def add_allowed_target(
+        self,
+        credential_id: str,
+        *,
+        target: str,
+        actor_user_id: Optional[str] = None,
+    ) -> bool:
+        """Add ``target`` (``"type:id"`` form) to a credential's
+        ``allowed_targets_json``.
+
+        Idempotent: returns False if the target was already present, True if it
+        was actually added. Raises CredentialNotFound if the credential does not
+        exist. Use this when an in-flight prompt resolves and binding to a
+        specific MCP server or native tool needs to be recorded on the
+        credential row itself, not just in the bookkeeping ``credential_bindings``
+        table (which ``_target_allowed`` does not consult).
+        """
+        target = target.strip()
+        if not target:
+            raise ValueError("target must be a non-empty 'type:id' string")
+        record = self.get_credential(credential_id)
+        if record is None:
+            raise CredentialNotFound(credential_id)
+        existing = list(record.allowed_targets or [])
+        if target in existing:
+            return False
+        existing.append(target)
+        now = _now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE credentials
+                SET allowed_targets_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (_json_dumps(existing), now, credential_id),
+            )
+            self._audit_locked(
+                conn,
+                credential_id=credential_id,
+                actor_user_id=actor_user_id,
+                event_type="allowed_target_added",
+                target_type=target.split(":", 1)[0] if ":" in target else None,
+                target_id=target.split(":", 1)[1] if ":" in target else None,
+                details={"target": target},
+            )
+            conn.commit()
+        return True
+
     def bind_credential(
         self,
         credential_id: str,

@@ -30,6 +30,12 @@ def parse_attach_paths(result: str) -> List[str]:
     return _ATTACH_RE.findall(result)
 
 
+_MAX_INSTRUCTIONS_RENDER_CHARS = 800
+"""Cap on instructions length in bot-rendered output. Telegram messages
+hard-limit at 4096 chars; the rest of the credential prompt (links, codes,
+expiry) eats a few hundred, so 800 keeps headroom even on smaller surfaces."""
+
+
 def format_auth_prompt_message(event: Dict[str, Any]) -> str:
     """Render a safe default credential-setup prompt for text chat surfaces.
 
@@ -39,7 +45,19 @@ def format_auth_prompt_message(event: Dict[str, Any]) -> str:
     - ``"oauth_device"`` (RFC 8628) renders a verification URL plus user code.
     - anything else (``api_key``, ``pat``, ``form``, missing) renders the
       one-time hosted-form link from ``connect_url``.
+
+    If the agent passed ``instructions`` (markdown step-by-step), they are
+    appended below the main body so chat-app users get the same tailored
+    guidance the desktop modal shows.
     """
+    body = _format_auth_prompt_body(event)
+    instructions_suffix = _format_instructions_suffix(event.get("instructions"))
+    if instructions_suffix:
+        return f"{body}{instructions_suffix}"
+    return body
+
+
+def _format_auth_prompt_body(event: Dict[str, Any]) -> str:
     mode = str(event.get("mode") or "").strip()
     display_name = str(
         event.get("display_name") or event.get("provider") or "a service"
@@ -67,6 +85,20 @@ def format_auth_prompt_message(event: Dict[str, Any]) -> str:
         "ask the server admin to set NYMERIA_PUBLIC_URL. Do not paste secrets "
         "into chat."
     )
+
+
+def _format_instructions_suffix(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip()
+    if not text:
+        return ""
+    if len(text) > _MAX_INSTRUCTIONS_RENDER_CHARS:
+        text = (
+            text[:_MAX_INSTRUCTIONS_RENDER_CHARS].rstrip()
+            + "\n\n(truncated; open the desktop modal for full steps)"
+        )
+    return f"\n\nSteps:\n{text}"
 
 
 def _format_oauth_auth_code(event: Dict[str, Any], display_name: str) -> str:

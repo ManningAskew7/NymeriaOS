@@ -61,6 +61,37 @@ If `NYMERIA_PUBLIC_URL` is unset, desktop prompts still work, but text-chat
 surfaces report that a public URL is required and warn users not to paste
 secrets into chat.
 
+**Fire-and-forget tool contract (Phase 11):** `request_credential` returns
+immediately with `status="dispatched"`. The agent does not block waiting for
+the user. When the user submits (or cancels, or the prompt times out), the
+coordinator's future resolves and a fresh agent turn fires automatically with
+a one-line summary like
+`CREDENTIAL_PROMPT_RESOLVED: provider=google_gmail status=active credential_id=cred_abc ...`
+delivered as a `source="credential_resolution"` autonomous turn. The summary
+is filtered from user-facing history (the user sees the agent's natural
+response, not the synthetic resolution line). See
+`nymeria/core/credential_prompt_injector.py` for the formatter and
+`nymeria/tools/credential_prompt.py:_make_resolution_callback` for the wiring.
+
+The agent should write a short acknowledgement after dispatching the prompt
+(e.g. "Opening the sign-in prompt, I'll pick it up when you're done") so the
+user knows the call landed.
+
+**Two new optional args on `request_credential`:**
+
+- `instructions` (string, markdown): step-by-step guidance shown in a
+  highlighted callout above the form. Different from `description`, which is
+  the short "what is this" summary. Use `instructions` to tailor steps to the
+  user's context, e.g. "Since you mentioned you're a Resend customer, find
+  your key at resend.com/api-keys, Create new, then paste it below."
+- `bind_target` (string `"type:id"`): automatic post-save binding. Currently
+  supports `"mcp_server:<id>"` (binds the credential to a specific MCP server
+  and force-restarts that server's connection so the next tool call resolves
+  the new env value) and `"native_tool:<name>"` (scopes the credential to one
+  native tool). Bind failures are non-fatal: the credential still saves and
+  the resolution summary tells the agent what went wrong. Validation regex:
+  `^(mcp_server|native_tool):[A-Za-z0-9_-]{1,64}$`.
+
 ### 3. Auto-Migration at Startup
 
 When the agent boots (`agent.py`), two migration functions run automatically:
