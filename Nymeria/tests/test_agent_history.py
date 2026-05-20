@@ -134,6 +134,125 @@ def test_format_conversation_history_attaches_tool_results_and_artifacts():
     ]
 
 
+def test_history_round_trip_uses_additional_kwargs_attachment_metadata():
+    """Phase B+ attachment metadata on HumanMessage.additional_kwargs should
+    drive history reconstruction, preserving original filename + byte size
+    that the legacy content-block synthesis path would have lost."""
+    user = HumanMessage(
+        content=[
+            {"type": "text", "text": "summarise the doc"},
+        ],
+        id="user-1",
+        additional_kwargs={
+            "attachments": [
+                {
+                    "id": "rec-uuid-1",
+                    "type": "document",
+                    "name": "Q3-financials.pdf",
+                    "size": 184_232,
+                    "mime_type": "application/pdf",
+                    "sandbox_path": "/workspace/threads/t/attachments/Q3-financials.pdf",
+                    "extracted_text_path": "/workspace/threads/t/attachments/Q3-financials.pdf.txt",
+                    "pages": 12,
+                    "sha256": "deadbeef",
+                },
+            ]
+        },
+    )
+
+    history = format_conversation_history(
+        [user],
+        thread_id="t",
+        timestamp_map={},
+        clean_tool_result=lambda value: value,
+        extract_workspace_artifacts=lambda _value: [],
+    )
+
+    assert len(history) == 1
+    entry = history[0]
+    assert entry["role"] == "user"
+    assert entry["content"] == "summarise the doc"
+    [attachment] = entry["attachments"]
+    assert attachment["id"] == "rec-uuid-1"
+    assert attachment["type"] == "document"
+    assert attachment["name"] == "Q3-financials.pdf"
+    assert attachment["size"] == 184_232
+    assert attachment["mimeType"] == "application/pdf"
+    # Sandbox-routed documents do not carry inline bytes; frontend fetches
+    # via the owner-scoped download endpoint instead.
+    assert attachment["dataUrl"] == ""
+
+
+def test_history_round_trip_uses_metadata_for_image_with_inline_data():
+    """Image metadata sits alongside an inline image_url content block; the
+    rebuild should preserve the real filename and surface the data URL."""
+    user = HumanMessage(
+        content=[
+            {"type": "text", "text": "describe"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,IMG"},
+            },
+        ],
+        id="user-1",
+        additional_kwargs={
+            "attachments": [
+                {
+                    "type": "image",
+                    "name": "screenshot.png",
+                    "size": 4096,
+                    "mime_type": "image/png",
+                    "data_url": "data:image/png;base64,IMG",
+                },
+            ]
+        },
+    )
+
+    history = format_conversation_history(
+        [user],
+        thread_id="t",
+        timestamp_map={},
+        clean_tool_result=lambda value: value,
+        extract_workspace_artifacts=lambda _value: [],
+    )
+
+    [attachment] = history[0]["attachments"]
+    assert attachment["type"] == "image"
+    assert attachment["name"] == "screenshot.png"
+    assert attachment["size"] == 4096
+    assert attachment["mimeType"] == "image/png"
+    assert attachment["dataUrl"] == "data:image/png;base64,IMG"
+
+
+def test_history_round_trip_legacy_message_synthesises_attachment():
+    """Messages without additional_kwargs attachments metadata fall back to
+    the legacy synthesis path so older history still renders pills."""
+    user = HumanMessage(
+        content=[
+            {"type": "text", "text": "describe"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,LEGACY"},
+            },
+        ],
+        id="user-1",
+    )
+
+    history = format_conversation_history(
+        [user],
+        thread_id="t",
+        timestamp_map={},
+        clean_tool_result=lambda value: value,
+        extract_workspace_artifacts=lambda _value: [],
+    )
+
+    [attachment] = history[0]["attachments"]
+    assert attachment["type"] == "image"
+    assert attachment["mimeType"] == "image/jpeg"
+    # Legacy path synthesizes a filename from the MIME extension.
+    assert attachment["name"].endswith(".jpeg")
+
+
 def test_format_conversation_history_uses_message_type_dispatch_table():
     source = inspect.getsource(format_conversation_history)
 

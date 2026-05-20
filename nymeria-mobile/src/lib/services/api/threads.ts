@@ -221,6 +221,36 @@ export class ThreadsApi extends ChatApi {
     return response.json();
   }
 
+  /**
+   * Download a sandboxed thread attachment by its record id. Returns a Blob
+   * the caller can hand to a `<a download>` link or pass to a Save dialog.
+   * The server-side route is owner-scoped (404 on probes) and streams the
+   * original file with its real Content-Type + Content-Disposition.
+   */
+  async downloadAttachment(threadId: string, attachmentId: string): Promise<{
+    blob: Blob;
+    filename: string;
+    contentType: string;
+  }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to download attachment: ${response.status} ${text}`);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get('content-type') || blob.type || 'application/octet-stream';
+    const disposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = filenameMatch?.[1] || `attachment-${attachmentId}`;
+
+    return { blob, filename, contentType };
+  }
+
   async stopThread(threadId: string): Promise<void> {
     try {
       await fetch(`${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/stop`, {
