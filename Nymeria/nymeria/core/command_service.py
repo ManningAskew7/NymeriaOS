@@ -785,6 +785,11 @@ class CommandBackendClient:
             "thread_id": thread_id,
         }
 
+    async def prune_thread(self, thread_id: str) -> dict:
+        """Deterministically compress tool returns in a thread (no LLM)."""
+        self._require_thread_access(thread_id)
+        return await self.agent.prune_now(thread_id, self.user.id)
+
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         self._require_thread_access(thread_id)
         stats = dict(self.agent.get_context_stats(thread_id) or {})
@@ -2101,6 +2106,16 @@ class CommandService:
             requires_thread=True,
             execution_kind="chat_stream",
             note="Handled by the chat stream endpoint.",
+        )
+        self.register(
+            "prune",
+            description="Compress tool returns in the active thread (no LLM)",
+            category="Thread",
+            usage="/prune",
+            agent_allowed=False,
+            requires_thread=True,
+            mutates_state=True,
+            danger_level="normal",
         )
         self.register(
             "stop",
@@ -4589,6 +4604,28 @@ class _CommandExecutor:
             return thread_error
         await self.api.clear_thread(self.thread_id)
         return "[Success]: Conversation history cleared. Notepad and tool config preserved."
+
+    async def _cmd_prune(self, args: list[str], rest: str) -> str:
+        thread_error = self._require_thread()
+        if thread_error:
+            return thread_error
+        result = await self.api.prune_thread(self.thread_id)
+        if not result.get("success"):
+            reason = result.get("reason", "unknown error")
+            return f"[Error]: Could not prune: {reason}"
+        pruned = int(result.get("pruned_count", 0))
+        saved = int(result.get("chars_saved", 0))
+        already = int(result.get("skipped_already_pruned", 0))
+        too_short = int(result.get("skipped_too_short", 0))
+        if pruned == 0:
+            if already or too_short:
+                return (
+                    f"[Info]: Nothing to prune. Already-pruned: {already}, "
+                    f"too small to compress: {too_short}."
+                )
+            return "[Info]: Nothing to prune - no tool results found in this thread."
+        word = "result" if pruned == 1 else "results"
+        return f"[Success]: Pruned {pruned} tool {word}, reclaimed {saved:,} chars."
 
     async def _cmd_restart_api(self, args: list[str], rest: str) -> str:
         await self.api.restart_api()

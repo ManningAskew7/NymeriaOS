@@ -254,6 +254,25 @@ def create_thread_operations_router(
         result = await agent.compact_now(thread_id, user.id)
         return result
 
+    @router.post("/threads/{thread_id}/prune")
+    async def prune_thread(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Deterministically compress tool returns in a thread (no LLM).
+
+        Each ToolMessage in the thread's active state is rewritten to a short
+        placeholder marker that preserves the message id and tool_call_id so the
+        AIMessage to ToolMessage linkage remains valid. The agent retains the
+        full reasoning trail; re-invoking a tool fetches the real result.
+        Idempotent; skips ToolMessages already pruned and very short ones.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        result = await agent.prune_now(thread_id, user.id)
+        return result
+
     @router.post("/threads/{thread_id}/stop")
     async def stop_thread(
         thread_id: str,

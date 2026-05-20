@@ -27,6 +27,7 @@ from .agent_history import (
 )
 from .agent_streaming import GraphStreamProcessor
 from .agent_compaction import CompactionManager
+from .agent_prune import PruneManager
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager
 from .todo_schedule_db import TodoScheduleDB
@@ -330,6 +331,7 @@ class NymeriaAgent:
         # Context management: token tracking and auto-compaction
         self._token_tracker = TokenTracker()
         self._compaction = CompactionManager(self)
+        self._prune = PruneManager(self)
 
         # Initialize schedule database for TODO scheduling
         self._schedule_db = TodoScheduleDB(
@@ -690,6 +692,14 @@ class NymeriaAgent:
     ) -> Dict[str, Any]:
         """Manually trigger compaction (/compact command)."""
         return await self._compaction.compact_now(thread_id, user_id)
+
+    async def prune_now(
+        self,
+        thread_id: str,
+        user_id: str = "default",
+    ) -> Dict[str, Any]:
+        """Deterministically compress tool returns (/prune command)."""
+        return await self._prune.prune_now(thread_id, user_id)
 
     def get_pending_summary(self, thread_id: str) -> Optional[str]:
         """Get and clear pending summary for a thread."""

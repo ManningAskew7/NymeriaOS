@@ -566,6 +566,17 @@ async def nymeria_compact_thread(thread_id: str, user_id: str = "default") -> Di
     return await _json_call("POST", f"/threads/{_enc(thread_id)}/compact", user_id=user_id)
 
 
+@mcp.tool()
+async def nymeria_prune_thread(thread_id: str, user_id: str = "default") -> Dict[str, Any]:
+    """Deterministically compress tool returns in a thread (no LLM).
+
+    Rewrites each ToolMessage in the thread's active state to a short
+    placeholder marker, leaving the agent's reasoning trail intact. Re-invoking
+    a tool fetches the real result. Idempotent.
+    """
+    return await _json_call("POST", f"/threads/{_enc(thread_id)}/prune", user_id=user_id)
+
+
 # =============================================================================
 # Thread Configuration
 # =============================================================================

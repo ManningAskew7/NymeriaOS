@@ -38,6 +38,7 @@ class FakeAgent:
         self._thread_locks = FakeThreadLocks()
         self.aborted_threads: list[str] = []
         self.compactions: list[tuple[str, str]] = []
+        self.prunes: list[tuple[str, str]] = []
         self.synced_tools = 0
 
     def _get_llm_config_for_thread(self, thread_id: str) -> ThreadLLMConfig:
@@ -49,6 +50,10 @@ class FakeAgent:
     async def compact_now(self, thread_id: str, user_id: str):
         self.compactions.append((thread_id, user_id))
         return {"status": "compacted", "thread_id": thread_id, "user_id": user_id}
+
+    async def prune_now(self, thread_id: str, user_id: str):
+        self.prunes.append((thread_id, user_id))
+        return {"success": True, "pruned_count": 3, "chars_saved": 1234}
 
     def abort_with_cascade(self, thread_id: str):
         self.aborted_threads.append(thread_id)
@@ -152,6 +157,25 @@ def test_compact_route_runs_under_authenticated_user(tmp_path: Path, api_client_
         "user_id": "owner",
     }
     assert agent.compactions == [(thread_id, "owner")]
+
+
+def test_prune_route_runs_under_authenticated_user(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-prune"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.post(
+        f"/threads/{thread_id}/prune",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "pruned_count": 3,
+        "chars_saved": 1234,
+    }
+    assert agent.prunes == [(thread_id, "owner")]
 
 
 def test_stop_route_aborts_only_when_thread_is_running(tmp_path: Path, api_client_builder):
