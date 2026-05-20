@@ -396,7 +396,6 @@ _SOURCE_LABELS = {
     "callable": "Callable Thread",
     "mcp": "MCP Client",
     "watchdog": "Watchdog",
-    "credential_resolution": "Credential Prompt",
 }
 
 
