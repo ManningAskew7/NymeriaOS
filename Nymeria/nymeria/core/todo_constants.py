@@ -1,11 +1,13 @@
 """Shared TODO formatting constants for Nymeria.
 
 This module provides a single source of truth for TODO status icons,
-recurrence patterns, and sorting orders used across the codebase.
+recurrence parsing, and sorting orders used across the codebase.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
+from .time_utils import parse_duration
 from .todo_manager import TodoStatus
 
 
@@ -23,20 +25,95 @@ STATUS_ORDER = {
     TodoStatus.DONE: 2,
 }
 
-# Valid recurrence patterns (single source of truth)
-VALID_RECURRENCES = ['5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly']
-
-# Recurrence deltas for calculating next execution time
-RECURRENCE_DELTAS = {
-    '5min': timedelta(minutes=5),
-    '10min': timedelta(minutes=10),
-    '15min': timedelta(minutes=15),
-    '30min': timedelta(minutes=30),
-    'hourly': timedelta(hours=1),
-    'daily': timedelta(days=1),
-    'weekly': timedelta(weeks=1),
-    'monthly': timedelta(days=30),  # Approximate
+# Legacy preset names mapped to canonical duration strings. Stored TODO data
+# and the agent tool vocabulary still use these; the parser resolves them
+# before delegating to parse_duration so old JSON keeps working.
+LEGACY_RECURRENCE_ALIASES = {
+    "5min": "5m",
+    "10min": "10m",
+    "15min": "15m",
+    "30min": "30m",
+    "hourly": "1h",
+    "daily": "1d",
+    "weekly": "1w",
+    "monthly": "30d",
 }
+
+MIN_RECURRENCE_SECONDS = 60
+
+RECURRENCE_FORMAT_HINT = (
+    "Format: Nm, Nh, Nd, Nw (or Ns for seconds, min 60s). "
+    "Examples: 5m, 2h, 1d, 1w. "
+    "Legacy names also accepted: hourly, daily, weekly, monthly."
+)
+
+
+def _canonicalize_recurrence(value: str) -> str:
+    """Normalize a recurrence string (lowercase, trim, resolve legacy alias)."""
+    cleaned = value.strip().lower()
+    return LEGACY_RECURRENCE_ALIASES.get(cleaned, cleaned)
+
+
+def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta]:
+    """Parse a recurrence string to a timedelta.
+
+    Accepts canonical durations ("5m", "2h", "1d", "1w", "30s") and legacy
+    preset names ("hourly", "daily", "weekly", "monthly", "5min" ... "30min").
+    Returns None when the input is empty or unparseable.
+    """
+    if not value:
+        return None
+    canonical = _canonicalize_recurrence(value)
+    seconds = parse_duration(canonical)
+    if seconds is None or seconds <= 0:
+        return None
+    return timedelta(seconds=seconds)
+
+
+def validate_recurrence(value: str) -> str:
+    """Validate and return the canonical duration string.
+
+    Raises ValueError for invalid format or intervals shorter than
+    MIN_RECURRENCE_SECONDS. Legacy preset names are resolved (e.g. "5min"
+    becomes "5m"); other inputs are returned in their normalized form
+    (lowercased, trimmed) without unit conversion ("300s" stays "300s").
+    Callers should store the returned value verbatim.
+    """
+    if not value or not value.strip():
+        raise ValueError(f"recurrence is empty. {RECURRENCE_FORMAT_HINT}")
+    canonical = _canonicalize_recurrence(value)
+    seconds = parse_duration(canonical)
+    if seconds is None or seconds <= 0:
+        raise ValueError(
+            f"Invalid recurrence {value!r}. {RECURRENCE_FORMAT_HINT}"
+        )
+    if seconds < MIN_RECURRENCE_SECONDS:
+        raise ValueError(
+            f"recurrence {value!r} is below the {MIN_RECURRENCE_SECONDS}s minimum. "
+            f"{RECURRENCE_FORMAT_HINT}"
+        )
+    return canonical
+
+
+def format_recurrence_for_display(value: Optional[str]) -> str:
+    """Return a human-friendly label for a recurrence string.
+
+    Returns "Hourly" / "Daily" / "Weekly" for the exact 1h / 1d / 1w slots
+    and "Every Nm" / "Every Nh" / etc. otherwise. Unparseable input falls
+    back to the raw value so legacy data never renders as an empty string.
+    """
+    if not value:
+        return ""
+    canonical = _canonicalize_recurrence(value)
+    if canonical == "1h":
+        return "Hourly"
+    if canonical == "1d":
+        return "Daily"
+    if canonical == "1w":
+        return "Weekly"
+    if parse_duration(canonical) is None:
+        return value
+    return f"Every {canonical}"
 
 
 def _ensure_aware_utc(value: datetime) -> datetime:
@@ -57,7 +134,7 @@ def calculate_next_recurrence_time(
     system missed one or more intervals, this skips forward to the next future
     slot while preserving the cadence.
     """
-    delta = RECURRENCE_DELTAS.get(recurrence)
+    delta = parse_recurrence_interval(recurrence)
     if delta is None:
         return None
 

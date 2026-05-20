@@ -100,20 +100,19 @@
   // Check if user-created
   let isUserCreated = $derived(todo.createdBy === 'user');
 
-  // Recurrence label
+  // Recurrence label — mirrors Nymeria.core.todo_constants.format_recurrence_for_display.
   let recurrenceLabel = $derived.by(() => {
     if (!todo.recurrence) return null;
-    const labels: Record<string, string> = {
-      '5min': 'Every 5m',
-      '10min': 'Every 10m',
-      '15min': 'Every 15m',
-      '30min': 'Every 30m',
-      'hourly': 'Hourly',
-      'daily': 'Daily',
-      'weekly': 'Weekly',
-      'monthly': 'Monthly'
+    const legacy: Record<string, string> = {
+      '5min': '5m', '10min': '10m', '15min': '15m', '30min': '30m',
+      hourly: '1h', daily: '1d', weekly: '1w', monthly: '30d'
     };
-    return labels[todo.recurrence] || todo.recurrence;
+    const canonical = legacy[todo.recurrence.toLowerCase()] ?? todo.recurrence.toLowerCase();
+    if (canonical === '1h') return 'Hourly';
+    if (canonical === '1d') return 'Daily';
+    if (canonical === '1w') return 'Weekly';
+    if (/^\d+(s|m|h|d|w)$/.test(canonical)) return `Every ${canonical}`;
+    return todo.recurrence;
   });
 
   function toggleExpand() {

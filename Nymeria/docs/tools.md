@@ -1455,7 +1455,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
   - ISO with timezone: `"YYYY-MM-DDTHH:MM:SSZ"` or `"YYYY-MM-DDTHH:MM:SS-04:00"`
 - `status` (`Optional[str]`): `"pending"`, `"in_progress"`, or `"done"` (update only)
 - `notes` (`Optional[str]`): Add or update notes (max 1000 characters)
-- `recurrence` (`Optional[str]`): `"5min"`, `"10min"`, `"15min"`, `"30min"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`
+- `recurrence` (`Optional[str]`): Interval as a canonical duration string — `Nm`, `Nh`, `Nd`, `Nw` (or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`, `"1w"`. Legacy preset names are also accepted on input and normalised: `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"5min"`, `"10min"`, `"15min"`, `"30min"`.
 - `clear_schedule` (`bool`, default `False`): Remove scheduled time (update only)
 - `clear_recurrence` (`bool`, default `False`): Remove recurrence pattern (update only)
 

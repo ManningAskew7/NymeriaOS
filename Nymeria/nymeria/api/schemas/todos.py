@@ -34,7 +34,13 @@ class TodoCreateRequest(BaseModel):
         description="When to execute: relative ('45s', '17m', '2h', '1w') or absolute/ISO datetime",
     )
     recurrence: Optional[str] = Field(
-        default=None, description="Recurrence: hourly, daily, weekly, monthly"
+        default=None,
+        description=(
+            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw; "
+            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d'. "
+            "Legacy names also accepted: hourly, daily, weekly, monthly. "
+            "Stored in canonical form."
+        ),
     )
     thread_id: Optional[str] = Field(
         default=None, description="Thread ID for scheduled execution output"
@@ -56,7 +62,13 @@ class TodoUpdateRequest(BaseModel):
         description="When to execute: relative ('45s', '17m', '2h', '1w') or absolute/ISO datetime",
     )
     recurrence: Optional[str] = Field(
-        default=None, description="Recurrence: hourly, daily, weekly, monthly"
+        default=None,
+        description=(
+            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw; "
+            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d'. "
+            "Legacy names also accepted: hourly, daily, weekly, monthly. "
+            "Stored in canonical form."
+        ),
     )
     thread_id: Optional[str] = Field(
         default=None, description="Thread ID for scheduled execution output"

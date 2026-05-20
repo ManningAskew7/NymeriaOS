@@ -1048,21 +1048,22 @@ class CommandBackendClient:
         thread_id: Optional[str] = None,
     ) -> dict:
         from ..api.routers.todos import (
-            VALID_RECURRENCES,
             _get_todo_schedule_db,
             _parse_scheduled_for,
             _todo_to_response,
         )
+        from .todo_constants import validate_recurrence
         from .todo_manager import TodoManager
 
         target_user_id = self._checked_user_id(user_id)
         settings = self._settings()
         todo_manager = TodoManager(settings.data_dir)
-        if recurrence and recurrence.lower() not in VALID_RECURRENCES:
-            _raise_http_status(
-                400,
-                f"Invalid recurrence: '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}",
-            )
+        canonical_recurrence: Optional[str] = None
+        if recurrence:
+            try:
+                canonical_recurrence = validate_recurrence(recurrence)
+            except ValueError as exc:
+                _raise_http_status(400, str(exc))
         try:
             parsed_schedule = _parse_scheduled_for(scheduled_for)
         except Exception as exc:  # noqa: BLE001
@@ -1077,7 +1078,7 @@ class CommandBackendClient:
                 scheduled_for=parsed_schedule,
                 thread_id=todo_thread_id,
                 created_by="user",
-                recurrence=recurrence.lower() if recurrence else None,
+                recurrence=canonical_recurrence,
             )
             if item is None:
                 _raise_http_status(400, "Cannot create TODO: maximum limit reached")

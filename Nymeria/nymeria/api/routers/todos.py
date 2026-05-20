@@ -12,8 +12,8 @@ from ...core.accounts import AuthenticatedUser
 from ...core.time_utils import ensure_aware_utc, parse_future_scheduled_time, utc_now
 from ...core.todo_constants import (
     STATUS_ORDER,
-    VALID_RECURRENCES,
     calculate_next_recurrence_time,
+    validate_recurrence,
 )
 from ...core.todo_manager import TodoItem, TodoManager, TodoStatus
 from ...core.todo_schedule_db import TodoScheduleDB
@@ -183,15 +183,12 @@ def create_todos_router(
         """
         todo_manager = TodoManager(settings.data_dir)
 
-        # Validate recurrence
-        if request.recurrence and request.recurrence.lower() not in VALID_RECURRENCES:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid recurrence: '{request.recurrence}'. "
-                    f"Use: {', '.join(VALID_RECURRENCES)}"
-                ),
-            )
+        canonical_recurrence: Optional[str] = None
+        if request.recurrence:
+            try:
+                canonical_recurrence = validate_recurrence(request.recurrence)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Parse scheduled_for
         scheduled_for = _parse_scheduled_for(request.scheduled_for)
@@ -206,7 +203,7 @@ def create_todos_router(
                 scheduled_for=scheduled_for,
                 thread_id=todo_thread_id,
                 created_by="user",
-                recurrence=request.recurrence.lower() if request.recurrence else None,
+                recurrence=canonical_recurrence,
             )
 
             if item is None:
@@ -258,18 +255,12 @@ def create_todos_router(
                     ),
                 ) from exc
 
-        # Validate recurrence
-        recurrence = None
+        recurrence: Optional[str] = None
         if request.recurrence and not request.clear_recurrence:
-            if request.recurrence.lower() not in VALID_RECURRENCES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Invalid recurrence: '{request.recurrence}'. "
-                        f"Use: {', '.join(VALID_RECURRENCES)}"
-                    ),
-                )
-            recurrence = request.recurrence.lower()
+            try:
+                recurrence = validate_recurrence(request.recurrence)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Parse scheduled_for
         scheduled_for = None

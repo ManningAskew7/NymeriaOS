@@ -1629,7 +1629,7 @@ Authorization: Bearer <token>
       "updated_at": "2026-02-02T10:00:00Z",
       "scheduled_for": "2026-02-02T14:00:00Z",
       "thread_id": "thread-xyz",
-      "recurrence": "daily",
+      "recurrence": "1d",
       "created_by": "user"
     }
   ],
@@ -1652,7 +1652,7 @@ Authorization: Bearer <token>
 {
   "task": "Check inbox",
   "scheduled_for": "30m",
-  "recurrence": "daily",
+  "recurrence": "2h",
   "thread_id": "optional-thread-id",
   "notes": "Optional notes"
 }
@@ -1662,7 +1662,7 @@ Authorization: Bearer <token>
 |-------|------|----------|-------------|
 | `task` | string | Yes | Task description |
 | `scheduled_for` | string | No | Relative (`45s`, `17m`, `2h`, `1w`) or absolute/ISO datetime |
-| `recurrence` | string | No | Valid recurrence pattern |
+| `recurrence` | string | No | Interval as a canonical duration string (`Nm`, `Nh`, `Nd`, `Nw`; or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min` … `30min`) are accepted on input and normalised to canonical form on storage. |
 | `thread_id` | string | No | Thread for autonomous output, defaults to a user-scoped default thread |
 | `notes` | string | No | Additional context |
 
@@ -1686,7 +1686,7 @@ Authorization: Bearer <token>
   "scheduled_for": "2h",
   "thread_id": "thread-xyz",
   "clear_schedule": false,
-  "recurrence": "weekly",
+  "recurrence": "1w",
   "clear_recurrence": false
 }
 ```
@@ -1697,7 +1697,7 @@ Authorization: Bearer <token>
 | `status` | string | `pending`, `in_progress`, `done` |
 | `notes` | string | Set or update notes |
 | `scheduled_for` | string | Set or update next scheduled execution |
-| `recurrence` | string | Set or update recurrence pattern |
+| `recurrence` | string | Interval as a canonical duration string (e.g. `"5m"`, `"2h"`, `"1d"`, `"1w"`); minimum 60s. Legacy preset names accepted as on create. |
 | `thread_id` | string | Thread for autonomous output |
 | `clear_schedule` | bool | Remove schedule if `true` |
 | `clear_recurrence` | bool | Remove recurrence if `true` |

@@ -90,12 +90,15 @@ def test_todo_crud_routes_filter_reschedule_and_sync_schedule_db(
     assert invalid_filter.status_code == 400
     assert invalid_filter.json()["detail"] == "Invalid status filter 'bogus'"
 
+    # Legacy "daily" alias is stored in canonical form ("1d").
+    assert body["recurrence"] == "1d"
+
     completed = client.post(f"/todos/{todo_id}/complete", headers=headers)
     assert completed.status_code == 200
     completed_body = completed.json()
     assert completed_body["id"] == todo_id
     assert completed_body["status"] == "pending"
-    assert completed_body["recurrence"] == "daily"
+    assert completed_body["recurrence"] == "1d"
     assert completed_body["scheduled_for"] is not None
     assert completed_body["last_execution"] is not None
     assert _scheduled_row_count(tmp_path, todo_id) == 1
@@ -104,6 +107,40 @@ def test_todo_crud_routes_filter_reschedule_and_sync_schedule_db(
     assert deleted.status_code == 200
     assert deleted.json() == {"status": "ok", "deleted_id": todo_id}
     assert _scheduled_row_count(tmp_path, todo_id) == 0
+
+
+def test_todo_routes_accept_arbitrary_recurrence_interval(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    created = client.post(
+        "/todos",
+        headers=headers,
+        json={
+            "task": "Custom cadence",
+            "scheduled_for": "30m",
+            "recurrence": "2h",
+            "thread_id": "thread-1",
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["recurrence"] == "2h"
+
+    too_short = client.post(
+        "/todos",
+        headers=headers,
+        json={
+            "task": "Too fast",
+            "scheduled_for": "30m",
+            "recurrence": "30s",
+        },
+    )
+    assert too_short.status_code == 400
+    assert "60" in too_short.json()["detail"]
 
 
 def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
