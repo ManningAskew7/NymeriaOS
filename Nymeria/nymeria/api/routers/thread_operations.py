@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ..schemas.thread_operations import (
+    AttachmentLimits,
+    AttachmentLimitsResponse,
     AttachmentValidationRequest,
     AttachmentValidationResponse,
 )
@@ -203,7 +205,10 @@ def create_thread_operations_router(
         be denied.
         """
         require_thread_access_fn(user, thread_id)
-        from ...config.model_capabilities import evaluate_attachment_compatibility
+        from ...config.model_capabilities import (
+            evaluate_attachment_compatibility,
+            get_attachment_limits,
+        )
 
         agent = get_agent_fn()
         llm_cfg = agent._get_llm_config_for_thread(thread_id)
@@ -225,6 +230,7 @@ def create_thread_operations_router(
             effective_provider,
             attachments,
         )
+        limits = get_attachment_limits(effective_model)
 
         return AttachmentValidationResponse(
             compatible=bool(report["compatible"]),
@@ -235,6 +241,37 @@ def create_thread_operations_router(
             unsupported_modalities=list(report["unsupported_modalities"]),
             warnings=list(report["warnings"]),
             can_force_send=True,
+            limits=AttachmentLimits(**limits),
+        )
+
+    @router.get(
+        "/threads/{thread_id}/attachment_limits",
+        response_model=AttachmentLimitsResponse,
+    )
+    async def get_thread_attachment_limits(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Return per-model attachment caps for this thread's effective model.
+
+        Frontend polls this on thread/model change to drive the input bar's
+        slot counter ("12 / 100 images") and pre-flight oversize rejection.
+        Effective model is resolved against thread-level overrides so a thread
+        routed to a different provider gets the correct numbers.
+        """
+        require_thread_access_fn(user, thread_id)
+        from ...config.model_capabilities import get_attachment_limits
+
+        agent = get_agent_fn()
+        llm_cfg = agent._get_llm_config_for_thread(thread_id)
+        effective_provider = llm_cfg.provider or agent.settings.llm_provider
+        effective_model = llm_cfg.model or agent.settings.llm_model
+
+        limits = get_attachment_limits(effective_model)
+        return AttachmentLimitsResponse(
+            effective_provider=effective_provider,
+            effective_model=effective_model,
+            limits=AttachmentLimits(**limits),
         )
 
     @router.post("/threads/{thread_id}/compact")

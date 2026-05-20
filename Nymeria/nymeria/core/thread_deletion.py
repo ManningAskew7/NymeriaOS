@@ -108,6 +108,7 @@ def cascade_delete_thread(
         _delete_triggers(agent, settings.data_dir, thread_id, result)
         _delete_chat_resources(agent, thread_id, result)
         _delete_activity_and_notifications(settings.data_dir, thread_id, result)
+        _delete_attachments(thread_id, result)
         _delete_in_memory_state(agent, thread_id, result)
     finally:
         agent._thread_locks.clear_lock_info(thread_id)
@@ -253,6 +254,16 @@ def _delete_activity_and_notifications(
         result.set("fcm_filters_updated", remove_thread_from_tokens(str(data_dir), thread_id))
     except Exception as e:
         result.warn(f"FCM filter cleanup failed: {e}")
+
+
+def _delete_attachments(thread_id: str, result: ThreadDeletionResult) -> None:
+    """Remove the per-thread sandbox directory + extracted text + meta files."""
+    try:
+        from .attachment_sandbox import cleanup_thread_attachments
+
+        result.set("attachment_files_deleted", cleanup_thread_attachments(thread_id))
+    except Exception as e:
+        result.warn(f"attachment cleanup failed: {e}")
 
 
 def _delete_in_memory_state(agent: "NymeriaAgent", thread_id: str, result: ThreadDeletionResult) -> None:

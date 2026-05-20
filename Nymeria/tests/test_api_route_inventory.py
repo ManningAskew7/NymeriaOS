@@ -158,6 +158,7 @@ EXPECTED_ROUTES = [
     ('/threads/import', ('POST',)),
     ('/threads/metadata/migrate', ('POST',)),
     ('/threads/{thread_id}', ('DELETE',)),
+    ('/threads/{thread_id}/attachment_limits', ('GET',)),
     ('/threads/{thread_id}/attachments/validate', ('POST',)),
     ('/threads/{thread_id}/branch', ('POST',)),
     ('/threads/{thread_id}/callable-tools', ('GET',)),

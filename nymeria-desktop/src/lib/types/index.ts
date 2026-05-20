@@ -29,6 +29,23 @@ export interface WorkspaceArtifact {
   sizeBytes: number;
 }
 
+// Per-model attachment caps surfaced by GET /threads/{id}/attachment_limits.
+// Backend returns null for limits the underlying provider doesn't publish
+// (e.g. OpenAI doesn't document a per-PDF page cap). Frontend treats null as
+// "no cap" and only the local MAX_SIZE ceiling still applies.
+export interface AttachmentLimits {
+  max_images_per_request: number | null;
+  max_image_bytes: number | null;
+  max_pdf_pages: number | null;
+  max_total_bytes: number | null;
+}
+
+export interface AttachmentLimitsResponse {
+  effective_provider: string;
+  effective_model: string;
+  limits: AttachmentLimits;
+}
+
 
 // Tool call types (defined early so MessageStep can reference ToolCallStatus)
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
