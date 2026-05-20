@@ -16,11 +16,15 @@ The flow is described in ``nymeria/core/auth_prompt_coordinator.py``.
 
 Fire-and-forget contract (Phase 11): this tool returns IMMEDIATELY with
 ``status="dispatched"``. The agent does not block waiting for the user.
-When the user completes (or cancels, or the prompt times out), the
-coordinator's future resolves, a background callback formats a one-line
-summary, and ``credential_prompt_injector.schedule_resolution_turn``
-starts a fresh agent turn whose prompt is that summary. The agent reads
-the summary in its next turn and decides what to do next.
+
+When the user submits the prompt the credential lands in the vault and the
+coordinator's future resolves. The future's done-callback runs the bind
+side-effects (e.g. add_allowed_target + bind_credential +
+mcp_manager.shutdown_server when ``bind_target`` was set) and then exits.
+**No automatic follow-up turn fires.** The user drives the next step:
+either by retrying their original request ("ok, try that again") or by
+copying any inline error from the modal back into the chat. This keeps
+the user in control and avoids surprise turns firing in the background.
 
 Because the tool no longer awaits, it can safely be called alongside
 other tool calls in a parallel batch.
@@ -45,10 +49,6 @@ from ..core.auth_prompt_coordinator import (
     new_prompt_id,
     new_prompt_token,
     prompt_expires_at,
-)
-from ..core.credential_prompt_injector import (
-    format_resolution_message,
-    schedule_resolution_turn,
 )
 from ..core.credential_vault import get_credential_vault_repo
 from ..core.event_bus import publish_autonomous_event
@@ -460,9 +460,10 @@ async def request_credential(
 
     dispatched_message = (
         f"Sent the user an in-chat prompt to connect {label_display}. "
-        "I'll be notified when they finish (or skip), at which point a fresh "
-        "turn will fire with the result. Until then I can keep going on other "
-        "work or wait for them."
+        "Tell the user a prompt is on screen and ask them to ping you "
+        "(e.g. 'done' or 'try again') once they have finished or paste "
+        "any error back into chat. No automatic turn will fire when they "
+        "save, the user drives the next step."
     )
     return _json(
         {
@@ -486,13 +487,20 @@ def _make_resolution_callback(
     user_id: str,
     bind_target: Optional[str] = None,
 ):
-    """Build the future done-callback that formats the resolution and
-    schedules a follow-up agent turn.
+    """Build the future done-callback that runs post-save side effects.
+
+    No follow-up agent turn fires here. The user drives the next step in
+    chat (e.g. "ok, try again now"), so this callback only:
+
+    * cancels any device-code poller still spinning
+    * runs ``_apply_bind_target`` when status=active and bind_target was set,
+      so the MCP env-var resolution path picks up the new credential
+    * logs the resolution for audit
 
     The callback runs synchronously on the loop where the future was
-    resolved (the agent's loop). It must not block; all I/O and the
-    actual ``agent.astream`` call happen inside the task scheduled by
-    ``schedule_resolution_turn``.
+    resolved (typically the agent's loop). It must not block for long;
+    the bind side-effects do a small vault update + best-effort MCP
+    connection shutdown, no network I/O.
     """
 
     def _on_resolved(fut: "asyncio.Future") -> None:
@@ -523,14 +531,6 @@ def _make_resolution_callback(
             result = fut.result() or {}
             status = str(result.get("status") or ("active" if result.get("ok") else "error"))
 
-            logger.info(
-                "credential_prompt resolved prompt=%s provider=%s status=%s bind_target=%s",
-                prompt_id,
-                provider,
-                status,
-                bind_target or "-",
-            )
-
             bind_outcome: Optional[str] = None
             if bind_target and status == "active":
                 bind_outcome = _apply_bind_target(
@@ -539,16 +539,15 @@ def _make_resolution_callback(
                     actor_user_id=user_id,
                 )
 
-            message = format_resolution_message(
-                provider=provider,
-                credential_id=credential_id,
-                payload=result,
-                bind_outcome=bind_outcome,
-            )
-            schedule_resolution_turn(
-                thread_id=thread_id,
-                user_id=user_id,
-                message=message,
+            logger.info(
+                "credential_prompt resolved prompt=%s provider=%s status=%s "
+                "bind_target=%s bind_outcome=%s thread=%s",
+                prompt_id,
+                provider,
+                status,
+                bind_target or "-",
+                bind_outcome or "-",
+                thread_id,
             )
         except Exception:
             # The callback runs in user-invisible context; never let an

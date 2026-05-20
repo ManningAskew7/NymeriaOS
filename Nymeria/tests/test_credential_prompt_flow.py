@@ -4,18 +4,21 @@ AuthPromptCoordinator's futures are shared between the tool call and the
 HTTP endpoint — which matches production (single API container).
 
 Post-Phase-11 contract: ``request_credential`` is fire-and-forget. The tool
-returns ``status="dispatched"`` immediately, and the future's done-callback
-formats a resolution summary that goes through
-``credential_prompt_injector.schedule_resolution_turn``. Tests stub the
-injector so they assert on the captured summary rather than waiting for a
-real agent turn."""
+returns ``status="dispatched"`` immediately. When the user submits/cancels/
+exits the modal, the coordinator's future resolves and a small done-callback
+runs (cancels device-code poller, applies bind_target if set), but **no
+follow-up agent turn fires**. The user drives the next step in chat.
+
+Tests therefore assert on observable backend state (vault row presence and
+status, coordinator entries, bind side-effects) rather than on a captured
+resolution message."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -28,41 +31,6 @@ from nymeria.core.auth_prompt_coordinator import get_auth_prompt_coordinator
 from nymeria.core.credential_vault import CredentialVaultRepo
 from nymeria.tools.credential_prompt import request_credential
 from nymeria.triggers import api as api_module
-
-
-@dataclass
-class _CapturedResolution:
-    """Container shared between tests and the stubbed injector."""
-
-    messages: list[str] = field(default_factory=list)
-    thread_ids: list[str] = field(default_factory=list)
-    user_ids: list[str] = field(default_factory=list)
-
-    @property
-    def last(self) -> str:
-        assert self.messages, "no resolution messages captured"
-        return self.messages[-1]
-
-
-def _patch_injector(monkeypatch) -> _CapturedResolution:
-    """Stub ``schedule_resolution_turn`` so the future's done-callback
-    doesn't need a live agent. Returns a capture object the test asserts on."""
-    cap = _CapturedResolution()
-
-    def fake_schedule(*, thread_id: str, user_id: str, message: str) -> None:
-        cap.messages.append(message)
-        cap.thread_ids.append(thread_id)
-        cap.user_ids.append(user_id)
-
-    # Patch the symbol the tool actually calls, not the source module --
-    # ``request_credential`` imports ``schedule_resolution_turn`` at module
-    # load time, so the bound name in ``credential_prompt`` is the one that
-    # matters.
-    monkeypatch.setattr(
-        "nymeria.tools.credential_prompt.schedule_resolution_turn",
-        fake_schedule,
-    )
-    return cap
 
 
 @dataclass
@@ -194,11 +162,20 @@ async def _call_tool_with(provider: str, **extra) -> dict:
 # ---------- scenarios ----------
 
 
-def test_dispatch_then_active_submit(env, monkeypatch):
-    """Tool returns ``dispatched`` immediately; submitting via HTTP fires
-    the done-callback which formats a ``status=active`` resolution summary."""
+def _vault_record_for(env, provider: str):
+    _, agent, _ = env
+    records = [
+        r for r in agent.credential_vault.list_credentials(owner_user_id="default")
+        if (r.provider or "").lower() == provider.lower()
+    ]
+    assert records, f"no vault record for provider={provider}"
+    return records[0]
+
+
+def test_dispatch_then_active_submit(env):
+    """Tool returns ``dispatched`` immediately; submitting via HTTP marks
+    the vault credential active and removes the prompt from the coordinator."""
     client, agent, token = env
-    captured = _patch_injector(monkeypatch)
 
     async def run():
         # Tool returns immediately with status="dispatched"
@@ -208,7 +185,6 @@ def test_dispatch_then_active_submit(env, monkeypatch):
         assert dispatched["credential_id"]
         assert dispatched["prompt_id"]
 
-        # Submit the secret via HTTP -> coordinator.resolve -> done-callback fires
         pid = await _pid_for("happy")
         resp = client.post(
             f"/credential-prompts/{pid}/submit",
@@ -219,27 +195,22 @@ def test_dispatch_then_active_submit(env, monkeypatch):
         body = resp.json()
         assert body["ok"] is True
         assert body["status"] == "active"
-        # Give the event loop one tick to drain the done-callback
         await asyncio.sleep(0)
-        return dispatched
+        return pid
 
-    dispatched = asyncio.run(run())
-    assert dispatched["credential_id"]
-    # The resolution callback formatted a single-line summary marking active
-    assert captured.messages, "resolution callback did not fire"
-    assert "status=active" in captured.last
-    assert "provider=happy" in captured.last
-    # thread_id propagates through the tool's RunnableConfig; LangChain
-    # may normalize it, so just verify it's present and non-empty.
-    assert captured.thread_ids and captured.thread_ids[0]
-    assert captured.user_ids == ["default"]
+    pid = asyncio.run(run())
+    # Vault record exists and is active.
+    record = _vault_record_for(env, "happy")
+    assert record.status == "active"
+    # Prompt no longer pending in the coordinator (resolve pops it).
+    assert get_auth_prompt_coordinator().get(pid) is None
 
 
-def test_hosted_prompt_token_flow(env, monkeypatch):
-    """Browser submits the hosted form, future resolves to active, the
-    summary lands with status=active and user_message='done in browser'."""
+def test_hosted_prompt_token_flow(env):
+    """Browser-only token flow: the hosted-form bearer token grants access
+    to the prompt metadata + test + submit endpoints; submit lands the
+    credential in the vault and clears the coordinator entry."""
     client, _, _ = env
-    captured = _patch_injector(monkeypatch)
 
     async def run():
         dispatched = await _call_tool("hosted")
@@ -293,20 +264,18 @@ def test_hosted_prompt_token_flow(env, monkeypatch):
         assert submit_body["ok"] is True
         assert submit_body["status"] == "active"
         await asyncio.sleep(0)
-        return dispatched
+        return pid
 
-    asyncio.run(run())
-    assert captured.messages
-    assert "status=active" in captured.last
-    assert "user_message=" in captured.last
-    assert "done in browser" in captured.last
+    pid = asyncio.run(run())
+    record = _vault_record_for(env, "hosted")
+    assert record.status == "active"
+    assert get_auth_prompt_coordinator().get(pid) is None
 
 
-def test_inline_retry_after_test_failure(env, monkeypatch):
-    """Repeated test failures bump attempts; final active resolution carries
-    the failure count through to the summary."""
+def test_inline_retry_after_test_failure(env):
+    """A failed test followed by a successful submit increments attempts
+    on the coordinator and ultimately marks the credential active."""
     client, _, token = env
-    captured = _patch_injector(monkeypatch)
 
     async def run():
         dispatched = await _call_tool("retry")
@@ -335,16 +304,14 @@ def test_inline_retry_after_test_failure(env, monkeypatch):
         await asyncio.sleep(0)
 
     asyncio.run(run())
-    assert captured.messages
-    assert "status=active" in captured.last
-    assert "attempts=1" in captured.last
+    record = _vault_record_for(env, "retry")
+    assert record.status == "active"
 
 
-def test_exit_returns_user_exited_with_last_error(env, monkeypatch):
-    """Modal dismiss without saving resolves with user_exited and preserves
-    the last test error + user note in the resolution summary."""
+def test_exit_returns_user_exited_with_last_error(env):
+    """Modal dismiss without saving leaves the credential in pending_setup
+    and removes the prompt from the coordinator."""
     client, _, token = env
-    captured = _patch_injector(monkeypatch)
 
     async def run():
         dispatched = await _call_tool("exit")
@@ -362,18 +329,19 @@ def test_exit_returns_user_exited_with_last_error(env, monkeypatch):
         )
         assert resp.status_code == 200
         await asyncio.sleep(0)
+        return pid
 
-    asyncio.run(run())
-    assert captured.messages
-    assert "status=user_exited" in captured.last
-    assert "Invalid scope" in captured.last
-    assert "I'll find it later" in captured.last
+    pid = asyncio.run(run())
+    record = _vault_record_for(env, "exit")
+    # Vault row stays in pending_setup so the user can resume later.
+    assert record.status == "pending_setup"
+    assert get_auth_prompt_coordinator().get(pid) is None
 
 
-def test_cancel_returns_cancelled(env, monkeypatch):
-    """Cancel button resolves the prompt with status=cancelled."""
+def test_cancel_returns_cancelled(env):
+    """Cancel button removes the prompt from the coordinator and leaves
+    the placeholder credential in pending_setup."""
     client, _, token = env
-    captured = _patch_injector(monkeypatch)
 
     async def run():
         dispatched = await _call_tool("cancel")
@@ -386,10 +354,12 @@ def test_cancel_returns_cancelled(env, monkeypatch):
         )
         assert resp.status_code == 200
         await asyncio.sleep(0)
+        return pid
 
-    asyncio.run(run())
-    assert captured.messages
-    assert "status=cancelled" in captured.last
+    pid = asyncio.run(run())
+    record = _vault_record_for(env, "cancel")
+    assert record.status == "pending_setup"
+    assert get_auth_prompt_coordinator().get(pid) is None
 
 
 def test_chat_message_resolves_pending_auth_prompt(env):
@@ -439,10 +409,9 @@ def test_chat_message_resolves_pending_auth_prompt(env):
         thread.join(timeout=2)
 
 
-def test_tool_dispatches_immediately(env, monkeypatch):
+def test_tool_dispatches_immediately(env):
     """Sanity check: the tool returns within milliseconds even with a long
     timeout, because there is no longer any await on the future."""
-    _patch_injector(monkeypatch)
 
     async def run():
         # 270s would have wedged the old blocking contract for 4+ minutes.
@@ -454,12 +423,10 @@ def test_tool_dispatches_immediately(env, monkeypatch):
     asyncio.run(run())
 
 
-def test_cross_user_submit_is_404(env, monkeypatch):
+def test_cross_user_submit_is_404(env):
     """A user authenticated as someone else can't resolve another user's
-    prompt. After the legitimate owner cancels, the resolution summary
-    still surfaces with status=cancelled."""
+    prompt. The legitimate owner can still cancel."""
     client, agent, token = env
-    captured = _patch_injector(monkeypatch)
     agent.accounts_repo.create_user("intruder", "x@example.com", "X", role="user")
     intruder_token = agent.accounts_repo.issue_token("intruder")
 
@@ -475,13 +442,13 @@ def test_cross_user_submit_is_404(env, monkeypatch):
             json={"secret_fields": {"value": "evil"}},
         )
         assert resp.status_code == 404
-        # Owner cancels normally so the future resolves and the callback fires.
+        # Owner cancels normally so the future resolves.
         client.post(f"/credential-prompts/{pid}/cancel", headers=_auth(token))
         await asyncio.sleep(0)
+        return pid
 
-    asyncio.run(run())
-    assert captured.messages
-    assert "status=cancelled" in captured.last
+    pid = asyncio.run(run())
+    assert get_auth_prompt_coordinator().get(pid) is None
 
 
 # ---------- Phase 11 additions: instructions + bind_target ----------
@@ -490,8 +457,6 @@ def test_cross_user_submit_is_404(env, monkeypatch):
 def test_instructions_arg_lands_in_auth_prompt_event(env, monkeypatch):
     """The new ``instructions`` arg flows into the auth_prompt SSE payload
     so the desktop modal can render it as a callout above the form."""
-    _patch_injector(monkeypatch)
-
     captured_events: list[dict] = []
     import nymeria.tools.credential_prompt as cp_mod
 
@@ -525,10 +490,9 @@ def test_instructions_arg_lands_in_auth_prompt_event(env, monkeypatch):
     assert event["instructions"] == instructions_text
 
 
-def test_bind_target_invalid_format_returns_early(env, monkeypatch):
+def test_bind_target_invalid_format_returns_early(env):
     """Malformed bind_target rejects before any prompt is created so the
     coordinator never sees a registration for the bad call."""
-    _patch_injector(monkeypatch)
 
     async def run():
         result = await _call_tool_with("badbind", bind_target="not::a::valid:target")
@@ -545,10 +509,9 @@ def test_bind_target_invalid_format_returns_early(env, monkeypatch):
 
 def test_bind_target_mcp_server_binds_and_restarts(env, monkeypatch):
     """Successful submit with bind_target=mcp_server:<id> triggers
-    add_allowed_target + bind_credential + shutdown_server, and the
-    resolution summary mentions the restart outcome."""
+    add_allowed_target + bind_credential + shutdown_server. No follow-up
+    agent turn is expected: the user prompts the agent in chat to retry."""
     client, _, token = env
-    captured = _patch_injector(monkeypatch)
 
     bind_calls: list[tuple[str, str, str]] = []
     shutdown_calls: list[str] = []
@@ -609,7 +572,8 @@ def test_bind_target_mcp_server_binds_and_restarts(env, monkeypatch):
     assert bind_call[2] == "mcp_server:resend-mcp"
     assert shutdown_calls == ["resend-mcp"]
 
-    assert captured.messages
-    assert "status=active" in captured.last
-    assert "bind=" in captured.last
-    assert "resend-mcp" in captured.last
+    # Credential is active and bound. No resolution turn is queued in the
+    # new contract, the user prompts the agent in chat to retry.
+    record = _vault_record_for(env, "resend")
+    assert record.status == "active"
+    assert "mcp_server:resend-mcp" in (record.allowed_targets or [])
