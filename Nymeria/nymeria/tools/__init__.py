@@ -1361,8 +1361,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SEARCH_MCP_TOOLS
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
-    + AUTH_MANAGER_TOOLS
-    + REQUEST_CREDENTIAL_TOOLS
     + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
     + SKILL_KIT_CREATE_TOOLS
@@ -1508,6 +1506,10 @@ ALL_TOOLS = [
     notify,
     # Core command-service bridge
     slash_command,
+    # Credential management — default so the agent can always prompt the user
+    # for API keys and OAuth tokens without requiring the tool to be pre-enabled.
+    auth_manager,
+    request_credential,
 ]
 
 __all__ = [
