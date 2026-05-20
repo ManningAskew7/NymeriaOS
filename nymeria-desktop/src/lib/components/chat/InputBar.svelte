@@ -388,6 +388,27 @@
   {/if}
 
   <div class="input-bar">
+    {#if filesEnabled}
+      <input
+        bind:this={fileInputRef}
+        type="file"
+        accept={getSupportedFileExtensions()}
+        multiple
+        class="file-input-hidden"
+        onchange={handleFileSelect}
+      />
+      <button
+        type="button"
+        class="plus-btn"
+        onclick={openFilePicker}
+        disabled={disabled || isStreaming || pendingFiles.length >= FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE}
+        title="Attach files"
+        aria-label="Attach files"
+      >
+        <Icon name="plus" size={18} />
+      </button>
+    {/if}
+
     <textarea
       bind:this={textareaRef}
       bind:value={inputValue}
@@ -400,45 +421,30 @@
       class="message-input"
     ></textarea>
 
-    {#if filesEnabled}
-      <input
-        bind:this={fileInputRef}
-        type="file"
-        accept={getSupportedFileExtensions()}
-        multiple
-        class="file-input-hidden"
-        onchange={handleFileSelect}
-      />
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={openFilePicker}
-        disabled={disabled || isStreaming || pendingFiles.length >= FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE}
-        title="Attach files"
-      >
-        <Icon name="paperclip" size={18} />
-      </Button>
-    {/if}
-
     {#if isStreaming}
-      <Button
-        variant="danger"
-        size="md"
+      <button
+        type="button"
+        class="plus-btn danger"
         onclick={handleStopClick}
         title="Stop the current turn"
+        aria-label="Stop"
       >
         <Icon name="stop" size={14} />
-      </Button>
+      </button>
     {/if}
-    <Button
-      variant="primary"
-      size="md"
+    <button
+      type="button"
+      class="send-btn"
       onclick={handleSendClick}
       disabled={!canSend}
       title={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
+      aria-label="Send"
     >
-      <Icon name="send" size={18} />
-    </Button>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="12" y1="19" x2="12" y2="5" />
+        <polyline points="5 12 12 5 19 12" />
+      </svg>
+    </button>
   </div>
 
   {#if isDragOver}
@@ -461,17 +467,14 @@
 <style>
   .input-container {
     position: relative;
-    background: var(--glass-bg-strong);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--glass-border);
+    background: var(--bg-elevated-2);
+    border-radius: 18px;
+    border: 1px solid var(--border-subtle);
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 
   .input-container:focus-within {
-    border-color: var(--accent-primary);
-    box-shadow: var(--accent-glow-sm);
+    border-color: var(--border-default);
   }
 
   .input-container.drag-over {
@@ -481,9 +484,111 @@
 
   .input-bar {
     display: flex;
-    align-items: flex-end;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm);
+    align-items: center;
+    gap: 6px;
+    padding: 10px 10px;
+  }
+
+  .plus-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .plus-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .plus-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .plus-btn.danger {
+    color: var(--error);
+  }
+
+  .plus-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 15%, transparent);
+  }
+
+  .pill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .pill-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .pill-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .pill-btn.danger {
+    color: var(--error);
+  }
+
+  .pill-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 15%, transparent);
+    color: var(--error);
+  }
+
+  .send-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: var(--accent-primary);
+    color: #0a1417;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+  }
+
+  .send-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+    box-shadow: 0 0 12px rgba(95, 184, 204, 0.3);
+  }
+
+  .send-btn:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+
+  .send-btn:disabled {
+    background: var(--bg-active);
+    color: var(--text-secondary);
+    border-color: var(--border-subtle);
+    cursor: not-allowed;
+    opacity: 1;
   }
 
   .command-palette {
@@ -549,9 +654,10 @@
 
   .message-input {
     flex: 1;
-    min-height: 24px;
-    max-height: 200px;
-    padding: var(--spacing-sm);
+    min-width: 0;
+    min-height: 22px;
+    max-height: 160px;
+    padding: 4px 6px;
     background: transparent;
     border: none;
     color: var(--text-primary);
@@ -626,10 +732,11 @@
   }
 
   .hint {
-    margin: var(--spacing-xs) 0 0 0;
+    margin: 18px 0 0 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     text-align: right;
+    opacity: 0.75;
   }
 
   kbd {

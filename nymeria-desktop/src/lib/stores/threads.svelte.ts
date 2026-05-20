@@ -494,7 +494,20 @@ function createThreadsStore() {
       if (threads.some((t) => t.id === id)) {
         currentThreadId = id;
         saveCurrentThreadId(currentThreadId);
+        // Clear unread flag without bumping updatedAt (preserves sort order)
+        const target = threads.find((t) => t.id === id);
+        if (target?.unread) {
+          threads = threads.map((t) => (t.id === id ? { ...t, unread: false } : t));
+          saveThreads(threads);
+        }
       }
+    },
+
+    markThreadUnread(id: string) {
+      const target = threads.find((t) => t.id === id);
+      if (!target || target.unread) return;
+      threads = threads.map((t) => (t.id === id ? { ...t, unread: true } : t));
+      saveThreads(threads);
     },
 
     updateThread(id: string, updates: Partial<Omit<Thread, 'id' | 'createdAt'>>) {

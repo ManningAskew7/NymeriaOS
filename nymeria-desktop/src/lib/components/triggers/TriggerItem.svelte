@@ -304,12 +304,6 @@
     {/if}
   {/if}
 
-  <!-- Source summary always visible -->
-  <div class="source-summary">
-    <span class="summary-label">Source</span>
-    <span class="summary-value">{sourceSummary}</span>
-  </div>
-
   <!-- Meta stats -->
   <div class="meta-row">
     <span class="meta-item" title={healthLabel}>
@@ -352,6 +346,10 @@
   <!-- Expanded details -->
   {#if expanded && hasDetails}
     <div class="details">
+      <div class="source-summary">
+        <span class="summary-label">Source</span>
+        <span class="summary-value">{sourceSummary}</span>
+      </div>
       {#if actionTemplate}
         <div class="detail-block">
           <div class="detail-label">
@@ -444,9 +442,9 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px 10px 14px;
-    background: var(--bg-elevated-2);
+    gap: 9px;
+    padding: 12px 14px 12px 16px;
+    background: var(--bg-elevated);
     border: 1px solid var(--border-subtle, var(--border-default));
     border-radius: var(--radius-md);
     overflow: hidden;
@@ -531,13 +529,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
   }
 
   .title-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -546,7 +544,7 @@
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.005em;
-    line-height: 1.25;
+    line-height: 1.4;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -565,8 +563,8 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.1);
+    color: var(--text-muted);
+    background: var(--bg-elevated);
     border-radius: var(--radius-full);
     line-height: 1.45;
   }
@@ -574,11 +572,11 @@
   .subtitle-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
     font-size: 11px;
     color: var(--text-muted);
-    line-height: 1.3;
+    line-height: 1.5;
   }
 
   .action-kind {
@@ -651,9 +649,9 @@
     max-width: 100%;
     font-size: 11px;
     font-weight: 500;
-    color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.08);
-    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-full);
     cursor: default;
     transition: all var(--transition-fast);
@@ -664,8 +662,9 @@
   }
 
   .thread-pill.clickable:hover {
-    background: rgba(var(--accent-primary-rgb), 0.16);
-    border-color: rgba(var(--accent-primary-rgb), 0.4);
+    background: var(--bg-hover);
+    border-color: var(--border-default);
+    color: var(--text-primary);
   }
 
   .thread-name {
@@ -715,10 +714,10 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 5px;
+    gap: 7px;
     font-size: 11px;
     color: var(--text-muted);
-    line-height: 1.3;
+    line-height: 1.4;
   }
 
   .meta-item {

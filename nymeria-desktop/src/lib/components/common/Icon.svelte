@@ -10,6 +10,7 @@
   // SVG path data for common icons
   const icons: Record<string, string> = {
     send: 'M2.01 21L23 12 2.01 3 2 10l15 2-15 2z',
+    arrowUp: 'M12 4 L19 11 L13.5 11 L13.5 20 L10.5 20 L10.5 11 L5 11 Z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
     chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
     settings:

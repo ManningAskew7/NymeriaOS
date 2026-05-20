@@ -686,6 +686,11 @@ function createAutonomousStore() {
         }
         refreshThreadTaskCounts();
 
+        // Mark thread as unread if Nymeria finished work on a thread the user isn't viewing
+        if (!isCurrentThread && !event.error) {
+          threadsStore.markThreadUnread(event.thread_id);
+        }
+
         if (
           isCurrentThread &&
           isOurTask &&

@@ -250,12 +250,12 @@
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-sm);
-    padding: 10px var(--spacing-sm) 10px 12px;
+    padding: 12px var(--spacing-md) 12px 14px;
     border-radius: var(--radius-md);
     transition: background var(--transition-fast), border-color var(--transition-fast);
     width: 100%;
     text-align: left;
-    background: var(--bg-elevated-2);
+    background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     cursor: default;
     font-family: inherit;
@@ -384,7 +384,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
   }
 
   .todo-header {
@@ -423,11 +423,11 @@
   .todo-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
     font-size: 11px;
     color: var(--text-muted);
-    line-height: 1.3;
+    line-height: 1.5;
   }
 
   .meta-thread {

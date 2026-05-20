@@ -156,10 +156,10 @@
   }
 
   .tab-btn.active {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.08);
-    box-shadow: var(--accent-glow-sm);
+    color: var(--text-primary);
+    border-color: var(--border-default);
+    background: var(--bg-elevated-2);
+    box-shadow: none;
   }
 
   .panel-body {
@@ -189,9 +189,9 @@
     height: 20px;
     padding: 0 6px;
     font-size: 11px;
-    font-weight: 600;
-    background: var(--accent-primary);
-    color: var(--bg-base);
+    font-weight: 500;
+    background: transparent;
+    color: var(--text-muted);
     border-radius: var(--radius-full);
   }
 
@@ -207,6 +207,7 @@
     flex-direction: column;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .activity-header {

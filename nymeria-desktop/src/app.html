@@ -5,6 +5,24 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nymeria</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Geist:wght@100..900&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Apply persisted font choice before app loads (testing-only override)
+      try {
+        var f = localStorage.getItem('nymeria_font_family');
+        if (f) document.documentElement.style.setProperty('--font-sans', f);
+      } catch (e) {}
+      // Apply persisted chat-bubble preference
+      try {
+        var b = localStorage.getItem('nymeria_chat_bubbles');
+        if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
+      } catch (e) {}
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

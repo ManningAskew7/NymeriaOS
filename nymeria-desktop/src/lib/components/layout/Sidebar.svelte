@@ -78,12 +78,14 @@
     {#if !isCollapsed}
       <div class="brand">
         <img src="/wolfhead-transparent.png" alt="" class="brand-mark" />
-        <h1 class="logo">Nymeria</h1>
+        <h1 class="logo">Nymeria<span class="logo-os">OS</span></h1>
       </div>
-      <Button variant="primary" size="sm" onclick={handleNewChat}>
-        <Icon name="plus" size={16} />
-        New Thread
-      </Button>
+      <span class="new-thread-wrap">
+        <Button variant="primary" size="sm" onclick={handleNewChat}>
+          <Icon name="plus" size={14} />
+          <span class="new-thread-label">New Thread</span>
+        </Button>
+      </span>
     {:else}
       <button
         class="icon-btn"
@@ -104,23 +106,43 @@
   {/if}
 
   <div class="sidebar-footer" class:collapsed={isCollapsed}>
-    <div class="notification-wrapper" bind:this={notificationWrapper}>
-      {#if !isCollapsed}
-        <button
-          class="footer-btn"
-          class:has-unread={notificationStore.unreadCount > 0}
-          type="button"
-          onclick={toggleNotifications}
-          aria-haspopup="dialog"
-          aria-expanded={showNotifications}
-        >
-          <Icon name="bell" size={18} />
-          Notifications
-          {#if notificationStore.unreadCount > 0}
-            <span class="notification-badge">{notificationStore.unreadCount}</span>
-          {/if}
-        </button>
-      {:else}
+    {#if !isCollapsed}
+      <div class="footer-row">
+        <div class="footer-account">
+          <AccountBadge onOpenSettings={openSettings} />
+        </div>
+        <div class="footer-tools">
+          <div class="notification-wrapper" bind:this={notificationWrapper}>
+            <button
+              class="footer-icon-btn"
+              class:has-unread={notificationStore.unreadCount > 0}
+              type="button"
+              onclick={toggleNotifications}
+              title="Notifications"
+              aria-label="Notifications"
+              aria-haspopup="dialog"
+              aria-expanded={showNotifications}
+            >
+              <Icon name="bell" size={16} />
+              {#if notificationStore.unreadCount > 0}
+                <span class="notification-badge-collapsed">{notificationStore.unreadCount}</span>
+              {/if}
+            </button>
+            <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
+          </div>
+          <button
+            class="footer-icon-btn"
+            type="button"
+            onclick={() => openSettings()}
+            title="Settings"
+            aria-label="Settings"
+          >
+            <Icon name="settings" size={16} />
+          </button>
+        </div>
+      </div>
+    {:else}
+      <div class="notification-wrapper" bind:this={notificationWrapper}>
         <button
           class="icon-btn"
           class:has-unread={notificationStore.unreadCount > 0}
@@ -136,16 +158,9 @@
             <span class="notification-badge-collapsed">{notificationStore.unreadCount}</span>
           {/if}
         </button>
-      {/if}
-      <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
-    </div>
-    <AccountBadge onOpenSettings={openSettings} />
-    {#if !isCollapsed}
-      <button class="footer-btn" type="button" onclick={() => openSettings()}>
-        <Icon name="settings" size={18} />
-        Settings
-      </button>
-    {:else}
+        <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
+      </div>
+      <AccountBadge onOpenSettings={openSettings} />
       <button
         class="icon-btn"
         type="button"
@@ -181,7 +196,6 @@
     justify-content: space-between;
     gap: var(--spacing-md);
     padding: var(--spacing-md);
-    border-bottom: 1px solid var(--glass-border);
   }
 
   .sidebar-header.collapsed {
@@ -209,12 +223,29 @@
   }
 
   .logo {
+    font-family: var(--font-logo);
     font-size: var(--font-size-xl);
     font-weight: 700;
     color: var(--accent-primary);
     margin: 0;
     letter-spacing: -0.02em;
     text-shadow: 0 0 20px rgba(34, 211, 238, 0.2);
+  }
+
+  .logo-os {
+    color: var(--accent-primary);
+    font-weight: 300;
+    text-shadow: none;
+  }
+
+  .new-thread-wrap :global(.btn) {
+    padding: 4px 10px;
+    font-size: 12px;
+    gap: 5px;
+  }
+
+  .new-thread-wrap :global(.new-thread-label) {
+    transform: translateY(-1px);
   }
 
   .threads-container {
@@ -224,7 +255,7 @@
   }
 
   .sidebar-footer {
-    padding: calc(var(--spacing-md) + 5px) var(--spacing-md) var(--spacing-md);
+    padding: var(--spacing-md) var(--spacing-md) var(--spacing-md);
     border-top: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;
@@ -246,10 +277,54 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md) var(--spacing-sm) var(--spacing-lg);
     color: var(--text-secondary);
     border-radius: var(--radius-md);
     transition: all var(--transition-fast);
+  }
+
+  .footer-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .footer-account {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .footer-tools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .footer-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    position: relative;
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .footer-icon-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .footer-icon-btn.has-unread {
+    color: var(--accent-primary);
   }
 
   .footer-btn:hover {

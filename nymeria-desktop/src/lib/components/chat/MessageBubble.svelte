@@ -632,7 +632,13 @@
   }
 
   .message-bubble.assistant {
+    align-self: stretch;
+    max-width: 100%;
+  }
+
+  :global(html[data-chat-bubbles="on"]) .message-bubble.assistant {
     align-self: flex-start;
+    max-width: 85%;
   }
 
   .bubble-content {
@@ -692,11 +698,20 @@
   }
 
   .assistant .bubble-content {
+    background: transparent;
+    border: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  :global(html[data-chat-bubbles="on"]) .assistant .bubble-content {
     background: var(--glass-bg);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border: 1px solid var(--glass-border);
     border-bottom-left-radius: var(--radius-sm);
+    padding-left: var(--spacing-md);
+    padding-right: var(--spacing-md);
   }
 
   .user-text {
