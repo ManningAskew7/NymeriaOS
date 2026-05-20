@@ -156,6 +156,13 @@ These files share core logic but have platform-specific adaptations. When making
 
 **When changing**: Changes to file processing logic, the `addFiles`/`removeFile` functions, or the file validation flow should be replicated. UI layout and interaction changes are platform-specific.
 
+#### `components/chat/QueuedPromptsBar.svelte`
+
+Both apps show the same queued sub-turn prompts, but the component is classified
+as known drift because the mobile variant uses shorter copy, touch-sized dismiss
+buttons, and mobile panel spacing while the desktop variant keeps denser desktop
+copy and hover affordances.
+
 #### `components/common/SettingsPanel.svelte`
 
 Desktop: ~2100 lines plus a desktop-only Provider Setup wizard. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.

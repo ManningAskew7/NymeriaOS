@@ -383,7 +383,6 @@ def test_list_threads_owned_only_for_regular_user_returns_owned_only(
     they no longer own (e.g. zombie metadata from a deleted callable thread).
     """
     client, agent = _client(tmp_path, api_client_builder)
-    settings = api_client_builder.settings(tmp_path)
     agent.accounts_repo.create_user("u", "u@example.com", "U")
     token = agent.accounts_repo.issue_token("u")
 

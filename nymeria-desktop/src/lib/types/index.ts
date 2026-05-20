@@ -193,6 +193,9 @@ export interface ThreadLLMConfig {
   openai_api_mode?: 'chat_completions' | 'responses' | null;
   base_url?: string | null;
   api_key?: string | null;
+  compact_threshold_mode?: 'percentage' | 'tokens' | null;
+  compact_threshold?: number | null;
+  compact_threshold_tokens?: number | null;
 }
 
 export interface ThreadConfig {
@@ -832,6 +835,8 @@ export interface ServerSettings {
   llm_stream_retry_max_delay: number;
   context_management: string;
   compact_threshold: number;
+  compact_threshold_mode: 'percentage' | 'tokens';
+  compact_threshold_tokens: number;
   compact_keep_messages: number;
   compact_model: string | null;
   sliding_window_cycles: number;
@@ -1245,6 +1250,8 @@ export interface ServerSettingsUpdate {
   llm_stream_retry_max_delay?: number;
   context_management?: string;
   compact_threshold?: number;
+  compact_threshold_mode?: 'percentage' | 'tokens';
+  compact_threshold_tokens?: number;
   compact_keep_messages?: number;
   compact_model?: string | null;
   sliding_window_cycles?: number;

@@ -165,13 +165,7 @@ from .search_mcp import (
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
-from .goal_tools import (
-    propose_task,
-    request_review,
-    mark_task_done,
-    provide_review_feedback,
-    GOAL_TOOLS,
-)
+from .goal_tools import GOAL_TOOLS
 from .image_generation import image_generate, IMAGE_GENERATION_TOOLS
 from .utility_integrations import (
     calculator,

@@ -124,6 +124,9 @@
   let llmReasoningEffort = $state('');
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>('default');
   let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>('default');
+  let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>('default');
+  let compactThresholdPct = $state('');
+  let compactThresholdTokens = $state('');
 
   // Form state — Tools
   let disabledTools = $state<Set<string>>(new Set());
@@ -464,6 +467,11 @@
       ? (String(cfg.llmConfig.use_model_defaults) as 'true' | 'false')
       : 'default';
     llmOpenAiApiMode = cfg?.llmConfig?.openai_api_mode ?? 'default';
+    compactThresholdMode = cfg?.llmConfig?.compact_threshold_mode ?? 'default';
+    compactThresholdPct = cfg?.llmConfig?.compact_threshold != null
+      ? String(cfg.llmConfig.compact_threshold) : '';
+    compactThresholdTokens = cfg?.llmConfig?.compact_threshold_tokens != null
+      ? String(cfg.llmConfig.compact_threshold_tokens) : '';
 
     // Tools
     if (cfg?.hasCustomizations) {
@@ -506,6 +514,11 @@
     const origUseDefaults = orig?.llmConfig?.use_model_defaults != null
       ? String(orig.llmConfig.use_model_defaults) : 'default';
     const origOpenAiApiMode = orig?.llmConfig?.openai_api_mode ?? 'default';
+    const origCompactMode = orig?.llmConfig?.compact_threshold_mode ?? 'default';
+    const origCompactPct = orig?.llmConfig?.compact_threshold != null
+      ? String(orig.llmConfig.compact_threshold) : '';
+    const origCompactTokens = orig?.llmConfig?.compact_threshold_tokens != null
+      ? String(orig.llmConfig.compact_threshold_tokens) : '';
     const origSystemPrompt = orig?.systemPrompt ?? '';
     const origCallable = orig?.callable ?? false;
     const origCallableName = orig?.callableName ?? '';
@@ -536,6 +549,9 @@
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseDefaults) return true;
     if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
+    if (compactThresholdMode !== origCompactMode) return true;
+    if (compactThresholdPct !== origCompactPct) return true;
+    if (compactThresholdTokens !== origCompactTokens) return true;
     if (disabledTools.size !== origDisabled.size) return true;
     for (const t of disabledTools) { if (!origDisabled.has(t)) return true; }
     if (enabledTools.size !== origEnabled.size) return true;
@@ -605,7 +621,8 @@
       const hasLlm = llmProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmBaseUrl || llmApiKey ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default';
+        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' ||
+        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -631,6 +648,9 @@
         llm.openai_api_mode = supportsApiMode() && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
+        llm.compact_threshold_mode = compactThresholdMode === 'default' ? null : compactThresholdMode;
+        llm.compact_threshold = compactThresholdPct ? parseFloat(compactThresholdPct) : null;
+        llm.compact_threshold_tokens = compactThresholdTokens ? parseInt(compactThresholdTokens, 10) : null;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -958,7 +978,12 @@
             <option value="true">On</option>
             <option value="false">Off</option>
           </select>
-          <p class="hint">Let provider apply optimal defaults for temp, top_p, etc.</p>
+          <p class="hint">
+            Let provider apply optimal defaults for temp, top_p, etc.
+            {#if llmUseModelDefaults === 'true' && threadModelMeta?.default_temperature != null}
+              (temp: {threadModelMeta.default_temperature})
+            {/if}
+          </p>
         </div>
 
         <div class="setting-group">
@@ -1006,6 +1031,43 @@
             <option value="high">High</option>
           </select>
         </div>
+
+        <div class="setting-group">
+          <label class="setting-label">Auto-Compact Trigger</label>
+          <select class="setting-input" bind:value={compactThresholdMode}>
+            <option value="default">Default (inherit global)</option>
+            <option value="percentage">Percentage of context window</option>
+            <option value="tokens">Absolute input-token count</option>
+          </select>
+        </div>
+
+        {#if compactThresholdMode === 'percentage'}
+          <div class="setting-group">
+            <label class="setting-label">Compact Threshold (0.05 – 0.95)</label>
+            <input
+              class="setting-input"
+              type="number"
+              min="0.05"
+              max="0.95"
+              step="0.01"
+              bind:value={compactThresholdPct}
+              placeholder="Leave empty to inherit global"
+            />
+          </div>
+        {:else if compactThresholdMode === 'tokens'}
+          <div class="setting-group">
+            <label class="setting-label">Compact Token Threshold (1,000 – 2,000,000)</label>
+            <input
+              class="setting-input"
+              type="number"
+              min="1000"
+              max="2000000"
+              step="1000"
+              bind:value={compactThresholdTokens}
+              placeholder="Leave empty to inherit global"
+            />
+          </div>
+        {/if}
 
       {:else if activeTab === 'tools'}
         <div class="tools-search">

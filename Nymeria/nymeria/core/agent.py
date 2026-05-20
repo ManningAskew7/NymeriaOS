@@ -633,9 +633,18 @@ class NymeriaAgent:
             thread_id, user_id, rehydrate_if_empty=rehydrate_if_empty
         )
 
-    def _compact_trigger_tokens(self, model_limit: int, threshold: float) -> int:
+    def _compact_trigger_tokens(
+        self,
+        model_limit: int,
+        threshold: float = 0.8,
+        *,
+        mode: str = "percentage",
+        tokens: int = 100_000,
+    ) -> int:
         """Return the input-token count that should trigger auto-compaction."""
-        return CompactionManager.compact_trigger_tokens(model_limit, threshold)
+        return CompactionManager.compact_trigger_tokens(
+            model_limit, threshold, mode=mode, tokens=tokens
+        )
 
     async def _check_and_compact(
         self,

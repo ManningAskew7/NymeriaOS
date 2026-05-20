@@ -1433,7 +1433,9 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
-| `COMPACT_THRESHOLD` | `0.8` | Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
+| `COMPACT_THRESHOLD_MODE` | `percentage` | Trigger mode: `percentage` (of context window) or `tokens` (absolute input-token count) |
+| `COMPACT_THRESHOLD` | `0.8` | Used when `COMPACT_THRESHOLD_MODE=percentage`. Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
+| `COMPACT_THRESHOLD_TOKENS` | `100000` | Used when `COMPACT_THRESHOLD_MODE=tokens`. Trigger compaction at this absolute input-token count (1,000-2,000,000). Clamped to the model's context window at runtime. Token counts come from the most recent provider response (`usage_metadata`), not character estimates. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
 | `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
@@ -1617,10 +1619,12 @@ AUDIT_LOG_ENABLED=true
 # MAX_CONCURRENT_AUTONOMOUS=5
 
 # Context Management (optional - defaults shown)
-# CONTEXT_MANAGEMENT=auto_compact  # auto_compact, sliding_window, or none
-# COMPACT_THRESHOLD=0.8            # Trigger at 80% of context limit (0.05-0.95)
-# COMPACT_MODEL=                   # Use cheaper model for summarization
-# SLIDING_WINDOW_CYCLES=5          # For legacy sliding_window mode
+# CONTEXT_MANAGEMENT=auto_compact      # auto_compact, sliding_window, or none
+# COMPACT_THRESHOLD_MODE=percentage    # percentage | tokens
+# COMPACT_THRESHOLD=0.8                # When mode=percentage: trigger at this fraction of context limit (0.05-0.95)
+# COMPACT_THRESHOLD_TOKENS=100000      # When mode=tokens: absolute input-token trigger (1000-2000000)
+# COMPACT_MODEL=                       # Use cheaper model for summarization
+# SLIDING_WINDOW_CYCLES=5              # For legacy sliding_window mode
 
 # Tool output safety
 # TOOL_OUTPUT_MAX_CHARS=100000     # Max stored characters per tool result

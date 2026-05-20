@@ -169,6 +169,9 @@ export interface ThreadLLMConfig {
   reasoning_effort?: string | null;
   use_model_defaults?: boolean | null;
   openai_api_mode?: 'chat_completions' | 'responses' | null;
+  compact_threshold_mode?: 'percentage' | 'tokens' | null;
+  compact_threshold?: number | null;
+  compact_threshold_tokens?: number | null;
 }
 
 export interface ThreadConfig {
@@ -756,6 +759,8 @@ export interface ServerSettings {
   llm_stream_retry_max_delay: number;
   context_management: string;
   compact_threshold: number;
+  compact_threshold_mode: 'percentage' | 'tokens';
+  compact_threshold_tokens: number;
   compact_keep_messages: number;
   compact_model: string | null;
   sliding_window_cycles: number;
@@ -1168,6 +1173,8 @@ export interface ServerSettingsUpdate {
   llm_stream_retry_max_delay?: number;
   context_management?: string;
   compact_threshold?: number;
+  compact_threshold_mode?: 'percentage' | 'tokens';
+  compact_threshold_tokens?: number;
   compact_keep_messages?: number;
   compact_model?: string | null;
   sliding_window_cycles?: number;
@@ -1494,6 +1501,62 @@ export interface CredentialSetupSessionRequest {
   target_id?: string | null;
   required_fields?: string[];
   metadata?: Record<string, unknown>;
+}
+
+export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'form';
+
+export interface AuthPromptField {
+  name: string;
+  label: string;
+  type: 'password' | 'text' | string;
+  required: boolean;
+  placeholder?: string | null;
+  help?: string | null;
+}
+
+export interface AuthPromptExistingAccount {
+  id: string;
+  label: string;
+  status: CredentialStatus;
+  scopes: string[];
+  last_tested_at?: string | null;
+}
+
+export interface AuthPromptEvent {
+  prompt_id: string;
+  credential_id: string;
+  provider: string;
+  display_name: string;
+  mode: AuthPromptMode;
+  description: string;
+  fields: AuthPromptField[];
+  account_label: string;
+  existing_accounts: AuthPromptExistingAccount[];
+  timeout_seconds: number;
+}
+
+export interface AuthPromptSubmitRequest {
+  secret_fields: Record<string, string>;
+  account_label?: string | null;
+}
+
+export interface AuthPromptSubmitResponse {
+  ok: boolean;
+  status: 'active' | 'test_failed' | string;
+  attempts: number;
+  error?: string | null;
+  credential?: Credential | null;
+}
+
+export interface AuthPromptResolvedEvent {
+  prompt_id: string;
+  credential_id: string;
+  status: 'active' | string;
+}
+
+export interface AuthPromptCancelledEvent {
+  prompt_id: string;
+  reason: 'user_exited' | 'cancelled' | 'tool_timeout' | string;
 }
 
 export interface CredentialBinding {

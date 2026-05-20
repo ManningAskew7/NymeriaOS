@@ -54,6 +54,8 @@ class ServerSettingsResponse(BaseModel):
     llm_stream_retry_max_delay: float
     context_management: str
     compact_threshold: float
+    compact_threshold_mode: str = "percentage"
+    compact_threshold_tokens: int = 100_000
     compact_keep_messages: int
     compact_model: Optional[str] = None
     sliding_window_cycles: int
@@ -642,7 +644,13 @@ class ServerSettingsUpdate(BaseModel):
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
     context_management: Optional[str] = None
-    compact_threshold: Optional[float] = None
+    compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
+    compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None
+    compact_threshold_tokens: Optional[int] = Field(
+        default=None,
+        ge=1_000,
+        le=2_000_000,
+    )
     compact_keep_messages: Optional[int] = None
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None

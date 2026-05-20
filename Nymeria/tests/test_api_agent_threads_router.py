@@ -136,6 +136,9 @@ def test_create_agent_thread_claims_metadata_syncs_tools_and_publishes_event(
         "openai_api_mode": None,
         "base_url": None,
         "api_key": None,
+        "compact_threshold_mode": None,
+        "compact_threshold": None,
+        "compact_threshold_tokens": None,
     }
     assert body["has_customizations"] is True
 

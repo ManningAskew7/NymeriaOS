@@ -1,4 +1,6 @@
 import type {
+  AuthPromptSubmitRequest,
+  AuthPromptSubmitResponse,
   Credential,
   CredentialBinding,
   CredentialBindingRequest,
@@ -151,5 +153,45 @@ export class CredentialsApi extends AccountsApi {
     if (!response.ok) {
       throw new Error(await this._toastAndExtractError(response, 'Failed to remove credential binding'));
     }
+  }
+
+  async submitCredentialPrompt(promptId: string, request: AuthPromptSubmitRequest): Promise<AuthPromptSubmitResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/submit`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request),
+    });
+    if (response.status === 404) {
+      throw new Error('This prompt has already been resolved or expired.');
+    }
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to submit credential'));
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    return {
+      ok: data.ok === true,
+      status: (data.status as string) || 'unknown',
+      attempts: typeof data.attempts === 'number' ? data.attempts : 0,
+      error: (data.error as string | null | undefined) ?? null,
+      credential: data.credential ? this.credentialFromResponse(data.credential as Record<string, unknown>) : null,
+    };
+  }
+
+  async exitCredentialPrompt(promptId: string, lastTestError: string | null, attempts: number): Promise<void> {
+    await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/exit`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ last_test_error: lastTestError, attempts }),
+    }).catch(() => {
+      // Exit is best-effort: if the agent has already timed out, the
+      // coordinator no longer has the prompt — silently ignore.
+    });
+  }
+
+  async cancelCredentialPrompt(promptId: string): Promise<void> {
+    await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/cancel`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+    }).catch(() => {});
   }
 }

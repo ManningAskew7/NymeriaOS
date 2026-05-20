@@ -1258,7 +1258,17 @@ class Settings(BaseSettings):
         default=0.8,
         ge=0.05,
         le=0.95,
-        description="Trigger auto-compact at this percentage of context window"
+        description="Trigger auto-compact at this percentage of context window (used when compact_threshold_mode='percentage')"
+    )
+    compact_threshold_mode: Literal["percentage", "tokens"] = Field(
+        default="percentage",
+        description="Whether auto-compact trigger uses 'percentage' of context window or an absolute 'tokens' count"
+    )
+    compact_threshold_tokens: int = Field(
+        default=100_000,
+        ge=1_000,
+        le=2_000_000,
+        description="Trigger auto-compact when input tokens reach this absolute count (used when compact_threshold_mode='tokens'); clamped to model context limit at runtime"
     )
     compact_keep_messages: int = Field(
         default=4,
