@@ -21,12 +21,17 @@ import json
 import logging
 from typing import Annotated, Any, Optional
 
+from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .. import config as config_mod
 from ..core.auth_prompt_coordinator import (
     get_auth_prompt_coordinator,
+    hash_prompt_token,
     new_prompt_id,
+    new_prompt_token,
+    prompt_expires_at,
 )
 from ..core.credential_vault import get_credential_vault_repo
 from ..core.event_bus import publish_autonomous_event
@@ -102,6 +107,15 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, default=str)
 
 
+def _connect_url(public_url: str | None, prompt_id: str, token: str) -> str | None:
+    if not public_url:
+        return None
+    base = public_url.strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/connect/credentials/{prompt_id}#{token}"
+
+
 @tool
 async def request_credential(
     provider: str,
@@ -111,7 +125,7 @@ async def request_credential(
     description: str = "",
     fields: Optional[list[dict[str, Any]]] = None,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
-    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    config: Annotated[RunnableConfig | None, InjectedToolArg] = None,
 ) -> str:
     """Open a secure in-chat modal to collect credentials from the user.
 
@@ -184,7 +198,9 @@ async def request_credential(
 
     repo = get_credential_vault_repo()
     coordinator = get_auth_prompt_coordinator()
+    settings = config_mod.get_settings()
     prompt_id = new_prompt_id()
+    prompt_token = new_prompt_token()
     label_display = display_name.strip() or provider_norm
     cred_name = label_display
     if account_label.strip():
@@ -197,6 +213,12 @@ async def request_credential(
         safe_description = safe_description[:_MAX_DESCRIPTION_CHARS]
 
     existing_accounts = _existing_accounts_for(repo, user_id, provider_norm)
+    token_expires_at, expires_at_iso = prompt_expires_at(timeout)
+    connect_url = _connect_url(
+        getattr(settings, "nymeria_public_url", None),
+        prompt_id,
+        prompt_token,
+    )
 
     record = repo.create_credential(
         owner_type="user",
@@ -222,6 +244,9 @@ async def request_credential(
         user_id=user_id,
         thread_id=thread_id,
         provider=provider_norm,
+        token_hash=hash_prompt_token(prompt_token),
+        token_expires_at=token_expires_at,
+        token_expires_at_iso=expires_at_iso,
     )
 
     event_payload = {
@@ -235,7 +260,18 @@ async def request_credential(
         "account_label": account_label.strip(),
         "existing_accounts": existing_accounts,
         "timeout_seconds": timeout,
+        "expires_at": expires_at_iso,
+        "connect_url": connect_url,
+        "connect_url_required": connect_url is None,
+        "connect_url_error": (
+            None
+            if connect_url
+            else "NYMERIA_PUBLIC_URL is required for credential setup links in chat apps."
+        ),
     }
+    prompt = coordinator.get(prompt_id)
+    if prompt is not None:
+        prompt.metadata = dict(event_payload)
 
     publish_autonomous_event(
         event_type="auth_prompt",
@@ -244,6 +280,10 @@ async def request_credential(
         task_id="",
         data=event_payload,
     )
+    try:
+        await adispatch_custom_event("auth_prompt", event_payload, config=config)
+    except RuntimeError:
+        logger.debug("request_credential custom event skipped outside a parent run")
 
     logger.info(
         "request_credential opened prompt=%s provider=%s user=%s timeout=%ds",
@@ -287,6 +327,10 @@ async def request_credential(
         "attempts": result.get("attempts", 0),
         "last_test_error": result.get("last_test_error"),
         "account_label": result.get("account_label") or (account_label.strip() or None),
+        "user_message": result.get("user_message"),
+        "tested": bool(result.get("tested", False)),
+        "test_status": result.get("test_status"),
+        "test_error": result.get("test_error") or result.get("last_test_error"),
         "message": result.get("message") or _default_message(status, result.get("last_test_error")),
     }
     return _json(payload)
@@ -305,6 +349,8 @@ def _default_message(status: str, last_error: Optional[str]) -> str:
         return "Credential is pending — user can finish in Settings."
     if status == "test_failed":
         return f"Connection test failed: {last_error or 'unknown error'}"
+    if status == "user_message":
+        return "User responded in chat instead of completing the credential prompt."
     if status == "swept":
         return "Prompt expired before resolution."
     return "Prompt resolved without a clear status."

@@ -16,6 +16,7 @@ Usage — autonomous single-event dispatch::
 
 from __future__ import annotations
 
+import inspect
 import re
 from typing import Any, AsyncIterable, Dict, List, Protocol, runtime_checkable
 
@@ -27,6 +28,30 @@ def parse_attach_paths(result: str) -> List[str]:
     if not isinstance(result, str):
         return []
     return _ATTACH_RE.findall(result)
+
+
+def format_auth_prompt_message(event: Dict[str, Any]) -> str:
+    """Render a safe default credential-setup prompt for text chat surfaces."""
+    display_name = str(
+        event.get("display_name") or event.get("provider") or "a service"
+    )
+    expires_at = event.get("expires_at")
+    connect_url = event.get("connect_url")
+    if isinstance(connect_url, str) and connect_url.strip():
+        expiry = f"\n\nLink expires: {expires_at}" if expires_at else ""
+        return (
+            f"Credential setup requested for {display_name}.\n\n"
+            f"Open this secure one-time link: {connect_url.strip()}"
+            f"{expiry}\n\n"
+            "Do not paste secrets into chat."
+        )
+    return (
+        f"Credential setup requested for {display_name}, but this chat app "
+        "cannot show the secure setup form because NYMERIA_PUBLIC_URL is not "
+        "configured on the server. Use the desktop app's credential prompt or "
+        "ask the server admin to set NYMERIA_PUBLIC_URL. Do not paste secrets "
+        "into chat."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +143,17 @@ async def dispatch_event(
         content = event.get("content", "")
         if content:
             await handler.on_response_chunk(content)
+
+    elif etype == "auth_prompt":
+        await handler.flush_text(final=True)
+        callback = getattr(handler, "on_auth_prompt", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+        else:
+            await handler.on_response_chunk(format_auth_prompt_message(event))
+            await handler.flush_text(final=True)
 
     elif etype == "compacting":
         await handler.flush_text(final=True)

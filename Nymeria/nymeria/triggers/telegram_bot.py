@@ -48,7 +48,11 @@ from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, http_error_detail
 from .message_splitter import split_telegram_message as split_message
-from .sse_consumer import consume_sse_stream, parse_attach_paths as _parse_attach_paths
+from .sse_consumer import (
+    consume_sse_stream,
+    format_auth_prompt_message,
+    parse_attach_paths as _parse_attach_paths,
+)
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 logger = logging.getLogger(__name__)
@@ -2942,6 +2946,18 @@ class NymeriaTelegramBot:
                 # otherwise risk hitting the 4096-char Telegram limit mid-stream.
                 if len(s["buffer"]) > 3800:
                     await _flush_buffer()
+
+            elif event_type == "auth_prompt":
+                _ensure_state()
+                await _flush_buffer()
+                try:
+                    message = escape_html(format_auth_prompt_message(event)).replace(
+                        "\n",
+                        "<br>",
+                    )
+                    await self._send_html(chat_id, message)
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous auth prompt: {e}")
 
             elif event_type == "tool_call":
                 s = _ensure_state()

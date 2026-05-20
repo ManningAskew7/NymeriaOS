@@ -71,6 +71,26 @@ def test_has_tool_call_content_delta_detects_provider_tool_blocks():
     assert has_tool_call_content_delta("not-blocks") is False
 
 
+def test_graph_stream_processor_converts_auth_prompt_custom_event():
+    chunks, response_parts, _graph = _collect_processor_events([
+        {
+            "event": "on_custom_event",
+            "name": "auth_prompt",
+            "data": {
+                "prompt_id": "prompt-1",
+                "connect_url": "https://nymeria.example.test/connect/credentials/prompt-1#tok",
+            },
+        }
+    ])
+
+    assert chunks == [{
+        "type": "auth_prompt",
+        "prompt_id": "prompt-1",
+        "connect_url": "https://nymeria.example.test/connect/credentials/prompt-1#tok",
+    }]
+    assert response_parts == []
+
+
 def test_reasoning_chunk_deduper_resets_between_model_calls():
     deduper = ReasoningChunkDeduper()
 

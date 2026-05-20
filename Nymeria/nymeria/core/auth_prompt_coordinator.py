@@ -24,11 +24,14 @@ to fan out to whichever worker is awaiting the future.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import secrets
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,7 @@ logger = logging.getLogger(__name__)
 # tool-side timeout always wins the race.
 _ORPHAN_TTL_SECONDS = 600
 _SWEEP_INTERVAL_SECONDS = 60
+_PROMPT_TOKEN_BYTES = 32
 
 
 @dataclass
@@ -48,6 +52,10 @@ class PendingPrompt:
     thread_id: str
     provider: str
     future: asyncio.Future
+    metadata: dict[str, Any] = field(default_factory=dict)
+    token_hash: Optional[str] = None
+    token_expires_at: Optional[float] = None
+    token_expires_at_iso: Optional[str] = None
     created_at: float = field(default_factory=time.monotonic)
     attempts: int = 0
     last_test_error: Optional[str] = None
@@ -70,6 +78,10 @@ class AuthPromptCoordinator:
         user_id: str,
         thread_id: str,
         provider: str,
+        metadata: Optional[dict[str, Any]] = None,
+        token_hash: Optional[str] = None,
+        token_expires_at: Optional[float] = None,
+        token_expires_at_iso: Optional[str] = None,
     ) -> asyncio.Future:
         """Create a future the agent tool will await on. Must be called from
         within a running event loop (tools run via ``SafeToolNode.ainvoke``)."""
@@ -82,6 +94,10 @@ class AuthPromptCoordinator:
             thread_id=thread_id,
             provider=provider,
             future=future,
+            metadata=metadata or {},
+            token_hash=token_hash,
+            token_expires_at=token_expires_at,
+            token_expires_at_iso=token_expires_at_iso,
         )
         with self._lock:
             self._prompts[prompt_id] = prompt
@@ -91,6 +107,33 @@ class AuthPromptCoordinator:
     def get(self, prompt_id: str) -> Optional[PendingPrompt]:
         with self._lock:
             return self._prompts.get(prompt_id)
+
+    def get_for_user_thread(self, *, user_id: str, thread_id: str) -> Optional[PendingPrompt]:
+        """Return the oldest unresolved prompt for ``user_id``/``thread_id``."""
+        with self._lock:
+            matches = [
+                prompt
+                for prompt in self._prompts.values()
+                if prompt.user_id == user_id and prompt.thread_id == thread_id
+            ]
+        if not matches:
+            return None
+        return min(matches, key=lambda prompt: prompt.created_at)
+
+    def verify_prompt_token(self, prompt_id: str, raw_token: str) -> Optional[PendingPrompt]:
+        """Resolve a hosted-form token to a pending prompt."""
+        if not raw_token:
+            return None
+        with self._lock:
+            prompt = self._prompts.get(prompt_id)
+        if prompt is None or not prompt.token_hash:
+            return None
+        if prompt.token_expires_at is not None and time.monotonic() > prompt.token_expires_at:
+            return None
+        token_hash = hash_prompt_token(raw_token)
+        if not hmac.compare_digest(token_hash, prompt.token_hash):
+            return None
+        return prompt
 
     def record_attempt(self, prompt_id: str, *, error: Optional[str]) -> int:
         """Bump the attempt counter (call after a failed test, before the
@@ -198,9 +241,27 @@ def new_prompt_id() -> str:
     return f"prompt_{secrets.token_urlsafe(16)}"
 
 
+def new_prompt_token() -> str:
+    return secrets.token_urlsafe(_PROMPT_TOKEN_BYTES)
+
+
+def hash_prompt_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def prompt_expires_at(timeout_seconds: int) -> tuple[float, str]:
+    seconds = max(1, int(timeout_seconds))
+    monotonic_expiry = time.monotonic() + seconds
+    wall_expiry = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return monotonic_expiry, wall_expiry.isoformat(timespec="seconds")
+
+
 __all__ = [
     "AuthPromptCoordinator",
     "PendingPrompt",
     "get_auth_prompt_coordinator",
+    "hash_prompt_token",
     "new_prompt_id",
+    "new_prompt_token",
+    "prompt_expires_at",
 ]

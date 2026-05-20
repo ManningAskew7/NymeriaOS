@@ -15,8 +15,11 @@
 
   let values = $state<Record<string, string>>({});
   let labelDraft = $state('');
+  let userNote = $state('');
   let submitting = $state(false);
+  let testing = $state(false);
   let lastError = $state<string | null>(null);
+  let lastInfo = $state<string | null>(null);
   let attempts = $state(0);
   let isOpen = $derived(prompt !== null);
 
@@ -29,8 +32,11 @@
       }
       values = initial;
       labelDraft = prompt.account_label || '';
+      userNote = '';
       submitting = false;
+      testing = false;
       lastError = null;
+      lastInfo = null;
       attempts = 0;
     }
   });
@@ -44,34 +50,60 @@
       close();
       return;
     }
-    if (submitting) return;
+    if (submitting || testing) return;
     // X / Esc / backdrop — return last error to the agent so it can help.
-    await api.exitCredentialPrompt(prompt.prompt_id, lastError, attempts);
+    await api.exitCredentialPrompt(prompt.prompt_id, lastError, attempts, userNote.trim() || null);
     close();
   }
 
   async function handleCancel() {
-    if (!prompt || submitting) return;
-    await api.cancelCredentialPrompt(prompt.prompt_id);
+    if (!prompt || submitting || testing) return;
+    await api.cancelCredentialPrompt(prompt.prompt_id, userNote.trim() || null);
     close();
+  }
+
+  function requestBody() {
+    const trimmedLabel = labelDraft.trim();
+    return {
+      secret_fields: values,
+      account_label: trimmedLabel || null,
+      user_message: userNote.trim() || null,
+    };
+  }
+
+  async function handleTest() {
+    if (!prompt || submitting || testing) return;
+    testing = true;
+    lastError = null;
+    lastInfo = null;
+    try {
+      const result = await api.testCredentialPrompt(prompt.prompt_id, requestBody());
+      attempts = result.attempts;
+      if (result.ok) {
+        lastInfo = result.message || (result.tested ? 'Connection verified.' : 'This provider has no verification probe yet.');
+        return;
+      }
+      lastError = result.error || result.message || 'Connection test failed';
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    } finally {
+      testing = false;
+    }
   }
 
   async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     if (!prompt || submitting) return;
     submitting = true;
+    lastError = null;
     try {
-      const trimmedLabel = labelDraft.trim();
-      const result = await api.submitCredentialPrompt(prompt.prompt_id, {
-        secret_fields: values,
-        account_label: trimmedLabel || null,
-      });
+      const result = await api.submitCredentialPrompt(prompt.prompt_id, requestBody());
       attempts = result.attempts;
       if (result.ok) {
         close();
         return;
       }
-      lastError = result.error || 'Connection test failed';
+      lastError = result.error || result.message || 'Connection test failed';
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -186,25 +218,40 @@
         </div>
       {/if}
 
+      <div class="field">
+        <label for={`auth-note-${prompt.prompt_id}`}>Note to Nymeria (optional)</label>
+        <textarea
+          id={`auth-note-${prompt.prompt_id}`}
+          class="note"
+          bind:value={userNote}
+          rows="3"
+          placeholder="Anything you want Nymeria to know after this setup closes"
+        ></textarea>
+      </div>
+
       {#if lastError}
         <div class="error">
-          <Icon name="alert-triangle" size={14} />
+          <Icon name="warning" size={14} />
           <span>{lastError}</span>
         </div>
       {/if}
 
+      {#if lastInfo}
+        <div class="info">
+          <Icon name="success" size={14} />
+          <span>{lastInfo}</span>
+        </div>
+      {/if}
+
       <div class="actions">
-        <Button variant="ghost" type="button" onclick={handleCancel} disabled={submitting}>
+        <Button variant="ghost" type="button" onclick={handleCancel} disabled={submitting || testing}>
           Cancel
         </Button>
+        <Button variant="secondary" type="button" onclick={handleTest} disabled={submitting || testing}>
+          {testing ? 'Testing…' : 'Test'}
+        </Button>
         <Button type="submit" disabled={submitting}>
-          {#if submitting}
-            Testing…
-          {:else if attempts > 0}
-            Retry
-          {:else}
-            Connect
-          {/if}
+          {submitting ? 'Saving…' : 'Save'}
         </Button>
       </div>
     </form>
@@ -290,6 +337,10 @@
     min-height: 80px;
   }
 
+  .field textarea.note {
+    font-family: inherit;
+  }
+
   .field input:focus,
   .field textarea:focus {
     outline: none;
@@ -309,6 +360,17 @@
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--danger, #c0392b) 12%, transparent);
     color: var(--danger, #c0392b);
+    font-size: var(--font-size-sm);
+  }
+
+  .info {
+    display: flex;
+    gap: var(--spacing-xs);
+    align-items: flex-start;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--success, #2e7d32) 12%, transparent);
+    color: var(--success, #2e7d32);
     font-size: var(--font-size-sm);
   }
 

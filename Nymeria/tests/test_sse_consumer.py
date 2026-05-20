@@ -10,6 +10,7 @@ from nymeria.triggers.sse_consumer import (
     SSEEventHandler,
     consume_sse_stream,
     dispatch_event,
+    format_auth_prompt_message,
     parse_attach_paths,
 )
 
@@ -144,6 +145,45 @@ def test_dispatch_response_empty_content_ignored():
     h = RecordingHandler()
     asyncio.run(dispatch_event({"type": "response", "content": ""}, h, 0))
     assert h.calls == []
+
+
+def test_format_auth_prompt_message_with_link():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "display_name": "GitHub",
+            "connect_url": "https://nymeria.example.test/connect/credentials/p#tok",
+            "expires_at": "2026-05-20T12:00:00+00:00",
+        }
+    )
+    assert "Credential setup requested for GitHub" in message
+    assert "https://nymeria.example.test/connect/credentials/p#tok" in message
+    assert "Do not paste secrets into chat" in message
+
+
+def test_format_auth_prompt_message_without_public_url():
+    message = format_auth_prompt_message(
+        {"type": "auth_prompt", "provider": "todoist"}
+    )
+    assert "NYMERIA_PUBLIC_URL" in message
+    assert "Do not paste secrets into chat" in message
+
+
+def test_dispatch_auth_prompt_renders_default_message_and_flushes():
+    h = RecordingHandler()
+    asyncio.run(dispatch_event(
+        {
+            "type": "auth_prompt",
+            "display_name": "GitHub",
+            "connect_url": "https://nymeria.example.test/connect/credentials/p#tok",
+        },
+        h,
+        0,
+    ))
+    assert h.calls[0] == ("flush_text", {"final": True})
+    assert h.calls[1][0] == "on_response_chunk"
+    assert "GitHub" in h.calls[1][1]["content"]
+    assert h.calls[2] == ("flush_text", {"final": True})
 
 
 def test_dispatch_dispatched_emits_response_reference_line():
