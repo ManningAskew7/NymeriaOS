@@ -1033,8 +1033,8 @@
         </div>
 
         <div class="setting-group">
-          <label class="setting-label">Auto-Compact Trigger</label>
-          <select class="setting-input" bind:value={compactThresholdMode}>
+          <label class="setting-label" for="thread-compact-mode">Auto-Compact Trigger</label>
+          <select id="thread-compact-mode" class="setting-input" bind:value={compactThresholdMode}>
             <option value="default">Default (inherit global)</option>
             <option value="percentage">Percentage of context window</option>
             <option value="tokens">Absolute input-token count</option>
@@ -1043,8 +1043,9 @@
 
         {#if compactThresholdMode === 'percentage'}
           <div class="setting-group">
-            <label class="setting-label">Compact Threshold (0.05 – 0.95)</label>
+            <label class="setting-label" for="thread-compact-pct">Compact Threshold (0.05 - 0.95)</label>
             <input
+              id="thread-compact-pct"
               class="setting-input"
               type="number"
               min="0.05"
@@ -1056,8 +1057,9 @@
           </div>
         {:else if compactThresholdMode === 'tokens'}
           <div class="setting-group">
-            <label class="setting-label">Compact Token Threshold (1,000 – 2,000,000)</label>
+            <label class="setting-label" for="thread-compact-tokens">Compact Token Threshold (1,000 - 2,000,000)</label>
             <input
+              id="thread-compact-tokens"
               class="setting-input"
               type="number"
               min="1000"
