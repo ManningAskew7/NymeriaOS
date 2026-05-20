@@ -256,8 +256,9 @@ call to the correct store.
 
 ## Agent Access — `auth_manager` Tool
 
-The optional `auth_manager` tool provides metadata-only credential management
-from within chat. It supports these actions:
+The `auth_manager` tool (default-enabled on every new thread) provides
+metadata-only credential management from within chat. It supports these
+actions:
 
 | Action | What it does |
 |--------|-------------|
