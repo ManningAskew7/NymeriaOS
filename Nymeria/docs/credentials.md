@@ -23,7 +23,7 @@ The vault uses four SQLite tables:
 
 - `owner_type`: `user` or `system`
 - `owner_user_id`: set for user-owned credentials
-- `provider` / `kind`: examples include `todoist` / `api_key`, `google_calendar` / `legacy_token_cache`, `mcp` / `env_var`
+- `provider` / `kind`: examples include `todoist` / `api_key`, `google_calendar` / `oauth_token`, `google_calendar` / `legacy_token_cache`, `mcp` / `env_var`
 - `metadata`: arbitrary JSON (account info, source tracking)
 - `scopes`: OAuth scope list (for OAuth-based credentials)
 - `allowed_targets`: list of target strings that controls who can decrypt (see Access Control)
@@ -164,6 +164,64 @@ Save a credential with `provider=<LLM provider ID>` (e.g. `openai`,
 `openrouter`, `anthropic`), `kind=api_key`, secret field `api_key`, and
 allowed target `llm_provider:<provider>` or `llm_provider:*`.
 
+### Path 5: OAuth via `request_credential`
+
+For services that require an OAuth 2.0 sign-in (Google Calendar, Gmail, Google
+Docs/Drive/Sheets, Google Analytics, Google Business Profile, Microsoft
+Outlook), the agent calls `request_credential` with `kind="oauth"` and the
+relevant `provider` (e.g. `google_calendar`). The provider registry lives in
+`nymeria/config/oauth_providers.py` and pins the authorize URI, token URI,
+scope set, client-config source, and which flows the provider supports.
+
+Two flows are wired in:
+
+- **Authorization code** (`mode="oauth"` in the SSE event). Default for
+  desktop and any bot user where `NYMERIA_PUBLIC_URL` is reachable. The
+  agent's tool builds an authorization URL with PKCE (when the descriptor
+  enables it) and emits an `auth_url` the modal opens in the user's browser.
+  The browser is redirected back to
+  `${NYMERIA_PUBLIC_URL}/connect/credentials/{prompt_id}/oauth/callback?code=…&state=…`,
+  which exchanges the code for tokens and writes the vault record. The
+  `state` parameter is a separate one-time nonce hashed into
+  `metadata["_oauth_state"]["state_token_hash"]` — distinct from the
+  hosted-form bearer token so the value exposed in the redirect URL never
+  doubles as a form-access credential.
+- **Device code** (`mode="oauth_device"`, RFC 8628). Used when the agent
+  passes `flow="device_code"` or when `NYMERIA_PUBLIC_URL` is unset and the
+  provider supports device-flow (currently Microsoft Outlook). The tool POSTs
+  to the device-authorization endpoint, emits a short `user_code` and
+  `verification_uri`, and spawns a background poller against the token URI.
+  When the user finishes the sign-in on any device, the poller resolves the
+  same coordinator future the auth-code callback would resolve. The poll
+  task lives in a module-level registry (`oauth_device_flow._POLL_TASKS`),
+  not on `PendingPrompt.metadata`, because `asyncio.Task` is not JSON
+  serialisable.
+
+When `NYMERIA_PUBLIC_URL` is not configured and the provider does not
+support device-code, the tool returns `status="missing_public_url"` without
+emitting a prompt. The agent can retry with `use_localhost=True` after
+confirming with the user; that path is only safe when the user's browser is
+on the same machine as Nymeria.
+
+The vault record written by both flows uses these conventions:
+
+- `kind = "oauth_token"`
+- `provider`: matches the descriptor ID (e.g. `google_calendar`,
+  `google_gmail`, `outlook`)
+- `secret_fields`: `access_token` (always), `refresh_token` (when the
+  provider returns one). `client_secret` is read from env / Google client
+  config at refresh time and is **not** stored in the vault.
+- `metadata`: `scopes` (list), `email`, `name`, `account_id`, `expires_at`
+  (ISO 8601, UTC), `client_id`, `token_uri`, `provider_id`, `source`
+  (`"oauth_callback"` or `"oauth_device_flow"`)
+- `allowed_targets`: default `["native_tool:*"]`, so any native Google or
+  Outlook tool can read the token. Bind to a specific tool name to scope.
+
+Tools that consume OAuth tokens (`google_docs.get_credentials`,
+`calendar.py`, `outlook_email.py`, etc.) look up the vault first, fall back
+to the legacy `data/auth_tokens/<user_id>/*.json` cache, and lazy-migrate
+the legacy file on the next successful new-flow OAuth for that provider.
+
 ## Access Control
 
 - **Ownership**: Each credential is `user`-owned (scoped to one user) or
@@ -227,6 +285,7 @@ The agent cannot manage system credentials or retrieve plaintext secrets.
 | `/connect/credentials/{id}/submit` | POST | Prompt-token save endpoint |
 | `/connect/credentials/{id}/exit` | POST | Prompt-token close endpoint |
 | `/connect/credentials/{id}/cancel` | POST | Prompt-token cancel endpoint |
+| `/connect/credentials/{id}/oauth/callback` | GET | OAuth authorization-code redirect target. Verifies state, exchanges the code, writes the vault, resolves the agent prompt, and renders a success/failure HTML page. |
 
 Writes accept `secret_fields` as plaintext. Responses only return metadata
 and the list of stored secret field names — never plaintext or ciphertext.
@@ -274,8 +333,12 @@ Using the Todoist tool as an example:
   helpers fall back to legacy file storage so local dev flows do not break
   abruptly, but production deployments must configure the key.
 - `NYMERIA_PUBLIC_URL` must point at the browser-reachable HTTPS API origin
-  for credential setup links in chat bots. Localhost HTTP is acceptable only
-  for local development.
+  for credential setup links in chat bots and for OAuth authorization-code
+  redirects. Localhost HTTP is acceptable only for local development (the
+  agent must opt-in with `use_localhost=True` for OAuth). Outlook prompts
+  auto-degrade to device-code when no public URL is configured; Google
+  providers do not, because they require a "Limited Input Device" client
+  type that the v1 setup does not register.
 - Fernet key rotation requires decrypting and re-encrypting all stored values.
   There is no automated rotation command yet.
 - Audit events are append-only and include the credential ID, actor, event
@@ -308,6 +371,10 @@ Full details in [`accounts.md`](accounts.md).
 | `nymeria/tools/native_credentials.py` | Native tool credential resolution |
 | `nymeria/tools/auth_manager.py` | Agent-facing metadata-only tool |
 | `nymeria/tools/credential_prompt.py` | Agent-facing `request_credential` tool |
+| `nymeria/config/oauth_providers.py` | OAuth provider descriptor registry (URIs, scopes, supported flows) |
+| `nymeria/core/oauth_start.py` | Start-side: resolve flow, build auth URL or device-code request |
+| `nymeria/core/oauth_callback_handler.py` | Finalize OAuth: code exchange, userinfo, vault write, coordinator resolve |
+| `nymeria/core/oauth_device_flow.py` | RFC 8628 device-code poller |
 | `nymeria/tools/auth_cache_utils.py` | OAuth token cache I/O (vault-first, file fallback) |
 | `nymeria/core/custom_tools.py` | `${credential:...}` resolution in custom HTTP tools |
 | `nymeria/core/mcp_manager.py` | `${credential:...}` resolution in MCP server config |
