@@ -169,6 +169,80 @@ def test_format_auth_prompt_message_without_public_url():
     assert "Do not paste secrets into chat" in message
 
 
+def test_format_auth_prompt_message_oauth_auth_code():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "mode": "oauth",
+            "display_name": "Google Calendar",
+            "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y",
+            "timeout_seconds": 180,
+        }
+    )
+    assert "Sign in to Google Calendar" in message
+    assert "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y" in message
+    assert "expires in 3 minutes" in message
+    assert "Do not share" in message
+
+
+def test_format_auth_prompt_message_oauth_auth_code_missing_url():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "mode": "oauth",
+            "display_name": "Google Calendar",
+            "auth_url": "",
+        }
+    )
+    assert "did not provide an authorization URL" in message
+
+
+def test_format_auth_prompt_message_oauth_device_code():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "mode": "oauth_device",
+            "display_name": "Microsoft Outlook",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "expires_in": 900,
+        }
+    )
+    assert "To connect Microsoft Outlook" in message
+    assert "https://microsoft.com/devicelogin" in message
+    assert "ABCD-1234" in message
+    assert "expires in 15 minutes" in message
+
+
+def test_format_auth_prompt_message_oauth_device_prefers_verification_uri_complete():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "mode": "oauth_device",
+            "display_name": "Microsoft Outlook",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "verification_uri_complete": "https://microsoft.com/devicelogin?code=ABCD-1234",
+            "expires_in": 600,
+        }
+    )
+    assert "https://microsoft.com/devicelogin?code=ABCD-1234" in message
+    assert "https://microsoft.com/devicelogin " not in message
+
+
+def test_format_auth_prompt_message_oauth_device_missing_fields():
+    message = format_auth_prompt_message(
+        {
+            "type": "auth_prompt",
+            "mode": "oauth_device",
+            "display_name": "Microsoft Outlook",
+            "user_code": "",
+            "verification_uri": "",
+        }
+    )
+    assert "did not provide a user code" in message
+
+
 def test_dispatch_auth_prompt_renders_default_message_and_flushes():
     h = RecordingHandler()
     asyncio.run(dispatch_event(

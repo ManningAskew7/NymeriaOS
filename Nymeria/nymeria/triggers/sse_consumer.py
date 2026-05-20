@@ -31,10 +31,25 @@ def parse_attach_paths(result: str) -> List[str]:
 
 
 def format_auth_prompt_message(event: Dict[str, Any]) -> str:
-    """Render a safe default credential-setup prompt for text chat surfaces."""
+    """Render a safe default credential-setup prompt for text chat surfaces.
+
+    Branches on the ``mode`` field set by ``request_credential``:
+
+    - ``"oauth"`` (authorization code) renders a single sign-in link.
+    - ``"oauth_device"`` (RFC 8628) renders a verification URL plus user code.
+    - anything else (``api_key``, ``pat``, ``form``, missing) renders the
+      one-time hosted-form link from ``connect_url``.
+    """
+    mode = str(event.get("mode") or "").strip()
     display_name = str(
         event.get("display_name") or event.get("provider") or "a service"
     )
+
+    if mode == "oauth":
+        return _format_oauth_auth_code(event, display_name)
+    if mode == "oauth_device":
+        return _format_oauth_device_code(event, display_name)
+
     expires_at = event.get("expires_at")
     connect_url = event.get("connect_url")
     if isinstance(connect_url, str) and connect_url.strip():
@@ -52,6 +67,56 @@ def format_auth_prompt_message(event: Dict[str, Any]) -> str:
         "ask the server admin to set NYMERIA_PUBLIC_URL. Do not paste secrets "
         "into chat."
     )
+
+
+def _format_oauth_auth_code(event: Dict[str, Any], display_name: str) -> str:
+    auth_url = str(event.get("auth_url") or "").strip()
+    if not auth_url:
+        return (
+            f"Sign-in requested for {display_name}, but the server did not "
+            "provide an authorization URL. Ask the server admin to check the "
+            "OAuth provider configuration."
+        )
+    minutes = _expiry_minutes(event.get("timeout_seconds"))
+    expiry = (
+        f"\n\nThis link expires in {minutes} minutes. Do not share it."
+        if minutes
+        else "\n\nDo not share this link."
+    )
+    return f"Sign in to {display_name}: {auth_url}{expiry}"
+
+
+def _format_oauth_device_code(event: Dict[str, Any], display_name: str) -> str:
+    user_code = str(event.get("user_code") or "").strip()
+    verification_uri = str(
+        event.get("verification_uri_complete") or event.get("verification_uri") or ""
+    ).strip()
+    if not user_code or not verification_uri:
+        return (
+            f"Sign-in requested for {display_name}, but the server did not "
+            "provide a user code or verification URL. Ask the server admin to "
+            "check the OAuth provider configuration."
+        )
+    minutes = _expiry_minutes(event.get("expires_in"))
+    expiry = (
+        f"\n\nThe code expires in {minutes} minutes."
+        if minutes
+        else ""
+    )
+    return (
+        f"To connect {display_name}, open {verification_uri} on any device "
+        f"and enter this code:\n\n    {user_code}{expiry}"
+    )
+
+
+def _expiry_minutes(value: Any) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if seconds <= 0:
+        return 0
+    return max(1, seconds // 60)
 
 
 # ---------------------------------------------------------------------------

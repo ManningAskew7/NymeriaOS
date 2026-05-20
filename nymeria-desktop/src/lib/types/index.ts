@@ -1659,7 +1659,9 @@ export interface CredentialSetupSessionRequest {
 // Auth-prompt SSE event — emitted by the agent's request_credential tool.
 // The desktop renders an AuthPromptModal in response.
 
-export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'form';
+export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'oauth_device' | 'form';
+
+export type AuthPromptFlow = 'auth_code' | 'device_code';
 
 export interface AuthPromptField {
   name: string;
@@ -1693,9 +1695,24 @@ export interface AuthPromptEvent {
   existing_accounts: AuthPromptExistingAccount[];
   timeout_seconds: number;
   expires_at?: string | null;
+  // Hosted-form path (mode in {api_key, pat, form}).
   connect_url?: string | null;
   connect_url_required?: boolean;
   connect_url_error?: string | null;
+  // OAuth path (mode in {oauth, oauth_device}).
+  flow?: AuthPromptFlow;
+  provider_id?: string;
+  scopes?: string[];
+  notes?: string | null;
+  // Authorization-code flow (mode = "oauth").
+  auth_url?: string;
+  uses_pkce?: boolean;
+  // Device-code flow (mode = "oauth_device", RFC 8628).
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string | null;
+  expires_in?: number;
+  interval?: number;
 }
 
 export interface AuthPromptSubmitRequest {
