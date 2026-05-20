@@ -184,6 +184,13 @@ class Settings(BaseSettings):
         default=None,
         description="Admin-role service token used by bots/ticker/watchdog for act-as calls",
     )
+    nymeria_public_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public browser base URL for hosted credential setup links, "
+            "for example https://nymeria.example.com"
+        ),
+    )
     account_token_ttl_days: int = Field(
         default=90,
         ge=1,

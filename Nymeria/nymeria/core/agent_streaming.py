@@ -177,6 +177,18 @@ class GraphStreamProcessor:
         elif event_type == "on_chat_model_end":
             for converted in self._handle_model_end(event):
                 yield converted
+        elif event_type == "on_custom_event":
+            converted = self._handle_custom_event(event)
+            if converted:
+                yield converted
+
+    def _handle_custom_event(self, event: dict[str, Any]) -> Optional[dict[str, Any]]:
+        name = event.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        data = event.get("data")
+        payload = data if isinstance(data, dict) else {"data": data}
+        return {**payload, "type": name}
 
     def _handle_model_start(self, event: dict[str, Any]) -> None:
         self._model_call_count += 1

@@ -38,16 +38,25 @@ class _Settings:
     nymeria_debug: bool = False
     api_docs_enabled: bool = False
     cors_origins_list: list[str] | None = None
+    nymeria_public_url: str | None = "https://nymeria.example.test"
 
     def __post_init__(self) -> None:
         if self.cors_origins_list is None:
             self.cors_origins_list = ["http://localhost"]
 
 
+class _ThreadMetadataManager:
+    def get_store(self, user_id: str):
+        _ = user_id
+        return type("_Store", (), {"threads": {}})()
+
+
 class _Agent:
     def __init__(self, data_dir: Path) -> None:
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.credential_vault = CredentialVaultRepo(data_dir / "accounts.db")
+        self.thread_metadata_manager = _ThreadMetadataManager()
+        self.thread_config_manager = None
         self._graph_cache_lock = threading.Lock()
         self._user_graphs: dict = {}
         self._async_user_graphs: dict = {}
@@ -150,6 +159,72 @@ def test_happy_path_returns_active(env):
     assert result["credential_id"]
 
 
+def test_hosted_prompt_token_flow(env):
+    client, _, _ = env
+
+    async def run():
+        async def submitter():
+            pid = await _pid_for("hosted")
+            prompt = get_auth_prompt_coordinator().get(pid)
+            assert prompt is not None
+            connect_url = prompt.metadata["connect_url"]
+            assert connect_url.startswith(
+                f"https://nymeria.example.test/connect/credentials/{pid}#"
+            )
+            token = connect_url.rsplit("#", 1)[1]
+
+            bad = client.get(
+                f"/connect/credentials/{pid}/prompt",
+                headers={"Authorization": "Bearer bad-token"},
+            )
+            assert bad.status_code == 404
+
+            auth = {"Authorization": f"Bearer {token}"}
+            meta = client.get(f"/connect/credentials/{pid}/prompt", headers=auth)
+            assert meta.status_code == 200
+            meta_body = meta.json()
+            assert meta_body["prompt_id"] == pid
+            assert meta_body["provider"] == "hosted"
+            assert meta_body["expires_at"] == prompt.token_expires_at_iso
+
+            test_resp = client.post(
+                f"/connect/credentials/{pid}/test",
+                headers=auth,
+                json={"secret_fields": {}},
+            )
+            assert test_resp.status_code == 200
+            test_body = test_resp.json()
+            assert test_body["ok"] is False
+            assert test_body["status"] == "test_failed"
+            assert test_body["attempts"] == 1
+            assert test_body["code"] == "missing_secret"
+
+            submit_resp = client.post(
+                f"/connect/credentials/{pid}/submit",
+                headers=auth,
+                json={
+                    "secret_fields": {"value": "sk-good"},
+                    "user_message": "done in browser",
+                },
+            )
+            assert submit_resp.status_code == 200, submit_resp.text
+            submit_body = submit_resp.json()
+            assert submit_body["ok"] is True
+            assert submit_body["status"] == "active"
+            assert submit_body["tested"] is False
+            assert submit_body["test_status"] == "not_verified"
+
+        tool, _ = await asyncio.gather(_call_tool("hosted"), submitter())
+        return tool
+
+    result = asyncio.run(run())
+    assert result["ok"] is True
+    assert result["status"] == "active"
+    assert result["user_message"] == "done in browser"
+    assert result["tested"] is False
+    assert result["test_status"] == "not_verified"
+
+
 def test_inline_retry_after_test_failure(env):
     client, _, token = env
 
@@ -194,7 +269,11 @@ def test_exit_returns_user_exited_with_last_error(env):
             resp = client.post(
                 f"/credential-prompts/{pid}/exit",
                 headers=_auth(token),
-                json={"last_test_error": "Invalid scope", "attempts": 2},
+                json={
+                    "last_test_error": "Invalid scope",
+                    "attempts": 2,
+                    "user_message": "I'll find it later",
+                },
             )
             assert resp.status_code == 200
 
@@ -205,6 +284,7 @@ def test_exit_returns_user_exited_with_last_error(env):
     assert result["ok"] is False
     assert result["status"] == "user_exited"
     assert result["last_test_error"] == "Invalid scope"
+    assert result["user_message"] == "I'll find it later"
 
 
 def test_cancel_returns_cancelled(env):
@@ -224,6 +304,53 @@ def test_cancel_returns_cancelled(env):
 
     result = asyncio.run(run())
     assert result["status"] == "cancelled"
+
+
+def test_chat_message_resolves_pending_auth_prompt(env):
+    client, _, token = env
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop, daemon=True)
+    thread.start()
+    ready.wait()
+
+    async def register_prompt():
+        return get_auth_prompt_coordinator().register(
+            prompt_id="prompt_chat",
+            credential_id="cred_chat",
+            user_id="default",
+            thread_id="interlock-thread",
+            provider="chat",
+        )
+
+    async def await_prompt(future: asyncio.Future):
+        return await future
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(register_prompt(), loop).result(2)
+        resp = client.post(
+            "/chat",
+            headers=_auth(token),
+            json={
+                "thread_id": "interlock-thread",
+                "message": "I need to ask a question first",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert '"auth_prompt_status": "user_message"' in resp.text
+        result = asyncio.run_coroutine_threadsafe(await_prompt(future), loop).result(2)
+        assert result["ok"] is False
+        assert result["status"] == "user_message"
+        assert result["user_message"] == "I need to ask a question first"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
 
 
 def test_tool_timeout_returns_pending(env):

@@ -27,6 +27,7 @@ from ...core.notification_dispatch import (
     should_notify_autonomous as default_should_notify_autonomous,
 )
 from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
+from .credential_prompts import resolve_pending_prompt_from_chat
 from ..schemas.chat import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,98 @@ def create_chat_router(
                 dispatched_target = mention_resolution
                 thread_id = mention_resolution.thread_id
                 message = mention_resolution.message
+
+        if not request.is_self_invoke:
+            prompt_resolution = resolve_pending_prompt_from_chat(
+                user_id=user_id,
+                thread_id=thread_id,
+                message=message,
+            )
+            if prompt_resolution is not None:
+                client_id = http_request.headers.get("x-nymeria-client-id", "")
+                publish_sync_event_fn(
+                    event_type="message_added",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    data={"role": "user", "content": message},
+                    origin_client_id=client_id,
+                )
+
+                async def auth_prompt_interlock_response():
+                    status = prompt_resolution.get("status")
+                    content = (
+                        "Credential setup was cancelled."
+                        if status == "cancelled"
+                        else (
+                            "I sent that to the active credential setup prompt. "
+                            "The running turn will continue from there."
+                        )
+                    )
+                    stream_thread_id = (
+                        original_thread_id
+                        if dispatched_target is not None
+                        else thread_id
+                    )
+                    if dispatched_target is not None:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "dispatched",
+                                    "thread_id": original_thread_id,
+                                    "target_thread_id": dispatched_target.thread_id,
+                                    "title": dispatched_target.title,
+                                    "matched_ref": dispatched_target.reference,
+                                    **_dispatch_stream_fields(
+                                        dispatched_target,
+                                        original_thread_id,
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "response",
+                                "content": content,
+                                "thread_id": stream_thread_id,
+                                "auth_prompt_status": status,
+                                "prompt_id": prompt_resolution.get("prompt_id"),
+                                **_dispatch_stream_fields(
+                                    dispatched_target,
+                                    original_thread_id,
+                                ),
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "thread_id": stream_thread_id,
+                                "auth_prompt_status": status,
+                                **_dispatch_stream_fields(
+                                    dispatched_target,
+                                    original_thread_id,
+                                ),
+                            }
+                        )
+                        + "\n\n"
+                    )
+
+                return StreamingResponse(
+                    auth_prompt_interlock_response(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
 
         # Handle slash commands (e.g., /compact)
         msg_stripped = message.strip().lower()

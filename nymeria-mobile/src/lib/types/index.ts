@@ -1533,11 +1533,16 @@ export interface AuthPromptEvent {
   account_label: string;
   existing_accounts: AuthPromptExistingAccount[];
   timeout_seconds: number;
+  expires_at?: string | null;
+  connect_url?: string | null;
+  connect_url_required?: boolean;
+  connect_url_error?: string | null;
 }
 
 export interface AuthPromptSubmitRequest {
   secret_fields: Record<string, string>;
   account_label?: string | null;
+  user_message?: string | null;
 }
 
 export interface AuthPromptSubmitResponse {
@@ -1545,6 +1550,11 @@ export interface AuthPromptSubmitResponse {
   status: 'active' | 'test_failed' | string;
   attempts: number;
   error?: string | null;
+  message?: string | null;
+  code?: string | null;
+  tested?: boolean;
+  testStatus?: string | null;
+  testError?: string | null;
   credential?: Credential | null;
 }
 

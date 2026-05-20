@@ -42,11 +42,24 @@ Fernet and stores the ciphertext. The plaintext is never persisted.
 
 ### 2. Agent-Initiated Setup
 
-The agent (via the `auth_manager` tool) calls `request_setup` to create a
-placeholder credential with `status: pending_setup`. The agent never handles
-actual secrets. The user completes the setup in the UI, which fills in the
-secret fields through an authenticated API call. This keeps secret material
-out of chat history.
+The agent calls the `request_credential` tool to create a placeholder
+credential with `status: pending_setup`. The agent never handles actual
+secrets. The user completes the setup in a server-hosted form:
+
+- Desktop receives the existing `auth_prompt` event and opens the credential
+  modal.
+- Chat bots receive an `auth_prompt` event containing a one-time setup link
+  shaped as `${NYMERIA_PUBLIC_URL}/connect/credentials/{prompt_id}#<token>`.
+
+The prompt token is stored only as a server-side hash, is scoped to one prompt,
+and expires with the prompt. It lives in the URL fragment so normal HTTP
+requests and access logs see only `/connect/credentials/{prompt_id}`. The
+browser form copies the fragment token into an `Authorization: Bearer` header
+when calling the prompt-token API endpoints.
+
+If `NYMERIA_PUBLIC_URL` is unset, desktop prompts still work, but text-chat
+surfaces report that a public URL is required and warn users not to paste
+secrets into chat.
 
 ### 3. Auto-Migration at Startup
 
@@ -204,9 +217,38 @@ The agent cannot manage system credentials or retrieve plaintext secrets.
 | `/credentials/{id}/bindings` | POST | Create a new binding |
 | `/credential-bindings/{id}` | DELETE | Remove a binding |
 | `/credential-setup-sessions` | POST | Create a setup session (agent workflow) |
+| `/credential-prompts/{id}/test` | POST | Test fields for an active desktop prompt |
+| `/credential-prompts/{id}/submit` | POST | Save fields for an active desktop prompt |
+| `/credential-prompts/{id}/exit` | POST | Close a desktop prompt with an optional note |
+| `/credential-prompts/{id}/cancel` | POST | Cancel a desktop prompt with an optional note |
+| `/connect/credentials/{id}` | GET | Hosted credential form shell for chat-bot links |
+| `/connect/credentials/{id}/prompt` | GET | Prompt-token metadata endpoint |
+| `/connect/credentials/{id}/test` | POST | Prompt-token provider test endpoint |
+| `/connect/credentials/{id}/submit` | POST | Prompt-token save endpoint |
+| `/connect/credentials/{id}/exit` | POST | Prompt-token close endpoint |
+| `/connect/credentials/{id}/cancel` | POST | Prompt-token cancel endpoint |
 
 Writes accept `secret_fields` as plaintext. Responses only return metadata
 and the list of stored secret field names — never plaintext or ciphertext.
+The `/connect/credentials/*` API endpoints authenticate with the one-time
+prompt token from the hosted setup link and do not grant general API access.
+
+## Provider Tests
+
+Credential verification is handled by `nymeria/core/credential_tests.py`.
+Provider testers receive provider/kind/metadata plus the submitted plaintext
+fields inside the API process and return a redacted status object:
+`ok`, `message`, `code`, and `verified`.
+
+The initial registry includes probes for GitHub, Todoist, Anthropic, and known
+OpenAI-compatible LLM providers. If a provider has no tester, Nymeria saves the
+credential as active but returns `tested=false` and `test_status=not_verified`
+with an explicit "no verification probe yet" message rather than pretending the
+provider accepted the key.
+
+The desktop prompt has separate **Test** and **Save** actions. Save re-runs the
+provider test before resolving the agent tool; failed tests stay in the prompt
+so the user can retry.
 
 ## Example End-to-End Flow
 
@@ -231,6 +273,9 @@ Using the Todoist tool as an example:
 - If `NYMERIA_SECRETS_KEY` is missing, new vault secret writes fail. Auth-cache
   helpers fall back to legacy file storage so local dev flows do not break
   abruptly, but production deployments must configure the key.
+- `NYMERIA_PUBLIC_URL` must point at the browser-reachable HTTPS API origin
+  for credential setup links in chat bots. Localhost HTTP is acceptable only
+  for local development.
 - Fernet key rotation requires decrypting and re-encrypting all stored values.
   There is no automated rotation command yet.
 - Audit events are append-only and include the credential ID, actor, event
@@ -257,12 +302,18 @@ Full details in [`accounts.md`](accounts.md).
 | File | Role |
 |------|------|
 | `nymeria/core/credential_vault.py` | Vault repo, schema, encrypt/decrypt, reference resolution, migrations |
+| `nymeria/core/auth_prompt_coordinator.py` | In-process prompt futures, one-time prompt tokens, and prompt lookup |
+| `nymeria/core/credential_tests.py` | Provider test registry and redacted probe helpers |
 | `nymeria/core/llm_credentials.py` | LLM provider credential resolution from the vault |
 | `nymeria/tools/native_credentials.py` | Native tool credential resolution |
 | `nymeria/tools/auth_manager.py` | Agent-facing metadata-only tool |
+| `nymeria/tools/credential_prompt.py` | Agent-facing `request_credential` tool |
 | `nymeria/tools/auth_cache_utils.py` | OAuth token cache I/O (vault-first, file fallback) |
 | `nymeria/core/custom_tools.py` | `${credential:...}` resolution in custom HTTP tools |
 | `nymeria/core/mcp_manager.py` | `${credential:...}` resolution in MCP server config |
 | `nymeria/api/routers/credentials.py` | REST API router |
+| `nymeria/api/routers/credential_prompts.py` | Desktop and hosted-form prompt resolution endpoints |
 | `nymeria/api/schemas/credentials.py` | Pydantic request/response schemas |
 | `tests/test_credential_vault.py` | Vault unit tests |
+| `tests/test_credential_prompt_flow.py` | Prompt flow integration tests |
+| `tests/test_credential_tests.py` | Provider test registry tests |

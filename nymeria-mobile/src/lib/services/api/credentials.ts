@@ -173,25 +173,61 @@ export class CredentialsApi extends AccountsApi {
       status: (data.status as string) || 'unknown',
       attempts: typeof data.attempts === 'number' ? data.attempts : 0,
       error: (data.error as string | null | undefined) ?? null,
+      message: (data.message as string | null | undefined) ?? null,
+      code: (data.code as string | null | undefined) ?? null,
+      tested: data.tested === true,
+      testStatus: (data.test_status as string | null | undefined) ?? null,
+      testError: (data.test_error as string | null | undefined) ?? null,
       credential: data.credential ? this.credentialFromResponse(data.credential as Record<string, unknown>) : null,
     };
   }
 
-  async exitCredentialPrompt(promptId: string, lastTestError: string | null, attempts: number): Promise<void> {
+  async testCredentialPrompt(promptId: string, request: AuthPromptSubmitRequest): Promise<AuthPromptSubmitResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/test`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        secret_fields: request.secret_fields,
+        account_label: request.account_label ?? null,
+      }),
+    });
+    if (response.status === 404) {
+      throw new Error('This prompt has already been resolved or expired.');
+    }
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to test credential'));
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    return {
+      ok: data.ok === true,
+      status: (data.status as string) || 'unknown',
+      attempts: typeof data.attempts === 'number' ? data.attempts : 0,
+      error: (data.error as string | null | undefined) ?? null,
+      message: (data.message as string | null | undefined) ?? null,
+      code: (data.code as string | null | undefined) ?? null,
+      tested: data.tested === true,
+      testStatus: (data.test_status as string | null | undefined) ?? null,
+      testError: (data.test_error as string | null | undefined) ?? null,
+      credential: data.credential ? this.credentialFromResponse(data.credential as Record<string, unknown>) : null,
+    };
+  }
+
+  async exitCredentialPrompt(promptId: string, lastTestError: string | null, attempts: number, userMessage: string | null = null): Promise<void> {
     await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/exit`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ last_test_error: lastTestError, attempts }),
+      body: JSON.stringify({ last_test_error: lastTestError, attempts, user_message: userMessage }),
     }).catch(() => {
       // Exit is best-effort: if the agent has already timed out, the
       // coordinator no longer has the prompt — silently ignore.
     });
   }
 
-  async cancelCredentialPrompt(promptId: string): Promise<void> {
+  async cancelCredentialPrompt(promptId: string, userMessage: string | null = null): Promise<void> {
     await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/cancel`, {
       method: 'POST',
       headers: this.getHeaders(),
+      body: JSON.stringify({ user_message: userMessage }),
     }).catch(() => {});
   }
 }
