@@ -142,7 +142,7 @@ class OutlookEmailSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict) -> List[dict]:
+    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
         """Poll Graph API for new emails since last check.
 
         State keys persisted between calls:
@@ -165,7 +165,7 @@ class OutlookEmailSource(BaseTriggerSource):
         processed_category = config.get("processed_category", "Nymeria-Read")
 
         # Get auth token -- fail gracefully if not authenticated
-        token = get_access_token(account_id)
+        token = get_access_token(user_id, account_id)
         if not token:
             logger.debug("outlook_email source: no authenticated account, skipping")
             return []
@@ -295,7 +295,7 @@ class OutlookEmailSource(BaseTriggerSource):
         # This ensures emails are marked as processed even if downstream
         # LLM processing fails or the backend crashes mid-batch.
         if processed_category:
-            self._tag_emails(new_messages, processed_category, account_id)
+            self._tag_emails(new_messages, processed_category, account_id, user_id)
 
         # Build events
         events = []
@@ -325,7 +325,7 @@ class OutlookEmailSource(BaseTriggerSource):
             # Download attachments so the LLM can see them inline
             if msg.get("hasAttachments"):
                 attachments = self._download_attachments(
-                    msg.get("id", ""), account_id
+                    msg.get("id", ""), account_id, user_id
                 )
                 if attachments:
                     event["attachments"] = attachments
@@ -353,6 +353,7 @@ class OutlookEmailSource(BaseTriggerSource):
         messages: List[dict],
         category: str,
         account_id: str | None,
+        user_id: str,
     ) -> None:
         """Tag fetched emails with the processed category via Graph PATCH.
 
@@ -372,6 +373,7 @@ class OutlookEmailSource(BaseTriggerSource):
 
             merged = existing + [category]
             ok, err = graph_request(
+                user_id,
                 "PATCH",
                 f"/me/messages/{msg_id}",
                 account_id=account_id,
@@ -438,6 +440,7 @@ class OutlookEmailSource(BaseTriggerSource):
     def _download_attachments(
         email_id: str,
         account_id: str | None,
+        user_id: str,
     ) -> List[Dict[str, str]]:
         """Download email attachments and convert to FileData format.
 
@@ -448,6 +451,7 @@ class OutlookEmailSource(BaseTriggerSource):
         from nymeria.tools.outlook_email import graph_request
 
         ok, result = graph_request(
+            user_id,
             "GET",
             f"/me/messages/{email_id}/attachments",
             account_id=account_id,

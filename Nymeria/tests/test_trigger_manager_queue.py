@@ -44,7 +44,7 @@ class _StaticSource:
     def __init__(self, events: list[dict]) -> None:
         self._events = list(events)
 
-    def check(self, source_config: dict, state: dict) -> list[dict]:
+    def check(self, source_config: dict, state: dict, user_id: str = "") -> list[dict]:
         return list(self._events)
 
 

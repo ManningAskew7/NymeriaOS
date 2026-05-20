@@ -211,7 +211,7 @@ def _handle_delete(state: "CLIState", args: List[str]) -> None:
 
     # 2. Delete checkpoints
     try:
-        from ...core.checkpoint_cleanup import delete_thread_checkpoints
+        from ....core.checkpoint_cleanup import delete_thread_checkpoints
         delete_thread_checkpoints(settings, tid)
     except Exception as e:
         logger.warning(f"Failed to delete checkpoints for {tid}: {e}")

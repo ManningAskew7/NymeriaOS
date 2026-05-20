@@ -46,7 +46,7 @@ class BaseTriggerSource(ABC):
     requires_auth: Optional[str] = None
 
     @abstractmethod
-    def check(self, config: dict, state: dict) -> List[dict]:
+    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
         """Check for new events.
 
         Called by the polling loop (ticker).  Must be lightweight -- no LLM
@@ -56,6 +56,9 @@ class BaseTriggerSource(ABC):
             config: Source-specific configuration from the trigger definition.
             state:  Mutable state dict persisted between checks.  Sources can
                     store cursors, timestamps, etc. here.
+            user_id: Owning Nymeria user. Required by sources that hit
+                    per-user credential stores (outlook, teams). Default
+                    ``""`` keeps sources that don't need it unchanged.
 
         Returns:
             List of event dicts (empty = no new events).  Each dict contains

@@ -91,7 +91,7 @@ class HTTPPollSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict) -> List[dict]:
+    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
         import httpx
 
         url = config["url"]
