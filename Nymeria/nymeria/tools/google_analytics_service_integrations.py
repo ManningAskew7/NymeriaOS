@@ -10,9 +10,12 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import GOOGLE_ANALYTICS_SCOPES as _GA_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .google_analytics_auth import GOOGLE_ANALYTICS_SCOPES, PROVIDER
 from .utils import get_user_id
+
+PROVIDER = "google_analytics"
+GOOGLE_ANALYTICS_SCOPES = list(_GA_SCOPES_TUPLE)
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +81,10 @@ def _analytics_request(
         provider_display_name="Google Analytics",
     )
     if not creds or not getattr(creds, "token", None):
-        return False, "No authenticated Google Analytics account. Use google_analytics_auth_start to authenticate."
+        return False, (
+            "No authenticated Google Analytics account. "
+            "Call request_credential(provider=\"google_analytics\", kind=\"oauth\") to connect."
+        )
 
     headers = {
         "Accept": "application/json",

@@ -308,13 +308,19 @@ def test_google_workspace_missing_auth_returns_error(monkeypatch):
     from nymeria.tools import google_workspace_service_integrations as tools
 
     def fake_request(*args, **kwargs):
-        return False, "No authenticated Google account. Use google_docs_auth_start to authenticate."
+        return False, (
+            "No authenticated Google account. Call "
+            "request_credential(provider=\"google_docs\", kind=\"oauth\") to connect."
+        )
 
     monkeypatch.setattr(tools.auth_utils, "google_api_request", fake_request)
 
     result = tools.google_tasks_list_tasklists.func()
 
-    assert result == "[Error]: No authenticated Google account. Use google_docs_auth_start to authenticate."
+    assert result == (
+        "[Error]: No authenticated Google account. Call "
+        "request_credential(provider=\"google_docs\", kind=\"oauth\") to connect."
+    )
 
 
 def test_google_workspace_tools_registered_with_metadata():

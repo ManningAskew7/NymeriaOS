@@ -7,7 +7,6 @@ import stat
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-import urllib.parse
 
 import nymeria.tools as tools_package
 from nymeria.tools import (
@@ -18,12 +17,8 @@ from nymeria.tools import (
 )
 from nymeria.tools import auth_cache_utils
 from nymeria.tools import calendar
-from nymeria.tools import calendar_auth
 from nymeria.tools import google_docs
-from nymeria.tools import google_docs_auth
 from nymeria.tools import google_sheets
-from nymeria.tools import gmail_auth
-from nymeria.tools import outlook_auth
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
 from nymeria.plugins._prv_a import products as _prv_a_products
@@ -379,51 +374,6 @@ def test_legacy_token_cache_file_fallback_uses_private_permissions(tmp_path, mon
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_google_oauth_start_adds_pkce_parameters(tmp_path, monkeypatch):
-    creds_path = tmp_path / "google_credentials.json"
-    creds_path.write_text(
-        json.dumps(
-            {
-                "installed": {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("GOOGLE_OAUTH_CREDENTIALS", str(creds_path))
-    monkeypatch.setattr(auth_cache_utils, "start_callback_server", lambda flow: 4567)
-
-    spec = auth_cache_utils.GoogleOAuthToolSpec(
-        provider="google_test",
-        cache_filename="google_test.json",
-        scopes=["scope-a"],
-        service_display_name="Google Test",
-        setup_api_name="Google Test API",
-        usable_tools_label="Google Test tools",
-        start_tool_name="google_test_auth_start",
-        complete_tool_name="google_test_auth_complete",
-        clear_tool_name="google_test_auth_clear",
-        list_tool_name="google_test_auth_list",
-        no_accounts_message="No accounts",
-        no_usable_accounts_message="No usable accounts",
-        list_heading="Accounts",
-    )
-    start_tool = auth_cache_utils.create_google_oauth_tools(spec)[0]
-
-    message = start_tool.func(config={"configurable": {"user_id": "alice"}})
-    url = next(line for line in message.splitlines() if line.startswith("https://"))
-    params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-    flow = auth_cache_utils.get_flow("alice", "google_test")
-
-    assert params["code_challenge_method"] == ["S256"]
-    assert params["code_challenge"] == [auth_cache_utils._pkce_challenge(flow.code_verifier)]
-    auth_cache_utils.clear_flow("alice", "google_test")
-
-
 def test_exchange_code_for_tokens_sends_pkce_verifier(monkeypatch):
     captured = {}
 
@@ -593,59 +543,6 @@ def test_google_request_wrappers_delegate_to_shared_helper(monkeypatch):
     assert calls[1][3]["service_name"] == "docs"
     assert calls[2][1] == "google_docs"
     assert calls[2][3]["service_name"] == "drive"
-
-
-def test_google_auth_tool_sets_are_generated_with_stable_names():
-    assert [tool.name for tool in calendar_auth.CALENDAR_AUTH_TOOLS] == [
-        "calendar_auth_start",
-        "calendar_auth_complete",
-        "calendar_auth_clear",
-        "calendar_list_authenticated_accounts",
-    ]
-    assert [tool.name for tool in google_docs_auth.GOOGLE_DOCS_AUTH_TOOLS] == [
-        "google_docs_auth_start",
-        "google_docs_auth_complete",
-        "google_docs_auth_clear",
-        "google_docs_list_accounts",
-    ]
-    assert [tool.name for tool in gmail_auth.GMAIL_AUTH_TOOLS] == [
-        "gmail_auth_start",
-        "gmail_auth_complete",
-        "gmail_auth_clear",
-        "gmail_list_accounts",
-    ]
-    assert calendar_auth.calendar_auth_start is calendar_auth.CALENDAR_AUTH_TOOLS[0]
-    assert google_docs_auth.google_docs_auth_start is google_docs_auth.GOOGLE_DOCS_AUTH_TOOLS[0]
-    assert gmail_auth.gmail_auth_start is gmail_auth.GMAIL_AUTH_TOOLS[0]
-
-
-def test_outlook_auth_cache_wrappers_delegate_to_shared_cache(monkeypatch):
-    calls = []
-
-    def fake_load(user_id, cache_filename):
-        calls.append(("load", user_id, cache_filename))
-        return {"ok": True}
-
-    def fake_save(user_id, cache_filename, cache):
-        calls.append(("save", user_id, cache_filename, cache))
-
-    def fake_delete(user_id, cache_filename):
-        calls.append(("delete", user_id, cache_filename))
-        return True
-
-    monkeypatch.setattr(outlook_auth.auth_utils, "load_token_cache", fake_load)
-    monkeypatch.setattr(outlook_auth.auth_utils, "save_token_cache", fake_save)
-    monkeypatch.setattr(outlook_auth.auth_utils, "delete_token_cache", fake_delete)
-
-    assert outlook_auth.load_token_cache("ms-user") == {"ok": True}
-    outlook_auth.save_token_cache("ms-user", {"saved": True})
-    assert outlook_auth.delete_token_cache("ms-user") is True
-
-    assert calls == [
-        ("load", "ms-user", "microsoft.json"),
-        ("save", "ms-user", "microsoft.json", {"saved": True}),
-        ("delete", "ms-user", "microsoft.json"),
-    ]
 
 
 def test_trigger_tool_schema_exposes_object_configs():

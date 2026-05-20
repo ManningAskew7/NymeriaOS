@@ -154,6 +154,35 @@ _AUTH_CODE_ONLY: frozenset[OAuthFlow] = frozenset({"auth_code"})
 _BOTH_FLOWS: frozenset[OAuthFlow] = frozenset({"auth_code", "device_code"})
 
 
+# ---------------------------------------------------------------------------
+# Per-provider hooks
+# ---------------------------------------------------------------------------
+
+def _export_gmail_mcp_credentials(user_id: str, account_id: str) -> Optional[str]:
+    """Post-save hook for ``google_gmail``: export to the Gmail MCP server's
+    google-auth credentials.json so the upstream MCP can read the token."""
+    from ..core.mcp_auth_bridge import export_google_account_for_gmail_mcp
+
+    export_path = export_google_account_for_gmail_mcp(user_id, account_id=account_id)
+    if export_path is None:
+        return (
+            "Gmail auth was saved, but no MCP credential file was exported. "
+            "Re-run the Gmail connection and check token scope status."
+        )
+    return f"Gmail MCP credentials exported to `{export_path}`."
+
+
+def _clear_gmail_mcp_credentials(user_id: str, _account_id: Optional[str] = None) -> Optional[str]:
+    """Post-clear hook for ``google_gmail``: remove the exported MCP credentials file."""
+    from ..core.mcp_auth_bridge import gmail_mcp_credentials_path
+
+    path = gmail_mcp_credentials_path(user_id)
+    if not path.exists():
+        return None
+    path.unlink()
+    return f"Removed exported Gmail MCP credentials at `{path}`."
+
+
 OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
     "google_calendar": OAuthProviderDescriptor(
         provider_id="google_calendar",
@@ -181,6 +210,8 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         client_config_file_env="GOOGLE_OAUTH_CREDENTIALS",
         uses_pkce=True,
         extra_authorize_params=_GOOGLE_AUTH_CODE_EXTRA,
+        post_save_hook=_export_gmail_mcp_credentials,
+        post_clear_hook=_clear_gmail_mcp_credentials,
         notes="Gmail bridge used by the gmail MCP server. Tokens are also exported to the MCP credential file via post_save_hook.",
     ),
     "google_docs": OAuthProviderDescriptor(
