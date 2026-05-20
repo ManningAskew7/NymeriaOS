@@ -614,6 +614,8 @@ Authorization: Bearer <token>
 
 Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`.
 
+Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `show_autonomous_prompts` config for this request only (without mutating thread state). When omitted, the backend falls back to the per-thread field. The desktop and mobile clients pass this query param based on their global "Show autonomous prompts" preference (combined with the per-thread force-on override), so a single global setting can drive history filtering without flipping every thread's config. MCP and CLI callers don't pass it and keep today's behavior. Ignored when `include_internal=true` (which always returns everything).
+
 **Response:**
 ```json
 {

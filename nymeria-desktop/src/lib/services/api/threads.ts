@@ -6,6 +6,8 @@ import type {
   ThreadStatus,
   ToolCall
 } from '$lib/types';
+import { configStore } from '$lib/stores/config.svelte';
+import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
 import { ChatApi } from './chat';
 
 export class ThreadsApi extends ChatApi {
@@ -134,8 +136,20 @@ export class ThreadsApi extends ChatApi {
   }
 
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
+    // History filtering for autonomous wake-ups is driven by the global
+    // localStorage toggle (default ON). A per-thread `show_autonomous_prompts`
+    // value of true acts as a force-on override (e.g. when the global is off
+    // but a specific thread should still show them). The backend honors the
+    // query param when present; otherwise it falls back to the per-thread
+    // field (preserves behavior for MCP/CLI and older clients).
+    const perThreadCfg = threadConfigStore.getConfig(threadId);
+    const effectiveShowAutonomousPrompts =
+      configStore.showAutonomousPrompts || Boolean(perThreadCfg?.showAutonomousPrompts);
+    const params = new URLSearchParams({
+      show_autonomous_prompts: String(effectiveShowAutonomousPrompts),
+    });
     const response = await fetch(
-      `${this.getBaseUrl()}/threads/${threadId}/history`,
+      `${this.getBaseUrl()}/threads/${threadId}/history?${params.toString()}`,
       {
         headers: this.getHeaders()
       }
