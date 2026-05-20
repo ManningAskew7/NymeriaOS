@@ -34,7 +34,6 @@ from .runtime_admin import (
     self_modify_rollback,
     RUNTIME_ADMIN_TOOLS,
 )
-from .outlook_auth import AUTH_TOOLS
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
 from .calendar import CALENDAR_TOOLS
@@ -85,26 +84,12 @@ from .google_workspace_service_integrations import (
     google_chat_delete_message,
     GOOGLE_WORKSPACE_SERVICE_TOOLS,
 )
-from .google_analytics_auth import (
-    google_analytics_auth_start,
-    google_analytics_auth_complete,
-    google_analytics_auth_clear,
-    google_analytics_list_accounts,
-    GOOGLE_ANALYTICS_AUTH_TOOLS,
-)
 from .google_analytics_service_integrations import (
     google_analytics_list_account_summaries,
     google_analytics_get_metadata,
     google_analytics_run_report,
     google_analytics_run_realtime_report,
     GOOGLE_ANALYTICS_SERVICE_TOOLS,
-)
-from .google_business_profile_auth import (
-    google_business_profile_auth_start,
-    google_business_profile_auth_complete,
-    google_business_profile_auth_clear,
-    google_business_profile_list_accounts,
-    GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS,
 )
 from .google_business_profile_service_integrations import (
     google_business_profile_list_profile_accounts,
@@ -119,13 +104,6 @@ from .google_business_profile_service_integrations import (
     google_business_profile_update_post,
     google_business_profile_delete_post,
     GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS,
-)
-from .gmail_auth import (
-    gmail_auth_start,
-    gmail_auth_complete,
-    gmail_auth_clear,
-    gmail_list_accounts,
-    GMAIL_AUTH_TOOLS,
 )
 from ..plugins._prv_a import (
     _PRV_TOOLS_A1,
@@ -1348,7 +1326,7 @@ from ..core.self_agent import SELF_AGENT_TOOLS
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
 # Combined Outlook tools list
-OUTLOOK_TOOLS = AUTH_TOOLS + EMAIL_TOOLS
+OUTLOOK_TOOLS = EMAIL_TOOLS
 
 # Combined _PRV_A tools list (all Google Sheets-based _PRV_A tools)
 _PRV_TOOLS_A = (
@@ -1366,7 +1344,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + OUTLOOK_TOOLS
-    + GMAIL_AUTH_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
     + BROWSER_TOOLS
@@ -1375,9 +1352,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + RUNTIME_ADMIN_TOOLS
     + GOOGLE_DOCS_TOOLS
     + GOOGLE_WORKSPACE_SERVICE_TOOLS
-    + GOOGLE_ANALYTICS_AUTH_TOOLS
     + GOOGLE_ANALYTICS_SERVICE_TOOLS
-    + GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS
     + GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS
     + _PRV_TOOLS_A
     + TWITCH_TOOLS
@@ -1386,8 +1361,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SEARCH_MCP_TOOLS
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
-    + AUTH_MANAGER_TOOLS
-    + REQUEST_CREDENTIAL_TOOLS
     + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
     + SKILL_KIT_CREATE_TOOLS
@@ -1533,6 +1506,10 @@ ALL_TOOLS = [
     notify,
     # Core command-service bridge
     slash_command,
+    # Credential management — default so the agent can always prompt the user
+    # for API keys and OAuth tokens without requiring the tool to be pre-enabled.
+    auth_manager,
+    request_credential,
 ]
 
 __all__ = [
@@ -2675,7 +2652,6 @@ __all__ = [
     "trigger_config",
     "trigger_info",
     "TRIGGER_TOOLS",
-    "AUTH_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
     "BROWSER_TOOLS",
@@ -2727,21 +2703,11 @@ __all__ = [
     "google_chat_update_message",
     "google_chat_delete_message",
     "GOOGLE_WORKSPACE_SERVICE_TOOLS",
-    "google_analytics_auth_start",
-    "google_analytics_auth_complete",
-    "google_analytics_auth_clear",
-    "google_analytics_list_accounts",
-    "GOOGLE_ANALYTICS_AUTH_TOOLS",
     "google_analytics_list_account_summaries",
     "google_analytics_get_metadata",
     "google_analytics_run_report",
     "google_analytics_run_realtime_report",
     "GOOGLE_ANALYTICS_SERVICE_TOOLS",
-    "google_business_profile_auth_start",
-    "google_business_profile_auth_complete",
-    "google_business_profile_auth_clear",
-    "google_business_profile_list_accounts",
-    "GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS",
     "google_business_profile_list_profile_accounts",
     "google_business_profile_list_locations",
     "google_business_profile_list_reviews",
@@ -2754,11 +2720,6 @@ __all__ = [
     "google_business_profile_update_post",
     "google_business_profile_delete_post",
     "GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS",
-    "gmail_auth_start",
-    "gmail_auth_complete",
-    "gmail_auth_clear",
-    "gmail_list_accounts",
-    "GMAIL_AUTH_TOOLS",
     "_PRV_TOOLS_A1",
     "_PRV_TOOLS_A2",
     "_PRV_TOOLS_A3",

@@ -1,243 +1,34 @@
-"""Shared OAuth scaffold for provider token caches and Google-based tools.
+"""Shared OAuth scaffold for the vault-first credential flow.
 
-Per-user OAuth flow state, callback server, token-cache I/O, userinfo and
-token-exchange helpers, previously duplicated in calendar_auth.py and
-google_docs_auth.py. The duplication caused two real bugs:
+Tokens are minted by ``request_credential(provider=..., kind="oauth")`` and
+stored in the credential vault (kind ``oauth_token``). Legacy per-provider
+file caches at ``data/auth_tokens/<user>/<provider>.json`` are still honoured
+during the migration window: :func:`resolve_oauth_cache` merges vault rows
+with the legacy file (vault wins on account_id collision) and returns a
+single dict-shaped view plus a persist callback that routes writes back to
+whichever store the account originated from.
 
-1. Module-global ``_auth_state`` dicts allowed concurrent users to overwrite
-   each other's pending OAuth flow.
-2. ``_save_account`` referenced ``user_id`` it never accepted as a parameter,
-   crashing OAuth completion with ``NameError`` whenever it ran.
-
-This module fixes both: flow state is keyed by ``(user_id, provider)``, the
-callback handler dispatches by state parameter (unique per flow, signed and
-validated), token persistence accepts ``user_id`` explicitly, and the shared
-Google credential/request/auth-tool helpers keep Calendar and Docs behavior in
-one place.
+The Google credential/request helpers below all read through that resolver,
+so once a user re-auths through the new flow their tools keep working without
+any per-tool code changes.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import http.server
 import json
 import logging
 import os
-import socketserver
-import threading
 import time
-import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 import httpx
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, tool
 
 logger = logging.getLogger(__name__)
-
-OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes
-
-
-# ---------------------------------------------------------------------------
-# Per-user flow state
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class OAuthFlow:
-    """One in-flight OAuth Authorization-Code flow.
-
-    Identified by ``(user_id, provider)``. ``state_param`` is unique per
-    flow and is what the callback handler uses to route an inbound redirect
-    to the right flow, so concurrent flows from different users don't
-    collide.
-    """
-
-    user_id: str
-    provider: str  # e.g. "google_calendar", "google_docs"
-    state_param: str
-    client_id: str
-    client_secret: str
-    token_uri: str
-    redirect_uri: str
-    started_at: float
-    code_verifier: Optional[str] = None
-    auth_code: Optional[str] = None
-    auth_error: Optional[str] = None
-    completed: bool = False
-    port: Optional[int] = None
-    httpd: Any = field(default=None, repr=False)
-    server_thread: Any = field(default=None, repr=False)
-
-
-_FLOW_REGISTRY: Dict[str, OAuthFlow] = {}
-_STATE_INDEX: Dict[str, str] = {}
-_REGISTRY_LOCK = threading.Lock()
-
-
-def _flow_key(user_id: str, provider: str) -> str:
-    return f"{user_id}:{provider}"
-
-
-def register_flow(flow: OAuthFlow) -> None:
-    """Register a new flow, replacing any existing one for the same key.
-
-    Closes the prior flow's HTTP server (if any) so we don't leak file
-    descriptors when a user retries auth_start mid-flow.
-    """
-    key = _flow_key(flow.user_id, flow.provider)
-    with _REGISTRY_LOCK:
-        old = _FLOW_REGISTRY.get(key)
-        if old:
-            _STATE_INDEX.pop(old.state_param, None)
-            if old.httpd is not None:
-                try:
-                    old.httpd.server_close()
-                except Exception:
-                    logger.debug("Error closing previous OAuth HTTP server")
-        _FLOW_REGISTRY[key] = flow
-        _STATE_INDEX[flow.state_param] = key
-
-
-def get_flow(user_id: str, provider: str) -> Optional[OAuthFlow]:
-    with _REGISTRY_LOCK:
-        return _FLOW_REGISTRY.get(_flow_key(user_id, provider))
-
-
-def lookup_flow_by_state(state_param: str) -> Optional[OAuthFlow]:
-    """Find a flow by the ``state`` URL parameter. Used by the HTTP handler
-    to dispatch a single global server's requests to the right flow."""
-    with _REGISTRY_LOCK:
-        key = _STATE_INDEX.get(state_param)
-        if key is None:
-            return None
-        return _FLOW_REGISTRY.get(key)
-
-
-def clear_flow(user_id: str, provider: str) -> None:
-    """Tear down a flow: drop registry entries and close its HTTP server."""
-    key = _flow_key(user_id, provider)
-    with _REGISTRY_LOCK:
-        flow = _FLOW_REGISTRY.pop(key, None)
-        if flow is None:
-            return
-        _STATE_INDEX.pop(flow.state_param, None)
-    if flow.httpd is not None:
-        try:
-            flow.httpd.server_close()
-        except Exception:
-            logger.debug("Error closing OAuth HTTP server on flow clear")
-
-
-# ---------------------------------------------------------------------------
-# Callback HTTP server
-# ---------------------------------------------------------------------------
-
-
-class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
-    """Handles the OAuth redirect callback from the provider.
-
-    The same handler class serves all flows; request dispatch is by the
-    ``state`` URL parameter, which uniquely identifies the flow.
-    """
-
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        returned_state = params.get("state", [None])[0]
-        flow = lookup_flow_by_state(returned_state) if returned_state else None
-
-        if flow is None:
-            # Either no state, or the flow expired / belonged to a different
-            # process. Reject without leaking which case it was.
-            self._send_page(
-                400,
-                "Authentication Failed",
-                "Invalid or expired authentication session. Please start "
-                "the flow again from Nymeria.",
-            )
-            return
-
-        code = params.get("code", [None])[0]
-        error = params.get("error", [None])[0]
-
-        if error:
-            flow.auth_error = error
-            self._send_page(
-                400,
-                "Authentication Denied",
-                f"Provider returned an error: {error}",
-            )
-        elif code:
-            flow.auth_code = code
-            self._send_page(
-                200,
-                "Authentication Successful",
-                "You can close this tab and return to Nymeria.",
-            )
-        else:
-            flow.auth_error = "No code or error in callback."
-            self._send_page(
-                400,
-                "Authentication Failed",
-                "Unexpected callback: no authorization code received.",
-            )
-
-        flow.completed = True
-
-    def _send_page(self, status: int, title: str, message: str):
-        body = f"""<!DOCTYPE html>
-<html><head><title>{title}</title>
-<style>body{{font-family:system-ui,sans-serif;display:flex;justify-content:center;
-align-items:center;min-height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0}}
-.card{{background:#16213e;border-radius:12px;padding:2rem 3rem;text-align:center;
-box-shadow:0 4px 24px rgba(0,0,0,.3)}}h2{{color:{"#4ade80" if status==200 else "#f87171"}}}
-</style></head><body><div class="card"><h2>{title}</h2><p>{message}</p></div></body></html>""".encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format, *args):
-        pass  # Suppress default access logging
-
-
-def start_callback_server(flow: OAuthFlow) -> int:
-    """Open an ephemeral HTTP server for this flow's callback.
-
-    Mutates the flow in place: sets ``port``, ``httpd``, and ``server_thread``.
-    Returns the port. The server handles exactly one request, then closes.
-    If no request arrives within ``OAUTH_TIMEOUT_SECONDS`` the flow is marked
-    timed-out.
-    """
-    httpd = socketserver.TCPServer(("127.0.0.1", 0), _OAuthCallbackHandler)
-    port = httpd.server_address[1]
-
-    flow.httpd = httpd
-    flow.port = port
-
-    def _serve() -> None:
-        httpd.timeout = OAUTH_TIMEOUT_SECONDS
-        try:
-            httpd.handle_request()
-        finally:
-            try:
-                httpd.server_close()
-            except Exception:
-                logger.debug("Error closing OAuth callback server")
-        if not flow.completed:
-            flow.auth_error = "timeout"
-            flow.completed = True
-
-    t = threading.Thread(target=_serve, name=f"oauth-{flow.user_id}-{flow.provider}", daemon=True)
-    t.start()
-    flow.server_thread = t
-    return port
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +139,305 @@ def delete_token_cache(user_id: str, cache_filename: str) -> bool:
         return removed
     path.unlink()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Vault-first OAuth cache resolver
+# ---------------------------------------------------------------------------
+#
+# Two storage shapes exist in production:
+#   1. Legacy: per-user JSON files under ``data/auth_tokens/<user>/<provider>.json``,
+#      mirrored (since the credential vault landed) into a ``legacy_cache`` table
+#      keyed by ``(user_id, cache_filename)``. ``load_token_cache`` /
+#      ``save_token_cache`` already read/write this path transparently.
+#   2. New: ``credentials`` rows of ``kind="oauth_token"`` populated by the
+#      ``request_credential`` flow. Tokens land in ``credential_secret_fields``
+#      under ``access_token`` / ``refresh_token`` and metadata stores
+#      ``account_id``/``email``/``scopes``/``expires_at``/``token_uri``.
+#
+# The resolver below merges both into the legacy in-memory shape so existing
+# consumers (``get_google_credentials``, ``outlook_email.get_access_token``)
+# need only small changes. Vault accounts win on ``account_id`` collision,
+# and refreshed tokens persist back to whichever store the account came from.
+
+
+@dataclass
+class OAuthCacheSource:
+    """Unified read/write handle over vault + legacy OAuth account storage.
+
+    ``cache`` has the legacy shape ``{"accounts": {<account_id>: {...}}}``.
+    Vault-backed accounts carry a ``_vault_credential_id`` sentinel used by
+    ``persist`` to route writes back to the correct credential row. Legacy
+    accounts have no sentinel and route to ``save_token_cache``.
+    """
+
+    cache: dict
+    persist: Callable[[dict], None]
+    has_vault_accounts: bool
+    has_legacy_accounts: bool
+
+
+_VAULT_CRED_ID_KEY = "_vault_credential_id"
+
+
+def _iso_to_epoch_seconds(value: Any) -> float:
+    """Parse an ISO 8601 timestamp into a float epoch. ``0.0`` on failure."""
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        # ``fromisoformat`` accepts ``+00:00`` and ``Z`` (Python 3.11+).
+        text = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _epoch_seconds_to_iso(value: Any) -> str:
+    """Format a float epoch as ISO 8601 UTC. Empty string on falsy input."""
+    if not value:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
+def _resolve_provider_client_id(
+    provider: str,
+    account_metadata_client_id: Optional[str],
+) -> Optional[str]:
+    """Pick a ``client_id`` for refresh. Falls back per provider family.
+
+    Existing vault rows minted before the ``client_id`` metadata fix do not
+    carry it, so the resolver consults the same env/file sources the legacy
+    code path always used.
+    """
+    if account_metadata_client_id:
+        return account_metadata_client_id
+    if provider.startswith("google"):
+        cfg = _load_google_oauth_client_config()
+        cid = cfg.get("client_id") if isinstance(cfg, dict) else None
+        return str(cid) if cid else None
+    if provider == "outlook":
+        # Mirrors outlook_auth.get_client_id() so refresh works in dev setups
+        # without MICROSOFT_MCP_CLIENT_ID.
+        return os.environ.get("MICROSOFT_MCP_CLIENT_ID") or "8ad36cab-9646-40ee-97f5-0ddd7cd6e5c8"
+    return None
+
+
+def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
+    """Read active vault ``oauth_token`` credentials for ``(user_id, provider)``.
+
+    Returns a legacy-shape ``{"accounts": {...}}`` dict, possibly empty.
+    Decryption failures are logged and the affected account is skipped so a
+    single bad row doesn't poison the whole read.
+    """
+    try:
+        from ..core.credential_vault import (
+            CredentialAccessDenied,
+            CredentialSecretUnavailable,
+            get_credential_vault_repo,
+        )
+    except Exception:
+        logger.debug("Credential vault import failed", exc_info=True)
+        return {}
+
+    try:
+        repo = get_credential_vault_repo()
+        all_creds = repo.list_credentials(owner_user_id=user_id, include_disabled=False)
+    except Exception:
+        logger.debug("Vault list_credentials failed for user=%s", user_id, exc_info=True)
+        return {}
+
+    accounts: dict[str, dict] = {}
+    for cred in all_creds:
+        if cred.kind != "oauth_token" or cred.provider != provider or cred.status != "active":
+            continue
+        meta = cred.metadata or {}
+        # Vault credentials are gated by ``allowed_targets`` (e.g. ``native_tool:*``).
+        # The resolver is the canonical native-tool reader; identify as such so
+        # the access check matches the policy stored on the row.
+        secret_kwargs = {
+            "actor_user_id": cred.owner_user_id,
+            "target_type": "native_tool",
+            "target_id": provider,
+        }
+        try:
+            access_token = repo.get_secret_field(cred.id, "access_token", **secret_kwargs)
+        except (CredentialSecretUnavailable, CredentialAccessDenied):
+            logger.warning(
+                "Vault oauth_token %s missing access_token; skipping", cred.id
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Vault oauth_token %s decrypt failed; skipping", cred.id, exc_info=True
+            )
+            continue
+
+        refresh_token = ""
+        try:
+            refresh_token = repo.get_secret_field(cred.id, "refresh_token", **secret_kwargs)
+        except (CredentialSecretUnavailable, CredentialAccessDenied):
+            pass  # refresh_token is optional; some providers don't issue one
+        except Exception:
+            logger.debug(
+                "Vault oauth_token %s refresh_token unavailable", cred.id, exc_info=True
+            )
+
+        account_id = str(meta.get("account_id") or cred.account_label or cred.id)
+        scopes = list(meta.get("scopes") or cred.scopes or [])
+        expires_at_epoch = _iso_to_epoch_seconds(meta.get("expires_at") or cred.expires_at)
+        client_id = _resolve_provider_client_id(provider, meta.get("client_id"))
+
+        accounts[account_id] = {
+            "email": meta.get("email") or cred.account_label or "unknown",
+            "name": meta.get("name") or "Unknown User",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at_epoch,
+            "scopes": scopes,
+            "client_id": client_id,
+            "token_uri": meta.get("token_uri")
+            or ("https://oauth2.googleapis.com/token" if provider.startswith("google") else ""),
+            _VAULT_CRED_ID_KEY: cred.id,
+        }
+
+    return {"accounts": accounts} if accounts else {}
+
+
+def _persist_vault_oauth_account(user_id: str, account_id: str, account: dict) -> None:
+    """Update a single vault ``oauth_token`` row from a refreshed account dict.
+
+    Silently skips accounts without a ``_vault_credential_id`` sentinel (i.e.
+    legacy-origin accounts persisted alongside vault ones).
+    """
+    cred_id = account.get(_VAULT_CRED_ID_KEY)
+    if not cred_id:
+        return
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+    except Exception:
+        logger.debug("Credential vault import failed during persist", exc_info=True)
+        return
+    try:
+        repo = get_credential_vault_repo()
+        existing = repo.get_credential(cred_id)
+    except Exception:
+        logger.warning("Vault get_credential failed for %s", cred_id, exc_info=True)
+        return
+    if existing is None:
+        logger.debug("Vault credential %s vanished before refresh write-back", cred_id)
+        return
+
+    metadata = dict(existing.metadata or {})
+    expires_iso = _epoch_seconds_to_iso(account.get("expires_at"))
+    if expires_iso:
+        metadata["expires_at"] = expires_iso
+    if account.get("scopes"):
+        metadata["scopes"] = list(account["scopes"])
+    if account.get("client_id"):
+        metadata["client_id"] = str(account["client_id"])
+
+    secret_fields = {"access_token": str(account.get("access_token") or "")}
+    if account.get("refresh_token"):
+        secret_fields["refresh_token"] = str(account["refresh_token"])
+
+    try:
+        repo.upsert_credential(
+            credential_id=existing.id,
+            owner_type=existing.owner_type,
+            owner_user_id=existing.owner_user_id,
+            name=existing.name,
+            provider=existing.provider,
+            kind="oauth_token",
+            account_label=existing.account_label,
+            metadata=metadata,
+            scopes=list(metadata.get("scopes") or existing.scopes or []),
+            allowed_targets=existing.allowed_targets or ["native_tool:*"],
+            expires_at=expires_iso or existing.expires_at,
+            status="active",
+            secret_fields=secret_fields,
+            actor_user_id=existing.owner_user_id,
+        )
+    except Exception:
+        logger.warning(
+            "Vault upsert_credential write-back failed for %s", cred_id, exc_info=True
+        )
+
+
+def _persist_oauth_cache(
+    user_id: str,
+    cache_filename: str,
+    cache: dict,
+) -> None:
+    """Route each account in ``cache`` back to its origin store.
+
+    Vault-tagged accounts go to ``_persist_vault_oauth_account``; everything
+    else falls through to ``save_token_cache`` (which already handles the
+    legacy_cache + file fallback). Vault accounts are stripped from the
+    legacy payload so we don't double-write or leak the sentinel.
+    """
+    accounts = cache.get("accounts") or {}
+    legacy_accounts: dict[str, dict] = {}
+    for account_id, account in accounts.items():
+        if _VAULT_CRED_ID_KEY in account:
+            _persist_vault_oauth_account(user_id, account_id, account)
+        else:
+            legacy_accounts[account_id] = account
+
+    # Always persist the legacy half so non-vault accounts (and other top-level
+    # keys like ``pending_auth``) survive a refresh. Strip the vault accounts
+    # so we don't store ciphertext-derived state in the legacy cache.
+    legacy_cache = dict(cache)
+    legacy_cache["accounts"] = legacy_accounts
+    if not legacy_accounts:
+        legacy_cache.pop("accounts", None)
+    save_token_cache(user_id, cache_filename, legacy_cache)
+
+
+def resolve_oauth_cache(
+    user_id: str,
+    provider: str,
+    *,
+    cache_filename: Optional[str] = None,
+) -> OAuthCacheSource:
+    """Return an ``OAuthCacheSource`` merging vault + legacy account storage.
+
+    Read order:
+        1. Vault ``oauth_token`` rows for ``(user_id, provider)``.
+        2. Legacy file/legacy_cache under ``cache_filename`` (defaults to
+           ``<provider>.json``).
+
+    Vault accounts win on ``account_id`` collision. ``persist`` routes each
+    account back to its origin: vault rows via ``upsert_credential``, legacy
+    rows via ``save_token_cache``.
+    """
+    filename = _google_cache_filename(provider, cache_filename)
+    vault_cache = _load_vault_oauth_cache(user_id, provider)
+    legacy_cache = load_token_cache(user_id, filename)
+
+    merged: dict[str, Any] = dict(legacy_cache or {})
+    legacy_accounts = dict((legacy_cache or {}).get("accounts") or {})
+    vault_accounts = dict(vault_cache.get("accounts") or {})
+
+    # Vault overrides legacy on collision.
+    merged_accounts: dict[str, dict] = {}
+    merged_accounts.update(legacy_accounts)
+    merged_accounts.update(vault_accounts)
+    merged["accounts"] = merged_accounts
+
+    def _persist(updated_cache: dict) -> None:
+        _persist_oauth_cache(user_id, filename, updated_cache)
+
+    return OAuthCacheSource(
+        cache=merged,
+        persist=_persist,
+        has_vault_accounts=bool(vault_accounts),
+        has_legacy_accounts=bool(legacy_accounts),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -574,8 +664,9 @@ def get_google_credentials(
     """Return valid Google OAuth credentials for a saved provider account.
 
     ``provider`` is the cache namespace, for example ``google_calendar`` or
-    ``google_docs``. Tokens are refreshed with the same 60-second expiry buffer
-    used by the older per-tool implementations.
+    ``google_docs``. Vault-stored credentials (kind=oauth_token) win on
+    account_id collision over the legacy file/legacy_cache path. Refreshes
+    write back to whichever store the account originated from.
     """
     try:
         from google.oauth2.credentials import Credentials
@@ -586,9 +677,8 @@ def get_google_credentials(
         )
         return None
 
-    filename = _google_cache_filename(provider, cache_filename)
-    cache = load_token_cache(user_id, filename)
-    accounts = cache.get("accounts", {})
+    source = resolve_oauth_cache(user_id, provider, cache_filename=cache_filename)
+    accounts = source.cache.get("accounts", {})
     if not accounts:
         return None
 
@@ -625,8 +715,8 @@ def get_google_credentials(
                 logger.error("%s token refresh failed: %s", display_name, reason)
             return None
         accounts[aid] = account
-        cache["accounts"] = accounts
-        save_token_cache(user_id, filename, cache)
+        source.cache["accounts"] = accounts
+        source.persist(source.cache)
 
     return Credentials(
         token=account.get("access_token"),
@@ -649,12 +739,18 @@ def google_api_request(
     service_name: str,
     service_version: str,
     account_id: Optional[str] = None,
-    auth_tool_name: str,
+    auth_tool_name: Optional[str] = None,
     api_label: str,
     cache_filename: Optional[str] = None,
     build_kwargs: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, Any]:
-    """Execute a Google API operation with shared auth and error handling."""
+    """Execute a Google API operation with shared auth and error handling.
+
+    ``auth_tool_name`` is accepted for backwards-compatibility but no longer
+    used: the legacy per-provider ``*_auth_start`` tools were removed in
+    favour of ``request_credential(provider=..., kind="oauth")``.
+    """
+    del auth_tool_name  # legacy arg; tolerated for callers that still pass it.
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -673,7 +769,10 @@ def google_api_request(
         provider_display_name=api_label,
     )
     if not creds:
-        return False, f"No authenticated Google account. Use {auth_tool_name} to authenticate."
+        return False, (
+            f"No authenticated Google account. Call "
+            f"request_credential(provider=\"{provider}\", kind=\"oauth\") to connect."
+        )
 
     try:
         kwargs = build_kwargs or {}
@@ -691,466 +790,6 @@ def google_api_request(
     except Exception as e:
         logger.error("%s request failed: %s", api_label, e, exc_info=True)
         return False, f"Request failed: {str(e)}"
-
-
-@dataclass(frozen=True)
-class GoogleOAuthToolSpec:
-    """Text and cache settings for one generated Google OAuth tool set."""
-
-    provider: str
-    cache_filename: str
-    scopes: list[str]
-    service_display_name: str
-    setup_api_name: str
-    usable_tools_label: str
-    start_tool_name: str
-    complete_tool_name: str
-    clear_tool_name: str
-    list_tool_name: str
-    no_accounts_message: str
-    no_usable_accounts_message: str
-    list_heading: str
-    post_save_hook: Optional[Callable[[str, str], Optional[str]]] = None
-    post_clear_hook: Optional[Callable[[str, Optional[str]], Optional[str]]] = None
-
-
-def _persist_or_delete_google_cache(user_id: str, spec: GoogleOAuthToolSpec, cache: dict) -> None:
-    if cache:
-        save_token_cache(user_id, spec.cache_filename, cache)
-    else:
-        delete_token_cache(user_id, spec.cache_filename)
-
-
-def _existing_google_auth_message(user_id: str, spec: GoogleOAuthToolSpec) -> Optional[str]:
-    """Return an already-authenticated message, pruning dead tokens first."""
-    cache = load_token_cache(user_id, spec.cache_filename)
-    accounts = cache.get("accounts", {})
-    if not accounts:
-        return None
-
-    required_scopes = set(spec.scopes)
-    changed = False
-    for account_id, account in list(accounts.items()):
-        email = account.get("email", "unknown")
-        has_refresh = bool(account.get("refresh_token"))
-        saved_scopes = set(account.get("scopes", []))
-        missing_scopes = required_scopes - saved_scopes
-
-        if not has_refresh:
-            continue
-        if missing_scopes:
-            logger.info(
-                "%s scope change detected for %s. Missing scopes: %s. "
-                "Proceeding with re-auth.",
-                spec.service_display_name,
-                email,
-                missing_scopes,
-            )
-            continue
-
-        expires_at = account.get("expires_at", 0)
-        if time.time() >= expires_at - 60:
-            status, reason = refresh_google_account(account, spec.scopes)
-            if status == "refreshed":
-                accounts[account_id] = account
-                changed = True
-            elif status == "invalid":
-                logger.info(
-                    "Clearing invalid %s token for %s: %s",
-                    spec.service_display_name,
-                    email,
-                    reason,
-                )
-                del accounts[account_id]
-                changed = True
-                continue
-            else:
-                if changed:
-                    cache["accounts"] = accounts
-                    _persist_or_delete_google_cache(user_id, spec, cache)
-                return (
-                    f"[Warning]: Found expired {spec.service_display_name} credentials for "
-                    f"**{account.get('name', 'Unknown')}** ({email}), but could not "
-                    f"verify the refresh token: {reason}\n\n"
-                    f"Use `{spec.clear_tool_name}` to remove the saved token, then run "
-                    f"`{spec.start_tool_name}` again."
-                )
-
-        if changed:
-            cache["accounts"] = accounts
-            _persist_or_delete_google_cache(user_id, spec, cache)
-
-        return (
-            f"[Info]: Already authenticated as **{account.get('name', 'Unknown')}** ({email}). "
-            "Tokens will auto-refresh. To add another account or re-authenticate, "
-            f"call `{spec.clear_tool_name}` first."
-        )
-
-    if changed:
-        if accounts:
-            cache["accounts"] = accounts
-        else:
-            cache.pop("accounts", None)
-        _persist_or_delete_google_cache(user_id, spec, cache)
-
-    return None
-
-
-def _build_google_auth_success_message(
-    spec: GoogleOAuthToolSpec,
-    account_id: str,
-    email: str,
-    name: str,
-) -> str:
-    return (
-        f"[Success]: {spec.service_display_name} authentication complete!\n\n"
-        f"**Account:** {name} ({email})\n"
-        f"**Account ID:** {account_id}\n\n"
-        f"You can now use the {spec.usable_tools_label}."
-    )
-
-
-def _exchange_and_save_google_flow(
-    user_id: str,
-    spec: GoogleOAuthToolSpec,
-    flow: OAuthFlow,
-    auth_code: str,
-) -> tuple[bool, str]:
-    success, token_data = exchange_code_for_tokens(
-        auth_code,
-        flow.client_id,
-        flow.client_secret,
-        flow.redirect_uri,
-        flow.token_uri,
-        flow.code_verifier,
-    )
-    if not success:
-        return False, f"[Error]: {token_data}"
-
-    account_id, email, name = save_google_account(
-        user_id,
-        spec.cache_filename,
-        token_data,
-        flow.client_id,
-        flow.client_secret,
-        flow.token_uri,
-        spec.scopes,
-    )
-    hook_message = None
-    if spec.post_save_hook:
-        try:
-            hook_message = spec.post_save_hook(user_id, account_id)
-        except Exception as e:
-            logger.warning(
-                "%s post-save hook failed for %s: %s",
-                spec.service_display_name,
-                account_id,
-                e,
-                exc_info=True,
-            )
-            hook_message = (
-                f"[Warning]: {spec.service_display_name} authentication succeeded, "
-                f"but post-auth setup failed: {e}"
-            )
-    clear_flow(user_id, spec.provider)
-    message = _build_google_auth_success_message(spec, account_id, email, name)
-    if hook_message:
-        message = f"{message}\n\n{hook_message}"
-    return True, message
-
-
-def _run_google_post_clear_hook(
-    user_id: str,
-    spec: GoogleOAuthToolSpec,
-    account_id: Optional[str],
-) -> Optional[str]:
-    if not spec.post_clear_hook:
-        return None
-    try:
-        return spec.post_clear_hook(user_id, account_id)
-    except Exception as e:
-        logger.warning(
-            "%s post-clear hook failed for %s: %s",
-            spec.service_display_name,
-            account_id or "(all)",
-            e,
-            exc_info=True,
-        )
-        return (
-            f"[Warning]: {spec.service_display_name} auth cache was cleared, "
-            f"but post-clear cleanup failed: {e}"
-        )
-
-
-def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
-    """Generate start/complete/clear/list tools for one Google OAuth provider."""
-    from .utils import get_user_id
-
-    @tool(
-        spec.start_tool_name,
-        description=f"Start {spec.service_display_name} OAuth authentication.",
-    )
-    def auth_start(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
-        user_id = get_user_id(config)
-
-        existing_message = _existing_google_auth_message(user_id, spec)
-        if existing_message:
-            return existing_message
-
-        existing = get_flow(user_id, spec.provider)
-        if existing and existing.server_thread and existing.server_thread.is_alive() and not existing.completed:
-            elapsed = time.time() - existing.started_at
-            remaining = max(0, OAUTH_TIMEOUT_SECONDS - elapsed)
-            return (
-                "[Info]: Authentication is already in progress!\n\n"
-                "Open the authorization URL in your browser (if you haven't already), "
-                f"then call {spec.complete_tool_name}.\n\n"
-                f"The session will expire in about {int(remaining / 60)} minutes."
-            )
-
-        creds_path = get_google_credentials_path()
-        if not creds_path:
-            return (
-                "[Error]: GOOGLE_OAUTH_CREDENTIALS environment variable is not set or the file was not found.\n\n"
-                "**Setup instructions:**\n"
-                "1. Go to https://console.cloud.google.com\n"
-                "2. Create a project (or select existing)\n"
-                f"3. Enable the **{spec.setup_api_name}** under APIs & Services > Library\n"
-                "4. Go to APIs & Services > Credentials > Create Credentials > OAuth Client ID\n"
-                "5. Application type: **Desktop app**\n"
-                "6. Download the JSON credentials file\n"
-                "7. Set `GOOGLE_OAUTH_CREDENTIALS=/path/to/credentials.json` in your .env file\n"
-                "8. Restart Nymeria and try again"
-            )
-
-        try:
-            with open(creds_path) as f:
-                client_config = json.load(f)
-            creds_data = client_config.get("installed") or client_config.get("web")
-            if not creds_data:
-                return "[Error]: Invalid credentials file format. Expected 'installed' or 'web' key in the JSON."
-
-            client_id = creds_data["client_id"]
-            client_secret = creds_data["client_secret"]
-            auth_uri = creds_data.get("auth_uri", "https://accounts.google.com/o/oauth2/auth")
-            token_uri = creds_data.get("token_uri", "https://oauth2.googleapis.com/token")
-
-            import secrets
-
-            code_verifier = secrets.token_urlsafe(64)
-            flow = OAuthFlow(
-                user_id=user_id,
-                provider=spec.provider,
-                state_param=secrets.token_urlsafe(16),
-                client_id=client_id,
-                client_secret=client_secret,
-                token_uri=token_uri,
-                redirect_uri="",
-                started_at=time.time(),
-                code_verifier=code_verifier,
-            )
-            register_flow(flow)
-            port = start_callback_server(flow)
-            flow.redirect_uri = f"http://localhost:{port}"
-
-            params = {
-                "client_id": client_id,
-                "redirect_uri": flow.redirect_uri,
-                "response_type": "code",
-                "scope": " ".join(spec.scopes),
-                "access_type": "offline",
-                "prompt": "consent",
-                "state": flow.state_param,
-                "code_challenge": _pkce_challenge(code_verifier),
-                "code_challenge_method": "S256",
-            }
-            auth_url = auth_uri + "?" + urllib.parse.urlencode(params)
-
-            return (
-                "[Success]: Authorization URL generated.\n\n"
-                "**Open this URL in your browser to sign in:**\n\n"
-                f"{auth_url}\n\n"
-                "After signing in and granting access, the page should redirect automatically "
-                "and show a success message.\n\n"
-                f"Then call `{spec.complete_tool_name}` to finish.\n\n"
-                "**If the redirect page doesn't load** (e.g. Docker/remote), copy the full URL "
-                "from your browser's address bar and give it to me. I'll extract the auth code from it."
-            )
-
-        except KeyError as e:
-            return f"[Error]: Credentials file is missing required field: {e}"
-        except json.JSONDecodeError:
-            return "[Error]: Credentials file is not valid JSON."
-        except Exception as e:
-            logger.error("%s failed: %s", spec.start_tool_name, e, exc_info=True)
-            return f"[Error]: Failed to start authentication: {str(e)}"
-
-    @tool(
-        spec.clear_tool_name,
-        description=f"Clear saved {spec.service_display_name} authentication.",
-    )
-    def auth_clear(
-        account_id: Optional[str] = None,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
-    ) -> str:
-        user_id = get_user_id(config)
-        cache = load_token_cache(user_id, spec.cache_filename)
-        accounts = cache.get("accounts", {})
-
-        clear_flow(user_id, spec.provider)
-
-        if account_id:
-            account = accounts.pop(account_id, None)
-            if account is None:
-                return (
-                    f"[Info]: No {spec.service_display_name} account found with ID `{account_id}`. "
-                    f"Use {spec.list_tool_name} to see saved accounts."
-                )
-
-            email = account.get("email", "unknown")
-            name = account.get("name", "Unknown")
-            if accounts:
-                cache["accounts"] = accounts
-            else:
-                cache.pop("accounts", None)
-            _persist_or_delete_google_cache(user_id, spec, cache)
-            message = (
-                f"[Success]: Cleared {spec.service_display_name} authentication for "
-                f"**{name}** ({email}). Run `{spec.start_tool_name}` to authenticate again."
-            )
-            hook_message = _run_google_post_clear_hook(user_id, spec, account_id)
-            if hook_message:
-                message = f"{message}\n\n{hook_message}"
-            return message
-
-        removed_count = len(accounts)
-        cache.pop("accounts", None)
-        _persist_or_delete_google_cache(user_id, spec, cache)
-        hook_message = _run_google_post_clear_hook(user_id, spec, None)
-
-        if removed_count:
-            message = (
-                f"[Success]: Cleared {removed_count} saved {spec.service_display_name} account(s) "
-                f"and any pending {spec.service_display_name} OAuth flow. "
-                f"Run `{spec.start_tool_name}` to authenticate again."
-            )
-            if hook_message:
-                message = f"{message}\n\n{hook_message}"
-            return message
-
-        message = (
-            f"[Info]: No saved {spec.service_display_name} authentication was present. "
-            f"Any pending {spec.service_display_name} OAuth flow was cleared."
-        )
-        if hook_message:
-            message = f"{message}\n\n{hook_message}"
-        return message
-
-    @tool(
-        spec.complete_tool_name,
-        description=f"Complete pending {spec.service_display_name} OAuth authentication.",
-    )
-    def auth_complete(
-        redirect_url: Optional[str] = None,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
-    ) -> str:
-        user_id = get_user_id(config)
-        flow = get_flow(user_id, spec.provider)
-        if flow is None:
-            return f"[Error]: No pending authentication. Please call {spec.start_tool_name} first."
-
-        if redirect_url:
-            try:
-                parsed = urllib.parse.urlparse(redirect_url)
-                params = urllib.parse.parse_qs(parsed.query)
-                auth_code = params.get("code", [None])[0]
-                returned_state = params.get("state", [None])[0]
-                if not auth_code:
-                    return "[Error]: No authorization code found in the URL. Make sure you copied the full URL from the browser's address bar."
-            except Exception:
-                return "[Error]: Could not parse the redirect URL. Please copy the complete URL."
-
-            if returned_state != flow.state_param:
-                return (
-                    "[Error]: State parameter mismatch. The URL may be from a different "
-                    f"auth session. Please call {spec.start_tool_name} to begin again."
-                )
-
-            _, message = _exchange_and_save_google_flow(user_id, spec, flow, auth_code)
-            return message
-
-        server_alive = flow.server_thread is not None and flow.server_thread.is_alive()
-        if not flow.completed and server_alive:
-            elapsed = int(time.time() - flow.started_at)
-            remaining = max(0, OAUTH_TIMEOUT_SECONDS - elapsed)
-            return (
-                f"[Info]: Still waiting for browser redirect ({elapsed}s elapsed, "
-                f"{remaining}s remaining).\n\n"
-                "Open the URL in your browser if you haven't yet.\n\n"
-                "If the redirect page didn't load, copy the full URL from your "
-                "browser's address bar and call this tool again with `redirect_url`."
-            )
-
-        if flow.auth_error == "timeout":
-            clear_flow(user_id, spec.provider)
-            return f"[Error]: Authentication timed out (5 minutes). Please call {spec.start_tool_name} to begin again."
-
-        if flow.auth_error:
-            err = flow.auth_error
-            clear_flow(user_id, spec.provider)
-            return f"[Error]: Authentication failed: {err}. Please call {spec.start_tool_name} to try again."
-
-        if not flow.auth_code:
-            clear_flow(user_id, spec.provider)
-            return f"[Error]: Authentication completed but no code was received. Please call {spec.start_tool_name} to try again."
-
-        success, message = _exchange_and_save_google_flow(user_id, spec, flow, flow.auth_code)
-        if not success:
-            clear_flow(user_id, spec.provider)
-        return message
-
-    @tool(
-        spec.list_tool_name,
-        description=f"List authenticated accounts for {spec.service_display_name}.",
-    )
-    def list_accounts(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
-        user_id = get_user_id(config)
-        cache = load_token_cache(user_id, spec.cache_filename)
-        accounts = cache.get("accounts", {})
-
-        if not accounts:
-            return spec.no_accounts_message
-
-        rows, changed = validate_google_accounts_for_display(accounts, spec.scopes)
-        if changed:
-            if accounts:
-                cache["accounts"] = accounts
-            else:
-                cache.pop("accounts", None)
-            _persist_or_delete_google_cache(user_id, spec, cache)
-
-        if not rows:
-            return spec.no_usable_accounts_message
-
-        lines = [spec.list_heading]
-        for row in rows:
-            row_account_id = row["account_id"]
-            info = row["account"]
-            email = info.get("email", "unknown")
-            name = info.get("name", "Unknown")
-            status = row["status"]
-
-            lines.append(f"- **{name}** ({email})")
-            lines.append(f"  Account ID: `{row_account_id}` ({status})")
-            if not row["usable"] and row.get("reason"):
-                lines.append(
-                    f"  Action: run `{spec.clear_tool_name}(account_id=\"{row_account_id}\")`, "
-                    f"then `{spec.start_tool_name}`."
-                )
-
-        return "\n".join(lines)
-
-    return [auth_start, auth_complete, auth_clear, list_accounts]
 
 
 def exchange_code_for_tokens(

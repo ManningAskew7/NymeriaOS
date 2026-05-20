@@ -2696,7 +2696,7 @@ tool_create(
 
 ### auth_manager
 
-Agent-safe credential management facade. Optional tool, disabled by default.
+Agent-safe credential management facade. Default-enabled on every new thread so the agent can always introspect and disable stored credentials without the user pre-enabling it.
 
 ```python
 auth_manager(
@@ -2992,18 +2992,12 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 
 ### Outlook Tools (18)
 
-Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_auth.py` (4 auth), `tools/outlook_email.py` (13 email), and `tools/outlook_attachments.py` (1 attachment).
-Microsoft tokens are stored with the shared cache I/O helpers in
-`tools/auth_cache_utils.py` at `data/auth_tokens/<user_id>/microsoft.json`.
+Used internally by OutlookAgent. Also available as **optional tools** for per-thread enabling. Defined in `tools/outlook_email.py` (13 email) and `tools/outlook_attachments.py` (1 attachment).
+Microsoft tokens land in the credential vault as `kind=oauth_token` via the unified `request_credential(provider="outlook", kind="oauth")` flow; legacy file caches at `data/auth_tokens/<user_id>/microsoft.json` are still consulted as a read-only fallback for backwards compatibility.
 
-**Authentication tools:**
+**Authentication:**
 
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `outlook_auth_start` | `()` | Start Microsoft OAuth device code flow. Returns URL and code. |
-| `outlook_auth_complete` | `()` | Complete auth after user signs in. Polls Microsoft (up to 5 min). |
-| `outlook_auth_clear` | `(account_id?)` | Clear one saved Microsoft account by ID, or all Microsoft accounts plus any pending device-code flow when omitted. |
-| `outlook_list_authenticated_accounts` | `()` | List all authenticated Microsoft accounts with IDs. |
+The agent connects Outlook by calling `request_credential(provider="outlook", kind="oauth")`. Outlook supports both `auth_code` (browser redirect, default when `NYMERIA_PUBLIC_URL` is set) and `device_code` (RFC 8628 short code, used automatically when `NYMERIA_PUBLIC_URL` is unset). To disconnect an Outlook account the user removes the credential from Settings → Connections or the agent calls `auth_manager(action="disable", credential_id=...)`.
 
 **Email tools:**
 
@@ -3031,45 +3025,21 @@ Microsoft tokens are stored with the shared cache I/O helpers in
 
 ---
 
-### Gmail Auth Tools (4)
+### Gmail Authentication
 
-Optional Google Gmail OAuth tools for MCP auth bridging. They use the same
-Google OAuth factory as Calendar and Docs, but request Gmail scopes and store
-tokens at `data/auth_tokens/<user_id>/google_gmail.json`.
+Gmail uses the unified `request_credential(provider="google_gmail", kind="oauth")` flow. Tokens land in the vault as `kind=oauth_token` with the Gmail scope set. The provider descriptor has a `post_save_hook` that exports a google-auth-library compatible token file to `data/auth_tokens/<user_id>/mcp/gmail/credentials.json` whenever Gmail is connected; the matching `post_clear_hook` removes that file on disconnect.
 
-After `gmail_auth_complete` succeeds, Nymeria exports a google-auth-library
-compatible token file to `data/auth_tokens/<user_id>/mcp/gmail/credentials.json`.
-Managed MCP install/retry/create automatically applies this file as
-`GMAIL_CREDENTIALS_PATH` for `@gongrzhe/server-gmail-autoauth-mcp` and applies
-`GOOGLE_OAUTH_CREDENTIALS` as `GMAIL_OAUTH_PATH`. Existing Calendar or Docs
-Google tokens are exported only if they already include the Gmail scopes; most
-older tokens will require `gmail_auth_start` because Google scopes are fixed at
-consent time.
-
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `gmail_auth_start` | `()` | Start Google Gmail OAuth flow. Returns authorization URL for the user. |
-| `gmail_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in and export MCP credentials. |
-| `gmail_auth_clear` | `(account_id?)` | Clear one saved Gmail account by ID, or all Gmail accounts plus any pending Gmail OAuth flow when omitted. |
-| `gmail_list_accounts` | `()` | List authenticated Google accounts for Gmail with verified token/scopes status. Invalid refresh tokens are pruned. |
+Managed MCP install/retry/create automatically applies the exported file as `GMAIL_CREDENTIALS_PATH` for `@gongrzhe/server-gmail-autoauth-mcp` and applies `GOOGLE_OAUTH_CREDENTIALS` as `GMAIL_OAUTH_PATH`. Google scopes are fixed at consent time, so a Calendar or Docs token that does not already include Gmail scopes will not satisfy the MCP server; the agent has to ask the user to connect Gmail explicitly.
 
 ---
 
-### Calendar Tools (15)
+### Calendar Tools (11)
 
-Native Python Google Calendar API client. Defined in `tools/calendar_auth.py` (4 auth) and `tools/calendar.py` (11 event). Uses `google-api-python-client` for direct API calls with agent-guided OAuth flow.
-Calendar auth tools are generated from the shared Google OAuth factory in
-`tools/auth_cache_utils.py`; Calendar API calls use the same module's
-credential refresh and request wrapper.
+Native Python Google Calendar API client. Defined in `tools/calendar.py`. Uses `google-api-python-client` for direct API calls and the unified credential flow for OAuth.
 
-**Authentication tools:**
+**Authentication:**
 
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `calendar_auth_start` | `()` | Start Google OAuth flow. Returns authorization URL for the user. |
-| `calendar_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
-| `calendar_auth_clear` | `(account_id?)` | Clear one saved Google Calendar account by ID, or all Calendar accounts plus any pending Calendar OAuth flow when omitted. |
-| `calendar_list_authenticated_accounts` | `()` | List authenticated Google accounts with verified token/scopes status. Invalid refresh tokens are pruned. |
+The agent connects Google Calendar by calling `request_credential(provider="google_calendar", kind="oauth")`. Tokens land in the vault as `kind=oauth_token`. Calendar API calls go through `tools/auth_cache_utils.get_google_credentials`, which performs a vault-first lookup with legacy file-cache fallback at `data/auth_tokens/<user_id>/google_calendar.json`. Token refresh writes the new access token back to the vault.
 
 **Event tools:**
 
@@ -3091,23 +3061,13 @@ credential refresh and request wrapper.
 
 ---
 
-### Google Docs/Drive/Sheets/Tasks/Contacts/Slides/Chat Auth Tools (4)
+### Google Workspace Authentication
 
-The Google Docs, Drive, Sheets, Tasks, Contacts, Slides, and Chat tools share one OAuth cache at `data/auth_tokens/<user_id>/google_docs.json`. Account-list output verifies scopes and refreshability before presenting an account as usable.
-The auth tools are generated by the same `tools/auth_cache_utils.py` Google
-OAuth factory used by Calendar. Workspace API calls share its credential
-refresh and request wrapper.
-
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `google_docs_auth_start` | `()` | Start Google Workspace OAuth flow. Returns authorization URL for the user. |
-| `google_docs_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
-| `google_docs_auth_clear` | `(account_id?)` | Clear one saved Google account by ID, or all Workspace accounts plus any pending OAuth flow when omitted. |
-| `google_docs_list_accounts` | `()` | List authenticated Google accounts for Workspace tools with verified token/scopes status. Invalid refresh tokens are pruned. |
+The Google Docs, Drive, Sheets, Tasks, Contacts, Slides, and Chat tools share one OAuth connection. The agent connects it via `request_credential(provider="google_docs", kind="oauth")`. Tokens land in the vault as `kind=oauth_token` with the union of Workspace scopes. Workspace API calls read the vault first and fall back to the legacy file cache at `data/auth_tokens/<user_id>/google_docs.json` while older accounts are still being migrated.
 
 ### Google Workspace Service Tools (34)
 
-These optional tools reuse the `google_docs_auth_start` OAuth connection and the vault-backed `google_docs.json` token cache. Existing Google accounts authenticated before Tasks/Contacts/Slides/Chat support may need to re-authenticate so the stored token includes the broader Workspace scopes.
+These optional tools reuse the same Workspace OAuth connection. Existing Google accounts authenticated before Tasks/Contacts/Slides/Chat support may need to reconnect via `request_credential` so the stored token includes the broader Workspace scopes.
 
 - Tasks: `google_tasks_list_tasklists`, `google_tasks_list_tasks`, `google_tasks_get_task`, `google_tasks_create_task`, `google_tasks_update_task`, `google_tasks_complete_task`, and `google_tasks_delete_task`. Listing/get are SAFE; create/update/complete/delete are MODERATE.
 - Contacts: `google_contacts_list_contacts`, `google_contacts_get_contact`, `google_contacts_create_contact`, `google_contacts_update_contact`, and `google_contacts_delete_contact`. Listing/get are SAFE; create/update/delete are MODERATE.
@@ -3117,20 +3077,13 @@ These optional tools reuse the `google_docs_auth_start` OAuth connection and the
 
 ---
 
-### Google Analytics Auth Tools (4)
+### Google Analytics Authentication
 
-Google Analytics uses its own OAuth cache at `data/auth_tokens/<user_id>/google_analytics.json` so Analytics scopes do not force re-authentication for existing Google Docs/Drive accounts.
-
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `google_analytics_auth_start` | `()` | Start Google Analytics OAuth flow. Returns authorization URL for the user. |
-| `google_analytics_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
-| `google_analytics_auth_clear` | `(account_id?)` | Clear one saved Google Analytics account by ID, or all Analytics accounts plus any pending OAuth flow when omitted. |
-| `google_analytics_list_accounts` | `()` | List authenticated Google accounts for Analytics tools with verified token/scopes status. Invalid refresh tokens are pruned. |
+Google Analytics uses its own OAuth connection so Analytics scopes do not force re-authentication for existing Google Docs/Drive accounts. The agent connects it via `request_credential(provider="google_analytics", kind="oauth")`. Tokens land in the vault; the legacy file cache at `data/auth_tokens/<user_id>/google_analytics.json` is consulted as a read-only fallback.
 
 ### Google Analytics Service Tools (4)
 
-These optional tools reuse the `google_analytics_auth_start` OAuth connection and are read-only:
+These optional tools reuse the Google Analytics OAuth connection and are read-only:
 - `google_analytics_list_account_summaries(page_size?, page_token?, account_id?)` lists visible Analytics accounts and GA4 properties.
 - `google_analytics_get_metadata(property_id, account_id?)` lists available GA4 dimensions and metrics.
 - `google_analytics_run_report(property_id, metrics?, dimensions?, start_date?, end_date?, limit?, offset?, order_bys_json?, filters_json?, keep_empty_rows?, account_id?)` runs a GA4 Data API report.
@@ -3138,20 +3091,13 @@ These optional tools reuse the `google_analytics_auth_start` OAuth connection an
 
 ---
 
-### Google Business Profile Auth Tools (4)
+### Google Business Profile Authentication
 
-Google Business Profile uses its own OAuth cache at `data/auth_tokens/<user_id>/google_business_profile.json` and requires the Google Business Profile APIs to be enabled for the OAuth client.
-
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `google_business_profile_auth_start` | `()` | Start Google Business Profile OAuth flow. Returns authorization URL for the user. |
-| `google_business_profile_auth_complete` | `(redirect_url?)` | Complete auth after browser sign-in. Accepts optional redirect URL for manual fallback. |
-| `google_business_profile_auth_clear` | `(account_id?)` | Clear one saved Google Business Profile account by ID, or all Business Profile accounts plus any pending OAuth flow when omitted. |
-| `google_business_profile_list_accounts` | `()` | List authenticated Google accounts for Business Profile tools with verified token/scopes status. Invalid refresh tokens are pruned. |
+Google Business Profile uses its own OAuth connection and requires the Google Business Profile APIs to be enabled for the OAuth client. The agent connects it via `request_credential(provider="google_business_profile", kind="oauth")`. Tokens land in the vault; the legacy file cache at `data/auth_tokens/<user_id>/google_business_profile.json` is consulted as a read-only fallback.
 
 ### Google Business Profile Service Tools (11)
 
-These optional tools reuse the `google_business_profile_auth_start` OAuth connection:
+These optional tools reuse the Google Business Profile OAuth connection:
 - `google_business_profile_list_profile_accounts(page_size?, page_token?, account_id?)` lists managed Business Profile accounts.
 - `google_business_profile_list_locations(account_name, read_mask?, page_size?, page_token?, account_id?)` lists locations for an account.
 - `google_business_profile_list_reviews(account_name, location_name, page_size?, page_token?, order_by?, account_id?)` and `google_business_profile_get_review(review_name, account_name?, location_name?, account_id?)` read reviews.

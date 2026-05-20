@@ -9,6 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config.llm_providers import is_known_llm_provider
+from ...config.oauth_providers import get_oauth_provider
 from ...core import secrets as nymeria_secrets
 from ...core.accounts import AuthenticatedUser
 from ...core.credential_tests import test_credential_fields
@@ -71,6 +72,36 @@ def _is_llm_credential(record: Any) -> bool:
         str(target).startswith(f"{LLM_PROVIDER_TARGET_TYPE}:")
         for target in targets
     )
+
+
+def _fire_oauth_post_clear_hook(record: Any) -> None:
+    """Run the provider's ``post_clear_hook`` (e.g. wipe Gmail MCP export).
+
+    Fires on both hard delete and disable: a disabled OAuth credential is no
+    longer usable, so any cached side-files derived from it (Gmail MCP
+    google-auth credentials.json, ...) should be torn down too.
+    """
+    if getattr(record, "kind", None) != "oauth_token":
+        return
+    descriptor = get_oauth_provider(getattr(record, "provider", None))
+    if descriptor is None or descriptor.post_clear_hook is None:
+        return
+    user_id = getattr(record, "owner_user_id", None)
+    if not user_id:
+        return
+    account_id = None
+    metadata = getattr(record, "metadata", None) or {}
+    if isinstance(metadata, dict):
+        account_id = metadata.get("account_id")
+    try:
+        descriptor.post_clear_hook(user_id, account_id)
+    except Exception:
+        logger.warning(
+            "OAuth post_clear_hook failed for provider=%s credential=%s",
+            descriptor.provider_id,
+            getattr(record, "id", "?"),
+            exc_info=True,
+        )
 
 
 def _invalidate_llm_graphs(get_agent_fn: Callable[[], Any], record: Any) -> None:
@@ -285,6 +316,8 @@ def create_credentials_router(
                 actor_is_admin=user.role == "admin",
             )
         )
+        if deleted:
+            _fire_oauth_post_clear_hook(record)
         _invalidate_llm_graphs(get_agent_fn, record)
         return {"status": "ok", "deleted": deleted, "hard": hard}
 
