@@ -1097,17 +1097,29 @@ class TriggerManager:
         user_id: str,
         trigger: TriggerDefinition,
     ) -> None:
-        """Send a notification (no LLM call)."""
+        """Send a notification (no LLM call).
+
+        Accepts either ``profile`` (current notification model) or the legacy
+        ``platform`` key for backward compatibility with trigger configs
+        created before the destinations/profiles refactor.
+        """
         from ..tools.notify import notify
 
         template = config.get("message_template", "Trigger {trigger_name} fired.")
         message = _safe_format(template, template_vars)
-        platform = config.get("platform") or "auto"
+        profile = config.get("profile")
+        platform = config.get("platform")
         thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+
+        invoke_args: dict = {"message": message}
+        if profile:
+            invoke_args["profile"] = profile
+        elif platform:
+            invoke_args["platform"] = platform
 
         logger.info(f"[TRIGGER] Sending notification: {message[:100]}...")
         result = notify.invoke(
-            {"message": message, "platform": platform},
+            invoke_args,
             config={"configurable": {"user_id": user_id, "thread_id": thread_id}},
         )
         logger.info(f"[TRIGGER] Notify result: {result}")

@@ -280,11 +280,16 @@
     return threadConfig?.inAppNotificationLevel ?? 'notify_only';
   }
 
+  function getInitialNotificationProfile(): string | null {
+    return threadConfig?.notificationProfile ?? null;
+  }
+
   let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
   let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
   let showPromptMetadata = $state(getInitialShowPromptMetadata());
   let telegramAutonomousDelivery = $state<TelegramAutonomousDelivery>(getInitialTelegramAutonomousDelivery());
   let inAppNotificationLevel = $state<InAppNotificationLevel>(getInitialInAppNotificationLevel());
+  let notificationProfile = $state<string | null>(getInitialNotificationProfile());
 
   // Search
   let toolSearch = $state('');
@@ -489,6 +494,8 @@
 
     const origNotificationLevel = threadConfig?.inAppNotificationLevel ?? 'notify_only';
     if (inAppNotificationLevel !== origNotificationLevel) return true;
+    const origNotificationProfile = threadConfig?.notificationProfile ?? null;
+    if ((notificationProfile ?? null) !== origNotificationProfile) return true;
 
     return false;
   }
@@ -612,6 +619,11 @@
       updates.show_prompt_metadata = showPromptMetadata;
       updates.telegram_autonomous_delivery = telegramAutonomousDelivery;
       updates.in_app_notification_level = inAppNotificationLevel;
+      if (notificationProfile === null || notificationProfile === '') {
+        updates.clear_notification_profile = true;
+      } else {
+        updates.notification_profile = notificationProfile;
+      }
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -672,6 +684,7 @@
       showPromptMetadata = false;
       telegramAutonomousDelivery = 'full';
       inAppNotificationLevel = 'notify_only';
+      notificationProfile = null;
       threadsStore.updateThread(thread.id, {
         callable: false,
         platform: platformAfterCallableChange(thread, false),
@@ -693,6 +706,7 @@
         showPromptMetadata: false,
         telegramAutonomousDelivery: 'full',
         inAppNotificationLevel: 'notify_only',
+        notificationProfile: null,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -1152,6 +1166,7 @@
           {thread}
           bind:telegramAutonomousDelivery
           bind:inAppNotificationLevel
+          bind:notificationProfile
         />
 
       {/if}

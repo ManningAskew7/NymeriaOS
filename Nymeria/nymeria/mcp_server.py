@@ -884,6 +884,206 @@ async def nymeria_rag_search(query: str, max_results: int = 5, user_id: str = "d
 
 
 # =============================================================================
+# Notifications (destinations, profiles, preferences)
+# =============================================================================
+
+
+@mcp.tool()
+async def nymeria_notification_channel_types(user_id: str = "default") -> Dict[str, Any]:
+    """List the channel TYPES available for new notification destinations.
+
+    Use this when guiding the user through setup so you know which keys each
+    type expects (e.g. webhook needs ``url``; telegram needs ``chat_id``).
+    """
+    return await _json_call(
+        "GET", "/notifications/channel-types", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_destination_list(user_id: str = "default") -> Dict[str, Any]:
+    """List the user's notification destinations (telegram chat, email, webhook, push, etc.)."""
+    return await _json_call(
+        "GET", "/notifications/destinations", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_destination_add(
+    name: str,
+    type: str,
+    config: Optional[Dict[str, Any]] = None,
+    secret_fields: Optional[Dict[str, str]] = None,
+    enabled: bool = True,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Create a notification destination.
+
+    ``config`` carries non-secret keys (chat_id, webhook URL, email
+    recipient). ``secret_fields`` carries secrets (bearer tokens, etc.).
+    Call ``nymeria_notification_channel_types`` first to see which keys the
+    chosen ``type`` expects.
+    """
+    if not name or not type:
+        return {"error": "name and type are required"}
+    body: Dict[str, Any] = {
+        "name": name,
+        "type": type,
+        "config": config or {},
+        "secret_fields": secret_fields or {},
+        "enabled": bool(enabled),
+    }
+    return await _json_call(
+        "POST", "/notifications/destinations", user_id=user_id, body=body,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_destination_update(
+    dest_id: str,
+    name: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    secret_fields: Optional[Dict[str, Optional[str]]] = None,
+    enabled: Optional[bool] = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Patch a notification destination. ``secret_fields`` values of null
+    delete the field; strings replace it. Omit keys to leave them unchanged.
+    """
+    if not dest_id:
+        return {"error": "dest_id is required"}
+    body: Dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if config is not None:
+        body["config"] = config
+    if secret_fields is not None:
+        body["secret_fields"] = secret_fields
+    if enabled is not None:
+        body["enabled"] = bool(enabled)
+    return await _json_call(
+        "PATCH",
+        f"/notifications/destinations/{_enc(dest_id)}",
+        user_id=user_id,
+        body=body,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_destination_delete(
+    dest_id: str, user_id: str = "default",
+) -> Dict[str, Any]:
+    """Delete a notification destination. Also removes it from every profile."""
+    if not dest_id:
+        return {"error": "dest_id is required"}
+    return await _json_call(
+        "DELETE", f"/notifications/destinations/{_enc(dest_id)}", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_destination_test(
+    dest_id: str,
+    message: str = "Test notification from Nymeria",
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Send a test message to a single destination. Does NOT write to the
+    in-app feed -- the result is returned in the response."""
+    if not dest_id:
+        return {"error": "dest_id is required"}
+    return await _json_call(
+        "POST",
+        f"/notifications/destinations/{_enc(dest_id)}/test",
+        user_id=user_id,
+        body={"message": message},
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_profile_list(user_id: str = "default") -> Dict[str, Any]:
+    """List the user's notification profiles (bundles of destinations)."""
+    return await _json_call(
+        "GET", "/notifications/profiles", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_profile_add(
+    name: str,
+    destination_names: Optional[List[str]] = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Create a notification profile referencing zero or more destinations
+    by their user-facing names."""
+    if not name:
+        return {"error": "name is required"}
+    return await _json_call(
+        "POST",
+        "/notifications/profiles",
+        user_id=user_id,
+        body={"name": name, "destination_names": list(destination_names or [])},
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_profile_update(
+    profile_id: str,
+    name: Optional[str] = None,
+    destination_names: Optional[List[str]] = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Patch a notification profile (rename it, or replace its destination list)."""
+    if not profile_id:
+        return {"error": "profile_id is required"}
+    body: Dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if destination_names is not None:
+        body["destination_names"] = list(destination_names)
+    return await _json_call(
+        "PATCH",
+        f"/notifications/profiles/{_enc(profile_id)}",
+        user_id=user_id,
+        body=body,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_profile_delete(
+    profile_id: str, user_id: str = "default",
+) -> Dict[str, Any]:
+    """Delete a notification profile."""
+    if not profile_id:
+        return {"error": "profile_id is required"}
+    return await _json_call(
+        "DELETE", f"/notifications/profiles/{_enc(profile_id)}", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_preferences_get(user_id: str = "default") -> Dict[str, Any]:
+    """Get the user-level notification preferences (default profile name, etc.)."""
+    return await _json_call(
+        "GET", "/notifications/preferences", user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def nymeria_notification_preferences_set(
+    default_profile: Optional[str] = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    """Update user-level notification preferences. Omit a field to leave it
+    unchanged."""
+    body: Dict[str, Any] = {}
+    if default_profile is not None:
+        body["default_profile"] = default_profile
+    return await _json_call(
+        "PATCH", "/notifications/preferences", user_id=user_id, body=body,
+    )
+
+
+# =============================================================================
 # Server Entry Points
 # =============================================================================
 

@@ -171,6 +171,15 @@ DEFAULT_RAG_PREFERENCES = {
 }
 
 
+# Default notification preferences (stored in UserProfile.preferences under
+# the 'notifications' key). ``default_profile`` is the profile name the
+# ``notify`` tool routes through when no per-call or per-thread override is
+# given. The profile itself lives in the notification_destinations DB.
+DEFAULT_NOTIFICATION_PREFERENCES = {
+    "default_profile": "default",
+}
+
+
 class UserProfile(BaseModel):
     """User profile containing memories and preferences."""
 
@@ -325,6 +334,21 @@ class UserProfile(BaseModel):
         if "rag" not in self.preferences:
             self.preferences["rag"] = {}
         self.preferences["rag"][key] = value
+        self.updated_at = utc_now()
+
+    def get_notification_preferences(self) -> Dict[str, Any]:
+        """Notification routing preferences, with defaults applied.
+
+        ``default_profile`` is the name of the destination profile the notify
+        tool routes through when no per-call or per-thread override is given.
+        """
+        prefs = self.preferences.get("notifications", {})
+        return {**DEFAULT_NOTIFICATION_PREFERENCES, **prefs}
+
+    def set_notification_preference(self, key: str, value: Any) -> None:
+        if "notifications" not in self.preferences:
+            self.preferences["notifications"] = {}
+        self.preferences["notifications"][key] = value
         self.updated_at = utc_now()
 
 

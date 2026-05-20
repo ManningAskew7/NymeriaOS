@@ -75,14 +75,17 @@ def create_activity_router(
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
         _settings: Any = Depends(get_settings_fn),
+        limit: int = Query(default=100, le=200, description="Max notifications to return"),
     ):
         """
         Get notifications for a user.
 
-        Returns all notifications with unread count.
+        Returns the most recent notifications (up to ``limit``) with the
+        unread count for the bell badge. The in-app feed doubles as an audit
+        log of every notify call so external-only sends still appear here.
         """
         store = get_notification_store()
-        notifications = store.get_all(user_id, limit=50)
+        notifications = store.get_all(user_id, limit=limit)
         unread_count = store.get_unread_count(user_id)
 
         return NotificationsListResponse(
@@ -94,6 +97,10 @@ def create_activity_router(
                     task_id=n.task_id,
                     created_at=n.created_at,
                     read=n.read,
+                    profile=getattr(n, "profile", None),
+                    attempted=list(getattr(n, "attempted", []) or []),
+                    delivered_to=list(getattr(n, "delivered_to", []) or []),
+                    errors=dict(getattr(n, "errors", {}) or {}),
                 )
                 for n in notifications
             ],
@@ -130,5 +137,32 @@ def create_activity_router(
         count = store.mark_all_read(user_id)
 
         return {"status": "ok", "marked_read": count}
+
+    @router.delete("/notifications/{notification_id}")
+    async def delete_notification(
+        notification_id: str,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+        _settings: Any = Depends(get_settings_fn),
+    ):
+        """Permanently delete a single notification from the in-app feed."""
+        store = get_notification_store()
+        if not store.delete(notification_id, user_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Notification '{notification_id}' not found",
+            )
+        return {"status": "ok", "notification_id": notification_id}
+
+    @router.delete("/notifications")
+    async def clear_notifications(
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+        _settings: Any = Depends(get_settings_fn),
+    ):
+        """Permanently clear all notifications for the user."""
+        store = get_notification_store()
+        store.clear(user_id)
+        return {"status": "ok"}
 
     return router

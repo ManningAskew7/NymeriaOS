@@ -215,7 +215,11 @@ export class TodosApi extends ThreadsApi {
             threadId: n.thread_id as string | undefined,
             taskId: n.task_id as string | undefined,
             createdAt: this.parseUtcTimestamp(n.created_at as string),
-            read: n.read as boolean
+            read: n.read as boolean,
+            profile: (n.profile as string | null) ?? null,
+            attempted: Array.isArray(n.attempted) ? (n.attempted as string[]) : [],
+            deliveredTo: Array.isArray(n.delivered_to) ? (n.delivered_to as string[]) : [],
+            errors: (n.errors as Record<string, string>) ?? {}
           }) as Notification
       ),
       unreadCount: data.unread_count as number
@@ -241,6 +245,34 @@ export class TodosApi extends ThreadsApi {
       `${this.getBaseUrl()}/notifications/read-all`,
       {
         method: 'POST',
+        headers: this.getHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+  }
+
+  async deleteNotification(notificationId: string): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/notifications/${encodeURIComponent(notificationId)}`,
+      {
+        method: 'DELETE',
+        headers: this.getHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+  }
+
+  async clearAllNotifications(): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/notifications`,
+      {
+        method: 'DELETE',
         headers: this.getHeaders()
       }
     );

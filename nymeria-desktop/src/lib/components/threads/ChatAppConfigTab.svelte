@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Thread, ThreadConfig } from '$lib/types';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
+  import { notificationStore } from '$lib/stores/notifications.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
@@ -12,13 +13,33 @@
     thread: Thread;
     telegramAutonomousDelivery: TelegramAutonomousDelivery;
     inAppNotificationLevel: InAppNotificationLevel;
+    notificationProfile: string | null | undefined;
   }
 
   let {
     thread,
     telegramAutonomousDelivery = $bindable(),
     inAppNotificationLevel = $bindable(),
+    notificationProfile = $bindable(),
   }: Props = $props();
+
+  // Lazy-load the notification profiles/preferences so the dropdown can render
+  // the user's profile names. Safe to call unconditionally; the store no-ops
+  // if data is already loaded.
+  let profilesLoaded = $state(false);
+  $effect(() => {
+    if (!profilesLoaded) {
+      profilesLoaded = true;
+      notificationStore.loadConfig().catch(() => {});
+    }
+  });
+
+  // Empty string in the <select> maps to null in the API payload (= "use
+  // the user-level default profile").
+  function onProfileChange(event: Event) {
+    const value = (event.target as HTMLSelectElement).value;
+    notificationProfile = value === '' ? null : value;
+  }
 
   let showChatAppWizard = $state(false);
   let showMyBotWizard = $state(false);
@@ -83,6 +104,28 @@
       <option value="all_autonomous">All autonomous completions</option>
       <option value="off">Off</option>
     </select>
+
+    <label class="field-label" for="notification-profile">
+      Notification profile override
+    </label>
+    <select
+      id="notification-profile"
+      class="field-input"
+      value={notificationProfile ?? ''}
+      onchange={onProfileChange}
+    >
+      <option value="">
+        Use account default ({notificationStore.preferences?.defaultProfile ?? 'default'})
+      </option>
+      {#each notificationStore.profiles as p (p.id)}
+        <option value={p.name}>{p.name}</option>
+      {/each}
+    </select>
+    <p class="field-hint">
+      Pick which destination profile the <code>notify</code> tool routes
+      through on this thread. Manage profiles and destinations in
+      Settings → Notifications.
+    </p>
   </div>
 
   {#if chatAppLoadError}

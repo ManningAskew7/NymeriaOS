@@ -25,8 +25,18 @@
     notificationStore.markRead(notificationId);
   }
 
+  function handleDelete(notificationId: string) {
+    notificationStore.deleteNotification(notificationId);
+  }
+
   function handleMarkAllRead() {
     notificationStore.markAllRead();
+  }
+
+  function handleClearAll() {
+    if (confirm('Clear all notifications? This cannot be undone.')) {
+      notificationStore.clearAllNotifications();
+    }
   }
 
   $effect(() => {
@@ -40,15 +50,23 @@
   <div class="notification-center" role="dialog" aria-label="Notifications">
     <div class="notification-header">
       <h3 class="notification-title">Notifications</h3>
-      {#if notificationStore.unreadCount > 0}
-        <button
-          class="mark-all-btn"
-          type="button"
-          onclick={handleMarkAllRead}
-        >
-          Mark all read
-        </button>
-      {/if}
+      <div class="header-actions">
+        {#if notificationStore.unreadCount > 0}
+          <button class="header-btn" type="button" onclick={handleMarkAllRead}>
+            Mark all read
+          </button>
+        {/if}
+        {#if notificationStore.notifications.length > 0}
+          <button
+            class="header-btn subtle"
+            type="button"
+            onclick={handleClearAll}
+            title="Delete all notifications"
+          >
+            Clear
+          </button>
+        {/if}
+      </div>
     </div>
 
     <div class="notification-list">
@@ -68,6 +86,7 @@
             {notification}
             onclick={() => handleNotificationClick(notification)}
             onDismiss={() => handleDismiss(notification.id)}
+            onDelete={() => handleDelete(notification.id)}
           />
         {/each}
       {/if}
@@ -108,7 +127,12 @@
     color: var(--text-primary);
   }
 
-  .mark-all-btn {
+  .header-actions {
+    display: flex;
+    gap: var(--spacing-xs);
+  }
+
+  .header-btn {
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
     padding: var(--spacing-xs) var(--spacing-sm);
@@ -116,7 +140,11 @@
     transition: all var(--transition-fast);
   }
 
-  .mark-all-btn:hover {
+  .header-btn.subtle {
+    color: var(--text-muted);
+  }
+
+  .header-btn:hover {
     background: var(--bg-hover);
   }
 

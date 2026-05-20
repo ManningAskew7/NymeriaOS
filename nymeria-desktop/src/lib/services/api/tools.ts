@@ -10,9 +10,9 @@ import type {
   UnifiedTool,
   UnifiedToolListResponse
 } from '$lib/types';
-import { TodosApi } from './todos';
+import { NotificationsApi } from './notifications';
 
-export class ToolsApi extends TodosApi {
+export class ToolsApi extends NotificationsApi {
   async getTools(): Promise<Tool[]> {
     const response = await fetch(`${this.getBaseUrl()}/tools`, {
       headers: this.getHeaders()

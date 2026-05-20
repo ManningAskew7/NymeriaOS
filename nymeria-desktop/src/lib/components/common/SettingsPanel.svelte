@@ -13,6 +13,7 @@
   import { CredentialManagerPanel } from '../credentials';
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
+  import NotificationsPanel from '../notifications/NotificationsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import { AccountTab, UsersTab } from '../account';
@@ -160,7 +161,7 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'voice' | 'proxy' | 'account' | 'users';
+  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
   const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
@@ -504,6 +505,14 @@
       disabled={!serverSettings}
     >
       Skills
+    </button>
+    <button
+      class="tab"
+      class:active={activeTab === 'notifications'}
+      onclick={() => (activeTab = 'notifications')}
+      disabled={!serverSettings}
+    >
+      Notifications
     </button>
     {#if isAdmin}
       <button
@@ -1265,6 +1274,12 @@
   {#if activeTab === 'skills'}
     <div class="tab-content tab-content-full">
       <SkillsPanel />
+    </div>
+  {/if}
+
+  {#if activeTab === 'notifications'}
+    <div class="tab-content tab-content-full">
+      <NotificationsPanel />
     </div>
   {/if}
 

@@ -1513,29 +1513,29 @@ nym_todo_list(filter_status: Optional[str] = None)
 
 ### notify
 
-Send notifications to the in-app notification center and messaging platforms
-(Telegram, Discord, Slack, Teams).
+Send a notification to the user through their configured channels.
 
 ```python
-notify(message: str, platform: Literal["auto", "desktop", "telegram", "discord", "slack", "teams"] = "auto")
+notify(message: str, profile: Optional[str] = None)
 ```
 
 **Parameters:**
-- `message` (`str`): The message text to send
-- `platform` (`Literal["auto", "desktop", "telegram", "discord", "slack", "teams"]`, default `"auto"`): Target platform. `"auto"` creates an in-app notification and tries all configured platforms.
+- `message` (`str`): The message text to send.
+- `profile` (`Optional[str]`): Name of a destination profile to route through. Omit to use the per-thread or per-user default profile.
 
-**Returns:** Success/error message.
+**Returns:** A status string summarising which destinations succeeded or failed.
 
-**Requires:** Platform-specific credentials in `.env`:
-- Desktop/in-app: no external credentials
-- Telegram: bound Telegram chat for the current thread, or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_CHAT_ID` fallback
-- Discord: `DISCORD_WEBHOOK_URL`
-- Slack: `SLACK_WEBHOOK_URL`
-- Teams: `TEAMS_TEAM_ID` + `TEAMS_CHANNEL_ID` plus Microsoft auth
+**Resolution order for the profile:**
+1. `profile` arg on the call (per-call override).
+2. `ThreadConfig.notification_profile` (per-thread override; set in the Chat-App tab of thread settings).
+3. `UserProfile.preferences['notifications']['default_profile']` (user-level default; set in Settings -> Notifications).
+4. The built-in `"default"` profile, auto-seeded from any existing global env config (TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, etc.).
 
-**Behavior in auto mode:** Creates a notification-center row unless the thread disables in-app notifications, then tries all configured external platforms. If the current thread is a Telegram thread or is bound to a Telegram chat, Telegram delivery is routed through that chat; otherwise Telegram falls back to the configured default chat. If any destination succeeds, returns the success messages (failures are not reported in mixed outcomes). If all fail, returns all errors.
+**Audit-log behaviour:** Every call ALSO writes a row in the in-app notification feed regardless of which external destinations were used. The row carries `delivered_to`, `attempted`, and `errors` so the desktop sidebar can render badges showing where the notification went and which destinations failed.
 
-**Architecture:** Platform senders, notification-level helpers, and composite dispatch functions live in `core/notification_dispatch.py`. The `notify` tool, the ticker (scheduled TODO completions), the API chat endpoint (autonomous completions), and the watchdog (stale TODO alerts) all delegate to this shared module rather than owning independent notification logic. `create_autonomous_notification()` combines in-app notification creation with FCM push in a single call gated by the per-thread `in_app_notification_level` setting.
+**Backward compatibility:** A legacy `platform=` keyword is still accepted (with a deprecation log line) to keep older trigger configs and prompts working without edits. Map: `telegram` -> destination `telegram-default`, etc. New code should use `profile` exclusively.
+
+**Architecture:** Destinations (concrete delivery targets) and profiles (named bundles of destinations) live in the SQLite-backed `NotificationDestinationsRepo` (`core/notification_destinations.py`). Channel types (telegram, discord, slack, teams, webhook, fcm, email_outlook) live in a registry in `core/notification_channels.py`. See [`notifications.md`](notifications.md) for the full reference.
 
 ### tool_search
 

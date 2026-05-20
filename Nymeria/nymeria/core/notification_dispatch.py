@@ -8,11 +8,12 @@ Discord, Slack, Teams, event bus).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import httpx
 
 if TYPE_CHECKING:
+    from .notification_channels import DispatchResult
     from .thread_config import ThreadConfigManager
 
 logger = logging.getLogger(__name__)
@@ -221,11 +222,21 @@ def create_in_app_notification(
     *,
     task_id: Optional[str] = None,
     in_app_level: Optional[str] = None,
+    profile: Optional[str] = None,
+    attempted: Optional[List[str]] = None,
+    delivered_to: Optional[List[str]] = None,
+    errors: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Create an unread notification-center item and publish an ``in_app_only`` event.
 
     *in_app_level* may be passed to avoid re-reading thread config when the
     caller already knows it. If ``"off"``, the call is skipped.
+
+    The ``profile`` / ``attempted`` / ``delivered_to`` / ``errors`` fields are
+    audit-log metadata: when the notify tool dispatches through a profile,
+    this is how the frontend shows badges like "sent to telegram, email" on
+    the in-app row even though only the in-app channel goes through this
+    helper.
     """
     if in_app_level == "off":
         return "Skipped Desktop notification (disabled for thread)"
@@ -237,6 +248,10 @@ def create_in_app_notification(
             summary=message[:200],
             thread_id=thread_id if thread_id and thread_id != "default" else None,
             task_id=task_id,
+            profile=profile,
+            attempted=attempted,
+            delivered_to=delivered_to,
+            errors=errors,
         )
         try:
             from .event_bus import publish_autonomous_event
@@ -255,6 +270,76 @@ def create_in_app_notification(
     except Exception as e:
         logger.error("In-app notification failed: %s", e)
         return f"Desktop error: {e}"
+
+
+def send_via_profile(
+    *,
+    message: str,
+    user_id: str,
+    thread_id: str,
+    task_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    thread_default_profile: Optional[str] = None,
+    user_default_profile: Optional[str] = None,
+    in_app_level: Optional[str] = None,
+    settings=None,
+) -> "DispatchResult":
+    """Resolve a notification profile and dispatch to every destination it
+    references, then write a single in-app audit-log row capturing the
+    outcome.
+
+    Resolution order: explicit ``profile_name`` arg > per-thread default >
+    per-user default > built-in ``"default"`` profile (auto-seeded from env
+    config on first use).
+    """
+    from ..config import get_settings
+    from .notification_channels import (
+        SendContext,
+        dispatch_to_profile,
+        ensure_seeded_destinations,
+        resolve_profile_name,
+    )
+    from .notification_destinations import get_destinations_repo
+
+    settings = settings or get_settings()
+    repo = get_destinations_repo()
+    ensure_seeded_destinations(user_id=user_id, settings=settings, repo=repo)
+
+    chosen_profile = resolve_profile_name(
+        user_id=user_id,
+        repo=repo,
+        explicit=profile_name,
+        thread_default=thread_default_profile,
+        user_default=user_default_profile,
+    )
+
+    ctx = SendContext(
+        user_id=user_id,
+        thread_id=thread_id or "",
+        settings=settings,
+        task_id=task_id or "",
+    )
+    result = dispatch_to_profile(
+        message=message,
+        profile_name=chosen_profile,
+        ctx=ctx,
+        repo=repo,
+    )
+
+    if in_app_level != "off":
+        create_in_app_notification(
+            message,
+            user_id=user_id,
+            thread_id=thread_id,
+            task_id=task_id,
+            in_app_level=in_app_level,
+            profile=chosen_profile,
+            attempted=result.attempted,
+            delivered_to=result.delivered_to,
+            errors=result.errors,
+        )
+
+    return result
 
 
 def create_autonomous_notification(

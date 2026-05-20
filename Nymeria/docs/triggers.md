@@ -125,19 +125,23 @@ Multiple events in one poll cycle are batched into a single LLM call to avoid fl
 
 ### notify
 
-Calls the `notify` tool without an LLM turn. By default this creates an
-in-app notification and sends to any configured external notification
-destinations.
+Calls the `notify` tool without an LLM turn. Routes through the user's
+configured notification profile (or a specific named profile if you set
+one). Always writes an audit-log row in the in-app feed.
 
 ```json
 {
   "type": "notify",
   "config": {
-    "message_template": "RSS update: {title} — {link}",
-    "platform": "auto"
+    "message_template": "RSS update: {title} - {link}",
+    "profile": "urgent"
   }
 }
 ```
+
+`profile` is optional; omit to use the per-thread or per-user default
+profile. The legacy `"platform": "telegram"` key is still accepted for
+backward compatibility. See [`notifications.md`](notifications.md).
 
 ### create_todo
 

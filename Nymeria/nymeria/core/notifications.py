@@ -10,7 +10,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,14 +26,11 @@ _notification_locks = KeyedRLockMap()
 class Notification(BaseModel):
     """A single notification entry.
 
-    Attributes:
-        id: Unique notification identifier
-        user_id: User who should see this notification
-        summary: Short notification text (shown in notification center)
-        thread_id: Optional thread to navigate to when clicked
-        task_id: Optional task ID that generated this notification
-        created_at: When the notification was created
-        read: Whether the notification has been read
+    Doubles as the in-app audit log for every ``notify`` tool call: even when
+    the message is delivered to external destinations only (Telegram, email,
+    webhook, etc.), a row is created here so the user has a single feed of
+    everything Nymeria has notified them about. ``attempted`` / ``delivered_to``
+    / ``errors`` record where the agent tried to send it and what happened.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -43,6 +40,22 @@ class Notification(BaseModel):
     task_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     read: bool = False
+    profile: Optional[str] = Field(
+        default=None,
+        description="Notification profile that was used (None for autonomous/system notifications)",
+    )
+    attempted: List[str] = Field(
+        default_factory=list,
+        description="Destination names that were attempted",
+    )
+    delivered_to: List[str] = Field(
+        default_factory=list,
+        description="Destination names that successfully received the message",
+    )
+    errors: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-destination error details for attempts that failed",
+    )
 
 
 class NotificationStore:
@@ -53,7 +66,10 @@ class NotificationStore:
     with automatic retention of unread notifications.
     """
 
-    MAX_NOTIFICATIONS = 50  # Keep last N notifications per user
+    # In-app feed doubles as an audit log of every notify call, so the cap
+    # is higher than a typical "unread bell" UI. Unread rows are always
+    # preserved; once over the cap, the oldest read rows are evicted first.
+    MAX_NOTIFICATIONS = 200
 
     def __init__(self, data_dir: Path):
         """
@@ -83,6 +99,11 @@ class NotificationStore:
         summary: str,
         thread_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        *,
+        profile: Optional[str] = None,
+        attempted: Optional[List[str]] = None,
+        delivered_to: Optional[List[str]] = None,
+        errors: Optional[Dict[str, str]] = None,
     ) -> Notification:
         """
         Create a new notification.
@@ -92,6 +113,10 @@ class NotificationStore:
             summary: Short notification text
             thread_id: Optional thread to navigate to
             task_id: Optional originating task ID
+            profile: Notification profile that routed this notification
+            attempted: Destination names that were tried
+            delivered_to: Destination names that succeeded
+            errors: Per-destination error details
 
         Returns:
             The created Notification
@@ -101,6 +126,10 @@ class NotificationStore:
             summary=summary[:200],  # Truncate if too long
             thread_id=thread_id,
             task_id=task_id,
+            profile=profile,
+            attempted=list(attempted or []),
+            delivered_to=list(delivered_to or []),
+            errors=dict(errors or {}),
         )
 
         lock = self._get_lock(user_id)
@@ -350,22 +379,24 @@ def create_notification(
     summary: str,
     thread_id: Optional[str] = None,
     task_id: Optional[str] = None,
+    *,
+    profile: Optional[str] = None,
+    attempted: Optional[List[str]] = None,
+    delivered_to: Optional[List[str]] = None,
+    errors: Optional[Dict[str, str]] = None,
 ) -> Notification:
-    """
-    Convenience function to create a notification.
+    """Convenience function to create a notification.
 
-    Args:
-        user_id: User to notify
-        summary: Short notification text
-        thread_id: Optional thread to navigate to
-        task_id: Optional originating task ID
-
-    Returns:
-        The created Notification
+    Passes optional audit-log fields through to the store so the in-app feed
+    reflects every channel the notification was sent to.
     """
     return get_notification_store().create(
         user_id=user_id,
         summary=summary,
         thread_id=thread_id,
         task_id=task_id,
+        profile=profile,
+        attempted=attempted,
+        delivered_to=delivered_to,
+        errors=errors,
     )

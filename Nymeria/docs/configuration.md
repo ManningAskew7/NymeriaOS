@@ -659,6 +659,7 @@ separately.
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
 | `ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS` | `24` | Lifetime for the first-run bootstrap admin token. The plaintext bootstrap token file is also deleted after first successful auth. |
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
+| `NYMERIA_PUBLIC_URL` | - | Browser-reachable public API origin used to build one-time credential setup links for chat bots, e.g. `https://nymeria.example.com`. Desktop modal prompts still work when unset; chat bots will report that a public URL is required. |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
@@ -1452,6 +1453,21 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 
 - **`none`**: No automatic context management (manual `/compact` still available)
 
+### Notification Routing (Destinations + Profiles)
+
+Nymeria's notification system is driven by user-configured **destinations**
+(concrete delivery targets) and **profiles** (named bundles) stored in
+`data/accounts.db`, not by environment variables. The env vars listed under
+the Telegram / Discord / Slack / Teams sections below are used ONLY for
+auto-seeding default destinations on first run so existing deployments keep
+working without reconfiguration.
+
+To configure destinations interactively, use **Settings → Notifications** in
+the desktop app, or have the agent do it via the
+`nymeria_notification_destination_*` MCP tools. See
+[`notifications.md`](notifications.md) for the data model, channel-type
+registry, and REST API.
+
 ### Watchdog, TODO, and Push Notifications
 
 | Variable | Default | Description |
@@ -1593,6 +1609,9 @@ DATABASE_BACKEND=sqlite
 # NYMERIA_SERVICE_TOKEN is the admin service token used by bots/ticker/watchdog
 # (with X-Nymeria-Act-As) for per-user routing.
 NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
+# Public browser URL for one-time credential setup links in chat bots.
+# Localhost HTTP is fine for local development; production should use HTTPS.
+# NYMERIA_PUBLIC_URL=https://nymeria.example.com
 API_HOST=0.0.0.0
 API_PORT=8000
 # NYMERIA_API_DOCS=false            # Set true only in trusted local development

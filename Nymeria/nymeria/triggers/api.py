@@ -32,6 +32,7 @@ from ..api.routers.credentials import create_credentials_router
 from ..api.routers.credential_prompts import create_credential_prompts_router
 from ..api.routers.custom_tools import create_custom_tools_router
 from ..api.routers.activity import create_activity_router
+from ..api.routers.notifications_config import create_notifications_config_router
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
 from ..api.routers.google_chat_bot import create_google_chat_bot_router
@@ -775,7 +776,7 @@ def create_api_app(
         )
     )
     app.include_router(create_credentials_router(verify_api_key, require_admin_user, get_agent))
-    app.include_router(create_credential_prompts_router(verify_api_key, get_agent))
+    app.include_router(create_credential_prompts_router(verify_api_key, get_agent, get_settings))
     app.include_router(create_workspace_router(require_admin_user))
     app.include_router(create_rag_router(verify_api_key, get_agent, _require_same_user_or_admin))
     app.include_router(create_memory_router(verify_api_key, get_agent, _require_same_user_or_admin))
@@ -784,6 +785,14 @@ def create_api_app(
     app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(
+        create_notifications_config_router(
+            verify_api_key,
+            _authed_user_id,
+            get_agent,
+            get_settings,
+        )
+    )
     app.include_router(create_todos_router(verify_api_key, require_admin_user, _authed_user_id, get_settings))
     app.include_router(create_commands_router(verify_api_key, get_agent, get_settings))
     app.include_router(create_autonomous_stream_router(get_agent, get_settings))

@@ -1,9 +1,9 @@
 """Dashboard activity and notification API schemas."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ActivityEntryResponse(BaseModel):
@@ -25,7 +25,12 @@ class ActivityLogResponse(BaseModel):
 
 
 class NotificationResponse(BaseModel):
-    """Response model for a single notification."""
+    """Response model for a single notification.
+
+    Includes audit-log fields (``profile``, ``attempted``, ``delivered_to``,
+    ``errors``) so the desktop sidebar can render badges showing every
+    external channel each notification reached.
+    """
 
     id: str
     summary: str
@@ -33,6 +38,10 @@ class NotificationResponse(BaseModel):
     task_id: Optional[str] = None
     created_at: datetime
     read: bool
+    profile: Optional[str] = None
+    attempted: List[str] = Field(default_factory=list)
+    delivered_to: List[str] = Field(default_factory=list)
+    errors: Dict[str, str] = Field(default_factory=dict)
 
 
 class NotificationsListResponse(BaseModel):
