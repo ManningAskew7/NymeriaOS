@@ -450,6 +450,19 @@ class NymeriaAgent:
             f"model={self.settings.llm_model}, tools={self.tool_registry.list_tools()}"
         )
 
+        # Best-effort Anthropic /v1/models fetch so the attachment-capability
+        # path uses live ``capabilities.image_input.supported`` /
+        # ``pdf_input.supported`` data for the default provider. No-op when
+        # the configured provider isn't anthropic or no API key is set.
+        if (self.settings.llm_provider or "").strip().lower() == "anthropic":
+            try:
+                from ..config.model_capabilities import refresh_anthropic_models
+                count = refresh_anthropic_models()
+                if count:
+                    logger.info(f"Anthropic capability cache primed with {count} models")
+            except Exception as e:
+                logger.debug(f"Anthropic model fetch skipped on startup: {e}")
+
     def _prepare_tool_reload_state_for_turn(self, thread_id: str, caller: str) -> None:
         from .agent_tool_reload import prepare_tool_reload_state_for_turn
         return prepare_tool_reload_state_for_turn(self, thread_id, caller)
@@ -963,11 +976,77 @@ class NymeriaAgent:
         from .agent_tools import sync_default_thread_tools
         sync_default_thread_tools(self, old_core, new_core)
 
+    def _sandbox_pending_attachments(
+        self,
+        thread_id: str,
+        message: str,
+        attachments: Optional[List[Dict[str, str]]],
+        images: Optional[List[Dict[str, str]]],
+    ) -> tuple[str, List[Dict[str, str]], List[Any], Optional[str]]:
+        """Sandbox non-image attachments and prepend a preamble to ``message``.
+
+        Returns ``(updated_message, image_attachments, sandbox_records, error)``.
+        Used by both ``chat()`` and ``astream()`` so the two entry points agree
+        on how attachments are split (images stay inline; documents go to disk
+        and are referenced from the message preamble).
+
+        ``error`` is non-None when an attachment can't be processed; callers
+        should surface it as the turn's error response.
+        """
+        image_attachments: List[Dict[str, str]] = []
+        sandbox_records: list = []
+        if not (attachments or images):
+            return message, image_attachments, sandbox_records, None
+
+        from .attachment_sandbox import build_attachment_preamble, write_attachment
+        from ..config.model_capabilities import infer_mime_type, normalize_attachment_file_type
+
+        all_atts: List[Dict[str, str]] = list(attachments or [])
+        if images:
+            for img in images:
+                all_atts.append({
+                    "file_type": "image",
+                    "data_url": img.get("data_url", ""),
+                    "mime_type": img.get("mime_type", ""),
+                })
+
+        for att in all_atts:
+            mime = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
+            file_type = normalize_attachment_file_type(
+                att.get("file_type", ""),
+                mime,
+                att.get("file_name", ""),
+            )
+            if file_type == "image":
+                image_attachments.append(att)
+            elif file_type == "document":
+                try:
+                    record = write_attachment(thread_id, {**att, "mime_type": mime})
+                except (ValueError, OSError) as e:
+                    return message, image_attachments, sandbox_records, (
+                        f"Failed to sandbox attachment "
+                        f"'{att.get('file_name', '?')}': {e}"
+                    )
+                sandbox_records.append(record)
+            else:
+                return message, image_attachments, sandbox_records, (
+                    f"Unsupported attachment type for "
+                    f"'{att.get('file_name', '?')}'. Supported: image, "
+                    "PDF, DOCX, XLSX, TXT, MD, CSV."
+                )
+
+        if sandbox_records:
+            message = build_attachment_preamble(sandbox_records) + message
+        return message, image_attachments, sandbox_records, None
+
     def chat(
         self,
         message: str,
         thread_id: str = "default",
         user_id: str = "default",
+        attachments: Optional[List[Dict[str, str]]] = None,
+        images: Optional[List[Dict[str, str]]] = None,
+        force_unsupported_attachments: bool = False,
         _is_self_invoke: bool = False,
         _trigger_override: Optional[str] = None,
         source: Optional[str] = None,
@@ -992,6 +1071,15 @@ class NymeriaAgent:
         """
         if not message.strip():
             return "Please provide a message."
+
+        # Sandbox non-image attachments before any lock acquisition, matching
+        # the astream() path. Errors surface as the sync turn's return string
+        # because chat() has no SSE channel.
+        message, image_attachments, sandbox_records, attachment_error = (
+            self._sandbox_pending_attachments(thread_id, message, attachments, images)
+        )
+        if attachment_error is not None:
+            return attachment_error
 
         from .pending_prompt_queue import (
             PendingPromptQueueClosingError,
@@ -1108,35 +1196,29 @@ class NymeriaAgent:
             except Exception as e:
                 logger.warning(f"Thread {thread_id}: Pre-flight compact failed in chat(): {e}")
 
-            # Check for pending summary (from pre-flight compact or manual /compact)
-            pending_summary = self.get_pending_summary(thread_id)
-            if pending_summary:
-                message_with_context = self._compaction.format_user_resume(
-                    message_with_context, pending_summary
-                )
-                logger.info(f"Thread {thread_id}: Attached pending summary to user message (chat)")
-
-            # Attach pending notepad content (from compaction)
-            pending_notepad = self._compaction.pop_pending_notepad(thread_id)
-            if pending_notepad:
-                message_with_context += self._format_notepad_section(pending_notepad)
-                logger.info(f"Thread {thread_id}: Attached pending notepad to user message (chat)")
-
             # Pass user_id through config for tools to access
             # callbacks=[] prevents LLM events from leaking into a parent
             # astream_events() when chat() is called from inside a tool
             config = self._graph_run_config(thread_id, user_id, callbacks=[])
 
-            # Create message - mark autonomous wake-ups as internal so they're filtered from user history
-            if _is_self_invoke:
-                human_msg = _create_human_message(
-                    message_with_context,
-                    internal=True,
-                    internal_type="autonomous_wakeup",
-                )
-            else:
-                human_msg = HumanMessage(content=message_with_context)
-            input_state = {"messages": [human_msg]}
+            # Delegate pending-summary / notepad attachment, image-content-block
+            # building, and additional_kwargs metadata to the same helper the
+            # streaming path uses, so the two entry points share one
+            # multimodal/HumanMessage construction code path.
+            from .agent_streaming_input import prepare_astream_input
+            input_state, _context_summary, input_error = prepare_astream_input(
+                self,
+                message_with_context=message_with_context,
+                thread_id=thread_id,
+                image_attachments=image_attachments,
+                sandbox_records=sandbox_records,
+                force_unsupported_attachments=force_unsupported_attachments,
+                is_self_invoke=_is_self_invoke,
+            )
+            if input_error:
+                return str(input_error.get("content") or "Failed to prepare chat input.")
+            if input_state is None:
+                return "Failed to prepare chat input."
 
             try:
                 self._prepare_tool_reload_state_for_turn(thread_id, "chat")
@@ -1441,6 +1523,18 @@ class NymeriaAgent:
             yield {"type": "error", "content": "Please provide a message."}
             return
 
+        # Sandbox non-image attachments upfront so both the queue and the
+        # lock-held path see the same on-disk files. The preamble baked into
+        # ``message`` references the resulting sandbox paths so the agent can
+        # ``file_read`` them via existing core tools instead of carrying the
+        # bytes through every turn of context.
+        message, image_attachments, sandbox_records, attachment_error = (
+            self._sandbox_pending_attachments(thread_id, message, attachments, images)
+        )
+        if attachment_error is not None:
+            yield {"type": "error", "content": attachment_error}
+            return
+
         from .pending_prompt_queue import (
             FanoutMailbox,
             PendingPromptQueueClosingError,
@@ -1491,19 +1585,18 @@ class NymeriaAgent:
             # Thread is busy. Queue the prompt instead of blocking on the
             # lock -- the running turn will halt at the next sub-turn
             # boundary (route_after_tools) and drain us in.
-            if attachments or images:
-                # Attachments bypass ``prepare_astream_input`` (which is
-                # where compatibility/multimodal building lives today),
-                # so v1 rejects them at enqueue time rather than try to
-                # re-run that pipeline at drain time. Revisit when a
-                # real use case appears.
+            if image_attachments:
+                # Image attachments still ride inside the LangChain message
+                # content list, which the PendingPrompt schema doesn't carry.
+                # Sandboxed documents are already on disk and referenced in
+                # ``message`` via the preamble, so they queue fine.
                 yield {
                     "type": "error",
-                    "code": "queue_attachments_unsupported",
+                    "code": "queue_image_attachments_unsupported",
                     "content": (
-                        "Thread is busy. Prompts with attachments or "
-                        "images cannot be queued; retry once the "
-                        "current turn finishes."
+                        "Thread is busy. Prompts with image attachments "
+                        "cannot be queued yet; retry once the current turn "
+                        "finishes."
                     ),
                 }
                 return
@@ -1708,8 +1801,8 @@ class NymeriaAgent:
                 self,
                 message_with_context=message_with_context,
                 thread_id=thread_id,
-                attachments=attachments,
-                images=images,
+                image_attachments=image_attachments,
+                sandbox_records=sandbox_records,
                 force_unsupported_attachments=force_unsupported_attachments,
                 is_self_invoke=_is_self_invoke,
             )

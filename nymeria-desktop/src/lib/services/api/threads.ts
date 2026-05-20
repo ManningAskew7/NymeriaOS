@@ -1,4 +1,5 @@
 import type {
+  AttachmentLimitsResponse,
   ContextStats,
   Message,
   MessageStep,
@@ -222,6 +223,23 @@ export class ThreadsApi extends ChatApi {
       revision: (data.revision as string | null | undefined) ?? null,
       processing: Boolean(data.processing),
     };
+  }
+
+  /**
+   * Look up per-model attachment caps for this thread. Used to drive the
+   * InputBar's "X / Y images" counter and to short-circuit oversize uploads
+   * before the user hits Send. Source of truth is the backend's
+   * `get_attachment_limits(effective_model)`.
+   */
+  async getAttachmentLimits(threadId: string): Promise<AttachmentLimitsResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachment_limits`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    return response.json();
   }
 
   async stopThread(threadId: string): Promise<void> {

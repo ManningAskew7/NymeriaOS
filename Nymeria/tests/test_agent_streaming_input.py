@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -10,6 +9,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from nymeria.core.agent_streaming_input import prepare_astream_input
+from nymeria.core.attachment_sandbox import AttachmentRecord
 
 
 def _fake_agent(
@@ -35,14 +35,14 @@ def _fake_agent(
     )
 
 
-def _patch_capabilities(
+def _patch_image_compatibility(
     monkeypatch: pytest.MonkeyPatch,
     *,
     compatible: bool = True,
     unsupported: tuple[str, ...] = (),
     warnings: tuple[str, ...] = (),
 ) -> None:
-    """Patch the lazy-imported model_capabilities helpers at their source module."""
+    """Patch evaluate_attachment_compatibility (only called for image_attachments)."""
     import nymeria.config.model_capabilities as mc
 
     monkeypatch.setattr(
@@ -54,11 +54,20 @@ def _patch_capabilities(
             "warnings": list(warnings),
         },
     )
-    monkeypatch.setattr(mc, "infer_mime_type", lambda mime, _filename: mime)
-    monkeypatch.setattr(
-        mc,
-        "normalize_attachment_file_type",
-        lambda ftype, _mime, _filename: ftype,
+
+
+def _record(name: str = "doc.pdf", *, mime: str = "application/pdf") -> AttachmentRecord:
+    """Build an in-memory sandbox record without touching disk."""
+    return AttachmentRecord(
+        id="rec-1",
+        thread_id="t1",
+        original_name=name,
+        mime_type=mime,
+        byte_size=1234,
+        sandbox_path=f"/workspace/threads/t1/attachments/{name}",
+        extracted_text_path=f"/workspace/threads/t1/attachments/{name}.txt",
+        sha256="deadbeef",
+        pages=12 if mime == "application/pdf" else None,
     )
 
 
@@ -68,8 +77,8 @@ def test_no_attachments_user_message():
         cast(Any, agent),
         message_with_context="hello",
         thread_id="t1",
-        attachments=None,
-        images=None,
+        image_attachments=None,
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
@@ -88,8 +97,8 @@ def test_no_attachments_self_invoke_marks_internal():
         cast(Any, agent),
         message_with_context="wake up",
         thread_id="t1",
-        attachments=None,
-        images=None,
+        image_attachments=None,
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=True,
     )
@@ -108,8 +117,8 @@ def test_pending_summary_prepends_resume():
         cast(Any, agent),
         message_with_context="continuing",
         thread_id="t1",
-        attachments=None,
-        images=None,
+        image_attachments=None,
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
@@ -125,8 +134,8 @@ def test_pending_notepad_extends_message():
         cast(Any, agent),
         message_with_context="check",
         thread_id="t1",
-        attachments=None,
-        images=None,
+        image_attachments=None,
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
@@ -135,57 +144,91 @@ def test_pending_notepad_extends_message():
     assert msg.content == "check\n\n[NOTEPAD:todo: ship]"
 
 
-def test_legacy_images_param_merged_into_attachments(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(monkeypatch)
+def test_sandbox_only_preserves_text_content(monkeypatch: pytest.MonkeyPatch):
     agent = _fake_agent()
+    record = _record("report.pdf")
     state, _summary, error = prepare_astream_input(
         cast(Any, agent),
-        message_with_context="see this",
+        message_with_context="preamble already in here",
         thread_id="t1",
-        attachments=None,
-        images=[{"data_url": "data:image/png;base64,AAA", "mime_type": "image/png"}],
+        image_attachments=None,
+        sandbox_records=[record],
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
     assert error is None
     assert state is not None
     [msg] = state["messages"]
-    parts = msg.content
-    assert parts[0] == {"type": "text", "text": "see this"}
-    assert parts[1] == {
-        "type": "image_url",
-        "image_url": {"url": "data:image/png;base64,AAA"},
-    }
+    # No image_url blocks for a non-image-only turn: content stays plain text.
+    assert msg.content == "preamble already in here"
+    metadata = msg.additional_kwargs["attachments"]
+    assert len(metadata) == 1
+    assert metadata[0]["type"] == "document"
+    assert metadata[0]["name"] == "report.pdf"
+    assert metadata[0]["sandbox_path"].endswith("report.pdf")
+    assert metadata[0]["pages"] == 12
 
 
-def test_image_attachment_compatible_model(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(monkeypatch, compatible=True)
+def test_image_attachment_inlines_image_url(monkeypatch: pytest.MonkeyPatch):
+    _patch_image_compatibility(monkeypatch)
     agent = _fake_agent()
-    attachments = [{
+    image_att = {
         "file_type": "image",
         "data_url": "data:image/png;base64,XYZ",
         "mime_type": "image/png",
-    }]
+        "file_name": "snap.png",
+    }
     state, _summary, error = prepare_astream_input(
         cast(Any, agent),
         message_with_context="describe",
         thread_id="t1",
-        attachments=attachments,
-        images=None,
+        image_attachments=[image_att],
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
     assert error is None
     assert state is not None
     [msg] = state["messages"]
+    assert msg.content[0] == {"type": "text", "text": "describe"}
     assert msg.content[1] == {
         "type": "image_url",
         "image_url": {"url": "data:image/png;base64,XYZ"},
     }
+    metadata = msg.additional_kwargs["attachments"]
+    assert metadata[0]["type"] == "image"
+    assert metadata[0]["name"] == "snap.png"
+
+
+def test_image_plus_sandbox_emits_both_in_metadata(monkeypatch: pytest.MonkeyPatch):
+    _patch_image_compatibility(monkeypatch)
+    agent = _fake_agent()
+    state, _summary, error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context="look at this",
+        thread_id="t1",
+        image_attachments=[{
+            "file_type": "image",
+            "data_url": "data:image/png;base64,AAA",
+            "mime_type": "image/png",
+            "file_name": "fig.png",
+        }],
+        sandbox_records=[_record("data.csv", mime="text/csv")],
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+    )
+    assert error is None
+    assert state is not None
+    [msg] = state["messages"]
+    # Image is inlined; sandbox doc is metadata-only.
+    assert msg.content[1]["type"] == "image_url"
+    metadata = msg.additional_kwargs["attachments"]
+    types = {item["type"] for item in metadata}
+    assert types == {"image", "document"}
 
 
 def test_image_attachment_incompatible_blocks_by_default(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(
+    _patch_image_compatibility(
         monkeypatch,
         compatible=False,
         unsupported=("vision",),
@@ -196,12 +239,12 @@ def test_image_attachment_incompatible_blocks_by_default(monkeypatch: pytest.Mon
         cast(Any, agent),
         message_with_context="look",
         thread_id="t1",
-        attachments=[{
+        image_attachments=[{
             "file_type": "image",
             "data_url": "data:image/png;base64,AAA",
             "mime_type": "image/png",
         }],
-        images=None,
+        sandbox_records=None,
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
@@ -214,7 +257,7 @@ def test_image_attachment_incompatible_blocks_by_default(monkeypatch: pytest.Mon
 
 
 def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(
+    _patch_image_compatibility(
         monkeypatch,
         compatible=False,
         unsupported=("vision",),
@@ -225,12 +268,12 @@ def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.Monke
         cast(Any, agent),
         message_with_context="look",
         thread_id="t1",
-        attachments=[{
+        image_attachments=[{
             "file_type": "image",
             "data_url": "data:image/png;base64,AAA",
             "mime_type": "image/png",
         }],
-        images=None,
+        sandbox_records=None,
         force_unsupported_attachments=True,
         is_self_invoke=False,
     )
@@ -240,106 +283,20 @@ def test_image_attachment_incompatible_forced_succeeds(monkeypatch: pytest.Monke
     assert msg.content[1]["type"] == "image_url"
 
 
-def test_pdf_attachment_emits_file_part(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(monkeypatch)
+def test_sandbox_record_self_invoke_marks_internal():
     agent = _fake_agent()
-    pdf_b64 = base64.b64encode(b"%PDF-1.4\n...").decode("ascii")
-    state, _summary, error = prepare_astream_input(
+    state, _summary, _error = prepare_astream_input(
         cast(Any, agent),
-        message_with_context="read this",
+        message_with_context="auto-wake with file",
         thread_id="t1",
-        attachments=[{
-            "file_type": "document",
-            "data_url": f"data:application/pdf;base64,{pdf_b64}",
-            "mime_type": "application/pdf",
-        }],
-        images=None,
+        image_attachments=None,
+        sandbox_records=[_record("data.csv", mime="text/csv")],
         force_unsupported_attachments=False,
-        is_self_invoke=False,
+        is_self_invoke=True,
     )
-    assert error is None
     assert state is not None
     [msg] = state["messages"]
-    assert msg.content[1] == {
-        "type": "file",
-        "source_type": "base64",
-        "mime_type": "application/pdf",
-        "data": pdf_b64,
-    }
-
-
-def test_text_file_attachment_decoded_into_text_part(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(monkeypatch)
-    agent = _fake_agent()
-    text_b64 = base64.b64encode(b"hello world").decode("ascii")
-    state, _summary, error = prepare_astream_input(
-        cast(Any, agent),
-        message_with_context="summarize",
-        thread_id="t1",
-        attachments=[{
-            "file_type": "document",
-            "data_url": f"data:text/plain;base64,{text_b64}",
-            "mime_type": "text/plain",
-        }],
-        images=None,
-        force_unsupported_attachments=False,
-        is_self_invoke=False,
-    )
-    assert error is None
-    assert state is not None
-    [msg] = state["messages"]
-    text_part = msg.content[1]
-    assert text_part["type"] == "text"
-    assert "hello world" in text_part["text"]
-    assert "Attached PLAIN file" in text_part["text"]
-    assert "End of file" in text_part["text"]
-
-
-def test_text_file_attachment_bad_base64_falls_back_to_placeholder(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _patch_capabilities(monkeypatch)
-    agent = _fake_agent()
-    # "////" base64-decodes to b"\xff\xff\xff", which is not valid UTF-8 ->
-    # UnicodeDecodeError fires inside the try block, exercising the fallback.
-    state, _summary, error = prepare_astream_input(
-        cast(Any, agent),
-        message_with_context="read",
-        thread_id="t1",
-        attachments=[{
-            "file_type": "document",
-            "data_url": "data:text/plain;base64,////",
-            "mime_type": "text/plain",
-        }],
-        images=None,
-        force_unsupported_attachments=False,
-        is_self_invoke=False,
-    )
-    assert error is None
-    assert state is not None
-    [msg] = state["messages"]
-    text_part = msg.content[1]
-    assert text_part["type"] == "text"
-    assert "Failed to read attached text file" in text_part["text"]
-
-
-def test_unsupported_attachment_returns_error_dict(monkeypatch: pytest.MonkeyPatch):
-    _patch_capabilities(monkeypatch)
-    agent = _fake_agent()
-    state, _summary, error = prepare_astream_input(
-        cast(Any, agent),
-        message_with_context="zip me",
-        thread_id="t1",
-        attachments=[{
-            "file_type": "archive",
-            "data_url": "data:application/zip;base64,AAA",
-            "mime_type": "application/zip",
-        }],
-        images=None,
-        force_unsupported_attachments=False,
-        is_self_invoke=False,
-    )
-    assert state is None
-    assert error is not None
-    assert error["type"] == "error"
-    assert "Unsupported attachment type" in error["content"]
+    assert msg.additional_kwargs.get("internal") is True
+    assert msg.additional_kwargs.get("internal_type") == "autonomous_wakeup"
+    metadata = msg.additional_kwargs["attachments"]
+    assert metadata[0]["name"] == "data.csv"

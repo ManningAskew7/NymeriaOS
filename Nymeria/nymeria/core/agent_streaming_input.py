@@ -4,15 +4,16 @@ Extracted from ``NymeriaAgent._prepare_astream_input``. The function
 takes the agent and the per-turn parameters; reads
 ``agent.get_pending_summary``, ``agent._compaction``,
 ``agent._format_notepad_section``, ``agent._get_llm_config_for_thread``,
-and ``agent.settings`` -- all stable public/facade surface on the
-agent. It returns the same three-tuple shape as the original method:
-``(input_state, context_summary_for_ui, input_error)``.
+and ``agent.settings`` -- all stable public/facade surface on the agent.
 
-Behavior is unchanged. Pending-summary attachment, pending-notepad
-attachment, attachment/image merging, compatibility checking,
-multimodal content-part building, and the self-invoke vs. regular
-``HumanMessage`` distinction all match the original method
-byte-for-byte modulo the ``self`` -> ``agent`` rename.
+As of Phase B (multi-attachment + sandbox), this function only handles
+*image* attachments inline. Non-image attachments are sandboxed upfront
+in ``agent.astream`` and reach this function as ``sandbox_records`` — a
+list of ``AttachmentRecord`` whose paths are already baked into the
+``message_with_context`` preamble. The records are persisted in
+``HumanMessage.additional_kwargs["attachments"]`` so thread history can
+rebuild attachment pills on reload without reading the sandbox bytes
+back.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from langchain_core.messages import HumanMessage
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
+    from .attachment_sandbox import AttachmentRecord
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,15 @@ def prepare_astream_input(
     *,
     message_with_context: str,
     thread_id: str,
-    attachments: Optional[List[Dict[str, str]]],
-    images: Optional[List[Dict[str, str]]],
+    image_attachments: Optional[List[Dict[str, str]]],
+    sandbox_records: Optional[List["AttachmentRecord"]],
     force_unsupported_attachments: bool,
     is_self_invoke: bool,
 ) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
-    """Build the LangGraph input state for a streaming turn."""
+    """Build the LangGraph input state for a streaming turn.
+
+    Returns ``(input_state, context_summary_for_ui, input_error)``.
+    """
     from .agent import _create_human_message  # Lazy: avoid circular import at module load.
 
     context_summary_for_ui: Optional[str] = None
@@ -56,16 +61,28 @@ def prepare_astream_input(
         message_with_context += agent._format_notepad_section(pending_notepad)
         logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
 
-    all_attachments = list(attachments or [])
-    if images:
-        for img in images:
-            all_attachments.append({
-                "file_type": "image",
-                "data_url": img["data_url"],
-                "mime_type": img["mime_type"]
-            })
+    image_atts = list(image_attachments or [])
+    records = list(sandbox_records or [])
 
-    if not all_attachments:
+    # Common helper to attach the attachments-metadata block. Persisted on
+    # the HumanMessage so history reload can rebuild pills (Phase D).
+    def _attachments_metadata() -> List[Dict[str, Any]]:
+        meta: List[Dict[str, Any]] = []
+        for img in image_atts:
+            meta.append({
+                "type": "image",
+                "name": img.get("file_name") or "image",
+                "size": len(img.get("data_url") or ""),
+                "mime_type": img.get("mime_type") or "",
+                "data_url": img.get("data_url"),
+            })
+        for record in records:
+            meta.append(record.to_history_dict())
+        return meta
+
+    if not image_atts:
+        # Text-only or sandbox-only path. Preamble is already in
+        # ``message_with_context`` if records exist.
         if is_self_invoke:
             human_msg = _create_human_message(
                 message_with_context,
@@ -74,13 +91,13 @@ def prepare_astream_input(
             )
         else:
             human_msg = HumanMessage(content=message_with_context)
+        meta = _attachments_metadata()
+        if meta:
+            human_msg.additional_kwargs["attachments"] = meta
         return {"messages": [human_msg]}, context_summary_for_ui, None
 
-    from ..config.model_capabilities import (
-        evaluate_attachment_compatibility,
-        infer_mime_type,
-        normalize_attachment_file_type,
-    )
+    # Image attachments require a compatibility check against the model.
+    from ..config.model_capabilities import evaluate_attachment_compatibility
 
     llm_cfg = agent._get_llm_config_for_thread(thread_id)
     effective_provider = llm_cfg.provider or agent.settings.llm_provider
@@ -89,7 +106,7 @@ def prepare_astream_input(
     compatibility = evaluate_attachment_compatibility(
         effective_model,
         effective_provider,
-        all_attachments,
+        image_atts,
     )
 
     if not compatibility["compatible"] and not force_unsupported_attachments:
@@ -115,60 +132,12 @@ def prepare_astream_input(
             compatibility["warnings"],
         )
 
-    import base64 as b64
-
-    content = [{"type": "text", "text": message_with_context}]
-    for att in all_attachments:
-        mime_type = infer_mime_type(att.get("mime_type", ""), att.get("file_name", ""))
-        file_type = normalize_attachment_file_type(
-            att.get("file_type", ""),
-            mime_type,
-            att.get("file_name", ""),
-        )
-        data_url = att["data_url"]
-
-        if "," in data_url:
-            base64_data = data_url.split(",", 1)[1]
-        else:
-            base64_data = data_url
-
-        if file_type == "image":
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": att["data_url"]},
-            })
-        elif mime_type == "application/pdf":
-            content.append({
-                "type": "file",
-                "source_type": "base64",
-                "mime_type": mime_type,
-                "data": base64_data,
-            })
-        elif mime_type in ("text/plain", "text/markdown", "text/csv"):
-            try:
-                text_content = b64.b64decode(base64_data).decode("utf-8")
-                filename = mime_type.split("/")[-1].upper()
-                content.append({
-                    "type": "text",
-                    "text": (
-                        f"\n\n--- Attached {filename} file ---\n"
-                        f"{text_content}\n--- End of file ---\n"
-                    ),
-                })
-            except Exception as e:
-                logger.warning(f"Failed to decode text file: {e}")
-                content.append({
-                    "type": "text",
-                    "text": f"\n\n[Failed to read attached text file: {e}]\n",
-                })
-        else:
-            return None, context_summary_for_ui, {
-                "type": "error",
-                "content": (
-                    "Unsupported attachment type. Supported types are images and "
-                    "documents (PDF, TXT, MD, CSV)."
-                ),
-            }
+    content: List[Dict[str, Any]] = [{"type": "text", "text": message_with_context}]
+    for att in image_atts:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": att["data_url"]},
+        })
 
     if is_self_invoke:
         human_msg = _create_human_message(
@@ -178,4 +147,5 @@ def prepare_astream_input(
         )
     else:
         human_msg = HumanMessage(content=content)
+    human_msg.additional_kwargs["attachments"] = _attachments_metadata()
     return {"messages": [human_msg]}, context_summary_for_ui, None

@@ -3,7 +3,7 @@
  * Validates, resizes images, and converts files to base64 for multimodal messages.
  */
 
-import type { FileAttachment, FileType } from '$lib/types';
+import type { AttachmentLimits, FileAttachment, FileType } from '$lib/types';
 
 const MIME_FALLBACK_BY_EXTENSION: Record<string, string> = {
   '.md': 'text/markdown',
@@ -18,7 +18,10 @@ const MIME_FALLBACK_BY_EXTENSION: Record<string, string> = {
   '.webp': 'image/webp'
 };
 
-// File constraints by type
+// File constraints by type. These are *absolute* client-side ceilings,
+// independent of the per-model caps the backend reports via
+// /threads/:id/attachment_limits — both apply. Whichever bites first wins.
+// (The per-model cap is typically the image *count*; MAX_SIZE is per-file.)
 export const FILE_CONSTRAINTS = {
   image: {
     MAX_SIZE: 10 * 1024 * 1024,           // 10MB max file size
@@ -30,8 +33,17 @@ export const FILE_CONSTRAINTS = {
   document: {
     MAX_SIZE: 20 * 1024 * 1024,           // 20MB max file size
     TYPES: ['application/pdf', 'text/plain', 'text/markdown', 'text/csv'] as const
-  },
-  MAX_FILES_PER_MESSAGE: 4
+  }
+};
+
+// Conservative defaults applied before the backend cap fetch lands (or when
+// it fails). Mirrors `_DEFAULT_ATTACHMENT_LIMITS` in
+// nymeria/config/model_capabilities.py — keep in sync.
+export const DEFAULT_ATTACHMENT_LIMITS: AttachmentLimits = {
+  max_images_per_request: 16,
+  max_image_bytes: 5 * 1024 * 1024,
+  max_pdf_pages: 100,
+  max_total_bytes: 32 * 1024 * 1024
 };
 
 export type SupportedImageType = typeof FILE_CONSTRAINTS.image.TYPES[number];
@@ -108,10 +120,11 @@ export function getSizeErrorMessage(fileType: FileType): string {
 }
 
 /**
- * Get a user-friendly error message for too many files.
+ * Get a user-friendly error message for too many images.
+ * The cap is per-model (e.g. 100 for claude-opus-4-7, 1500 for gpt-5.5).
  */
-export function getMaxFilesErrorMessage(): string {
-  return `Maximum ${FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE} files per message`;
+export function getMaxImagesErrorMessage(limit: number): string {
+  return `Current model accepts at most ${limit} image${limit === 1 ? '' : 's'} per message`;
 }
 
 

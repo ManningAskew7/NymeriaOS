@@ -3,15 +3,15 @@
   import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { FileAttachment, SlashCommandInfo } from '$lib/types';
+  import type { AttachmentLimits, FileAttachment, SlashCommandInfo } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
   import {
     processFile,
     getFilesFromClipboard,
-    FILE_CONSTRAINTS,
-    getMaxFilesErrorMessage,
+    getMaxImagesErrorMessage,
     getSupportedFileExtensions,
+    DEFAULT_ATTACHMENT_LIMITS,
     type FileProcessingError,
   } from '$lib/utils/fileProcessing';
   import { hapticImpact } from '$lib/utils/haptics';
@@ -42,14 +42,47 @@
   let highlightedCommandIndex = $state(0);
 
   let isStreaming = $derived(chatStore.isStreaming);
-  // Backend rejects attachments on queued prompts, so while streaming we only
-  // allow text-only follow-ups to be queued.
-  let canSendWhileStreaming = $derived(inputValue.trim().length > 0 && pendingFiles.length === 0);
+  let pendingImageCount = $derived(pendingFiles.filter((f) => f.type === 'image').length);
+  // After Phase B, non-image attachments are sandboxed at ingress and ride
+  // inside the message text (which queues fine). Only image attachments still
+  // can't be queued (PendingPrompt schema doesn't carry image_url blocks).
+  let canSendWhileStreaming = $derived(inputValue.trim().length > 0 && pendingImageCount === 0);
   let canSend = $derived(
     isStreaming
       ? !disabled && canSendWhileStreaming
       : (inputValue.trim().length > 0 || pendingFiles.length > 0) && !disabled
   );
+
+  // Per-model attachment caps fetched once per thread. Default to the
+  // conservative DEFAULT_ATTACHMENT_LIMITS until the backend reply lands.
+  let attachmentLimits = $state<AttachmentLimits>(DEFAULT_ATTACHMENT_LIMITS);
+  let maxImages = $derived(attachmentLimits.max_images_per_request ?? Infinity);
+  let remainingImageSlots = $derived(Math.max(0, maxImages - pendingImageCount));
+
+  $effect(() => {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId) {
+      attachmentLimits = DEFAULT_ATTACHMENT_LIMITS;
+      return;
+    }
+    let cancelled = false;
+    api.getAttachmentLimits(threadId).then(
+      (response) => {
+        if (!cancelled) {
+          attachmentLimits = response.limits;
+        }
+      },
+      (error) => {
+        console.warn('[InputBar] Failed to fetch attachment limits:', error);
+        if (!cancelled) {
+          attachmentLimits = DEFAULT_ATTACHMENT_LIMITS;
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  });
   let isCommandNameEntry = $derived(inputValue.startsWith('/') && !/\s/.test(inputValue.slice(1)));
   let slashQuery = $derived(
     isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
@@ -175,25 +208,26 @@
   }
 
   async function addFiles(files: File[]) {
-    const remainingSlots = FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE - pendingFiles.length;
-    if (remainingSlots <= 0) {
-      showError(getMaxFilesErrorMessage());
-      return;
-    }
-
-    const filesToProcess = files.slice(0, remainingSlots);
-    for (const file of filesToProcess) {
+    let imagesRemaining = remainingImageSlots;
+    let droppedImages = 0;
+    for (const file of files) {
       try {
         const attachment = await processFile(file);
+        if (attachment.type === 'image') {
+          if (imagesRemaining <= 0) {
+            droppedImages += 1;
+            continue;
+          }
+          imagesRemaining -= 1;
+        }
         pendingFiles = [...pendingFiles, attachment];
       } catch (error) {
         const processingError = error as FileProcessingError;
         showError(processingError.message);
       }
     }
-
-    if (files.length > remainingSlots) {
-      showError(getMaxFilesErrorMessage());
+    if (droppedImages > 0) {
+      showError(getMaxImagesErrorMessage(maxImages));
     }
   }
 
@@ -305,7 +339,7 @@
       <button
         class="attach-btn"
         onclick={openFilePicker}
-        disabled={disabled || isStreaming || pendingFiles.length >= FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE}
+        disabled={disabled || isStreaming}
         title="Attach files"
       >
         <Icon name="paperclip" size={22} />
@@ -313,7 +347,7 @@
       <button
         class="attach-btn"
         onclick={openCamera}
-        disabled={disabled || isStreaming || pendingFiles.length >= FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE}
+        disabled={disabled || isStreaming}
         title="Take photo"
       >
         <Icon name="camera" size={22} />

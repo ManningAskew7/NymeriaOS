@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ...core.accounts import AuthenticatedUser
@@ -45,6 +45,78 @@ def _attachment_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
         }
         for att in request.attachments
     ]
+
+
+def _enforce_attachment_caps(request: ChatRequest, agent: Any, thread_id: str) -> None:
+    """Reject requests whose attachments exceed the per-model caps.
+
+    Source of truth is ``get_attachment_limits`` keyed by the thread's
+    effective model. Raises 413 with the limit so the frontend can show
+    the cap to the user. Skipped when the request has no attachments.
+    """
+    if not request.attachments and not request.images:
+        return
+
+    from ...config.model_capabilities import get_attachment_limits
+    from ...config.model_capabilities import infer_mime_type, normalize_attachment_file_type
+
+    llm_cfg = agent._get_llm_config_for_thread(thread_id)
+    effective_model = llm_cfg.model or agent.settings.llm_model
+    limits = get_attachment_limits(effective_model)
+
+    image_count = 0
+    total_data_url_bytes = 0
+    max_single_image_bytes = limits.get("max_image_bytes")
+
+    for att in (request.attachments or []):
+        mime = infer_mime_type(att.mime_type or "", att.file_name or "")
+        file_type = normalize_attachment_file_type(
+            att.file_type or "", mime, att.file_name or ""
+        )
+        # data: URL length over-counts vs the decoded bytes by ~33%; that
+        # over-approximation is fine for a cap check.
+        att_len = len(att.data_url or "")
+        total_data_url_bytes += att_len
+        if file_type == "image":
+            image_count += 1
+            if max_single_image_bytes is not None and att_len > max_single_image_bytes * 2:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "code": "attachment_too_large",
+                        "limit_bytes": max_single_image_bytes,
+                        "model": effective_model,
+                        "file_name": att.file_name,
+                    },
+                )
+
+    # Legacy `images` list counts toward the image cap too.
+    for img in (request.images or []):
+        image_count += 1
+        total_data_url_bytes += len(img.data_url or "")
+
+    max_images = limits.get("max_images_per_request")
+    if max_images is not None and image_count > max_images:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "too_many_images",
+                "limit": max_images,
+                "received": image_count,
+                "model": effective_model,
+            },
+        )
+
+    max_total = limits.get("max_total_bytes")
+    if max_total is not None and total_data_url_bytes > max_total * 2:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "attachments_total_too_large",
+                "limit_bytes": max_total,
+                "model": effective_model,
+            },
+        )
 
 
 def _agent_prompt_source(request: ChatRequest) -> tuple[str, str | None, str | None]:
@@ -222,6 +294,10 @@ def create_chat_router(
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
         require_thread_access_fn(user, thread_id)
+
+        # Per-model attachment cap. Raises 413 with the limit before any
+        # SSE handshake so the frontend can show the cap inline.
+        _enforce_attachment_caps(request, agent, thread_id)
 
         if not request.is_self_invoke:
             mention_resolution = resolve_thread_mention(
@@ -1209,6 +1285,10 @@ def create_chat_router(
         user_id = user.id
         require_thread_access_fn(user, thread_id)
 
+        # Per-model attachment cap (same surface as /chat). 413 lands as a
+        # JSON error response since this endpoint is non-streaming.
+        _enforce_attachment_caps(request, agent, thread_id)
+
         if not request.is_self_invoke:
             mention_resolution = resolve_thread_mention(
                 message,
@@ -1256,10 +1336,25 @@ def create_chat_router(
             message = prepared.message
 
         prompt_source, prompt_source_id, prompt_source_label = _agent_prompt_source(request)
+        attachments = _attachment_dicts(request)
+        images = (
+            [
+                {
+                    "data_url": img.data_url,
+                    "mime_type": img.mime_type,
+                }
+                for img in request.images
+            ]
+            if request.images
+            else None
+        )
         response = agent.chat(
             message,
             thread_id=thread_id,
             user_id=user_id,
+            attachments=attachments,
+            images=images,
+            force_unsupported_attachments=request.force_unsupported_attachments,
             _is_self_invoke=request.is_self_invoke,
             _trigger_override=request.trigger_override,
             source=prompt_source,
