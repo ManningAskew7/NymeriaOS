@@ -693,7 +693,7 @@
   }
 
   .input-area {
-    padding: var(--spacing-md);
+    padding: 18px var(--spacing-md);
     border-top: 1px solid var(--border-subtle);
     background: var(--bg-elevated);
   }

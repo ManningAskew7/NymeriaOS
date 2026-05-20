@@ -12,6 +12,7 @@
     taskCount?: number;
     hasActiveTask?: boolean;
     hasCustomConfig?: boolean;
+    hasUnread?: boolean;
     onSelect: (e: MouseEvent) => void;
     onDelete: () => void;
     onRename: (newTitle: string) => void;
@@ -21,7 +22,7 @@
     onExport?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -270,8 +271,8 @@
       {#if isPinned}
         <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
       {/if}
-      {#if hasCustomConfig}
-        <span class="config-dot" title="Custom config"></span>
+      {#if hasUnread}
+        <span class="unread-dot" title="New message from Nymeria"></span>
       {/if}
       {#if thread.recovered}
         <span class="recovered-indicator" title="Recovered backend thread">
@@ -287,7 +288,7 @@
     </div>
   {/if}
 
-  {#if (showActions || (isCallable && !!onOpenAgentConfig)) && !isEditing}
+  {#if showActions && !isEditing}
     <div class="action-buttons">
       {#if onOpenAgentConfig}
         <button
@@ -300,14 +301,12 @@
           <Icon name="tool" size={14} />
         </button>
       {/if}
-      {#if showActions}
       <button class="edit-btn" onclick={startEditing} type="button" title="Rename thread">
         <Icon name="edit" size={14} />
       </button>
       <button class="delete-btn" onclick={handleDelete} type="button" title="Delete thread">
         <Icon name="trash" size={14} />
       </button>
-      {/if}
     </div>
   {/if}
 </div>
@@ -394,10 +393,6 @@
     outline: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
   }
 
-  .thread-item.callable:not(.actionsOpen) .thread-badges {
-    padding-right: calc(24px + var(--spacing-sm));
-  }
-
   .selection-check {
     position: absolute;
     top: 4px;
@@ -419,7 +414,10 @@
   }
 
   .thread-icon {
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
+    margin-top: 1px;
     color: var(--text-muted);
   }
 
@@ -522,9 +520,17 @@
 
   .action-buttons {
     position: absolute;
-    right: var(--spacing-sm);
+    right: 1px;
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
-    gap: 2px;
+    gap: 4px;
+    padding: 3px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    z-index: 2;
   }
 
   .agent-btn,
@@ -538,18 +544,12 @@
   }
 
   .agent-btn {
-    color: var(--accent-primary);
-    opacity: 0.95;
-  }
-
-  .thread-item.callable .agent-btn {
-    background: var(--accent-primary-alpha);
-    box-shadow: var(--accent-glow-sm);
-    opacity: 1;
+    color: var(--text-muted);
+    opacity: 0.85;
   }
 
   .agent-btn:hover {
-    color: var(--accent-primary);
+    color: var(--text-primary);
     background: var(--bg-elevated-2);
     opacity: 1;
   }
@@ -654,13 +654,14 @@
     flex-shrink: 0;
   }
 
-  .config-dot {
+  .unread-dot {
     display: inline-block;
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--accent-primary);
     flex-shrink: 0;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary) 60%, transparent);
   }
 
   .context-backdrop {

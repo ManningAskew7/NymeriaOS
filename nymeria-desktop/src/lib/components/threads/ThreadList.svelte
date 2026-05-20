@@ -656,6 +656,7 @@
                   hasActiveTask={threadsStore.isThreadActive(thread.id)}
                   isCallable={isCallableThread(thread)}
                   hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+                  hasUnread={thread.unread ?? false}
                   onSelect={(e) => handleThreadClick(thread.id, e)}
                   onDelete={() => handleDeleteThread(thread.id)}
                   onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
@@ -680,6 +681,7 @@
               hasActiveTask={threadsStore.isThreadActive(thread.id)}
               isCallable={isCallableThread(thread)}
               hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+              hasUnread={thread.unread ?? false}
               onSelect={(e) => handleThreadClick(thread.id, e)}
               onDelete={() => handleDeleteThread(thread.id)}
               onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
@@ -744,6 +746,7 @@
                   hasActiveTask={threadsStore.isThreadActive(thread.id)}
                   isCallable={isCallableThread(thread)}
                   hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+                  hasUnread={thread.unread ?? false}
                   onSelect={(e) => handleThreadClick(thread.id, e)}
                   onDelete={() => handleDeleteThread(thread.id)}
                   onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}
@@ -768,6 +771,7 @@
               hasActiveTask={threadsStore.isThreadActive(thread.id)}
               isCallable={isCallableThread(thread)}
               hasCustomConfig={threadConfigStore.getConfig(thread.id)?.hasCustomizations}
+              hasUnread={thread.unread ?? false}
               onSelect={(e) => handleThreadClick(thread.id, e)}
               onDelete={() => handleDeleteThread(thread.id)}
               onRename={(newTitle) => handleRenameThread(thread.id, newTitle)}

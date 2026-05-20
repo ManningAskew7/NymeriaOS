@@ -42,8 +42,8 @@
 
 <style>
   .collapsible {
-    border-radius: var(--radius-md);
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .header {
@@ -51,11 +51,20 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
+    min-height: 38px;
+    padding: 0 var(--spacing-md);
     background: var(--bg-elevated-2);
     color: var(--text-primary);
     text-align: left;
-    transition: background var(--transition-fast);
+    line-height: 1;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .open .header {
+    border-bottom: none;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
   }
 
   .header:hover {
@@ -81,9 +90,17 @@
 
   .content {
     padding: var(--spacing-md);
-    background: var(--bg-elevated);
-    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
+    border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
     animation: slideDown var(--transition-fast);
+    /* Brighten inherited text colors so muted/secondary text remains readable
+       against the slightly lighter bubble background. */
+    --text-muted: #a5abb3;
+    --text-secondary: #c4c9d0;
+    --border-subtle: #353a40;
+    --border-default: #4a5058;
   }
 
   @keyframes slideDown {

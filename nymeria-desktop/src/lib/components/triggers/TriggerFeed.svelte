@@ -171,9 +171,9 @@
     width: 100%;
     padding: var(--spacing-xs) var(--spacing-sm);
     background: transparent;
-    border: 1px dashed var(--border-default);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
@@ -181,9 +181,13 @@
   }
 
   .add-trigger-btn:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.05);
+    border-color: var(--border-default);
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .add-trigger-btn span {
+    transform: translateY(-1px);
   }
 
   .loading-state,
@@ -243,7 +247,7 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
-    margin: 0;
+    margin: 0 0 var(--spacing-xs) 0;
     font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-muted);
@@ -255,18 +259,19 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
     font-size: 10px;
-    font-weight: 600;
-    background: var(--bg-elevated-2);
+    font-weight: 500;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
     border-radius: var(--radius-full);
   }
 
   .count.highlight {
-    background: var(--accent-secondary, var(--accent-primary));
-    color: var(--bg-base);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .group-items {

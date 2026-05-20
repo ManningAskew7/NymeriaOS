@@ -17,6 +17,8 @@
 
   let { thread, threadConfig, onOpenSettings }: Props = $props();
 
+  let showMeta = $state(false);
+
   const isCallable = $derived(threadConfig?.callable ?? false);
 
   type OfficeBridge = {
@@ -295,11 +297,25 @@
   <h2 class="title" title={thread.title}>{thread.title}</h2>
 
   {#if metaParts.length > 0}
-    <div class="meta">
-      {#each metaParts as part (part.id)}
-        <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{part.text}</span>
-      {/each}
-    </div>
+    <button
+      class="meta-toggle"
+      class:open={showMeta}
+      type="button"
+      onclick={() => (showMeta = !showMeta)}
+      title={showMeta ? 'Hide thread details' : 'Show thread details'}
+      aria-label="Toggle thread details"
+      aria-expanded={showMeta}
+    >
+      <Icon name="chevronDown" size={14} />
+    </button>
+
+    {#if showMeta}
+      <div class="meta">
+        {#each metaParts as part (part.id)}
+          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{part.text}</span>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   <div class="actions">
@@ -369,6 +385,39 @@
     flex: 0 1 auto;
     min-width: 0;
     max-width: 45%;
+  }
+
+  .meta-toggle {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .meta-toggle :global(svg) {
+    display: block;
+    transition: transform var(--transition-fast);
+  }
+
+  .meta-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .meta-toggle.open :global(svg) {
+    transform: rotate(-90deg);
+  }
+
+  .meta-toggle.open {
+    color: var(--text-secondary);
   }
 
   .meta {

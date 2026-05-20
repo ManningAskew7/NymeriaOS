@@ -151,6 +151,7 @@ export interface Thread {
   pinned?: boolean;
   recovered?: boolean;
   recoverySources?: string[];
+  unread?: boolean;
 }
 
 // Thread organization types

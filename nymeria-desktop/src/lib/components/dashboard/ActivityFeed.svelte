@@ -213,6 +213,7 @@
     flex-direction: column;
     gap: var(--spacing-xs);
     overflow-y: auto;
+    overflow-x: hidden;
   }
 
   /* Trigger group styles */

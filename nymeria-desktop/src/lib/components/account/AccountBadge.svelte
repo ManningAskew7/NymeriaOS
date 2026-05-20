@@ -94,7 +94,6 @@
       <span class="identity-stack">
         <span class="identity-line">
           <span class="identity-name">{primaryLabel}</span>
-          <RoleChip role={identity?.role} size="xs" />
         </span>
         {#if secondaryLabel}
           <span class="identity-secondary">{secondaryLabel}</span>
@@ -147,7 +146,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    padding: 6px var(--spacing-sm);
+    padding: 6px var(--spacing-md) 6px var(--spacing-lg);
     color: var(--text-secondary);
     border-radius: var(--radius-md);
     transition: all var(--transition-fast);

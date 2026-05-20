@@ -101,6 +101,67 @@
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
 
+  // Font picker (testing-only, persisted in localStorage)
+  const FONT_STORAGE_KEY = 'nymeria_font_family';
+  const SYSTEM_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+  const fontOptions = [
+    { id: 'geist', name: 'Geist', description: 'Current — clean, modern (Vercel)', stack: `'Geist', ${SYSTEM_STACK}` },
+    { id: 'system', name: 'System default', description: 'Original — Segoe UI on Windows', stack: SYSTEM_STACK },
+    { id: 'inter', name: 'Inter', description: 'Crisp, neutral (Linear, Notion)', stack: `'Inter', ${SYSTEM_STACK}` },
+    { id: 'outfit', name: 'Outfit', description: 'Friendly geometric sans', stack: `'Outfit', ${SYSTEM_STACK}` },
+    { id: 'dm-sans', name: 'DM Sans', description: 'Soft modern grotesque', stack: `'DM Sans', ${SYSTEM_STACK}` },
+    { id: 'jakarta', name: 'Plus Jakarta Sans', description: 'Slightly condensed, modern', stack: `'Plus Jakarta Sans', ${SYSTEM_STACK}` },
+    { id: 'manrope', name: 'Manrope', description: 'Rounded, approachable', stack: `'Manrope', ${SYSTEM_STACK}` },
+  ];
+
+  function detectInitialFontId(): string {
+    if (typeof localStorage === 'undefined') return 'geist';
+    const stored = localStorage.getItem(FONT_STORAGE_KEY);
+    if (!stored) return 'geist';
+    const match = fontOptions.find((opt) => opt.stack === stored);
+    return match?.id ?? 'geist';
+  }
+
+  let selectedFontId = $state(detectInitialFontId());
+
+  function handleFontChange(id: string) {
+    const opt = fontOptions.find((o) => o.id === id);
+    if (!opt) return;
+    selectedFontId = id;
+    if (typeof document !== 'undefined') {
+      if (id === 'geist') {
+        // Default — clear the override so the stylesheet's --font-sans applies
+        document.documentElement.style.removeProperty('--font-sans');
+      } else {
+        document.documentElement.style.setProperty('--font-sans', opt.stack);
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      if (id === 'geist') localStorage.removeItem(FONT_STORAGE_KEY);
+      else localStorage.setItem(FONT_STORAGE_KEY, opt.stack);
+    }
+  }
+
+  // Chat bubble preference (off by default, on = restore the bubble look)
+  const CHAT_BUBBLES_KEY = 'nymeria_chat_bubbles';
+  function detectInitialBubbles(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(CHAT_BUBBLES_KEY) === 'on';
+  }
+  let showChatBubbles = $state(detectInitialBubbles());
+
+  function handleChatBubblesChange(on: boolean) {
+    showChatBubbles = on;
+    if (typeof document !== 'undefined') {
+      if (on) document.documentElement.setAttribute('data-chat-bubbles', 'on');
+      else document.documentElement.removeAttribute('data-chat-bubbles');
+    }
+    if (typeof localStorage !== 'undefined') {
+      if (on) localStorage.setItem(CHAT_BUBBLES_KEY, 'on');
+      else localStorage.removeItem(CHAT_BUBBLES_KEY);
+    }
+  }
+
   // Model metadata (reactive lookup based on current model ID)
   const currentModelMeta = $derived(
     llmProvider === 'openrouter' ? modelsStore.getById(llmModel) : undefined
@@ -748,6 +809,37 @@
                 <span class="theme-name">{theme.name}</span>
                 <span class="theme-desc">{theme.description}</span>
               </div>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Message bubbles</span>
+        <p class="hint">Show a soft background behind AI responses, or let them flow flat on the page.</p>
+        <label class="bubble-toggle">
+          <input
+            type="checkbox"
+            checked={showChatBubbles}
+            onchange={(e) => handleChatBubblesChange((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>Show message bubble around AI responses</span>
+        </label>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Font (testing)</span>
+        <p class="hint">Try different body fonts. The Nymeria logo is unaffected.</p>
+        <div class="font-grid">
+          {#each fontOptions as opt}
+            <button
+              class="font-card"
+              class:selected={selectedFontId === opt.id}
+              onclick={() => handleFontChange(opt.id)}
+            >
+              <span class="font-sample" style="font-family: {opt.stack};">Aa Bb Cc</span>
+              <span class="font-name" style="font-family: {opt.stack};">{opt.name}</span>
+              <span class="font-desc">{opt.description}</span>
             </button>
           {/each}
         </div>
@@ -1776,6 +1868,78 @@
     justify-content: flex-end;
     padding-top: var(--spacing-md);
     border-top: 1px solid var(--border-subtle);
+  }
+
+  /* Chat bubble toggle */
+  .bubble-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    user-select: none;
+  }
+
+  .bubble-toggle input {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent-primary);
+  }
+
+  /* Font picker styles (testing-only) */
+  .font-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+  }
+
+  .font-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-elevated-2);
+    border: 2px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
+  }
+
+  .font-card:hover {
+    border-color: var(--border-default);
+    background: var(--bg-hover);
+  }
+
+  .font-card.selected {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+  }
+
+  .font-sample {
+    font-size: 22px;
+    font-weight: 400;
+    color: var(--text-primary);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+
+  .font-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .font-desc {
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   /* Theme selector styles */

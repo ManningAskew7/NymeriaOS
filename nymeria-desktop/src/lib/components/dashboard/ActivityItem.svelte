@@ -154,6 +154,15 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    transition: -webkit-line-clamp 0s;
+  }
+
+  .activity-item:hover .activity-message {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+    overflow: visible;
+    display: block;
+    word-break: break-word;
   }
 
   .activity-meta {

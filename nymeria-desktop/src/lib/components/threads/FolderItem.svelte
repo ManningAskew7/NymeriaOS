@@ -176,6 +176,7 @@
             hasActiveTask={isThreadActive(thread.id)}
             isCallable={isCallableThread(thread)}
             hasCustomConfig={getCustomConfig(thread.id)?.hasCustomizations}
+            hasUnread={thread.unread ?? false}
             onSelect={(e) => onSelectThread(thread.id, e)}
             onDelete={() => onDeleteThread(thread.id)}
             onRename={(newTitle) => onRenameThread(thread.id, newTitle)}
@@ -219,9 +220,7 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    padding: var(--spacing-xs) var(--spacing-md);
-    background: var(--bg-elevated);
-    border-bottom: 1px solid var(--border-subtle);
+    padding: var(--spacing-sm) var(--spacing-md);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: background var(--transition-fast);
@@ -292,15 +291,10 @@
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 18px;
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
-    background: var(--bg-elevated-2);
-    color: var(--text-secondary);
-    border-radius: var(--radius-full);
+    padding: 0 2px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
   }
 
   .folder-contents {
