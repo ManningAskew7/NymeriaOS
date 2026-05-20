@@ -274,15 +274,52 @@ class CompactionManager:
 
         llm_config = agent._get_llm_config_for_thread(thread_id)
         model_limit = get_context_limit(llm_config.model)
-        threshold = agent.settings.compact_threshold
-        trigger_tokens = self.compact_trigger_tokens(model_limit, threshold)
+        mode, pct, tokens = self._resolve_threshold_config(thread_id)
+        trigger_tokens = self.compact_trigger_tokens(
+            model_limit, pct, mode=mode, tokens=tokens
+        )
 
         usage = agent._token_tracker.get_usage(thread_id)
         return usage.context_tokens >= trigger_tokens
 
+    def _resolve_threshold_config(self, thread_id: str) -> tuple[str, float, int]:
+        """Resolve effective (mode, percentage, tokens) with per-thread override.
+
+        Thread-level ``llm_config.compact_threshold_*`` fields win over global
+        settings; ``None`` inherits from global.
+        """
+        agent = self._agent
+        tc_llm = None
+        if thread_id:
+            tc_obj = agent.thread_config_manager.get_config(thread_id)
+            if tc_obj:
+                tc_llm = tc_obj.llm_config
+
+        def pick(attr: str, fallback: Any) -> Any:
+            value = getattr(tc_llm, attr, None) if tc_llm else None
+            return value if value is not None else fallback
+
+        mode = pick("compact_threshold_mode", agent.settings.compact_threshold_mode)
+        pct = pick("compact_threshold", agent.settings.compact_threshold)
+        tokens = pick("compact_threshold_tokens", agent.settings.compact_threshold_tokens)
+        return mode, float(pct), int(tokens)
+
     @staticmethod
-    def compact_trigger_tokens(model_limit: int, threshold: float) -> int:
-        """Return the input-token count that should trigger auto-compaction."""
+    def compact_trigger_tokens(
+        model_limit: int,
+        threshold: float = 0.8,
+        *,
+        mode: str = "percentage",
+        tokens: int = 100_000,
+    ) -> int:
+        """Return the input-token count that should trigger auto-compaction.
+
+        ``mode="percentage"`` returns ``int(model_limit * threshold)``.
+        ``mode="tokens"`` returns ``tokens`` clamped to ``model_limit`` so an
+        oversized absolute setting never disables compaction.
+        """
+        if mode == "tokens":
+            return max(1, min(int(tokens), int(model_limit)))
         return max(1, int(model_limit * threshold))
 
     # ------------------------------------------------------------------
@@ -635,8 +672,10 @@ class CompactionManager:
 
         llm_config = agent._get_llm_config_for_thread(thread_id)
         model_limit = get_context_limit(llm_config.model)
-        threshold = agent.settings.compact_threshold
-        trigger_tokens = self.compact_trigger_tokens(model_limit, threshold)
+        mode, pct, tokens = self._resolve_threshold_config(thread_id)
+        trigger_tokens = self.compact_trigger_tokens(
+            model_limit, pct, mode=mode, tokens=tokens
+        )
         usage = agent._token_tracker.get_usage(thread_id)
 
         if usage.context_tokens < trigger_tokens:

@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from nymeria.config.model_capabilities import get_context_limit
+from nymeria.config.model_capabilities import get_context_limit, get_model_defaults
 from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.accounts import AccountsRepo
 from nymeria.triggers import api as api_module
@@ -49,6 +49,8 @@ class FakeSettings:
     llm_stream_retry_max_delay: float = 8.0
     context_management: str = "none"
     compact_threshold: float = 0.8
+    compact_threshold_mode: str = "percentage"
+    compact_threshold_tokens: int = 100_000
     compact_keep_messages: int = 4
     compact_model: str | None = None
     sliding_window_cycles: int = 20
@@ -121,6 +123,15 @@ class FakeSettingsProvider:
 
     def cache_clear(self) -> None:
         self.cache_clear_count += 1
+
+        def env_float(name: str, default: float) -> float:
+            value = os.environ.get(name)
+            return default if value is None else float(value)
+
+        def env_int(name: str, default: int) -> int:
+            value = os.environ.get(name)
+            return default if value is None else int(value)
+
         self.settings = replace(
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
@@ -133,6 +144,18 @@ class FakeSettingsProvider:
                 self.settings.llm_fallback_models,
             ),
             tts_provider=os.environ.get("TTS_PROVIDER", self.settings.tts_provider),
+            compact_threshold=env_float(
+                "COMPACT_THRESHOLD",
+                self.settings.compact_threshold,
+            ),
+            compact_threshold_mode=os.environ.get(
+                "COMPACT_THRESHOLD_MODE",
+                self.settings.compact_threshold_mode,
+            ),
+            compact_threshold_tokens=env_int(
+                "COMPACT_THRESHOLD_TOKENS",
+                self.settings.compact_threshold_tokens,
+            ),
             anthropic_api_key=os.environ.get(
                 "ANTHROPIC_API_KEY",
                 self.settings.anthropic_api_key,
@@ -444,6 +467,11 @@ def test_available_models_uses_provider_endpoint_and_caches_metadata(
                 "context_length": 64000,
                 "top_provider": {"max_completion_tokens": 4096},
                 "supported_parameters": ["tools", "temperature"],
+                "default_parameters": {
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "frequency_penalty": 0.2,
+                },
                 "architecture": {
                     "input_modalities": ["text"],
                     "tokenizer": "GPT",
@@ -467,7 +495,15 @@ def test_available_models_uses_provider_endpoint_and_caches_metadata(
     assert body[0]["context_length"] == 64000
     assert body[0]["max_completion_tokens"] == 4096
     assert body[0]["supported_parameters"] == ["tools", "temperature"]
+    assert body[0]["default_temperature"] == 0.7
+    assert body[0]["default_top_p"] == 0.95
+    assert body[0]["default_frequency_penalty"] == 0.2
     assert get_context_limit("provider/test-context-model") == 64000
+    assert get_model_defaults("provider/test-context-model") == {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "frequency_penalty": 0.2,
+    }
 
 
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(
@@ -560,6 +596,64 @@ def test_patch_settings_hot_reloads_fallback_models(
     assert provider.cache_clear_count == 1
     assert agent.settings.llm_fallback_models == DEFAULT_LLM_FALLBACK_MODELS
     assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_hot_reloads_compact_token_threshold(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text(
+        "COMPACT_THRESHOLD_MODE=percentage\nCOMPACT_THRESHOLD_TOKENS=100000\n",
+        encoding="utf-8",
+    )
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={
+            "compact_threshold_mode": "tokens",
+            "compact_threshold_tokens": 250000,
+            "compact_threshold": 0.5,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == [
+        "compact_threshold",
+        "compact_threshold_mode",
+        "compact_threshold_tokens",
+    ]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "COMPACT_THRESHOLD_MODE=tokens" in env_text
+    assert "COMPACT_THRESHOLD_TOKENS=250000" in env_text
+    assert "COMPACT_THRESHOLD=0.5" in env_text
+    assert os.environ["COMPACT_THRESHOLD_MODE"] == "tokens"
+    assert os.environ["COMPACT_THRESHOLD_TOKENS"] == "250000"
+    assert provider.cache_clear_count == 1
+    assert agent.settings.compact_threshold_mode == "tokens"
+    assert agent.settings.compact_threshold_tokens == 250000
+    assert agent.settings.compact_threshold == 0.5
+    assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_rejects_invalid_compact_token_threshold(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={
+            "compact_threshold_mode": "tokens",
+            "compact_threshold_tokens": 999,
+        },
+    )
+
+    assert response.status_code == 422
+    assert not (tmp_path / ".env").exists()
 
 
 def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(

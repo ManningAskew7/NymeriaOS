@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { modelsStore } from '$lib/stores/models.svelte';
 import type { AvailableModel } from '$lib/types';
 
 export interface AvailableModelsState {
@@ -24,8 +25,10 @@ export async function resolveAvailableModels(
     return current;
   }
   try {
+    const models = await api.getAvailableModels(provider, baseUrl || undefined);
+    modelsStore.mergeAvailableModels(models);
     return {
-      models: await api.getAvailableModels(provider, baseUrl || undefined),
+      models,
       provider: cacheKey,
     };
   } catch {

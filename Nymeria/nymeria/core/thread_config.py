@@ -43,6 +43,9 @@ class ThreadLLMConfig(BaseModel):
     # (or any OpenAI-compatible endpoint) with its own auth without touching
     # global env vars. None = fall back to per-provider env key or global proxy key.
     api_key: Optional[str] = None
+    compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None
+    compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
+    compact_threshold_tokens: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
 
 
 class TemporaryToolEntry(BaseModel):

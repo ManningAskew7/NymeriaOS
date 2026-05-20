@@ -18,7 +18,16 @@ A thread's conversation lives in three places:
 
 ## Compaction flow
 
-Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`. Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
+Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
+
+- **`percentage`** (default): fires when input tokens reach `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`.
+- **`tokens`**: fires when input tokens reach the absolute count `COMPACT_THRESHOLD_TOKENS` (1,000–2,000,000), clamped at runtime to the model's context window so an oversized setting never disables compaction.
+
+The check uses **real provider-reported input tokens**, not character estimates. `core/token_tracker.py` records `last_input_tokens` from each AIMessage via `core/token_usage.py::extract_from_message`, which reads LangChain's `usage_metadata` (`input_tokens` / `prompt_tokens`) and falls back to the Anthropic-native `response_metadata.usage` block. `should_auto_compact_now` compares that value directly against the trigger. The `estimate_tokens()` helper in `agent_compaction.py` is only used by the context-overflow rewind fallback to size the prefix trim — never for the primary compaction trigger.
+
+Per-thread `ThreadLLMConfig` may override `compact_threshold_mode`, `compact_threshold`, or `compact_threshold_tokens` independently — `None` on any field inherits the global setting.
+
+Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
 
 ```
 1. compact_now()  (or _do_auto_compact() / _do_compact_sync())

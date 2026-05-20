@@ -109,6 +109,46 @@ def test_chat_openai_with_reasoning_is_importable_stable_class():
     assert type(openrouter_llm) is ChatOpenAIWithReasoning
 
 
+def test_openai_compatible_llms_omit_sampling_params_for_provider_defaults(
+    monkeypatch,
+):
+    captured: list[dict] = []
+
+    class CaptureModel:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(providers, "ChatOpenAIWithReasoning", CaptureModel)
+    monkeypatch.setattr(
+        providers,
+        "_attach_loop_local_openai_async_http_client",
+        lambda kwargs, **_options: None,
+    )
+
+    providers._create_openai_llm(
+        _openai_config(
+            temperature=None,
+            top_p=None,
+            frequency_penalty=None,
+            presence_penalty=None,
+        )
+    )
+    providers._create_openrouter_llm(
+        _openrouter_config(
+            temperature=None,
+            top_p=None,
+            frequency_penalty=None,
+            presence_penalty=None,
+        )
+    )
+
+    for kwargs in captured:
+        assert "temperature" not in kwargs
+        assert "top_p" not in kwargs
+        assert "frequency_penalty" not in kwargs
+        assert "presence_penalty" not in kwargs
+
+
 def test_create_llm_with_tools_sorts_tools_deterministically():
     @tool
     def zz_tool(value: str) -> str:

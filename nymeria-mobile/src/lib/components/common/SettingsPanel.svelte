@@ -165,6 +165,8 @@
   // Agent settings
   let contextManagement = $state<string>('auto_compact');
   let compactThreshold = $state(0.8);
+  let compactThresholdMode = $state<'percentage' | 'tokens'>('percentage');
+  let compactThresholdTokens = $state(100000);
   let slidingWindowCycles = $state(5);
   let logLevel = $state<LogLevel>('INFO');
   let watchdogEnabled = $state(true);
@@ -224,6 +226,8 @@
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
       contextManagement = serverSettings.context_management;
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
+      compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
+      compactThresholdTokens = serverSettings.compact_threshold_tokens ?? 100000;
       slidingWindowCycles = serverSettings.sliding_window_cycles;
       logLevel = serverSettings.log_level;
       watchdogEnabled = serverSettings.watchdog_enabled;
@@ -327,6 +331,8 @@
         openai_api_mode: openaiApiMode,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
+        compact_threshold_mode: compactThresholdMode,
+        compact_threshold_tokens: compactThresholdTokens,
         sliding_window_cycles: slidingWindowCycles,
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
@@ -718,17 +724,47 @@
 
           {#if contextManagement === 'auto_compact'}
             <div class="setting-group">
-              <label class="setting-label" for="compact-threshold">Auto-Compact Threshold: {Math.round(compactThreshold * 100)}%</label>
-              <input
-                id="compact-threshold"
-                type="range"
-                min="0.05"
-                max="0.95"
-                step="0.01"
-                bind:value={compactThreshold}
-              />
-              <p class="hint">Context usage percentage that triggers summarization</p>
+              <label class="setting-label" for="compact-threshold-mode">Auto-Compact Trigger</label>
+              <select id="compact-threshold-mode" bind:value={compactThresholdMode}>
+                <option value="percentage">Percentage of context window</option>
+                <option value="tokens">Absolute input-token count</option>
+              </select>
+              <p class="hint">
+                {#if compactThresholdMode === 'percentage'}
+                  Triggers at a fraction of the model's context window.
+                {:else}
+                  Triggers at a fixed input-token count regardless of model. Clamped to the model's context window.
+                {/if}
+              </p>
             </div>
+
+            {#if compactThresholdMode === 'percentage'}
+              <div class="setting-group">
+                <label class="setting-label" for="compact-threshold">Auto-Compact Threshold: {Math.round(compactThreshold * 100)}%</label>
+                <input
+                  id="compact-threshold"
+                  type="range"
+                  min="0.05"
+                  max="0.95"
+                  step="0.01"
+                  bind:value={compactThreshold}
+                />
+                <p class="hint">Context usage percentage that triggers summarization</p>
+              </div>
+            {:else}
+              <div class="setting-group">
+                <label class="setting-label" for="compact-threshold-tokens">Auto-Compact Token Threshold: {compactThresholdTokens.toLocaleString()} tokens</label>
+                <input
+                  id="compact-threshold-tokens"
+                  type="number"
+                  min="1000"
+                  max="2000000"
+                  step="1000"
+                  bind:value={compactThresholdTokens}
+                />
+                <p class="hint">Token count from the most recent provider response that triggers summarization (1,000-2,000,000)</p>
+              </div>
+            {/if}
           {/if}
 
           {#if contextManagement === 'sliding_window'}

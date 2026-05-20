@@ -201,6 +201,22 @@
     return threadConfig?.llmConfig?.openai_api_mode ?? 'default';
   }
 
+  function getInitialCompactThresholdMode(): 'default' | 'percentage' | 'tokens' {
+    return threadConfig?.llmConfig?.compact_threshold_mode ?? 'default';
+  }
+
+  function getInitialCompactThreshold(): string {
+    return threadConfig?.llmConfig?.compact_threshold != null
+      ? String(threadConfig.llmConfig.compact_threshold)
+      : '';
+  }
+
+  function getInitialCompactThresholdTokens(): string {
+    return threadConfig?.llmConfig?.compact_threshold_tokens != null
+      ? String(threadConfig.llmConfig.compact_threshold_tokens)
+      : '';
+  }
+
   // LLM form state
   let threadDisplayProvider = $state<ThreadDisplayProvider>(getInitialThreadDisplayProvider());
   let llmProvider = $state(getInitialLlmProvider());
@@ -213,6 +229,9 @@
   let llmReasoningEffort = $state(getInitialLlmReasoningEffort());
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
   let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(getInitialLlmOpenAiApiMode());
+  let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>(getInitialCompactThresholdMode());
+  let compactThresholdPct = $state<string>(getInitialCompactThreshold());
+  let compactThresholdTokens = $state<string>(getInitialCompactThresholdTokens());
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
@@ -411,6 +430,11 @@
     const origUseModelDefaults = threadConfig?.llmConfig?.use_model_defaults != null
       ? String(threadConfig.llmConfig.use_model_defaults) : 'default';
     const origOpenAiApiMode = threadConfig?.llmConfig?.openai_api_mode ?? 'default';
+    const origCompactMode = threadConfig?.llmConfig?.compact_threshold_mode ?? 'default';
+    const origCompactPct = threadConfig?.llmConfig?.compact_threshold != null
+      ? String(threadConfig.llmConfig.compact_threshold) : '';
+    const origCompactTokens = threadConfig?.llmConfig?.compact_threshold_tokens != null
+      ? String(threadConfig.llmConfig.compact_threshold_tokens) : '';
 
     const origEnabled = new Set(threadConfig?.enabledTools ?? []);
     const origSystemPrompt = threadConfig?.systemPrompt ?? '';
@@ -443,6 +467,9 @@
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseModelDefaults) return true;
     if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
+    if (compactThresholdMode !== origCompactMode) return true;
+    if (compactThresholdPct !== origCompactPct) return true;
+    if (compactThresholdTokens !== origCompactTokens) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
@@ -522,7 +549,8 @@
       // LLM config
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey;
+        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
+        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -556,6 +584,9 @@
         llm.openai_api_mode = supportsOpenAiApiMode(getEffectiveProvider()) && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
+        llm.compact_threshold_mode = compactThresholdMode === 'default' ? null : compactThresholdMode;
+        llm.compact_threshold = compactThresholdPct ? parseFloat(compactThresholdPct) : null;
+        llm.compact_threshold_tokens = compactThresholdTokens ? parseInt(compactThresholdTokens, 10) : null;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -630,6 +661,9 @@
       llmMaxTokens = '';
       llmExtendedThinking = 'default';
       llmReasoningEffort = '';
+      compactThresholdMode = 'default';
+      compactThresholdPct = '';
+      compactThresholdTokens = '';
       systemPrompt = '';
       isCallable = false;
       callableName = '';
@@ -929,6 +963,9 @@
           bind:llmReasoningEffort
           bind:llmUseModelDefaults
           bind:llmOpenAiApiMode
+          bind:compactThresholdMode
+          bind:compactThresholdPct
+          bind:compactThresholdTokens
         />
 
       {:else if activeTab === 'tools'}

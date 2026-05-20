@@ -37,7 +37,6 @@ from .config import LLMConfig
 from nymeria.config.llm_providers import (
     get_llm_provider_spec,
     is_openai_compatible_provider,
-    is_provider_verified,
     normalize_llm_provider,
     provider_requires_api_key,
     provider_supports_responses,

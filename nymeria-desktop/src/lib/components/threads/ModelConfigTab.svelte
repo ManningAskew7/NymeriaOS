@@ -24,6 +24,9 @@
     llmReasoningEffort: string;
     llmUseModelDefaults: 'default' | 'true' | 'false';
     llmOpenAiApiMode: 'default' | 'chat_completions' | 'responses';
+    compactThresholdMode: 'default' | 'percentage' | 'tokens';
+    compactThresholdPct: string;
+    compactThresholdTokens: string;
   }
 
   let {
@@ -38,6 +41,9 @@
     llmReasoningEffort = $bindable(),
     llmUseModelDefaults = $bindable(),
     llmOpenAiApiMode = $bindable(),
+    compactThresholdMode = $bindable(),
+    compactThresholdPct = $bindable(),
+    compactThresholdTokens = $bindable(),
   }: Props = $props();
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
@@ -251,6 +257,49 @@
       <option value="high">High</option>
     </select>
   </div>
+
+  <div class="field-group">
+    <label class="field-label" for="thread-compact-mode">Auto-Compact Trigger</label>
+    <select id="thread-compact-mode" class="field-select" bind:value={compactThresholdMode}>
+      <option value="default">Default (inherit global)</option>
+      <option value="percentage">Percentage of context window</option>
+      <option value="tokens">Absolute input-token count</option>
+    </select>
+    <span class="field-hint">
+      Overrides the global compact trigger for this thread only. Real provider-reported input tokens are used either way.
+    </span>
+  </div>
+
+  {#if compactThresholdMode === 'percentage'}
+    <div class="field-group">
+      <label class="field-label" for="thread-compact-pct">Compact Threshold (0.05 – 0.95)</label>
+      <input
+        id="thread-compact-pct"
+        class="field-input"
+        type="number"
+        min="0.05"
+        max="0.95"
+        step="0.01"
+        bind:value={compactThresholdPct}
+        placeholder="Leave empty to inherit global"
+      />
+    </div>
+  {:else if compactThresholdMode === 'tokens'}
+    <div class="field-group">
+      <label class="field-label" for="thread-compact-tokens">Compact Token Threshold (1,000 – 2,000,000)</label>
+      <input
+        id="thread-compact-tokens"
+        class="field-input"
+        type="number"
+        min="1000"
+        max="2000000"
+        step="1000"
+        bind:value={compactThresholdTokens}
+        placeholder="Leave empty to inherit global"
+      />
+      <span class="field-hint">Clamped to the model's context window at runtime.</span>
+    </div>
+  {/if}
 </div>
 
 <style>
