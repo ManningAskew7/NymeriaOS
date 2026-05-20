@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.runnables import RunnableConfig
 
@@ -83,6 +84,11 @@ def env(tmp_path, monkeypatch):
     # a previous case don't survive into this one.
     import nymeria.core.auth_prompt_coordinator as coord_mod
     coord_mod._coordinator = None
+
+    # Vault encryption needs a key. Tests used to inherit one from .env.docker
+    # via the legacy ``*_auth.py`` modules' import-time ``load_dotenv()``; that
+    # implicit hook is gone after Phase 8, so set it explicitly here.
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
 
     settings = _Settings(data_dir=tmp_path)
     monkeypatch.setattr(api_module, "get_settings", lambda: settings)

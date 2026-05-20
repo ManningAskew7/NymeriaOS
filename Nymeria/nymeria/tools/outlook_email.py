@@ -1,7 +1,9 @@
 """Native Microsoft Graph API email tools.
 
-Direct Graph API calls for Outlook email operations, bypassing MCP.
-Uses tokens saved by outlook_auth tools.
+Direct Graph API calls for Outlook email operations, bypassing MCP. Tokens
+are minted by ``request_credential(provider="outlook", kind="oauth")`` and
+live in the vault; legacy ``microsoft.json`` files are still honoured during
+the migration window via :func:`auth_cache_utils.resolve_oauth_cache`.
 """
 
 import logging
@@ -300,7 +302,10 @@ def graph_request(
     """Make a Graph API request on behalf of ``user_id``."""
     token = get_access_token(user_id, account_id)
     if not token:
-        return False, "No authenticated account. Use outlook_auth_start to authenticate."
+        return False, (
+            "No authenticated account. Call "
+            "request_credential(provider=\"outlook\", kind=\"oauth\") to connect."
+        )
 
     url = f"{GRAPH_BASE}{endpoint}"
     headers = {

@@ -192,8 +192,8 @@ def _fetch_sheet(
         gid,
         service_factory=lambda: _get_sheets_service(user_id),
         unavailable_message=(
-            "[Error]: Google Sheets API not available. "
-            "Run the google_docs_auth_start tool to authenticate."
+            "[Error]: Google Sheets API not available. Call "
+            "request_credential(provider=\"google_docs\", kind=\"oauth\") to connect."
         ),
     )
 
@@ -476,7 +476,10 @@ def google_sheets_append(
 
     service = _get_sheets_service(user_id)
     if not service:
-        return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
+        return (
+            "[Error]: Google Sheets API not available. Call "
+            "request_credential(provider=\"google_docs\", kind=\"oauth\") to connect."
+        )
 
     # Parse rows
     rows = []
@@ -511,8 +514,8 @@ def google_sheets_append(
         if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
             return (
                 "[Error]: Permission denied. The Google account may only have "
-                "read-only access. Run google_docs_auth_start to re-authenticate "
-                "with write permissions."
+                "read-only access. Call request_credential(provider=\"google_docs\", "
+                "kind=\"oauth\") to re-authenticate with write permissions."
             )
         return f"[Error]: Failed to append to sheet: {e}"
 
@@ -557,7 +560,10 @@ def google_sheets_update(
 
     service = _get_sheets_service(user_id)
     if not service:
-        return "[Error]: Google Sheets API not available. Run google_docs_auth_start."
+        return (
+            "[Error]: Google Sheets API not available. Call "
+            "request_credential(provider=\"google_docs\", kind=\"oauth\") to connect."
+        )
 
     try:
         # Read the sheet to find the row
@@ -661,8 +667,9 @@ def google_sheets_update(
         error_msg = str(e)
         if "PERMISSION_DENIED" in error_msg or "403" in error_msg:
             return (
-                "[Error]: Permission denied. Run google_docs_auth_start to "
-                "re-authenticate with write permissions."
+                "[Error]: Permission denied. Call request_credential(provider="
+                "\"google_docs\", kind=\"oauth\") to re-authenticate with write "
+                "permissions."
             )
         return f"[Error]: Failed to update sheet: {e}"
 
