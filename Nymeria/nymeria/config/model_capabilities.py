@@ -58,6 +58,12 @@ class ModelInfo:
     pricing_prompt: Optional[float] = None           # USD per token
     pricing_completion: Optional[float] = None       # USD per token
     tokenizer: Optional[str] = None                  # "Claude", "GPT", "Llama3"
+    # Provider-published attachment limits. None when the provider does not
+    # report a per-model number; callers should fall back to the family table.
+    max_images_per_request: Optional[int] = None
+    max_image_bytes: Optional[int] = None
+    max_pdf_pages: Optional[int] = None
+    max_total_attachment_bytes: Optional[int] = None
 
 
 # Single unified cache: model_id (lowercase) -> ModelInfo
@@ -248,6 +254,94 @@ def _safe_float(value, allow_zero: bool = False) -> Optional[float]:
         return None
 
 
+# ============================================================================
+# Per-family attachment-limit table
+# ============================================================================
+#
+# Neither Anthropic's nor OpenAI's /v1/models endpoint reports per-model
+# attachment count / size caps, so the cap table is hardcoded by family.
+# Sources (research brief 2026-05-20):
+#   Anthropic: platform.claude.com/docs/en/build-with-claude/vision +
+#     /pdf-support. 100 images/request on 200K-context models, 5 MB inline
+#     per image, 32 MB total request, 100 PDF pages on 200K context.
+#   OpenAI: developers.openai.com/api/docs/guides/images-vision +
+#     /pdf-files. ~1500 images/request, 512 MB total, 50 MB per file input.
+#   Gemini: ai.google.dev/gemini-api. 3000 files/request, 100 MB inline,
+#     1000 pages per PDF.
+# Family matching is substring-based against the lowercased model id; the
+# first matching family wins, so list more specific patterns first.
+
+_DEFAULT_ATTACHMENT_LIMITS: Dict[str, Optional[int]] = {
+    "max_images_per_request": 16,
+    "max_image_bytes": 5 * 1024 * 1024,
+    "max_pdf_pages": 100,
+    "max_total_bytes": 32 * 1024 * 1024,
+}
+
+_ATTACHMENT_LIMITS_BY_FAMILY: List[tuple[tuple[str, ...], Dict[str, Optional[int]]]] = [
+    # Modern Anthropic 4.x models with the 200K-context profile.
+    (
+        (
+            "claude-opus-4-7", "claude-opus-4.7",
+            "claude-sonnet-4-6", "claude-sonnet-4.6",
+            "claude-haiku-4-5", "claude-haiku-4.5",
+            "claude-opus-4-6", "claude-opus-4.6",
+            "claude-opus-4-5", "claude-opus-4.5",
+            "claude-sonnet-4-5", "claude-sonnet-4.5",
+        ),
+        {
+            "max_images_per_request": 100,
+            "max_image_bytes": 5 * 1024 * 1024,
+            "max_pdf_pages": 100,
+            "max_total_bytes": 32 * 1024 * 1024,
+        },
+    ),
+    # Generic Claude fallback (legacy 3.x, etc.).
+    (
+        ("claude-", "anthropic/"),
+        {
+            "max_images_per_request": 100,
+            "max_image_bytes": 5 * 1024 * 1024,
+            "max_pdf_pages": 100,
+            "max_total_bytes": 32 * 1024 * 1024,
+        },
+    ),
+    # OpenAI GPT-5 / 4.x / codex family.
+    (
+        ("gpt-5", "gpt-4o", "gpt-4.1", "chatgpt-", "codex-", "openai/"),
+        {
+            "max_images_per_request": 1500,
+            "max_image_bytes": 20 * 1024 * 1024,
+            # OpenAI does not publish a per-PDF page cap; per-file 50 MB cap
+            # is enforced via max_image_bytes for file_input on Responses.
+            "max_pdf_pages": None,
+            "max_total_bytes": 512 * 1024 * 1024,
+        },
+    ),
+    # Google Gemini.
+    (
+        ("gemini-", "google/"),
+        {
+            "max_images_per_request": 3000,
+            "max_image_bytes": 20 * 1024 * 1024,
+            "max_pdf_pages": 1000,
+            "max_total_bytes": 100 * 1024 * 1024,
+        },
+    ),
+]
+
+
+def _resolve_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
+    """Pattern-match a model id against the per-family attachment-limit table."""
+    if not model_id:
+        return dict(_DEFAULT_ATTACHMENT_LIMITS)
+    lowered = model_id.lower()
+    for patterns, limits in _ATTACHMENT_LIMITS_BY_FAMILY:
+        if any(p in lowered for p in patterns):
+            return dict(limits)
+    return dict(_DEFAULT_ATTACHMENT_LIMITS)
+
+
 def _fetch_openrouter_models() -> Dict[str, ModelInfo]:
     """Fetch model metadata from OpenRouter API and populate unified cache."""
     try:
@@ -306,6 +400,109 @@ def _fetch_openrouter_models() -> Dict[str, ModelInfo]:
     except Exception as e:
         logger.warning(f"Failed to fetch OpenRouter models: {e}")
         return {}
+
+
+def _fetch_anthropic_models(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, ModelInfo]:
+    """Fetch model metadata from Anthropic /v1/models (or CLIProxy passthrough).
+
+    Anthropic's response includes ``capabilities.image_input.supported`` and
+    ``capabilities.pdf_input.supported`` per model, which lets the agent decide
+    natively whether a Claude model accepts attachments rather than relying on
+    the static fallback table. The endpoint requires an API key; if the env
+    doesn't have one, the call is a no-op.
+    """
+    import os as _os
+
+    if api_key is None:
+        api_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    if base_url is None:
+        configured_base = _os.environ.get("LLM_BASE_URL", "").strip()
+        configured_provider = _os.environ.get("LLM_PROVIDER", "").strip().lower()
+        if configured_provider == "anthropic" and configured_base:
+            base_url = configured_base.rstrip("/")
+        else:
+            base_url = "https://api.anthropic.com"
+
+    if not api_key:
+        logger.debug("Skipping Anthropic /v1/models fetch — no api key configured")
+        return {}
+
+    url = f"{base_url}/v1/models"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    try:
+        response = httpx.get(url, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch Anthropic models from {url}: {e}")
+        return {}
+
+    cache: Dict[str, ModelInfo] = {}
+    for model in data.get("data", []):
+        model_id = model.get("id") or ""
+        if not model_id:
+            continue
+
+        capabilities_obj = model.get("capabilities") or {}
+        input_modalities: Set[str] = {"text"}
+        if (capabilities_obj.get("image_input") or {}).get("supported"):
+            input_modalities.add("image")
+        if (capabilities_obj.get("pdf_input") or {}).get("supported"):
+            input_modalities.add("file")
+
+        context_length = int(model.get("max_input_tokens") or 0)
+        max_output = model.get("max_output_tokens")
+        max_completion_tokens = (
+            int(max_output) if isinstance(max_output, (int, float)) and max_output > 0 else None
+        )
+
+        family_limits = _resolve_attachment_limits(model_id)
+
+        info = ModelInfo(
+            id=model_id,
+            name=model.get("display_name") or model.get("name") or model_id,
+            context_length=context_length,
+            max_completion_tokens=max_completion_tokens,
+            input_modalities=input_modalities,
+            max_images_per_request=family_limits.get("max_images_per_request"),
+            max_image_bytes=family_limits.get("max_image_bytes"),
+            max_pdf_pages=family_limits.get("max_pdf_pages"),
+            max_total_attachment_bytes=family_limits.get("max_total_bytes"),
+        )
+        cache[model_id.lower()] = info
+
+    logger.info(f"Fetched metadata for {len(cache)} models from Anthropic")
+    return cache
+
+
+def refresh_anthropic_models(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> int:
+    """Fetch Anthropic /v1/models and merge into the live cache.
+
+    Intended to be called once at agent startup when ``LLM_PROVIDER=anthropic``
+    (direct or via CLIProxy). Safe to call repeatedly. Returns the number of
+    models registered. The merge writes to the runtime live cache so a later
+    OpenRouter refresh does not overwrite the Anthropic capability bits.
+    """
+    fetched = _fetch_anthropic_models(base_url=base_url, api_key=api_key)
+    if not fetched:
+        return 0
+    with _cache_lock:
+        for key, info in fetched.items():
+            _live_model_cache[key] = info
+            # Seed _model_cache too so prefix lookups during the next
+            # OpenRouter refresh cycle still see Anthropic data.
+            _model_cache.setdefault(key, info)
+    return len(fetched)
 
 
 def _ensure_cache() -> Dict[str, ModelInfo]:
@@ -659,6 +856,10 @@ def register_model_metadata(
     pricing_prompt: float | None = None,
     pricing_completion: float | None = None,
     tokenizer: str | None = None,
+    max_images_per_request: int | None = None,
+    max_image_bytes: int | None = None,
+    max_pdf_pages: int | None = None,
+    max_total_attachment_bytes: int | None = None,
 ) -> None:
     """Merge provider-returned model metadata into the runtime cache.
 
@@ -718,6 +919,26 @@ def register_model_metadata(
                 else (existing.pricing_completion if existing else None)
             ),
             tokenizer=tokenizer or (existing.tokenizer if existing else None),
+            max_images_per_request=(
+                max_images_per_request
+                if max_images_per_request is not None
+                else (existing.max_images_per_request if existing else None)
+            ),
+            max_image_bytes=(
+                max_image_bytes
+                if max_image_bytes is not None
+                else (existing.max_image_bytes if existing else None)
+            ),
+            max_pdf_pages=(
+                max_pdf_pages
+                if max_pdf_pages is not None
+                else (existing.max_pdf_pages if existing else None)
+            ),
+            max_total_attachment_bytes=(
+                max_total_attachment_bytes
+                if max_total_attachment_bytes is not None
+                else (existing.max_total_attachment_bytes if existing else None)
+            ),
         )
         _live_model_cache[key] = info
         _model_cache[key] = info
@@ -854,7 +1075,10 @@ def evaluate_attachment_compatibility(
 ) -> Dict[str, object]:
     """Evaluate whether attachments are likely compatible with a model."""
     normalized_provider = (provider or "").strip().lower()
-    modalities = get_model_modalities(model_id) if normalized_provider == "openrouter" else set()
+    # Anthropic and OpenRouter both expose machine-readable input modalities;
+    # for other providers we rely on the static fallback tables.
+    consult_live_modalities = normalized_provider in {"openrouter", "anthropic"}
+    modalities = get_model_modalities(model_id) if consult_live_modalities else set()
 
     required_modalities: Set[str] = set()
     unsupported_modalities: Set[str] = set()
@@ -909,6 +1133,20 @@ def evaluate_attachment_compatibility(
             warnings.append(
                 "This model does not report native file input. OpenRouter may parse PDFs before sending text to the model."
             )
+    elif normalized_provider == "anthropic":
+        if "image" in required_modalities:
+            if modalities:
+                if "image" not in modalities:
+                    unsupported_modalities.add("image")
+            elif not supports_vision(model_id):
+                unsupported_modalities.add("image")
+
+        if has_pdf:
+            if modalities:
+                if "file" not in modalities:
+                    unsupported_modalities.add("file")
+            elif not supports_documents(model_id):
+                unsupported_modalities.add("file")
     else:
         if "image" in required_modalities and not supports_vision(model_id):
             unsupported_modalities.add("image")
@@ -926,3 +1164,28 @@ def evaluate_attachment_compatibility(
         "unsupported_modalities": sorted(unsupported_modalities),
         "warnings": warnings,
     }
+
+
+def get_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
+    """Return per-model attachment caps as a flat dict.
+
+    Provider /v1/models endpoints do not return these numbers today, so the
+    primary source is the per-family table at the top of this module. When a
+    live fetcher (Anthropic, future) populates ModelInfo with explicit caps,
+    those override the family default for the keys they fill.
+
+    Keys: ``max_images_per_request``, ``max_image_bytes``, ``max_pdf_pages``,
+    ``max_total_bytes`` (request payload cap).
+    """
+    limits = _resolve_attachment_limits(model_id)
+    info = _lookup_model(model_id)
+    if info is not None:
+        if info.max_images_per_request is not None:
+            limits["max_images_per_request"] = info.max_images_per_request
+        if info.max_image_bytes is not None:
+            limits["max_image_bytes"] = info.max_image_bytes
+        if info.max_pdf_pages is not None:
+            limits["max_pdf_pages"] = info.max_pdf_pages
+        if info.max_total_attachment_bytes is not None:
+            limits["max_total_bytes"] = info.max_total_attachment_bytes
+    return limits

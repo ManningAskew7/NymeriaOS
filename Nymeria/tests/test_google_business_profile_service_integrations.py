@@ -113,7 +113,7 @@ def test_google_business_profile_missing_auth_returns_setup_hint(monkeypatch):
 
     assert success is False
     assert "No authenticated Google Business Profile account" in message
-    assert "google_business_profile_auth_start" in message
+    assert "request_credential(provider=\"google_business_profile\"" in message
 
 
 def test_google_business_profile_tools_registered_with_metadata():
@@ -121,7 +121,6 @@ def test_google_business_profile_tools_registered_with_metadata():
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
-        "google_business_profile_list_accounts",
         "google_business_profile_list_profile_accounts",
         "google_business_profile_list_locations",
         "google_business_profile_list_reviews",
@@ -130,9 +129,6 @@ def test_google_business_profile_tools_registered_with_metadata():
         "google_business_profile_get_post",
     ]
     moderate_names = [
-        "google_business_profile_auth_start",
-        "google_business_profile_auth_complete",
-        "google_business_profile_auth_clear",
         "google_business_profile_reply_to_review",
         "google_business_profile_delete_review_reply",
         "google_business_profile_create_post",

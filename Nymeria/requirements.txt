@@ -84,10 +84,12 @@ google-api-python-client>=2.100.0
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
 
-# Document extraction (email attachments) + Gemini TTS
+# Document extraction (email attachments, user file attachments) + Gemini TTS
 google-genai>=1.0.0
 pydub>=0.25.1
 openpyxl>=3.1.0
+pypdf>=4.0.0
+python-docx>=1.1.0
 
 # RSS/Atom feed parsing (trigger source)
 feedparser>=6.0.0

@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { SvelteSet } from 'svelte/reactivity';
   import type { Message, MessageStep, ToolCall, FileAttachment } from '$lib/types';
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { api } from '$lib/services/api.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -187,6 +189,10 @@
   // Modal state for image preview
   let modalFile = $state<FileAttachment | null>(null);
 
+  // Tracks in-flight document downloads so a second tap on the same pill
+  // doesn't double-fetch and the button can show a busy state.
+  let downloadingIds = $state(new SvelteSet<string>());
+
   function openFileModal(file: FileAttachment) {
     if (file.type === 'image') {
       modalFile = file;
@@ -201,6 +207,31 @@
     if (mimeType.startsWith('image/')) return 'image';
     if (mimeType === 'application/pdf') return 'fileText';
     return 'fileText';
+  }
+
+  async function downloadAttachment(file: FileAttachment) {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId) {
+      console.warn('[MessageBubble] No active thread; cannot download attachment');
+      return;
+    }
+    if (downloadingIds.has(file.id)) return;
+    downloadingIds.add(file.id);
+    try {
+      const { blob, filename } = await api.downloadAttachment(threadId, file.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename || file.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('[MessageBubble] Attachment download failed:', error);
+    } finally {
+      downloadingIds.delete(file.id);
+    }
   }
 
   // Check if content looks like raw JSON (hide it during streaming, will be parsed at end)
@@ -278,14 +309,22 @@
                 <img src={file.dataUrl} alt={file.name} />
               </button>
             {:else}
-              <div
+              <button
+                type="button"
                 class="user-document"
-                title={`${file.name} (${formatFileSize(file.size)})`}
+                onclick={() => downloadAttachment(file)}
+                disabled={downloadingIds.has(file.id)}
+                title={`Download ${file.name} (${formatFileSize(file.size)})`}
               >
                 <Icon name={getFileIcon(file.mimeType)} size={20} />
                 <span class="doc-name">{file.name}</span>
                 <span class="doc-ext">{getFileExtension(file.name)}</span>
-              </div>
+                {#if downloadingIds.has(file.id)}
+                  <span class="doc-spinner" aria-hidden="true">…</span>
+                {:else}
+                  <Icon name="download" size={14} />
+                {/if}
+              </button>
             {/if}
           {/each}
         </div>
@@ -637,7 +676,26 @@
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
-    max-width: 200px;
+    max-width: 240px;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+    font-family: inherit;
+  }
+
+  .user-document:active:not(:disabled) {
+    border-color: var(--accent-primary);
+    background: var(--bg-elevated-3, var(--bg-elevated-2));
+  }
+
+  .user-document:disabled {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
+  .doc-spinner {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    flex-shrink: 0;
   }
 
   .user-document .doc-name {

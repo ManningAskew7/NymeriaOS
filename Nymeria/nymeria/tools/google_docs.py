@@ -1,8 +1,11 @@
 """Google Docs tools (native Python implementation).
 
 Uses google-api-python-client for direct Google Docs API calls.
-Authentication is handled by google_docs_auth.py (OAuth 2.0 authorization
-code flow with localhost redirect + manual fallback).
+Authentication runs through ``request_credential(provider="google_docs",
+kind="oauth")``; the resulting vault credential covers Docs, Drive, Sheets,
+Tasks, Contacts, Slides, and Chat. Legacy file caches under
+``data/auth_tokens/<user>/google_docs.json`` are still honoured during the
+migration window via :func:`auth_cache_utils.resolve_oauth_cache`.
 
 Optional tools, enable per-thread via thread config.
 """
@@ -16,13 +19,12 @@ from typing import Annotated, Any, Callable, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import GOOGLE_DOCS_SCOPES as _GOOGLE_DOCS_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .google_docs_auth import (
-    GOOGLE_DOCS_AUTH_TOOLS,
-    GOOGLE_DOCS_SCOPES as GOOGLE_SCOPES,
-    PROVIDER,
-)
 from .utils import get_user_id
+
+PROVIDER = "google_docs"
+GOOGLE_SCOPES = list(_GOOGLE_DOCS_SCOPES_TUPLE)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,6 @@ def _docs_request(
         service_name="docs",
         service_version="v1",
         account_id=account_id,
-        auth_tool_name="google_docs_auth_start",
         api_label="Google Docs",
     )
 
@@ -98,7 +99,6 @@ def _drive_request(
         service_name="drive",
         service_version="v3",
         account_id=account_id,
-        auth_tool_name="google_docs_auth_start",
         api_label="Google Drive",
     )
 
@@ -2179,7 +2179,7 @@ def google_docs_table_append_row(
 # Export — auth tools + API tools combined
 # ---------------------------------------------------------------------------
 
-GOOGLE_DOCS_TOOLS = GOOGLE_DOCS_AUTH_TOOLS + [
+GOOGLE_DOCS_TOOLS = [
     google_docs_create,
     google_docs_delete,
     google_docs_list,

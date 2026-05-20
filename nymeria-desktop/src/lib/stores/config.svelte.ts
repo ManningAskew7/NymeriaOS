@@ -134,6 +134,7 @@ function loadConfig(): AppConfig {
       apiKey: DEFAULT_API_KEY,
       theme: 'midnight',
       suppressAttachmentWarnings: false,
+      showAutonomousPrompts: true,
       identity: null,
     };
   }
@@ -147,6 +148,9 @@ function loadConfig(): AppConfig {
       }
       if (config.suppressAttachmentWarnings === undefined) {
         config.suppressAttachmentWarnings = false;
+      }
+      if (config.showAutonomousPrompts === undefined) {
+        config.showAutonomousPrompts = true;
       }
       if (config.identity === undefined) {
         config.identity = null;
@@ -162,6 +166,7 @@ function loadConfig(): AppConfig {
     apiKey: DEFAULT_API_KEY,
     theme: 'midnight',
     suppressAttachmentWarnings: false,
+    showAutonomousPrompts: true,
     identity: null,
   };
 }
@@ -183,6 +188,7 @@ function createConfigStore() {
   let setupCompleted = $state(initial.setupCompleted ?? false);
   let theme = $state<ThemeName>(initial.theme ?? 'midnight');
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
+  let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
   // Seed the module-level scope cache with whatever identity is persisted so
@@ -197,7 +203,15 @@ function createConfigStore() {
   }
 
   function saveCurrentConfig() {
-    saveConfig({ apiUrl, apiKey, setupCompleted, theme, suppressAttachmentWarnings, identity });
+    saveConfig({
+      apiUrl,
+      apiKey,
+      setupCompleted,
+      theme,
+      suppressAttachmentWarnings,
+      showAutonomousPrompts,
+      identity,
+    });
   }
 
   function notifyIdentityReloadHooks(label: string): void {
@@ -381,6 +395,13 @@ function createConfigStore() {
       suppressAttachmentWarnings = value;
       saveCurrentConfig();
     },
+    get showAutonomousPrompts() {
+      return showAutonomousPrompts;
+    },
+    set showAutonomousPrompts(value: boolean) {
+      showAutonomousPrompts = value;
+      saveCurrentConfig();
+    },
     get identity(): AccountIdentity | null {
       return identity;
     },
@@ -395,6 +416,7 @@ function createConfigStore() {
       setupCompleted = false;
       theme = 'midnight';
       suppressAttachmentWarnings = false;
+      showAutonomousPrompts = true;
       identity = null;
       currentIdentityId = null;
       applyTheme('midnight');

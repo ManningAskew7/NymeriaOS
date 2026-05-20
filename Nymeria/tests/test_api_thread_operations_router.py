@@ -195,3 +195,166 @@ def test_stop_route_aborts_only_when_thread_is_running(tmp_path: Path, api_clien
     assert body["thread_id"] == thread_id
     assert "Thread was held by 'chat'" in body["message"]
     assert agent.aborted_threads == [thread_id]
+
+
+def test_attachment_validation_returns_per_model_limits(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-claude"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            llm_config=ThreadLLMConfig(provider="anthropic", model="claude-opus-4-7"),
+        )
+    )
+
+    response = client.post(
+        f"/threads/{thread_id}/attachments/validate",
+        headers=api_client_builder.auth(token),
+        json={"attachments": []},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["effective_provider"] == "anthropic"
+    assert body["effective_model"] == "claude-opus-4-7"
+    assert body["limits"]["max_images_per_request"] == 100
+    assert body["limits"]["max_image_bytes"] == 5 * 1024 * 1024
+    assert body["limits"]["max_pdf_pages"] == 100
+
+
+def test_attachment_limits_endpoint_returns_per_model_caps(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-gpt"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            llm_config=ThreadLLMConfig(provider="openai", model="openai/gpt-5.5"),
+        )
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/attachment_limits",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["effective_provider"] == "openai"
+    assert body["effective_model"] == "openai/gpt-5.5"
+    assert body["limits"]["max_images_per_request"] == 1500
+    assert body["limits"]["max_total_bytes"] == 512 * 1024 * 1024
+
+
+def test_attachment_limits_endpoint_falls_back_to_settings_model(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-default"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    # No ThreadConfig saved; the route should fall back to agent.settings.
+
+    response = client.get(
+        f"/threads/{thread_id}/attachment_limits",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["effective_provider"] == "openai"
+    assert body["effective_model"] == "gpt-5.5"
+    assert body["limits"]["max_images_per_request"] == 1500
+
+
+def test_attachment_limits_endpoint_denies_non_owner(tmp_path: Path, api_client_builder):
+    client, agent, _token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.create_user("other", "other@example.com", "Other")
+    other_token = agent.accounts_repo.issue_token("other")
+    thread_id = "thread-owned-by-owner"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.get(
+        f"/threads/{thread_id}/attachment_limits",
+        headers=api_client_builder.auth(other_token),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"
+
+
+def test_attachment_download_streams_original_bytes(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    from nymeria.core import attachment_sandbox
+    import base64
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-download"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    payload = b"hello, sandbox!"
+    record = attachment_sandbox.write_attachment(
+        thread_id,
+        {
+            "file_type": "document",
+            "data_url": f"data:text/plain;base64,{base64.b64encode(payload).decode()}",
+            "mime_type": "text/plain",
+            "file_name": "notes.txt",
+        },
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/attachments/{record.id}/download",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "notes.txt" in response.headers.get("content-disposition", "")
+
+
+def test_attachment_download_404_for_unknown_id(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-download-missing"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.get(
+        f"/threads/{thread_id}/attachments/no-such-id/download",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Attachment not found"
+
+
+def test_attachment_download_denies_non_owner(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    from nymeria.core import attachment_sandbox
+    import base64
+
+    client, agent, _token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.create_user("other", "other@example.com", "Other")
+    other_token = agent.accounts_repo.issue_token("other")
+    thread_id = "thread-private"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    record = attachment_sandbox.write_attachment(
+        thread_id,
+        {
+            "file_type": "document",
+            "data_url": f"data:text/plain;base64,{base64.b64encode(b'secret').decode()}",
+            "mime_type": "text/plain",
+            "file_name": "secret.txt",
+        },
+    )
+
+    # Other user must not be able to download by guessing the attachment id.
+    response = client.get(
+        f"/threads/{thread_id}/attachments/{record.id}/download",
+        headers=api_client_builder.auth(other_token),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"

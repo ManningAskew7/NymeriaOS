@@ -522,10 +522,13 @@ function createAutonomousStore() {
         // If on the same thread and not already streaming (user typing),
         // show that autonomous activity is starting
         if (isCurrentThread && !chatStore.isStreaming) {
-          // Show autonomous prompt if thread config has it enabled
-          // Only for scheduler/watchdog/trigger tasks, not callable thread invocations
+          // Show autonomous prompt if the global toggle is on OR the per-thread
+          // override is force-on. Only for scheduler/watchdog/trigger tasks, not
+          // callable thread invocations.
           const threadCfg = threadConfigStore.getConfig(event.thread_id);
-          if (threadCfg?.showAutonomousPrompts && event.prompt && !event.callable_name) {
+          const effective =
+            configStore.showAutonomousPrompts || Boolean(threadCfg?.showAutonomousPrompts);
+          if (effective && event.prompt && !event.callable_name) {
             const sourceLabel = classifyAutonomousSource(event);
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }
@@ -636,8 +639,9 @@ function createAutonomousStore() {
           credential_id: (event.credential_id as string) || '',
           provider: (event.provider as string) || '',
           display_name: (event.display_name as string) || (event.provider as string) || '',
-          mode: (event.mode as 'api_key' | 'pat' | 'oauth' | 'form') || 'api_key',
+          mode: (event.mode as 'api_key' | 'pat' | 'oauth' | 'oauth_device' | 'form') || 'api_key',
           description: (event.description as string) || '',
+          instructions: (event.instructions as string) || '',
           fields: (event.fields as Array<{
             name: string;
             label: string;
@@ -656,6 +660,25 @@ function createAutonomousStore() {
             last_tested_at: string | null;
           }>) || [],
           timeout_seconds: (event.timeout_seconds as number) || 180,
+          expires_at: (event.expires_at as string | null | undefined) ?? null,
+          // Hosted-form path
+          connect_url: (event.connect_url as string | null | undefined) ?? null,
+          connect_url_required: (event.connect_url_required as boolean | undefined) ?? undefined,
+          connect_url_error: (event.connect_url_error as string | null | undefined) ?? null,
+          // OAuth (auth-code + device-code) shared fields
+          flow: (event.flow as 'auth_code' | 'device_code' | undefined),
+          provider_id: (event.provider_id as string | undefined),
+          scopes: (event.scopes as string[] | undefined),
+          notes: (event.notes as string | null | undefined) ?? null,
+          // Authorization-code fields
+          auth_url: (event.auth_url as string | undefined),
+          uses_pkce: (event.uses_pkce as boolean | undefined),
+          // Device-code (RFC 8628) fields
+          user_code: (event.user_code as string | undefined),
+          verification_uri: (event.verification_uri as string | undefined),
+          verification_uri_complete: (event.verification_uri_complete as string | null | undefined) ?? null,
+          expires_in: (event.expires_in as number | undefined),
+          interval: (event.interval as number | undefined),
         });
         break;
       }

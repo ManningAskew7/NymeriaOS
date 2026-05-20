@@ -78,7 +78,7 @@ def test_google_analytics_missing_auth_returns_setup_hint(monkeypatch):
 
     assert success is False
     assert "No authenticated Google Analytics account" in message
-    assert "google_analytics_auth_start" in message
+    assert "request_credential(provider=\"google_analytics\"" in message
 
 
 def test_google_analytics_tools_registered_with_metadata():
@@ -86,17 +86,12 @@ def test_google_analytics_tools_registered_with_metadata():
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
-        "google_analytics_list_accounts",
         "google_analytics_list_account_summaries",
         "google_analytics_get_metadata",
         "google_analytics_run_report",
         "google_analytics_run_realtime_report",
     ]
-    moderate_names = [
-        "google_analytics_auth_start",
-        "google_analytics_auth_complete",
-        "google_analytics_auth_clear",
-    ]
+    moderate_names: list[str] = []
 
     for name in safe_names:
         assert name in OPTIONAL_TOOLS

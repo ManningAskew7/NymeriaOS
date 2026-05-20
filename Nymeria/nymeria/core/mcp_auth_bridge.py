@@ -31,6 +31,14 @@ GOOGLE_CACHE_CANDIDATES = (
     "google_docs.json",
     "google_calendar.json",
 )
+# Filename -> provider mapping used to look credentials up in the credential
+# vault via ``resolve_oauth_cache``. Filenames remain the user-visible cache
+# names; providers match ``OAUTH_PROVIDERS`` keys in ``config/oauth_providers``.
+_GOOGLE_FILENAME_TO_PROVIDER = {
+    GOOGLE_GMAIL_CACHE: "google_gmail",
+    "google_docs.json": "google_docs",
+    "google_calendar.json": "google_calendar",
+}
 
 
 def _is_gmail_mcp_server(defn: MCPServerDefinition) -> bool:
@@ -119,7 +127,13 @@ def export_google_account_for_gmail_mcp(
     for filename in filenames:
         if not filename:
             continue
-        cache = auth_utils.load_token_cache(user_id, filename)
+        provider = _GOOGLE_FILENAME_TO_PROVIDER.get(filename)
+        if provider:
+            source = auth_utils.resolve_oauth_cache(user_id, provider, cache_filename=filename)
+            cache = source.cache
+        else:
+            source = None
+            cache = auth_utils.load_token_cache(user_id, filename)
         accounts = cache.get("accounts", {})
         if not accounts:
             continue
@@ -151,7 +165,10 @@ def export_google_account_for_gmail_mcp(
             accounts[candidate_id] = account
             if changed:
                 cache["accounts"] = accounts
-                auth_utils.save_token_cache(user_id, filename, cache)
+                if source is not None:
+                    source.persist(cache)
+                else:
+                    auth_utils.save_token_cache(user_id, filename, cache)
             _write_google_auth_library_credentials(account, target)
             logs.append(
                 "Exported Google Gmail auth connection "
@@ -206,9 +223,9 @@ def apply_mcp_auth_presets(
         )
         if exported is None:
             logs.append(
-                "No saved Google auth connection has Gmail scopes yet. Run "
-                "`gmail_auth_start` / `gmail_auth_complete`, then retry or "
-                "rediscover this MCP server."
+                "No saved Google auth connection has Gmail scopes yet. Ask the "
+                "agent to call `request_credential(provider=\"google_gmail\", "
+                "kind=\"oauth\")`, then retry or rediscover this MCP server."
             )
     else:
         logs.append(f"Using existing Gmail MCP credential file: {credentials_path}")

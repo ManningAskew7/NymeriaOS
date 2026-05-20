@@ -1,4 +1,5 @@
 import type {
+  AttachmentLimitsResponse,
   ContextStats,
   Message,
   MessageStep,
@@ -6,6 +7,8 @@ import type {
   ThreadStatus,
   ToolCall
 } from '$lib/types';
+import { configStore } from '$lib/stores/config.svelte';
+import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
 import { ChatApi } from './chat';
 
 export class ThreadsApi extends ChatApi {
@@ -109,8 +112,20 @@ export class ThreadsApi extends ChatApi {
     }
   }
   async getThreadHistory(threadId: string): Promise<ThreadHistory> {
+    // History filtering for autonomous wake-ups is driven by the global
+    // localStorage toggle (default ON). A per-thread `show_autonomous_prompts`
+    // value of true acts as a force-on override (e.g. when the global is off
+    // but a specific thread should still show them). The backend honors the
+    // query param when present; otherwise it falls back to the per-thread
+    // field (preserves behavior for MCP/CLI and older clients).
+    const perThreadCfg = threadConfigStore.getConfig(threadId);
+    const effectiveShowAutonomousPrompts =
+      configStore.showAutonomousPrompts || Boolean(perThreadCfg?.showAutonomousPrompts);
+    const params = new URLSearchParams({
+      show_autonomous_prompts: String(effectiveShowAutonomousPrompts),
+    });
     const response = await fetch(
-      `${this.getBaseUrl()}/threads/${threadId}/history`,
+      `${this.getBaseUrl()}/threads/${threadId}/history?${params.toString()}`,
       {
         headers: this.getHeaders()
       }
@@ -189,6 +204,53 @@ export class ThreadsApi extends ChatApi {
       processing: Boolean(data.processing),
     };
   }
+  /**
+   * Look up per-model attachment caps for this thread. Used to drive the
+   * InputBar's "X / Y images" counter and to short-circuit oversize uploads
+   * before the user hits Send. Source of truth is the backend's
+   * `get_attachment_limits(effective_model)`.
+   */
+  async getAttachmentLimits(threadId: string): Promise<AttachmentLimitsResponse> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachment_limits`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Download a sandboxed thread attachment by its record id. Returns a Blob
+   * the caller can hand to a `<a download>` link or pass to a Save dialog.
+   * The server-side route is owner-scoped (404 on probes) and streams the
+   * original file with its real Content-Type + Content-Disposition.
+   */
+  async downloadAttachment(threadId: string, attachmentId: string): Promise<{
+    blob: Blob;
+    filename: string;
+    contentType: string;
+  }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to download attachment: ${response.status} ${text}`);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get('content-type') || blob.type || 'application/octet-stream';
+    const disposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = filenameMatch?.[1] || `attachment-${attachmentId}`;
+
+    return { blob, filename, contentType };
+  }
+
   async stopThread(threadId: string): Promise<void> {
     try {
       await fetch(`${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/stop`, {

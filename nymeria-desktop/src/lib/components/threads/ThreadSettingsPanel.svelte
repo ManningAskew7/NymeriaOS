@@ -882,11 +882,14 @@
 
             <label class="toggle-row">
               <input type="checkbox" bind:checked={showAutonomousPrompts} />
-              <span class="toggle-label">Show autonomous prompts</span>
+              <span class="toggle-label">Force show autonomous prompts on this thread</span>
             </label>
             <p class="field-hint">
-              Show the prompts sent by the scheduler, watchdog, and triggers as
-              messages in the chat. Useful for debugging autonomous behavior.
+              Per-thread override. When the global "Show autonomous prompts"
+              setting (Settings, Appearance) is off, enable this to still show
+              scheduler, watchdog, and trigger prompts on this specific thread.
+              When the global setting is on, this has no effect (prompts already
+              show on all threads).
             </p>
 
             <label class="toggle-row">
