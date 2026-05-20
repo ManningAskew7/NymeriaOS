@@ -45,6 +45,7 @@
     border: none;
     cursor: pointer;
     line-height: 0;
+    transform: translateY(-4px);
   }
 
   .toggle-switch:focus-visible {

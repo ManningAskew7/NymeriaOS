@@ -1,8 +1,5 @@
 <script lang="ts">
   import { chatStore } from '$lib/stores/chat.svelte';
-  import { Icon } from '$lib/components/common';
-
-  let expanded = $state(false);
 
   function formatTokenCount(tokens: number): string {
     if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
@@ -20,45 +17,32 @@
 {#if chatStore.contextStats && chatStore.contextStats.totalTokens > 0}
   {@const stats = chatStore.contextStats}
   {@const color = getUsageColor(stats.usagePercentage)}
-  <div class="context-status-bar" class:expanded>
-    <button
-      class="info-toggle"
-      type="button"
-      onclick={() => (expanded = !expanded)}
-      title={expanded ? 'Hide context details' : `Context ${stats.usagePercentage}% used — click for details`}
-      aria-label="Toggle context details"
-      aria-expanded={expanded}
-    >
-      <span class="usage-dot" style:background={color}></span>
-    </button>
-
-    {#if expanded}
-      <div class="details">
-        {#if chatStore.activeModel}
-          <span class="model-name">{chatStore.activeModel}</span>
-          <span class="separator">|</span>
-        {/if}
-
-        <span class="token-count">{formatTokenCount(stats.totalTokens)} tokens</span>
+  <div class="context-status-bar">
+    <div class="details">
+      {#if chatStore.activeModel}
+        <span class="model-name">{chatStore.activeModel}</span>
         <span class="separator">|</span>
+      {/if}
 
-        <span class="usage" style:color={color}>
-          {stats.usagePercentage}%
-        </span>
-        <div class="progress-bar">
-          <div
-            class="progress-fill"
-            style:width="{Math.min(stats.usagePercentage, 100)}%"
-            style:background={color}
-          ></div>
-        </div>
+      <span class="token-count">{formatTokenCount(stats.totalTokens)} tokens</span>
+      <span class="separator">|</span>
 
-        {#if stats.compactionCount > 0}
-          <span class="separator">|</span>
-          <span class="compaction-count" title="Times compacted">{stats.compactionCount}x compacted</span>
-        {/if}
+      <span class="usage" style:color={color}>
+        {stats.usagePercentage}%
+      </span>
+      <div class="progress-bar">
+        <div
+          class="progress-fill"
+          style:width="{Math.min(stats.usagePercentage, 100)}%"
+          style:background={color}
+        ></div>
       </div>
-    {/if}
+
+      {#if stats.compactionCount > 0}
+        <span class="separator">|</span>
+        <span class="compaction-count" title="Times compacted">{stats.compactionCount}x compacted</span>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -67,9 +51,9 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-sm, 8px);
-    padding: 2px 0 2px 2px;
+    padding: 0;
     font-size: 0.7rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     background: transparent;
     user-select: none;
     flex-shrink: 0;
@@ -129,7 +113,7 @@
   }
 
   .separator {
-    opacity: 0.3;
+    opacity: 0.5;
   }
 
   .token-count {

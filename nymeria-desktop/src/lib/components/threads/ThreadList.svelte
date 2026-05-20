@@ -1067,7 +1067,9 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 3px 8px;
+    padding: 0 8px;
+    height: 28px;
+    box-sizing: border-box;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     background: transparent;
@@ -1082,6 +1084,8 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
+    height: 28px;
+    box-sizing: border-box;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: transparent;
@@ -1089,7 +1093,7 @@
 
   .mode-btn {
     width: 24px;
-    height: 22px;
+    height: 100%;
     justify-content: center;
     padding: 0;
     border: none;

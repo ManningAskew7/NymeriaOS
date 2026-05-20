@@ -171,7 +171,7 @@
   );
 
   function toggleExpand() {
-    if (hasDetails) expanded = !expanded;
+    expanded = !expanded;
   }
 
   function stop(e: Event) {
@@ -246,15 +246,6 @@
         <span class="trigger-name" class:muted={!trigger.enabled}>{trigger.name}</span>
         <span class="source-chip">{sourceLabel}</span>
       </div>
-      <div class="subtitle-row">
-        <span class="action-kind">
-          <Icon name={actionMeta.icon} size={10} />
-          <span>{actionMeta.label}</span>
-        </span>
-        {#if actionTemplate}
-          <span class="action-preview">{truncate(actionTemplate, 62)}</span>
-        {/if}
-      </div>
     </div>
 
     <div class="header-actions">
@@ -268,79 +259,90 @@
         variant="outlined"
       />
 
-      {#if hasDetails}
-        <button
-          class="expand-btn"
-          class:rotated={expanded}
-          type="button"
-          aria-expanded={expanded}
-          aria-label={expanded ? 'Collapse trigger details' : 'Expand trigger details'}
-          onclick={toggleExpand}
-        >
-          <Icon name="chevronDown" size={12} />
-        </button>
+      <button
+        class="expand-btn"
+        class:rotated={expanded}
+        type="button"
+        aria-expanded={expanded}
+        aria-label={expanded ? 'Collapse trigger details' : 'Expand trigger details'}
+        onclick={toggleExpand}
+      >
+        <Icon name="chevronDown" size={12} />
+      </button>
+    </div>
+  </div>
+
+  {#if expanded}
+    <!-- Thread pill + action preview -->
+    {#if threadTitle || actionTemplate || actionMeta}
+      <div class="thread-action-row">
+        {#if threadTitle}
+          {#if onNavigateToThread}
+            <button
+              class="thread-pill clickable"
+              onclick={handleThreadClick}
+              type="button"
+              title={`Go to thread: ${threadTitle}`}
+            >
+              <Icon name="chat" size={10} />
+              <span class="thread-name">{threadTitle}</span>
+              <Icon name="chevronRight" size={10} />
+            </button>
+          {:else}
+            <span class="thread-pill" title={threadTitle}>
+              <Icon name="chat" size={10} />
+              <span class="thread-name">{threadTitle}</span>
+            </span>
+          {/if}
+        {/if}
+        {#if actionTemplate}
+          <span class="action-preview">{truncate(actionTemplate, 62)}</span>
+        {:else}
+          <span class="action-kind">
+            <Icon name={actionMeta.icon} size={10} />
+            <span>{actionMeta.label}</span>
+          </span>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Meta stats -->
+    <div class="meta-row">
+      <span class="meta-item" title={healthLabel}>
+        <span class="health-dot" style="background: {healthColor}"></span>
+        {healthLabel}
+      </span>
+      <span class="meta-sep" aria-hidden="true">·</span>
+      <span class="meta-item" title="Times fired">
+        <Icon name="bolt" size={10} />
+        <span><span class="num">{trigger.fire_count}</span> {trigger.fire_count === 1 ? 'fire' : 'fires'}</span>
+      </span>
+      <span class="meta-sep" aria-hidden="true">·</span>
+      <span class="meta-item clock-item" title="Last fired">
+        <Icon name="clock" size={10} />
+        {formatTimeAgo(trigger.last_fired)}
+      </span>
+      {#if trigger.cooldown_seconds > 0}
+        <span class="meta-sep" aria-hidden="true">·</span>
+        <span class="meta-item cooldown-item" title="Cooldown between fires">
+          {formatCooldown(trigger.cooldown_seconds)}
+        </span>
       {/if}
     </div>
-  </div>
 
-  <!-- Thread pill: most visible in global view so you know what thread this belongs to -->
-  {#if threadTitle}
-    {#if onNavigateToThread}
-      <button
-        class="thread-pill clickable"
-        onclick={handleThreadClick}
-        type="button"
-        title={`Go to thread: ${threadTitle}`}
-      >
-        <Icon name="chat" size={10} />
-        <span class="thread-name">{threadTitle}</span>
-        <Icon name="chevronRight" size={10} />
-      </button>
-    {:else}
-      <span class="thread-pill" title={threadTitle}>
-        <Icon name="chat" size={10} />
-        <span class="thread-name">{threadTitle}</span>
-      </span>
+    {#if trigger.last_error && trigger.health_status !== 'healthy'}
+      <div class="error-banner" title={trigger.last_error}>
+        <Icon name="warning" size={11} />
+        <span>{truncate(trigger.last_error, 90)}</span>
+      </div>
     {/if}
-  {/if}
 
-  <!-- Meta stats -->
-  <div class="meta-row">
-    <span class="meta-item" title={healthLabel}>
-      <span class="health-dot" style="background: {healthColor}"></span>
-      {healthLabel}
-    </span>
-    <span class="meta-sep" aria-hidden="true">·</span>
-    <span class="meta-item" title="Times fired">
-      <Icon name="bolt" size={10} />
-      <span class="num">{trigger.fire_count}</span>
-      {trigger.fire_count === 1 ? 'fire' : 'fires'}
-    </span>
-    <span class="meta-sep" aria-hidden="true">·</span>
-    <span class="meta-item" title="Last fired">
-      <Icon name="clock" size={10} />
-      {formatTimeAgo(trigger.last_fired)}
-    </span>
-    {#if trigger.cooldown_seconds > 0}
-      <span class="meta-sep" aria-hidden="true">·</span>
-      <span class="meta-item" title="Cooldown between fires">
-        {formatCooldown(trigger.cooldown_seconds)}
-      </span>
+    {#if testResult !== null}
+      <div class="test-banner" class:ok={testOk} class:bad={!testOk}>
+        <Icon name={testOk ? 'success' : 'warning'} size={11} />
+        <span>{testResult}</span>
+      </div>
     {/if}
-  </div>
-
-  {#if trigger.last_error && trigger.health_status !== 'healthy'}
-    <div class="error-banner" title={trigger.last_error}>
-      <Icon name="warning" size={11} />
-      <span>{truncate(trigger.last_error, 90)}</span>
-    </div>
-  {/if}
-
-  {#if testResult !== null}
-    <div class="test-banner" class:ok={testOk} class:bad={!testOk}>
-      <Icon name={testOk ? 'success' : 'warning'} size={11} />
-      <span>{testResult}</span>
-    </div>
   {/if}
 
   <!-- Expanded details -->
@@ -477,6 +479,27 @@
     background: var(--bg-hover);
   }
 
+  /* Collapsed state: tighter card, smaller source bubble, centered row */
+  .trigger-card:not(.expanded) {
+    padding: 7px 14px 7px 9px;
+  }
+
+  .trigger-card:not(.expanded) .card-header {
+    align-items: center;
+    gap: 9px;
+  }
+
+  .trigger-card:not(.expanded) .source-badge {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+  }
+
+  .trigger-card:not(.expanded) .source-badge :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+
   /* Health rail — a thin accent rail on the left that reflects status */
   .health-rail {
     position: absolute;
@@ -541,10 +564,10 @@
 
   .trigger-name {
     font-size: var(--font-size-sm);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--text-primary);
     letter-spacing: -0.005em;
-    line-height: 1.4;
+    line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -553,20 +576,31 @@
   }
 
   .trigger-name.muted {
-    color: var(--text-muted);
+    color: var(--text-primary);
   }
 
   .source-chip {
     flex-shrink: 0;
-    padding: 1px 6px;
+    padding: 2px 8px;
     font-size: 9.5px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted);
-    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-full);
     line-height: 1.45;
+  }
+
+  .thread-action-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-wrap: wrap;
   }
 
   .subtitle-row {
@@ -714,7 +748,8 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 7px;
+    row-gap: 6px;
+    column-gap: 7px;
     font-size: 11px;
     color: var(--text-muted);
     line-height: 1.4;
@@ -723,9 +758,23 @@
   .meta-item {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 2px;
     flex-shrink: 0;
     font-variant-numeric: tabular-nums;
+  }
+
+  .meta-item :global(svg) {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+  }
+
+  .clock-item :global(svg) {
+    margin-right: 3px;
+  }
+
+  .cooldown-item {
+    font-variant-numeric: normal;
   }
 
   .meta-item .num {
@@ -734,10 +783,11 @@
   }
 
   .health-dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
+    margin-right: 3px;
   }
 
   .meta-sep {

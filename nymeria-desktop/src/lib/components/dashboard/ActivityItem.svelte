@@ -70,7 +70,7 @@
 </script>
 
 {#snippet activityContent()}
-  <div class="activity-icon" style="color: {color}">
+  <div class="activity-icon" class:clock-icon={icon === 'clock'} class:check-icon={icon === 'check'} style="color: {color}">
     <Icon name={icon} size={12} />
   </div>
 
@@ -133,8 +133,16 @@
 
   .activity-icon {
     flex-shrink: 0;
-    margin-top: 3px;
+    margin-top: -3px;
     opacity: 0.8;
+  }
+
+  .activity-icon.clock-icon {
+    margin-top: -3px;
+  }
+
+  .activity-icon.check-icon {
+    margin-top: -4px;
   }
 
   .activity-content {
