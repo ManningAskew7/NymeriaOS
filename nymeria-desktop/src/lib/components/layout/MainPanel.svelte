@@ -16,6 +16,7 @@
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { api } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
   import { isTodoTool } from '$lib/utils/todoTools';
@@ -36,6 +37,8 @@
   let attachmentValidationResult = $state<AttachmentValidationResult | null>(null);
   let warningSuppressChecked = $state(false);
   let pendingSend = $state<{ message: string; attachments?: FileAttachment[] } | null>(null);
+
+  let bothSidebarsOpen = $derived(!uiStore.sidebarCollapsed && !uiStore.rightPanelCollapsed);
 
   // Load global stores for thread header badges
   $effect(() => {
@@ -605,9 +608,7 @@
     <ChatContainer />
   </div>
 
-  <ContextStatusBar />
-
-  <div class="input-area">
+  <div class="input-area" class:both-open={bothSidebarsOpen}>
     <QueuedPromptsBar />
     <InputBar
       onSend={handleSendMessage}
@@ -620,6 +621,9 @@
           ? 'Type to queue (sends at the next sub-turn halt)'
           : 'Type a message...'}
     />
+    <div class="context-status-wrap">
+      <ContextStatusBar />
+    </div>
   </div>
 </div>
 
@@ -693,9 +697,38 @@
   }
 
   .input-area {
+    position: relative;
     padding: 18px var(--spacing-md);
-    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+  }
+
+  .input-area::before {
+    content: '';
+    position: absolute;
+    inset: 0;
     background: var(--bg-elevated);
+    border-top: 1px solid var(--border-subtle);
+    transform: translateY(100%);
+    transition: transform 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .input-area.both-open::before {
+    transform: translateY(0);
+  }
+
+  .input-area > :global(*) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .context-status-wrap {
+    position: absolute;
+    left: calc(var(--spacing-md) + 8px);
+    bottom: 18px;
+    z-index: 2;
+    pointer-events: auto;
   }
 
   .attachment-warning-modal {

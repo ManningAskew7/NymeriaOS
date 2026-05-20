@@ -229,7 +229,6 @@
     color: var(--accent-primary);
     margin: 0;
     letter-spacing: -0.02em;
-    text-shadow: 0 0 20px rgba(34, 211, 238, 0.2);
   }
 
   .logo-os {

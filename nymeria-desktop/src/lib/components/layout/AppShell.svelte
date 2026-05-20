@@ -12,6 +12,67 @@
 
   let { sidebar, main, rightPanel }: Props = $props();
 
+  // Drag-to-resize state
+  let dragging = $state<null | 'sidebar' | 'right'>(null);
+  let dragStartX = 0;
+  let dragStartWidth = 0;
+  // Frozen at first paint: the main panel's natural width with both sidebars
+  // at their default sizes. We forbid the center column from shrinking below
+  // this, so dragging a sidebar wider is only possible while there is room.
+  let mainMinWidth = 0;
+
+  function recomputeMainMin() {
+    if (typeof window === 'undefined') return;
+    // Lock to whatever the main panel is right now (assumed default layout).
+    const sidebar = uiStore.sidebarCollapsed ? 0 : uiStore.sidebarWidth;
+    const right = uiStore.rightPanelCollapsed ? 0 : uiStore.rightPanelWidth;
+    mainMinWidth = Math.max(0, window.innerWidth - sidebar - right);
+  }
+
+  function startSidebarDrag(e: PointerEvent) {
+    if (uiStore.sidebarCollapsed) return;
+    dragging = 'sidebar';
+    dragStartX = e.clientX;
+    dragStartWidth = uiStore.sidebarWidth;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function startRightDrag(e: PointerEvent) {
+    if (uiStore.rightPanelCollapsed) return;
+    dragging = 'right';
+    dragStartX = e.clientX;
+    dragStartWidth = uiStore.rightPanelWidth;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!dragging) return;
+    const dx = e.clientX - dragStartX;
+    const viewport = typeof window !== 'undefined' ? window.innerWidth : 0;
+    if (dragging === 'sidebar') {
+      const otherSide = uiStore.rightPanelCollapsed ? 0 : uiStore.rightPanelWidth;
+      const maxByMain = Math.max(0, viewport - otherSide - mainMinWidth);
+      const next = Math.min(dragStartWidth + dx, maxByMain);
+      uiStore.setSidebarWidth(next);
+    } else {
+      const otherSide = uiStore.sidebarCollapsed ? 0 : uiStore.sidebarWidth;
+      const maxByMain = Math.max(0, viewport - otherSide - mainMinWidth);
+      const next = Math.min(dragStartWidth - dx, maxByMain);
+      uiStore.setRightPanelWidth(next);
+    }
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = null;
+    uiStore.persistWidths();
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+  }
+
   // In Outlook mode, only allow one panel open at a time
   function outlookToggleSidebar() {
     if (outlookStore.isOutlookMode && uiStore.sidebarCollapsed && !uiStore.rightPanelCollapsed) {
@@ -48,13 +109,35 @@
 
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+    recomputeMainMin();
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+    };
   });
 </script>
 
-<div class="app-shell">
-  <aside class="sidebar" class:collapsed={uiStore.sidebarCollapsed} class:outlook-hide={outlookStore.isOutlookMode && uiStore.sidebarCollapsed}>
+<div
+  class="app-shell"
+  class:dragging
+  onpointermove={onPointerMove}
+  onpointerup={onPointerUp}
+>
+  <aside
+    class="sidebar"
+    class:collapsed={uiStore.sidebarCollapsed}
+    class:outlook-hide={outlookStore.isOutlookMode && uiStore.sidebarCollapsed}
+    style:--sidebar-width="{uiStore.sidebarWidth}px"
+  >
     {@render sidebar()}
+    {#if !uiStore.sidebarCollapsed}
+      <div
+        class="resize-handle right-edge"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onpointerdown={startSidebarDrag}
+      ></div>
+    {/if}
     <button
       type="button"
       class="panel-toggle sidebar-toggle"
@@ -77,7 +160,20 @@
     {@render main()}
   </main>
 
-  <aside class="right-panel" class:collapsed={uiStore.rightPanelCollapsed}>
+  <aside
+    class="right-panel"
+    class:collapsed={uiStore.rightPanelCollapsed}
+    style:--right-panel-width="{uiStore.rightPanelWidth}px"
+  >
+    {#if !uiStore.rightPanelCollapsed}
+      <div
+        class="resize-handle left-edge"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize dashboard"
+        onpointerdown={startRightDrag}
+      ></div>
+    {/if}
     <button
       type="button"
       class="panel-toggle right-panel-toggle"
@@ -213,6 +309,42 @@
 
   .right-panel-toggle {
     left: -44px;
+  }
+
+  /* Drag-to-resize handles on the inner edge of each side panel */
+  .resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    z-index: 9;
+    background: transparent;
+    transition: background 120ms ease;
+  }
+
+  .resize-handle.right-edge {
+    right: -3px;
+  }
+
+  .resize-handle.left-edge {
+    left: -3px;
+  }
+
+  .resize-handle:hover,
+  .app-shell.dragging .resize-handle {
+    background: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+  }
+
+  /* Suppress width transitions and text selection while a drag is in flight */
+  .app-shell.dragging {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  .app-shell.dragging .sidebar,
+  .app-shell.dragging .right-panel {
+    transition: none;
   }
 
 </style>

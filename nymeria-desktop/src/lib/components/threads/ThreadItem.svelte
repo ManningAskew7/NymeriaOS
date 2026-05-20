@@ -295,16 +295,16 @@
           class="agent-btn"
           onclick={handleOpenAgentConfig}
           type="button"
-          title={isCallable ? 'Callable agent settings' : 'Agent settings'}
+          data-tooltip={isCallable ? 'Callable agent settings' : 'Agent settings'}
           aria-label={isCallable ? 'Callable agent settings' : 'Agent settings'}
         >
           <Icon name="tool" size={14} />
         </button>
       {/if}
-      <button class="edit-btn" onclick={startEditing} type="button" title="Rename thread">
+      <button class="edit-btn" onclick={startEditing} type="button" data-tooltip="Rename thread" aria-label="Rename thread">
         <Icon name="edit" size={14} />
       </button>
-      <button class="delete-btn" onclick={handleDelete} type="button" title="Delete thread">
+      <button class="delete-btn" onclick={handleDelete} type="button" data-tooltip="Delete thread" aria-label="Delete thread">
         <Icon name="trash" size={14} />
       </button>
     </div>

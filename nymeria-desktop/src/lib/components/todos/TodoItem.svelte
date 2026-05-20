@@ -329,8 +329,8 @@
 
   .complete-btn {
     flex-shrink: 0;
-    width: 16px;
-    height: 16px;
+    width: 13px;
+    height: 13px;
     border-radius: var(--radius-sm);
     border: 1.5px solid var(--border-default);
     background: transparent;
