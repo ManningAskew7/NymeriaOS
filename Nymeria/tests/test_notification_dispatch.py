@@ -391,12 +391,13 @@ def test_ticker_should_notify_delegates_to_shared_helper(monkeypatch):
     assert calls[0][1] is fake_thread_config_manager
 
 
-def test_notify_tool_imports_senders_from_dispatch():
-    """Verify the tool module imports senders from the dispatch module."""
+def test_notify_tool_routes_through_dispatch():
+    """The tool module dispatches through ``send_via_profile`` and
+    ``get_in_app_notification_level`` from the dispatch module rather than
+    calling per-platform helpers directly.
+    """
     tool_mod = sys.modules["nymeria.tools.notify"]
     import nymeria.core.notification_dispatch as dispatch_mod
 
-    assert tool_mod.send_telegram is dispatch_mod.send_telegram
-    assert tool_mod.send_discord is dispatch_mod.send_discord
-    assert tool_mod.send_slack is dispatch_mod.send_slack
-    assert tool_mod.send_teams is dispatch_mod.send_teams
+    assert tool_mod.send_via_profile is dispatch_mod.send_via_profile
+    assert tool_mod.get_in_app_notification_level is dispatch_mod.get_in_app_notification_level

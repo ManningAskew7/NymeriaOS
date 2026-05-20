@@ -135,6 +135,10 @@ class ThreadConfig(BaseModel):
     telegram_autonomous_delivery: Literal["full", "notify_only", "off"] = "full"
     # In-app notification center behavior for this thread.
     in_app_notification_level: Literal["notify_only", "all_autonomous", "off"] = "notify_only"
+    # Per-thread override for the notify tool's destination profile. When set,
+    # overrides the user's default_notification_profile preference for this
+    # thread. None means "use the user-level default".
+    notification_profile: Optional[str] = Field(default=None, max_length=120)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -198,6 +202,8 @@ class ThreadConfig(BaseModel):
         if self.telegram_autonomous_delivery != "full":
             return True
         if self.in_app_notification_level != "notify_only":
+            return True
+        if self.notification_profile:
             return True
         return False
 

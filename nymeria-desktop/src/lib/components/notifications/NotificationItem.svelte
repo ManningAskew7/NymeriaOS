@@ -6,9 +6,17 @@
     notification: Notification;
     onclick?: () => void;
     onDismiss?: () => void;
+    onDelete?: () => void;
   }
 
-  let { notification, onclick, onDismiss }: Props = $props();
+  let { notification, onclick, onDismiss, onDelete }: Props = $props();
+
+  let hasErrors = $derived(
+    notification.errors && Object.keys(notification.errors).length > 0
+  );
+  let errorEntries = $derived(
+    notification.errors ? Object.entries(notification.errors) : []
+  );
 
   function formatTimeAgo(date: Date): string {
     const now = new Date();
@@ -32,11 +40,17 @@
     e.stopPropagation();
     onDismiss?.();
   }
+
+  function handleDelete(e: MouseEvent) {
+    e.stopPropagation();
+    onDelete?.();
+  }
 </script>
 
 <button
   class="notification-item"
   class:unread={!notification.read}
+  class:has-errors={hasErrors}
   type="button"
   onclick={handleClick}
 >
@@ -46,28 +60,67 @@
     </div>
     <div class="notification-text">
       <p class="notification-summary">{notification.summary}</p>
-      <span class="notification-time">{formatTimeAgo(notification.createdAt)}</span>
+      <div class="notification-meta">
+        <span class="notification-time">{formatTimeAgo(notification.createdAt)}</span>
+        {#if notification.profile}
+          <span class="meta-sep">·</span>
+          <span class="notification-profile" title="Profile used for routing">
+            {notification.profile}
+          </span>
+        {/if}
+      </div>
+      {#if notification.deliveredTo.length > 0 || hasErrors}
+        <div class="delivery-row">
+          {#each notification.deliveredTo as dest (dest)}
+            <span class="delivery-badge ok" title="Delivered to {dest}">
+              <Icon name="check" size={10} />
+              {dest}
+            </span>
+          {/each}
+          {#each errorEntries as [dest, err] (dest)}
+            <span class="delivery-badge err" title="{dest}: {err}">
+              <Icon name="x" size={10} />
+              {dest}
+            </span>
+          {/each}
+        </div>
+      {/if}
     </div>
   </div>
-  {#if !notification.read}
-    <span
-      class="dismiss-btn"
-      role="button"
-      tabindex="0"
-      onclick={handleDismiss}
-      onkeydown={(e) => e.key === 'Enter' && handleDismiss(e as unknown as MouseEvent)}
-      title="Mark as read"
-    >
-      <Icon name="x" size={14} />
-    </span>
-  {/if}
+  <div class="row-actions">
+    {#if !notification.read && onDismiss}
+      <span
+        class="row-action"
+        role="button"
+        tabindex="0"
+        onclick={handleDismiss}
+        onkeydown={(e) => e.key === 'Enter' && handleDismiss(e as unknown as MouseEvent)}
+        title="Mark as read"
+      >
+        <Icon name="check" size={14} />
+      </span>
+    {/if}
+    {#if onDelete}
+      <span
+        class="row-action delete"
+        role="button"
+        tabindex="0"
+        onclick={handleDelete}
+        onkeydown={(e) => e.key === 'Enter' && handleDelete(e as unknown as MouseEvent)}
+        title="Delete notification"
+      >
+        <Icon name="x" size={14} />
+      </span>
+    {/if}
+  </div>
 </button>
 
 <style>
   .notification-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
+    gap: var(--spacing-xs);
     width: 100%;
     padding: var(--spacing-sm) var(--spacing-md);
     text-align: left;
@@ -87,6 +140,10 @@
 
   .notification-item.unread:hover {
     background: var(--bg-hover);
+  }
+
+  .notification-item.has-errors {
+    border-left: 2px solid var(--accent-danger, #ef4444);
   }
 
   .notification-content {
@@ -113,7 +170,6 @@
     font-size: var(--font-size-sm);
     color: var(--text-primary);
     line-height: 1.4;
-    /* Allow text to wrap */
     word-wrap: break-word;
   }
 
@@ -121,28 +177,79 @@
     font-weight: 500;
   }
 
-  .notification-time {
+  .notification-meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 2px;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    display: block;
-    margin-top: 2px;
   }
 
-  .dismiss-btn {
+  .meta-sep {
+    opacity: 0.6;
+  }
+
+  .notification-profile {
+    font-variant: small-caps;
+    letter-spacing: 0.02em;
+  }
+
+  .delivery-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .delivery-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 10px;
+    line-height: 1;
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+  }
+
+  .delivery-badge.ok {
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    color: var(--accent-primary);
+  }
+
+  .delivery-badge.err {
+    background: color-mix(in srgb, var(--accent-danger, #ef4444) 14%, transparent);
+    color: var(--accent-danger, #ef4444);
+  }
+
+  .row-actions {
+    display: flex;
     flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+  }
+
+  .notification-item:hover .row-actions {
+    opacity: 1;
+  }
+
+  .row-action {
     padding: var(--spacing-xs);
     color: var(--text-muted);
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
-    opacity: 0;
+    cursor: pointer;
   }
 
-  .notification-item:hover .dismiss-btn {
-    opacity: 1;
-  }
-
-  .dismiss-btn:hover {
+  .row-action:hover {
     background: var(--bg-elevated);
     color: var(--text-primary);
+  }
+
+  .row-action.delete:hover {
+    color: var(--accent-danger, #ef4444);
   }
 </style>

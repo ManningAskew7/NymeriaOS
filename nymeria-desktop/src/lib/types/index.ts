@@ -218,6 +218,12 @@ export interface ThreadConfig {
   showPromptMetadata?: boolean;
   telegramAutonomousDelivery: 'full' | 'notify_only' | 'off';
   inAppNotificationLevel: 'notify_only' | 'all_autonomous' | 'off';
+  /**
+   * Per-thread override for which notification profile the `notify` tool
+   * routes through on this thread. `null` falls back to the user-level
+   * default profile preference.
+   */
+  notificationProfile?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -242,6 +248,7 @@ export interface ThreadConfigUpdateRequest {
   show_prompt_metadata?: boolean;
   telegram_autonomous_delivery?: 'full' | 'notify_only' | 'off';
   in_app_notification_level?: 'notify_only' | 'all_autonomous' | 'off';
+  notification_profile?: string | null;
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
@@ -249,6 +256,7 @@ export interface ThreadConfigUpdateRequest {
   clear_disabled_skills?: boolean;
   clear_llm_config?: boolean;
   clear_system_prompt?: boolean;
+  clear_notification_profile?: boolean;
 }
 
 export interface ThreadShareDocument {
@@ -477,11 +485,83 @@ export interface Notification {
   taskId?: string;
   createdAt: Date;
   read: boolean;
+  profile?: string | null;
+  attempted: string[];
+  deliveredTo: string[];
+  errors: Record<string, string>;
 }
 
 export interface NotificationsResponse {
   notifications: Notification[];
   unreadCount: number;
+}
+
+// Notification destination/profile/preference types
+export interface NotificationChannelTypeField {
+  key: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  help: string | null;
+}
+
+export interface NotificationChannelType {
+  name: string;
+  description: string;
+  configFields: NotificationChannelTypeField[];
+}
+
+export interface NotificationDestination {
+  id: string;
+  name: string;
+  type: string;
+  config: Record<string, unknown>;
+  secretFieldNames: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationDestinationCreate {
+  name: string;
+  type: string;
+  config?: Record<string, unknown>;
+  secretFields?: Record<string, string>;
+  enabled?: boolean;
+}
+
+export interface NotificationDestinationUpdate {
+  name?: string;
+  config?: Record<string, unknown>;
+  secretFields?: Record<string, string | null>;
+  enabled?: boolean;
+}
+
+export interface NotificationDestinationTestResult {
+  ok: boolean;
+  detail: string;
+}
+
+export interface NotificationProfile {
+  id: string;
+  name: string;
+  destinationNames: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationProfileCreate {
+  name: string;
+  destinationNames?: string[];
+}
+
+export interface NotificationProfileUpdate {
+  name?: string;
+  destinationNames?: string[];
+}
+
+export interface NotificationPreferences {
+  defaultProfile: string;
 }
 
 // API types
@@ -1612,11 +1692,16 @@ export interface AuthPromptEvent {
   account_label: string;
   existing_accounts: AuthPromptExistingAccount[];
   timeout_seconds: number;
+  expires_at?: string | null;
+  connect_url?: string | null;
+  connect_url_required?: boolean;
+  connect_url_error?: string | null;
 }
 
 export interface AuthPromptSubmitRequest {
   secret_fields: Record<string, string>;
   account_label?: string | null;
+  user_message?: string | null;
 }
 
 export interface AuthPromptSubmitResponse {
@@ -1624,6 +1709,11 @@ export interface AuthPromptSubmitResponse {
   status: 'active' | 'test_failed' | string;
   attempts: number;
   error?: string | null;
+  message?: string | null;
+  code?: string | null;
+  tested?: boolean;
+  testStatus?: string | null;
+  testError?: string | null;
   credential?: Credential | null;
 }
 

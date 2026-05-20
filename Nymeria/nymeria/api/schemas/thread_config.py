@@ -44,6 +44,7 @@ class ThreadConfigUpdateRequest(BaseModel):
     show_prompt_metadata: bool | None = None
     telegram_autonomous_delivery: Literal["full", "notify_only", "off"] | None = None
     in_app_notification_level: Literal["notify_only", "all_autonomous", "off"] | None = None
+    notification_profile: str | None = Field(default=None, max_length=120)
     clear_instructions: bool = False
     clear_disabled_tools: bool = False
     clear_enabled_tools: bool = False
@@ -51,6 +52,7 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_disabled_skills: bool = False
     clear_llm_config: bool = False
     clear_system_prompt: bool = False
+    clear_notification_profile: bool = False
 
 
 class ThreadTeamCreateRequest(BaseModel):
