@@ -29,6 +29,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, Optional, Sequence, Tuple
 
@@ -351,6 +352,305 @@ def delete_token_cache(user_id: str, cache_filename: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Vault-first OAuth cache resolver
+# ---------------------------------------------------------------------------
+#
+# Two storage shapes exist in production:
+#   1. Legacy: per-user JSON files under ``data/auth_tokens/<user>/<provider>.json``,
+#      mirrored (since the credential vault landed) into a ``legacy_cache`` table
+#      keyed by ``(user_id, cache_filename)``. ``load_token_cache`` /
+#      ``save_token_cache`` already read/write this path transparently.
+#   2. New: ``credentials`` rows of ``kind="oauth_token"`` populated by the
+#      ``request_credential`` flow. Tokens land in ``credential_secret_fields``
+#      under ``access_token`` / ``refresh_token`` and metadata stores
+#      ``account_id``/``email``/``scopes``/``expires_at``/``token_uri``.
+#
+# The resolver below merges both into the legacy in-memory shape so existing
+# consumers (``get_google_credentials``, ``outlook_email.get_access_token``)
+# need only small changes. Vault accounts win on ``account_id`` collision,
+# and refreshed tokens persist back to whichever store the account came from.
+
+
+@dataclass
+class OAuthCacheSource:
+    """Unified read/write handle over vault + legacy OAuth account storage.
+
+    ``cache`` has the legacy shape ``{"accounts": {<account_id>: {...}}}``.
+    Vault-backed accounts carry a ``_vault_credential_id`` sentinel used by
+    ``persist`` to route writes back to the correct credential row. Legacy
+    accounts have no sentinel and route to ``save_token_cache``.
+    """
+
+    cache: dict
+    persist: Callable[[dict], None]
+    has_vault_accounts: bool
+    has_legacy_accounts: bool
+
+
+_VAULT_CRED_ID_KEY = "_vault_credential_id"
+
+
+def _iso_to_epoch_seconds(value: Any) -> float:
+    """Parse an ISO 8601 timestamp into a float epoch. ``0.0`` on failure."""
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        # ``fromisoformat`` accepts ``+00:00`` and ``Z`` (Python 3.11+).
+        text = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _epoch_seconds_to_iso(value: Any) -> str:
+    """Format a float epoch as ISO 8601 UTC. Empty string on falsy input."""
+    if not value:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
+def _resolve_provider_client_id(
+    provider: str,
+    account_metadata_client_id: Optional[str],
+) -> Optional[str]:
+    """Pick a ``client_id`` for refresh. Falls back per provider family.
+
+    Existing vault rows minted before the ``client_id`` metadata fix do not
+    carry it, so the resolver consults the same env/file sources the legacy
+    code path always used.
+    """
+    if account_metadata_client_id:
+        return account_metadata_client_id
+    if provider.startswith("google"):
+        cfg = _load_google_oauth_client_config()
+        cid = cfg.get("client_id") if isinstance(cfg, dict) else None
+        return str(cid) if cid else None
+    if provider == "outlook":
+        # Mirrors outlook_auth.get_client_id() so refresh works in dev setups
+        # without MICROSOFT_MCP_CLIENT_ID.
+        return os.environ.get("MICROSOFT_MCP_CLIENT_ID") or "8ad36cab-9646-40ee-97f5-0ddd7cd6e5c8"
+    return None
+
+
+def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
+    """Read active vault ``oauth_token`` credentials for ``(user_id, provider)``.
+
+    Returns a legacy-shape ``{"accounts": {...}}`` dict, possibly empty.
+    Decryption failures are logged and the affected account is skipped so a
+    single bad row doesn't poison the whole read.
+    """
+    try:
+        from ..core.credential_vault import (
+            CredentialAccessDenied,
+            CredentialSecretUnavailable,
+            get_credential_vault_repo,
+        )
+    except Exception:
+        logger.debug("Credential vault import failed", exc_info=True)
+        return {}
+
+    try:
+        repo = get_credential_vault_repo()
+        all_creds = repo.list_credentials(owner_user_id=user_id, include_disabled=False)
+    except Exception:
+        logger.debug("Vault list_credentials failed for user=%s", user_id, exc_info=True)
+        return {}
+
+    accounts: dict[str, dict] = {}
+    for cred in all_creds:
+        if cred.kind != "oauth_token" or cred.provider != provider or cred.status != "active":
+            continue
+        meta = cred.metadata or {}
+        # Vault credentials are gated by ``allowed_targets`` (e.g. ``native_tool:*``).
+        # The resolver is the canonical native-tool reader; identify as such so
+        # the access check matches the policy stored on the row.
+        secret_kwargs = {
+            "actor_user_id": cred.owner_user_id,
+            "target_type": "native_tool",
+            "target_id": provider,
+        }
+        try:
+            access_token = repo.get_secret_field(cred.id, "access_token", **secret_kwargs)
+        except (CredentialSecretUnavailable, CredentialAccessDenied):
+            logger.warning(
+                "Vault oauth_token %s missing access_token; skipping", cred.id
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Vault oauth_token %s decrypt failed; skipping", cred.id, exc_info=True
+            )
+            continue
+
+        refresh_token = ""
+        try:
+            refresh_token = repo.get_secret_field(cred.id, "refresh_token", **secret_kwargs)
+        except (CredentialSecretUnavailable, CredentialAccessDenied):
+            pass  # refresh_token is optional; some providers don't issue one
+        except Exception:
+            logger.debug(
+                "Vault oauth_token %s refresh_token unavailable", cred.id, exc_info=True
+            )
+
+        account_id = str(meta.get("account_id") or cred.account_label or cred.id)
+        scopes = list(meta.get("scopes") or cred.scopes or [])
+        expires_at_epoch = _iso_to_epoch_seconds(meta.get("expires_at") or cred.expires_at)
+        client_id = _resolve_provider_client_id(provider, meta.get("client_id"))
+
+        accounts[account_id] = {
+            "email": meta.get("email") or cred.account_label or "unknown",
+            "name": meta.get("name") or "Unknown User",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at_epoch,
+            "scopes": scopes,
+            "client_id": client_id,
+            "token_uri": meta.get("token_uri")
+            or ("https://oauth2.googleapis.com/token" if provider.startswith("google") else ""),
+            _VAULT_CRED_ID_KEY: cred.id,
+        }
+
+    return {"accounts": accounts} if accounts else {}
+
+
+def _persist_vault_oauth_account(user_id: str, account_id: str, account: dict) -> None:
+    """Update a single vault ``oauth_token`` row from a refreshed account dict.
+
+    Silently skips accounts without a ``_vault_credential_id`` sentinel (i.e.
+    legacy-origin accounts persisted alongside vault ones).
+    """
+    cred_id = account.get(_VAULT_CRED_ID_KEY)
+    if not cred_id:
+        return
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+    except Exception:
+        logger.debug("Credential vault import failed during persist", exc_info=True)
+        return
+    try:
+        repo = get_credential_vault_repo()
+        existing = repo.get_credential(cred_id)
+    except Exception:
+        logger.warning("Vault get_credential failed for %s", cred_id, exc_info=True)
+        return
+    if existing is None:
+        logger.debug("Vault credential %s vanished before refresh write-back", cred_id)
+        return
+
+    metadata = dict(existing.metadata or {})
+    expires_iso = _epoch_seconds_to_iso(account.get("expires_at"))
+    if expires_iso:
+        metadata["expires_at"] = expires_iso
+    if account.get("scopes"):
+        metadata["scopes"] = list(account["scopes"])
+    if account.get("client_id"):
+        metadata["client_id"] = str(account["client_id"])
+
+    secret_fields = {"access_token": str(account.get("access_token") or "")}
+    if account.get("refresh_token"):
+        secret_fields["refresh_token"] = str(account["refresh_token"])
+
+    try:
+        repo.upsert_credential(
+            credential_id=existing.id,
+            owner_type=existing.owner_type,
+            owner_user_id=existing.owner_user_id,
+            name=existing.name,
+            provider=existing.provider,
+            kind="oauth_token",
+            account_label=existing.account_label,
+            metadata=metadata,
+            scopes=list(metadata.get("scopes") or existing.scopes or []),
+            allowed_targets=existing.allowed_targets or ["native_tool:*"],
+            expires_at=expires_iso or existing.expires_at,
+            status="active",
+            secret_fields=secret_fields,
+            actor_user_id=existing.owner_user_id,
+        )
+    except Exception:
+        logger.warning(
+            "Vault upsert_credential write-back failed for %s", cred_id, exc_info=True
+        )
+
+
+def _persist_oauth_cache(
+    user_id: str,
+    cache_filename: str,
+    cache: dict,
+) -> None:
+    """Route each account in ``cache`` back to its origin store.
+
+    Vault-tagged accounts go to ``_persist_vault_oauth_account``; everything
+    else falls through to ``save_token_cache`` (which already handles the
+    legacy_cache + file fallback). Vault accounts are stripped from the
+    legacy payload so we don't double-write or leak the sentinel.
+    """
+    accounts = cache.get("accounts") or {}
+    legacy_accounts: dict[str, dict] = {}
+    for account_id, account in accounts.items():
+        if _VAULT_CRED_ID_KEY in account:
+            _persist_vault_oauth_account(user_id, account_id, account)
+        else:
+            legacy_accounts[account_id] = account
+
+    # Always persist the legacy half so non-vault accounts (and other top-level
+    # keys like ``pending_auth``) survive a refresh. Strip the vault accounts
+    # so we don't store ciphertext-derived state in the legacy cache.
+    legacy_cache = dict(cache)
+    legacy_cache["accounts"] = legacy_accounts
+    if not legacy_accounts:
+        legacy_cache.pop("accounts", None)
+    save_token_cache(user_id, cache_filename, legacy_cache)
+
+
+def resolve_oauth_cache(
+    user_id: str,
+    provider: str,
+    *,
+    cache_filename: Optional[str] = None,
+) -> OAuthCacheSource:
+    """Return an ``OAuthCacheSource`` merging vault + legacy account storage.
+
+    Read order:
+        1. Vault ``oauth_token`` rows for ``(user_id, provider)``.
+        2. Legacy file/legacy_cache under ``cache_filename`` (defaults to
+           ``<provider>.json``).
+
+    Vault accounts win on ``account_id`` collision. ``persist`` routes each
+    account back to its origin: vault rows via ``upsert_credential``, legacy
+    rows via ``save_token_cache``.
+    """
+    filename = _google_cache_filename(provider, cache_filename)
+    vault_cache = _load_vault_oauth_cache(user_id, provider)
+    legacy_cache = load_token_cache(user_id, filename)
+
+    merged: dict[str, Any] = dict(legacy_cache or {})
+    legacy_accounts = dict((legacy_cache or {}).get("accounts") or {})
+    vault_accounts = dict(vault_cache.get("accounts") or {})
+
+    # Vault overrides legacy on collision.
+    merged_accounts: dict[str, dict] = {}
+    merged_accounts.update(legacy_accounts)
+    merged_accounts.update(vault_accounts)
+    merged["accounts"] = merged_accounts
+
+    def _persist(updated_cache: dict) -> None:
+        _persist_oauth_cache(user_id, filename, updated_cache)
+
+    return OAuthCacheSource(
+        cache=merged,
+        persist=_persist,
+        has_vault_accounts=bool(vault_accounts),
+        has_legacy_accounts=bool(legacy_accounts),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Google-specific helpers (userinfo, token exchange, account save)
 # ---------------------------------------------------------------------------
 
@@ -574,8 +874,9 @@ def get_google_credentials(
     """Return valid Google OAuth credentials for a saved provider account.
 
     ``provider`` is the cache namespace, for example ``google_calendar`` or
-    ``google_docs``. Tokens are refreshed with the same 60-second expiry buffer
-    used by the older per-tool implementations.
+    ``google_docs``. Vault-stored credentials (kind=oauth_token) win on
+    account_id collision over the legacy file/legacy_cache path. Refreshes
+    write back to whichever store the account originated from.
     """
     try:
         from google.oauth2.credentials import Credentials
@@ -586,9 +887,8 @@ def get_google_credentials(
         )
         return None
 
-    filename = _google_cache_filename(provider, cache_filename)
-    cache = load_token_cache(user_id, filename)
-    accounts = cache.get("accounts", {})
+    source = resolve_oauth_cache(user_id, provider, cache_filename=cache_filename)
+    accounts = source.cache.get("accounts", {})
     if not accounts:
         return None
 
@@ -625,8 +925,8 @@ def get_google_credentials(
                 logger.error("%s token refresh failed: %s", display_name, reason)
             return None
         accounts[aid] = account
-        cache["accounts"] = accounts
-        save_token_cache(user_id, filename, cache)
+        source.cache["accounts"] = accounts
+        source.persist(source.cache)
 
     return Credentials(
         token=account.get("access_token"),
@@ -1115,7 +1415,11 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
     )
     def list_accounts(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
         user_id = get_user_id(config)
-        cache = load_token_cache(user_id, spec.cache_filename)
+        # Use the vault-first resolver so vault oauth_token credentials minted
+        # by the new request_credential flow show up here too. Legacy file
+        # entries still appear for users mid-migration.
+        source = resolve_oauth_cache(user_id, spec.provider, cache_filename=spec.cache_filename)
+        cache = source.cache
         accounts = cache.get("accounts", {})
 
         if not accounts:
@@ -1123,11 +1427,13 @@ def create_google_oauth_tools(spec: GoogleOAuthToolSpec) -> list[Any]:
 
         rows, changed = validate_google_accounts_for_display(accounts, spec.scopes)
         if changed:
-            if accounts:
-                cache["accounts"] = accounts
-            else:
-                cache.pop("accounts", None)
-            _persist_or_delete_google_cache(user_id, spec, cache)
+            # validate_google_accounts_for_display deletes accounts whose
+            # refresh tokens Google confirmed are invalid. Vault accounts get
+            # dropped from the merged dict but the vault row stays active,
+            # so they will be re-reported as invalid next call. Re-auth via
+            # the new flow replaces them. Phase 8 removes this legacy tool.
+            cache["accounts"] = accounts
+            source.persist(cache)
 
         if not rows:
             return spec.no_usable_accounts_message

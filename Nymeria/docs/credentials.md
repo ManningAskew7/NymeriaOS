@@ -222,9 +222,15 @@ The vault record written by both flows uses these conventions:
   Outlook tool can read the token. Bind to a specific tool name to scope.
 
 Tools that consume OAuth tokens (`google_docs.get_credentials`,
-`calendar.py`, `outlook_email.py`, etc.) look up the vault first, fall back
-to the legacy `data/auth_tokens/<user_id>/*.json` cache, and lazy-migrate
-the legacy file on the next successful new-flow OAuth for that provider.
+`calendar.py`, `outlook_email.py`, etc.) call
+`auth_cache_utils.resolve_oauth_cache(user_id, provider)`, which merges
+vault `oauth_token` rows with the legacy `data/auth_tokens/<user_id>/*.json`
+cache. Vault accounts win on `account_id` collision; legacy-only accounts
+remain visible until the user re-auths via the new flow. Refreshes write
+back to whichever store the account originated from: vault rows go through
+`upsert_credential`, legacy rows through `save_token_cache`. The
+`_vault_credential_id` sentinel on each merged account routes the persist
+call to the correct store.
 
 ## Access Control
 
