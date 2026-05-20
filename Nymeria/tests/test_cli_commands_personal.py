@@ -489,7 +489,7 @@ def test_todo_and_memory_commands_use_api_client_methods() -> None:
             "task": "Call Bob",
             "scheduled_for": "2h",
             "notes": "phone",
-            "recurrence": "daily",
+            "recurrence": "1d",
             "thread_id": "thread-1",
         },
     ) in client.calls
@@ -497,6 +497,38 @@ def test_todo_and_memory_commands_use_api_client_methods() -> None:
     assert ("delete_todo", {"user_id": "alice", "todo_id": "todo-new"}) in client.calls
     assert ("search_memories", {"user_id": "alice", "query": "Tulsa"}) in client.calls
     assert ("save_memory", {"user_id": "alice", "key": "timezone", "value": "UTC"}) in client.calls
+
+
+def test_todo_add_accepts_arbitrary_recurrence_interval() -> None:
+    client = PersonalFakeClient()
+    registry = make_registry()
+    ctx = make_context(client, output=ListCommandOutputSink(), confirm=False)
+
+    assert run(
+        registry.dispatch_async(
+            ctx,
+            "/todo add Heartbeat --schedule 5m --recurrence 90m",
+        )
+    ).ok is True
+    assert (
+        "add_todo",
+        {
+            "user_id": "alice",
+            "task": "Heartbeat",
+            "scheduled_for": "5m",
+            "notes": None,
+            "recurrence": "90m",
+            "thread_id": "thread-1",
+        },
+    ) in client.calls
+
+    too_short = run(
+        registry.dispatch_async(
+            ctx,
+            "/todo add NoGood --schedule 5m --recurrence 30s",
+        )
+    )
+    assert too_short.ok is False
 
 
 def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None:

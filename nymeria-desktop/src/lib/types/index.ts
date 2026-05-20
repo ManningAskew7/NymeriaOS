@@ -391,7 +391,11 @@ export interface ThreadStatus {
 
 // TODO types (from backend)
 export type TodoStatus = 'pending' | 'in_progress' | 'done';
-export type TodoRecurrence = '5min' | '10min' | '15min' | '30min' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+// Recurrence is a canonical duration string ("5m", "2h", "1d", "1w") on the
+// wire. Legacy preset names ("hourly", "daily", "weekly", "monthly", "5min"
+// ... "30min") may still arrive from older data and are accepted by the
+// backend.
+export type TodoRecurrence = string;
 export type TodoCreatedBy = 'agent' | 'user';
 
 export interface TodoItem {

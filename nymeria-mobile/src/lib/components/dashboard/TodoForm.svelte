@@ -4,7 +4,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { TodoItem, TodoRecurrence } from '$lib/types';
+  import type { TodoItem } from '$lib/types';
 
   interface Props {
     isOpen: boolean;
@@ -14,11 +14,30 @@
 
   let { isOpen, onClose, editTodo = null }: Props = $props();
 
+  type RecurrenceUnit = '' | 's' | 'm' | 'h' | 'd' | 'w';
+
+  // Mirrors Nymeria.core.todo_constants.LEGACY_RECURRENCE_ALIASES so the form
+  // can populate amount/unit when editing a TODO created before arbitrary
+  // intervals existed.
+  const LEGACY_ALIASES: Record<string, string> = {
+    '5min': '5m', '10min': '10m', '15min': '15m', '30min': '30m',
+    hourly: '1h', daily: '1d', weekly: '1w', monthly: '30d'
+  };
+
+  function parseRecurrenceForForm(value: string | undefined): { amount: number; unit: RecurrenceUnit } {
+    if (!value) return { amount: 1, unit: '' };
+    const canonical = LEGACY_ALIASES[value.toLowerCase()] ?? value.toLowerCase();
+    const match = /^(\d+)(s|m|h|d|w)$/.exec(canonical);
+    if (!match) return { amount: 1, unit: '' };
+    return { amount: parseInt(match[1], 10), unit: match[2] as RecurrenceUnit };
+  }
+
   // Form state
   let task = $state('');
   let notes = $state('');
   let scheduledFor = $state('');
-  let recurrence = $state<TodoRecurrence | ''>('');
+  let recurrenceAmount = $state<number>(1);
+  let recurrenceUnit = $state<RecurrenceUnit>('');
   let selectedThreadId = $state<string>('__new__');
   let saving = $state(false);
   let deleting = $state(false);
@@ -38,13 +57,16 @@
         task = editTodo.task;
         notes = editTodo.notes || '';
         scheduledFor = editTodo.scheduledFor ? formatDateTimeForInput(editTodo.scheduledFor) : '';
-        recurrence = editTodo.recurrence || '';
+        const parsed = parseRecurrenceForForm(editTodo.recurrence);
+        recurrenceAmount = parsed.amount;
+        recurrenceUnit = parsed.unit;
         selectedThreadId = editTodo.threadId || '__new__';
       } else {
         task = '';
         notes = '';
         scheduledFor = '';
-        recurrence = '';
+        recurrenceAmount = 1;
+        recurrenceUnit = '';
         selectedThreadId = '__new__';
       }
       formError = '';
@@ -81,6 +103,20 @@
       return;
     }
 
+    let recurrence: string | undefined;
+    if (recurrenceUnit) {
+      if (!Number.isFinite(recurrenceAmount) || recurrenceAmount <= 0) {
+        formError = 'Repeat amount must be a positive whole number.';
+        return;
+      }
+      const amount = Math.floor(recurrenceAmount);
+      if (recurrenceUnit === 's' && amount < 60) {
+        formError = 'Repeat interval must be at least 60 seconds.';
+        return;
+      }
+      recurrence = `${amount}${recurrenceUnit}`;
+    }
+
     saving = true;
 
     try {
@@ -107,7 +143,7 @@
           task: task.trim(),
           notes: notes.trim() || undefined,
           scheduledFor: scheduledForValue,
-          recurrence: recurrence || undefined,
+          recurrence: recurrence,
           threadId: threadId,
           clearSchedule: !scheduledFor && !!editTodo.scheduledFor,
           clearRecurrence: !recurrence && !!editTodo.recurrence
@@ -117,7 +153,7 @@
           task: task.trim(),
           notes: notes.trim() || undefined,
           scheduledFor: scheduledForValue,
-          recurrence: recurrence || undefined,
+          recurrence: recurrence,
           threadId: threadId
         });
       }
@@ -197,18 +233,32 @@
     </div>
 
     <div class="form-group">
-      <label for="recurrence">Repeat</label>
-      <select id="recurrence" bind:value={recurrence} disabled={saving || deleting}>
-        <option value="">Never</option>
-        <option value="5min">Every 5 minutes</option>
-        <option value="10min">Every 10 minutes</option>
-        <option value="15min">Every 15 minutes</option>
-        <option value="30min">Every 30 minutes</option>
-        <option value="hourly">Hourly</option>
-        <option value="daily">Daily</option>
-        <option value="weekly">Weekly</option>
-        <option value="monthly">Monthly</option>
-      </select>
+      <label for="recurrenceUnit">Repeat</label>
+      <div class="recurrence-row">
+        {#if recurrenceUnit}
+          <input
+            id="recurrenceAmount"
+            class="recurrence-amount"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={recurrenceAmount}
+            disabled={saving || deleting}
+            aria-label="Repeat amount"
+          />
+        {/if}
+        <select id="recurrenceUnit" bind:value={recurrenceUnit} disabled={saving || deleting}>
+          <option value="">Never</option>
+          <option value="s">Seconds</option>
+          <option value="m">Minutes</option>
+          <option value="h">Hours</option>
+          <option value="d">Days</option>
+          <option value="w">Weeks</option>
+        </select>
+      </div>
+      {#if recurrenceUnit === 's'}
+        <span class="form-hint">Minimum 60 seconds.</span>
+      {/if}
     </div>
 
     {#if showThreadSelector}
@@ -321,6 +371,20 @@
   .form-hint {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+  }
+
+  .recurrence-row {
+    display: flex;
+    gap: var(--spacing-xs);
+    align-items: center;
+  }
+
+  .recurrence-row select {
+    flex: 1;
+  }
+
+  .recurrence-amount {
+    width: 5rem;
   }
 
   .form-actions {

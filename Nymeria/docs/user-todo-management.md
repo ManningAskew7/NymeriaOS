@@ -6,7 +6,7 @@ This feature allows users to create, edit, complete, and delete TODOs for Nymeri
 
 **Key Features:**
 - Full CRUD operations for TODOs via REST API
-- Recurrence presets (`5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly`)
+- Arbitrary recurrence intervals as duration strings (`5m`, `2h`, `1d`, `1w`, etc.); minimum 60s. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min`/`10min`/`15min`/`30min`) are still accepted on input and normalised to canonical form on storage.
 - Visual distinction between user-created vs agent-created TODOs
 - Visual distinction between recurring vs one-time TODOs
 - Thread selection and per-thread task counts for scheduled TODO output
@@ -69,7 +69,7 @@ class TodoItem(BaseModel):
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created: 'agent' or 'user'")
-    recurrence: Optional[str] = Field(default=None, description="'5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly'")
+    recurrence: Optional[str] = Field(default=None, description="Canonical duration string (e.g. '5m', '2h', '1d', '1w'). Validated by core.todo_constants.validate_recurrence; legacy preset names are accepted on input.")
 ```
 
 ### REST API Endpoints
@@ -91,7 +91,7 @@ class TodoCreateRequest(BaseModel):
     task: str
     notes: Optional[str]
     scheduled_for: Optional[str] # "45s", "17m", "2h", "1w", absolute, or ISO datetime
-    recurrence: Optional[str]    # 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
+    recurrence: Optional[str]    # Duration string: "5m", "2h", "1d", "1w" (min 60s). Legacy names "hourly", "daily", "weekly", "monthly", "5min" ... "30min" still accepted.
     thread_id: Optional[str]     # Thread for scheduled execution output
 
 class TodoUpdateRequest(BaseModel):
@@ -151,26 +151,27 @@ When a scheduled TODO is executed:
 3. Reset status to `pending`
 4. Re-sync to TodoScheduleDB
 
+The interval calculation lives in `core/todo_constants.py`:
+
 ```python
-def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Optional[datetime]:
-    if recurrence == "5min":
-        return from_time + timedelta(minutes=5)
-    elif recurrence == "10min":
-        return from_time + timedelta(minutes=10)
-    elif recurrence == "15min":
-        return from_time + timedelta(minutes=15)
-    elif recurrence == "30min":
-        return from_time + timedelta(minutes=30)
-    elif recurrence == "hourly":
-        return from_time + timedelta(hours=1)
-    elif recurrence == "daily":
-        return from_time + timedelta(days=1)
-    elif recurrence == "weekly":
-        return from_time + timedelta(weeks=1)
-    elif recurrence == "monthly":
-        return from_time + timedelta(days=30)  # Approximate
-    return None
+def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta]:
+    """Accept canonical durations ("5m", "2h", "1d", "1w", "30s") and legacy
+    preset names ("hourly", "daily", "weekly", "monthly", "5min" ... "30min").
+    Returns None for unparseable input."""
+
+def validate_recurrence(value: str) -> str:
+    """Return the canonical duration string, raising ValueError if the
+    interval is below MIN_RECURRENCE_SECONDS (60s) or malformed."""
+
+def calculate_next_recurrence_time(recurrence: str, anchor: datetime, ...):
+    """Advance the anchor by parse_recurrence_interval(recurrence), skipping
+    any intervals that have already passed."""
 ```
+
+Legacy preset names map to canonical durations via `LEGACY_RECURRENCE_ALIASES`:
+`hourly → 1h`, `daily → 1d`, `weekly → 1w`, `monthly → 30d` (approximate),
+`5min → 5m` ... `30min → 30m`. The API, agent tool, CLI and command service
+all call `validate_recurrence(...)` and persist the returned canonical string.
 
 ### Completed TODO Retention
 
@@ -196,7 +197,9 @@ context, depending on their own retention/indexing settings.
 **File:** `nymeria-desktop/src/lib/types/index.ts`
 
 ```typescript
-export type TodoRecurrence = '5min' | '10min' | '15min' | '30min' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+// Canonical duration string ("5m", "2h", "1d", "1w"). Legacy preset names
+// arrive from older data and are accepted by the backend.
+export type TodoRecurrence = string;
 export type TodoCreatedBy = 'agent' | 'user';
 
 export interface TodoItem {
@@ -352,10 +355,10 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 5. **Verify:** Logs show schedule DB sync
 
 ### Test 3: Recurring TODO
-1. Create TODO with recurrence (for example `"5min"`), scheduled for 1 minute
+1. Create TODO with recurrence (for example `"5m"` or the legacy alias `"5min"`), scheduled for 1 minute
 2. Wait for execution
 3. **Verify:** TODO status resets to pending
-4. **Verify:** Schedule updated to the next cadence slot based on the prior scheduled fire time, not completion time (for example a `5min` TODO due at 10:00 moves to 10:05 even if marked done at 10:01)
+4. **Verify:** Schedule updated to the next cadence slot based on the prior scheduled fire time, not completion time (for example a `5m` TODO due at 10:00 moves to 10:05 even if marked done at 10:01)
 
 ### Test 4: Visual Distinction
 1. Create TODO via UI (should show user icon badge)

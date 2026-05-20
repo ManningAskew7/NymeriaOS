@@ -69,7 +69,7 @@ class TodoItem(BaseModel):
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
-    recurrence: Optional[str] = Field(default=None, description="Recurrence pattern: 'hourly', 'daily', 'weekly', 'monthly'")
+    recurrence: Optional[str] = Field(default=None, description="Recurrence interval as a duration string (e.g. '5m', '2h', '1d', '1w'). Legacy preset names (hourly/daily/weekly/monthly, 5min/10min/15min/30min) are still accepted on input and resolved by todo_constants.")
 
     # /goal integration: when set, this TODO is part of a supervised goal and
     # cannot be transitioned to `done` by anyone but the goal's supervisor
@@ -146,7 +146,9 @@ class TodoList(BaseModel):
             scheduled_for: When Nymeria should wake up to work on this
             thread_id: Thread context for scheduled execution
             created_by: Who created this TODO ('agent' or 'user')
-            recurrence: Recurrence pattern ('hourly', 'daily', 'weekly', 'monthly')
+            recurrence: Recurrence interval as a canonical duration string
+                (e.g. '5m', '2h', '1d'). Callers should pass values already
+                validated by todo_constants.validate_recurrence.
             notes: Additional notes
 
         Returns:
@@ -199,7 +201,9 @@ class TodoList(BaseModel):
             scheduled_for: Set/update scheduled execution time
             clear_schedule: If True, removes the schedule
             thread_id: Update thread context for scheduled execution
-            recurrence: Recurrence pattern ('hourly', 'daily', 'weekly', 'monthly')
+            recurrence: Recurrence interval as a canonical duration string
+                (e.g. '5m', '2h', '1d'). Callers should pass values already
+                validated by todo_constants.validate_recurrence.
             clear_recurrence: If True, removes the recurrence
 
         Returns:

@@ -17,13 +17,13 @@ from .system import (
     strip_confirmation_flags,
     unsupported_transport_result,
 )
+from ....core.todo_constants import RECURRENCE_FORMAT_HINT, validate_recurrence
 from ..rendering.tables import render_todo_table
 
 if TYPE_CHECKING:
     from ..state import CLIState
 
 
-RECURRENCE_VALUES = {"hourly", "daily", "weekly", "monthly"}
 TODO_STATUS_VALUES = {"pending", "in_progress", "done"}
 
 
@@ -114,7 +114,7 @@ async def _handle_todo_root_context(
         return CommandResult.completed()
     if args:
         return CommandResult.failed(
-            "Usage: /todo list|add|edit|done|delete|schedule|recurrence",
+            "Usage: /todo list|add|edit|done|delete|schedule|repeat",
             error_code="usage_error",
         )
     return await _list_todos_context(context, [])
@@ -164,7 +164,8 @@ async def _handle_todo_add_context(
     if not task:
         return CommandResult.failed(
             "Usage: /todo add <task> [--schedule <when>] [--notes <text>] "
-            "[--recurrence daily|weekly|monthly|hourly] [--thread current|<id>]",
+            "[--recurrence <interval>] [--thread current|<id>]. "
+            f"{RECURRENCE_FORMAT_HINT}",
             error_code="usage_error",
         )
 
@@ -384,22 +385,26 @@ async def _handle_todo_recurrence_context(
         )
     if len(args) < 2:
         return CommandResult.failed(
-            "Usage: /todo recurrence <id> hourly|daily|weekly|monthly|clear",
+            f"Usage: /todo recurrence <id> <interval|clear>. {RECURRENCE_FORMAT_HINT}",
             error_code="usage_error",
         )
 
-    value = args[1].casefold()
-    if value not in RECURRENCE_VALUES | {"clear", "none", "off"}:
-        return CommandResult.failed(
-            "Recurrence must be hourly, daily, weekly, monthly, or clear.",
-            error_code="usage_error",
-        )
+    raw_value = args[1]
+    value = raw_value.casefold()
+    if value in {"clear", "none", "off"}:
+        patch: dict[str, Any] = {"clear_recurrence": True}
+    else:
+        try:
+            canonical = validate_recurrence(raw_value)
+        except ValueError as exc:
+            return CommandResult.failed(str(exc), error_code="usage_error")
+        patch = {"recurrence": canonical}
+        value = canonical
 
     match = await _resolve_todo(context, args[0], command="/todo recurrence")
     if isinstance(match, CommandResult):
         return match
     todo_id = _todo_id(match)
-    patch = {"clear_recurrence": True} if value in {"clear", "none", "off"} else {"recurrence": value}
 
     try:
         updated = await call_client_method(
@@ -549,13 +554,11 @@ def _parse_todo_mutation_args(
             value, index_or_error = _next_value(args, index, "--recurrence")
             if isinstance(index_or_error, CommandResult):
                 return index_or_error
-            value = value.casefold()
-            if value not in RECURRENCE_VALUES:
-                return CommandResult.failed(
-                    "Recurrence must be hourly, daily, weekly, or monthly.",
-                    error_code="usage_error",
-                )
-            parsed["recurrence"] = value
+            try:
+                canonical = validate_recurrence(value)
+            except ValueError as exc:
+                return CommandResult.failed(str(exc), error_code="usage_error")
+            parsed["recurrence"] = canonical
             index = index_or_error
         elif normalized == "--clear-recurrence" and allow_clear:
             parsed["clear_recurrence"] = True
@@ -716,7 +719,7 @@ def register(registry: CommandRegistry) -> None:
                 name="recurrence",
                 aliases=["repeat"],
                 description="Set or clear TODO recurrence",
-                usage="recurrence <id> hourly|daily|weekly|monthly|clear",
+                usage="recurrence <id> <interval|clear>",
                 handler=_handle_todo_recurrence_context,
                 handler_mode="context",
                 category="Personal",

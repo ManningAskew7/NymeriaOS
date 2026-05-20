@@ -26,8 +26,8 @@ from ..core.time_utils import (
 from ..core.todo_constants import (
     STATUS_ICONS,
     STATUS_ORDER,
-    VALID_RECURRENCES,
     calculate_next_recurrence_time,
+    validate_recurrence,
 )
 from ..core.todo_manager import TodoManager, TodoStatus
 from .utils import get_user_id, get_thread_id
@@ -142,7 +142,10 @@ def nym_todo(
             "YYYY-MM-DDTHH:MM", or ISO datetimes with timezone.
         status: "pending", "in_progress", or "done"
         notes: Additional notes (max 1000 chars)
-        recurrence: "5min", "10min", "15min", "30min", "hourly", "daily", "weekly", "monthly"
+        recurrence: Interval as a duration string (Nm, Nh, Nd, Nw; or Ns
+            with a 60s minimum). Examples: "5m", "2h", "1d", "1w". Legacy
+            preset names also accepted: "hourly", "daily", "weekly",
+            "monthly", "5min", "10min", "15min", "30min".
         clear_schedule: Remove scheduled time
         clear_recurrence: Remove recurrence pattern
 
@@ -174,12 +177,12 @@ def nym_todo(
         except ValueError as exc:
             return _schedule_format_error(exc)
 
-        # Validate recurrence
-        todo_recurrence = None
+        todo_recurrence: Optional[str] = None
         if recurrence:
-            if recurrence.lower() not in VALID_RECURRENCES:
-                return f"[Error]: Invalid recurrence '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
-            todo_recurrence = recurrence.lower()
+            try:
+                todo_recurrence = validate_recurrence(recurrence)
+            except ValueError as exc:
+                return f"[Error]: {exc}"
 
         # Use atomic update to prevent race conditions
         with manager.atomic_update(user_id) as todo_list:
@@ -243,12 +246,12 @@ def nym_todo(
         except ValueError as exc:
             return _schedule_format_error(exc)
 
-    # Validate recurrence
-    todo_recurrence = None
+    todo_recurrence: Optional[str] = None
     if recurrence and not clear_recurrence:
-        if recurrence.lower() not in VALID_RECURRENCES:
-            return f"[Error]: Invalid recurrence '{recurrence}'. Use: {', '.join(VALID_RECURRENCES)}"
-        todo_recurrence = recurrence.lower()
+        try:
+            todo_recurrence = validate_recurrence(recurrence)
+        except ValueError as exc:
+            return f"[Error]: {exc}"
 
     # Use atomic update to prevent race conditions
     rescheduled_time = None

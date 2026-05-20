@@ -84,3 +84,15 @@ def test_calculate_next_recurrence_time_skips_missed_intervals():
         0,
         tzinfo=timezone.utc,
     )
+
+
+def test_calculate_next_recurrence_time_arbitrary_interval_skips_missed():
+    # Anchor 10:00 with 45m cadence fires at 10:45, 11:30, 12:15.
+    # At "now = 11:30" the 11:30 slot is not strictly in the future, so the
+    # next slot is 12:15.
+    anchor = datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 15, 11, 30, tzinfo=timezone.utc)
+
+    assert calculate_next_recurrence_time("45m", anchor, now=now) == datetime(
+        2026, 5, 15, 12, 15, tzinfo=timezone.utc
+    )
