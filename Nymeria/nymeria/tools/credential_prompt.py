@@ -1,26 +1,29 @@
-"""Agent-facing tool: ``request_credential`` — opens an in-chat modal (or
+"""Agent-facing tool: ``request_credential`` opens an in-chat modal (or
 launches an OAuth dance) that lets the user supply a credential, runs a
-connection test, and returns success or failure to the agent without the
-agent ever seeing the secret.
+connection test, and lands the secret in the vault. The agent never sees
+the secret.
 
 Modes:
-    api_key / pat / form — collected via the modal + hosted form pair. The
+    api_key / pat / form: collected via the modal + hosted form pair. The
         user types the secret into a sandboxed UI; the backend tests it and
         writes it to the vault.
-    oauth — covers both ``auth_code`` (browser redirect to a hosted callback)
-        and ``device_code`` (RFC 8628 — user enters a short code on a second
+    oauth: covers both ``auth_code`` (browser redirect to a hosted callback)
+        and ``device_code`` (RFC 8628, user enters a short code on a second
         device). Auto-degrades to ``device_code`` when no ``NYMERIA_PUBLIC_URL``
         is configured and the provider supports it.
 
-The flow is described in ``nymeria/core/auth_prompt_coordinator.py``. This
-module wires the agent side: create a pending credential, emit an
-``auth_prompt`` SSE event, await the coordinator's future, return a
-structured JSON result.
+The flow is described in ``nymeria/core/auth_prompt_coordinator.py``.
 
-Caveat: this tool blocks for up to ``timeout_seconds`` (default 180s). It
-should be called as a standalone tool call rather than in a parallel batch —
-LangGraph's ToolNode dispatches parallel tool_calls together, so a long await
-here will block its siblings.
+Fire-and-forget contract (Phase 11): this tool returns IMMEDIATELY with
+``status="dispatched"``. The agent does not block waiting for the user.
+When the user completes (or cancels, or the prompt times out), the
+coordinator's future resolves, a background callback formats a one-line
+summary, and ``credential_prompt_injector.schedule_resolution_turn``
+starts a fresh agent turn whose prompt is that summary. The agent reads
+the summary in its next turn and decides what to do next.
+
+Because the tool no longer awaits, it can safely be called alongside
+other tool calls in a parallel batch.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Annotated, Any, Optional
 
 from langchain_core.callbacks.manager import adispatch_custom_event
@@ -41,6 +45,10 @@ from ..core.auth_prompt_coordinator import (
     new_prompt_id,
     new_prompt_token,
     prompt_expires_at,
+)
+from ..core.credential_prompt_injector import (
+    format_resolution_message,
+    schedule_resolution_turn,
 )
 from ..core.credential_vault import get_credential_vault_repo
 from ..core.event_bus import publish_autonomous_event
@@ -59,6 +67,12 @@ _DEFAULT_TIMEOUT_SECONDS = 180
 _MIN_TIMEOUT_SECONDS = 15
 _MAX_TIMEOUT_SECONDS = 270  # Stay under SafeToolNode's 300s default
 _MAX_DESCRIPTION_CHARS = 2000  # Bound the markdown payload sent over SSE
+_MAX_INSTRUCTIONS_CHARS = 4000  # Step-by-step text can be longer than description
+
+# Format for bind_target: ``"type:id"``. The type whitelist matches existing
+# allowed_targets conventions (``mcp_server:<id>`` used by mcp_runtime,
+# ``native_tool:<name>`` used by native_credentials).
+_BIND_TARGET_RE = re.compile(r"^(mcp_server|native_tool):[A-Za-z0-9_\-]{1,64}$")
 
 
 def _generic_fields(provider: str) -> list[dict[str, Any]]:
@@ -138,23 +152,32 @@ async def request_credential(
     account_label: str = "",
     display_name: str = "",
     description: str = "",
+    instructions: str = "",
     fields: Optional[list[dict[str, Any]]] = None,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     flow: str = "",
     use_localhost: bool = False,
+    bind_target: str = "",
     config: Annotated[RunnableConfig | None, InjectedToolArg] = None,
 ) -> str:
     """Open a secure in-chat prompt (modal / hosted form / OAuth dance) to
     collect credentials from the user.
 
     For ``kind="api_key"``/``"pat"``/``"form"`` the user types the secret into
-    a sandboxed modal — you never see the value. The backend tests the
+    a sandboxed modal, you never see the value. The backend tests the
     connection and returns a structured result.
 
     For ``kind="oauth"`` the user is sent through the provider's standard
     OAuth flow (browser redirect for ``flow="auth_code"``, on-screen
     short-code for ``flow="device_code"``). Tokens land in the vault as
     ``kind="oauth_token"``. The agent never sees the access or refresh token.
+
+    Fire-and-forget contract: this tool returns IMMEDIATELY with
+    ``status="dispatched"``. When the user finishes (or cancels), a fresh
+    agent turn fires automatically with a one-line summary. The agent
+    should write a short user-facing acknowledgement after dispatching
+    (e.g. "Opening the sign-in prompt now, I'll pick it up when you're
+    done") rather than going silent.
 
     Args:
         provider: Service identifier. For OAuth, must be in the registry
@@ -166,18 +189,28 @@ async def request_credential(
             (e.g. ``"work"``, ``"personal"``).
         display_name: Optional human-readable name shown in the modal title.
             Defaults to the descriptor's display name or the provider id.
-        description: Optional instructions shown above the form (markdown
-            supported: bold, lists, links). Use for non-obvious services to
-            tell the user where to find the credential.
+        description: Optional 1 to 2 sentence summary of what this connection
+            is for, shown above the form (markdown supported: bold, lists,
+            links). Keep it short.
+        instructions: Optional step-by-step instructions for HOW the user
+            obtains or signs in to this credential, shown above the form in
+            a highlighted callout (markdown supported). Use this to tailor
+            guidance to context: where in the provider's dashboard the API
+            key lives, which account to pick during OAuth consent, any
+            quirks the user mentioned earlier. Different from ``description``,
+            which is the short "what is this" line.
         fields: Optional schema of secret fields, each
             ``{name, label, secret, placeholder, help, kind}``. ``kind`` is
             ``"password"`` (default for secret=True), ``"text"``, or
             ``"textarea"`` (use for multiline values like service-account
             JSON). Omit to use a single ``value`` field. Ignored for
             ``kind="oauth"`` (the registry supplies scopes).
-        timeout_seconds: How long to wait for the user (15-270, default 180).
-            On timeout the credential remains in ``pending_setup`` so the
-            user can finish later in Settings → Connections.
+        timeout_seconds: Background timeout for the prompt (15-270, default
+            180). If the user has not finished within this window the
+            coordinator publishes a cancellation event and a resolution
+            turn fires with ``status="pending"``. The credential remains in
+            ``pending_setup`` so the user can finish later in
+            Settings, Connections.
         flow: For ``kind="oauth"`` only. ``"auth_code"`` for browser-redirect,
             ``"device_code"`` for on-screen short code. Omit to use the
             provider default (auth_code when a redirect URL is available,
@@ -187,18 +220,25 @@ async def request_credential(
             instead of ``NYMERIA_PUBLIC_URL``. Safe only when the user's
             browser is on the same machine as Nymeria. Set only after the
             user explicitly confirms.
+        bind_target: Optional ``"type:id"`` binding to apply automatically
+            once the user finishes setup. ``"mcp_server:<id>"`` binds the
+            credential to a specific MCP server and force-restarts its
+            connection so the next tool call picks up the new env value.
+            ``"native_tool:<name>"`` scopes the credential to one Nymeria
+            native tool. Bind failures are non-fatal: the credential still
+            saves; the resolution turn surfaces the failure to the agent.
+            Validated against ``^(mcp_server|native_tool):[A-Za-z0-9_-]{1,64}$``.
 
     Returns:
-        JSON string with: ``ok``, ``status``, ``credential_id``, ``attempts``,
-        ``last_test_error``, ``account_label``, ``message``. OAuth-specific
-        statuses include ``missing_public_url`` (agent should ask the user
-        whether to set the env var or retry with ``use_localhost=True``),
+        JSON string with ``ok=True``, ``status="dispatched"``, ``credential_id``,
+        ``prompt_id``, ``provider``, ``timeout_seconds``, ``message``. On error
+        states (unknown provider, missing PUBLIC_URL, etc.) returns the same
+        statuses as before with ``ok=False``: ``missing_public_url``,
         ``unknown_provider``, ``unsupported_flow``, ``client_config_missing``,
-        ``device_code_request_failed``, ``denied``, ``expired``.
+        ``device_code_request_failed``.
 
-    Caveat: this tool blocks the calling tool batch until the user responds
-    (or it times out). Prefer calling it alone, not in parallel with other
-    tool calls.
+    Because the tool no longer blocks, it is safe to call alongside other
+    tool calls in the same batch.
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -209,6 +249,20 @@ async def request_credential(
     kind_norm = (kind or "api_key").strip().lower()
     if kind_norm not in {"api_key", "pat", "oauth", "form"}:
         kind_norm = "api_key"
+
+    bind_target_norm = (bind_target or "").strip()
+    if bind_target_norm and not _BIND_TARGET_RE.match(bind_target_norm):
+        return _json(
+            {
+                "ok": False,
+                "status": "invalid_bind_target",
+                "message": (
+                    f"bind_target={bind_target_norm!r} is not valid. Use "
+                    "'mcp_server:<id>' or 'native_tool:<name>' where <id>/<name> "
+                    "is 1-64 chars matching [A-Za-z0-9_-]."
+                ),
+            }
+        )
 
     repo = get_credential_vault_repo()
     coordinator = get_auth_prompt_coordinator()
@@ -253,6 +307,10 @@ async def request_credential(
     safe_description = (description or "").strip()
     if len(safe_description) > _MAX_DESCRIPTION_CHARS:
         safe_description = safe_description[:_MAX_DESCRIPTION_CHARS]
+
+    safe_instructions = (instructions or "").strip()
+    if len(safe_instructions) > _MAX_INSTRUCTIONS_CHARS:
+        safe_instructions = safe_instructions[:_MAX_INSTRUCTIONS_CHARS]
 
     existing_accounts = _existing_accounts_for(repo, user_id, provider_norm)
     token_expires_at, expires_at_iso = prompt_expires_at(timeout)
@@ -306,6 +364,7 @@ async def request_credential(
             "provider": provider_norm,
             "display_name": oauth_display_name,
             "description": safe_description,
+            "instructions": safe_instructions,
             "account_label": account_label.strip(),
             "existing_accounts": existing_accounts,
             "timeout_seconds": timeout,
@@ -320,6 +379,7 @@ async def request_credential(
             "display_name": label_display,
             "mode": kind_norm,
             "description": safe_description,
+            "instructions": safe_instructions,
             "fields": pending_fields,
             "account_label": account_label.strip(),
             "existing_accounts": existing_accounts,
@@ -338,6 +398,8 @@ async def request_credential(
         prompt.metadata = dict(event_payload)
         if oauth_result is not None:
             prompt.metadata["_oauth_state"] = oauth_result.prompt_state
+        if bind_target_norm:
+            prompt.metadata["_bind_target"] = bind_target_norm
 
     publish_autonomous_event(
         event_type="auth_prompt",
@@ -381,70 +443,221 @@ async def request_credential(
         event_payload.get("mode") or kind_norm,
     )
 
-    try:
-        result = await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        cancel_poll_task(prompt_id)
-        # Narrow race: the poller could have finalized between the timer
-        # firing and us getting here, leaving the vault active but the
-        # future cancelled. Check the vault before reporting "pending".
-        post_timeout = repo.get_credential(record.id)
-        if post_timeout is not None and post_timeout.status == "active":
-            coordinator.discard(prompt_id)
-            return _json(
-                {
-                    "ok": True,
-                    "status": "active",
-                    "credential_id": record.id,
-                    "attempts": 0,
-                    "message": (
-                        f"User completed {provider_norm} sign-in just as the prompt "
-                        "timed out — credential is active and ready to use."
-                    ),
-                }
-            )
-        coordinator.discard(prompt_id)
-        publish_autonomous_event(
-            event_type="auth_prompt_cancelled",
+    # Attach a done-callback so the future's resolution starts a fresh
+    # turn rather than waking a blocked tool call. The tool returns
+    # IMMEDIATELY; the agent's next action depends on whatever it decides
+    # to do after seeing status="dispatched".
+    future.add_done_callback(
+        _make_resolution_callback(
+            prompt_id=prompt_id,
+            credential_id=record.id,
+            provider=provider_norm,
             thread_id=thread_id,
             user_id=user_id,
-            task_id="",
-            data={"prompt_id": prompt_id, "reason": "tool_timeout"},
+            bind_target=bind_target_norm or None,
         )
-        return _json(
-            {
-                "ok": False,
-                "status": "pending",
-                "credential_id": record.id,
-                "attempts": 0,
-                "message": (
-                    f"User did not complete the prompt within {timeout}s. "
-                    "The credential is still in pending_setup — they can finish "
-                    "it later in Settings → Connections."
-                ),
-            }
+    )
+
+    dispatched_message = (
+        f"Sent the user an in-chat prompt to connect {label_display}. "
+        "I'll be notified when they finish (or skip), at which point a fresh "
+        "turn will fire with the result. Until then I can keep going on other "
+        "work or wait for them."
+    )
+    return _json(
+        {
+            "ok": True,
+            "status": "dispatched",
+            "credential_id": record.id,
+            "prompt_id": prompt_id,
+            "provider": provider_norm,
+            "timeout_seconds": timeout,
+            "message": dispatched_message,
+        }
+    )
+
+
+def _make_resolution_callback(
+    *,
+    prompt_id: str,
+    credential_id: str,
+    provider: str,
+    thread_id: str,
+    user_id: str,
+    bind_target: Optional[str] = None,
+):
+    """Build the future done-callback that formats the resolution and
+    schedules a follow-up agent turn.
+
+    The callback runs synchronously on the loop where the future was
+    resolved (the agent's loop). It must not block; all I/O and the
+    actual ``agent.astream`` call happen inside the task scheduled by
+    ``schedule_resolution_turn``.
+    """
+
+    def _on_resolved(fut: "asyncio.Future") -> None:
+        try:
+            # Always cancel any lingering device-code poller. If the
+            # poller itself resolved the future, this is a no-op.
+            cancel_poll_task(prompt_id)
+
+            if fut.cancelled():
+                logger.warning(
+                    "credential_prompt resolution callback fired on cancelled "
+                    "future prompt=%s provider=%s",
+                    prompt_id,
+                    provider,
+                )
+                return
+
+            exc = fut.exception()
+            if exc is not None:
+                logger.error(
+                    "credential_prompt future raised: prompt=%s provider=%s err=%s",
+                    prompt_id,
+                    provider,
+                    exc,
+                )
+                return
+
+            result = fut.result() or {}
+            status = str(result.get("status") or ("active" if result.get("ok") else "error"))
+
+            logger.info(
+                "credential_prompt resolved prompt=%s provider=%s status=%s bind_target=%s",
+                prompt_id,
+                provider,
+                status,
+                bind_target or "-",
+            )
+
+            bind_outcome: Optional[str] = None
+            if bind_target and status == "active":
+                bind_outcome = _apply_bind_target(
+                    credential_id=credential_id,
+                    bind_target=bind_target,
+                    actor_user_id=user_id,
+                )
+
+            message = format_resolution_message(
+                provider=provider,
+                credential_id=credential_id,
+                payload=result,
+                bind_outcome=bind_outcome,
+            )
+            schedule_resolution_turn(
+                thread_id=thread_id,
+                user_id=user_id,
+                message=message,
+            )
+        except Exception:
+            # The callback runs in user-invisible context; never let an
+            # exception here escape and kill the resolver's loop.
+            logger.exception(
+                "credential_prompt resolution callback failed for prompt=%s",
+                prompt_id,
+            )
+
+    return _on_resolved
+
+
+def _apply_bind_target(
+    *,
+    credential_id: str,
+    bind_target: str,
+    actor_user_id: str,
+) -> str:
+    """Apply ``bind_target`` to the just-saved credential.
+
+    Three coordinated writes, mirroring the proven pattern in
+    ``mcp_runtime._credential_ref_for_secret``:
+
+    1. ``add_allowed_target``: updates ``allowed_targets_json`` on the
+       credentials row so vault read-side (``_target_allowed``) lets the
+       target read the secret.
+    2. ``bind_credential``: writes the bookkeeping row in
+       ``credential_bindings`` (used by ``auth_manager``'s list/bind UI).
+    3. ``mcp_manager.shutdown_server`` if the target is an MCP server:
+       force the next tool call to respawn the connection so the new
+       vault value resolves into its env. Env-var resolution runs once
+       at spawn time; without this restart the old empty/stale env
+       persists.
+
+    Returns a human-readable summary string for the resolution message.
+    Never raises: bind failures are non-fatal and reported to the agent.
+    """
+    try:
+        target_type, _, target_id = bind_target.partition(":")
+        target_type = target_type.strip()
+        target_id = target_id.strip()
+        if not target_type or not target_id:
+            return f"bind_target={bind_target!r} invalid; skipped"
+
+        # Lazy imports to avoid pulling vault/mcp_manager into the tool
+        # module at import time (which would pull half the agent stack
+        # into the tool registry).
+        from ..core.credential_vault import get_credential_vault_repo
+
+        repo = get_credential_vault_repo()
+        try:
+            repo.add_allowed_target(
+                credential_id,
+                target=bind_target,
+                actor_user_id=actor_user_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "bind_target allowed_targets update failed credential=%s target=%s",
+                credential_id,
+                bind_target,
+            )
+            return f"bind failed (allowed_targets): {e}"
+
+        try:
+            repo.bind_credential(
+                credential_id,
+                target_type=target_type,
+                target_id=target_id,
+                actor_user_id=actor_user_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "bind_target credential_bindings row failed credential=%s target=%s",
+                credential_id,
+                bind_target,
+            )
+            return f"bind failed (credential_bindings): {e}"
+
+        if target_type == "mcp_server":
+            try:
+                from ..core.mcp_manager import get_mcp_manager
+
+                outcome = get_mcp_manager().shutdown_server(target_id)
+                if outcome == "shutdown":
+                    return f"bound to {bind_target}, connection restarted"
+                if outcome == "skipped_in_use":
+                    return (
+                        f"bound to {bind_target}, but connection restart skipped "
+                        "because a tool call is in flight (idle sweep will pick "
+                        "it up)"
+                    )
+                return f"bound to {bind_target}, no live connection to restart"
+            except Exception as e:
+                logger.exception(
+                    "bind_target shutdown_server failed credential=%s target=%s",
+                    credential_id,
+                    bind_target,
+                )
+                return f"bound to {bind_target}, but connection restart failed: {e}"
+
+        return f"bound to {bind_target}"
+    except Exception as e:
+        logger.exception(
+            "bind_target apply failed credential=%s target=%s",
+            credential_id,
+            bind_target,
         )
-
-    # If a device-code poller is still running (e.g. user cancelled in chat),
-    # stop it so it doesn't keep hitting the provider after we've returned.
-    cancel_poll_task(prompt_id)
-
-    # Result is enriched with attempts/last_test_error by the coordinator.
-    status = result.get("status") or ("active" if result.get("ok") else "error")
-    payload = {
-        "ok": bool(result.get("ok")),
-        "status": status,
-        "credential_id": record.id,
-        "attempts": result.get("attempts", 0),
-        "last_test_error": result.get("last_test_error"),
-        "account_label": result.get("account_label") or (account_label.strip() or None),
-        "user_message": result.get("user_message"),
-        "tested": bool(result.get("tested", False)),
-        "test_status": result.get("test_status"),
-        "test_error": result.get("test_error") or result.get("last_test_error"),
-        "message": result.get("message") or _default_message(status, result.get("last_test_error")),
-    }
-    return _json(payload)
+        return f"bind failed: {e}"
 
 
 def _default_message(status: str, last_error: Optional[str]) -> str:

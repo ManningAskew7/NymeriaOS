@@ -1003,7 +1003,7 @@ class NymeriaAgent:
 
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
-        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog", "credential_resolution"} or _is_self_invoke
 
         backend = get_pending_queue()
 
@@ -1454,17 +1454,18 @@ class NymeriaAgent:
         # call sites that haven't been updated yet.
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
-        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog", "credential_resolution"} or _is_self_invoke
         # Sources that observe the holder's stream after injection.
-        # Autonomous sources (ticker / trigger / watchdog) MUST observe so the
-        # queued prompt's response chunks are fanned to the worker's HTTP
-        # stream — otherwise the worker publishes ``task_completed`` with
-        # empty content because the model output was yielded on the holder's
-        # stream, not the worker's. See ``pending_prompt_queue.py`` top
+        # Autonomous sources (ticker / trigger / watchdog / credential_resolution)
+        # MUST observe so the queued prompt's response chunks are fanned to the
+        # worker's HTTP stream, otherwise the worker publishes ``task_completed``
+        # with empty content because the model output was yielded on the
+        # holder's stream, not the worker's. See ``pending_prompt_queue.py`` top
         # docstring for the fanout protocol.
         observes_stream = source in {
             "user", "callable", "mcp",
             "trigger", "ticker", "watchdog",
+            "credential_resolution",
         }
 
         backend = get_pending_queue()

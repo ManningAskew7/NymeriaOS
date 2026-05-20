@@ -286,8 +286,9 @@ def test_auth_code_happy_path_with_public_url(env):
     assert metadata.get("oauth_pending") is True
     assert metadata.get("provider_id") == "google_calendar"
 
-    # Tool result is the cancellation we issued.
-    assert captured["tool_result"]["status"] == "cancelled"
+    # Fire-and-forget contract: the tool returns "dispatched" the moment it
+    # registers the prompt, independent of whether the future has resolved.
+    assert captured["tool_result"]["status"] == "dispatched"
 
 
 def test_use_localhost_builds_localhost_redirect(env, monkeypatch):

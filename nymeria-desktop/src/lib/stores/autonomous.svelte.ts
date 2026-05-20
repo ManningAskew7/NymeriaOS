@@ -638,6 +638,7 @@ function createAutonomousStore() {
           display_name: (event.display_name as string) || (event.provider as string) || '',
           mode: (event.mode as 'api_key' | 'pat' | 'oauth' | 'oauth_device' | 'form') || 'api_key',
           description: (event.description as string) || '',
+          instructions: (event.instructions as string) || '',
           fields: (event.fields as Array<{
             name: string;
             label: string;

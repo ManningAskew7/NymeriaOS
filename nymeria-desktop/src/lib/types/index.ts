@@ -1687,9 +1687,13 @@ export interface AuthPromptEvent {
   provider: string;
   display_name: string;
   mode: AuthPromptMode;
-  /** Markdown rendered above the form. Use for "Find your key at…" instructions
-   *  and links to provider docs. Empty string when the agent didn't supply any. */
+  /** Short markdown summary ("what is this connection for"). Rendered above the
+   *  form. Empty string when the agent didn't supply any. */
   description: string;
+  /** Markdown step-by-step instructions tailored to context ("how does the user
+   *  get this credential"). Rendered as a highlighted callout above the form,
+   *  separate from `description`. Empty string when the agent didn't supply any. */
+  instructions?: string;
   fields: AuthPromptField[];
   account_label: string;
   existing_accounts: AuthPromptExistingAccount[];
