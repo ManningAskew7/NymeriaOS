@@ -810,9 +810,14 @@
         <div class="setting-group">
           <label class="setting-toggle">
             <input type="checkbox" bind:checked={showAutonomousPrompts} />
-            <span>Show autonomous prompts</span>
+            <span>Force show autonomous prompts on this thread</span>
           </label>
-          <p class="hint">Show scheduler, watchdog, and trigger prompts in the chat.</p>
+          <p class="hint">
+            Per-thread override. When the global "Show autonomous prompts"
+            setting is off, enable this to still show scheduler, watchdog, and
+            trigger prompts on this specific thread. No effect when the global
+            setting is on.
+          </p>
         </div>
         <div class="setting-group">
           <label class="setting-toggle">

@@ -22,6 +22,23 @@ export interface WorkspaceArtifact {
   sizeBytes: number;
 }
 
+// Per-model attachment caps surfaced by GET /threads/{id}/attachment_limits.
+// Backend returns null for limits the underlying provider doesn't publish
+// (e.g. OpenAI doesn't document a per-PDF page cap). Frontend treats null as
+// "no cap" and only the local MAX_SIZE ceiling still applies.
+export interface AttachmentLimits {
+  max_images_per_request: number | null;
+  max_image_bytes: number | null;
+  max_pdf_pages: number | null;
+  max_total_bytes: number | null;
+}
+
+export interface AttachmentLimitsResponse {
+  effective_provider: string;
+  effective_model: string;
+  limits: AttachmentLimits;
+}
+
 
 // Tool call types (defined early so MessageStep can reference ToolCallStatus)
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
@@ -679,6 +696,7 @@ export interface AppConfig {
   setupCompleted?: boolean;
   theme?: ThemeName;
   suppressAttachmentWarnings?: boolean;
+  showAutonomousPrompts?: boolean;
   identity?: AccountIdentity | null;
 }
 
@@ -1503,7 +1521,9 @@ export interface CredentialSetupSessionRequest {
   metadata?: Record<string, unknown>;
 }
 
-export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'form';
+export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'oauth_device' | 'form';
+
+export type AuthPromptFlow = 'auth_code' | 'device_code';
 
 export interface AuthPromptField {
   name: string;
@@ -1537,6 +1557,17 @@ export interface AuthPromptEvent {
   connect_url?: string | null;
   connect_url_required?: boolean;
   connect_url_error?: string | null;
+  flow?: AuthPromptFlow;
+  provider_id?: string;
+  scopes?: string[];
+  notes?: string | null;
+  auth_url?: string;
+  uses_pkce?: boolean;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string | null;
+  expires_in?: number;
+  interval?: number;
 }
 
 export interface AuthPromptSubmitRequest {

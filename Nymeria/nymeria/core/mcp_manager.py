@@ -784,6 +784,55 @@ class MCPServerManager:
             self._cleanup_thread.join(timeout=5)
         logger.info("All MCP servers shutdown")
 
+    def shutdown_server(self, server_id: str, *, skip_if_active: bool = True) -> str:
+        """Force-shutdown a single MCP server connection by its config id.
+
+        Used by the credential-resolution callback when a freshly-saved
+        credential is bound to ``mcp_server:<server_id>``: killing the
+        running connection ensures the next tool call respawns the server
+        with the new vault value resolved into its env (env_var resolution
+        runs at spawn time, not per tool call, see ``mcp_manager.py``
+        around the ``${credential:...}`` block).
+
+        Returns one of: ``"shutdown"`` (killed and removed),
+        ``"not_running"`` (no live connection for that id),
+        ``"skipped_in_use"`` (a tool call is in flight and
+        ``skip_if_active=True``; idle sweep will eventually pick it up).
+
+        Never raises: caller treats this as best-effort.
+        """
+        with self._lock:
+            target_keys = [
+                key for key, conn in self._connections.items()
+                if (conn.config.server_id or conn.config.server_command) == server_id
+            ]
+            if not target_keys:
+                return "not_running"
+
+            results: List[str] = []
+            for key in target_keys:
+                conn = self._connections.get(key)
+                if conn is None:
+                    continue
+                if skip_if_active and conn._io_lock.locked():
+                    logger.info(
+                        "shutdown_server skipping %s: io_lock held by in-flight call",
+                        server_id,
+                    )
+                    results.append("skipped_in_use")
+                    continue
+                try:
+                    self._shutdown_connection(conn)
+                finally:
+                    self._connections.pop(key, None)
+                results.append("shutdown")
+
+        if "shutdown" in results:
+            return "shutdown"
+        if "skipped_in_use" in results:
+            return "skipped_in_use"
+        return "not_running"
+
     def get_active_servers(self) -> List[Dict[str, Any]]:
         with self._lock:
             out = []

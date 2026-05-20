@@ -511,7 +511,9 @@ function createAutonomousStore() {
 
         if (isCurrentThread && !chatStore.isStreaming) {
           const threadCfg = threadConfigStore.getConfig(event.thread_id);
-          if (threadCfg?.showAutonomousPrompts && event.prompt && !event.callable_name) {
+          const effective =
+            configStore.showAutonomousPrompts || Boolean(threadCfg?.showAutonomousPrompts);
+          if (effective && event.prompt && !event.callable_name) {
             const sourceLabel = classifyAutonomousSource(event);
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }

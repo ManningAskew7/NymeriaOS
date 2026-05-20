@@ -595,7 +595,11 @@ def _handle_human_history_message(
         "role": "user",
     }
 
-    raw_content, attachments = _parse_human_content(msg.content, ctx.msg_counter)
+    raw_content, attachments = _parse_human_content(
+        msg.content,
+        getattr(msg, "additional_kwargs", None) or {},
+        ctx.msg_counter,
+    )
     timestamp_iso = ctx.timestamp_map.get(msg.id) if msg.id else None
     if not timestamp_iso:
         timestamp_iso = extract_timestamp(raw_content)
@@ -763,10 +767,25 @@ def _filter_internal_messages(
     return filtered_messages
 
 
-def _parse_human_content(content: Any, msg_counter: int) -> tuple[str, List[Dict[str, Any]]]:
-    """Parse user text plus image/document attachments from message content."""
+def _parse_human_content(
+    content: Any,
+    additional_kwargs: Dict[str, Any],
+    msg_counter: int,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Parse user text plus image/document attachments from message content.
+
+    Phase B+ turns persist attachment metadata on ``additional_kwargs`` so the
+    original filename, byte size, and (for sandbox-routed documents) the
+    attachment id survive a thread reload. Prefer that path when present;
+    fall back to the legacy synthesis from content blocks for older history.
+    """
     attachments: List[Dict[str, Any]] = []
+
     try:
+        metadata = additional_kwargs.get("attachments") if additional_kwargs else None
+        if isinstance(metadata, list) and metadata:
+            return _parse_human_content_from_metadata(content, metadata, msg_counter)
+
         if isinstance(content, list):
             text_parts = []
             for part in content:
@@ -803,6 +822,74 @@ def _parse_human_content(content: Any, msg_counter: int) -> tuple[str, List[Dict
         return content if isinstance(content, str) else str(content), attachments
     except Exception:
         return str(content), []
+
+
+def _parse_human_content_from_metadata(
+    content: Any,
+    metadata: List[Any],
+    msg_counter: int,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Build attachment pills from the canonical additional_kwargs payload.
+
+    The metadata list mirrors the shape written by ``agent_streaming_input``:
+        - ``type: "image"`` entries carry the inline ``data_url`` so the
+          original image still renders in the bubble.
+        - ``type: "document"`` entries reference a sandbox file by ``id``; the
+          frontend uses the owner-scoped download endpoint instead of an
+          inline payload, so ``dataUrl`` is left empty here.
+    """
+    text_parts: List[str] = []
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") in ("text", "output_text"):
+                    text_parts.append(part.get("text", ""))
+            elif isinstance(part, str):
+                text_parts.append(part)
+    elif isinstance(content, str):
+        text_parts.append(content)
+
+    # Defensive: pull image data URLs straight from the content blocks too, in
+    # case a producer wrote metadata without echoing ``data_url`` on the image
+    # entry. Order preserved so we can match them positionally.
+    inline_image_urls: List[str] = []
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                inline_image_urls.append(part.get("image_url", {}).get("url", ""))
+
+    attachments_out: List[Dict[str, Any]] = []
+    image_idx = 0
+    for entry in metadata:
+        if not isinstance(entry, dict):
+            continue
+        entry_type = entry.get("type")
+        if entry_type == "image":
+            data_url = entry.get("data_url") or (
+                inline_image_urls[image_idx] if image_idx < len(inline_image_urls) else ""
+            )
+            image_idx += 1
+            attachments_out.append({
+                "id": entry.get("id") or f"att-{msg_counter}-{len(attachments_out)}",
+                "type": "image",
+                "dataUrl": data_url,
+                "mimeType": entry.get("mime_type", "") or extract_mime_from_data_url(data_url),
+                "name": entry.get("name") or "image",
+                "size": entry.get("size") or len(data_url),
+            })
+        elif entry_type == "document":
+            attachments_out.append({
+                "id": entry.get("id") or f"att-{msg_counter}-{len(attachments_out)}",
+                "type": "document",
+                # Documents live in the per-thread sandbox; frontend fetches the
+                # bytes via /threads/{tid}/attachments/{aid}/download when the
+                # user clicks the pill.
+                "dataUrl": "",
+                "mimeType": entry.get("mime_type", "application/octet-stream"),
+                "name": entry.get("name") or "document",
+                "size": entry.get("size") or 0,
+            })
+    return "\n".join(text_parts), attachments_out
 
 
 def _append_tool_call_steps(

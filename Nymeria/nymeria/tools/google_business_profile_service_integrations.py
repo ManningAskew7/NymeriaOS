@@ -11,9 +11,12 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import GOOGLE_BUSINESS_PROFILE_SCOPES as _GBP_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .google_business_profile_auth import GOOGLE_BUSINESS_PROFILE_SCOPES, PROVIDER
 from .utils import get_user_id
+
+PROVIDER = "google_business_profile"
+GOOGLE_BUSINESS_PROFILE_SCOPES = list(_GBP_SCOPES_TUPLE)
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +185,8 @@ def _profile_request(
     if not creds or not getattr(creds, "token", None):
         return False, (
             "No authenticated Google Business Profile account. "
-            "Use google_business_profile_auth_start to authenticate."
+            "Call request_credential(provider=\"google_business_profile\", kind=\"oauth\") "
+            "to connect."
         )
 
     headers = {

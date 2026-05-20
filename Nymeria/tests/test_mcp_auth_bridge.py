@@ -114,4 +114,4 @@ def test_gmail_mcp_preset_does_not_export_without_gmail_scopes(tmp_path, monkeyp
     assert defn.env_vars["GMAIL_CREDENTIALS_PATH"] == str(credentials_path)
     assert not credentials_path.exists()
     assert any("missing Gmail scopes" in line for line in logs)
-    assert any("gmail_auth_start" in line for line in logs)
+    assert any("request_credential(provider=\"google_gmail\"" in line for line in logs)

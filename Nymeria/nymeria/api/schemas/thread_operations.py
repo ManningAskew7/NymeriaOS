@@ -1,5 +1,7 @@
 """Thread portability, attachment validation, and control API schemas."""
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 from .chat import FileData
@@ -14,6 +16,20 @@ class AttachmentValidationRequest(BaseModel):
     )
 
 
+class AttachmentLimits(BaseModel):
+    """Per-model attachment hard caps surfaced to the frontend.
+
+    None means "no published limit for this model family"; the frontend
+    should treat it as effectively uncapped (but still honor its own absolute
+    ceilings on file size, e.g. 20 MB per document).
+    """
+
+    max_images_per_request: Optional[int] = None
+    max_image_bytes: Optional[int] = None
+    max_pdf_pages: Optional[int] = None
+    max_total_bytes: Optional[int] = None
+
+
 class AttachmentValidationResponse(BaseModel):
     """Response model for attachment preflight validation."""
 
@@ -25,3 +41,12 @@ class AttachmentValidationResponse(BaseModel):
     unsupported_modalities: list[str]
     warnings: list[str]
     can_force_send: bool = True
+    limits: AttachmentLimits = Field(default_factory=AttachmentLimits)
+
+
+class AttachmentLimitsResponse(BaseModel):
+    """Response for the standalone limits-lookup endpoint."""
+
+    effective_provider: str
+    effective_model: str
+    limits: AttachmentLimits

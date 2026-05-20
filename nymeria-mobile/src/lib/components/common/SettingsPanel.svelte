@@ -444,6 +444,22 @@
           {/each}
         </div>
 
+        <div class="setting-group">
+          <label class="setting-toggle">
+            <input
+              type="checkbox"
+              checked={configStore.showAutonomousPrompts}
+              onchange={(e) => (configStore.showAutonomousPrompts = e.currentTarget.checked)}
+            />
+            <span>Show autonomous prompts</span>
+          </label>
+          <p class="hint">
+            Show the prompts sent by the scheduler, watchdog, and triggers as
+            messages in chat (both live and in history). You can still force
+            this on for a specific thread from its Thread Settings.
+          </p>
+        </div>
+
       <!-- Provider Tab -->
       {:else if activeTab === 'llm' && isAdmin}
         {#if loadingSettings}

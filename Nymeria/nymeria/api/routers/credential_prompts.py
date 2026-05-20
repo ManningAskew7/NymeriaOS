@@ -20,6 +20,7 @@ from ...core.auth_prompt_coordinator import (
 from ...core.credential_tests import CredentialTestResult, test_credential_fields
 from ...core.credential_vault import CredentialVaultRepo
 from ...core.event_bus import publish_autonomous_event
+from ...core.oauth_callback_handler import handle_auth_code_callback
 from ..schemas.credentials import CredentialResponse, credential_to_response
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,28 @@ def _bounded_message(value: Optional[str]) -> Optional[str]:
     return text[:_MAX_USER_MESSAGE_CHARS]
 
 
+def _is_oauth_prompt(prompt: PendingPrompt) -> bool:
+    return str((prompt.metadata or {}).get("mode") or "").startswith("oauth")
+
+
+def _reject_if_oauth(prompt: PendingPrompt) -> None:
+    """Raise 409 if this is an OAuth prompt being touched by a form endpoint.
+
+    OAuth prompts must be resolved by their callback (``/oauth/callback``)
+    or device-code poller. The form ``submit``/``test`` paths take
+    ``secret_fields`` from the caller, which would corrupt the in-flight
+    OAuth credential record. Exit/cancel still pass through fine.
+    """
+    if _is_oauth_prompt(prompt):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This prompt is an OAuth flow — finish it in your browser "
+                "(or on the device-login page), not via this endpoint."
+            ),
+        )
+
+
 def is_credential_prompt_cancel_text(message: str) -> bool:
     return message.strip().lower() in _CANCEL_TEXTS
 
@@ -159,13 +182,25 @@ def _response_from_test(
     )
 
 
+def _public_prompt_metadata(prompt: PendingPrompt) -> dict[str, Any]:
+    """Return a copy of ``prompt.metadata`` safe to send to credential testers.
+
+    Internal-only keys (any key starting with an underscore) are stripped so
+    secrets like ``_oauth_state`` (which holds ``client_secret`` and
+    ``code_verifier`` for the in-flight OAuth flow) never reach loggers or
+    third-party probes.
+    """
+    raw = prompt.metadata or {}
+    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+
+
 async def _run_prompt_test(
     *,
     prompt: PendingPrompt,
     body: CredentialPromptTestRequest,
     get_settings_fn: Callable[[], Any],
 ) -> CredentialTestResult:
-    metadata = dict(prompt.metadata or {})
+    metadata = _public_prompt_metadata(prompt)
     metadata["account_label"] = body.account_label
     return await test_credential_fields(
         provider=prompt.provider,
@@ -206,6 +241,7 @@ async def _submit_prompt_impl(
     repo: CredentialVaultRepo,
     get_settings_fn: Callable[[], Any],
 ) -> CredentialPromptSubmitResponse:
+    _reject_if_oauth(prompt)
     coordinator = get_auth_prompt_coordinator()
     current = repo.get_credential(prompt.credential_id)
     if current is None:
@@ -307,6 +343,28 @@ def _metadata_response(prompt: PendingPrompt) -> CredentialPromptMetadataRespons
         timeout_seconds=int(data.get("timeout_seconds") or 0),
         expires_at=prompt.token_expires_at_iso or data.get("expires_at"),
     )
+
+
+def _oauth_result_page(*, title: str, message: str, ok: bool) -> str:
+    """Tiny HTML page shown to the user's browser after an OAuth redirect."""
+    safe_title = html.escape(title)
+    safe_message = html.escape(message)
+    accent = "#16a34a" if ok else "#dc2626"
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{safe_title}</title>
+<style>
+  :root {{ color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+  body {{ margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: Canvas; color: CanvasText; padding: 16px; }}
+  .card {{ background: color-mix(in srgb, Canvas 96%, CanvasText); border-radius: 12px; padding: 32px 36px;
+          max-width: 480px; text-align: center; box-shadow: 0 6px 24px rgba(0,0,0,0.15); }}
+  h1 {{ color: {accent}; margin: 0 0 10px; font-size: 1.4rem; }}
+  p {{ margin: 0; line-height: 1.5; }}
+</style></head>
+<body><div class="card"><h1>{safe_title}</h1><p>{safe_message}</p></div></body></html>"""
 
 
 def _hosted_form_shell(prompt_id: str) -> str:
@@ -518,6 +576,29 @@ def create_credential_prompts_router(
         return HTMLResponse(_hosted_form_shell(prompt_id))
 
     @router.get(
+        "/connect/credentials/oauth/callback",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    async def oauth_callback(
+        code: Optional[str] = None,
+        state: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> HTMLResponse:
+        # Static path: every prompt redirects here. The prompt id is packed
+        # into ``state`` by oauth_start so users only register one redirect
+        # URI per origin in their Google Cloud Console / Azure Portal.
+        result = await handle_auth_code_callback(
+            code=code,
+            state=state,
+            error=error,
+        )
+        return HTMLResponse(
+            _oauth_result_page(title=result.title, message=result.message, ok=result.ok),
+            status_code=result.status_code,
+        )
+
+    @router.get(
         "/connect/credentials/{prompt_id}/prompt",
         response_model=CredentialPromptMetadataResponse,
     )
@@ -538,6 +619,7 @@ def create_credential_prompts_router(
         authorization: Optional[str] = Header(None),
     ) -> CredentialPromptSubmitResponse:
         prompt = _load_prompt_by_token_or_404(prompt_id, authorization)
+        _reject_if_oauth(prompt)
         result = await _run_prompt_test(
             prompt=prompt,
             body=body,
@@ -604,6 +686,7 @@ def create_credential_prompts_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ) -> CredentialPromptSubmitResponse:
         prompt = _load_prompt_or_404(prompt_id, user)
+        _reject_if_oauth(prompt)
         result = await _run_prompt_test(
             prompt=prompt,
             body=body,

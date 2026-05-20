@@ -1,8 +1,10 @@
 """Google Calendar tools (native Python implementation).
 
 Uses google-api-python-client for direct Google Calendar API calls.
-Authentication is handled by calendar_auth.py (OAuth 2.0 authorization
-code flow with localhost redirect + manual fallback).
+Authentication runs through ``request_credential(provider="google_calendar",
+kind="oauth")`` and tokens live in the credential vault. Reads fall back to
+the legacy ``data/auth_tokens/<user>/google_calendar.json`` file for
+mid-migration users via :func:`auth_cache_utils.resolve_oauth_cache`.
 
 Optional tools, enable per-thread via thread config.
 """
@@ -14,13 +16,12 @@ from typing import Annotated, Any, Callable, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import GOOGLE_CALENDAR_SCOPES as _GOOGLE_CALENDAR_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .calendar_auth import (
-    CALENDAR_AUTH_TOOLS,
-    GOOGLE_SCOPES,
-    PROVIDER,
-)
 from .utils import get_user_id
+
+PROVIDER = "google_calendar"
+GOOGLE_SCOPES = list(_GOOGLE_CALENDAR_SCOPES_TUPLE)
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,6 @@ def _calendar_request(
         service_name="calendar",
         service_version="v3",
         account_id=account_id,
-        auth_tool_name="calendar_auth_start",
         api_label="Google Calendar",
     )
 
@@ -684,7 +684,7 @@ def calendar_list_colors(account_id: Optional[str] = None, config: Annotated[Run
 # Export — auth tools + API tools combined
 # ---------------------------------------------------------------------------
 
-CALENDAR_TOOLS = CALENDAR_AUTH_TOOLS + [
+CALENDAR_TOOLS = [
     calendar_list_calendars,
     calendar_list_events,
     calendar_get_event,

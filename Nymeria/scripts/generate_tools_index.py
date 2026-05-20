@@ -17,7 +17,7 @@ def extract_tools(filepath: Path) -> list[tuple[str, str, str]]:
 
     tools = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         is_tool = any(
             (isinstance(d, ast.Name) and d.id == "tool")

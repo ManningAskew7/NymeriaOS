@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1254 tools found.**
+**1253 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -70,10 +70,7 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `asana_search_tasks` | `nymeria/tools/work_tracking_service_integrations.py` | Search Asana tasks in a workspace. |
 | `asana_update_project` | `nymeria/tools/work_tracking_service_integrations.py` | Update an Asana project. |
 | `asana_update_task` | `nymeria/tools/work_tracking_service_integrations.py` | Update an Asana task. |
-| `auth_clear` | `nymeria/tools/auth_cache_utils.py` | (no description) |
-| `auth_complete` | `nymeria/tools/auth_cache_utils.py` | (no description) |
 | `auth_manager` | `nymeria/tools/auth_manager.py` | Manage Nymeria credentials without exposing secret values. |
-| `auth_start` | `nymeria/tools/auth_cache_utils.py` | (no description) |
 | `autopilot_add_contact_to_journey` | `nymeria/tools/marketing_contact_service_integrations.py` | Add an Autopilot contact to a journey trigger. |
 | `autopilot_create_list` | `nymeria/tools/marketing_contact_service_integrations.py` | Create an Autopilot list. |
 | `autopilot_delete_contact` | `nymeria/tools/marketing_contact_service_integrations.py` | Delete an Autopilot contact. |
@@ -612,7 +609,6 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `lingvanex_translate_text` | `nymeria/tools/business_service_integrations.py` | Translate text with LingvaNex. |
 | `linkedin_create_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create a LinkedIn text or article post. |
 | `linkedin_get_me` | `nymeria/tools/community_publishing_service_integrations.py` | Get the authenticated LinkedIn member profile. |
-| `list_accounts` | `nymeria/tools/auth_cache_utils.py` | (no description) |
 | `list_installed_skills` | `nymeria/tools/search_skills.py` | List all Agent Skills currently installed and visible to the user. |
 | `lonescale_add_company_item` | `nymeria/tools/lead_enrichment_service_integrations.py` | Add a company item to a LoneScale list. |
 | `lonescale_add_people_item` | `nymeria/tools/lead_enrichment_service_integrations.py` | Add a person item to a LoneScale list. |
@@ -648,6 +644,7 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `mailjet_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS with Mailjet. |
 | `mandrill_send_email` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an email with Mandrill / Mailchimp Transactional. |
 | `mandrill_send_template` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an email with a Mandrill template. |
+| `mark_task_done` | `nymeria/tools/goal_tools.py` | Approve a task as complete (supervisor side). Authority enforced. |
 | `marketstack_get_eod` | `nymeria/tools/business_service_integrations.py` | Get Marketstack end-of-day stock market data. |
 | `marketstack_get_exchange` | `nymeria/tools/business_service_integrations.py` | Get Marketstack exchange metadata. |
 | `marketstack_get_ticker` | `nymeria/tools/business_service_integrations.py` | Get Marketstack ticker metadata. |
@@ -782,7 +779,7 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `nocodb_list_bases` | `nymeria/tools/data_table_service_integrations.py` | List NocoDB bases, optionally within a workspace. |
 | `nocodb_list_records` | `nymeria/tools/data_table_service_integrations.py` | List NocoDB records from a table. |
 | `nocodb_update_record` | `nymeria/tools/data_table_service_integrations.py` | Update a NocoDB record from a JSON field mapping. |
-| `notify` | `nymeria/tools/notify.py` | Send a notification to the user via messaging platform. |
+| `notify` | `nymeria/tools/notify.py` | Send a notification to the user through their configured channels. |
 | `notion_append_block_children` | `nymeria/tools/collaboration_data_service_integrations.py` | Append child blocks to a Notion page or block. |
 | `notion_create_page` | `nymeria/tools/collaboration_data_service_integrations.py` | Create a Notion page under a page or data source. |
 | `notion_get_block_children` | `nymeria/tools/collaboration_data_service_integrations.py` | Retrieve child blocks for a Notion page or block. |
@@ -829,9 +826,6 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `oura_get_daily_readiness` | `nymeria/tools/personal_device_service_integrations.py` | Get Oura daily readiness summaries. |
 | `oura_get_daily_sleep` | `nymeria/tools/personal_device_service_integrations.py` | Get Oura daily sleep summaries. |
 | `oura_get_profile` | `nymeria/tools/personal_device_service_integrations.py` | Get the authenticated Oura personal profile. |
-| `outlook_auth_clear` | `nymeria/tools/outlook_auth.py` | Clear saved Microsoft Outlook/Graph authentication for the current user. |
-| `outlook_auth_complete` | `nymeria/tools/outlook_auth.py` | Complete the Microsoft authentication after the user has signed in. |
-| `outlook_auth_start` | `nymeria/tools/outlook_auth.py` | Start Microsoft account authentication using device code flow. |
 | `outlook_create_draft` | `nymeria/tools/outlook_email.py` | Create an email draft without sending it. |
 | `outlook_delete_email` | `nymeria/tools/outlook_email.py` | Delete an email (moves to Deleted Items, or permanently deletes). |
 | `outlook_draft_reply` | `nymeria/tools/outlook_email.py` | Create a draft reply to an email (does NOT send it). |
@@ -839,7 +833,6 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `outlook_forward_email` | `nymeria/tools/outlook_email.py` | Forward an email to another recipient. |
 | `outlook_get_attachments` | `nymeria/tools/outlook_attachments.py` | Download and extract text content from all attachments on an email. |
 | `outlook_get_email` | `nymeria/tools/outlook_email.py` | Get full details of email(s) by ID. |
-| `outlook_list_authenticated_accounts` | `nymeria/tools/outlook_auth.py` | List all authenticated Microsoft accounts. |
 | `outlook_list_emails` | `nymeria/tools/outlook_email.py` | List recent emails from Outlook. |
 | `outlook_mark_email` | `nymeria/tools/outlook_email.py` | Mark an email as read or unread. |
 | `outlook_move_email` | `nymeria/tools/outlook_email.py` | Move an email to a different folder. |
@@ -890,6 +883,8 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `posthog_track_page_or_screen` | `nymeria/tools/marketing_contact_service_integrations.py` | Track a PostHog page or screen view. |
 | `profitwell_get_metrics` | `nymeria/tools/commerce_billing_service_integrations.py` | Get ProfitWell daily or monthly metrics. |
 | `profitwell_get_settings` | `nymeria/tools/commerce_billing_service_integrations.py` | Get ProfitWell account settings. |
+| `propose_task` | `nymeria/tools/goal_tools.py` | Add a task to the active goal's task list (worker side). |
+| `provide_review_feedback` | `nymeria/tools/goal_tools.py` | Send refinement guidance back to the worker (supervisor side). |
 | `pushbullet_delete_push` | `nymeria/tools/notification_service_integrations.py` | Delete a Pushbullet push by ID. |
 | `pushbullet_list_pushes` | `nymeria/tools/notification_service_integrations.py` | List Pushbullet push history. |
 | `pushbullet_send_push` | `nymeria/tools/notification_service_integrations.py` | Send a Pushbullet note or link push. |
@@ -927,7 +922,10 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `reddit_get_user` | `nymeria/tools/community_publishing_service_integrations.py` | Get Reddit user metadata. |
 | `reddit_list_subreddit_posts` | `nymeria/tools/community_publishing_service_integrations.py` | List posts from a subreddit listing. |
 | `reddit_search_posts` | `nymeria/tools/community_publishing_service_integrations.py` | Search Reddit posts. |
+| `regression_echo` | `nymeria/tools/regression_echo.py` | Echo the supplied text back with a fixed prefix. |
 | `reload_all` | `nymeria/tools/runtime_admin.py` | Reload all tools, skills, and trigger sources. |
+| `request_credential` | `nymeria/tools/credential_prompt.py` | Open a secure in-chat prompt (modal / hosted form / OAuth dance) to |
+| `request_review` | `nymeria/tools/goal_tools.py` | Escalate a task to the supervisor for review (worker side). BLOCKS. |
 | `rocketchat_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Rocket.Chat message. |
 | `rocketchat_get_channel_history` | `nymeria/tools/chat_platform_service_integrations.py` | Get Rocket.Chat channel history by room ID or room name. |
 | `rocketchat_get_me` | `nymeria/tools/chat_platform_service_integrations.py` | Get the current Rocket.Chat user. |
@@ -1006,6 +1004,7 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `signl4_resolve_alert` | `nymeria/tools/notification_service_integrations.py` | Resolve a SIGNL4 alert by external ID. |
 | `signl4_send_alert` | `nymeria/tools/notification_service_integrations.py` | Send a SIGNL4 alert event. |
 | `skill_config` | `nymeria/tools/skill_config.py` | Draft, validate, publish, list, or delete Nymeria Skills and Skill Kits. |
+| `skill_kit_create` | `nymeria/tools/skill_config.py` | Create durable Skills or Skill Kits, optionally drafting HTTP tools first. |
 | `skill_manage` | `nymeria/tools/search_skills.py` | List, search, install, enable, or disable Agent Skills. |
 | `slack_add_reaction` | `nymeria/tools/collaboration_data_service_integrations.py` | Add a reaction to a Slack message. |
 | `slack_get_channel_history` | `nymeria/tools/collaboration_data_service_integrations.py` | Get recent messages from a Slack conversation. |
@@ -1091,6 +1090,7 @@ Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
 | `todoist_list_projects` | `nymeria/tools/productivity_service_integrations.py` | List Todoist projects. |
 | `todoist_list_tasks` | `nymeria/tools/productivity_service_integrations.py` | List Todoist tasks. |
 | `todoist_update_task` | `nymeria/tools/productivity_service_integrations.py` | Update a Todoist task. |
+| `tool_create` | `nymeria/tools/tool_create.py` | Draft, test, publish, list, or delete agent-created HTTP tools. |
 | `tool_enable` | `nymeria/tools/tool_search.py` | Enable, disable, or inspect current-thread tool bindings. |
 | `tool_search` | `nymeria/tools/tool_search.py` | Search available tools by keyword or category. |
 | `totp_generate_code` | `nymeria/tools/transform_utility_integrations.py` | Generate a time-based one-time password from the saved TOTP secret. |
