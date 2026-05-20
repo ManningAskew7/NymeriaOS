@@ -11,9 +11,12 @@ from typing import Annotated, Any, Callable, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config.oauth_providers import GOOGLE_DOCS_SCOPES as _GOOGLE_DOCS_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .google_docs_auth import GOOGLE_SCOPES, PROVIDER
 from .utils import get_user_id
+
+PROVIDER = "google_docs"
+GOOGLE_SCOPES = list(_GOOGLE_DOCS_SCOPES_TUPLE)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,6 @@ def _workspace_request(
         service_name=service_name,
         service_version=service_version,
         account_id=account_id,
-        auth_tool_name="google_docs_auth_start",
         api_label=api_label,
         build_kwargs={"cache_discovery": False},
     )

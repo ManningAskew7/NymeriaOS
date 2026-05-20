@@ -659,7 +659,7 @@ separately.
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
 | `ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS` | `24` | Lifetime for the first-run bootstrap admin token. The plaintext bootstrap token file is also deleted after first successful auth. |
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
-| `NYMERIA_PUBLIC_URL` | - | Browser-reachable public API origin used to build one-time credential setup links for chat bots, e.g. `https://nymeria.example.com`. Desktop modal prompts still work when unset; chat bots will report that a public URL is required. |
+| `NYMERIA_PUBLIC_URL` | - | Browser-reachable public API origin used to build one-time credential setup links for chat bots and OAuth authorization-code redirects, e.g. `https://nymeria.example.com`. Desktop modal prompts still work when unset; chat bots will report that a public URL is required. OAuth `request_credential` calls return `status="missing_public_url"` when unset unless the agent retries with `use_localhost=True` (only safe when the user's browser is on the same machine) or the provider supports device-code (currently Outlook). |
 | `API_HOST` | `0.0.0.0` | Server bind address |
 | `API_PORT` | `8000` | Server port |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
@@ -853,7 +853,7 @@ reachable from the backend process.
 | `TEAMS_ACCOUNT_ID` | - | Outlook account ID for Teams (must have ChannelMessage.Send) |
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
 | `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
-| `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth credentials JSON file; used for Google OAuth start and refresh so per-user caches do not persist the app-wide client secret |
+| `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth installed-app credentials JSON file. Used by both the legacy `*_auth_start` tools and the new unified `request_credential(kind="oauth")` flow for Google providers. Required for any Google OAuth path; user tokens are stored in the vault as `kind=oauth_token`, but the client secret itself stays in this file (one per Nymeria install). |
 | `_PRV_A_SERVICE_ACCOUNT_FILE` | - | Path to a Google service account JSON file for _PRV_A reference Sheets |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |

@@ -121,7 +121,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.SELF_MODIFY, ("SELF_AGENT_TOOLS", "RUNTIME_ADMIN_TOOLS")),
     (ToolCategory.THREAD_SPAWN, ("SPAWN_THREAD_TOOLS",)),
     (ToolCategory.TRIGGER, ("TRIGGER_TOOLS",)),
-    (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "GMAIL_AUTH_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
+    (ToolCategory.EMAIL, ("OUTLOOK_TOOLS", "OUTLOOK_ATTACHMENT_TOOLS")),
     (ToolCategory.BROWSER, ("BROWSER_TOOLS",)),
     (ToolCategory.IMAGE, ("IMAGE_GENERATION_TOOLS",)),
     (ToolCategory.CALENDAR, ("CALENDAR_TOOLS",)),
@@ -131,7 +131,6 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "GOOGLE_DOCS_TOOLS",
             "GOOGLE_SHEETS_TOOLS",
             "GOOGLE_WORKSPACE_SERVICE_TOOLS",
-            "GOOGLE_ANALYTICS_AUTH_TOOLS",
             "GOOGLE_ANALYTICS_SERVICE_TOOLS",
         ),
     ),
@@ -185,7 +184,6 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "DATA_TABLE_SERVICE_TOOLS",
             "CHAT_PLATFORM_SERVICE_TOOLS",
             "MICROSOFT_GRAPH_SERVICE_TOOLS",
-            "GOOGLE_BUSINESS_PROFILE_AUTH_TOOLS",
             "GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS",
         ),
     ),
@@ -232,20 +230,17 @@ _BROWSER_SAFE_TOOL_NAMES = frozenset(
 
 _EMAIL_SAFE_TOOL_NAMES = frozenset(
     {
-        "outlook_list_authenticated_accounts",
         "outlook_list_emails",
         "outlook_get_email",
         "outlook_search_emails",
         "outlook_mark_email",
         "outlook_get_attachments",
         "outlook_set_category",
-        "gmail_list_accounts",
     }
 )
 
 _CALENDAR_SAFE_TOOL_NAMES = frozenset(
     {
-        "calendar_list_authenticated_accounts",
         "calendar_list_calendars",
         "calendar_list_events",
         "calendar_get_event",
@@ -258,7 +253,6 @@ _CALENDAR_SAFE_TOOL_NAMES = frozenset(
 
 _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
     {
-        "google_docs_list_accounts",
         "google_docs_read",
         "google_docs_list",
         "google_docs_find_index",
@@ -280,7 +274,6 @@ _GOOGLE_DOCS_SAFE_TOOL_NAMES = frozenset(
         "google_chat_get_member",
         "google_chat_list_messages",
         "google_chat_get_message",
-        "google_analytics_list_accounts",
         "google_analytics_list_account_summaries",
         "google_analytics_get_metadata",
         "google_analytics_run_report",
@@ -863,7 +856,6 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "microsoft_excel_get_used_range",
         "microsoft_excel_read_range",
         "microsoft_excel_list_tables",
-        "google_business_profile_list_accounts",
         "google_business_profile_list_profile_accounts",
         "google_business_profile_list_locations",
         "google_business_profile_list_reviews",

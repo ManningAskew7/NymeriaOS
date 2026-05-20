@@ -1503,7 +1503,9 @@ export interface CredentialSetupSessionRequest {
   metadata?: Record<string, unknown>;
 }
 
-export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'form';
+export type AuthPromptMode = 'api_key' | 'pat' | 'oauth' | 'oauth_device' | 'form';
+
+export type AuthPromptFlow = 'auth_code' | 'device_code';
 
 export interface AuthPromptField {
   name: string;
@@ -1537,6 +1539,17 @@ export interface AuthPromptEvent {
   connect_url?: string | null;
   connect_url_required?: boolean;
   connect_url_error?: string | null;
+  flow?: AuthPromptFlow;
+  provider_id?: string;
+  scopes?: string[];
+  notes?: string | null;
+  auth_url?: string;
+  uses_pkce?: boolean;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string | null;
+  expires_in?: number;
+  interval?: number;
 }
 
 export interface AuthPromptSubmitRequest {
