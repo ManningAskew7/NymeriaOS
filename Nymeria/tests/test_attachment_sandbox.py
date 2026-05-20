@@ -189,6 +189,39 @@ def test_build_attachment_preamble_includes_paths(_isolated_workspace: Path):
     assert r.extracted_text_path in preamble
 
 
+def test_find_attachment_by_id_round_trips(_isolated_workspace: Path):
+    record = attachment_sandbox.write_attachment(
+        "t-find",
+        {
+            "file_type": "document",
+            "data_url": _data_url(b"abc", "text/plain"),
+            "mime_type": "text/plain",
+            "file_name": "x.txt",
+        },
+    )
+    found = attachment_sandbox.find_attachment_by_id("t-find", record.id)
+    assert found is not None
+    assert found.id == record.id
+    assert found.original_name == "x.txt"
+    assert found.sandbox_path == record.sandbox_path
+    assert found.byte_size == 3
+
+
+def test_find_attachment_by_id_returns_none_for_unknown(_isolated_workspace: Path):
+    attachment_sandbox.write_attachment(
+        "t-find",
+        {
+            "file_type": "document",
+            "data_url": _data_url(b"abc", "text/plain"),
+            "mime_type": "text/plain",
+            "file_name": "x.txt",
+        },
+    )
+    assert attachment_sandbox.find_attachment_by_id("t-find", "does-not-exist") is None
+    # And no dir at all also returns None (idempotent).
+    assert attachment_sandbox.find_attachment_by_id("never-existed", "any") is None
+
+
 def test_to_history_dict_excludes_bytes(_isolated_workspace: Path):
     r = attachment_sandbox.write_attachment(
         "t-history",

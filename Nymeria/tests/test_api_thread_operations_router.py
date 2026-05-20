@@ -281,3 +281,80 @@ def test_attachment_limits_endpoint_denies_non_owner(tmp_path: Path, api_client_
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Not found"
+
+
+def test_attachment_download_streams_original_bytes(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    from nymeria.core import attachment_sandbox
+    import base64
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-download"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    payload = b"hello, sandbox!"
+    record = attachment_sandbox.write_attachment(
+        thread_id,
+        {
+            "file_type": "document",
+            "data_url": f"data:text/plain;base64,{base64.b64encode(payload).decode()}",
+            "mime_type": "text/plain",
+            "file_name": "notes.txt",
+        },
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/attachments/{record.id}/download",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "notes.txt" in response.headers.get("content-disposition", "")
+
+
+def test_attachment_download_404_for_unknown_id(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-download-missing"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.get(
+        f"/threads/{thread_id}/attachments/no-such-id/download",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Attachment not found"
+
+
+def test_attachment_download_denies_non_owner(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    from nymeria.core import attachment_sandbox
+    import base64
+
+    client, agent, _token = _client(tmp_path, api_client_builder)
+    agent.accounts_repo.create_user("other", "other@example.com", "Other")
+    other_token = agent.accounts_repo.issue_token("other")
+    thread_id = "thread-private"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    record = attachment_sandbox.write_attachment(
+        thread_id,
+        {
+            "file_type": "document",
+            "data_url": f"data:text/plain;base64,{base64.b64encode(b'secret').decode()}",
+            "mime_type": "text/plain",
+            "file_name": "secret.txt",
+        },
+    )
+
+    # Other user must not be able to download by guessing the attachment id.
+    response = client.get(
+        f"/threads/{thread_id}/attachments/{record.id}/download",
+        headers=api_client_builder.auth(other_token),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"

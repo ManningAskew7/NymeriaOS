@@ -307,6 +307,43 @@ def _extract_xlsx(path: Path, out: Path) -> tuple[Optional[Path], Optional[int]]
     return out, None
 
 
+def find_attachment_by_id(thread_id: str, attachment_id: str) -> Optional[AttachmentRecord]:
+    """Locate a sandboxed attachment by its record id.
+
+    Scans the per-thread attachment directory for ``*.meta.json`` files and
+    returns the first record whose ``id`` matches. O(n) in number of
+    attachments per thread, which is fine for typical thread sizes; if that
+    ever becomes a hotspot we can add an index.
+
+    Returns ``None`` if no matching record is found.
+    """
+    sanitized = _sanitize_thread_id(thread_id)
+    base = _workspace_root() / "threads" / sanitized / "attachments"
+    if not base.exists():
+        return None
+
+    for meta_path in base.glob("*.meta.json"):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("id") != attachment_id:
+            continue
+        return AttachmentRecord(
+            id=data.get("id", ""),
+            thread_id=data.get("thread_id", thread_id),
+            original_name=data.get("original_name", ""),
+            mime_type=data.get("mime_type", ""),
+            byte_size=int(data.get("byte_size", 0) or 0),
+            sandbox_path=data.get("sandbox_path", ""),
+            extracted_text_path=data.get("extracted_text_path"),
+            sha256=data.get("sha256", ""),
+            pages=data.get("pages"),
+            extracted_at=float(data.get("extracted_at", 0.0) or 0.0),
+        )
+    return None
+
+
 def cleanup_thread_attachments(thread_id: str) -> int:
     """Remove the entire per-thread attachment directory tree.
 

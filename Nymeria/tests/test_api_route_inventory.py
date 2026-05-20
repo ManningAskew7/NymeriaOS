@@ -160,6 +160,7 @@ EXPECTED_ROUTES = [
     ('/threads/{thread_id}', ('DELETE',)),
     ('/threads/{thread_id}/attachment_limits', ('GET',)),
     ('/threads/{thread_id}/attachments/validate', ('POST',)),
+    ('/threads/{thread_id}/attachments/{attachment_id}/download', ('GET',)),
     ('/threads/{thread_id}/branch', ('POST',)),
     ('/threads/{thread_id}/callable-tools', ('GET',)),
     ('/threads/{thread_id}/chatapp/bind-code', ('POST',)),

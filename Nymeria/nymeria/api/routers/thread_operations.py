@@ -1,11 +1,14 @@
 """Thread portability, attachment validation, compaction, and stop routes."""
 
 import logging
+import mimetypes
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
@@ -272,6 +275,44 @@ def create_thread_operations_router(
             effective_provider=effective_provider,
             effective_model=effective_model,
             limits=AttachmentLimits(**limits),
+        )
+
+    @router.get(
+        "/threads/{thread_id}/attachments/{attachment_id}/download",
+    )
+    async def download_thread_attachment(
+        thread_id: str,
+        attachment_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Stream the original bytes of a sandboxed thread attachment.
+
+        Owner-scoped: the caller must own the thread (the existing
+        ``require_thread_access_fn`` returns 404 otherwise so attachment ids
+        don't become a probe surface for which threads exist). Looks up the
+        record by id via ``attachment_sandbox.find_attachment_by_id`` and
+        streams the file from the per-thread sandbox.
+        """
+        require_thread_access_fn(user, thread_id)
+        from ...core.attachment_sandbox import find_attachment_by_id
+
+        record = find_attachment_by_id(thread_id, attachment_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+
+        path = Path(record.sandbox_path)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Attachment file missing on disk")
+
+        media_type = (
+            record.mime_type
+            or mimetypes.guess_type(str(path))[0]
+            or "application/octet-stream"
+        )
+        return FileResponse(
+            path=str(path),
+            media_type=media_type,
+            filename=record.original_name or path.name,
         )
 
     @router.post("/threads/{thread_id}/compact")
