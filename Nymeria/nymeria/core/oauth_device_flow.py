@@ -146,6 +146,7 @@ async def poll_device_token(
                         prompt=fresh,
                         descriptor=descriptor,
                         token_data=payload,
+                        source="oauth_device_flow",
                     )
                     return
 
