@@ -133,6 +133,92 @@ def test_thread_history_visibility_flags_and_context_processing_state(
     }
 
 
+def test_thread_history_show_autonomous_prompts_query_param_overrides_thread_config(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """
+    The desktop/mobile clients keep a global `show_autonomous_prompts` toggle
+    in localStorage. They pass its effective value as a query parameter so
+    history filtering honors the global setting without mutating each
+    thread's config. When the param is supplied it takes precedence over
+    the per-thread flag; when omitted, the per-thread flag still drives
+    filtering (regression check for older clients and MCP/CLI callers).
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    thread_id = "thread-history-override"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            show_autonomous_prompts=False,
+            show_prompt_metadata=False,
+        )
+    )
+
+    no_param = client.get(
+        f"/threads/{thread_id}/history",
+        headers=api_client_builder.auth(token),
+    )
+    param_true = client.get(
+        f"/threads/{thread_id}/history",
+        headers=api_client_builder.auth(token),
+        params={"show_autonomous_prompts": "true"},
+    )
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            show_autonomous_prompts=True,
+            show_prompt_metadata=False,
+        )
+    )
+
+    param_false = client.get(
+        f"/threads/{thread_id}/history",
+        headers=api_client_builder.auth(token),
+        params={"show_autonomous_prompts": "false"},
+    )
+    internal_with_param = client.get(
+        f"/threads/{thread_id}/history",
+        headers=api_client_builder.auth(token),
+        params={"include_internal": "true", "show_autonomous_prompts": "true"},
+    )
+
+    assert no_param.status_code == 200
+    assert param_true.status_code == 200
+    assert param_false.status_code == 200
+    assert internal_with_param.status_code == 200
+
+    assert agent.history_calls == [
+        {
+            "thread_id": thread_id,
+            "include_internal": False,
+            "show_autonomous_prompts": False,
+            "show_prompt_metadata": False,
+        },
+        {
+            "thread_id": thread_id,
+            "include_internal": False,
+            "show_autonomous_prompts": True,
+            "show_prompt_metadata": False,
+        },
+        {
+            "thread_id": thread_id,
+            "include_internal": False,
+            "show_autonomous_prompts": False,
+            "show_prompt_metadata": False,
+        },
+        {
+            "thread_id": thread_id,
+            "include_internal": True,
+            "show_autonomous_prompts": False,
+            "show_prompt_metadata": False,
+        },
+    ]
+
+
 def test_thread_status_returns_revision_and_processing_state(
     tmp_path: Path,
     api_client_builder,

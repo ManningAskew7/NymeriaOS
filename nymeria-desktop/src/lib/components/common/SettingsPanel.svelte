@@ -752,6 +752,21 @@
           {/each}
         </div>
       </div>
+
+      <div class="field checkbox-field">
+        <input
+          id="global-show-autonomous-prompts"
+          type="checkbox"
+          checked={configStore.showAutonomousPrompts}
+          onchange={(e) => (configStore.showAutonomousPrompts = e.currentTarget.checked)}
+        />
+        <label for="global-show-autonomous-prompts">Show autonomous prompts</label>
+        <p class="hint">
+          Show the prompts sent by the scheduler, watchdog, and triggers as
+          messages in chat (both live and in history). You can still force
+          this on for a specific thread from its Thread Settings.
+        </p>
+      </div>
     </div>
   {/if}
 

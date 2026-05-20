@@ -400,6 +400,15 @@ def create_threads_router(
             False,
             description="Include internal system messages (autonomous wake-ups, compaction prompts)",
         ),
+        show_autonomous_prompts: bool | None = Query(
+            None,
+            description=(
+                "Override the per-thread show_autonomous_prompts flag for this "
+                "request. When provided, takes precedence over the per-thread "
+                "config. Lets clients with a global UI preference (e.g. desktop) "
+                "control history filtering without mutating per-thread state."
+            ),
+        ),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
@@ -408,6 +417,8 @@ def create_threads_router(
         Returns all messages in the conversation including tool calls and results.
         By default, internal system messages (autonomous wake-ups, compaction prompts)
         are filtered out. Set include_internal=true for debugging to see all messages.
+        Pass show_autonomous_prompts to override the per-thread filter without
+        mutating thread config.
         """
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
@@ -416,11 +427,12 @@ def create_threads_router(
         show_prompt_metadata = False
         if not include_internal:
             tc = agent.thread_config_manager.get_config(thread_id)
-            if tc:
-                if tc.show_autonomous_prompts:
-                    show_autonomous = True
-                if tc.show_prompt_metadata:
-                    show_prompt_metadata = True
+            if show_autonomous_prompts is not None:
+                show_autonomous = show_autonomous_prompts
+            elif tc and tc.show_autonomous_prompts:
+                show_autonomous = True
+            if tc and tc.show_prompt_metadata:
+                show_prompt_metadata = True
 
         history = await run_in_threadpool(
             agent.get_conversation_history,

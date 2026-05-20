@@ -821,6 +821,7 @@ export interface AppConfig {
   setupCompleted?: boolean;
   theme?: ThemeName;
   suppressAttachmentWarnings?: boolean;
+  showAutonomousPrompts?: boolean;
   identity?: AccountIdentity | null;
 }
 

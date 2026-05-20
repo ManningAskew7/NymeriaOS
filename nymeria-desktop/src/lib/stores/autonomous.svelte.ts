@@ -522,10 +522,13 @@ function createAutonomousStore() {
         // If on the same thread and not already streaming (user typing),
         // show that autonomous activity is starting
         if (isCurrentThread && !chatStore.isStreaming) {
-          // Show autonomous prompt if thread config has it enabled
-          // Only for scheduler/watchdog/trigger tasks, not callable thread invocations
+          // Show autonomous prompt if the global toggle is on OR the per-thread
+          // override is force-on. Only for scheduler/watchdog/trigger tasks, not
+          // callable thread invocations.
           const threadCfg = threadConfigStore.getConfig(event.thread_id);
-          if (threadCfg?.showAutonomousPrompts && event.prompt && !event.callable_name) {
+          const effective =
+            configStore.showAutonomousPrompts || Boolean(threadCfg?.showAutonomousPrompts);
+          if (effective && event.prompt && !event.callable_name) {
             const sourceLabel = classifyAutonomousSource(event);
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }
