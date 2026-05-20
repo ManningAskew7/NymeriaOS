@@ -358,6 +358,57 @@ def test_compact_is_listed_but_not_executed_by_command_service() -> None:
     assert "handled outside the command service" in result.markdown
 
 
+def test_prune_is_registered_as_executable_command() -> None:
+    service = CommandService()
+    prune = next(
+        cmd
+        for cmd in service.list_commands(actor="user", surface="desktop", is_admin=True)
+        if cmd.id == "prune"
+    )
+    assert prune.execution_kind == "command"
+    assert prune.agent_allowed is False
+    assert prune.requires_thread is True
+    assert prune.mutates_state is True
+
+    agent_visible = {
+        cmd.name
+        for cmd in service.list_commands(actor="agent", surface="agent", is_admin=True)
+    }
+    assert "prune" not in agent_visible
+
+
+def test_prune_dispatches_to_backend_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nymeria.core.agent as agent_module
+
+    fake_agent = _FakeAgent()
+
+    async def fake_prune_now(thread_id: str, user_id: str) -> dict[str, Any]:
+        return {
+            "success": True,
+            "pruned_count": 2,
+            "skipped_already_pruned": 0,
+            "skipped_too_short": 1,
+            "chars_saved": 5000,
+        }
+
+    fake_agent.prune_now = fake_prune_now  # type: ignore[attr-defined]
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    result = run(CommandService().execute(ctx, "/prune"))
+    assert result.success is True
+    assert "Pruned 2" in result.markdown
+    assert "5,000" in result.markdown
+
+
 def test_stop_aborts_active_thread_and_reports_idle_when_no_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

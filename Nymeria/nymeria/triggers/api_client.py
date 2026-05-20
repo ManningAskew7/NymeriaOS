@@ -306,6 +306,12 @@ class NymeriaAPIClient:
             f"/threads/{thread_id}/compact", params={"user_id": user_id}, act_as=user_id,
         )
 
+    async def prune(self, thread_id: str, user_id: str) -> dict:
+        """Deterministically compress tool returns in a thread (no LLM)."""
+        return await self._post(
+            f"/threads/{thread_id}/prune", params={"user_id": user_id}, act_as=user_id,
+        )
+
     async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         """Delete all history for a thread."""
         return await self._delete(f"/threads/{thread_id}", act_as=user_id)

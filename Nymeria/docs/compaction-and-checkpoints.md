@@ -296,15 +296,87 @@ Only `core/` files should show activity/notification constructor calls. If you s
 
 ---
 
+## `/prune` — deterministic tool-result compression
+
+`/prune` is a lightweight sibling of `/compact` that **only rewrites tool results**. It does not call an LLM, does not produce a summary, and does not erase the conversational narrative. Every `HumanMessage` and `AIMessage` (including each AIMessage's `tool_calls` block) stays intact; only the `ToolMessage.content` of large tool returns is replaced with a placeholder.
+
+Use `/prune` when the conversation flow is still useful but the tool returns themselves (RAG dumps, web fetches, file listings, gmail searches) dominate the input token count. Use `/compact` when the whole conversation should be summarised.
+
+### Flow
+
+```
+1. graph.aget_state(config)              — read current message list
+2. For each ToolMessage:
+   - Skip if additional_kwargs.internal_type == 'pruned_tool_result' (idempotent)
+   - Skip if len(content) <= 200 chars (compression wouldn't save anything)
+   - Build marker: "[/prune placeholder - original tool result removed
+                    (<N> chars, success|error). Call this tool again to get the
+                    real result.]"
+   - Detect status from msg.status == 'error' OR content.startswith('[Error]')
+   - model_copy({content: marker, additional_kwargs: {..., internal_type:
+                                                     'pruned_tool_result', ...}})
+3. graph.aupdate_state(config, {"messages": replacements})
+   - add_messages reducer replaces in-place by id
+   - id, tool_call_id, and name are preserved → AIMessage linkage stays valid
+```
+
+### Key properties
+
+- **No LLM**: the entire operation is a single state read + state update. Sub-second.
+- **No data destruction**: the per-turn conversation indexer (`rag_search`) has already indexed each tool result into the per-user RAG store, so the agent can recover specific content via search even after pruning.
+- **No token tracker reset**: unlike `/compact`, `/prune` does not call `reset_after_compact`. The next turn's real `input_tokens` reported by the provider will naturally overwrite the stale `last_input_tokens` cache.
+- **No checkpoint pruning**: `/prune` does not delete historical checkpoint rows. It only mutates the latest state. Older `checkpoint_blobs` still contain the original tool results.
+- **Idempotent**: running `/prune` twice on the same thread yields `pruned_count=0` on the second call.
+- **Agent-blocked**: `agent_allowed=False` (matches `/compact`) — prevents the agent from pruning its own in-flight tool results mid-turn.
+
+### Marker contract
+
+The placeholder text is intentionally self-explanatory so a future LLM call can read it and know the result was pruned, not a real return value:
+
+```
+[/prune placeholder - original tool result removed (4523 chars, success). Call this tool again to get the real result.]
+```
+
+The deterministic machine-readable signal is `additional_kwargs.internal_type == 'pruned_tool_result'`, also carrying `original_chars`, `original_status`, and `pruned_at` ISO timestamp. Display layers can detect this and render a distinct visual treatment if desired.
+
+### Return shape
+
+```json
+{
+  "success": true,
+  "pruned_count": 12,
+  "skipped_already_pruned": 0,
+  "skipped_too_short": 3,
+  "chars_before": 38420,
+  "chars_after": 1320,
+  "chars_saved": 37100
+}
+```
+
+On failure (state read or write error): `{"success": false, "reason": "..."}`.
+
+### Entry points
+
+- Slash command from any frontend: `/prune` (registered with `execution_kind="command"`)
+- REST: `POST /threads/{id}/prune`
+- MCP: `nymeria_prune_thread(thread_id, user_id)`
+- Triggers HTTP client (bots): `api_client.prune(thread_id, user_id)`
+- Python: `agent.prune_now(thread_id, user_id)` → `PruneManager.prune_now`
+
+---
+
 ## Relevant files
 
 | Path | Purpose |
 |------|---------|
 | `core/agent_compaction.py` | `CompactionManager` — owns compaction policy, execution, and pending state |
+| `core/agent_prune.py` | `PruneManager` — owns `/prune` execution (deterministic tool-result compression) |
 | `core/checkpoint_cleanup.py` | `CheckpointCleaner`, `prune_checkpoints_before`, and `delete_thread_checkpoints` — raw SQL cleanup, per-backend (SQLite + Postgres) |
 | `core/agent_compaction.py` | `create_compaction_marker` — durable history marker |
-| `core/agent.py` | `NymeriaAgent` delegates to `self._compaction` (CompactionManager) |
+| `core/agent.py` | `NymeriaAgent` delegates to `self._compaction` (CompactionManager) and `self._prune` (PruneManager) |
 | `core/agent.py` | `_build_message_timestamp_map` — checkpoint walker for timestamps |
 | `core/agent.py` | display filter in `get_conversation_history` — internal_type branches |
+| `core/command_service.py` | `/compact` (chat_stream) and `/prune` (command) registration; `_CommandExecutor._cmd_prune`; `CommandBackendClient.prune_thread` |
+| `api/routers/thread_operations.py` | `POST /threads/{id}/compact` and `POST /threads/{id}/prune` endpoints |
 | `triggers/api.py` | `/threads/{id}/history` endpoint |
 | `triggers/api.py` | `_get_checkpoint_thread_ids` — reference pattern for raw SQL checkpoint reads |
