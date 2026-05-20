@@ -34,7 +34,6 @@ EXACT_MATCH: set[str] = {
     "lib/components/common/ThinkingIndicator.svelte",
     "lib/components/credentials/CredentialManagerPanel.svelte",
     "lib/components/credentials/index.ts",
-    "lib/components/notifications/index.ts",
     "lib/components/triggers/TriggerHistoryPanel.svelte",
     "lib/stores/chatAppBindings.svelte.ts",
     "lib/stores/credentials.svelte.ts",
@@ -130,6 +129,7 @@ KNOWN_DRIFT: set[str] = {
     # Notifications: different prop contracts (MOB-003)
     "lib/components/notifications/NotificationCenter.svelte",
     "lib/components/notifications/NotificationItem.svelte",
+    "lib/components/notifications/index.ts",
     # API service modules: same domain split, different platform/API surface
     "lib/services/api/accounts.ts",
     "lib/services/api/base.ts",

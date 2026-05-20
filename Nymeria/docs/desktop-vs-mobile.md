@@ -102,6 +102,7 @@ Both apps now use the same modular API service layout:
 | `stores/credentials.svelte.ts` | EXACT_MATCH | Shared credential-vault state and actions. |
 | `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
+| `components/notifications/index.ts` | KNOWN_DRIFT | Desktop exports notification profile/destination editors and the full panel; mobile only exports its notification center/item subset. |
 
 The shared module chain is:
 `base -> system -> accounts -> credentials -> chat -> threads -> todos -> tools -> mcp -> thread-config -> skills -> triggers -> commands -> reporting`.
