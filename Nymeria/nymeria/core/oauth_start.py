@@ -128,6 +128,11 @@ def _resolve_client_config(
 
     if descriptor.client_id_env:
         client_id = os.environ.get(descriptor.client_id_env) or ""
+        if not client_id and descriptor.client_id_fallback:
+            # Public client ID baked into the descriptor (e.g. Microsoft Graph
+            # sample app). Mirrors the legacy outlook_auth.get_client_id()
+            # fallback so device-code works out of the box.
+            client_id = descriptor.client_id_fallback
         if not client_id:
             return OAuthStartError(
                 status="client_config_missing",
@@ -212,19 +217,53 @@ def _resolve_flow(
 # ---------------------------------------------------------------------------
 
 
+_OAUTH_CALLBACK_PATH = "/connect/credentials/oauth/callback"
+
+
 def _build_redirect_uri(
     public_url: Optional[str],
     api_port: int,
     use_localhost: bool,
-    prompt_id: str,
 ) -> Optional[str]:
+    """Return the static OAuth redirect URI for this Nymeria install.
+
+    The path is the same for every prompt so the user only has to register
+    one redirect URI per origin in Google Cloud Console / Azure Portal. The
+    per-prompt identity travels in the OAuth ``state`` parameter instead;
+    see :func:`_pack_state` and :func:`unpack_state`.
+    """
     if public_url:
         base = public_url.strip().rstrip("/")
         if base:
-            return f"{base}/connect/credentials/{prompt_id}/oauth/callback"
+            return f"{base}{_OAUTH_CALLBACK_PATH}"
     if use_localhost:
-        return f"http://localhost:{int(api_port or _DEFAULT_API_PORT)}/connect/credentials/{prompt_id}/oauth/callback"
+        return f"http://localhost:{int(api_port or _DEFAULT_API_PORT)}{_OAUTH_CALLBACK_PATH}"
     return None
+
+
+_STATE_SEPARATOR = ":"
+
+
+def _pack_state(prompt_id: str, nonce: str) -> str:
+    """Encode ``prompt_id`` and a verification nonce as a single ``state``.
+
+    ``prompt_id`` is a UUID, so a colon is a safe separator. The callback
+    parser uses :func:`unpack_state` to reverse this.
+    """
+    return f"{prompt_id}{_STATE_SEPARATOR}{nonce}"
+
+
+def unpack_state(state: str) -> Optional[tuple[str, str]]:
+    """Inverse of :func:`_pack_state`. Returns ``None`` on malformed input."""
+    if not state:
+        return None
+    parts = state.split(_STATE_SEPARATOR, 1)
+    if len(parts) != 2:
+        return None
+    prompt_id, nonce = parts[0].strip(), parts[1].strip()
+    if not prompt_id or not nonce:
+        return None
+    return prompt_id, nonce
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +302,7 @@ async def start_oauth_flow(
     if isinstance(client_config, OAuthStartError):
         return client_config
 
-    redirect_uri = _build_redirect_uri(public_url, api_port, use_localhost, prompt_id)
+    redirect_uri = _build_redirect_uri(public_url, api_port, use_localhost)
     flow_or_err = _resolve_flow(
         descriptor,
         flow_override,
@@ -320,9 +359,11 @@ def _build_auth_code_result(
     # State token is distinct from the hosted-form bearer token. The raw
     # state ends up in the user's browser URL during the redirect, so it
     # must not double as a credential the callback could use to access
-    # other endpoints.
-    state_token = new_prompt_token()
-    state_hash = hash_prompt_token(state_token)
+    # other endpoints. The packed state also carries the prompt_id so the
+    # static-path callback knows which prompt this redirect belongs to.
+    nonce = new_prompt_token()
+    state_hash = hash_prompt_token(nonce)
+    state_token = _pack_state(prompt_id, nonce)
 
     params: dict[str, str] = {
         "client_id": client_config["client_id"],
@@ -484,4 +525,5 @@ __all__ = [
     "OAuthStartError",
     "OAuthStartResult",
     "start_oauth_flow",
+    "unpack_state",
 ]

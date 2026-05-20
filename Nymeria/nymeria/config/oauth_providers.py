@@ -57,6 +57,11 @@ class OAuthProviderDescriptor:
     client_id_env: Optional[str] = None
     client_secret_env: Optional[str] = None
     client_config_file_env: Optional[str] = None
+    # Hardcoded fallback for ``client_id`` when ``client_id_env`` is unset or
+    # empty. Use only for *public* client IDs (e.g. Microsoft's `8ad36cab...`
+    # Graph sample app) where the same value ships with the codebase. Never
+    # provide a fallback for a client secret.
+    client_id_fallback: Optional[str] = None
     # Device-code endpoint (RFC 8628 §3.1). Required when "device_code" is in
     # supported_flows, otherwise ignored.
     device_authorization_uri: Optional[str] = None
@@ -230,6 +235,10 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         supported_flows=_BOTH_FLOWS,
         default_flow="auth_code",
         client_id_env="MICROSOFT_MCP_CLIENT_ID",
+        # Public Microsoft Graph sample app id, mirrored from the legacy
+        # outlook_auth.get_client_id() fallback. Lets the device-code flow
+        # work out-of-the-box without a registered Azure app.
+        client_id_fallback="8ad36cab-9646-40ee-97f5-0ddd7cd6e5c8",
         device_authorization_uri=_MICROSOFT_DEVICE_CODE_URI,
         uses_pkce=False,
         notes="Microsoft Graph. Supports both flows. Auto-degrades to device_code when NYMERIA_PUBLIC_URL is unset and use_localhost is not requested.",

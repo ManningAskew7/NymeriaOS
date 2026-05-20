@@ -180,12 +180,16 @@ Two flows are wired in:
   agent's tool builds an authorization URL with PKCE (when the descriptor
   enables it) and emits an `auth_url` the modal opens in the user's browser.
   The browser is redirected back to
-  `${NYMERIA_PUBLIC_URL}/connect/credentials/{prompt_id}/oauth/callback?code=…&state=…`,
+  `${NYMERIA_PUBLIC_URL}/connect/credentials/oauth/callback?code=…&state=…`,
   which exchanges the code for tokens and writes the vault record. The
-  `state` parameter is a separate one-time nonce hashed into
-  `metadata["_oauth_state"]["state_token_hash"]` — distinct from the
-  hosted-form bearer token so the value exposed in the redirect URL never
-  doubles as a form-access credential.
+  redirect URI path is **static** so the user only registers one URI per
+  origin in their Google Cloud Console / Azure Portal — `prompt_id` and a
+  one-time nonce are packed into the OAuth `state` parameter
+  (`"<prompt_id>:<nonce>"`). The callback handler unpacks the state, looks
+  up the prompt by id, then `hmac.compare_digest` checks the nonce against
+  `metadata["_oauth_state"]["state_token_hash"]`. The hash is distinct from
+  the hosted-form bearer token so the state value exposed in the browser
+  URL never doubles as a form-access credential.
 - **Device code** (`mode="oauth_device"`, RFC 8628). Used when the agent
   passes `flow="device_code"` or when `NYMERIA_PUBLIC_URL` is unset and the
   provider supports device-flow (currently Microsoft Outlook). The tool POSTs
@@ -285,7 +289,7 @@ The agent cannot manage system credentials or retrieve plaintext secrets.
 | `/connect/credentials/{id}/submit` | POST | Prompt-token save endpoint |
 | `/connect/credentials/{id}/exit` | POST | Prompt-token close endpoint |
 | `/connect/credentials/{id}/cancel` | POST | Prompt-token cancel endpoint |
-| `/connect/credentials/{id}/oauth/callback` | GET | OAuth authorization-code redirect target. Verifies state, exchanges the code, writes the vault, resolves the agent prompt, and renders a success/failure HTML page. |
+| `/connect/credentials/oauth/callback` | GET | Static OAuth authorization-code redirect target. Unpacks `prompt_id` + nonce from `state`, verifies the nonce, exchanges the code, writes the vault, resolves the agent prompt, and renders a success/failure HTML page. |
 
 Writes accept `secret_fields` as plaintext. Responses only return metadata
 and the list of stored secret field names — never plaintext or ciphertext.

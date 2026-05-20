@@ -576,18 +576,19 @@ def create_credential_prompts_router(
         return HTMLResponse(_hosted_form_shell(prompt_id))
 
     @router.get(
-        "/connect/credentials/{prompt_id}/oauth/callback",
+        "/connect/credentials/oauth/callback",
         response_class=HTMLResponse,
         include_in_schema=False,
     )
     async def oauth_callback(
-        prompt_id: str,
         code: Optional[str] = None,
         state: Optional[str] = None,
         error: Optional[str] = None,
     ) -> HTMLResponse:
+        # Static path: every prompt redirects here. The prompt id is packed
+        # into ``state`` by oauth_start so users only register one redirect
+        # URI per origin in their Google Cloud Console / Azure Portal.
         result = await handle_auth_code_callback(
-            prompt_id=prompt_id,
             code=code,
             state=state,
             error=error,

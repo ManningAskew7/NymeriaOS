@@ -1,6 +1,6 @@
 """Shared finalize logic for OAuth flows.
 
-Both the auth-code callback endpoint (``GET /connect/credentials/{prompt_id}/oauth/callback``)
+Both the auth-code callback endpoint (``GET /connect/credentials/oauth/callback``)
 and the device-code poller end here. Given a fresh token bundle from the
 provider, this module:
 
@@ -364,17 +364,19 @@ class AuthCodeCallbackResult:
 
 async def handle_auth_code_callback(
     *,
-    prompt_id: str,
     code: Optional[str],
     state: Optional[str],
     error: Optional[str] = None,
 ) -> AuthCodeCallbackResult:
     """Resolve a pending OAuth ``auth_code`` prompt from a provider redirect.
 
-    Verifies the ``state`` against the prompt's token hash, looks up the
-    stashed ``oauth_state`` (client_id, code_verifier, redirect_uri),
-    exchanges the ``code`` for tokens, and finalizes the credential.
+    The static callback path does not carry the prompt id; both the
+    ``prompt_id`` and the verification nonce are packed into ``state``
+    by :func:`oauth_start._pack_state` and unpacked here. The nonce is
+    then compared against the hash stored on the prompt at start time.
     """
+    from .oauth_start import unpack_state
+
     coordinator = get_auth_prompt_coordinator()
 
     if not state:
@@ -384,6 +386,16 @@ async def handle_auth_code_callback(
             message="Missing state parameter. Start the flow again from Nymeria.",
             status_code=400,
         )
+
+    unpacked = unpack_state(state)
+    if unpacked is None:
+        return AuthCodeCallbackResult(
+            ok=False,
+            title="Authentication Failed",
+            message="State parameter was malformed. Start the flow again from Nymeria.",
+            status_code=400,
+        )
+    prompt_id, nonce = unpacked
 
     prompt = coordinator.get(prompt_id)
     if prompt is None:
@@ -398,7 +410,7 @@ async def handle_auth_code_callback(
     # start time. Distinct from the hosted-form bearer token because the raw
     # state ends up in the user's browser URL during the provider redirect.
     expected_hash = ((prompt.metadata or {}).get("_oauth_state") or {}).get("state_token_hash")
-    if not expected_hash or not hmac.compare_digest(hash_prompt_token(state), expected_hash):
+    if not expected_hash or not hmac.compare_digest(hash_prompt_token(nonce), expected_hash):
         return AuthCodeCallbackResult(
             ok=False,
             title="Authentication Failed",
