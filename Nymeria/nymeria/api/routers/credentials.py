@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...config.llm_providers import is_known_llm_provider
 from ...core import secrets as nymeria_secrets
 from ...core.accounts import AuthenticatedUser
-from ...core.credential_vault import CredentialNotFound, CredentialVaultRepo
+from ...core.credential_tests import test_credential_fields
+from ...core.credential_vault import (
+    CredentialAccessDenied,
+    CredentialNotFound,
+    CredentialSecretUnavailable,
+    CredentialVaultRepo,
+)
 from ...core.llm_credentials import LLM_PROVIDER_TARGET_TYPE
 from ..schemas.credentials import (
     CredentialBindingRequest,
@@ -292,12 +298,39 @@ def create_credentials_router(
         if record is None:
             raise HTTPException(status_code=404, detail="Credential not found")
         _require_manage(user, record)
-        status = "active" if record.secret_fields else "pending_setup"
+        try:
+            secret_fields = repo.get_secret_fields_for_test(
+                credential_id,
+                actor_user_id=user.id,
+                actor_is_admin=user.role == "admin",
+            )
+        except (
+            nymeria_secrets.SecretsKeyMissing,
+            nymeria_secrets.SecretsKeyInvalid,
+            CredentialSecretUnavailable,
+            CredentialAccessDenied,
+        ) as exc:
+            raise _secret_error(exc) from exc
+        result = await test_credential_fields(
+            provider=record.provider,
+            kind=record.kind,
+            metadata=record.metadata,
+            secret_fields=secret_fields,
+            settings=getattr(get_agent_fn(), "settings", None),
+        )
+        status = "active" if result.ok else "invalid"
         repo.mark_tested(
             credential_id,
             status=status,
             actor_user_id=user.id,
-            details={"status": status, "generic_test": True},
+            details={
+                "status": status,
+                "ok": result.ok,
+                "verified": result.verified,
+                "code": result.code,
+                "message": result.message,
+                **(result.metadata or {}),
+            },
         )
         updated = repo.get_credential(credential_id)
         return credential_to_response(updated)

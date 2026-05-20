@@ -797,6 +797,61 @@ class CredentialVaultRepo:
             conn.commit()
             return plaintext
 
+    def get_secret_fields_for_test(
+        self,
+        credential_id: str,
+        *,
+        actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
+    ) -> dict[str, str]:
+        """Return all secret fields for a credential owner/admin test probe.
+
+        Credential tests validate the credential itself, not a runtime target,
+        so this performs owner/admin checks without applying allowed_targets.
+        """
+        with self._lock, self._connect() as conn:
+            record = self._record_locked(conn, credential_id)
+            if record is None:
+                raise CredentialNotFound(credential_id)
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
+            if record.status == "disabled":
+                raise CredentialAccessDenied(f"Credential {credential_id} is disabled")
+            rows = conn.execute(
+                """
+                SELECT field_name, ciphertext FROM credential_secret_fields
+                WHERE credential_id = ?
+                """,
+                (credential_id,),
+            ).fetchall()
+            out: dict[str, str] = {}
+            for row in rows:
+                try:
+                    out[str(row["field_name"])] = nymeria_secrets.decrypt(row["ciphertext"])
+                except (
+                    nymeria_secrets.SecretsKeyMissing,
+                    nymeria_secrets.SecretsKeyInvalid,
+                    InvalidToken,
+                ) as exc:
+                    self._audit_locked(
+                        conn,
+                        credential_id=credential_id,
+                        actor_user_id=actor_user_id,
+                        event_type="decrypt_failed",
+                        target_type="credential_test",
+                        target_id=credential_id,
+                        details={
+                            "field_name": row["field_name"],
+                            "error": exc.__class__.__name__,
+                        },
+                    )
+                    conn.commit()
+                    raise CredentialSecretUnavailable(str(exc)) from exc
+            return out
+
     def resolve_references(
         self,
         value: str,
