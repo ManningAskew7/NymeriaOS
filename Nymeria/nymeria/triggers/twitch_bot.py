@@ -337,7 +337,7 @@ class NymeriaTwitchBot(commands.Bot):
 
         # Subscribe to chat messages for the target channel via EventSub WebSocket
         if self._broadcaster_id:
-            subscription = twitchio.ChatMessageSubscription(
+            subscription = twitchio.eventsub.ChatMessageSubscription(
                 broadcaster_user_id=self._broadcaster_id,
                 user_id=self._bot_user_id,
             )

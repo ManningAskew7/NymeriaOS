@@ -89,7 +89,7 @@ class TeamsSource(BaseTriggerSource):
         },
     }
 
-    def check(self, config: dict, state: dict) -> List[dict]:
+    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
         from nymeria.tools.outlook_email import get_access_token, GRAPH_BASE
         import httpx
 
@@ -102,7 +102,7 @@ class TeamsSource(BaseTriggerSource):
         keyword_filter = config.get("keyword_filter")
         exclude_bots = config.get("exclude_bots", True)
 
-        token = get_access_token(account_id)
+        token = get_access_token(user_id, account_id)
         if not token:
             logger.debug("teams source: no authenticated account, skipping")
             return []

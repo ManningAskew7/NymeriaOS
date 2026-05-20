@@ -500,7 +500,7 @@ class TriggerManager:
                     continue
 
                 try:
-                    events = source.check(trigger.source_config, trigger.state)
+                    events = source.check(trigger.source_config, trigger.state, user_id)
                     # Reset health on success
                     if trigger.consecutive_errors > 0:
                         trigger.consecutive_errors = 0

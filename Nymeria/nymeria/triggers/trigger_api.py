@@ -5,7 +5,7 @@ Mounted as a sub-router on the main FastAPI app at ``/triggers``.
 
 import inspect
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 class TriggerConditionRequest(BaseModel):
     field: str
-    operator: str = "contains"
+    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = "contains"
     value: str = ""
     case_sensitive: bool = False
 
@@ -43,7 +43,7 @@ class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     source_type: str = Field(..., min_length=1)
     source_config: dict = Field(default_factory=dict)
-    action_type: str = Field(...)
+    action_type: Literal["agent_prompt", "notify", "create_todo"] = Field(...)
     action_config: dict = Field(default_factory=dict)
     conditions: List[TriggerConditionRequest] = Field(default_factory=list)
     cooldown_seconds: int = Field(default=0, ge=0)
@@ -55,7 +55,7 @@ class TriggerUpdateRequest(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
     source_config: Optional[dict] = None
-    action_type: Optional[str] = None
+    action_type: Optional[Literal["agent_prompt", "notify", "create_todo"]] = None
     action_config: Optional[dict] = None
     conditions: Optional[List[TriggerConditionRequest]] = None
     cooldown_seconds: Optional[int] = None

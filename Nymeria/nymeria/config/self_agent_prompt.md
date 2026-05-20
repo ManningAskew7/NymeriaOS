@@ -208,7 +208,7 @@ class MySource(BaseTriggerSource):
         "param": {"type": "string", "description": "What it does", "required": True},
     }
 
-    def check(self, config: dict, state: dict) -> List[dict]:
+    def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
         # Lightweight check -- NO LLM calls!
         # Use state dict to persist cursors/timestamps between checks.
         # Return list of event dicts (empty = no events).
