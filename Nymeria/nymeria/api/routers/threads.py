@@ -23,6 +23,7 @@ from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..schemas.threads import (
     ThreadBranchRequest,
     ThreadBranchResponse,
+    ThreadClaimRequest,
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
@@ -843,16 +844,18 @@ def create_threads_router(
     @router.post("/threads/{thread_id}/claim")
     async def claim_thread_endpoint(
         thread_id: str,
+        request: ThreadClaimRequest | None = None,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
         Eagerly claim ownership of a thread for the calling user.
 
-        Used by the desktop frontend after locally generating a UUID for a
-        new thread, so the thread_owners row exists before any chat-app
-        binding (Telegram/Discord) routes a message into it. Without this,
-        the first non-admin caller to hit /chat for the UUID would TOFU-claim
-        and silently transfer ownership.
+        Used by first-party clients after locally generating a UUID for a
+        new personal thread, so the thread_owners row exists before any
+        chat-app binding (Telegram/Discord) routes a message into it. Without
+        this, the first non-admin caller to hit /chat for the UUID would
+        TOFU-claim and silently transfer ownership. Clients may also include
+        initial metadata such as ``platform="cli"`` for non-desktop surfaces.
         """
         if _is_shared_channel_thread(thread_id):
             raise HTTPException(
@@ -863,6 +866,25 @@ def create_threads_router(
         owner = agent.accounts_repo.claim_thread(thread_id, user.id)
         if owner != user.id and user.role != "admin":
             raise HTTPException(status_code=404, detail="Not found")
+        metadata: dict[str, Any] | None = None
+        if request is not None and owner == user.id:
+            fields: dict[str, Any] = {}
+            title = request.title.strip() if request.title is not None else None
+            platform = request.platform.strip() if request.platform is not None else None
+            if title:
+                fields["title"] = title
+                fields["title_source"] = "user"
+            if platform:
+                fields["platform"] = platform
+            if fields:
+                meta = agent.thread_metadata_manager.upsert_thread(
+                    user.id,
+                    thread_id,
+                    **fields,
+                )
+                metadata = meta.model_dump(mode="json")
+        if metadata is not None:
+            return {"thread_id": thread_id, "owner": owner, **metadata}
         return {"thread_id": thread_id, "owner": owner}
 
     @router.delete("/threads/{thread_id}")

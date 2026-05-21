@@ -108,9 +108,31 @@ class FakeAPIClient:
         )
         return self.context
 
-    async def claim_thread(self, thread_id: str, user_id: str) -> dict[str, Any]:
-        self.calls.append(("claim_thread", {"thread_id": thread_id, "user_id": user_id}))
-        return {"thread_id": thread_id, "owner": user_id}
+    async def claim_thread(
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        title: str | None = None,
+        platform: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "claim_thread",
+                {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "title": title,
+                    "platform": platform,
+                },
+            )
+        )
+        return {
+            "thread_id": thread_id,
+            "owner": user_id,
+            "title": title or "New Chat",
+            "platform": platform or "desktop",
+        }
 
     async def update_thread_metadata(
         self,
@@ -297,6 +319,7 @@ def test_api_transport_thread_operations_delegate_to_api_client() -> None:
     assert threads == api.threads
     assert context == api.context
     assert created["title"] == "Draft"
+    assert created["platform"] == "cli"
     assert updated == {"thread_id": "thread-a", "title": "Renamed", "pinned": True}
     assert deleted == {"ok": True, "thread_id": "thread-a"}
     assert [name for name, _ in api.calls] == [
@@ -305,7 +328,6 @@ def test_api_transport_thread_operations_delegate_to_api_client() -> None:
         "list_threads",
         "get_context_stats",
         "claim_thread",
-        "update_thread_metadata",
         "update_thread_metadata",
         "delete_thread",
     ]

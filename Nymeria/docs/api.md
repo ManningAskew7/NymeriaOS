@@ -1779,15 +1779,33 @@ POST /threads/{thread_id}/claim
 Authorization: Bearer <token>
 ```
 
-Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, so the backend has an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
+Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, and the CLI calls it for CLI-generated startup threads and `/thread new`. This gives the backend an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
 
-Idempotent  -  safe to call multiple times.
+Idempotent  -  safe to call multiple times. The request body is optional. First-party clients may seed metadata:
+
+```json
+{
+  "title": "CLI Draft",
+  "platform": "cli"
+}
+```
 
 **Response (200):**
 ```json
 {
   "thread_id": "abc123",
   "owner": "default"
+}
+```
+
+When metadata is supplied, the response includes the stored metadata fields:
+
+```json
+{
+  "thread_id": "abc123",
+  "owner": "default",
+  "title": "CLI Draft",
+  "platform": "cli"
 }
 ```
 

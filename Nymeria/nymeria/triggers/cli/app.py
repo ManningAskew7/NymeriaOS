@@ -1300,6 +1300,7 @@ class CLIApp:
         runtime_config: CLIRuntimeConfig | None = None,
     ) -> None:
         self.runtime_config = runtime_config or CLIRuntimeConfig(user_id=user_id)
+        self._startup_thread_id_was_provided = thread_id is not None
         self.state = CLIState(
             agent,
             thread_id=thread_id,
@@ -1428,6 +1429,8 @@ class CLIApp:
                     if resolved is None:
                         return False
                     self.state.switch_thread(resolved["thread_id"])
+                else:
+                    await self._ensure_new_cli_thread_metadata()
                 events = client.stream_chat(
                     message.strip(),
                     self.state.thread_id,
@@ -1647,6 +1650,7 @@ class CLIApp:
 
         ref = str(self.runtime_config.startup_thread_ref or "").strip()
         if not ref:
+            await self._ensure_new_cli_thread_metadata()
             return False
 
         resolved = await self._resolve_startup_thread_ref(ref)
@@ -1656,6 +1660,24 @@ class CLIApp:
         self._repl_thread_label = resolved["title"]
         self._startup_history_thread_id = resolved["thread_id"]
         return False
+
+    async def _ensure_new_cli_thread_metadata(self) -> None:
+        """Persist metadata for the CLI-generated startup thread."""
+
+        if self._startup_thread_id_was_provided:
+            return
+        if self._client is None or is_disconnected_client(self._client):
+            return
+        create_thread = getattr(self._client, "create_thread", None)
+        if not callable(create_thread):
+            return
+        try:
+            await create_thread(
+                self.state.user_id,
+                thread_id=self.state.thread_id,
+            )
+        except Exception:
+            return
 
     async def _render_startup_thread_list_async(
         self,

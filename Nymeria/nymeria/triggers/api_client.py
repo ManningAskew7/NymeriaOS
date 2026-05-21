@@ -321,9 +321,21 @@ class NymeriaAPIClient:
         data = await self._get("/threads", act_as=user_id)
         return data.get("threads", [])
 
-    async def claim_thread(self, thread_id: str, user_id: str) -> dict:
-        """Eagerly claim a new user-owned thread."""
-        return await self._post(f"/threads/{thread_id}/claim", act_as=user_id)
+    async def claim_thread(
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        title: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> dict:
+        """Eagerly claim a new user-owned thread, optionally with metadata."""
+        body = _clean_params(title=title, platform=platform) or None
+        return await self._post(
+            f"/threads/{thread_id}/claim",
+            json=body,
+            act_as=user_id,
+        )
 
     async def update_thread_metadata(
         self,

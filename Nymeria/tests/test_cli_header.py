@@ -664,3 +664,39 @@ def test_cli_app_refresh_hooks_mark_and_render_header(monkeypatch) -> None:
     assert len(calls) == 7
     assert calls[0].startswith("thread-1:alice")
     assert any(call.startswith("thread-2:bob") for call in calls)
+
+
+def test_cli_app_startup_seeds_generated_thread_metadata() -> None:
+    class StartupThreadClient:
+        connection_label = "api http://api.test"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create_thread(
+            self,
+            user_id: str = "default",
+            *,
+            thread_id: str | None = None,
+            title: str | None = None,
+        ) -> dict[str, Any]:
+            self.calls.append(
+                {"user_id": user_id, "thread_id": thread_id, "title": title}
+            )
+            return {
+                "thread_id": thread_id,
+                "title": title or "New Chat",
+                "platform": "cli",
+            }
+
+    app = CLIApp(agent=None, user_id="alice")
+    client = StartupThreadClient()
+    app._client = client
+    generated_thread_id = app.state.thread_id
+
+    handled = run(app._handle_startup_thread_intents_async(SimpleNamespace()))
+
+    assert handled is False
+    assert client.calls == [
+        {"user_id": "alice", "thread_id": generated_thread_id, "title": None}
+    ]

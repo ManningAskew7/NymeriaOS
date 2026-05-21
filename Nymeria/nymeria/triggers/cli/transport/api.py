@@ -250,19 +250,20 @@ class APIAgentClient:
     ) -> Mapping[str, Any]:
         selected_user_id = self._selected_user_id(user_id)
         selected_thread_id = thread_id or str(uuid.uuid4())[:8]
-        claimed = await self.api.claim_thread(selected_thread_id, selected_user_id)
-        if title is None:
-            return {
-                "thread_id": selected_thread_id,
-                "title": "New Chat",
-                "title_source": "default",
-                **copy.deepcopy(dict(claimed)),
-            }
-        return await self.api.update_thread_metadata(
+        claimed = await self.api.claim_thread(
             selected_thread_id,
             selected_user_id,
             title=title,
+            platform="cli",
         )
+        payload: dict[str, Any] = {
+            "thread_id": selected_thread_id,
+            "title": title or "New Chat",
+            "title_source": "user" if title else "default",
+            "platform": "cli",
+        }
+        payload.update(copy.deepcopy(dict(claimed)))
+        return payload
 
     async def update_thread_metadata(
         self,
