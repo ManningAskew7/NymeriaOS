@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, Optional
 
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
+from nymeria.triggers.discord_cogs.chat import ChatCog
 from nymeria.triggers.discord_cogs.config import ConfigCog
 from nymeria.triggers.discord_cogs.info import InfoCog
 from nymeria.triggers.discord_cogs.memory import MemoryCog
@@ -13,13 +14,55 @@ from nymeria.triggers.discord_cogs.todos import TodosCog
 
 
 class _FakeAPI:
-    def __init__(self, *, role: str = "user") -> None:
+    def __init__(
+        self,
+        *,
+        role: str = "user",
+        events: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.role = role
+        self.events = events or [{"type": "done"}]
+        self.chat_calls: list[dict[str, Any]] = []
         self.command_calls: list[dict[str, Any]] = []
         self.list_command_calls: list[dict[str, Any]] = []
 
     async def get_me(self, *, act_as: Optional[str] = None) -> dict[str, Any]:
         return {"id": act_as, "role": self.role}
+
+    async def chat_stream(
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        **kwargs: Any,
+    ):
+        self.chat_calls.append(
+            {
+                "message": message,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                **kwargs,
+            }
+        )
+        for event in self.events:
+            yield event
+
+    async def chat(
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.chat_calls.append(
+            {
+                "message": message,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                **kwargs,
+            }
+        )
+        return {"response": "", "tool_call_count": 0}
 
     async def execute_command(
         self,
@@ -123,10 +166,37 @@ class _FakeFollowup:
         embed: Any = None,
         ephemeral: bool = False,
         **_: Any,
-    ) -> None:
+    ) -> "_FakeSentMessage":
         self._interaction.messages.append(
             {"content": content, "embed": embed, "ephemeral": ephemeral}
         )
+        return _FakeSentMessage(self._interaction.messages[-1])
+
+
+class _FakeSentMessage:
+    def __init__(self, record: dict[str, Any]) -> None:
+        self.record = record
+
+    async def edit(self, *, content: Optional[str] = None, embed: Any = None) -> None:
+        if content is not None:
+            self.record["content"] = content
+        if embed is not None:
+            self.record["embed"] = embed
+
+
+class _FakeChannel:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.messages = messages
+
+    async def send(
+        self,
+        content: Optional[str] = None,
+        *,
+        embed: Any = None,
+        **_: Any,
+    ) -> _FakeSentMessage:
+        self.messages.append({"content": content, "embed": embed, "ephemeral": False})
+        return _FakeSentMessage(self.messages[-1])
 
 
 class _FakeUser:
@@ -141,6 +211,7 @@ class _FakeInteraction:
         self.response = _FakeResponse(self)
         self.followup = _FakeFollowup(self)
         self.messages: list[dict[str, Any]] = []
+        self.channel = _FakeChannel(self.messages)
         self.deferred_ephemeral: Optional[bool] = None
 
 
@@ -184,6 +255,39 @@ def test_memory_save_uses_backend_command_endpoint():
     ]
     assert interaction.messages[0]["content"] == (
         "backend result for /memory save favorite_color deep blue"
+    )
+
+
+def test_compact_uses_chat_stream_endpoint():
+    api = _FakeAPI(
+        events=[
+            {"type": "compacting", "message": "Compacting thread context..."},
+            {"type": "response", "content": "Compacted."},
+            {"type": "done"},
+        ]
+    )
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = ChatCog(bot)
+
+    async def run() -> None:
+        await ChatCog.cmd_compact.callback(cog, interaction)
+
+    asyncio.run(run())
+
+    assert api.command_calls == []
+    assert api.chat_calls == [
+        {
+            "message": "/compact",
+            "thread_id": "discord_123_456",
+            "user_id": "user-1",
+            "attachments": None,
+            "force_unsupported_attachments": False,
+        }
+    ]
+    assert any(
+        msg["content"] == "Compacting thread context..."
+        for msg in interaction.messages
     )
 
 

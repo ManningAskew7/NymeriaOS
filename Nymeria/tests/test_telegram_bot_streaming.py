@@ -502,6 +502,30 @@ def test_telegram_thread_command_uses_backend_command_service():
     assert [msg.text for msg in fake_bot.messages] == ["backend result for /thread"]
 
 
+def test_telegram_compact_uses_chat_stream_endpoint():
+    api = _CaptureAPI(
+        user_map={"42": "user-1"},
+        events=[
+            {"type": "compacting", "message": "Compacting thread context..."},
+            {"type": "response", "content": "Compacted."},
+            {"type": "done"},
+        ],
+    )
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    update = _fake_update(telegram_user_id=42)
+    fake_bot = _FakeBot()
+    context = SimpleNamespace(bot=fake_bot, args=[])
+
+    asyncio.run(bot._cmd_compact(update, context))
+
+    assert api.command_calls == []
+    assert api.chat_calls[0]["message"] == "/compact"
+    assert api.chat_calls[0]["thread_id"] == "telegram_123"
+    assert api.chat_calls[0]["user_id"] == "user-1"
+    texts = [msg.text for msg in fake_bot.messages]
+    assert any("Compacting thread context" in text for text in texts)
+
+
 def test_telegram_global_tool_command_uses_backend_command_service():
     api = _CaptureAPI(user_map={"42": "user-1"})
     bot = NymeriaTelegramBot(api=api, bot_token="test-token")

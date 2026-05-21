@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,13 @@ class FakeChatAgent:
         self._last_chat_tool_calls = 2
         self.chat_calls: list[dict[str, Any]] = []
         self.astream_calls: list[dict[str, Any]] = []
+        self.compact_calls: list[dict[str, Any]] = []
+        self.compact_result: dict[str, Any] = {
+            "success": True,
+            "messages_removed": 3,
+            "summary": "summary",
+        }
+        self.compact_should_start = True
 
     def sync_agent_tools(self) -> None:
         self.synced_tools += 1
@@ -41,6 +49,14 @@ class FakeChatAgent:
         self.astream_calls.append({"message": message, **kwargs})
         yield {"type": "thinking", "content": "working"}
         yield {"type": "response", "content": "stream response"}
+
+    async def compact_now(self, thread_id: str, user_id: str, *, on_started=None):
+        self.compact_calls.append({"thread_id": thread_id, "user_id": user_id})
+        if self.compact_should_start and on_started is not None:
+            result = on_started()
+            if inspect.isawaitable(result):
+                await result
+        return self.compact_result
 
     def get_context_stats(self, thread_id: str) -> dict[str, int | str]:
         return {"thread_id": thread_id, "estimated_tokens": 123}
@@ -192,3 +208,55 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
         ("alice", "thread-stream", "stream this")
     ]
     assert agent.accounts_repo.get_thread_owner("thread-stream") == "alice"
+
+
+def test_chat_stream_compact_emits_status_only_after_compaction_starts(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent.compact_should_start = False
+    agent.compact_result = {
+        "success": False,
+        "reason": "Not enough messages (1, need 4)",
+    }
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/compact", "thread_id": "thread-compact"},
+    ) as response:
+        skipped_body = "".join(response.iter_text())
+
+    skipped_events = _sse_events(skipped_body)
+    assert response.status_code == 200
+    assert not any(event["type"] == "compacting" for event in skipped_events)
+    assert any(
+        event["type"] == "response" and "Could not compact" in event["content"]
+        for event in skipped_events
+    )
+
+    agent.compact_should_start = True
+    agent.compact_result = {
+        "success": True,
+        "messages_removed": 5,
+        "summary": "prior state",
+    }
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/compact", "thread_id": "thread-compact"},
+    ) as response:
+        compacted_body = "".join(response.iter_text())
+
+    compacted_events = _sse_events(compacted_body)
+    assert response.status_code == 200
+    assert compacted_events[0] == {
+        "type": "compacting",
+        "message": "Compacting thread context...",
+        "thread_id": "thread-compact",
+    }
+    assert compacted_events[1]["type"] == "compacted"
