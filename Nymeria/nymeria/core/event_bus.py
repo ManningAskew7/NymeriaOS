@@ -195,12 +195,21 @@ class EventBus:
 _event_bus: Optional[EventBus] = None
 
 
-def create_event_bus(settings: "Settings") -> EventBus:
+def create_event_bus(
+    settings: "Settings",
+    *,
+    enable_subscriber: bool = True,
+) -> EventBus:
     """
     Create an event bus based on settings.
 
     Args:
         settings: Application settings
+        enable_subscriber: Only meaningful when the Redis bus is selected.
+            Pass False from publisher-only processes (e.g. the Docker
+            worker) so they do not spin up a no-op pub/sub subscriber
+            thread. Defaults to True for the API and other processes
+            that consume cross-process events.
 
     Returns:
         RedisEventBus if Redis is enabled and configured, otherwise EventBus
@@ -208,10 +217,14 @@ def create_event_bus(settings: "Settings") -> EventBus:
     if settings.redis_enabled and settings.redis_url:
         from .event_bus_redis import RedisEventBus
         logger.info(
-            "Creating Redis event bus with URL: %s",
+            "Creating Redis event bus with URL: %s (subscriber=%s)",
             redact_url_credentials(settings.redis_url),
+            enable_subscriber,
         )
-        return RedisEventBus(settings.redis_url)
+        return RedisEventBus(
+            settings.redis_url,
+            enable_subscriber=enable_subscriber,
+        )
     else:
         logger.info("Creating in-memory event bus")
         return EventBus()
