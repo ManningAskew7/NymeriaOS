@@ -70,6 +70,33 @@ def filter_commands(
     return matches
 
 
+def slash_usage_hint(text: str, registry: "CommandRegistry | None") -> str:
+    """Return the inline usage suffix for an exact slash-command path."""
+
+    if registry is None:
+        return ""
+    raw_text = str(text or "")
+    if not raw_text.startswith("/") or "\n" in raw_text:
+        return ""
+
+    stripped = raw_text.rstrip(" \t")
+    if not stripped:
+        return ""
+
+    trailing_whitespace = len(raw_text) - len(stripped)
+    lookup = stripped.casefold()
+    for entry in registry.get_palette_entries(include_hidden=False):
+        command_text = (entry.text or "").strip()
+        if command_text.casefold() != lookup:
+            continue
+        usage = (entry.usage or entry.text or "").strip()
+        suffix = _usage_suffix(command_text, usage)
+        if trailing_whitespace:
+            suffix = suffix.lstrip(" \t")
+        return suffix
+    return ""
+
+
 def slash_panel_height(
     text: str,
     registry: "CommandRegistry | None",
@@ -181,6 +208,20 @@ def _visible_window(
     return matches[start : start + rows], start
 
 
+def _usage_suffix(command_text: str, usage: str) -> str:
+    if not usage or not command_text:
+        return ""
+    if usage.casefold() == command_text.casefold():
+        return ""
+    prefix = usage[: len(command_text)]
+    if prefix.casefold() != command_text.casefold():
+        return ""
+    suffix = usage[len(command_text) :]
+    if not suffix.strip():
+        return ""
+    return suffix
+
+
 def _fit_cell(text: str, width: int) -> str:
     width = max(1, width)
     cells = cell_len(text)
@@ -203,5 +244,6 @@ __all__ = [
     "filter_commands",
     "slash_panel_fragments",
     "slash_panel_height",
+    "slash_usage_hint",
     "slash_panel_visible",
 ]

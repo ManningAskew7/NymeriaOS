@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from pathlib import Path
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -19,9 +19,13 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.widgets import TextArea
+from rich.cells import cell_len
 
 from ..attachment_helpers import build_attachment
+from .rendering.markdown import truncate_cell_width
+from .rendering.slash_panel import slash_usage_hint
 from .theme import CLITheme, DEFAULT_CLI_THEME
 
 if TYPE_CHECKING:
@@ -161,6 +165,34 @@ class ComposerCompleter(Completer):
             )
 
 
+class SlashUsageHintProcessor(Processor):
+    """Append a muted usage suffix for exact slash-command paths."""
+
+    def __init__(self, registry: "CommandRegistry") -> None:
+        self.registry = registry
+
+    def apply_transformation(self, ti) -> Transformation:
+        if ti.document.line_count != 1 or ti.lineno != 0:
+            return Transformation(ti.fragments)
+        if not ti.document.is_cursor_at_the_end:
+            return Transformation(ti.fragments)
+
+        hint = slash_usage_hint(ti.document.text_before_cursor, self.registry)
+        if not hint:
+            return Transformation(ti.fragments)
+
+        fragments = _without_auto_suggestion(ti.fragments)
+        used_width = sum(cell_len(text) for _style, text in fragments)
+        available_width = max(0, int(ti.width or 0) - used_width)
+        if available_width <= 0:
+            return Transformation(fragments)
+
+        fitted_hint = truncate_cell_width(hint, available_width)
+        if not fitted_hint.strip():
+            return Transformation(fragments)
+        return Transformation(fragments + [("class:slash-hint", fitted_hint)])
+
+
 class ComposerController:
     """Bottom composer widget plus input behavior for the full-screen shell."""
 
@@ -180,6 +212,7 @@ class ComposerController:
         on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
         multiline: bool = False,
         show_queued_prompt: bool = True,
+        show_slash_usage_hints: bool = False,
         max_height: int = 6,
     ) -> None:
         self.cwd = cwd or Path.cwd()
@@ -199,6 +232,9 @@ class ComposerController:
             if multiline
             else Dimension(min=1, max=max(1, max_height), preferred=1)
         )
+        input_processors: list[Processor] = []
+        if show_slash_usage_hints and command_registry is not None:
+            input_processors.append(SlashUsageHintProcessor(command_registry))
         self.text_area = TextArea(
             height=input_height,
             dont_extend_height=multiline,
@@ -211,6 +247,7 @@ class ComposerController:
             completer=ComposerCompleter(command_registry, cwd=self.cwd),
             complete_while_typing=False,
             accept_handler=self.handle_enter,
+            input_processors=input_processors,
             name="nymeria-composer",
         )
 
@@ -452,6 +489,7 @@ def create_rich_repl_composer(
         on_slash_panel_accept=on_slash_panel_accept,
         multiline=True,
         show_queued_prompt=False,
+        show_slash_usage_hints=True,
         max_height=6,
     )
 
@@ -554,6 +592,14 @@ def _add_command_metadata(
         metadata[candidate] = description
 
 
+def _without_auto_suggestion(fragments):
+    return [
+        (style, text)
+        for style, text in fragments
+        if "auto-suggestion" not in str(style)
+    ]
+
+
 def _token_before_cursor(text: str) -> str:
     if not text:
         return ""
@@ -639,6 +685,7 @@ __all__ = [
     "ComposerController",
     "ComposerPromptState",
     "ComposerSubmission",
+    "SlashUsageHintProcessor",
     "create_full_screen_composer",
     "create_rich_repl_composer",
     "create_session",
