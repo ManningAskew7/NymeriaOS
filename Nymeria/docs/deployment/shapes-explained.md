@@ -215,8 +215,9 @@ Five function calls. No network. No Redis. No serialization.
    `RedisEventBus.publish`
    ([`event_bus_redis.py`](../../nymeria/core/event_bus_redis.py))
    using stable task IDs (`todo.id`).
-4. `RedisEventBus.publish` first delivers locally (worker has no SSE
-   subscribers, so this is a no-op), then publishes to the Redis
+4. The worker's publisher-only `RedisEventBus.publish` skips local SSE
+   dispatch because the worker has no local SSE subscribers, then
+   publishes to the Redis
    `nymeria:autonomous_events` channel.
 5. The API container's `RedisEventBus` subscriber thread receives the
    message, drops self-echoes, and dispatches to local SSE subscribers.

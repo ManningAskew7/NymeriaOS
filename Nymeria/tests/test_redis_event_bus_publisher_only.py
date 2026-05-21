@@ -9,6 +9,7 @@ every ~5 seconds. ``enable_subscriber=False`` suppresses the subscriber.
 
 from __future__ import annotations
 
+import logging
 import sys
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -92,8 +93,11 @@ def test_subscriber_client_has_no_socket_timeout(fake_redis_module):
     bus.close()
 
 
-def test_publisher_only_mode_can_still_publish(fake_redis_module):
-    """publish() must still fan out to Redis even without a local subscriber."""
+def test_publisher_only_mode_can_still_publish_without_local_drop_warning(
+    fake_redis_module,
+    caplog,
+):
+    """publish() still fans out to Redis without local no-subscriber noise."""
     from nymeria.core.event_bus import AutonomousEvent
     from nymeria.core.event_bus_redis import RedisEventBus
 
@@ -111,11 +115,13 @@ def test_publisher_only_mode_can_still_publish(fake_redis_module):
         data={"prompt": "hi"},
         timestamp=datetime.now(timezone.utc),
     )
-    bus.publish(event)
+    with caplog.at_level(logging.WARNING, logger="nymeria.core.event_bus"):
+        bus.publish(event)
 
     fake_client.publish.assert_called_once()
     channel, _payload = fake_client.publish.call_args.args
     assert channel == RedisEventBus.CHANNEL_NAME
+    assert "publish_drop_no_subscribers" not in caplog.text
     bus.close()
 
 
