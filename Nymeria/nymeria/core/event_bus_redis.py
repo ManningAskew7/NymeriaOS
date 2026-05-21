@@ -25,11 +25,13 @@ class RedisEventBus(EventBus):
     Uses Redis pub/sub for real-time cross-container communication.
     Falls back to in-memory behavior if Redis connection fails.
 
-    Resilience model: every ``publish()`` dispatches to local SSE subscribers
-    *before* fanning out to Redis, so even if the Redis subscriber thread is
-    momentarily dead the publishing process still delivers to its own clients.
-    Each published message carries a per-process ``_publisher_id`` so the
-    subscriber loop can drop its own echoes and avoid double-delivery.
+    Resilience model: subscriber-enabled buses dispatch each ``publish()`` to
+    local SSE subscribers *before* fanning out to Redis, so even if the Redis
+    subscriber thread is momentarily dead the publishing process still delivers
+    to its own clients. Publisher-only buses skip local dispatch because they
+    intentionally have no local SSE subscribers. Each published message carries
+    a per-process ``_publisher_id`` so the subscriber loop can drop its own
+    echoes and avoid double-delivery.
     """
 
     CHANNEL_NAME = "nymeria:autonomous_events"
@@ -305,17 +307,19 @@ class RedisEventBus(EventBus):
         """
         Publish an event.
 
-        Delivery is two-step and independent: we always dispatch to local
-        SSE subscribers first, then fan out to other processes via Redis
-        pub/sub. If Redis is unreachable or the subscriber loop is dead,
-        local clients still receive the event. The Redis subscriber loop
-        on *other* processes drops their own echoes via ``_publisher_id``,
-        so the publisher process won't double-deliver to itself.
+        Delivery is two-step and independent for subscriber-enabled buses:
+        dispatch to local SSE subscribers first, then fan out to other
+        processes via Redis pub/sub. If Redis is unreachable or the subscriber
+        loop is dead, local clients still receive the event. Publisher-only
+        buses skip local dispatch because they intentionally have no local SSE
+        subscribers. The Redis subscriber loop on *other* processes drops
+        their own echoes via ``_publisher_id``, so the publisher process won't
+        double-deliver to itself.
         """
-        # Always deliver locally first. This is the only path that reaches
-        # SSE subscribers connected to *this* process and must not depend
-        # on Redis being healthy.
-        super().publish(event)
+        if self._enable_subscriber:
+            # This is the only path that reaches SSE subscribers connected to
+            # this process and must not depend on Redis being healthy.
+            super().publish(event)
 
         if not self._connected or self._redis_client is None:
             return
@@ -351,10 +355,16 @@ class RedisEventBus(EventBus):
                 )
 
         except Exception as e:
+            local_delivery_status = (
+                "local delivery already done"
+                if self._enable_subscriber
+                else "publisher-only local delivery skipped"
+            )
             logger.error(
                 "[REDIS EVENT BUS] cross-process publish failed: %s "
-                "(local delivery already done)",
+                "(%s)",
                 e,
+                local_delivery_status,
             )
 
     def close(self) -> None:
