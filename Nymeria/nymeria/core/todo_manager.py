@@ -69,7 +69,7 @@ class TodoItem(BaseModel):
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
-    recurrence: Optional[str] = Field(default=None, description="Recurrence interval as a duration string (e.g. '5m', '2h', '1d', '1w'). Legacy preset names (hourly/daily/weekly/monthly, 5min/10min/15min/30min) are still accepted on input and resolved by todo_constants.")
+    recurrence: Optional[str] = Field(default=None, description="Recurrence interval as a duration string (e.g. '5m', '2h', '1d', '1w', '1mo'). Calendar months (Nmo) use calendar arithmetic; everything else is a fixed duration. Legacy preset names (hourly/daily/weekly/monthly, 5min/10min/15min/30min) are still accepted on input and resolved by todo_constants.")
 
     # /goal integration: when set, this TODO is part of a supervised goal and
     # cannot be transitioned to `done` by anyone but the goal's supervisor

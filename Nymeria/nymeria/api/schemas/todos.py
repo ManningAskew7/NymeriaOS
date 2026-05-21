@@ -36,8 +36,10 @@ class TodoCreateRequest(BaseModel):
     recurrence: Optional[str] = Field(
         default=None,
         description=(
-            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw; "
-            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d'. "
+            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw, Nmo; "
+            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d', '1mo'. "
+            "Calendar months (Nmo) advance by calendar arithmetic so a TODO "
+            "anchored on the 31st clamps to the last day of shorter months. "
             "Legacy names also accepted: hourly, daily, weekly, monthly. "
             "Stored in canonical form."
         ),
@@ -64,8 +66,10 @@ class TodoUpdateRequest(BaseModel):
     recurrence: Optional[str] = Field(
         default=None,
         description=(
-            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw; "
-            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d'. "
+            "Recurrence interval as a duration string (Nm, Nh, Nd, Nw, Nmo; "
+            "or Ns with a 60s minimum). Examples: '5m', '2h', '1d', '1mo'. "
+            "Calendar months (Nmo) advance by calendar arithmetic so a TODO "
+            "anchored on the 31st clamps to the last day of shorter months. "
             "Legacy names also accepted: hourly, daily, weekly, monthly. "
             "Stored in canonical form."
         ),

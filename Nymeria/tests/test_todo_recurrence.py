@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from dateutil.relativedelta import relativedelta
 
 from nymeria.core.todo_constants import (
     MIN_RECURRENCE_SECONDS,
+    calculate_next_recurrence_time,
     format_recurrence_for_display,
     parse_recurrence_interval,
     validate_recurrence,
@@ -34,7 +36,6 @@ def test_parse_recurrence_canonical_durations(raw: str, expected: timedelta):
         ("hourly", timedelta(hours=1)),
         ("daily", timedelta(days=1)),
         ("weekly", timedelta(weeks=1)),
-        ("monthly", timedelta(days=30)),
         ("5min", timedelta(minutes=5)),
         ("10min", timedelta(minutes=10)),
         ("15min", timedelta(minutes=15)),
@@ -46,16 +47,34 @@ def test_parse_recurrence_legacy_aliases(raw: str, expected: timedelta):
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected_months"),
+    [
+        ("1mo", 1),
+        ("2mo", 2),
+        ("12mo", 12),
+        ("monthly", 1),
+    ],
+)
+def test_parse_recurrence_months_returns_relativedelta(raw: str, expected_months: int):
+    delta = parse_recurrence_interval(raw)
+    assert isinstance(delta, relativedelta)
+    assert delta == relativedelta(months=expected_months)
+
+
+@pytest.mark.parametrize(
     ("raw", "canonical"),
     [
         ("hourly", "1h"),
         ("daily", "1d"),
         ("weekly", "1w"),
-        ("monthly", "30d"),
+        ("monthly", "1mo"),
         ("5min", "5m"),
         ("30min", "30m"),
         ("2H", "2h"),
         ("  45m  ", "45m"),
+        ("1mo", "1mo"),
+        ("3mo", "3mo"),
+        ("  2MO ", "2mo"),
     ],
 )
 def test_validate_recurrence_returns_canonical_form(raw: str, canonical: str):
@@ -73,7 +92,7 @@ def test_validate_recurrence_rejects_below_minimum(raw: str):
 
 @pytest.mark.parametrize(
     "raw",
-    ["five minutes", "", " ", "5x", "1month", "h", "abc"],
+    ["five minutes", "", " ", "5x", "1month", "h", "abc", "0mo", "mo", "1.5mo"],
 )
 def test_validate_recurrence_rejects_garbage(raw: str):
     with pytest.raises(ValueError):
@@ -97,10 +116,12 @@ def test_validate_recurrence_rejects_none_via_empty_guard():
         ("daily", "Daily"),
         ("1w", "Weekly"),
         ("weekly", "Weekly"),
+        ("1mo", "Monthly"),
+        ("monthly", "Monthly"),
         ("45m", "Every 45m"),
         ("2h", "Every 2h"),
         ("30d", "Every 30d"),
-        ("monthly", "Every 30d"),
+        ("3mo", "Every 3mo"),
     ],
 )
 def test_format_recurrence_for_display(raw: str, label: str):
@@ -110,3 +131,65 @@ def test_format_recurrence_for_display(raw: str, label: str):
 def test_format_recurrence_for_display_unparseable_falls_back_to_raw():
     assert format_recurrence_for_display("garbage") == "garbage"
     assert format_recurrence_for_display(None) == ""
+
+
+# --- calculate_next_recurrence_time: month-aware behaviour ---
+
+
+def _utc(*args, **kwargs) -> datetime:
+    return datetime(*args, **kwargs, tzinfo=timezone.utc)
+
+
+def test_monthly_advances_one_calendar_month_not_thirty_days():
+    anchor = _utc(2026, 1, 15, 11, 0)
+    # baseline just after the anchor so we get the next slot, not a skip
+    now = _utc(2026, 1, 15, 11, 0, 1)
+    next_time = calculate_next_recurrence_time("1mo", anchor, now=now)
+    assert next_time == _utc(2026, 2, 15, 11, 0)
+
+
+def test_monthly_legacy_alias_uses_calendar_month():
+    anchor = _utc(2026, 1, 15, 11, 0)
+    now = _utc(2026, 1, 15, 11, 0, 1)
+    next_time = calculate_next_recurrence_time("monthly", anchor, now=now)
+    # Was: 2026-02-14 11:00 (30d drift). Now: 2026-02-15 11:00.
+    assert next_time == _utc(2026, 2, 15, 11, 0)
+
+
+def test_monthly_jan31_clamps_to_feb28_non_leap():
+    anchor = _utc(2026, 1, 31, 11, 0)
+    now = _utc(2026, 1, 31, 11, 0, 1)
+    next_time = calculate_next_recurrence_time("1mo", anchor, now=now)
+    assert next_time == _utc(2026, 2, 28, 11, 0)
+
+
+def test_monthly_jan31_clamps_to_feb29_in_leap_year():
+    anchor = _utc(2028, 1, 31, 11, 0)
+    now = _utc(2028, 1, 31, 11, 0, 1)
+    next_time = calculate_next_recurrence_time("1mo", anchor, now=now)
+    assert next_time == _utc(2028, 2, 29, 11, 0)
+
+
+def test_monthly_skips_missed_intervals_on_long_downtime():
+    # Anchor in January, but the system was down through April: should land
+    # on the next future slot (May 15), not on each missed month.
+    anchor = _utc(2026, 1, 15, 11, 0)
+    now = _utc(2026, 4, 20, 9, 0)
+    next_time = calculate_next_recurrence_time("1mo", anchor, now=now)
+    assert next_time == _utc(2026, 5, 15, 11, 0)
+
+
+def test_three_month_interval_uses_calendar_arithmetic():
+    anchor = _utc(2026, 1, 15, 11, 0)
+    now = _utc(2026, 1, 15, 11, 0, 1)
+    next_time = calculate_next_recurrence_time("3mo", anchor, now=now)
+    assert next_time == _utc(2026, 4, 15, 11, 0)
+
+
+def test_daily_skip_forward_uses_seconds_path_unchanged():
+    # Regression guard: daily/weekly/etc. should keep using the timedelta
+    # skip-forward path, not the relativedelta loop.
+    anchor = _utc(2026, 1, 15, 11, 0)
+    now = _utc(2026, 1, 20, 11, 0, 30)  # 5 days + 30s late
+    next_time = calculate_next_recurrence_time("1d", anchor, now=now)
+    assert next_time == _utc(2026, 1, 21, 11, 0)

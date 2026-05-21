@@ -4,8 +4,11 @@ This module provides a single source of truth for TODO status icons,
 recurrence parsing, and sorting orders used across the codebase.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Union
+
+from dateutil.relativedelta import relativedelta
 
 from .time_utils import parse_duration
 from .todo_manager import TodoStatus
@@ -36,16 +39,20 @@ LEGACY_RECURRENCE_ALIASES = {
     "hourly": "1h",
     "daily": "1d",
     "weekly": "1w",
-    "monthly": "30d",
+    "monthly": "1mo",
 }
 
 MIN_RECURRENCE_SECONDS = 60
 
 RECURRENCE_FORMAT_HINT = (
-    "Format: Nm, Nh, Nd, Nw (or Ns for seconds, min 60s). "
-    "Examples: 5m, 2h, 1d, 1w. "
+    "Format: Nm, Nh, Nd, Nw, Nmo (or Ns for seconds, min 60s). "
+    "Examples: 5m, 2h, 1d, 1w, 1mo. "
     "Legacy names also accepted: hourly, daily, weekly, monthly."
 )
+
+_MONTH_PATTERN = re.compile(r"^(\d+)mo$")
+
+RecurrenceDelta = Union[timedelta, relativedelta]
 
 
 def _canonicalize_recurrence(value: str) -> str:
@@ -54,16 +61,33 @@ def _canonicalize_recurrence(value: str) -> str:
     return LEGACY_RECURRENCE_ALIASES.get(cleaned, cleaned)
 
 
-def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta]:
-    """Parse a recurrence string to a timedelta.
+def _parse_month_interval(canonical: str) -> Optional[relativedelta]:
+    """Return a calendar-aware monthly delta for "Nmo" inputs, else None."""
+    match = _MONTH_PATTERN.match(canonical)
+    if not match:
+        return None
+    months = int(match.group(1))
+    if months <= 0:
+        return None
+    return relativedelta(months=months)
 
-    Accepts canonical durations ("5m", "2h", "1d", "1w", "30s") and legacy
-    preset names ("hourly", "daily", "weekly", "monthly", "5min" ... "30min").
+
+def parse_recurrence_interval(value: Optional[str]) -> Optional[RecurrenceDelta]:
+    """Parse a recurrence string to a calendar- or duration-based delta.
+
+    Accepts canonical durations ("5m", "2h", "1d", "1w", "30s"), calendar
+    months ("1mo", "3mo"), and legacy preset names ("hourly", "daily",
+    "weekly", "monthly", "5min" ... "30min"). Month intervals return a
+    ``dateutil.relativedelta`` so calendar arithmetic stays correct across
+    months of different lengths; everything else returns a ``timedelta``.
     Returns None when the input is empty or unparseable.
     """
     if not value:
         return None
     canonical = _canonicalize_recurrence(value)
+    month_delta = _parse_month_interval(canonical)
+    if month_delta is not None:
+        return month_delta
     seconds = parse_duration(canonical)
     if seconds is None or seconds <= 0:
         return None
@@ -73,15 +97,18 @@ def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta]:
 def validate_recurrence(value: str) -> str:
     """Validate and return the canonical duration string.
 
-    Raises ValueError for invalid format or intervals shorter than
-    MIN_RECURRENCE_SECONDS. Legacy preset names are resolved (e.g. "5min"
-    becomes "5m"); other inputs are returned in their normalized form
-    (lowercased, trimmed) without unit conversion ("300s" stays "300s").
-    Callers should store the returned value verbatim.
+    Raises ValueError for invalid format or sub-minute intervals. Legacy
+    preset names are resolved (e.g. "5min" becomes "5m", "monthly" becomes
+    "1mo"); other inputs are returned in their normalized form (lowercased,
+    trimmed) without unit conversion ("300s" stays "300s"). Callers should
+    store the returned value verbatim.
     """
     if not value or not value.strip():
         raise ValueError(f"recurrence is empty. {RECURRENCE_FORMAT_HINT}")
     canonical = _canonicalize_recurrence(value)
+    if _parse_month_interval(canonical) is not None:
+        # Month intervals are always above the 60s floor.
+        return canonical
     seconds = parse_duration(canonical)
     if seconds is None or seconds <= 0:
         raise ValueError(
@@ -98,9 +125,10 @@ def validate_recurrence(value: str) -> str:
 def format_recurrence_for_display(value: Optional[str]) -> str:
     """Return a human-friendly label for a recurrence string.
 
-    Returns "Hourly" / "Daily" / "Weekly" for the exact 1h / 1d / 1w slots
-    and "Every Nm" / "Every Nh" / etc. otherwise. Unparseable input falls
-    back to the raw value so legacy data never renders as an empty string.
+    Returns "Hourly" / "Daily" / "Weekly" / "Monthly" for the exact
+    1h / 1d / 1w / 1mo slots and "Every Nm" / "Every Nmo" / etc. otherwise.
+    Unparseable input falls back to the raw value so legacy data never
+    renders as an empty string.
     """
     if not value:
         return ""
@@ -111,6 +139,10 @@ def format_recurrence_for_display(value: Optional[str]) -> str:
         return "Daily"
     if canonical == "1w":
         return "Weekly"
+    if canonical == "1mo":
+        return "Monthly"
+    if _parse_month_interval(canonical) is not None:
+        return f"Every {canonical}"
     if parse_duration(canonical) is None:
         return value
     return f"Every {canonical}"
@@ -132,7 +164,10 @@ def calculate_next_recurrence_time(
 
     The anchor is the intended fire time, not the later completion time. If the
     system missed one or more intervals, this skips forward to the next future
-    slot while preserving the cadence.
+    slot while preserving the cadence. Month-based intervals use calendar
+    arithmetic via ``relativedelta``, so a TODO anchored on the 31st clamps to
+    the last day of shorter months (Feb 28/29) the same way Google Calendar
+    handles "monthly on the 31st".
     """
     delta = parse_recurrence_interval(recurrence)
     if delta is None:
@@ -142,9 +177,16 @@ def calculate_next_recurrence_time(
     baseline = _ensure_aware_utc(now) if now is not None else datetime.now(timezone.utc)
     next_time = anchor + delta
     if next_time <= baseline:
-        delta_seconds = delta.total_seconds()
-        if delta_seconds <= 0:
-            return None
-        missed_intervals = int((baseline - next_time).total_seconds() // delta_seconds) + 1
-        next_time = next_time + (delta * missed_intervals)
+        if isinstance(delta, timedelta):
+            delta_seconds = delta.total_seconds()
+            if delta_seconds <= 0:
+                return None
+            missed_intervals = int((baseline - next_time).total_seconds() // delta_seconds) + 1
+            next_time = next_time + (delta * missed_intervals)
+        else:
+            # relativedelta has no fixed length; step forward calendar by
+            # calendar. Bounded by missed-month count, so at most a few dozen
+            # iterations for realistic downtime.
+            while next_time <= baseline:
+                next_time = next_time + delta
     return next_time
