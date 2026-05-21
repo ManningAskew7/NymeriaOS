@@ -68,7 +68,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
 | `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking); invalid values fail settings validation |
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. |
-| `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API — the provider applies the model's own optimal defaults. |
+| `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API  -  the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for native Anthropic or OpenAI-compatible providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for OpenAI-compatible endpoints, use the provider's documented base URL, usually ending in `/v1`. Leave unset to use the registry default or a credential-vault base URL. |
 | `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers. `responses` is used only for providers that advertise Responses support in the registry; unsupported providers fall back to Chat Completions. |
 | `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
@@ -611,6 +611,79 @@ Set the API key for your chosen provider:
 | `MONICA_ACCESS_TOKEN` | Monica CRM | Optional Monica CRM API token fallback; credential vault provider `monica` is preferred |
 | `MONICA_BASE_URL` | Monica CRM | Optional Monica CRM API base URL override |
 
+### Additional Settings Model Variables
+
+These variables are also defined by `nymeria.config.settings.Settings` or the
+runtime `/settings` environment mapping. They are optional unless a deployment
+or tool explicitly requires them.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AFFINITY_API_KEY` | - | Affinity API key fallback |
+| `AFFINITY_BASE_URL` | `https://api.affinity.co` | Affinity API base URL |
+| `DHL_API_KEY` | - | DHL API key fallback |
+| `DHL_BASE_URL` | `https://api-eu.dhl.com` | DHL API base URL |
+| `DRIFT_ACCESS_TOKEN` | - | Drift access token fallback |
+| `DRIFT_BASE_URL` | `https://driftapi.com` | Drift API base URL |
+| `DYNAMIC_TOOL_BINDING` | `true` | Resolve tools per step in the model node instead of rebuilding the graph after tool enablement changes. Set `false` to use the legacy rebuild path as a fallback |
+| `EMELIA_API_KEY` | - | Emelia API key fallback |
+| `EMELIA_GRAPHQL_URL` | `https://graphql.emelia.io/graphql` | Emelia GraphQL URL |
+| `FACEBOOK_ACCESS_TOKEN` | - | Facebook Graph API access token fallback |
+| `FACEBOOK_APP_SECRET` | - | Facebook app secret fallback for appsecret_proof |
+| `FACEBOOK_GRAPH_BASE_URL` | `https://graph.facebook.com/v23.0` | Facebook Graph API base URL |
+| `GEMINI_EXTRACTION_MODEL` | `gemini-3-flash-preview` | Gemini model for attachment text extraction |
+| `KEAP_ACCESS_TOKEN` | - | Keap OAuth access token fallback |
+| `KEAP_BASE_URL` | `https://api.infusionsoft.com/crm/rest/v1` | Keap REST API base URL |
+| `KOBOTOOLBOX_API_TOKEN` | - | KoBoToolbox API token fallback |
+| `KOBOTOOLBOX_BASE_URL` | `https://kf.kobotoolbox.org` | KoBoToolbox API root URL |
+| `LEMLIST_API_KEY` | - | Lemlist API key fallback |
+| `LEMLIST_BASE_URL` | `https://api.lemlist.com/api` | Lemlist API base URL |
+| `LINKEDIN_ACCESS_TOKEN` | - | LinkedIn OAuth access token fallback |
+| `LINKEDIN_API_VERSION` | `202604` | LinkedIn REST API version header |
+| `LINKEDIN_BASE_URL` | `https://api.linkedin.com` | LinkedIn API base URL |
+| `MAGENTO_ACCESS_TOKEN` | - | Magento access token fallback |
+| `MAGENTO_BASE_URL` | - | Magento REST API base URL override |
+| `MAGENTO_HOST` | - | Magento site host fallback |
+| `MAUTIC_ACCESS_TOKEN` | - | Mautic OAuth or bearer access token fallback |
+| `MAUTIC_BASE_URL` | - | Mautic instance base URL fallback |
+| `MAUTIC_PASSWORD` | - | Mautic basic-auth password fallback |
+| `MAUTIC_USERNAME` | - | Mautic basic-auth username fallback |
+| `MCP_REGISTRY_URL` | `https://registry.modelcontextprotocol.io` | Official MCP registry base URL used by `search_mcp` and `install_mcp_server` |
+| `MICROSOFT_GRAPH_ACCESS_TOKEN` | - | Microsoft Graph OAuth access token fallback for native productivity tools |
+| `MICROSOFT_GRAPH_BASE_URL` | `https://graph.microsoft.com/v1.0` | Microsoft Graph API base URL |
+| `OKTA_ACCESS_TOKEN` | - | Okta SSWS API token fallback |
+| `OKTA_BASE_URL` | - | Okta org base URL override |
+| `OKTA_DOMAIN` | - | Okta org domain fallback |
+| `ONFLEET_API_KEY` | - | Onfleet API key fallback |
+| `ONFLEET_BASE_URL` | `https://onfleet.com/api/v2` | Onfleet API base URL |
+| `PERPLEXITY_SEARCH_MODEL` | `sonar-pro` | Default Perplexity model for web search |
+| `PHANTOMBUSTER_API_KEY` | - | Phantombuster API key fallback |
+| `PHANTOMBUSTER_BASE_URL` | `https://api.phantombuster.com/api/v2` | Phantombuster API base URL |
+| `QUICKBOOKS_ACCESS_TOKEN` | - | QuickBooks Online OAuth access token fallback |
+| `QUICKBOOKS_BASE_URL` | - | QuickBooks Online API base URL override |
+| `QUICKBOOKS_ENVIRONMENT` | `production` | QuickBooks environment: `production` or `sandbox` |
+| `QUICKBOOKS_REALM_ID` | - | QuickBooks Online company or realm ID fallback |
+| `RUNDECK_BASE_URL` | - | Rundeck instance base URL fallback |
+| `RUNDECK_TOKEN` | - | Rundeck API token fallback |
+| `SENDY_API_KEY` | - | Sendy API key fallback |
+| `SENDY_BASE_URL` | - | Sendy base URL fallback |
+| `SENDY_URL` | - | Sendy site URL fallback |
+| `SMITHERY_API_KEY` | - | Optional Smithery API key for private or verified listings |
+| `TELEGRAM_BOT_USERNAME` | - | Public Telegram bot username without `@`, used for `t.me/<bot>?start=...` deep links in the desktop wizard |
+| `TWITTER_ACCESS_TOKEN` | - | X/Twitter OAuth access token fallback |
+| `TWITTER_API_BASE_URL` | `https://api.twitter.com/2` | X/Twitter API v2 base URL |
+| `TWITTER_BEARER_TOKEN` | - | X/Twitter bearer token fallback |
+| `UNLEASHED_API_ID` | - | Unleashed API ID fallback |
+| `UNLEASHED_API_KEY` | - | Unleashed API key fallback |
+| `UNLEASHED_BASE_URL` | `https://api.unleashedsoftware.com` | Unleashed API base URL |
+| `WEBFLOW_ACCESS_TOKEN` | - | Webflow access token fallback |
+| `WEBFLOW_BASE_URL` | `https://api.webflow.com/v2` | Webflow API base URL |
+| `WORKER_MODE` | `false` | Run in worker mode, ticker only without the API server |
+| `XERO_ACCESS_TOKEN` | - | Xero OAuth access token fallback |
+| `XERO_BASE_URL` | `https://api.xero.com/api.xro/2.0` | Xero Accounting API base URL |
+| `XERO_CONNECTIONS_URL` | `https://api.xero.com/connections` | Xero connections API URL |
+| `XERO_TENANT_ID` | - | Xero tenant or organization ID fallback |
+
 `nymeria init` can collect these optional capability keys during first-run
 setup after the user chooses a hosting/security profile. For bare-metal and
 venv/pipx hosting, it validates the selected provider/model/key combination
@@ -654,7 +727,7 @@ separately.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
-| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `twitch-bot`, `watchdog`, `mcp`, and `service run`; local `api`, `cli`, and `users` development can still start without it. Created via `python run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `twitch-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
 | `ACCOUNT_TOKEN_TTL_DAYS` | `90` | Lifetime for newly issued Nymeria account tokens. Expired tokens are rejected and auto-revoked. |
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
 | `ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS` | `24` | Lifetime for the first-run bootstrap admin token. The plaintext bootstrap token file is also deleted after first successful auth. |
@@ -1424,7 +1497,7 @@ closing DNS-rebinding gaps.
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
 | `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
-| `TOOL_TIMEOUT` | `300` | Max seconds a tool/sub-agent invocation may run |
+| `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
 
 ### Context Management
@@ -1500,21 +1573,21 @@ git-crypt and wired into Docker via `FCM_CREDENTIALS_JSON`.
 **Watchdog runtime kill switches** (disable without restart):
 
 - **Env var**: `NYMERIA_WATCHDOG_DISABLED=1` (re-read on every poll cycle)
-- **File flag**: `{data_dir}/flags/watchdog-off` — persistent across container restarts because `/data` is a Docker volume. Create it with `docker exec nymeria-watchdog touch /data/flags/watchdog-off`; remove with `rm` to re-enable.
+- **File flag**: `{data_dir}/flags/watchdog-off`  -  persistent across container restarts because `/data` is a Docker volume. Create it with `docker exec nymeria-watchdog touch /data/flags/watchdog-off`; remove with `rm` to re-enable.
 
-In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`, defined in `docker-compose.yml`). It's a thin client that calls the API over HTTP — no `NymeriaAgent` in the watchdog process. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart, or simply don't start the service (`docker compose stop watchdog`). See `docs/architecture.md` §4.2 for details.
+In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`, defined in `docker-compose.yml`). It's a thin client that calls the API over HTTP  -  no `NymeriaAgent` in the watchdog process. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart, or simply don't start the service (`docker compose stop watchdog`). See `docs/architecture.md` §4.2 for details.
 
 ### Voice (TTS / STT)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TTS_PROVIDER` | `none` | TTS provider: `none`, `gemini`, `openai`, `qwen3` |
-| `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini (uses SDK). Defaults: OpenAI=`https://api.openai.com/v1`, Qwen3=`http://localhost:8880/v1` |
-| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for OpenAI/Qwen3 TTS. Gemini uses `GEMINI_API_KEY` instead |
-| `TTS_MODEL` | `tts-1-hd` | Model name. Gemini: `gemini-3.1-flash-tts-preview`, OpenAI: `tts-1` / `tts-1-hd` |
-| `TTS_VOICE` | `nova` | Voice identifier. Gemini: `Kore`, `Puck`, `Charon`, `Algenib`, `Leda`, `Orus`, `Zephyr` (30 total). OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` |
-| `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini always outputs MP3 (converted from WAV server-side) |
-| `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0. Not applicable for Gemini |
+| `TTS_PROVIDER` | `none` | TTS provider: `none`, `cartesia`, `gemini`, `openai`, `qwen3` |
+| `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini or Cartesia. Defaults: OpenAI=`https://api.openai.com/v1`, Qwen3=`http://localhost:8880/v1` |
+| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for OpenAI/Qwen3 TTS. Gemini uses `GEMINI_API_KEY`; Cartesia requires `TTS_API_KEY` set to a Cartesia key |
+| `TTS_MODEL` | `tts-1-hd` | Model name. Cartesia: `sonic-3`; Gemini: `gemini-3.1-flash-tts-preview`; OpenAI: `tts-1` / `tts-1-hd` |
+| `TTS_VOICE` | `nova` | Voice identifier. Cartesia uses a voice UUID from play.cartesia.ai; Gemini: `Kore`, `Puck`, `Charon`, `Algenib`, `Leda`, `Orus`, `Zephyr` (30 total). OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` |
+| `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini and Cartesia return MP3 |
+| `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0; Cartesia clamps to 0.6-1.5; not applicable for Gemini |
 | `STT_PROVIDER` | `none` | STT provider: `none`, `openai`, `faster-whisper` |
 | `STT_BASE_URL` | (per provider) | STT API base URL |
 | `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for STT |
@@ -1528,7 +1601,7 @@ The optional local voice Docker profile publishes `qwen3-tts` and
 references (`repo@sha256:...`) before starting `--profile voice`; the compose
 defaults are invalid placeholders to avoid pulling mutable `:latest` images.
 
-**Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech — e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
+**Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech  -  e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
 
 ---
 
@@ -1677,7 +1750,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Available models:
-- `claude-opus-4-7` (current flagship — see `docs/cliproxy.md` "Claude 4.7 compatibility" for the thinking/sampling-param caveats the provider already handles)
+- `claude-opus-4-7` (current flagship  -  see `docs/cliproxy.md` "Claude 4.7 compatibility" for the thinking/sampling-param caveats the provider already handles)
 - `claude-opus-4-6` (previous flagship)
 - `claude-sonnet-4-6` (balanced default)
 - `claude-opus-4-20250514`
@@ -1735,12 +1808,12 @@ Two runtime shapes are supported:
 
 #### Native Anthropic (Recommended)
 
-Uses `ChatAnthropic` with native `/v1/messages` format. No format translation — tool calling, streaming, and extended thinking work identically to direct API usage. Requires CLIProxyAPI with Claude OAuth login (`-claude-login`).
+Uses `ChatAnthropic` with native `/v1/messages` format. No format translation  -  tool calling, streaming, and extended thinking work identically to direct API usage. Requires CLIProxyAPI with Claude OAuth login (`-claude-login`).
 
 ```bash
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-opus-4-7             # Must match a model in proxy's Claude registry
-LLM_BASE_URL=http://localhost:8317    # No /v1 suffix — ChatAnthropic appends /v1/messages
+LLM_BASE_URL=http://localhost:8317    # No /v1 suffix  -  ChatAnthropic appends /v1/messages
 ANTHROPIC_API_KEY=cpx-...             # Proxy gatekeeper key, not a hosted Anthropic key
 ```
 
@@ -1770,7 +1843,7 @@ available only as a compatibility override and not recommended if thinking is
 enabled. To route the whole deployment, use **Settings → Provider → Open
 Wizard** or **Settings → LLM → OpenAI (Custom base URL)** and keep
 `OPENAI_API_MODE=responses` in the active env file. Per-thread overrides honor
-`provider`, `base_url`, `api_key`, and `openai_api_mode` — the API key is the
+`provider`, `base_url`, `api_key`, and `openai_api_mode`  -  the API key is the
 CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI
 key.
 

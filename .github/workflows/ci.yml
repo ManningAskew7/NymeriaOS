@@ -236,7 +236,7 @@ jobs:
 
       - name: Validate all-profile compose config
         working-directory: Nymeria
-        run: docker compose --profile discord --profile telegram --profile twitch --profile voice --env-file .env.docker.example -f docker-compose.yml config --quiet
+        run: docker compose --profile discord --profile telegram --profile slack --profile matrix --profile mattermost --profile zulip --profile rocketchat --profile signal --profile voice --env-file .env.docker.example -f docker-compose.yml config --quiet
 
       - name: Check full Dockerfile
         working-directory: Nymeria

@@ -37,9 +37,9 @@ The Docker deployment provides:
 
    The legacy shared `NYMERIA_API_KEY` was retired. The first API boot
    auto-creates a `default` admin and writes the bootstrap token to
-   `<data_dir>/BOOTSTRAP_TOKEN.txt` — see `docs/accounts.md`. Provision the
+   `<data_dir>/BOOTSTRAP_TOKEN.txt`  -  see `docs/accounts.md`. Provision the
    admin service token used by bots/ticker/watchdog with
-   `python run.py users add bot-service@localhost --role admin --id bot-service`
+   `python3 run.py users add bot-service@localhost --role admin --id bot-service`
    and put the printed token into `NYMERIA_SERVICE_TOKEN`.
 
 3. Edit `.env.docker` with your values:
@@ -133,7 +133,7 @@ For remote access, ensure:
    TELEGRAM_BOT_TOKEN=your-bot-token
    TELEGRAM_DEFAULT_CHAT_ID=your-chat-id
    ```
-4. The Telegram bot uses long-polling — no webhook setup needed. See `docs/telegram-bot.md` for full setup.
+4. The Telegram bot uses long-polling  -  no webhook setup needed. See `docs/telegram-bot.md` for full setup.
 
 #### Discord
 
@@ -287,7 +287,7 @@ To revert to local development:
 
 3. Run locally:
    ```bash
-   python run.py api
+   python3 run.py api
    ```
 
 Your SQLite databases and user data in `data/` are preserved.

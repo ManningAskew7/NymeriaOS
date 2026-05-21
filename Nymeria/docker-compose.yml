@@ -13,11 +13,12 @@ x-security-hardening: &security-hardening
   cap_drop:
     - ALL
 
-# Filesystem hardening for AGENT-bearing containers (api/worker).
-# These run NymeriaAgent and keep a writable rootfs for workspace/package
-# caches, but still run as the Dockerfile's non-root `nymeria` user with
-# cap_drop ALL + no-new-privileges. Runtime system package installation is
-# intentionally not supported in the production compose profile.
+# Filesystem hardening for full-runtime containers (api/worker). The API owns
+# the NymeriaAgent runtime; the worker relays scheduled turns to the API but
+# currently shares the full image and writable workspace/cache posture. Both
+# still run as the Dockerfile's non-root `nymeria` user with cap_drop ALL +
+# no-new-privileges. Runtime system package installation is intentionally not
+# supported in the production compose profile.
 x-agent-fs: &agent-fs
   tmpfs:
     - /tmp
@@ -34,7 +35,7 @@ x-thin-client-fs: &thin-client-fs
 
 # Resource limits. Tuned for a 2GB / 1 vCPU droplet running the core
 # services plus a couple of optional bots. The sum overcommits the host
-# on purpose — limits are caps, not reservations, and most services idle
+# on purpose; limits are caps, not reservations, and most services idle
 # well under their headroom. Per-container PID limits cap fork-bomb-style
 # blast radius from a compromised tool call.
 x-limits-full: &limits-full
@@ -143,7 +144,7 @@ services:
   # Caddy fronts the public internet. Terminates TLS via Let's Encrypt
   # (set NYMERIA_HOSTNAME + ACME_EMAIL in .env.docker), proxies to api on
   # /, /api/* and /mcp/* to mcp. The api and mcp containers expose their
-  # ports on 127.0.0.1 only — Caddy is the only externally-reachable
+  # ports on 127.0.0.1 only; Caddy is the only externally-reachable
   # service on the host. UFW should accept 80 and 443 and deny 8000/8001.
   caddy:
     <<: [*security-hardening, *thin-client-fs, *limits-slim]
@@ -171,7 +172,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      # Hit the proxy itself on :80 — passes if Caddy is serving and
+      # Hit the proxy itself on :80; passes if Caddy is serving and
       # successfully proxying to api (which has its own /health).
       test: ["CMD", "wget", "-qO-", "--spider", "http://localhost/health"]
       interval: 30s
@@ -191,7 +192,7 @@ services:
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
-    # Agent-bearing container: runs as the Dockerfile's non-root `nymeria`
+    # Full-runtime API container: runs as the Dockerfile's non-root `nymeria`
     # user. cap_drop ALL + no-new-privileges is the production boundary;
     # runtime apt/dpkg installs are intentionally not available here.
     # OAuth token caches are now per-user at /data/auth_tokens/<user_id>/
@@ -215,7 +216,7 @@ services:
       # System timezone (matches USER_TIMEZONE for consistent bash/OS time)
       TZ: ${USER_TIMEZONE:-UTC}
       # Required
-      # NYMERIA_API_KEY is deprecated — authentication is per-user account
+      # NYMERIA_API_KEY is deprecated; authentication is per-user account
       # tokens only. Passed through if set (silently ignored by the server)
       # so existing .env.docker values don't break compose validation.
       NYMERIA_API_KEY: ${NYMERIA_API_KEY:-}
@@ -404,14 +405,15 @@ services:
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
     init: true
-    # See api service for non-root/capability rationale. The worker runs
-    # scheduled-TODO invocations of the same agent.
+    # See api service for non-root/capability rationale. The worker is a
+    # scheduler/trigger relay that invokes the API instead of constructing
+    # its own agent.
     dns:
       - 8.8.8.8
       - 1.1.1.1
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Legacy /root/<token>.json symlink migration removed — the agent's
+    # Legacy /root/<token>.json symlink migration removed; the agent's
     # accounts bootstrap (nymeria/core/accounts.py) now handles legacy
     # auth-token paths and migrates them under /data/auth_tokens/<user_id>/.
     # Required because the container no longer runs as root and /root/ is
@@ -438,8 +440,8 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - edge       # so bots/api can call worker health endpoints
-      - backend    # for postgres + redis access (ticker, checkpointer)
+      - edge       # for API relay calls and outbound trigger/source access
+      - backend    # for Redis events and datastore dependency checks
 
   # Watchdog thin-client worker (polls API for stale TODOs)
   watchdog:
@@ -785,7 +787,7 @@ services:
   # Start with: docker compose --env-file .env.docker --profile voice up -d
   # ============================================================================
 
-  # Qwen3-TTS — Local text-to-speech with OpenAI-compatible API
+  # Qwen3-TTS - Local text-to-speech with OpenAI-compatible API
   qwen3-tts:
     <<: *security-hardening
     # Placeholder digest intentionally fails if the voice profile is started
@@ -817,7 +819,7 @@ services:
     networks:
       - edge
 
-  # Faster-Whisper — Local speech-to-text with OpenAI-compatible API
+  # Faster-Whisper - Local speech-to-text with OpenAI-compatible API
   faster-whisper:
     <<: *security-hardening
     # Placeholder digest intentionally fails if the voice profile is started
@@ -863,7 +865,7 @@ volumes:
   nymeria_workspace:
     driver: local
   # Caddy persists auto-issued TLS certs (and ACME account state) in /data
-  # so they survive container restarts and image rebuilds — losing this
+  # so they survive container restarts and image rebuilds; losing this
   # volume forces Let's Encrypt re-issuance and may hit rate limits.
   caddy_data:
     driver: local
@@ -885,8 +887,8 @@ networks:
   edge:
     driver: bridge
   # Backend network: data plane only. Postgres and Redis live here, plus
-  # the services that legitimately speak SQL/RESP (api, worker, twitch-bot).
-  # Chat bots and mcp are intentionally NOT on backend — a compromised
+  # the services that legitimately speak SQL/RESP (api, worker).
+  # Chat bots and mcp are intentionally NOT on backend; a compromised
   # bot can call the api over HTTP but cannot touch the database directly.
   backend:
     driver: bridge

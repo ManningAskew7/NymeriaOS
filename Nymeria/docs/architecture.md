@@ -101,7 +101,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 | `command_service.py` | Central slash-command registry, path metadata catalog, alias resolver, direct backend adapter, and markdown dispatcher used by REST, desktop/mobile command input, bots, and the `slash_command` agent tool |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |
 | `thread_metadata.py` | Server-authoritative thread metadata (titles, pins, platform). Replaces frontend-only localStorage titles. |
-| `thread_deletion.py` | Cascade deletion for a thread — removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
+| `thread_deletion.py` | Cascade deletion for a thread  -  removes checkpoints, TODOs, triggers bound to the thread, callable-thread bindings, notepad, and activity entries in one transaction so `DELETE /threads/{id}` doesn't leave orphans. |
 | `thread_agent_executor.py` | Delegates tasks to callable threads through `stream_and_collect()` over the sync `iter_agent_astream()` bridge. Publishes live SSE events. |
 | `stream_bridge.py` | Lets synchronous autonomous/callable workers consume `NymeriaAgent.astream()` through one process-local asyncio loop, while provider HTTP pools and async graph caches remain local to whichever event loop owns the invocation. |
 | `trigger_manager.py` | Event-driven trigger coordination, fires agent prompts or direct actions |
@@ -197,7 +197,7 @@ Manages autonomous operation for 24/7 functionality through the **TODO system** 
 - `TodoManager`: Manages user TODO lists with atomic updates (JSON files in `data/todos/`)
 - `TodoScheduleDB`: SQLite index for efficient polling and cross-process active-execution markers (not source of truth - mirrors JSON)
 - `Ticker`: Global daemon thread that executes due scheduled TODOs and removes completed TODOs older than `TODO_AUTO_ARCHIVE_DAYS`
-- `EventBus`: Pub/sub system for streaming autonomous events to frontend (see Section 4.1)
+- `EventBus`: Pub/sub system for streaming autonomous events to frontend (see Section 4.3)
 
 **Scheduled TODO Flow:**
 ```
@@ -208,7 +208,7 @@ TODO with scheduled_for → ticker polls → executes when due → streams via E
 ```
 User creates TODO with scheduled time
     ↓
-LLM calls: todo_add("Check inbox", scheduled_for="30m")
+LLM calls: nym_todo("Check inbox", scheduled_for="30m")
     ↓
 TodoManager:
     1. Creates TODO item with scheduled_for datetime (JSON file)
@@ -219,7 +219,7 @@ TodoManager:
 Ticker finds due scheduled TODO:
     1. Claims an active-execution marker in TodoScheduleDB (skips duplicate claims)
     2. Reads the JSON TODO and marks it IN_PROGRESS
-    3. Starts the agent via the async streaming bridge
+    3. Dispatches the turn through `TurnExecutor`
     4. Publishes "task_started" after the first stream chunk is available
     5. Streams tool_reload, tool_call, tool_result, thinking, response, and other supported events to frontend
     6. If recurring: calculates next execution, reschedules
@@ -252,9 +252,9 @@ API container), which keeps the in-memory `ThreadLockManager` and
 `PendingPromptQueue` authoritative for cross-source contention. The
 abstraction lives in `nymeria/core/turn_executor.py`:
 
-- `LocalAgentExecutor` (slim, API container) — calls `agent.astream(...)`
+- `LocalAgentExecutor` (slim, API container)  -  calls `agent.astream(...)`
   directly.
-- `APIClientExecutor` (Docker worker) — wraps `NymeriaAPIClient` and
+- `APIClientExecutor` (Docker worker)  -  wraps `NymeriaAPIClient` and
   POSTs to `/chat` with `publish_autonomous_events=False`. The worker
   remains the sole publisher of autonomous SSE events for its own
   TODOs (using `todo.id` as the stable task id) and triggers (using
@@ -269,11 +269,11 @@ from a 30-minute API-side housekeeping task registered by
 
 ---
 
-### 4.2 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)
+### 4.1 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)
 
-The **Watchdog** nudges Nymeria when active TODOs haven't been touched for a while. It runs as a **thin-client process** alongside (not inside) the API — same structural pattern as the Discord and Telegram bots.
+The **Watchdog** nudges Nymeria when active TODOs haven't been touched for a while. In Docker it runs as a **thin-client process** alongside the API, following the same API-client pattern as the chat bots. In slim mode the API registers an in-process watchdog task, but it still talks through the same service-token API client path rather than constructing a second agent runtime.
 
-**Why a separate process?** The old watchdog lived inside `NymeriaAgent.__init__`, which meant every container that built an agent (both `api` and `worker` in Docker) started its own watchdog — two instances scanning the same TODOs, with in-process callbacks via `get_watchdog()` to clear nudge state. Running it as a sibling service eliminates the duplication and the global coupling.
+**Why a separate process?** The old watchdog lived inside `NymeriaAgent.__init__`, which meant every container that built an agent (both `api` and `worker` in Docker) started its own watchdog  -  two instances scanning the same TODOs, with in-process callbacks via `get_watchdog()` to clear nudge state. Running it as a sibling service eliminates the duplication and the global coupling.
 
 **Flow:**
 ```
@@ -297,21 +297,24 @@ watchdog container (run.py watchdog)
           via `core.notification_dispatch.send_external_notifications()`.
 ```
 
-**State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen` — no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.
+**State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen`  -  no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.
 
 **Kill switches:** `NYMERIA_WATCHDOG_DISABLED=1` env var, or a `{data_dir}/flags/watchdog-off` file (persistent across container restarts).
 
 ---
 
-### 4.3 Docker Runtime Images
+### 4.2 Docker Runtime Images
 
 Docker Compose uses two Nymeria application image families instead of one
 workstation image for every process:
 
-- `nymeria-full:local` (`Dockerfile.full`) runs the API, worker, and Twitch
-  bot. These services own a `NymeriaAgent` or execute autonomous agent work, so
-  they keep the Kali tools, browser runtime, and CLI-oriented environment that
-  shell-capable tools may call.
+- `nymeria-full:local` (`Dockerfile.full`) runs the API and worker. The API owns
+  the Docker stack's `NymeriaAgent` runtime; the worker is a scheduler/trigger
+  relay that POSTs autonomous turns to the API but currently shares the full
+  image. A manually launched Twitch runtime also uses the full runtime shape
+  because it constructs its own `NymeriaAgent`. These processes keep the Kali
+  tools, browser runtime, and CLI-oriented environment that shell-capable tools
+  may call.
 - `nymeria-slim:local` (`Dockerfile.slim`) runs Watchdog, Discord, Telegram,
   Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, and MCP. Those services are
   HTTP thin clients over the API and do not execute local agent tools, so they
@@ -326,7 +329,7 @@ stay simple; `requirements-dev.txt` is deliberately host/CI-only.
 
 ---
 
-### 4.1 Event Bus & Autonomous Streaming (`nymeria/core/event_bus.py`)
+### 4.3 Event Bus & Autonomous Streaming (`nymeria/core/event_bus.py`)
 
 The **EventBus** enables real-time streaming of autonomous task execution to connected frontend clients.
 
@@ -479,21 +482,22 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 
 | Category | Tools |
 |----------|-------|
-| Core System | file_read, file_write, web_search, consult, slash_command |
+| Core System | bash_execute, file_read, file_write, web_search, consult, notify, slash_command |
 | Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
-| Runtime / utility | consult, notify and other currently registered core utilities |
+| Credentials | auth_manager, request_credential |
 
 **Callable thread tools** (generated by `agents/tool_factory.py`):
 - Any thread marked `callable=True` becomes a tool (e.g., `ResearchAgent(task="...")`)
 - Tools are synced via `agent.sync_agent_tools()` and added per-graph in `_build_graph_with_prompt()`
-- Built-in callables: BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent
 
 **Per-thread tool filtering pipeline:**
-1. Start with core tools + callable thread tools
-2. Filter by user preferences and `TOOL_METADATA`
-3. Remove any in `ThreadConfig.disabled_tools`
-4. Add any from `OPTIONAL_TOOLS` listed in `ThreadConfig.enabled_tools`
+1. Start with the user's `default_thread_tools` if set, otherwise `ALL_TOOLS`.
+2. Add callable-thread tools owned by the same user and visible to the caller's callable team.
+3. Remove any names in `ThreadConfig.disabled_tools`.
+4. Add live `ThreadConfig.enabled_tools` and non-expired `temporary_tools`, including optional tools, MCP registry tools, and allowed callables.
+5. Strip admin-only and developer-only tools when the calling user role is not allowed.
+6. Add the synthetic `Skill(name)` meta-tool when thread or global skills are active.
 
 See [Tools Reference](./tools.md) for detailed documentation.
 
@@ -546,7 +550,7 @@ The `get_conversation_history()` method (used for page refresh/checkpoint rebuil
 
 **Callable Thread Streaming**
 
-Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Blocking `mode="ask"` calls run through the shared sync stream bridge loop rather than creating a fresh event loop per invocation. Async graph cache keys include the owning event loop, and `vendor/react_agent/providers.py` keeps Anthropic plus OpenAI-compatible HTTP pools loop-local. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local — a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
+Callable thread invocations stream supported agent events (including thinking, tool calls/results, workspace artifacts, tool reloads, and responses) to the event bus in real-time via `thread_agent_executor.py`, so the frontend can display callable thread activity as it happens. Blocking `mode="ask"` calls run through the shared sync stream bridge loop rather than creating a fresh event loop per invocation. Async graph cache keys include the owning event loop, and `vendor/react_agent/providers.py` keeps Anthropic plus OpenAI-compatible HTTP pools loop-local. Parent→child invocations are tracked via `_active_callable_invocations` for cascading abort support. This dict is intentionally process-local  -  a restart kills all in-flight invocations, so an empty dict is the correct post-restart state.
 
 ---
 
@@ -662,13 +666,13 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - Supports linked-user enforcement, chat-app bind codes, mention-gated group/room routing, native LINE thread IDs, inbound dedupe, and SSE streaming through the in-process agent
 
 **Event-Driven Trigger Sources** (`triggers/sources/`):
-- `base.py` — Abstract `BaseTriggerSource` with rich metadata (category, icon, setup_guide, template_variables, example_config, requires_auth, get_sample_event())
-- `webhook_source.py` — Push-based incoming webhook with file-backed queue persistence
-- `outlook_email_source.py` — Polls Outlook inbox via Graph API, supports sender/subject/importance filters
-- `rss_source.py` — Polls RSS/Atom feeds, deduplicates via rolling seen_ids window
-- `http_poll_source.py` — Generic URL monitoring with change/status/contains/always fire modes
-- `slack_source.py` — Polls Slack conversations.history API for new channel messages
-- `teams_source.py` — Polls Microsoft Graph API for Teams channel messages
+- `base.py`  -  Abstract `BaseTriggerSource` with rich metadata (category, icon, setup_guide, template_variables, example_config, requires_auth, get_sample_event())
+- `webhook_source.py`  -  Push-based incoming webhook with file-backed queue persistence
+- `outlook_email_source.py`  -  Polls Outlook inbox via Graph API, supports sender/subject/importance filters
+- `rss_source.py`  -  Polls RSS/Atom feeds, deduplicates via rolling seen_ids window
+- `http_poll_source.py`  -  Generic URL monitoring with change/status/contains/always fire modes
+- `slack_source.py`  -  Polls Slack conversations.history API for new channel messages
+- `teams_source.py`  -  Polls Microsoft Graph API for Teams channel messages
 - Sources auto-register via `register_source()` and are discovered by `list_sources()`
 - Managed by `core/trigger_manager.py` which coordinates source lifecycle, health tracking (healthy/degraded/failing with exponential backoff), condition filtering (AND logic), and execution history logging
 
@@ -697,9 +701,9 @@ who-does-what:
 | Owns the task list | X | X |
 | Authority to mark "done" | X (self-managed) | Helper thread (structurally enforced) |
 | Helper lifetime | `temporary` (idle-deletes) | `temporary` (idle-deletes) |
-| Persisted state | None — agent self-manages via `nym_todo` | `Goal` record (`data/goals/{user}.json`) |
+| Persisted state | None  -  agent self-manages via `nym_todo` | `Goal` record (`data/goals/{user}.json`) |
 
-### `/orchestrate` — prompt-driven delegation
+### `/orchestrate`  -  prompt-driven delegation
 
 - Implementation: a single SKILL.md (`nymeria/skills_bundled/orchestrate/`)
   plus the slash-command intercept in `api/routers/chat.py`.
@@ -707,22 +711,22 @@ who-does-what:
   `nym_todo_list`, `tool_search`.
 - Workers are spawned via `spawn_thread(mode="branched",
   lifetime="temporary")` so they inherit X's context up to the spawn point.
-- No framework enforcement — the orchestrator persona in the kit body tells
+- No framework enforcement  -  the orchestrator persona in the kit body tells
   the agent how to decompose, delegate, and judge. Extensible to a swarm
   (multiple parallel workers) for free, since `spawn_thread` doesn't cap it.
 
-### `/goal` — framework-enforced supervision
+### `/goal`  -  framework-enforced supervision
 
 The structural novelty: **the worker thread cannot mark its own tasks
 complete.** Authority is held by the supervisor thread, enforced via three
 layers of defence-in-depth:
 
-1. **Tool binding** — the `goal-worker` kit binds `propose_task` and
+1. **Tool binding**  -  the `goal-worker` kit binds `propose_task` and
    `request_review` only; `mark_task_done` is in the `goal-supervisor` kit.
-2. **Runtime authority check** — `mark_task_done` itself verifies
+2. **Runtime authority check**  -  `mark_task_done` itself verifies
    `goal_manager.can_authority(user_id, goal_id, thread_id)` and refuses
    if the calling thread isn't the recorded supervisor.
-3. **`nym_todo` lock** — TODO items carry an optional `goal_id`; the
+3. **`nym_todo` lock**  -  TODO items carry an optional `goal_id`; the
    done-transition path in `nym_todo` refuses for any thread that isn't
    the supervisor, catching attempts that bypass the goal tools.
 
@@ -799,7 +803,7 @@ Skills](./skills.md#slash-command-activation).
 
 ### Standard Conversation
 
-1. User sends message via CLI or API
+1. User sends message via a frontend, bot, CLI, MCP client, or REST API
 2. NymeriaAgent receives message
 3. Time context injected (example): `[Time: Thursday, February 18, 2026 at 05:42 PM (America/New_York)]`
 4. User memories loaded and formatted into system prompt
@@ -808,7 +812,7 @@ Skills](./skills.md#slash-command-activation).
 7. If tools needed: execute tools, truncate oversized tool results, then feed results back to LLM
 8. HTTP/API primitive tool calls append redacted audit events when `AUDIT_LOG_ENABLED=true`
 9. Loop until LLM generates final response, hits the turn tool-call budget, or repeats the same tool call/result 5 times in a row
-10. State saved to SQLite for conversation continuity
+10. State saved through the configured LangGraph checkpointer for conversation continuity
 11. Response returned to user
 
 ### Memory Injection
@@ -899,7 +903,8 @@ scheduled TODOs, triggers, callable threads, and spawned threads.
   agent paths use the same checkpoint tables through the same adapter logic as
   SQLite.
 
-See [LangGraph PERSISTENCE.md](../../LangGraph/docs/PERSISTENCE.md) for full technical details.
+The local implementation details live in `nymeria/vendor/react_agent/graph.py`
+and `nymeria/core/checkpointer_config.py`.
 
 ### Scheduled TODO Storage
 

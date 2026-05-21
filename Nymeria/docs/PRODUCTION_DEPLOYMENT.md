@@ -4,8 +4,8 @@ This document outlines deployment options for Nymeria, from local development to
 
 ## Deployment Options Overview
 
-- **Local**: run directly on host (`python run.py api`, or other `run.py` subcommands as needed)
-- **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `mcp`, optional chat/voice services)
+- **Local**: run directly on host (`python3 run.py api`, or other `run.py` subcommands as needed)
+- **Docker Compose**: production-oriented split services (`api`, `worker`, `watchdog`, `postgres`, `redis`, `caddy`, `mcp`, optional chat/voice services)
 
 ## Quick Start
 
@@ -13,15 +13,15 @@ This document outlines deployment options for Nymeria, from local development to
 
 ```bash
 cd Nymeria
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+python3 -m pip install --user -r requirements.txt
+python3 -m pip install --user -r requirements-dev.txt
 
 # Optional: only needed when local development uses DATABASE_BACKEND=postgres
-pip install -r requirements-postgres.txt
+python3 -m pip install --user -r requirements-postgres.txt
 
 # Optional: Install BrowserAgent dependencies
-pip install playwright
-playwright install chromium
+python3 -m pip install --user playwright
+python3 -m playwright install chromium
 
 # Optional: Install Claude Code CLI
 npm install -g @anthropic-ai/claude-code
@@ -31,7 +31,7 @@ cp .env.docker.example .env.docker
 # Edit .env.docker with your API keys
 
 # Run
-python run.py api
+python3 run.py api
 ```
 
 ### Docker Compose (Server/Multi-device)
@@ -46,18 +46,21 @@ docker compose --env-file .env.docker up -d
 
 Docker Compose builds two Nymeria application images:
 
-- `nymeria-full:local` from `Dockerfile.full` for `api`, `worker`, and
-  `twitch-bot`. These services own a `NymeriaAgent` or execute scheduled agent
-  work, so they keep the Kali/browser/CLI workstation runtime used by
-  shell-capable and browser-capable tools.
+- `nymeria-full:local` from `Dockerfile.full` for `api` and `worker`.
+  The API owns the Docker stack's `NymeriaAgent` runtime and keeps the
+  Kali/browser/CLI workstation dependencies used by shell-capable and
+  browser-capable tools. The worker is a scheduler/trigger relay that POSTs
+  turns to the API, but it currently shares the full image in Compose.
 - `nymeria-slim:local` from `Dockerfile.slim` for `watchdog`, `discord-bot`,
   `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`,
   `rocketchat-bot`, `signal-bot`, and `mcp`.
-  These processes are HTTP thin clients over the API and do not need Kali
-  tools, Playwright browsers, Node.js, Claude Code CLI, or test dependencies.
+  These processes are HTTP thin clients over the API and do not construct their
+  own `NymeriaAgent`.
   WhatsApp Cloud API, Messenger Platform, Instagram Messaging, Webex Messaging,
   Microsoft Teams, Google Chat, and LINE webhooks are handled by the API
   container.
+  Twitch is run as a standalone `python3 run.py twitch-bot` process today, not
+  as a Compose service.
 
 Both images install runtime requirements only. Install `requirements-dev.txt`
 on the host when running backend tests, coverage, or Ruff lint checks.
@@ -103,12 +106,15 @@ Docker Compose owns the health checks for Nymeria services. The Nymeria
 application Dockerfiles intentionally do not define a built-in `HEALTHCHECK`
 because the images run different commands in different containers.
 
-The API container uses `GET /health`. Worker, watchdog, Discord, Telegram, and
-Twitch containers write runtime heartbeat files under `/tmp/nymeria-health/`;
-Compose validates those heartbeats with `python -m nymeria.core.service_health`.
-Those checks fail when the heartbeat is stale, the heartbeat PID is gone, the
-service reports an unhealthy client/ticker loop, or required dependencies such
-as the API, PostgreSQL, or Redis are unavailable.
+The API container uses `GET /ready` for its Compose health check; `/ready`
+validates database and Redis readiness. Caddy checks the proxied `/health`
+route, and thin-client services use `python -m nymeria.core.service_health`.
+Worker, watchdog, and profiled chat bot processes write runtime heartbeat files
+under `/tmp/nymeria-health/`. Those checks fail when the heartbeat is stale,
+the heartbeat PID is gone, the service reports an unhealthy client/ticker loop,
+or a service-specific dependency check fails. The worker validates PostgreSQL
+and Redis access; watchdog, Discord, Slack, Matrix, Telegram, and MCP validate
+API `/health`; MCP also validates its local TCP listener.
 
 Use `docker compose --env-file .env.docker ps` for the container health summary.
 For a direct check inside a container, run a service-specific command such as:
@@ -122,40 +128,46 @@ docker compose --env-file .env.docker exec worker \
 
 ### Docker Deployment Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Docker Network                               │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │  PostgreSQL  │  │    Redis     │  │   Nymeria Services    │  │
-│  │              │  │              │  │                       │  │
-│  │  Checkpoint  │  │  Event Bus   │  │  - API container      │  │
-│  │  Storage     │  │  (Pub/Sub)   │  │  - Worker container   │  │
-│  │              │  │              │  │  - MCP container      │  │
-│  └──────────────┘  └──────────────┘  │  - Optional Discord   │  │
-│                                      └───────────────────────┘  │
-│                                                 │                │
-│  Volumes:                                       │                │
-│  - postgres_data: Conversation history          │                │
-│  - redis_data: Event persistence                │                │
-│  - nymeria_data: Memories, TODOs, profiles      │                │
-│  - nymeria_workspace: Project files             │                │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-              Access from any device via API
-              (Desktop app, mobile, other agents)
+```text
++-------------------------------------------------------------------+
+|                         Docker networks                           |
+|                                                                   |
+|  backend:                                                         |
+|  +--------------+  +--------------+                               |
+|  | PostgreSQL   |  | Redis        |                               |
+|  | LangGraph    |  | pub/sub and  |                               |
+|  | checkpoints  |  | cache state  |                               |
+|  +--------------+  +--------------+                               |
+|          ^                 ^                                       |
+|          |                 |                                       |
+|  +-------------------------------+        +---------------------+  |
+|  | API container                 | <----> | Caddy reverse proxy |  |
+|  | single agent runtime          |        | public 80/443       |  |
+|  +-------------------------------+        +---------------------+  |
+|          ^                                                        |
+|          | REST/SSE with service token                            |
+|  +-------------------------------+                                |
+|  | Worker, watchdog, MCP, and    |                                |
+|  | profiled chat bot containers  |                                |
+|  +-------------------------------+                                |
+|                                                                   |
+|  Volumes:                                                         |
+|  - postgres_data: LangGraph checkpoint database                   |
+|  - redis_data: Redis server persistence                           |
+|  - nymeria_data: accounts.db, users, TODOs, triggers, config      |
+|  - nymeria_workspace: workspace files                             |
++-------------------------------------------------------------------+
 ```
 
 ## Tool Availability by Deployment
 
 | Capability | Local | Docker Compose |
 |------------|-------|----------------|
-| Core tools | ✅ Host system | ✅ Containerized |
-| Optional and callable-thread tools | ✅ | ✅ |
-| Browser automation | ⚠️ Install Playwright/Chromium | ✅ Included in `nymeria-full` agent services |
-| `claude_code` integration | ⚠️ Install Claude Code CLI | ⚠️ Available only where configured in `nymeria-full` |
-| Self-modification persistence | ✅ (local filesystem) | ✅ (via mounted volumes) |
+| Core tools | Host system | Containerized |
+| Optional and callable-thread tools | Available | Available |
+| Browser automation | Install Playwright/Chromium locally | Included in the `nymeria-full` API image |
+| `claude_code` integration | Install Claude Code CLI locally | Available only where configured in `nymeria-full` |
+| Self-modification persistence | Local filesystem | Mounted code/data volumes |
 
 ## Configuration
 
@@ -170,45 +182,45 @@ REDIS_PASSWORD=<secure-url-safe-password>
 NYMERIA_SERVICE_TOKEN=<admin-service-token>   # see docs/accounts.md
 
 # LLM (at least one required)
-ANTHROPIC_API_KEY=sk-ant-...
-OPENROUTER_API_KEY=sk-or-...
-OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-<token>
+OPENROUTER_API_KEY=sk-or-<token>
+OPENAI_API_KEY=sk-<token>
 
 # LLM Settings
 LLM_PROVIDER=anthropic  # or openrouter, openai
 LLM_MODEL=claude-sonnet-4-6
 
 # Optional Integrations
-PERPLEXITY_API_KEY=pplx-...      # Web search
-TELEGRAM_BOT_TOKEN=...           # Telegram notifications
-DISCORD_WEBHOOK_URL=...          # Discord notifications
-SLACK_WEBHOOK_URL=...            # Slack notifications
-MATTERMOST_BASE_URL=...          # Mattermost bot/tools server URL
-MATTERMOST_ACCESS_TOKEN=...      # Mattermost bot account token
-ZULIP_BASE_URL=...               # Zulip realm URL
-ZULIP_EMAIL=...                  # Zulip bot email
-ZULIP_API_KEY=...                # Zulip bot API key
-ROCKETCHAT_BASE_URL=...          # Rocket.Chat server URL
-ROCKETCHAT_USER_ID=...           # Rocket.Chat bot/user ID
-ROCKETCHAT_AUTH_TOKEN=...        # Rocket.Chat bot/user token
-SIGNAL_HTTP_URL=...              # signal-cli-rest-api base URL
+PERPLEXITY_API_KEY=pplx-<token>  # Web search
+TELEGRAM_BOT_TOKEN=<token>       # Telegram notifications
+DISCORD_WEBHOOK_URL=<url>        # Discord notifications
+SLACK_WEBHOOK_URL=<url>          # Slack notifications
+MATTERMOST_BASE_URL=<url>        # Mattermost bot/tools server URL
+MATTERMOST_ACCESS_TOKEN=<token>  # Mattermost bot account token
+ZULIP_BASE_URL=<url>             # Zulip realm URL
+ZULIP_EMAIL=<email>              # Zulip bot email
+ZULIP_API_KEY=<token>            # Zulip bot API key
+ROCKETCHAT_BASE_URL=<url>        # Rocket.Chat server URL
+ROCKETCHAT_USER_ID=<user-id>     # Rocket.Chat bot/user ID
+ROCKETCHAT_AUTH_TOKEN=<token>    # Rocket.Chat bot/user token
+SIGNAL_HTTP_URL=<url>            # signal-cli-rest-api base URL
 SIGNAL_ACCOUNT=+15551234567      # Signal bot account phone number
-WEBEX_ACCESS_TOKEN=...           # Webex webhook replies
-WEBEX_WEBHOOK_SECRET=...         # Webex webhook HMAC secret
-TEAMS_BOT_APP_ID=...             # Microsoft Teams Bot Framework app ID
-TEAMS_BOT_APP_PASSWORD=...       # Microsoft Teams Bot Framework client secret
+WEBEX_ACCESS_TOKEN=<token>       # Webex webhook replies
+WEBEX_WEBHOOK_SECRET=<secret>    # Webex webhook HMAC secret
+TEAMS_BOT_APP_ID=<app-id>        # Microsoft Teams Bot Framework app ID
+TEAMS_BOT_APP_PASSWORD=<secret>  # Microsoft Teams Bot Framework client secret
 GOOGLE_CHAT_SERVICE_ACCOUNT_FILE=/run/secrets/google-chat-service-account.json # Google Chat replies
-LINE_CHANNEL_ACCESS_TOKEN=...    # LINE Messaging API webhook replies
-LINE_CHANNEL_SECRET=...          # LINE webhook HMAC secret
-WHATSAPP_ACCESS_TOKEN=...        # WhatsApp Cloud API webhook replies
-WHATSAPP_PHONE_NUMBER_ID=...     # WhatsApp Cloud API sender
-WHATSAPP_WEBHOOK_VERIFY_TOKEN=... # Meta webhook challenge token
-MESSENGER_PAGE_ACCESS_TOKEN=...  # Messenger Send API webhook replies
-MESSENGER_PAGE_ID=...            # Facebook Page ID
-MESSENGER_WEBHOOK_VERIFY_TOKEN=... # Messenger webhook challenge token
-INSTAGRAM_ACCESS_TOKEN=...       # Instagram Messaging webhook replies
-INSTAGRAM_IG_USER_ID=...         # Instagram professional account ID
-INSTAGRAM_WEBHOOK_VERIFY_TOKEN=... # Instagram webhook challenge token
+LINE_CHANNEL_ACCESS_TOKEN=<token> # LINE Messaging API webhook replies
+LINE_CHANNEL_SECRET=<secret>     # LINE webhook HMAC secret
+WHATSAPP_ACCESS_TOKEN=<token>    # WhatsApp Cloud API webhook replies
+WHATSAPP_PHONE_NUMBER_ID=<id>    # WhatsApp Cloud API sender
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=<token> # Meta webhook challenge token
+MESSENGER_PAGE_ACCESS_TOKEN=<token> # Messenger Send API webhook replies
+MESSENGER_PAGE_ID=<page-id>      # Facebook Page ID
+MESSENGER_WEBHOOK_VERIFY_TOKEN=<token> # Messenger webhook challenge token
+INSTAGRAM_ACCESS_TOKEN=<token>   # Instagram Messaging webhook replies
+INSTAGRAM_IG_USER_ID=<id>        # Instagram professional account ID
+INSTAGRAM_WEBHOOK_VERIFY_TOKEN=<token> # Instagram webhook challenge token
 ```
 
 ### CORS for Remote Access
@@ -225,10 +237,12 @@ refuses to start when wildcard origins are configured.
 
 ### Messaging Integrations
 
-Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, and Twitch
-bots run as dedicated bot containers. Configure their tokens in `.env.docker`
-and enable their Docker Compose profiles; those clients do not need external
-webhook URLs. See `docs/telegram-bot.md`, `docs/discord-bot.md`,
+Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, and Signal
+bots run as dedicated profiled containers. Configure their tokens in
+`.env.docker` and enable their Docker Compose profiles; those clients do not
+need external webhook URLs. Twitch is currently a standalone runtime launched
+with `python3 run.py twitch-bot`, not a Compose service. See
+`docs/telegram-bot.md`, `docs/discord-bot.md`,
 `docs/slack-bot.md`, `docs/matrix-bot.md`, `docs/mattermost-bot.md`,
 `docs/zulip-bot.md`, `docs/rocketchat-bot.md`, `docs/signal-bot.md`, and
 `docs/twitch-bot.md`. Signal additionally requires a separately managed
@@ -268,17 +282,17 @@ use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.m
 Nymeria can expose an MCP server for other AI agents to use her capabilities.
 The MCP process is a thin client: it talks to the running REST/SSE API with
 `NYMERIA_SERVICE_TOKEN` and uses `X-Nymeria-Act-As` for user-scoped tools.
-`python run.py mcp` exits during startup if that token is missing, matching the
+`python3 run.py mcp` exits during startup if that token is missing, matching the
 worker, bot, watchdog, and foreground service launch checks.
 
 ### Local MCP
 
 ```bash
 # STDIO mode (for Claude Code, etc.)
-python run.py mcp --api-url http://localhost:8000
+python3 run.py mcp --api-url http://localhost:8000
 
 # HTTP mode (for network access)
-python run.py mcp --http --port 8001 --api-url http://localhost:8000
+python3 run.py mcp --http --port 8001 --api-url http://localhost:8000
 ```
 
 ### Docker MCP
@@ -286,14 +300,17 @@ python run.py mcp --http --port 8001 --api-url http://localhost:8000
 The `mcp` service starts by default in `docker compose --env-file .env.docker up -d`, waits for the API health check, and runs:
 
 ```bash
-python run.py mcp --http --host 0.0.0.0 --port 8001 --api-url http://nymeria-api:8000
+python3 run.py mcp --http --host 0.0.0.0 --port 8001 --api-url http://nymeria-api:8000
 ```
 
 ```yaml
 # In docker-compose.yml
-ports:
-  - "8000:8000"  # REST API
-  - "8001:8001"  # MCP Server (HTTP mode)
+api:
+  ports:
+    - "127.0.0.1:${API_PORT:-8000}:8000"
+mcp:
+  ports:
+    - "127.0.0.1:${MCP_PORT:-8001}:8001"
 ```
 
 Configure Claude Code to use Nymeria:
@@ -309,34 +326,34 @@ Configure Claude Code to use Nymeria:
 
 ## Scaling
 
-### Horizontal Scaling (API)
+### API Runtime
 
-The API process can be scaled behind a load balancer:
-
-```bash
-docker compose --env-file .env.docker up -d --scale api=3
-```
-
-When Redis is enabled, the API container creates the event bus connection and runs with ticker disabled, so SSE clients can still receive worker-published autonomous events.
+The stock Compose stack is a single-API runtime. Do not scale the API service
+with `docker compose --scale api=<count>` in the current architecture: Compose sets
+fixed container names, and agent coordination structures such as
+`ThreadLockManager` and `PendingPromptQueue` are process-local. Redis pub/sub
+lets the worker publish autonomous task events, but it does not coordinate
+multiple API agent runtimes. Horizontal API scaling would require a separate
+design for shared locks, queued sub-turns, sticky request routing, and container
+naming.
 
 ### Single Worker
 
-The worker (`python run.py worker`) should only run one instance to avoid duplicate scheduled-task execution.
+The worker (`python3 run.py worker`) should only run one instance to avoid duplicate scheduled-task execution.
 
 In Docker the worker is a **scheduler-only thin client**: it polls due TODOs
 and poll-based trigger sources, then relays each turn to the API container
 via `POST /chat` (mirroring the watchdog). It no longer constructs a
 `NymeriaAgent`, so its memory footprint drops by roughly the size of the
-tool registry + LLM client + MCP runtime (~50–150MB freed). The API
+tool registry, LLM client, and MCP runtime, roughly 50 to 150 MB. The API
 container's footprint grows by a comparable amount because it now serves
-autonomous turns in addition to user chat. The `docker-compose.yml`
-resource limits were not tuned in this PR — adjust the `api` container's
-memory limit upward and the `worker` container's downward to match the
-new shape if you're running close to limits.
+autonomous turns in addition to user chat. If the host is close to its memory
+limit, tune the `api` and `worker` resource limits in `docker-compose.yml` to
+match the workload.
 
 The worker waits up to 30s on `/health` at startup before claiming the
 first scheduled TODO, so the API doesn't need to be ready before the
-worker container boots — but the scheduled-TODO floor is API uptime,
+worker container boots. The scheduled-TODO floor is API uptime,
 not worker uptime. Plan API restarts accordingly.
 
 ## Backup & Recovery
@@ -345,10 +362,11 @@ not worker uptime. Plan API restarts accordingly.
 
 | Data | Location | Backup Method |
 |------|----------|---------------|
-| Conversations | PostgreSQL | `pg_dump` |
-| Memories/Profiles | /data/users/ | Volume backup |
-| TODOs | /data/todos/ | Volume backup |
-| Custom Tools | /data/custom_tools/ | Volume backup |
+| LangGraph checkpoints | `postgres_data` PostgreSQL volume | `pg_dump` |
+| Accounts, tokens, chat bindings, credential vault | `/data/accounts.db` in `nymeria_data` | Volume backup plus secret-key backup |
+| Users, memories, TODOs, triggers, skills, MCP servers, custom tools | `/data/<runtime paths>` in `nymeria_data` | Volume backup |
+| Workspace files | `nymeria_workspace` | Volume backup |
+| Redis cache/pub-sub state | `redis_data` | Optional volume backup; not a conversation-history store |
 | Self-modifications | Host repo `./nymeria` (bind-mounted to `/app/nymeria`) | Git + host filesystem backup |
 
 ### Backup Script
@@ -369,21 +387,21 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 `Nymeria/.env.docker` and other secret files are encrypted at rest in the repo via [git-crypt](https://github.com/AGWA/git-crypt). After `git-crypt unlock`, they are transparent in the working tree. Compose reads `.env.docker` with `--env-file` and injects only the variables each service declares; the full env file is not bind-mounted into containers.
 
 - **Fresh clone:** `git-crypt unlock /path/to/nymeria-gitcrypt.key`, or copy `.env.docker.example` and fill in your own keys.
-- **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected — only commit when updating the shared baseline.
+- **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected; only commit when updating the shared baseline.
 - **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
 - **Docker images:** `.env.docker` is excluded from the Docker build context. Compose injects selected values with `--env-file` instead of copying or mounting the full secret file into containers.
-- **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/` — they are not managed by git-crypt. Never copy them between machines.
+- **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/`; they are not managed by git-crypt. Never copy them between machines.
 
 ## Reverse Proxy (Caddy)
 
 The compose stack ships with a Caddy reverse proxy that terminates TLS and
 fronts the api/mcp containers. Production hosts should expose **only** 80
-and 443 to the public internet — the api (8000) and mcp (8001) ports are
+and 443 to the public internet; the api (8000) and mcp (8001) ports are
 bound to `127.0.0.1` inside the host and only reachable via SSH tunnel.
 
 ### One-time setup
 
-1. Point a DNS A record at the host (e.g. `nymeria.example.com` → host IP).
+1. Point a DNS A record at the host, for example `nymeria.example.com` to the host IP.
 2. Set `NYMERIA_HOSTNAME` and `ACME_EMAIL` in `.env.docker`. Caddy will
    auto-issue a Let's Encrypt cert on first request.
 3. Open 80 and 443 on the host firewall, close 8000 and 8001:
@@ -394,12 +412,12 @@ bound to `127.0.0.1` inside the host and only reachable via SSH tunnel.
    sudo ufw delete allow 8001/tcp 2>/dev/null
    sudo ufw reload
    ```
-4. `docker compose up -d caddy` — Caddy joins the `edge` network and is
+4. `docker compose up -d caddy`. Caddy joins the `edge` network and is
    the only host-published service.
 
 If you don't have a domain yet, leave `NYMERIA_HOSTNAME` unset. Caddy
 listens on `:80` over plain HTTP and you can front it with Cloudflare
-Tunnel, Tailscale Funnel, or an SSH tunnel for testing — none of those
+Tunnel, Tailscale Funnel, or an SSH tunnel for testing; none of those
 need a public TLS cert.
 
 ### Local-dev tunnel
@@ -415,13 +433,13 @@ just as they do for local Docker.
 
 ## Security Considerations
 
-1. **Account tokens**: Per-user bearer tokens (`nym_…`) are minted via `python run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired — see `docs/accounts.md`. Bots/ticker/watchdog authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
+1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, watchdog, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` are git-crypt encrypted. See `docs/git-crypt.md` for policy, rotation, and history-rewriting decisions.
-3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` (and the local Tauri origins for desktop/mobile clients) — no wildcards.
+3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: TLS is terminated at the Caddy reverse proxy (above). Only 80/443 should be open on the host firewall; 8000/8001 are loopback-only.
-6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Agent-bearing containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (watchdog, mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
-7. **Network segmentation**: Two Docker networks — `edge` (proxy + api + mcp + bots + cli-proxy + hexstrike) and `backend` (postgres + redis + api + worker). Bots cannot reach the database directly even if compromised.
+6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Full-runtime containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (watchdog, mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
+7. **Network segmentation**: Two Docker networks: `edge` for Caddy, API, MCP, worker, watchdog, profiled chat bots, and voice services; `backend` for PostgreSQL, Redis, API, and worker. Chat bots and MCP cannot reach the database directly even if compromised.
 8. **Resource limits**: Every service declares `mem_limit`, `cpus`, and `pids_limit` (see the `x-limits-*` anchors in `docker-compose.yml`). A runaway tool call cannot exhaust host memory or fork-bomb the kernel.
 9. **Bind mounts**: `./nymeria` and `run.py` are mounted **read-only** into containers for live code sync. `.env.docker` is not mounted; services receive only the selected environment variables declared in Compose. `.env.docker` stays out of image layers and is ignored by the Docker build context.
 10. **Kali Tools**: The full image includes nmap, hydra, sqlmap, etc. for `bash_execute` access. Use responsibly and only on authorized targets. Since the container is non-root, nmap loses SYN-scan privileges and falls back to TCP-connect scans.
@@ -443,8 +461,14 @@ Common issues:
 
 Ensure Playwright is installed and Chromium is available:
 ```bash
-docker exec nymeria-api playwright install chromium
+python3 -m pip install --user playwright
+python3 -m playwright install chromium
 ```
+
+In Docker, Playwright and Chromium are installed in `nymeria-full` at build
+time. If browser automation is broken inside the API container, rebuild the
+full image rather than installing browsers interactively into the running
+container.
 
 ### Self-modifications lost after restart
 

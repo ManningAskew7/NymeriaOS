@@ -1,6 +1,6 @@
 # Telegram Bot
 
-Nymeria's Telegram integration runs as a stateless gateway that translates Telegram bot commands and direct messages into Nymeria REST API calls. All state lives in the API container — the bot is a thin client with no local persistence (except a per-chat tool display toggle held in memory).
+Nymeria's Telegram integration runs as a stateless gateway that translates Telegram bot commands and direct messages into Nymeria REST API calls. All state lives in the API container  -  the bot is a thin client with no local persistence (except a per-chat tool display toggle held in memory).
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Docker: nymeria-telegram-bot (profile: telegram)
 	       └─ SSE listener (autonomous task stream → chat posts)
 ```
 
-Like the Discord bot, the Telegram bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`) — users see text appear progressively as the model generates it, with tool call boundaries shown as separate message bubbles.
+Like the Discord bot, the Telegram bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`)  -  users see text appear progressively as the model generates it, with tool call boundaries shown as separate message bubbles.
 
 ### Thread & User ID Scheme
 
@@ -80,7 +80,7 @@ docker logs nymeria-telegram-bot --tail 10
 # Look for: "telegram_{chat_id}" in the thread ID
 ```
 
-Or use the `/thread` command — it shows the full thread ID including the chat ID.
+Or use the `/thread` command  -  it shows the full thread ID including the chat ID.
 
 ## Commands Reference
 
@@ -99,7 +99,7 @@ Or use the `/thread` command — it shows the full thread ID including the chat 
 | `/restart [bot\|api]` | Restart the Telegram bot (default) or API server. Bot restarts stop polling and close Nymeria-side resources before the container exits. |
 | `/showtools` | Toggle whether tool calls are shown as separate messages |
 | `/help` | List all available commands |
-| `/start` | Telegram's default entry point — shows welcome message |
+| `/start` | Telegram's default entry point  -  shows welcome message |
 | `/threads [query]` | List desktop/user-owned threads this Telegram chat can switch to |
 | `/switch <title\|number\|id>` | Move this Telegram chat to another existing thread. Title matching is case-insensitive; use `/threads` first to get numbered choices for duplicate titles. |
 | `/new [title]` | Create a fresh desktop-style thread and switch this Telegram chat to it. If no title is given, the first chat message can still auto-title the thread. |
@@ -184,7 +184,7 @@ During streamed replies, Telegram surfaces compaction events instead of hiding t
 | `/switch <title\|number\|id>` | Move this chat's binding to another owned thread by exact title, unique title substring, numbered `/threads` result, or thread ID. Ambiguous title matches return a numbered picker. |
 | `/new [title]` | Create a fresh UUID thread owned by the Telegram user's Nymeria account, bind this chat to it, and optionally set the title. |
 | `/unbind` | Remove this chat's thread binding. Future messages here revert to the default `telegram_<chat_id>` thread. |
-| `/start link_<code>` | Auto-handled when you tap a `t.me/<bot>?start=link_<code>` deep link from the desktop wizard's first step. Self-service alternative to `python run.py users link-platform`. |
+| `/start link_<code>` | Auto-handled when you tap a `t.me/<bot>?start=link_<code>` deep link from the desktop wizard's first step. Self-service alternative to `python3 run.py users link-platform`. |
 | `/start bind_<code>` | Auto-handled when you tap a `t.me/<bot>?start=bind_<code>` deep link. Equivalent to `/bind <code>` in the chat the deep link opens. |
 
 The desktop and mobile **Chat App** tabs (Thread Settings → Chat App) are the
@@ -214,27 +214,27 @@ Setting `TELEGRAM_BOT_USERNAME=<bot>` (no `@`) in `.env.docker` lets the wizard
 produce one-tap `t.me/<bot>?start=...` deep links. With it unset, the wizard
 shows the raw `/bind` and `/start` commands the user types manually.
 
-## BYO bots — "Use my own bot" wizard
+## BYO bots  -  "Use my own bot" wizard
 
 In addition to the shared bot, users can register their own Telegram bot from
 a BotFather token. The Chat App tab has a second button, **Use my own bot**,
 that walks through:
 
-1. **Token paste** — the user pastes a token from `@BotFather`. The API
+1. **Token paste**  -  the user pastes a token from `@BotFather`. The API
    validates it via Telegram's `getMe`, encrypts it with `NYMERIA_SECRETS_KEY`
-   (Fernet symmetric encryption — see `nymeria/core/secrets.py`), and stores
+   (Fernet symmetric encryption  -  see `nymeria/core/secrets.py`), and stores
    the ciphertext on `user_telegram_bots`.
-2. **Starting** — the supervisor inside the `nymeria-telegram-bot` container
+2. **Starting**  -  the supervisor inside the `nymeria-telegram-bot` container
    refreshes its registered-bot list every ~15s. On the next tick it builds
    a fresh `python-telegram-bot` `Application` for the new bot, wires it
    into the same handlers as the shared bot, and starts polling. The wizard
    polls `GET /me/telegram-bots/{id}` until `last_seen_at` becomes non-null,
    then advances.
-3. **Bind code** — same as the shared-bot flow except the bot is the
+3. **Bind code**  -  same as the shared-bot flow except the bot is the
    user's own. The bot's `/bind <code>` handler calls
    `POST /admin/chatapp/bindings/claim-via-bot`, which authorizes by
    matching the bind code's issuing Nymeria user against the bot's
-   `owner_user_id`. No `platform_identities` lookup needed — the bot
+   `owner_user_id`. No `platform_identities` lookup needed  -  the bot
    itself is the credential.
 4. **Done.**
 
@@ -253,7 +253,7 @@ its bindings; the supervisor stops the polling loop on its next refresh.
 - **Inbound**: each bot's polling sees only chats it's a member of. The
   per-bot binding cache (filtered by `user_telegram_bot_id`) resolves
   `chat_id → thread_id`. Unbound chats on a user-owned bot have no
-  fallback (unlike the shared bot's `telegram_<chat_id>` default) — for
+  fallback (unlike the shared bot's `telegram_<chat_id>` default)  -  for
   v1 the bot replies "this chat isn't bound to a thread; use `/bind <code>`".
 - **Outbound**: the shared bot's SSE listener is the single subscriber.
   Each event's `thread_id` is matched against every bot's
@@ -271,7 +271,7 @@ Telegram message should exceed the platform's 4096-character text limit.
 
 **Tool call display modes:**
 
-- **Hidden (default):** Pre-tool text and post-tool text are sent as separate message bubbles. Telegram's chat bubble layout provides natural visual separation — no separators needed. Toggle with `/showtools`.
+- **Hidden (default):** Pre-tool text and post-tool text are sent as separate message bubbles. Telegram's chat bubble layout provides natural visual separation  -  no separators needed. Toggle with `/showtools`.
 - **Shown:** Tool calls and results appear as separate messages between text segments, formatted with tool name, arguments, and result in HTML.
 
 A **Stop** button (inline keyboard) appears on the first message during streaming. Press it to abort the current operation.
@@ -284,7 +284,7 @@ If streaming fails, the bot falls back to the sync `POST /chat/sync` endpoint au
 
 ### In Private Chats (DMs)
 
-The bot responds to all text messages — no command prefix needed. Just type naturally.
+The bot responds to all text messages  -  no command prefix needed. Just type naturally.
 
 To route a single turn to another owned Nymeria thread without switching the
 current Telegram binding, prefix the message with a thread mention:
@@ -307,7 +307,7 @@ Telegram's **privacy mode** (enabled by default for bots) means the bot only rec
 - Messages that are bot commands (`/command`)
 - Replies to the bot's own messages
 
-This is handled automatically by Telegram — no configuration needed. To respond to replies, simply reply to any of Nymeria's messages.
+This is handled automatically by Telegram  -  no configuration needed. To respond to replies, simply reply to any of Nymeria's messages.
 
 ### Message Splitting
 
@@ -322,15 +322,15 @@ Telegram has a 4096-character message limit. The bot uses the shared trigger mes
 
 The bot accepts photos and document uploads alongside (or instead of) text. Files are downloaded, base64-encoded, and forwarded to the API as the same `attachments` payload the desktop frontend uses, so the same multimodal models work.
 
-- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp` — 10 MB max.
-- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv` — 20 MB max.
+- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp`  -  10 MB max.
+- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv`  -  20 MB max.
 - **Limit:** 4 files per message; extras are dropped with a warning.
 
 Telegram converts photos to JPEG and serves them in multiple resolutions; the bot uses the highest. To preserve original encoding (PNG, etc.), send the image as a *file* / *document* instead of a photo.
 
 The message text comes from `text` if present, otherwise the photo/document `caption`. If neither is set, a short `[attachment]` placeholder is substituted so the API's non-empty-message requirement is satisfied.
 
-Unsupported MIME types and oversized files are rejected with a short reply in the chat — the rest of the message still goes through.
+Unsupported MIME types and oversized files are rejected with a short reply in the chat  -  the rest of the message still goes through.
 
 Because Telegram is text-only and can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't actually process the file the LLM will say so itself, but the upfront capability check is bypassed (useful with CLIProxy, where multimodal capabilities aren't advertised the way OpenRouter advertises them).
 
@@ -344,7 +344,7 @@ When Nymeria writes a file with `file_write(..., attach=True)`, the bot automati
 3. The bot downloads the file from `GET /workspace/download?path=...` on the API.
 4. Images (`image/*` under 10 MB) are sent as inline photos; everything else as downloadable documents.
 
-**Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded — the API rejects paths outside the workspace directory.
+**Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded  -  the API rejects paths outside the workspace directory.
 
 ### HTML Formatting
 
@@ -367,7 +367,7 @@ The bot maintains a background SSE connection to `GET /autonomous/stream`. When 
 - `tool_reload` events are produced by the backend same-turn tool reload loop; Telegram just flushes buffered text and posts a compact Tool Binding line before resumed tool calls/results.
 - Compaction, attached-context, and iteration-limit events are surfaced as compact status messages.
 - A small `Tool calls: N` italic footer is appended to the final bubble when tools were used.
-- No wrapper header — bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
+- No wrapper header  -  bubbles look identical to a regular reply, with the chat itself providing the autonomous-vs-user provenance.
 - `task_completed.content` is used only as a fallback when no live `response` chunks were received, so long streamed responses are not duplicated at completion.
 - On `task_completed` with `error: true`, a single short `Autonomous task error: ...` line is posted instead.
 - Explicit `notify` tool calls arrive as `notification` SSE events and are posted to the bound Telegram chat unless Telegram autonomous delivery is `off`.

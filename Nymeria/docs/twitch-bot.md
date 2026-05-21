@@ -13,7 +13,7 @@ Docker: nymeria-twitch-bot (profile: twitch)
             └─ LLM config: inherits global or per-thread override
 ```
 
-The bot communicates exclusively through the `twitch_send` tool — the agent's final text output is never sent to chat. This gives the agent full control over when and how many messages it sends.
+The bot communicates exclusively through the `twitch_send` tool  -  the agent's final text output is never sent to chat. This gives the agent full control over when and how many messages it sends.
 
 Twitch tools resolve the active bot through `nymeria/core/twitch_runtime.py`, a small runtime facade that lives outside `nymeria.tools`. This keeps the bot registration intact across `reload_all` / tool hot-reload and prevents tool objects from holding stale TwitchIO bot references.
 
@@ -63,12 +63,12 @@ tool-proxy/RPC layer before moving chat execution to `/chat`.
 
 Two tokens are needed: one for the **bot account** and one for the **broadcaster** (channel owner).
 
-**Bot token** — log in as the bot account and visit:
+**Bot token**  -  log in as the bot account and visit:
 ```
 https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000&scope=user:read:chat+user:write:chat+user:bot+moderator:manage:banned_users+moderator:manage:chat_messages+moderator:manage:announcements+channel:bot
 ```
 
-**Broadcaster token** — log in as the channel owner and visit:
+**Broadcaster token**  -  log in as the channel owner and visit:
 ```
 https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3000&scope=channel:bot+channel:manage:polls+channel:manage:predictions+channel:manage:broadcast+channel:read:subscriptions+channel:moderate
 ```
@@ -122,7 +122,7 @@ docker logs nymeria-twitch-bot --tail 20
 | `!clear` | Mods, Broadcaster | None | Clear conversation history |
 | `!pulse on/off/<seconds>/min <count>` | Mods, Broadcaster | None | Control pulse (enable/disable/interval/min messages) |
 | `!context` | Mods, Broadcaster | None | Show context window token usage and compaction count |
-| `!stop` / `!start` | Mods, Broadcaster | None | Kill switch — disable/re-enable all agent responses |
+| `!stop` / `!start` | Mods, Broadcaster | None | Kill switch  -  disable/re-enable all agent responses |
 | `!help` | Everyone | None | List available commands (shows mod commands to mods) |
 
 ## Chat Pulse
@@ -133,7 +133,7 @@ The bot periodically evaluates recent chat and may comment if something interest
 - **Minimum activity**: configurable via `TWITCH_PULSE_MIN_MESSAGES` (default 10, live via `!pulse min <count>`)
 - **Behavior**: the agent receives only **unseen** messages and decides whether to call `twitch_send` or stay silent
 
-The pulse and `!ask` share a delivery cursor — messages are only sent to the agent once across both paths. If a pulse is skipped (too few messages), those messages carry over to the next delivery. This eliminates duplicate token spend from repeated context.
+The pulse and `!ask` share a delivery cursor  -  messages are only sent to the agent once across both paths. If a pulse is skipped (too few messages), those messages carry over to the next delivery. This eliminates duplicate token spend from repeated context.
 
 The pulse only fires when there's new activity, so it won't waste tokens when the stream is offline or chat is dead.
 
@@ -141,9 +141,9 @@ The pulse only fires when there's new activity, so it won't waste tokens when th
 
 The bot subscribes to Twitch EventSub moderation events so it can see mod actions in its chat context:
 
-- **Bans and timeouts** (`channel.ban`) — requires `channel:moderate` scope on broadcaster token
-- **Unbans** (`channel.unban`) — requires `channel:moderate` scope on broadcaster token
-- **Message deletions** (`channel.chat.message_delete`) — requires `user:read:chat` scope on bot token
+- **Bans and timeouts** (`channel.ban`)  -  requires `channel:moderate` scope on broadcaster token
+- **Unbans** (`channel.unban`)  -  requires `channel:moderate` scope on broadcaster token
+- **Message deletions** (`channel.chat.message_delete`)  -  requires `user:read:chat` scope on bot token
 
 Mod events appear in the chat buffer as system messages formatted as `[MOD] moderator_name banned/timed out/unbanned user_name`. This gives the agent awareness of ongoing moderation so it doesn't duplicate mod actions or miss context.
 
@@ -220,15 +220,15 @@ Use the auth helper to generate URLs with all scopes: `python tools/twitch_auth.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TWITCH_CLIENT_ID` | — | Twitch application Client ID (required) |
-| `TWITCH_CLIENT_SECRET` | — | Twitch application Client Secret |
-| `TWITCH_BOT_ACCESS_TOKEN` | — | Bot's OAuth access token (required) |
-| `TWITCH_BOT_REFRESH_TOKEN` | — | Bot's OAuth refresh token |
-| `TWITCH_BOT_USER_ID` | — | Bot's numeric Twitch user ID |
-| `TWITCH_BROADCASTER_TOKEN` | — | Broadcaster's OAuth token (channel:bot scope) |
-| `TWITCH_BROADCASTER_REFRESH_TOKEN` | — | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | — | Channel to join (required) |
-| `TWITCH_SYSTEM_PROMPT` | — | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
+| `TWITCH_CLIENT_ID` |  -  | Twitch application Client ID (required) |
+| `TWITCH_CLIENT_SECRET` |  -  | Twitch application Client Secret |
+| `TWITCH_BOT_ACCESS_TOKEN` |  -  | Bot's OAuth access token (required) |
+| `TWITCH_BOT_REFRESH_TOKEN` |  -  | Bot's OAuth refresh token |
+| `TWITCH_BOT_USER_ID` |  -  | Bot's numeric Twitch user ID |
+| `TWITCH_BROADCASTER_TOKEN` |  -  | Broadcaster's OAuth token (channel:bot scope) |
+| `TWITCH_BROADCASTER_REFRESH_TOKEN` |  -  | Broadcaster's refresh token |
+| `TWITCH_CHANNEL` |  -  | Channel to join (required) |
+| `TWITCH_SYSTEM_PROMPT` |  -  | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
 | `TWITCH_BUFFER_SIZE` | `500` | Max messages in ring buffer |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat pulse |
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
@@ -258,7 +258,7 @@ curl -X PUT "http://localhost:8000/threads/twitch_channelname/config" \
 | `nymeria/config/settings.py` | Twitch settings fields |
 | `run.py` | `twitch-bot` subcommand entry point |
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) |
-| `tools/twitch_auth.py` | OAuth helper — URL generation, code exchange, token validation |
+| `tools/twitch_auth.py` | OAuth helper  -  URL generation, code exchange, token validation |
 
 ## Debugging
 
