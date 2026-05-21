@@ -45,6 +45,25 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def _slash_registry() -> CommandRegistry:
+    registry = CommandRegistry()
+    registry.register(
+        Command(
+            name="loop",
+            description="Run a prompt on a recurring interval",
+            handler=lambda _state, _args: None,
+        )
+    )
+    registry.register(
+        Command(
+            name="login",
+            description="Authenticate with the API",
+            handler=lambda _state, _args: None,
+        )
+    )
+    return registry
+
+
 def test_command_completions_include_descriptions() -> None:
     registry = CommandRegistry()
     registry.register(
@@ -223,6 +242,56 @@ def test_full_screen_prompt_fragments_use_composer_labels() -> None:
     assert all(">" not in text for fragments in prompts for _, text in fragments)
 
 
+def test_composer_slash_panel_callbacks_are_gated() -> None:
+    active = False
+    moves: list[int] = []
+    accepts: list[str] = []
+    controller = ComposerController(
+        slash_panel_is_active=lambda: active,
+        on_slash_panel_move=moves.append,
+        on_slash_panel_accept=lambda buffer: accepts.append(buffer.text),
+    )
+    buffer = controller.text_area.buffer
+    buffer.text = "/lo"
+
+    assert controller.slash_panel_navigation_enabled() is False
+    assert controller.slash_panel_accept_enabled() is False
+    assert controller.move_slash_panel_selection(1) is False
+    assert controller.accept_slash_panel_selection(buffer) is False
+    assert moves == []
+    assert accepts == []
+
+    active = True
+    assert controller.slash_panel_navigation_enabled() is True
+    assert controller.slash_panel_accept_enabled() is True
+    assert controller.move_slash_panel_selection(1) is True
+    assert controller.accept_slash_panel_selection(buffer) is True
+    assert moves == [1]
+    assert accepts == ["/lo"]
+
+
+def test_enter_can_submit_slash_panel_selection() -> None:
+    submissions: list[ComposerSubmission] = []
+
+    def accept(buffer):
+        buffer.text = "/loop"
+        buffer.cursor_position = len(buffer.text)
+
+    controller = ComposerController(
+        on_submit=submissions.append,
+        slash_panel_is_active=lambda: True,
+        on_slash_panel_accept=accept,
+    )
+    buffer = controller.text_area.buffer
+    buffer.text = "/lo"
+    buffer.cursor_position = len(buffer.text)
+
+    assert controller.submit_slash_panel_selection(buffer) is True
+
+    assert [submission.message for submission in submissions] == ["/loop"]
+    assert buffer.text == ""
+
+
 def test_rich_repl_prompt_uses_chat_label_without_command_chevron() -> None:
     state = CLIState(None, thread_id="thread-1")
 
@@ -337,6 +406,40 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
         )
         for _, text in fragments
     )
+
+
+def test_rich_repl_slash_panel_navigation_fills_selected_command(
+    tmp_path: Path,
+) -> None:
+    capabilities = FakeTerminalCapabilities(width=100)
+    cli_app = CLIApp(None, thread_id="thread-1")
+    cli_app.registry = _slash_registry()
+    renderer = RichReplRenderer(capabilities=capabilities, width=100)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    shell = _RichReplPromptToolkitShell(
+        cli_app=cli_app,
+        runtime=runtime,
+        renderer=renderer,
+        capabilities=capabilities,
+        history_path=tmp_path / "cli_history",
+    )
+
+    shell.build_application()
+    buffer = shell.composer_controller.text_area.buffer
+    buffer.text = "hello"
+    assert shell.composer_controller.slash_panel_navigation_enabled() is False
+
+    buffer.text = "/lo"
+    assert shell.composer_controller.slash_panel_navigation_enabled() is True
+    assert shell.composer_controller.move_slash_panel_selection(1) is True
+    assert shell.composer_controller.accept_slash_panel_selection(buffer) is True
+
+    assert buffer.text == "/loop"
+    assert buffer.cursor_position == len("/loop")
 
 
 def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None:

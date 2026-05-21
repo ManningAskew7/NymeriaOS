@@ -31,8 +31,7 @@ def slash_panel_visible(text: str) -> bool:
 
     if not text:
         return False
-    stripped = text.lstrip()
-    return stripped.startswith("/")
+    return text.startswith("/")
 
 
 def filter_commands(
@@ -48,7 +47,7 @@ def filter_commands(
 
     if registry is None:
         return []
-    query = text.lstrip()
+    query = str(text or "")
     if not query.startswith("/"):
         return []
 
@@ -93,6 +92,7 @@ def slash_panel_fragments(
     *,
     width: int,
     max_rows: int = SLASH_PANEL_MAX_ROWS,
+    selected_index: int | None = None,
 ) -> "StyleAndTextTuples":
     """Render the panel as prompt_toolkit fragments.
 
@@ -115,18 +115,35 @@ def slash_panel_fragments(
     used = name_width + SLASH_PANEL_NAME_GUTTER + desc_width
     trailing = max(0, panel_width - used)
 
-    visible = matches[: max(1, max_rows)]
+    visible, window_start = _visible_window(
+        matches,
+        max_rows=max_rows,
+        selected_index=selected_index,
+    )
     hidden_count = len(matches) - len(visible)
 
     fragments: "StyleAndTextTuples" = []
     for index, item in enumerate(visible):
+        absolute_index = window_start + index
+        selected = selected_index == absolute_index
+        base_style = "class:slash-panel.selected" if selected else "class:slash-panel"
+        name_style = (
+            "class:slash-panel.selected.name"
+            if selected
+            else "class:slash-panel.name"
+        )
+        desc_style = (
+            "class:slash-panel.selected.desc"
+            if selected
+            else "class:slash-panel.desc"
+        )
         name_cell = _fit_cell(item.text, name_width)
         desc_cell = _fit_cell(item.description or "", desc_width)
-        fragments.append(("class:slash-panel.name", name_cell))
-        fragments.append(("class:slash-panel", " " * SLASH_PANEL_NAME_GUTTER))
-        fragments.append(("class:slash-panel.desc", desc_cell))
+        fragments.append((name_style, name_cell))
+        fragments.append((base_style, " " * SLASH_PANEL_NAME_GUTTER))
+        fragments.append((desc_style, desc_cell))
         if trailing:
-            fragments.append(("class:slash-panel", " " * trailing))
+            fragments.append((base_style, " " * trailing))
         if index < len(visible) - 1 or hidden_count > 0:
             fragments.append(("", "\n"))
 
@@ -145,6 +162,23 @@ def _name_column_width(
     target = max(SLASH_PANEL_NAME_MIN_WIDTH, longest)
     cap = min(SLASH_PANEL_NAME_MAX_WIDTH, max(1, panel_width - 4))
     return max(1, min(target, cap))
+
+
+def _visible_window(
+    matches: list["CommandCompletion"],
+    *,
+    max_rows: int,
+    selected_index: int | None,
+) -> tuple[list["CommandCompletion"], int]:
+    rows = max(1, max_rows)
+    if len(matches) <= rows:
+        return matches, 0
+    if selected_index is None:
+        return matches[:rows], 0
+
+    bounded = max(0, min(selected_index, len(matches) - 1))
+    start = min(max(0, bounded - rows + 1), max(0, len(matches) - rows))
+    return matches[start : start + rows], start
 
 
 def _fit_cell(text: str, width: int) -> str:

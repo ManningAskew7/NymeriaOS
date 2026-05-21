@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
@@ -36,6 +37,8 @@ ErrorHandler = Callable[[str], None]
 StopHandler = Callable[[], bool | None]
 StateGetter = Callable[[], bool]
 CountGetter = Callable[[], int]
+SlashPanelMoveHandler = Callable[[int], bool | None]
+SlashPanelAcceptHandler = Callable[["Buffer"], bool | None]
 
 _SHIFT_ENTER_CSI = "\x1b[13;2u"
 if _SHIFT_ENTER_CSI not in ANSI_SEQUENCES:
@@ -172,6 +175,9 @@ class ComposerController:
         on_stop: StopHandler | None = None,
         is_busy: StateGetter | None = None,
         queued_count: CountGetter | None = None,
+        slash_panel_is_active: StateGetter | None = None,
+        on_slash_panel_move: SlashPanelMoveHandler | None = None,
+        on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
         multiline: bool = False,
         show_queued_prompt: bool = True,
         max_height: int = 6,
@@ -182,6 +188,9 @@ class ComposerController:
         self.on_stop = on_stop
         self.is_busy = is_busy or (lambda: False)
         self.queued_count = queued_count or (lambda: 0)
+        self.slash_panel_is_active = slash_panel_is_active or (lambda: False)
+        self.on_slash_panel_move = on_slash_panel_move
+        self.on_slash_panel_accept = on_slash_panel_accept
         self.show_queued_prompt = show_queued_prompt
         self.last_attachment_errors: tuple[str, ...] = ()
         self.key_bindings = self._build_key_bindings()
@@ -280,11 +289,34 @@ class ComposerController:
     def open_external_editor(self, buffer: "Buffer") -> None:
         buffer.open_in_editor(validate_and_handle=False)
 
+    def slash_panel_navigation_enabled(self) -> bool:
+        return self.on_slash_panel_move is not None and self.slash_panel_is_active()
+
+    def slash_panel_accept_enabled(self) -> bool:
+        return self.on_slash_panel_accept is not None and self.slash_panel_is_active()
+
+    def move_slash_panel_selection(self, delta: int) -> bool:
+        if not self.slash_panel_navigation_enabled() or self.on_slash_panel_move is None:
+            return False
+        return self.on_slash_panel_move(delta) is not False
+
+    def accept_slash_panel_selection(self, buffer: "Buffer") -> bool:
+        if not self.slash_panel_accept_enabled() or self.on_slash_panel_accept is None:
+            return False
+        return self.on_slash_panel_accept(buffer) is not False
+
+    def submit_slash_panel_selection(self, buffer: "Buffer") -> bool:
+        if not self.accept_slash_panel_selection(buffer):
+            return False
+        return self.submit_buffer(buffer)
+
     def _build_key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
 
         @bindings.add("enter", eager=True)
         def _submit(event):
+            if self.submit_slash_panel_selection(event.current_buffer):
+                return
             self.handle_enter(event.current_buffer)
 
         @bindings.add("c-j", eager=True)
@@ -294,6 +326,30 @@ class ComposerController:
         @bindings.add("escape", "enter", eager=True)
         def _modified_enter_newline(event):
             self.insert_newline(event.current_buffer)
+
+        @bindings.add(
+            "up",
+            eager=True,
+            filter=Condition(self.slash_panel_navigation_enabled),
+        )
+        def _slash_panel_up(event):
+            self.move_slash_panel_selection(-1)
+
+        @bindings.add(
+            "down",
+            eager=True,
+            filter=Condition(self.slash_panel_navigation_enabled),
+        )
+        def _slash_panel_down(event):
+            self.move_slash_panel_selection(1)
+
+        @bindings.add(
+            "tab",
+            eager=True,
+            filter=Condition(self.slash_panel_accept_enabled),
+        )
+        def _slash_panel_accept(event):
+            self.accept_slash_panel_selection(event.current_buffer)
 
         @bindings.add("c-c", eager=True)
         def _stop_or_clear(event):
@@ -376,6 +432,9 @@ def create_rich_repl_composer(
     on_stop: StopHandler | None = None,
     is_busy: StateGetter | None = None,
     queued_count: CountGetter | None = None,
+    slash_panel_is_active: StateGetter | None = None,
+    on_slash_panel_move: SlashPanelMoveHandler | None = None,
+    on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
 ) -> ComposerController:
     """Create the scrollback-native Rich REPL composer controller."""
 
@@ -388,6 +447,9 @@ def create_rich_repl_composer(
         on_stop=on_stop,
         is_busy=is_busy,
         queued_count=queued_count,
+        slash_panel_is_active=slash_panel_is_active,
+        on_slash_panel_move=on_slash_panel_move,
+        on_slash_panel_accept=on_slash_panel_accept,
         multiline=True,
         show_queued_prompt=False,
         max_height=6,
