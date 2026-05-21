@@ -70,12 +70,14 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API  -  the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for native Anthropic or OpenAI-compatible providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for OpenAI-compatible endpoints, use the provider's documented base URL, usually ending in `/v1`. Leave unset to use the registry default or a credential-vault base URL. |
+| `LLM_CONTEXT_LENGTH` | auto | 1,000 - 2,000,000 | Manual context-window override for local endpoints or proxies that do not report context metadata. Also available per thread as `context_length`. |
+| `LLM_OLLAMA_NUM_CTX` | auto | 1,000 - 2,000,000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests. Also available per thread as `ollama_num_ctx`. |
 | `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers. `responses` is used only for providers that advertise Responses support in the registry; unsupported providers fall back to Chat Completions. |
 | `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
 
-**Note:** For model dropdowns and context metadata, Nymeria asks the selected provider's `/models` endpoint through `GET /models/available`. Provider-returned context fields such as `context_length`, `context_window`, or `max_context_tokens` are cached for frontend context-window percentage calculations. Chat Completions itself standardizes usage token fields, not context-window limits.
+**Note:** For model dropdowns and context metadata, Nymeria asks the selected provider's `/models` endpoint through `GET /models/available`. Provider-returned context fields such as `context_length`, `context_window`, or `max_context_tokens` are cached for frontend context-window percentage calculations. Chat Completions itself standardizes usage token fields, not context-window limits. Local endpoints get extra probing: Ollama `/api/show`, LM Studio `/api/v1/models`, llama.cpp `/props`, and common OpenAI-compatible `max_model_len` fields are checked when the base URL is loopback, container-local, private LAN, or Tailscale.
 
 **Also note:** `LLM_EXTENDED_THINKING`, `LLM_USE_MODEL_DEFAULTS`, `OPENAI_API_MODE`, and provider-aware `LLM_BASE_URL` overrides are implemented in settings and runtime behavior, so they are safe to rely on even though some older docs may mention proxy behavior separately. OpenRouter Responses reasoning is displayed only when the provider emits plaintext reasoning fields; malformed inline `<think>` text that arrives as normal answer text is stripped from display and replay.
 
@@ -1520,7 +1522,7 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
   1. Asks the agent to summarize the conversation (it already has full context)
   2. Agent saves important facts to persistent memory via `memory_add(scope="global", ...)`
   3. Clears the conversation and persists a visible compaction notice with the summary
-  4. On async `/chat` streams, compacts before the next provider call when prior usage already crossed the trigger; post-turn async compaction emits `compacting`/`compacted` and streams the resumed assistant continuation. Sync/manual paths attach the summary to the next user message.
+  4. On async `/chat` streams, compacts before the next provider call when prior usage already crossed the trigger; post-turn async compaction emits `compacting` after compaction starts, then `compacted`, and streams the resumed assistant continuation. Sync/manual paths attach the summary to the next user message.
 
 - **`sliding_window`**: Legacy mode that simply removes old messages, keeping the last N cycles
 

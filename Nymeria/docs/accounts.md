@@ -263,6 +263,9 @@ Google OAuth start flows use PKCE (`S256`). Per-user Google token caches store t
 `thread_owners` enforces "who can read/mutate this thread" for normal users.
 `GET /threads` returns the effective user's owned threads plus safe recovery
 rows; pass `owned_only=true` when tooling needs only explicit owner rows.
+The desktop client uses `GET /threads?owned_only=true` for its sidebar so an
+admin token signed in as itself still sees only admin-owned threads, not other
+users' owned threads or orphan recovery rows.
 There is no universal "all threads" list view. Admin callers bypass
 thread-owner checks on direct thread routes if they already know the thread ID,
 and should use `X-Nymeria-Act-As: <user>` when they want user-scoped metadata,
