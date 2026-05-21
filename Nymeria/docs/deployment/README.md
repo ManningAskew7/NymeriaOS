@@ -1,10 +1,10 @@
 # Deployment
 
-NymeriaOS supports two deployment shapes from the same codebase. Pick the one that matches your use case — you can switch later.
+Nymeria supports two deployment shapes from the same codebase. Pick the one that matches your use case. You can switch later.
 
 ## Decision tree
 
-| If you... | Use |
+| Goal | Use |
 |---|---|
 | Want to try it on your laptop in five minutes | **Slim** |
 | Self-host for personal use on a VPS or home server | **Slim** + [remote access](remote-access.md) |
@@ -19,16 +19,16 @@ NymeriaOS supports two deployment shapes from the same codebase. Pick the one th
 - In-memory event bus
 - Embedded MCP endpoint at `/mcp` and an in-process watchdog task
 - No external services required (no Postgres, no Redis)
-- Agent runs as the OS user that started it — has whatever filesystem access you do
-- Install: `git clone … && uv venv && uv pip install -e . && python run.py slim`
+- Agent runs as the OS user that started it and has whatever filesystem access you do
+- Install: `cd Nymeria && python3 -m pip install --user -r requirements.txt && python3 run.py slim`
 
-The slim shape is the **default** the codebase has always supported — it's how the project is developed. It is suitable for individuals and small teams (rule of thumb: comfortable up to ~10 active users; heavy concurrent writes start queueing past that).
+The slim shape is the **default** the codebase has always supported. It is how the project is developed. It is suitable for individuals and small teams (rule of thumb: comfortable up to ~10 active users; heavy concurrent writes start queueing past that).
 
 See [slim.md](slim.md) for the full launcher reference, token-file map, and Docker-vs-slim caveats.
 
 ### Docker stack
-- Multi-container: `api`, `worker`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots
-- Postgres + Redis for durability and cross-process events
+- Multi-container: `api`, `worker`, `watchdog`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots and voice services
+- Postgres for durable app data and Redis pub/sub for cross-process events
 - Caddy reverse proxy with automatic Let's Encrypt TLS
 - Hardened: non-root/capability-dropped app containers, minimal thin-client env, network segmentation, read-only source bind mounts, resource limits
 - Install: `docker compose --env-file .env.docker up -d`
@@ -38,9 +38,9 @@ The Docker stack is what you reach for in production. It has stronger isolation,
 ## What's the same in both shapes
 
 Everything user-facing:
-- All agent features — tools, skills, dynamic tool binding, scheduled TODOs, thread branches, memory index, credential vault
+- All agent features: tools, skills, dynamic tool binding, scheduled TODOs, thread branches, memory index, credential vault
 - All LLM provider integrations
-- All chat-app bot integrations — native protocols: Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, Rocket.Chat, Twitch; API-hosted webhook runtimes: WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, LINE
+- All chat-app bot integrations: native protocols through thin-client bot processes, plus API-hosted webhook runtimes for WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE
 - The web UI, the desktop app, the mobile app
 - Multi-user accounts
 - Multi-agent thread teams
@@ -52,14 +52,14 @@ The slim shape is not a stripped-down product. It runs the same code in a smalle
 | | Slim | Docker stack |
 |---|---|---|
 | Storage backend | SQLite | Postgres |
-| Event bus | In-memory | Redis pub/sub (or Postgres LISTEN/NOTIFY) |
+| Event bus | In-memory | Redis pub/sub |
 | Concurrency ceiling | ~10 active users | 100+ active users |
 | Process isolation | One process | Per-service containers |
 | Agent runtime | In-process (the one process) | API container only; `worker` schedules and relays turns to the API |
 | Network segmentation | None | `edge` + `backend` networks |
 | TLS / public URL | Bring your own (see [remote-access.md](remote-access.md)) | Bundled Caddy |
 | Container security boundary | N/A (runs on host) | Cap-dropped, non-root, read-only rootfs where possible |
-| Bot containers | Run as separate processes (systemd units) | Run as containers |
+| Chat bots | Run as separate thin-client processes if launched | Profiled thin-client containers for Discord, Telegram, Slack, Matrix, Signal, Mattermost, Zulip, and Rocket.Chat; API-hosted webhooks run inside `api` |
 
 The Docker `worker` container is a scheduler + event relay: it polls
 scheduled TODOs and poll-based triggers, then POSTs to `/chat` on the
@@ -73,10 +73,10 @@ locking. See [architecture.md](../architecture.md) §4 and
 
 ## Remote access
 
-Both shapes can be accessed from anywhere — your laptop, your phone, a coworker's machine. The patterns are the same regardless of shape. See [remote-access.md](remote-access.md).
+Both shapes can be accessed from anywhere: your laptop, your phone, or a coworker's machine. The patterns are the same regardless of shape. See [remote-access.md](remote-access.md).
 
 Short version:
-- **Chat bots** (Telegram/Discord/etc.) — talk to your assistant from anywhere with zero network setup
-- **Tailscale** — private network between your devices, no public exposure
-- **Cloudflare Tunnel** — public URL on a free tier, no VPS or domain needed
-- **Domain + Caddy** — classic production setup with your own domain
+- **Chat bots** (Telegram/Discord/etc.): talk to your assistant from anywhere with zero network setup
+- **Tailscale**: private network between your devices, no public exposure
+- **Cloudflare Tunnel**: public URL on a free tier, no VPS or domain needed
+- **Domain + Caddy**: classic production setup with your own domain

@@ -4,8 +4,8 @@ Get Nymeria running in under 10 minutes.
 
 ## Prerequisites
 
-- **Python 3.11+** - Check with `python --version`
-- **pipx** - Needed for beta package installs (`python -m pip install --user pipx`)
+- **Python 3.11+** - Check with `python3 --version`
+- **pipx** - Needed for beta package installs (`python3 -m pip install --user pipx`)
 - **LLM API Key** - From one of:
   - [Anthropic](https://console.anthropic.com/) (recommended)
   - [OpenAI](https://platform.openai.com/)
@@ -112,7 +112,7 @@ Use this path when you are changing backend code locally:
 
 ```bash
 cd Nymeria
-pip install -r requirements.txt
+python3 -m pip install --user -r requirements.txt
 ```
 
 From a source checkout, you can also install the backend package in editable
@@ -120,7 +120,7 @@ mode. This uses `pyproject.toml` and keeps the `nymeria` package importable
 while you work:
 
 ```bash
-pip install -e .
+python3 -m pip install --user -e .
 ```
 
 SQLite is the default backend and needs no extra packages. If you want local
@@ -128,9 +128,9 @@ development to use PostgreSQL instead, install the Postgres checkpoint extras
 after the base dependencies:
 
 ```bash
-pip install -r requirements-postgres.txt
+python3 -m pip install --user -r requirements-postgres.txt
 # or, when using the package metadata:
-pip install -e ".[postgres]"
+python3 -m pip install --user -e ".[postgres]"
 ```
 
 ## Step 2: Configure Environment
@@ -157,11 +157,11 @@ The legacy shared `NYMERIA_API_KEY` was retired in the multi-user refactor. The
 first time setup or API boot finds an empty accounts DB it auto-creates a
 `default` admin user and writes the raw account token to
 `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600). `nymeria init` prints the token
-file path and a platform-specific copy command that reads the `nym_...` value
+file path and a platform-specific copy command that reads the `nym_<token>` value
 from the file without putting the token itself in shell history. Paste that
-`nym_...` account token into the desktop/mobile Setup Wizard, not an
+`nym_<token>` account token into the desktop/mobile Setup Wizard, not an
 Anthropic/OpenAI/OpenRouter provider API key, then delete the file. See
-`docs/accounts.md` for the full account model and the `python run.py users …`
+`docs/accounts.md` for the full account model and the `python3 run.py users`
 CLI for provisioning additional users.
 
 ### Set Your LLM Provider API Key
@@ -169,28 +169,28 @@ CLI for provisioning additional users.
 For Anthropic (default):
 ```ini
 LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...your-key-here...
+ANTHROPIC_API_KEY=sk-ant-<key>
 ```
 
 For OpenAI:
 ```ini
 LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...your-key-here...
+OPENAI_API_KEY=sk-<key>
 ```
 
 For OpenRouter:
 ```ini
 LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-...your-key-here...
+OPENROUTER_API_KEY=sk-or-<key>
 ```
 
 Optional capability keys:
 
 ```ini
-EMBEDDING_API_KEY=sk-...      # Semantic memory/RAG/skill search
-OPENAI_API_KEY=sk-...         # OpenAI image generation/STT/OpenAI-backed tools
-GEMINI_API_KEY=...            # Gemini image/document extraction/TTS tools
-PERPLEXITY_API_KEY=pplx-...   # Web search
+EMBEDDING_API_KEY=sk-<key>       # Semantic memory/RAG/skill search
+OPENAI_API_KEY=sk-<key>          # OpenAI image generation/STT/OpenAI-backed tools
+GEMINI_API_KEY=<key>             # Gemini image/document extraction/TTS tools
+PERPLEXITY_API_KEY=pplx-<key>    # Web search
 ```
 
 If `LLM_PROVIDER=openai`, the primary `OPENAI_API_KEY` also covers optional
@@ -233,33 +233,34 @@ If you are offline or intentionally testing without provider access, use
 
 ## Step 4: Start the Backend
 
-For solo/local use the simplest path is `python run.py slim`, which runs
-the API, ticker, MCP, and watchdog in a single process backed by SQLite —
+For solo/local use the simplest path is `python3 run.py slim`, which runs
+the API, ticker, MCP, and watchdog in a single process backed by SQLite;
 no Docker, no Redis, no Postgres:
 
 ```bash
-python run.py slim
+python3 run.py slim
 ```
 
 You should see:
 ```
-Starting Nymeria SLIM (single-process) on 127.0.0.1:8000...
+Starting Nymeria SLIM (single-process) on 127.0.0.1:8000
   - Mode: SQLite + in-process ticker + embedded MCP
+  - Internal API URL: http://127.0.0.1:8000
+  - Data directory: <data_dir>
   - MCP endpoint: http://127.0.0.1:8000/mcp
 ```
 
-`python run.py slim` writes an internal `data/SLIM_SERVICE_TOKEN.txt`
+`python3 run.py slim` writes an internal `data/SLIM_SERVICE_TOKEN.txt`
 (mode 0600) on first boot so embedded MCP, the watchdog, and trigger fires
 can authenticate against the API in the same process. That is NOT the
-human bootstrap token — paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
+human bootstrap token; paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
 Setup Wizard, not `SLIM_SERVICE_TOKEN.txt`. See
 [deployment/slim.md](deployment/slim.md) for the full launcher reference.
 
-For multi-process / Docker deployments (separate API + worker + MCP
-containers backed by Postgres and Redis), use:
+For source-checkout API-only development, use:
 
 ```bash
-python run.py api
+python3 run.py api
 ```
 
 When installed as a package, use:
@@ -272,9 +273,12 @@ nymeria api
 
 `nymeria api` prints:
 ```
-Starting Nymeria API server on 0.0.0.0:8000...
+Starting Nymeria API server on 0.0.0.0:8000
   - API docs: disabled (set NYMERIA_API_DOCS=true to enable)
 ```
+
+For full multi-process Docker deployments with separate API, worker, MCP,
+PostgreSQL, and Redis services, use the Docker Compose path above.
 
 ### Backend Validation
 
@@ -283,11 +287,11 @@ tests, or coverage. Docker production images intentionally omit `pytest`,
 `pytest-cov`, `ruff`, and other dev-only packages:
 
 ```bash
-pip install -r requirements-dev.txt
+python3 -m pip install --user -r requirements-dev.txt
 # or, when using the package metadata:
-pip install -e ".[dev]"
-python -m ruff check nymeria tests run.py
-python -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
+python3 -m pip install --user -e ".[dev]"
+python3 -m ruff check nymeria tests run.py
+python3 -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-under=38
 ```
 
 ## Step 5: Open the Web UI or Desktop App
@@ -307,7 +311,7 @@ For the Windows desktop app:
 2. Open the Nymeria desktop app
 3. The setup wizard will guide you through:
    - Entering the backend URL (default: `http://localhost:8000`)
-   - Pasting a `nym_...` account token, such as the bootstrap token from
+   - Pasting a `nym_<token>` account token, such as the bootstrap token from
      `<data_dir>/BOOTSTRAP_TOKEN.txt` on a first local backend boot
    - Testing the connection
 
@@ -336,7 +340,7 @@ For beta install diagnostics, provider/key failures, database locks, and
 
 ### "Invalid API key" / 401 from the desktop app
 
-The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written automatically on the first API boot) for the bootstrap admin token. To mint another user's token: `python run.py users add <email> --role user --id <slug>`. Both flows are documented in `docs/accounts.md`.
+The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written automatically on the first API boot) for the bootstrap admin token. To mint another user's token: `python3 run.py users add <email> --role user --id <slug>`. Both flows are documented in `docs/accounts.md`.
 
 ### "No API key for LLM provider"
 
@@ -347,7 +351,7 @@ Make sure you've set the API key for your chosen provider in your environment fi
 
 ### "Cannot connect to server"
 
-1. Check the backend is running: `python run.py api`
+1. Check the backend is running: `python3 run.py api`
 2. Check the URL in the desktop app matches the backend
 3. Check firewall isn't blocking port 8000
 
@@ -363,9 +367,9 @@ Make sure you've set the API key for your chosen provider in your environment fi
 
 - Read the full documentation in `docs/`
 - Customize Nymeria's personality in `nymeria/config/soul.md`
-- Explore other entry points like `python run.py cli`, `python run.py worker`, or `python run.py mcp`
-- Run as foreground gateway: `python run.py service`
-- Enable tab completion: `python run.py completion bash >> ~/.bashrc && source ~/.bashrc` (also supports `zsh` and `fish`)
+- Explore other entry points like `python3 run.py cli`, `python3 run.py worker`, or `python3 run.py mcp`
+- Run as foreground gateway: `python3 run.py service`
+- Enable tab completion: `python3 run.py completion bash >> ~/.bashrc && source ~/.bashrc` (also supports `zsh` and `fish`)
 
 ## Getting Help
 

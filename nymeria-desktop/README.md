@@ -66,7 +66,7 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 2. **Start the Nymeria API** (in a separate terminal):
    ```bash
    cd ../Nymeria
-   python run.py api
+   python3 run.py api
    ```
 
 3. **Run in development mode:**
@@ -78,9 +78,9 @@ A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
 
    On first launch, the app displays a setup wizard that guides you through:
    - Configuring the backend URL (defaults to `http://localhost:8000`)
-   - Pasting your account token — the bootstrap admin token from
+   - Pasting your account token  -  the bootstrap admin token from
      `<data_dir>/BOOTSTRAP_TOKEN.txt`, or any per-user token minted via
-     `python run.py users add <email>` (see `Nymeria/docs/accounts.md`)
+     `python3 run.py users add <email>` (see `Nymeria/docs/accounts.md`)
    - Testing the connection
 
    After completing setup, you'll be taken directly to the chat interface.
@@ -104,7 +104,7 @@ The Settings panel (⚙️ in sidebar) provides four configuration tabs:
 - Changes apply instantly
 
 ### LLM
-- Provider selection — choose from any of the 130+ providers exposed by the backend's `/settings/llm/providers` endpoint (Anthropic native, plus OpenAI/OpenRouter/xAI/Gemini/Groq/DeepSeek/Mistral/Azure/Together/Fireworks/Perplexity/Ollama/LM Studio/etc. via the OpenAI-chat path). See `Nymeria/nymeria/config/llm_providers.py` for the full registry.
+- Provider selection  -  choose from any of the 130+ providers exposed by the backend's `/settings/llm/providers` endpoint (Anthropic native, plus OpenAI/OpenRouter/xAI/Gemini/Groq/DeepSeek/Mistral/Azure/Together/Fireworks/Perplexity/Ollama/LM Studio/etc. via the OpenAI-chat path). See `Nymeria/nymeria/config/llm_providers.py` for the full registry.
 - Model selection with custom model ID support
 - Temperature slider
 - **Advanced Settings** (collapsible):

@@ -1,8 +1,8 @@
 # Remote access
 
-Your NymeriaOS backend runs on some machine — a VPS, a home server, a Raspberry Pi. You want to talk to it from somewhere else — your laptop at work, your phone on mobile, a teammate's machine.
+Your Nymeria backend runs on some machine: a VPS, a home server, a Raspberry Pi. You want to talk to it from somewhere else: your laptop at work, your phone on mobile, a teammate's machine.
 
-This page covers four paths, ordered roughly from simplest to most powerful. **You can use more than one at a time** — Telegram + Tailscale is a common combination.
+This page covers four paths, ordered roughly from simplest to most powerful. **You can use more than one at a time**. Telegram plus Tailscale is a common combination.
 
 ## TL;DR
 
@@ -19,16 +19,18 @@ This page covers four paths, ordered roughly from simplest to most powerful. **Y
 
 **This is the path most people overlook.** If your goal is "talk to my AI from anywhere," you don't need any of the network setup below. You just need a bot token.
 
-NymeriaOS ships ready-to-use integrations for Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, and Rocketchat. Each one works by having a bot daemon make *outbound* connections to the chat platform's API — long-polling for Telegram, Socket Mode for Slack, Gateway for Discord, sync loop for Matrix, and so on. The chat platform routes messages between you and your bot.
+Nymeria ships ready-to-use outbound bot integrations for Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, Rocket.Chat, and Twitch. Each one works by having a bot daemon make outbound connections to the chat platform's API: polling for Telegram, Socket Mode for Slack, Gateway for Discord, sync loop for Matrix, and so on. The chat platform routes messages between you and your bot.
 
-**No inbound network access is needed.** Your backend can sit behind any router, NAT, firewall, or ISP that allows outbound HTTPS. No domain, no port forwarding, no tunnel, no TLS certificate.
+Nymeria also supports API-hosted webhook runtimes for WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE. Those need one of the public URL options below because the chat platform must POST webhooks to your API.
+
+For those outbound bot daemons, **no inbound network access is needed**. Your backend can sit behind any router, NAT, firewall, or ISP that allows outbound HTTPS. No domain, no port forwarding, no tunnel, no TLS certificate.
 
 ### Why this is so good for personal use
 
-- You can talk to your assistant from your phone, your watch, your work laptop — anywhere the chat app is installed.
+- You can talk to your assistant from your phone, your watch, your work laptop, or anywhere the chat app is installed.
 - Your backend's IP and presence are never exposed to anyone but the chat platform.
-- The chat app provides authentication for free — only people you've shared the bot with can talk to it.
-- It works equally well in the slim shape (run as a separate Python process) and the Docker stack (run as a container).
+- Nymeria still enforces account linking: the Telegram/Discord/etc. sender must resolve to a Nymeria user before the bot will run chat turns.
+- It works in the slim shape as a separate thin-client Python process and in the Docker stack as a profiled thin-client container.
 
 ### Setup (Telegram example)
 
@@ -37,12 +39,23 @@ NymeriaOS ships ready-to-use integrations for Telegram, Discord, Slack, Matrix, 
 3. In your `.env` or `.env.docker`, set:
    ```
    TELEGRAM_BOT_TOKEN=<token>
-   TELEGRAM_BOT_USER_ID=<your-telegram-user-id>
+   TELEGRAM_DEFAULT_CHAT_ID=<optional-chat-id-for-notifications>
    ```
 4. Start the bot:
-   - **Slim shape:** `python run.py telegram-bot` (in a separate terminal or as a systemd unit)
-   - **Docker stack:** the bot starts automatically when `TELEGRAM_BOT_TOKEN` is set
+   - **Slim shape:** in a separate terminal after `python3 run.py slim` has minted `data/SLIM_SERVICE_TOKEN.txt`:
+     ```bash
+     NYMERIA_SERVICE_TOKEN="$(cat data/SLIM_SERVICE_TOKEN.txt)" \
+       python3 run.py telegram-bot --api-url http://127.0.0.1:8000
+     ```
+   - **Docker stack:** enable the profiled container after setting `TELEGRAM_BOT_TOKEN` and `NYMERIA_SERVICE_TOKEN`:
+     ```bash
+     docker compose --env-file .env.docker --profile telegram up -d telegram-bot
+     ```
 5. Open a chat with your bot in Telegram. Send `/start`.
+6. Link your Telegram sender to a Nymeria account with the desktop/mobile Chat App wizard or:
+   ```bash
+   python3 run.py users link-platform <email> telegram <telegram-user-id>
+   ```
 
 For other chat platforms see [telegram-bot.md](../telegram-bot.md), [discord-bot.md](../discord-bot.md), [slack-bot.md](../slack-bot.md), [matrix-bot.md](../matrix-bot.md), [signal-bot.md](../signal-bot.md), etc.
 
@@ -60,11 +73,11 @@ For those, combine bots with one of the options below.
 
 [Tailscale](https://tailscale.com) is a peer-to-peer VPN built on WireGuard. Install it on each of your devices, they get private IPs like `100.x.x.x`, and they can reach each other directly with end-to-end encryption.
 
-**This is the recommended path for personal use** — backend at home, devices everywhere.
+**This is the recommended path for personal use**: backend at home, devices everywhere.
 
 ### Setup
 
-On the NymeriaOS server:
+On the Nymeria server:
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
@@ -72,14 +85,14 @@ sudo tailscale up
 
 Follow the URL printed to authenticate (uses your Google / GitHub / Microsoft account).
 
-Then expose NymeriaOS to your tailnet with automatic HTTPS:
+Then expose Nymeria to your tailnet with automatic HTTPS:
 ```bash
-sudo tailscale serve --bg --https=443 http://localhost:8000
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8000
 ```
 
 This:
-- Binds NymeriaOS to your tailnet's MagicDNS hostname (e.g. `nymeria.your-tailnet.ts.net`)
-- Provisions a Let's Encrypt TLS certificate automatically
+- Binds Nymeria to your tailnet's MagicDNS hostname (e.g. `nymeria.your-tailnet.ts.net`)
+- Provisions a TLS certificate automatically after HTTPS is enabled for the tailnet
 - Makes it reachable only from devices on your tailnet
 
 On each client device (laptop, phone, etc.):
@@ -91,9 +104,9 @@ That's it. Zero public exposure, end-to-end encrypted, no domain required, no po
 
 ### When Tailscale is the right answer
 
-- You access NymeriaOS from your own devices and nobody else's
+- You access Nymeria from your own devices and nobody else's
 - You don't want to expose anything to the public internet
-- You're comfortable with ≤3 users (free tier) or a small paid plan
+- You are comfortable managing access through your tailnet users and ACLs
 
 ### When it isn't
 
@@ -108,9 +121,9 @@ Tailscale's coordination server is a third-party service. If you want zero third
 
 ## Cloudflare Tunnel
 
-Cloudflare Tunnel runs a small daemon (`cloudflared`) on your server. It opens an outbound connection to Cloudflare's edge network. Public requests hit Cloudflare, get routed through the tunnel, and arrive at NymeriaOS. **No port forwarding, no public IP, no domain required for the free tier.**
+Cloudflare Tunnel runs a small daemon (`cloudflared`) on your server. It opens an outbound connection to Cloudflare's edge network. Public requests hit Cloudflare, get routed through the tunnel, and arrive at Nymeria. **No port forwarding or public IP is required.** Quick tunnels do not require a domain; stable named tunnels do.
 
-### Setup — quick tunnel (no account, ephemeral URL)
+### Setup: quick tunnel (no account, ephemeral URL)
 
 ```bash
 # Install cloudflared
@@ -121,9 +134,9 @@ sudo dpkg -i cloudflared.deb
 cloudflared tunnel --url http://localhost:8000
 ```
 
-Cloudflare prints a URL like `https://random-words-here.trycloudflare.com`. Anyone with that URL can reach your NymeriaOS. **The URL changes every restart** — fine for one-off sharing, not for daily use.
+Cloudflare prints a URL like `https://random-words-here.trycloudflare.com`. Anyone with that URL can reach your Nymeria API. **The URL changes every restart**. This is fine for one-off sharing, not daily use.
 
-### Setup — named tunnel (free Cloudflare account, stable URL)
+### Setup: named tunnel (free Cloudflare account, stable URL)
 
 Requires a free Cloudflare account and a domain on Cloudflare DNS (Cloudflare offers free DNS hosting for any domain you own).
 
@@ -148,11 +161,17 @@ Install as a system service:
 sudo cloudflared service install
 ```
 
-Now `https://nymeria.yourdomain.com` reaches your NymeriaOS. Cloudflare handles TLS automatically.
+Now `https://nymeria.yourdomain.com` reaches your Nymeria API. Cloudflare handles public TLS automatically.
+
+For chat-bot credential setup links and OAuth authorization-code redirects, also set:
+
+```bash
+NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
+```
 
 ### Trade-offs
 
-- All your traffic flows through Cloudflare's edge — they decrypt it to serve TLS.
+- Public traffic flows through Cloudflare's edge; Cloudflare terminates public TLS and proxies through the tunnel to your server.
 - For most personal use this is acceptable. For sensitive deployments consider Tailscale instead.
 - Cloudflare can disconnect your tunnel for policy reasons (rare for legitimate use).
 
@@ -187,13 +206,19 @@ The [Docker stack](../PRODUCTION_DEPLOYMENT.md) bundles Caddy out of the box. Fo
 
 Caddy auto-provisions a Let's Encrypt certificate on first request. Browse to `https://nymeria.yourdomain.com`.
 
+For credential setup links and OAuth authorization-code redirects, set the same public origin in the Nymeria environment:
+
+```bash
+NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
+```
+
 ### When this is the right answer
 
 - You're running a production or business deployment
 - You want a permanent, professional URL
 - You want full control without third-party services in the request path
 
-For multi-user production, prefer the [Docker stack](../PRODUCTION_DEPLOYMENT.md) — it bundles Caddy plus the hardening you want.
+For multi-user production, prefer the [Docker stack](../PRODUCTION_DEPLOYMENT.md). It bundles Caddy plus the hardening you want.
 
 ---
 
@@ -201,8 +226,8 @@ For multi-user production, prefer the [Docker stack](../PRODUCTION_DEPLOYMENT.md
 
 These paths are not mutually exclusive.
 
-- **Telegram + Tailscale** — chat from your phone via the bot, use the desktop app from your laptop via the tailnet.
-- **Cloudflare Tunnel + Telegram** — public URL for demos, chat bot for daily personal use.
-- **Domain + Caddy + Telegram** — production deployment with a chat fallback.
+- **Telegram + Tailscale**: chat from your phone via the bot, use the desktop app from your laptop via the tailnet.
+- **Cloudflare Tunnel + Telegram**: public URL for demos, chat bot for daily personal use.
+- **Domain + Caddy + Telegram**: production deployment with a chat fallback.
 
 Pick what fits each use case independently. They cost nothing to layer.

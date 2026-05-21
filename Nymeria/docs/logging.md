@@ -66,7 +66,7 @@ Every subsystem uses a standardized `[TAG]` prefix. Filter by tag to isolate a s
 - **END** always includes: `thread=`, `elapsed=Xs`, and a summary metric (chunks, response_len, etc.)
 - **ERROR** always includes: `thread=`, `elapsed=Xs`, and the exception
 
-## How to Read Logs — Common Scenarios
+## How to Read Logs  -  Common Scenarios
 
 **1. "What happened during a user chat message?"**
 Look for the `[ASTREAM]` START→END pair matching the thread_id:
@@ -98,7 +98,7 @@ Set `LOG_PROFILES=threads`. Trace the callable thread by its name:
 ```
 Key: `response_len=0` confirms the callable returned empty. Check the nested `[ASTREAM] === START ===` line for the callable's thread_id to see its full stream lifecycle.
 
-**4. "Thread orchestration — which thread called which?"**
+**4. "Thread orchestration  -  which thread called which?"**
 When a main thread invokes callable threads, the log interleaves but each line has its `thread=` identifier:
 ```
 [ASTREAM] === START === thread=main-abc, user=default              ← user's chat
@@ -121,7 +121,7 @@ Tool execution timed out after 300s. Tools: ['web_search']
 ```
 If a callable thread tool times out, the parent thread's `_on_tool_timeout` fires and signals abort on the callable's thread_id, cascading to any children.
 
-**6. "User clicked stop — did it cascade?"**
+**6. "User clicked stop  -  did it cascade?"**
 Look for the cascade chain:
 ```
 [ASTREAM] Thread main-abc: Aborted by cancel signal               ← user's thread stopped
@@ -129,7 +129,7 @@ Cascading abort from thread main-abc to child research-123         ← cascade t
 [ASTREAM] Thread research-123: Aborted by cancel signal            ← child stopped
 ```
 
-**7. "Autonomous task (ticker/watchdog/trigger) — what happened?"**
+**7. "Autonomous task (ticker/watchdog/trigger)  -  what happened?"**
 Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller is a sync worker using `iter_agent_astream()`:
 ```
 [STREAM_BRIDGE] start thread=todo-thread user=default autonomous=True

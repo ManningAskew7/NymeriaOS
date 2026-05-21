@@ -1,6 +1,6 @@
 # Discord Bot
 
-Nymeria's Discord integration runs as a stateless gateway that translates Discord slash commands and mentions into Nymeria REST API calls. All state lives in the API container — the bot is a thin client with no local persistence (except a per-channel context toggle held in memory).
+Nymeria's Discord integration runs as a stateless gateway that translates Discord slash commands and mentions into Nymeria REST API calls. All state lives in the API container  -  the bot is a thin client with no local persistence (except a per-channel context toggle held in memory).
 
 ## Architecture
 
@@ -12,7 +12,7 @@ Docker: nymeria-discord-bot (profile: discord)
 	      └─ SSE listener (autonomous task stream → channel posts)
 ```
 
-Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`) — users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
+Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`)  -  users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
 
 - The frontend always reflects the same state as Discord
 - Context stats, compaction, and tool changes are visible in the UI
@@ -68,11 +68,11 @@ When not using the Discord bot, set `DISCORD_BOT_TOKEN=disabled` to prevent dock
 
 ### Slash Command Sync
 
-Discord slash commands are synced **per-guild** in the `on_ready` hook — the bot clears any stale global commands, copies the local command tree to each guild, and calls `tree.sync(guild=guild)`. This means:
+Discord slash commands are synced **per-guild** in the `on_ready` hook  -  the bot clears any stale global commands, copies the local command tree to each guild, and calls `tree.sync(guild=guild)`. This means:
 
 - **After adding/removing/renaming slash commands**, you must restart the bot container so `on_ready` fires and pushes the updated tree to Discord.
 - Sync is near-instant for guild commands (unlike global commands which can take up to an hour).
-- The Discord client may take a few seconds to refresh its autocomplete cache — if new commands don't appear immediately, close and reopen the slash command menu.
+- The Discord client may take a few seconds to refresh its autocomplete cache  -  if new commands don't appear immediately, close and reopen the slash command menu.
 
 ```bash
 # Restart to sync new/changed commands
@@ -174,7 +174,7 @@ Per-channel persistent notes that survive conversation compaction.
 
 | Command | Description |
 |---------|-------------|
-| `/show-tools` | Toggle whether tool calls are shown as embeds in chat. Defaults to hidden — only response text is shown, with horizontal rule separators at tool boundaries. When enabled, tool calls appear as blue embeds with arguments and results. |
+| `/show-tools` | Toggle whether tool calls are shown as embeds in chat. Defaults to hidden  -  only response text is shown, with horizontal rule separators at tool boundaries. When enabled, tool calls appear as blue embeds with arguments and results. |
 | `/channel-context` | Toggle whether Nymeria includes recent channel messages as context in `/ask` and @mentions. Defaults to enabled. |
 
 ## Streaming Responses
@@ -227,13 +227,13 @@ Discord has a 2000-character message limit. The bot uses the shared trigger mess
 
 The bot accepts message attachments alongside (or instead of) text. Files are downloaded, base64-encoded, and forwarded to the API as the same `attachments` payload the desktop frontend uses.
 
-- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp` — 10 MB max.
-- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv` — 20 MB max.
+- **Images:** `image/jpeg`, `image/png`, `image/gif`, `image/webp`  -  10 MB max.
+- **Documents:** `application/pdf`, `text/plain`, `text/markdown`, `text/csv`  -  20 MB max.
 - **Limit:** 4 files per message; extras are dropped with a warning.
 
-If a message has attachments but no text, a short `[attachment]` placeholder is substituted so the API's non-empty-message requirement is satisfied. Unsupported MIME types and oversized files are rejected with a short reply in the channel — the rest of the message still goes through.
+If a message has attachments but no text, a short `[attachment]` placeholder is substituted so the API's non-empty-message requirement is satisfied. Unsupported MIME types and oversized files are rejected with a short reply in the channel  -  the rest of the message still goes through.
 
-**Limitation:** `/ask` does NOT yet accept attachments — Discord slash commands need a separate `attachment` option type. Use a regular @mention (with the file attached to the same Discord message) or a DM with the file attached.
+**Limitation:** `/ask` does NOT yet accept attachments  -  Discord slash commands need a separate `attachment` option type. Use a regular @mention (with the file attached to the same Discord message) or a DM with the file attached.
 
 Because chat clients can't surface the desktop's "model may not support these attachments" override modal, the bot auto-sets `force_unsupported_attachments=true` whenever attachments are present. If the underlying model can't process the file the LLM will say so itself, but the upfront capability check is bypassed.
 
@@ -264,7 +264,7 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 
 ## Future Improvements
 
-- **`/activation` command** — Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. OpenClaw implements this as `/activation mention|always`. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
+- **`/activation` command**  -  Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. OpenClaw implements this as `/activation mention|always`. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
 
 ## Key Files
 
