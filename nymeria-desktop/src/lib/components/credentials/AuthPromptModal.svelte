@@ -6,12 +6,11 @@
   import Icon from '../common/Icon.svelte';
 
   /**
-   * Phase 11 redesign: this is no longer a blocking dialog. It renders as a
-   * floating panel that the user can drag, dismiss, or ignore while still
-   * interacting with the rest of the app. There is no full-screen backdrop
-   * and no focus trap. After a successful save the panel just closes; the
-   * agent does not get a synthetic turn, so the user prompts the agent
-   * (e.g. "ok, try again") to continue. On a test failure the error is
+   * This is a non-blocking floating panel that the user can drag, dismiss, or
+   * ignore while still interacting with the rest of the app. There is no
+   * full-screen backdrop and no focus trap. After a successful save the panel
+   * closes; the agent does not get a synthetic turn, so the user prompts the
+   * agent (e.g. "ok, try again") to continue. On a test failure the error is
    * shown inline with a copy button so the user can paste it back into chat.
    */
 

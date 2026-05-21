@@ -12,7 +12,7 @@
   let showSettings = $state(false);
   let settingsInitialTab = $state<string | undefined>(undefined);
   let showNotifications = $state(false);
-  let notificationWrapper: HTMLDivElement | undefined;
+  let notificationWrapper = $state<HTMLDivElement | undefined>(undefined);
 
   let isCollapsed = $derived(uiStore.sidebarCollapsed);
 
@@ -271,17 +271,6 @@
     position: relative;
   }
 
-  .footer-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md) var(--spacing-sm) var(--spacing-lg);
-    color: var(--text-secondary);
-    border-radius: var(--radius-md);
-    transition: all var(--transition-fast);
-  }
-
   .footer-row {
     display: flex;
     align-items: center;
@@ -324,32 +313,6 @@
 
   .footer-icon-btn.has-unread {
     color: var(--accent-primary);
-  }
-
-  .footer-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-    transform: translateX(2px);
-  }
-
-  .footer-btn.has-unread {
-    color: var(--accent-primary);
-  }
-
-  .notification-badge {
-    margin-left: auto;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 var(--spacing-xs);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: white;
-    background: var(--accent-primary);
-    border-radius: 9px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    animation: glowPulse 2s ease-in-out infinite;
   }
 
   /* Icon-only buttons for collapsed state */

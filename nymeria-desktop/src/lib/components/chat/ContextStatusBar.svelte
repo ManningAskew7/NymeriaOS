@@ -60,42 +60,6 @@
     min-height: 20px;
   }
 
-  .info-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    background: transparent;
-    border: none;
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 0.7rem;
-    transition: color var(--transition-fast), background var(--transition-fast);
-  }
-
-  .info-toggle:hover {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .info-label {
-    text-transform: lowercase;
-    letter-spacing: 0.03em;
-    transform: translateY(-1px);
-    margin-right: -2px;
-  }
-
-  .usage-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    transform: translateY(-1px);
-  }
-
   .details {
     display: flex;
     align-items: center;

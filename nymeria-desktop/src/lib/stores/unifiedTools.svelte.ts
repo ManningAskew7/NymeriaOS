@@ -136,10 +136,13 @@ function createUnifiedToolsStore() {
 
     try {
       await api.setUnifiedToolEnabled(toolId, enabled, userId);
-      // Reload to get updated state
+      // Drop the mutation loading state before calling loadTools(), which
+      // has its own loading guard.
+      loading = false;
       await loadTools(userId);
-      // Sync defaultToolsStore so both stores reflect the change
+      // Sync defaultToolsStore so banners/settings see the new baseline.
       defaultToolsStore.resetLoaded();
+      await defaultToolsStore.load(userId);
       return true;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to update tool';

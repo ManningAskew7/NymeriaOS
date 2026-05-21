@@ -8,6 +8,7 @@
   import { api } from '$lib/services/api.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
+  import { computeEffectiveToolCounts } from '$lib/utils/toolCounts';
 
   interface Props {
     thread: Thread;
@@ -58,10 +59,6 @@
     }
     return null;
   });
-
-  function isMcpToolName(name: string): boolean {
-    return name.startsWith('mcp__');
-  }
 
   let activeSkillCount = $state<number | null>(null);
   let activeSkillTooltip = $state('');
@@ -155,30 +152,21 @@
     void threadTeamsKey;
   });
 
-  const disabledNonMcpCount = $derived(
-    (threadConfig?.disabledTools ?? []).filter((name) => !isMcpToolName(name)).length
-  );
-  const enabledOptionalNonMcpCount = $derived(
-    (threadConfig?.enabledTools ?? []).filter((name) => !isMcpToolName(name)).length
-  );
-  const disabledMcpCount = $derived(
-    (threadConfig?.disabledTools ?? []).filter(isMcpToolName).length
-  );
-  const enabledOptionalMcpCount = $derived(
-    (threadConfig?.enabledTools ?? []).filter(isMcpToolName).length
-  );
-
-  const activeToolCount = $derived.by(() => {
+  const effectiveToolCounts = $derived.by(() => {
     if (!defaultToolsStore.loaded) return null;
-    const defaultNonMcpCount = defaultToolsStore.defaultToolNames.filter((name) => !isMcpToolName(name)).length;
-    return defaultNonMcpCount - disabledNonMcpCount + enabledOptionalNonMcpCount;
+    return computeEffectiveToolCounts({
+      defaultToolNames: defaultToolsStore.defaultToolNames,
+      enabledTools: threadConfig?.enabledTools ?? [],
+      disabledTools: threadConfig?.disabledTools ?? [],
+    });
   });
 
-  const activeMcpToolCount = $derived.by(() => {
-    if (!defaultToolsStore.loaded) return null;
-    const defaultMcpCount = defaultToolsStore.defaultToolNames.filter(isMcpToolName).length;
-    return defaultMcpCount - disabledMcpCount + enabledOptionalMcpCount;
-  });
+  const disabledNonMcpCount = $derived(effectiveToolCounts?.disabledNonMcpCount ?? 0);
+  const enabledOptionalNonMcpCount = $derived(effectiveToolCounts?.enabledExtraNonMcpCount ?? 0);
+  const disabledMcpCount = $derived(effectiveToolCounts?.disabledMcpCount ?? 0);
+  const enabledOptionalMcpCount = $derived(effectiveToolCounts?.enabledExtraMcpCount ?? 0);
+  const activeToolCount = $derived(effectiveToolCounts?.activeNonMcpCount ?? null);
+  const activeMcpToolCount = $derived(effectiveToolCounts?.activeMcpCount ?? null);
 
   const toolsTooltip = $derived.by(() => {
     if (activeToolCount === null) return '';

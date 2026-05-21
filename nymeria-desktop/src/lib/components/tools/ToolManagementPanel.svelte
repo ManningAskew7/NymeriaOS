@@ -154,6 +154,10 @@
     selectedTools = next;
   }
 
+  function sectionCountLabel(matches: number, total: number): string {
+    return isSearching ? `${matches} matches of ${total}` : `${total}`;
+  }
+
   function handleSave() {
     if (totalWithCallable > 25) {
       showWarning = true;
@@ -166,6 +170,9 @@
     showWarning = false;
     const ok = await defaultToolsStore.save([...selectedTools]);
     if (ok) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      unifiedToolsStore.resetLoaded();
+      await unifiedToolsStore.loadTools();
       saveStatus = 'success';
       saveMessage = 'Core tool set saved!';
     } else {
@@ -190,7 +197,9 @@
       if (needsMcpRestore) {
         await defaultToolsStore.save(mergedDefaults);
       }
-      selectedTools = new Set(mergedDefaults);
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      unifiedToolsStore.resetLoaded();
+      await unifiedToolsStore.loadTools();
       saveStatus = 'success';
       saveMessage = 'Reset to Nymeria defaults';
     } else {
@@ -378,7 +387,7 @@
             <Icon name="chevronRight" size={14} />
           </span>
           <span class="section-title">Core Tools</span>
-          <span class="section-count">{isSearching ? `${coreMatchCount}/${coreCount}` : coreCount}</span>
+          <span class="section-count">{sectionCountLabel(coreMatchCount, coreCount)}</span>
         </button>
         {#if effectiveCoreOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
@@ -492,7 +501,7 @@
             <Icon name="chevronRight" size={14} />
           </span>
           <span class="section-title">Available Tools</span>
-          <span class="section-count">{isSearching ? `${availableMatchCount}/${availableCount}` : availableCount}</span>
+          <span class="section-count">{sectionCountLabel(availableMatchCount, availableCount)}</span>
         </button>
         {#if effectiveAvailableOpen}
         <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
@@ -1117,11 +1126,14 @@
   }
 
   .section-count {
+    margin-left: auto;
     font-size: var(--font-size-xs);
     font-weight: 600;
     padding: 0 6px;
     min-width: 20px;
     text-align: center;
+    white-space: nowrap;
+    flex-shrink: 0;
     border-radius: var(--radius-full);
     background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
     color: var(--accent-primary);

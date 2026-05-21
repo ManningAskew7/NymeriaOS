@@ -19,9 +19,13 @@
 
   const isEditing = $derived(existing !== null);
 
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let name = $state(existing?.name ?? '');
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let selectedType = $state<string>(existing?.type ?? channelTypes[0]?.name ?? '');
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let enabled = $state(existing?.enabled ?? true);
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let configValues = $state<Record<string, string>>(
     Object.fromEntries(
       Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v ?? '')])
