@@ -7,7 +7,7 @@ How live-streaming reasoning tokens flow from the LLM provider to the frontend t
 ## TL;DR
 
 - The **frontend** has one code path for the thinking dropdown: it listens for SSE events of `type: "thinking"` and streams the bytes into a live-collapsing block.
-- The **backend agent** (`core/agent.py`) emits that event from three sources — Anthropic's typed `{"type": "thinking"}` content blocks, OpenAI-compatible `additional_kwargs["reasoning_content"]`, and Responses API `{"type": "reasoning"}` blocks. Responses reasoning text may arrive as `summary` entries or as OpenRouter/Anthropic-style `content: [{"type": "reasoning_text", ...}]`.
+- The **backend agent** (`core/agent.py`) emits that event from three sources  -  Anthropic's typed `{"type": "thinking"}` content blocks, OpenAI-compatible `additional_kwargs["reasoning_content"]`, and Responses API `{"type": "reasoning"}` blocks. Responses reasoning text may arrive as `summary` entries or as OpenRouter/Anthropic-style `content: [{"type": "reasoning_text", ...}]`.
 - The **ChatOpenAI subclass** (`vendor/react_agent/providers.py`) intercepts the raw streaming chunk and rescues OpenAI-compatible reasoning fields that langchain-openai deliberately drops (`delta.reasoning_content`, `delta.reasoning`, and `delta.reasoning_details`).
 - The **history endpoint** rehydrates all supported storage shapes into the same frontend `steps` format: Anthropic thinking from `AIMessage.content` typed blocks, OpenAI-compatible reasoning from `AIMessage.additional_kwargs["reasoning_content"]` / `["reasoning_details"]`, and Responses reasoning summaries from `AIMessage.content` blocks.
 - A single Responses `reasoning` block may contain several `summary_text` sections. History keeps those sections inside one frontend `thinking` step so a single model reasoning item does not render as several separate Thought blocks before the same tool call.
@@ -18,7 +18,7 @@ How live-streaming reasoning tokens flow from the LLM provider to the frontend t
 - For **native OpenAI/OpenRouter Responses mode**, Nymeria replays the checkpointed Responses content blocks on each request instead of using `previous_response_id`. That keeps LangGraph's checkpoint authoritative for compaction, system prompt changes, injected context, and per-thread tool changes while still preserving prior reasoning/tool blocks in provider-native shape.
 - If an OpenRouter model leaks Qwen/DeepSeek-style `<think>...</think>` markup through a normal text block instead of a provider-native reasoning block, Nymeria strips that text from live display, history, and later stateless replay. Leaked inline thinking is not converted into durable `thinking` history. When a provider emits an empty reasoning block, the live sanitizer may briefly hold following text while it checks for leaked inline thinking; `[ASTREAM DIAG] inline_thinking_*` logs show whether visible pre-tool preamble was held and released before or at model end.
 
-If CLIProxy gets wiped, the only thing that needs rebuilding is the sidecar container and its auth tokens (see [docs/cliproxy.md](cliproxy.md)). The Python/Svelte code in this repository requires no change — the fix is committed and automatic for any OpenAI-compatible endpoint that emits reasoning in either convention.
+If CLIProxy gets wiped, the only thing that needs rebuilding is the sidecar container and its auth tokens (see [docs/cliproxy.md](cliproxy.md)). The Python/Svelte code in this repository requires no change  -  the fix is committed and automatic for any OpenAI-compatible endpoint that emits reasoning in either convention.
 
 For Anthropic-over-CLIProxy thinking, the persistence rule is different but
 simple: the safe beta header comes from Nymeria, not from the proxy container.
@@ -70,7 +70,7 @@ This is what CLIProxy's GPT-5.5 sidecar, OpenRouter, DeepSeek, and Qwen-via-Open
 | `delta.reasoning` | OpenRouter's unified wrapper | plaintext string deltas, one per token |
 | `delta.reasoning_details` | OpenRouter's structured reasoning wrapper | typed reasoning detail objects such as `reasoning.text`, `reasoning.summary`, or encrypted blocks |
 
-`langchain-openai` documents that it **intentionally does not** extract these provider-specific fields (see the docstring at `langchain_openai/chat_models/base.py:8` and the explicit comment at `:576`). It tells you to subclass for provider-specific behaviour — which we do.
+`langchain-openai` documents that it **intentionally does not** extract these provider-specific fields (see the docstring at `langchain_openai/chat_models/base.py:8` and the explicit comment at `:576`). It tells you to subclass for provider-specific behaviour  -  which we do.
 
 ### Responses API (`/v1/responses`)
 
@@ -144,14 +144,14 @@ Reasoning arrives as typed blocks with `type: "reasoning"`. Nymeria streams and 
 └─────────────────────────────┘
 ```
 
-For **Anthropic** the two middle rows collapse into a single typed-block branch inside the same `on_chat_model_stream` handler — both paths converge on the same `yield {"type": "thinking", ...}` line, so downstream rendering is identical.
+For **Anthropic** the two middle rows collapse into a single typed-block branch inside the same `on_chat_model_stream` handler  -  both paths converge on the same `yield {"type": "thinking", ...}` line, so downstream rendering is identical.
 
 ## Why a subclass, not a monkey-patch
 
 `langchain_openai/chat_models/base.py` explicitly recommends subclassing as the provider-specific extension mechanism (`"Use a provider-specific subclass for full provider support."`). The key override point is `_convert_chunk_to_generation_chunk`, which receives the full raw chunk dict (not just the delta). We call `super()` first to get the standard `AIMessageChunk`, then inject reasoning into its `additional_kwargs` before returning. That keeps every other langchain behaviour (tool-call deltas, usage metadata, finish reason propagation, response_metadata output versioning) intact.
 
 We avoid monkey-patching because:
-- `_convert_delta_to_message_chunk` is a module-level free function, not a method — any patch would collide with other `ChatOpenAI` consumers sharing the process (plus it's called from both sync and async paths).
+- `_convert_delta_to_message_chunk` is a module-level free function, not a method  -  any patch would collide with other `ChatOpenAI` consumers sharing the process (plus it's called from both sync and async paths).
 - The existing `_patch_langchain_anthropic_proxy_compat` monkey-patch in the same file demonstrates how awkward upstream patching is. A subclass is contained to the creator function.
 
 ## Code map
@@ -185,7 +185,7 @@ All under `/opt/NymeriaOS/Nymeria/`:
 | OpenRouter with default `openai_api_mode="responses"` | `/api/v1/responses` | typed `reasoning` summaries; OpenRouter may also stream `response.reasoning.delta` / `response.reasoning_text.delta` or finalize Claude reasoning in `reasoning.content[].text` | ✅ yes, with stateless full-history replay, OpenRouter history normalization, and inline `<think>` leak stripping |
 | OpenRouter DeepSeek-R1 / Qwen thinking / Claude-via-OR with `openai_api_mode="chat_completions"` and `reasoning.enabled=true` | `/chat/completions` | `delta.reasoning` and/or `delta.reasoning_details` | ✅ yes, via subclass; prior OpenRouter assistant reasoning is replayed with `message.reasoning_details` when available |
 | Pure OpenAI reasoning models via `openai.com` with default `openai_api_mode="responses"` | `/v1/responses` | Typed reasoning blocks; summary optional and often empty | ✅ surfaces plaintext summaries when present |
-| gpt-5-pro family, gpt-5.2-pro, gpt-5.4-pro, any `*codex*` name — direct (not via CLIProxy) | `/v1/responses` (auto-switched by langchain-openai `_model_prefers_responses_api`) | Typed reasoning blocks; summary optional and often empty; raw reasoning is encrypted | ✅ surfaces plaintext summaries when present |
+| gpt-5-pro family, gpt-5.2-pro, gpt-5.4-pro, any `*codex*` name  -  direct (not via CLIProxy) | `/v1/responses` (auto-switched by langchain-openai `_model_prefers_responses_api`) | Typed reasoning blocks; summary optional and often empty; raw reasoning is encrypted | ✅ surfaces plaintext summaries when present |
 
 The CLIProxy sidecar does not trigger langchain-openai's built-in Responses auto-switch for `gpt-5.5` because the model name does not match any prefix in `_RESPONSES_API_ONLY_PREFIXES` (`gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`) and does not contain `codex`. Nymeria's default `openai_api_mode="responses"` forces the correct endpoint anyway; `chat_completions` remains available as a compatibility override.
 
@@ -193,12 +193,12 @@ The CLIProxy sidecar does not trigger langchain-openai's built-in Responses auto
 
 If the GPT-5.5 CLIProxy sidecar gets wiped and you're rebuilding from scratch, the **reasoning-translation** behaviour requires the following to line up. All of them are already satisfied by the procedure in [docs/cliproxy.md § Codex OAuth GPT-5.5 sidecar](cliproxy.md#codex-oauth-gpt-55-sidecar), but it's worth stating them explicitly because they're the failure points:
 
-1. **Image version ≥ v6.9.36.** The Codex→chat-completions reasoning translator at `internal/translator/codex/openai/chat-completions/codex_openai_response.go:105` was added in that release. Older images (including the pinned `v6.9.0` Claude proxy) do not have it and will strip reasoning before it reaches Nymeria. Use `eceasy/cli-proxy-api:latest` for the sidecar — it bumps as new Codex models land.
-2. **`config.yaml` has a non-empty `api-keys:` list.** CLIProxy's local gatekeeper. The value isn't upstream auth — it's what you paste into the thread's "API Key" field. Default in our repo is `cpx-latest-local-test` (see `CLIProxyAPI-main/config.nymeria.example.yaml`).
-3. **A valid Codex OAuth token in `auths/`.** Generated via the `-codex-device-login -no-browser` flow (see cliproxy.md). This is the subscription-side auth. Upstream reasoning visibility depends on this account's model access — Plus-tier gives `gpt-5.5` with reasoning summaries; free tier currently does not.
+1. **Image version ≥ v6.9.36.** The Codex→chat-completions reasoning translator at `internal/translator/codex/openai/chat-completions/codex_openai_response.go:105` was added in that release. Older images (including the pinned `v6.9.0` Claude proxy) do not have it and will strip reasoning before it reaches Nymeria. Use `eceasy/cli-proxy-api:latest` for the sidecar  -  it bumps as new Codex models land.
+2. **`config.yaml` has a non-empty `api-keys:` list.** CLIProxy's local gatekeeper. The value isn't upstream auth  -  it's what you paste into the thread's "API Key" field. Default in our repo is `cpx-latest-local-test` (see `CLIProxyAPI-main/config.nymeria.example.yaml`).
+3. **A valid Codex OAuth token in `auths/`.** Generated via the `-codex-device-login -no-browser` flow (see cliproxy.md). This is the subscription-side auth. Upstream reasoning visibility depends on this account's model access  -  Plus-tier gives `gpt-5.5` with reasoning summaries; free tier currently does not.
 4. **The sidecar container is attached to the `nymeria_nymeria-network` Docker network.** `docker network connect nymeria_nymeria-network cli-proxy-api-latest`. Without this, the Nymeria API container resolves `http://cli-proxy-api-latest:8317` → no route. Per-thread `base_url` would have to switch to a host-routable address (`http://host.docker.internal:8318/v1`) as a fallback.
 
-Given those four, reasoning streaming works immediately — no Python or Svelte change is ever needed after a sidecar rebuild.
+Given those four, reasoning streaming works immediately  -  no Python or Svelte change is ever needed after a sidecar rebuild.
 
 ## Debugging
 
@@ -228,7 +228,7 @@ curl -s -N -X POST http://localhost:8318/v1/chat/completions \
 ```
 
 Expected: ten `"reasoning_content":"..."` lines. If you get none:
-- Try `reasoning_effort: "medium"` or `"high"` — low-effort often skips reasoning entirely on trivial prompts.
+- Try `reasoning_effort: "medium"` or `"high"`  -  low-effort often skips reasoning entirely on trivial prompts.
 - Check `docker logs cli-proxy-api-latest --tail 60` for `Suspended client ... quota` or `model_cooldown` lines. If present, `docker restart cli-proxy-api-latest` clears in-memory suspension, then retry.
 - Check the auth token is for a Plus-tier Codex account. Free-tier Codex OAuth tokens do not receive reasoning summaries.
 
@@ -253,7 +253,7 @@ print('preview:', ''.join(rc)[:200])
 PY
 ```
 
-Expected: 20+ chunks and a plaintext preview. If `reasoning chunks: 0` but the curl above shows the wire has them, the subclass isn't being used — check `_create_openai_llm` and `_create_openrouter_llm` in providers.py both instantiate `ChatOpenAIWithReasoning`.
+Expected: 20+ chunks and a plaintext preview. If `reasoning chunks: 0` but the curl above shows the wire has them, the subclass isn't being used  -  check `_create_openai_llm` and `_create_openrouter_llm` in providers.py both instantiate `ChatOpenAIWithReasoning`.
 
 ### Is the agent emitting thinking SSE events?
 
@@ -285,7 +285,6 @@ Expected for a GPT-5.5 sidecar turn: a `steps` array with a `thinking` entry bef
 
 ## Related docs
 
-- [cliproxy.md](cliproxy.md) — full sidecar setup and OAuth procedure. Required reading if rebuilding from scratch.
-- [architecture.md](architecture.md) — overall SSE event protocol and streaming model.
-- [reasoning-tokens-investigation.md](reasoning-tokens-investigation.md) — the 2026-02-08 investigation that identified where langchain-openai was dropping reasoning, superseded by this doc.
-- [configuration.md](configuration.md) — per-thread LLM config fields (`provider`, `base_url`, `api_key`, `reasoning_effort`, `extended_thinking`).
+- [cliproxy.md](cliproxy.md)  -  full sidecar setup and OAuth procedure. Required reading if rebuilding from scratch.
+- [architecture.md](architecture.md)  -  overall SSE event protocol and streaming model.
+- [configuration.md](configuration.md)  -  per-thread LLM config fields (`provider`, `base_url`, `api_key`, `reasoning_effort`, `extended_thinking`).

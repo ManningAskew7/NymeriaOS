@@ -1,4 +1,4 @@
-# Nymeria — Complete Feature List
+# Nymeria  -  Complete Feature List
 
 Comprehensive feature inventory for comparison with other AI agent platforms. Last updated: 2026-04-23.
 
@@ -9,11 +9,11 @@ Comprehensive feature inventory for comparison with other AI agent platforms. La
 The core differentiating feature. Any conversation thread can be made "callable", turning it into a tool that other threads can invoke. This enables stateful, multi-agent orchestration where each agent maintains its own persistent conversation history, knowledge, tools, and personality.
 
 ### How It Works
-- **Any thread becomes a tool** — Set `callable=True` on any thread, and it appears as `thread_name(task: str) → str` in other threads' tool lists
-- **Fully stateful** — Each callable thread has its own persistent conversation history (SQLite/PostgreSQL checkpoints). When invoked again, it remembers everything from previous calls
-- **Independent configuration** — Each thread has its own system prompt, tools, LLM model, skills, and iteration limits
-- **Hierarchical invocation** — Threads can call other threads, forming multi-level agent hierarchies (max depth 3)
-- **Circular call prevention** — BFS ancestry check prevents deadlocks (thread A → B → A blocked)
+- **Any thread becomes a tool**  -  Set `callable=True` on any thread, and it appears as `thread_name(task: str) → str` in other threads' tool lists
+- **Fully stateful**  -  Each callable thread has its own persistent conversation history (SQLite/PostgreSQL checkpoints). When invoked again, it remembers everything from previous calls
+- **Independent configuration**  -  Each thread has its own system prompt, tools, LLM model, skills, and iteration limits
+- **Hierarchical invocation**  -  Threads can call other threads, forming multi-level agent hierarchies (max depth 3)
+- **Circular call prevention**  -  BFS ancestry check prevents deadlocks (thread A → B → A blocked)
 
 ### Per-Thread Configuration
 - **System prompt**: Append instructions to base prompt (5000 chars) OR replace entirely (50,000 chars)
@@ -33,30 +33,30 @@ The core differentiating feature. Any conversation thread can be made "callable"
 
 ### Learning & Improvement
 Each thread improves as it's used through two knowledge systems:
-- **Notepad** (thread-local) — Persistent markdown scratchpad (50KB) that survives context compaction. The agent writes findings, decisions, project state, and strategy. Re-injected into the system prompt after every compaction. Acts as the thread's isolated, evolving knowledge base.
-- **Profile** (shared) — Key-value store shared across ALL threads (100 entries, 1000 chars each). Contains universal facts about the user: name, preferences, API keys, communication style. Every thread sees this context.
+- **Notepad** (thread-local)  -  Persistent markdown scratchpad (50KB) that survives context compaction. The agent writes findings, decisions, project state, and strategy. Re-injected into the system prompt after every compaction. Acts as the thread's isolated, evolving knowledge base.
+- **Profile** (shared)  -  Key-value store shared across ALL threads (100 entries, 1000 chars each). Contains universal facts about the user: name, preferences, API keys, communication style. Every thread sees this context.
 
 ### Concurrency & Safety
-- **Per-thread locking** — `ThreadLockManager` prevents concurrent access to the same thread
-- **Cascading abort** — Aborting a parent recursively aborts all active child threads
-- **Callback isolation** — Child thread LLM tokens don't leak into parent's event stream
-- **Parent-child tracking** — Active invocations registered for abort cascade and hierarchy queries
+- **Per-thread locking**  -  `ThreadLockManager` prevents concurrent access to the same thread
+- **Cascading abort**  -  Aborting a parent recursively aborts all active child threads
+- **Callback isolation**  -  Child thread LLM tokens don't leak into parent's event stream
+- **Parent-child tracking**  -  Active invocations registered for abort cascade and hierarchy queries
 
 ---
 
 ## 2. Persistent Memory & Learning
 
-Nymeria threads don't just respond — they learn. Three interconnected systems ensure nothing is forgotten and every thread improves with use.
+Nymeria threads don't just respond  -  they learn. Three interconnected systems ensure nothing is forgotten and every thread improves with use.
 
 ### Profile (Shared Knowledge Base)
-- **Scope**: Global — shared across ALL threads for a user
+- **Scope**: Global  -  shared across ALL threads for a user
 - **Purpose**: Universal facts (name, role, preferences, API keys, communication style)
 - **Auto-injected**: Into every thread's system prompt (configurable per-thread)
 - **Tools**: `memory_add(scope="global", ...)`, `memory_edit(scope="global", ...)`, `memory_read(scope="global", ...)`, `personality_set`
 - **Limits**: 100 memories, 1000 chars each
 
 ### Notepad (Per-Thread Knowledge Base)
-- **Scope**: Thread-local — isolated to one conversation
+- **Scope**: Thread-local  -  isolated to one conversation
 - **Purpose**: Thread-specific state: project context, decisions, findings, strategy, file paths
 - **Survives compaction**: Automatically re-injected after context summarization
 - **Tools**: `memory_add(scope="thread", ...)`, `memory_edit(scope="thread", ...)`, `memory_read(scope="thread", ...)` (same unified verbs as profile, just `scope="thread"`)
@@ -64,10 +64,10 @@ Nymeria threads don't just respond — they learn. Three interconnected systems 
 - **Used by autonomous tasks**: Ticker reads notepad for context continuity
 
 ### RAG (Nothing Gets Forgotten)
-- **Every conversation turn is indexed** — User message + AI response pairs embedded into per-user vector store after each turn
-- **Pre-compaction flush** — Before context is trimmed, all messages are defensively written to RAG
-- **Hybrid search** — sqlite-vec vector similarity (70%) + FTS5 BM25 (30%)
-- **Three chunk types**: `conversation`, `memory`, `todo` — each toggleable
+- **Every conversation turn is indexed**  -  User message + AI response pairs embedded into per-user vector store after each turn
+- **Pre-compaction flush**  -  Before context is trimmed, all messages are defensively written to RAG
+- **Hybrid search**  -  sqlite-vec vector similarity (70%) + FTS5 BM25 (30%)
+- **Three chunk types**: `conversation`, `memory`, `todo`  -  each toggleable
 - **Embedding**: OpenAI-compatible `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536 dims), BM25-only fallback if unavailable
 - **Sentence-aware chunking**: 400-token chunks with 80-token overlap
 - **Per-user isolation**: Separate vector stores per user
@@ -95,45 +95,45 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - Core tools always available; optional tools curated per user preference
 
 ### Runtime Capability Expansion (`self-improve`)
-- **Search** — `tool_search` finds tools by keyword/category after `self-improve` loads
-- **Enable** — `tool_enable` activates optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
-- **MCP** — `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
-- **Skills** — `skill_manage` lists, searches, installs, enables, and disables Agent Skills
-- **Skill Kits** — `skill_kit_create` packages existing tools or creates HTTP tools before publishing a durable Skill Kit
+- **Search**  -  `tool_search` finds tools by keyword/category after `self-improve` loads
+- **Enable**  -  `tool_enable` activates optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
+- **MCP**  -  `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
+- **Skills**  -  `skill_manage` lists, searches, installs, enables, and disables Agent Skills
+- **Skill Kits**  -  `skill_kit_create` packages existing tools or creates HTTP tools before publishing a durable Skill Kit
 
 ### In-Turn Hot-Loading
-- **Mid-stream graph rebuild** — Enable a tool and use it in the same turn (up to 3 reloads per turn)
+- **Mid-stream graph rebuild**  -  Enable a tool and use it in the same turn (up to 3 reloads per turn)
 - Agent calls `tool_enable(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
 - Skill Kit activation uses the same path when `metadata.nymeria.required_tools` declares required tool schemas
 - `skill_config(action="publish")`, `skill_kit_create`, `skill_manage`, and `manage_mcp(action="install")` use reload metadata to refresh the right schemas/indexes in the same turn
-- **Sliding renewal** — Re-enabling refreshes expiry; promoting to permanent upgrades classification
-- **Lazy eviction** — Expired TTL tools filtered at graph-build time, no background scheduler
+- **Sliding renewal**  -  Re-enabling refreshes expiry; promoting to permanent upgrades classification
+- **Lazy eviction**  -  Expired TTL tools filtered at graph-build time, no background scheduler
 
 ### MCP Server Discovery & Installation
-- **`manage_mcp`** — Search official MCP registry + Smithery, preview install plans, install from Claude Desktop JSON/bare command/HTTP URL/registry ID, and inspect installed servers
+- **`manage_mcp`**  -  Search official MCP registry + Smithery, preview install plans, install from Claude Desktop JSON/bare command/HTTP URL/registry ID, and inspect installed servers
 - Auto-discovers tools, namespaces as `mcp__<server>__<tool>`, and enables them in the same turn when requested
 
 ### Skill Discovery & Installation
-- **`skill_manage`** — List/search installed + Anthropic marketplace skills, install bundles, and enable/disable them per-thread
-- **Security scanning** — Detects curl|bash pipes, rm -rf, eval base64, fork bombs before install
-- **Progressive disclosure** — Only name + description loaded; full body on activation
-- **Skill Kits** — Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
-- **Self-improve Skill Kit** — Bundled workflow seeded into user global skills by default; users can untick "Enable globally" while generated Skill Kits activate only on the current thread unless explicitly made global
-- **`skill_config`** — Validated agent-facing writer for generated `SKILL.md` files; strict dependency checks, user scope by default, global scope admin-only
-- **Per-thread control** — Enable/disable skills per thread; four scopes (thread > user > global > bundled)
+- **`skill_manage`**  -  List/search installed + Anthropic marketplace skills, install bundles, and enable/disable them per-thread
+- **Security scanning**  -  Detects curl|bash pipes, rm -rf, eval base64, fork bombs before install
+- **Progressive disclosure**  -  Only name + description loaded; full body on activation
+- **Skill Kits**  -  Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
+- **Self-improve Skill Kit**  -  Bundled workflow seeded into user global skills by default; users can untick "Enable globally" while generated Skill Kits activate only on the current thread unless explicitly made global
+- **`skill_config`**  -  Validated agent-facing writer for generated `SKILL.md` files; strict dependency checks, user scope by default, global scope admin-only
+- **Per-thread control**  -  Enable/disable skills per thread; four scopes (thread > user > global > bundled)
 
 ---
 
 ## 4. Core Agent Architecture
 
 ### LangGraph ReAct Agent
-- **Reasoning + Acting loop** — LangGraph-based ReAct pattern with higher tool-call budgets (default 500 main, 300 callable, configurable callables up to 1000) and exact repeated tool/result loop detection
-- **Per-user graph compilation** — Graphs compiled per user/thread based on memory hash, tool set, and thread config; LRU-cached (max 50 entries)
-- **Dynamic tool binding** — Tools resolved at graph-build time from core + optional + callable + MCP + skill sources
-- **Multi-provider LLM support** — Anthropic (native) plus OpenAI, OpenRouter, xAI, Gemini, Groq, DeepSeek, Mistral, local/self-hosted runtimes, and other OpenAI-compatible providers via a registry-backed adapter and live model-list endpoints
-- **Extended thinking** — Configurable reasoning effort (off, on, low, medium, high) with thinking block visualization
-- **Model hot-switching** — Change model per-thread or globally at runtime without restart
-- **Cross-thread @mentions** — Prefix a chat message with `@ThreadName`,
+- **Reasoning + Acting loop**  -  LangGraph-based ReAct pattern with higher tool-call budgets (default 500 main, 300 callable, configurable callables up to 1000) and exact repeated tool/result loop detection
+- **Per-user graph compilation**  -  Graphs compiled per user/thread based on memory hash, tool set, and thread config; LRU-cached (max 50 entries)
+- **Dynamic tool binding**  -  Tools resolved at graph-build time from core + optional + callable + MCP + skill sources
+- **Multi-provider LLM support**  -  Anthropic (native) plus OpenAI, OpenRouter, xAI, Gemini, Groq, DeepSeek, Mistral, local/self-hosted runtimes, and other OpenAI-compatible providers via a registry-backed adapter and live model-list endpoints
+- **Extended thinking**  -  Configurable reasoning effort (off, on, low, medium, high) with thinking block visualization
+- **Model hot-switching**  -  Change model per-thread or globally at runtime without restart
+- **Cross-thread @mentions**  -  Prefix a chat message with `@ThreadName`,
   `@CallableName`, or `@"Thread With Spaces"` to route that turn to another
   owned thread while streaming the response in the current client view with a
   visible reference line like `Response from <thread>`. Routed turns preserve
@@ -148,17 +148,17 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Autonomous events**: `task_started`, `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, `response`, `task_completed`, `webhook_message`
 
 ### Context Management
-- **Auto-compaction** (default) — Automatic summarization at a configurable model-window threshold (default 80%)
-- **In-context summarization** — Agent generates its own summary, no separate LLM call
-- **Pre-compaction RAG flush** — All messages indexed before trimming (nothing lost)
-- **Checkpoint pruning** — Old checkpoint rows cleaned up after compaction
-- **Notepad re-injection** — Thread knowledge base re-attached after compaction
-- **Token tracking** — Context stats exposed via API: token count, percentage, compaction count
+- **Auto-compaction** (default)  -  Automatic summarization at a configurable model-window threshold (default 80%)
+- **In-context summarization**  -  Agent generates its own summary, no separate LLM call
+- **Pre-compaction RAG flush**  -  All messages indexed before trimming (nothing lost)
+- **Checkpoint pruning**  -  Old checkpoint rows cleaned up after compaction
+- **Notepad re-injection**  -  Thread knowledge base re-attached after compaction
+- **Token tracking**  -  Context stats exposed via API: token count, percentage, compaction count
 
 ### Concurrency
-- **Per-thread locking** — Non-blocking acquisition with timeout and lock holder metadata
-- **Queued execution** — Busy threads return "queued" events with wait duration
-- **Explicit cancellation** — `/stop` and `POST /threads/{id}/stop` cancel active work on a thread
+- **Per-thread locking**  -  Non-blocking acquisition with timeout and lock holder metadata
+- **Queued execution**  -  Busy threads return "queued" events with wait duration
+- **Explicit cancellation**  -  `/stop` and `POST /threads/{id}/stop` cancel active work on a thread
 
 ---
 
@@ -169,14 +169,17 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | Category | Tools |
 |----------|-------|
 | **Files** | `file_read`, `file_write` (broad write access by default; optional `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true`) |
+| **Shell** | `bash_execute` (backend shell execution, bounded by deployment and tool policy) |
 | **Web** | `web_search` (Perplexity, 3 depth levels) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
+| **Credentials** | `auth_manager`, `request_credential` |
 | **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when needed |
 
-`bash_execute` is available only as an admin-enabled optional tool, not in the default core loadout.
+The code-owned source of truth is `nymeria/tools/__init__.py`: 17 core tools in
+`ALL_TOOLS` and 1,250 optional tools in `OPTIONAL_TOOLS` as of 2026-05-20.
 
 ### Optional Tool Categories
 
@@ -194,10 +197,10 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Self-Modification** | 8 | (Legacy) Direct code editing with backups and validation |
 
 ### Dynamic Tools
-- **Callable thread tools** — Any thread with `callable=True` becomes a tool
-- **Custom HTTP tools** — REST API calls with templates and JSONPath extraction
-- **MCP server tools** — Auto-discovered from installed MCP servers
-- **Skill meta-tool** — Synthesized `Skill(name)` tool per thread; Skill Kits hot-bind required tools on activation
+- **Callable thread tools**  -  Any thread with `callable=True` becomes a tool
+- **Custom HTTP tools**  -  REST API calls with templates and JSONPath extraction
+- **MCP server tools**  -  Auto-discovered from installed MCP servers
+- **Skill meta-tool**  -  Synthesized `Skill(name)` tool per thread; Skill Kits hot-bind required tools on activation
 
 ---
 
@@ -211,17 +214,17 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Auto-purge**: Completed TODOs are removed from the active TODO list after `TODO_AUTO_ARCHIVE_DAYS` (default 7)
 
 ### Ticker (Background Scheduler)
-- **Daemon thread polling** — 5-second intervals (configurable 1–60s)
-- **Parallel execution** — ThreadPoolExecutor (default 5 concurrent tasks)
-- **Retry logic** — 3 retries before permanent failure, 10-minute backoff on iteration limits
-- **Missed schedule recovery** — Detects and re-executes overdue TODOs on startup
-- **Event publishing** — Real-time SSE for watching autonomous work
+- **Daemon thread polling**  -  5-second intervals (configurable 1–60s)
+- **Parallel execution**  -  ThreadPoolExecutor (default 5 concurrent tasks)
+- **Retry logic**  -  3 retries before permanent failure, 10-minute backoff on iteration limits
+- **Missed schedule recovery**  -  Detects and re-executes overdue TODOs on startup
+- **Event publishing**  -  Real-time SSE for watching autonomous work
 
 ### Watchdog Monitoring
-- **Staleness detection** — Finds TODOs unchanged beyond configurable threshold
-- **Nudge mechanism** — Groups stale TODOs by thread, sends prompts via `/chat`
-- **External notifications** — Alerts via Telegram/Discord/Slack with elapsed time
-- **Kill switches** — Environment variable or file flag to disable
+- **Staleness detection**  -  Finds TODOs unchanged beyond configurable threshold
+- **Nudge mechanism**  -  Groups stale TODOs by thread, sends prompts via `/chat`
+- **External notifications**  -  Alerts via Telegram/Discord/Slack with elapsed time
+- **Kill switches**  -  Environment variable or file flag to disable
 
 ---
 
@@ -238,21 +241,21 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Microsoft Teams** | Poll | Channel monitoring via Graph API |
 
 ### Trigger Actions
-- **agent_prompt** — Send prompt to bound thread via `/chat` with full SSE streaming
-- **notify** — Publish notification via configured platforms
-- **create_todo** — Create TODO item with template variable support
+- **agent_prompt**  -  Send prompt to bound thread via `/chat` with full SSE streaming
+- **notify**  -  Publish notification via configured platforms
+- **create_todo**  -  Create TODO item with template variable support
 
 ### Trigger Features
-- **Condition filtering** — equals, not_equals, contains, starts_with, matches_regex (AND logic, case toggle)
-- **Template variables** — Source-specific `{variable}` interpolation into actions
-- **Thread binding** — Each trigger bound to one thread; auto-binds to creation thread
-- **Busy-thread deferral** — Detects busy threads, defers to pending queue, retries next cycle
-- **Batch processing** — Multiple events per poll batched into single LLM call
-- **Cooldown** — Per-trigger minimum fire interval
-- **Health tracking** — healthy → degraded (2+ errors) → failing (5+) with exponential backoff
-- **Execution history** — Full audit trail (200 per user) with status and duration
-- **Dry-run testing** — Test with sample data without firing
-- **Plugin reload** — Reload source plugins from disk without restart
+- **Condition filtering**  -  equals, not_equals, contains, starts_with, matches_regex (AND logic, case toggle)
+- **Template variables**  -  Source-specific `{variable}` interpolation into actions
+- **Thread binding**  -  Each trigger bound to one thread; auto-binds to creation thread
+- **Busy-thread deferral**  -  Detects busy threads, defers to pending queue, retries next cycle
+- **Batch processing**  -  Multiple events per poll batched into single LLM call
+- **Cooldown**  -  Per-trigger minimum fire interval
+- **Health tracking**  -  healthy → degraded (2+ errors) → failing (5+) with exponential backoff
+- **Execution history**  -  Full audit trail (200 per user) with status and duration
+- **Dry-run testing**  -  Test with sample data without firing
+- **Plugin reload**  -  Reload source plugins from disk without restart
 
 ---
 
@@ -260,18 +263,19 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Nymeria as MCP Server
 - **Dual transport**: STDIO and HTTP (port 8001)
-- **Thin-client architecture** — MCP calls the Nymeria REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
-- **Configurable transcript verbosity** — `nymeria_chat`, `nymeria_get_thread_history`, and `nymeria_thread_history` accept `verbosity`: `verbose` preserves full-fidelity thinking, preamble text, raw SSE events when requested, persisted tool calls/args/results, workspace artifacts, final response, context stats, model metadata, and copy-ready markdown; `concise` keeps thinking/response text plus tool names/status without tool payloads; `chat` returns the smallest conversational text shape
-- **Core management tools** — threads, per-thread config, global settings, TODOs, triggers, memories, RAG search, and history
-- **MCP-friendly collection responses** — trigger lists and execution histories are wrapped as JSON objects with `total` counts so empty collections stay valid tool results
+- **Thin-client architecture**  -  MCP calls the Nymeria REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
+- **52 API-backed MCP tools** covering health/auth, chat, background chat, triggers, threads, thread config, global settings, TODOs, profile/memory/RAG, and notification routing
+- **Configurable transcript verbosity**  -  `nymeria_chat`, `nymeria_get_thread_history`, and `nymeria_thread_history` accept `verbosity`: `verbose` preserves full-fidelity thinking, preamble text, raw SSE events when requested, persisted tool calls/args/results, workspace artifacts, final response, context stats, model metadata, and copy-ready markdown; `concise` keeps thinking/response text plus tool names/status without tool payloads; `chat` returns the smallest conversational text shape
+- **Core management tools**  -  threads, per-thread config, global settings, TODOs, triggers, memories, RAG search, and history
+- **MCP-friendly collection responses**  -  trigger lists and execution histories are wrapped as JSON objects with `total` counts so empty collections stay valid tool results
 - **Per-user isolation** via `X-Nymeria-Act-As`
 
 ### Nymeria as MCP Client
 - **4 install formats**: Claude Desktop JSON, bare stdio command, HTTP/SSE URL, registry ID
-- **Auto-discovery** — Connect, discover tools, store schemas
-- **Tool namespacing** — `mcp__<server_id>__<tool_name>`
-- **Registry search** — Official MCP registry + Smithery
-- **Hot-install** — New tools available after reload
+- **Auto-discovery**  -  Connect, discover tools, store schemas
+- **Tool namespacing**  -  `mcp__<server_id>__<tool_name>`
+- **Registry search**  -  Official MCP registry + Smithery
+- **Hot-install**  -  New tools available after reload
 
 ---
 
@@ -279,37 +283,37 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Provider Support
 130+ providers registered in `nymeria/config/llm_providers.py`. Categories:
-- **Anthropic** (native `anthropic_messages` API) — Claude Opus, Sonnet, Haiku
-- **OpenAI-chat-compatible registry** — OpenAI, OpenRouter (200+ models), xAI, Google (Gemini + Vertex), Groq, DeepSeek, Mistral, Azure OpenAI, Azure Foundry, Together, Fireworks, Perplexity, Cohere, and ~120 more
-- **Local LLMs** — llama.cpp, KoboldCpp, LM Studio, Ollama via the OpenAI-chat path
-- **CLIProxyAPI** — Proxy for Claude Max subscription access (auto-detected from `LLM_BASE_URL`)
-- **Per-thread overrides** — `core/thread_config.py` `ThreadLLMConfig` (provider/model/base_url/api_key)
+- **Anthropic** (native `anthropic_messages` API)  -  Claude Opus, Sonnet, Haiku
+- **OpenAI-chat-compatible registry**  -  OpenAI, OpenRouter (200+ models), xAI, Google (Gemini + Vertex), Groq, DeepSeek, Mistral, Azure OpenAI, Azure Foundry, Together, Fireworks, Perplexity, Cohere, and ~120 more
+- **Local LLMs**  -  llama.cpp, KoboldCpp, LM Studio, Ollama via the OpenAI-chat path
+- **CLIProxyAPI**  -  Proxy for Claude Max subscription access (auto-detected from `LLM_BASE_URL`)
+- **Per-thread overrides**  -  `core/thread_config.py` `ThreadLLMConfig` (provider/model/base_url/api_key)
 
 ### Consult Tool
-- **Cross-model second opinion** — Ask Gemini 3 Pro / 2.5 Pro / 2.5 Flash via OpenRouter
-- **Reasoning token extraction** — Shows external model's reasoning process
+- **Cross-model second opinion**  -  Ask Gemini 3 Pro / 2.5 Pro / 2.5 Flash via OpenRouter
+- **Reasoning token extraction**  -  Shows external model's reasoning process
 
 ### Claude Code Integration
-- **Headless CLI invocation** — sonnet/opus/haiku model selection
-- **Controlled permissions** — Toggle file edit and bash access per invocation
+- **Headless CLI invocation**  -  sonnet/opus/haiku model selection
+- **Controlled permissions**  -  Toggle file edit and bash access per invocation
 
 ---
 
 ## 10. Voice
 
 ### Text-to-Speech
-- **OpenAI-compatible** — tts-1, tts-1-hd with 6 voices, speed 0.25–4.0x
-- **Google Gemini TTS** — 200+ inline audio tags ([whispers], [excitedly], [sighs])
-- **Cartesia Sonic** — High-quality 44.1kHz output
+- **OpenAI-compatible**  -  tts-1, tts-1-hd with 6 voices, speed 0.25–4.0x
+- **Google Gemini TTS**  -  200+ inline audio tags ([whispers], [excitedly], [sighs])
+- **Cartesia Sonic**  -  High-quality 44.1kHz output
 - **Formats**: MP3, WAV, Opus, AAC, FLAC, PCM
 
 ### Speech-to-Text
-- **OpenAI Whisper** — whisper-1 with language hints
-- **faster-whisper** — Local inference option
+- **OpenAI Whisper**  -  whisper-1 with language hints
+- **faster-whisper**  -  Local inference option
 - **Formats**: WAV, MP3, M4A, FLAC, OGG, Opus
 
 ### Voice Chat
-- `/voice/chat` — Audio in → STT → agent processing → TTS → audio out
+- `/voice/chat`  -  Audio in → STT → agent processing → TTS → audio out
 
 ---
 
@@ -435,42 +439,42 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | Container | Port | Purpose |
 |-----------|------|---------|
 | nymeria-api | 8000 | FastAPI REST API + SSE streaming (also hosts WhatsApp/Messenger/Instagram/Webex/Teams/Google Chat/LINE webhook runtimes) |
-| nymeria-worker | — | Ticker daemon for autonomous tasks |
-| nymeria-watchdog | — | Thin-client watchdog worker |
+| nymeria-worker |  -  | Ticker daemon for autonomous tasks |
+| nymeria-watchdog |  -  | Thin-client watchdog worker |
 | nymeria-mcp | 8001 | MCP server (HTTP mode) |
 | nymeria-postgres | 5432 | PostgreSQL 15 |
 | nymeria-redis | 6379 | Redis event bus |
 | nymeria-caddy | 80/443 | Reverse proxy / TLS terminator |
-| nymeria-discord-bot | — | Discord gateway bot |
-| nymeria-telegram-bot | — | Telegram bot |
-| nymeria-slack-bot | — | Slack bot |
-| nymeria-matrix-bot | — | Matrix bot |
-| nymeria-mattermost-bot | — | Mattermost bot |
-| nymeria-zulip-bot | — | Zulip bot |
-| nymeria-rocketchat-bot | — | Rocket.Chat bot |
-| nymeria-signal-bot | — | Signal bot |
-| nymeria-qwen3-tts | — | TTS service |
-| nymeria-faster-whisper | — | STT service |
+| nymeria-discord-bot |  -  | Discord gateway bot |
+| nymeria-telegram-bot |  -  | Telegram bot |
+| nymeria-slack-bot |  -  | Slack bot |
+| nymeria-matrix-bot |  -  | Matrix bot |
+| nymeria-mattermost-bot |  -  | Mattermost bot |
+| nymeria-zulip-bot |  -  | Zulip bot |
+| nymeria-rocketchat-bot |  -  | Rocket.Chat bot |
+| nymeria-signal-bot |  -  | Signal bot |
+| nymeria-qwen3-tts |  -  | TTS service |
+| nymeria-faster-whisper |  -  | STT service |
 
 CLIProxyAPI runs as a separate stack from `/opt/NymeriaOS/CLIProxyAPI-main/` (not part of `Nymeria/docker-compose.yml`). The Twitch bot runs as a standalone runtime, not a compose service.
 
 ### Other Modes
-- **Local dev** — `python run.py api|cli|worker|mcp`
-- **Foreground gateway** — `python run.py service` (GatewayServer with graceful shutdown)
-- **Interactive CLI** — `python run.py cli`
-- **Non-interactive CLI** — `python run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
-- **CLI JSON output** — add `--json` to slash-command list/stat commands for machine-readable stdout: `/thread list --json`, `/tools list --json`, `/settings --json`, `/context --json`, and `/usage --json`.
-- **Session resume** — `python run.py cli -c` (continue most recent thread), `python run.py cli -r <ref>` (resume by ID/title)
-- **Session export/import** — `python run.py cli --export <thread-id> --format json|md|jsonl` (non-interactive export); `/export` and `/import` slash commands in the REPL
-- **Shell completions** — `python run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
-- **Clipboard copy** — `/copy` copies the last assistant response to clipboard; `/copy N` copies the Nth most recent; `/copy code` extracts only fenced code blocks
-- **Undo / retry** — `/undo` removes the last user+assistant exchange from thread state; `/retry` re-sends the last user message for a new response (or `/retry <new prompt>` to replace it). Requires `POST /threads/{id}/rewind` backend endpoint.
-- **Session branching** — `/branch [title]` or `/fork` creates a new thread from the current thread's checkpoint history and per-thread config, then switches to it. `/branch --from N [title]` branches from the checkpoint at or before message index `N`.
-- **Reasoning toggle** — `/reasoning on|off|low|medium|high` toggles extended thinking in one command (per-thread when a thread is active, global otherwise). Alias `/thinking`. Status bar shows `thinking: <effort>` when active.
-- **Provider credentials** — `/provider`, `/provider list`, `/provider set <provider> api_key=<key>`, `/provider test [provider]`, and `/provider switch <provider>` manage LLM provider auth from the CLI. Secrets are saved in `~/.nymeria/credentials.json` with `0600` permissions and applied through the backend settings API for admin users.
-- **Model fallback chain** — `/fallback`, `/fallback add <model-id> [--position N]`, `/fallback remove <model-id>`, `/fallback set <model1> <model2> ...`, and `/fallback clear` manage `LLM_FALLBACK_MODELS`. The backend tries the ordered chain for retryable provider/transport failures before any output chunk, so every frontend surface benefits from the same resilience behavior.
-- **Fast model toggle** — `/fast`, `/fast on`, and `/fast off` switch the active thread between the default model and `LLM_FAST_MODEL`; `/fast set <model-id>` stores the fast model; `/fast <prompt>` uses the fast model for one turn without leaving the thread in fast mode. Status bar shows `FAST` while active.
-- **Token usage / cost** — `/usage` shows current thread token consumption (input, output, context window fill with graphical bar, estimated cost). `/usage session` shows aggregate across all turns in the current CLI session with per-model breakdown. Aliases: `/tokens`, `/cost`. Status bar shows hermes-style context bar: `ctx 45.2k/200k [████████░░░░░░░░░░░░] 23%`.
+- **Local dev**  -  `python3 run.py api|cli|worker|mcp`
+- **Foreground gateway**  -  `python3 run.py service` (GatewayServer with graceful shutdown)
+- **Interactive CLI**  -  `python3 run.py cli`
+- **Non-interactive CLI**  -  `python3 run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
+- **CLI JSON output**  -  add `--json` to slash-command list/stat commands for machine-readable stdout: `/thread list --json`, `/tools list --json`, `/settings --json`, `/context --json`, and `/usage --json`.
+- **Session resume**  -  `python3 run.py cli -c` (continue most recent thread), `python3 run.py cli -r <ref>` (resume by ID/title)
+- **Session export/import**  -  `python3 run.py cli --export <thread-id> --format json|md|jsonl` (non-interactive export); `/export` and `/import` slash commands in the REPL
+- **Shell completions**  -  `python3 run.py completion bash|zsh|fish` generates tab-completion scripts (covers all subcommands, flags, and known choices)
+- **Clipboard copy**  -  `/copy` copies the last assistant response to clipboard; `/copy N` copies the Nth most recent; `/copy code` extracts only fenced code blocks
+- **Undo / retry**  -  `/undo` removes the last user+assistant exchange from thread state; `/retry` re-sends the last user message for a new response (or `/retry <new prompt>` to replace it). Requires `POST /threads/{id}/rewind` backend endpoint.
+- **Session branching**  -  `/branch [title]` or `/fork` creates a new thread from the current thread's checkpoint history and per-thread config, then switches to it. `/branch --from N [title]` branches from the checkpoint at or before message index `N`.
+- **Reasoning toggle**  -  `/reasoning on|off|low|medium|high` toggles extended thinking in one command (per-thread when a thread is active, global otherwise). Alias `/thinking`. Status bar shows `thinking: <effort>` when active.
+- **Provider credentials**  -  `/provider`, `/provider list`, `/provider set <provider> api_key=<key>`, `/provider test [provider]`, and `/provider switch <provider>` manage LLM provider auth from the CLI. Secrets are saved in `~/.nymeria/credentials.json` with `0600` permissions and applied through the backend settings API for admin users.
+- **Model fallback chain**  -  `/fallback`, `/fallback add <model-id> [--position N]`, `/fallback remove <model-id>`, `/fallback set <model1> <model2> ...`, and `/fallback clear` manage `LLM_FALLBACK_MODELS`. The backend tries the ordered chain for retryable provider/transport failures before any output chunk, so every frontend surface benefits from the same resilience behavior.
+- **Fast model toggle**  -  `/fast`, `/fast on`, and `/fast off` switch the active thread between the default model and `LLM_FAST_MODEL`; `/fast set <model-id>` stores the fast model; `/fast <prompt>` uses the fast model for one turn without leaving the thread in fast mode. Status bar shows `FAST` while active.
+- **Token usage / cost**  -  `/usage` shows current thread token consumption (input, output, context window fill with graphical bar, estimated cost). `/usage session` shows aggregate across all turns in the current CLI session with per-model breakdown. Aliases: `/tokens`, `/cost`. Status bar shows hermes-style context bar: `ctx 45.2k/200k [████████░░░░░░░░░░░░] 23%`.
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging

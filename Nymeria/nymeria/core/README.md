@@ -4,19 +4,19 @@ Runtime heart of Nymeria. Agent orchestration, streaming, persistence, and all s
 
 ## Start here
 
-`agent.py` — main NymeriaAgent class. Large file; splitting is planned but out of scope for now.
+`agent.py`  -  main NymeriaAgent class. Large file; splitting is planned but out of scope for now.
 
 ## Contents
 
-- `agent.py` — agent orchestration, thread locks, graph execution
-- `stream_bridge.py` — async streaming bridge between agent and API
-- `agent_compaction.py` — context compaction logic
-- `command_service.py` — slash command dispatcher (large file)
-- `todo_manager.py` — TODO scheduling, watchdog integration
-- `mcp_runtime.py`, `mcp_manager.py` — MCP server lifecycle
-- `accounts.py` — multi-user account management
-- `event_bus.py`, `event_bus_redis.py` — pub/sub event system
-- `ticker.py` — autonomous task runner
+- `agent.py`  -  agent orchestration, thread locks, graph execution
+- `stream_bridge.py`  -  async streaming bridge between agent and API
+- `agent_compaction.py`  -  context compaction logic
+- `command_service.py`  -  slash command dispatcher (large file)
+- `todo_manager.py`  -  TODO scheduling, watchdog integration
+- `mcp_runtime.py`, `mcp_manager.py`  -  MCP server lifecycle
+- `accounts.py`  -  multi-user account management
+- `event_bus.py`, `event_bus_redis.py`  -  pub/sub event system
+- `ticker.py`  -  autonomous task runner
 - `config/` files: `thread_config.py`, `credential_vault.py`, `secrets.py`
 
 ## Notes

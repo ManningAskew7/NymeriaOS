@@ -1,4 +1,4 @@
-# Twitch bot — thin-client migration decision
+# Twitch bot  -  thin-client migration decision
 
 Status: deferred as not feasible in the original scope. The Twitch bot remains
 an intentionally in-process agent client until a separate tool-proxy/RPC layer
@@ -6,15 +6,15 @@ exists.
 
 ## Why
 
-`twitch_bot.py` is the last trigger that instantiates a full in-process `NymeriaAgent` (`run.py:160`). Discord and Telegram bots are thin clients — they talk to the API over HTTP via `NymeriaAPIClient`. Twitch doesn't.
+`twitch_bot.py` is the last trigger that instantiates a full in-process `NymeriaAgent` (`run.py:160`). Discord and Telegram bots are thin clients  -  they talk to the API over HTTP via `NymeriaAPIClient`. Twitch doesn't.
 
-This is the architectural smell that produced the watchdog ghost of 2026-04-17: a container with a long uptime hosting an in-process agent, whose stale in-memory code kept running a background thread (`NymeriaAgent.__init__` used to spawn `Watchdog`) and writing to shared state (`/data`, Postgres, Telegram bot token) invisibly — grep across all containers couldn't find the producer because the code had been deleted from disk weeks earlier. Commit `8811869` removed the specific background thread that caused that incident, but the *pattern* is still present: any new background worker added to `NymeriaAgent` in the future will silently duplicate itself inside the Twitch container.
+This is the architectural smell that produced the watchdog ghost of 2026-04-17: a container with a long uptime hosting an in-process agent, whose stale in-memory code kept running a background thread (`NymeriaAgent.__init__` used to spawn `Watchdog`) and writing to shared state (`/data`, Postgres, Telegram bot token) invisibly  -  grep across all containers couldn't find the producer because the code had been deleted from disk weeks earlier. Commit `8811869` removed the specific background thread that caused that incident, but the *pattern* is still present: any new background worker added to `NymeriaAgent` in the future will silently duplicate itself inside the Twitch container.
 
 Other concrete consequences of Twitch staying fat:
 
 - Twitch drifts behind the repo whenever its container isn't restarted; behavior can diverge from `api`/`worker` in subtle ways visible only on Twitch.
 - Every refactor to `core/agent.py`, `core/ticker.py`, or tool imports has to remember Twitch in its "restart these" list. Easy to miss.
-- Twitch holds its own Postgres checkpointer connection and its own tool registry — doubling connection count and creating a second source of truth for what tools are enabled.
+- Twitch holds its own Postgres checkpointer connection and its own tool registry  -  doubling connection count and creating a second source of truth for what tools are enabled.
 
 ## What a full thin-client migration would require
 
@@ -22,7 +22,7 @@ The Discord/Telegram pattern is not enough by itself:
 
 1. Replace the in-process `NymeriaAgent` with a `NymeriaAPIClient` (`triggers/api_client.py`) pointed at `http://nymeria-api:8000`.
 2. Route chat through `POST /chat` (streaming SSE), not in-process agent streaming.
-3. Pull settings, model lists, and per-thread config through API endpoints — not direct Postgres reads.
+3. Pull settings, model lists, and per-thread config through API endpoints  -  not direct Postgres reads.
 4. Remove `NymeriaAgent(...)` from `run_twitch_bot` in `run.py`. Twitch becomes pure I/O glue.
 
 That partial migration would break Twitch tool execution. In Nymeria, tool

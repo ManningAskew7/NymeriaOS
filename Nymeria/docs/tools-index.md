@@ -1,7 +1,7 @@
 # Tools Index
 
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
-Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`
+Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
 **1253 tools found.**
 

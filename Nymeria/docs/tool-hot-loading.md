@@ -4,7 +4,7 @@ How Nymeria enables and uses optional tools within a single user turn, without r
 
 ## Problem
 
-LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_enable(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation — which normally means the next user message.
+LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_enable(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation  -  which normally means the next user message.
 
 This breaks the autonomous "search, enable, use" flow:
 
@@ -150,15 +150,15 @@ and no longer than about one year (`365d` or `52w`).
 
 `ThreadConfig` has two fields for enabled tools:
 
-- **`enabled_tools: List[str]`** — Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="never")` or `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
+- **`enabled_tools: List[str]`**  -  Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="never")` or `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
 
-- **`temporary_tools: Dict[str, TemporaryToolEntry]`** — TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
+- **`temporary_tools: Dict[str, TemporaryToolEntry]`**  -  TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
 
 Both fields are merged at graph-build time: `extra_names = (set(tc.enabled_tools) | live_temp) - disabled`.
 
 ### Lazy Eviction
 
-No background scheduler. At graph-build time, `_resolve_temporary_tools()` filters out expired entries and persists the cleaned config. A tool that was live when the graph was built stays callable for the whole invocation — no surprise mid-turn eviction.
+No background scheduler. At graph-build time, `_resolve_temporary_tools()` filters out expired entries and persists the cleaned config. A tool that was live when the graph was built stays callable for the whole invocation  -  no surprise mid-turn eviction.
 
 ### Sliding Renewal
 
@@ -170,7 +170,7 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 
 ## Code Reference
 
-### Entry Points: `tool_search()` and `tool_enable()` — `tools/tool_search.py`
+### Entry Points: `tool_search()` and `tool_enable()`  -  `tools/tool_search.py`
 
 `tool_search()` is search-only. `tool_enable()` dispatches on binding actions:
 
@@ -182,7 +182,7 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 | `tool_enable(action="status")` | `_status()` | Thread's full tool status (permanent, TTL, disabled sections) |
 | `tool_enable(action="list_categories")` | `_list_categories()` | All categories with tool counts |
 
-### Enable Classification: `_enable()` — `tools/tool_search.py:246`
+### Enable Classification: `_enable()`  -  `tools/tool_search.py:246`
 
 Each requested tool is classified into exactly one bucket (checked in this priority order):
 
@@ -203,7 +203,7 @@ After classification, if `newly_added` or `un_disabled` is non-empty **and** the
 
 If the reload cap is already hit, returns a plain string instead. The enablement is still persisted, but the tool won't be bound until the next user message.
 
-### Reload Loop: `astream()` — `core/agent.py:4132`
+### Reload Loop: `astream()`  -  `core/agent.py:4132`
 
 After the first graph invocation completes, `astream()` enters the reload loop:
 
@@ -222,7 +222,7 @@ while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:  # default 3
 
 Each iteration:
 
-1. **Yields a `tool_reload` SSE event** (`:4149`) — frontends use this to render the reload/resume message between the pre-reload and post-reload response segments.
+1. **Yields a `tool_reload` SSE event** (`:4149`)  -  frontends use this to render the reload/resume message between the pre-reload and post-reload response segments.
 
 2. **Invalidates the graph cache** and builds a fresh graph via `_get_async_graph_for_user()` (`:4159-4162`). The new graph has the just-enabled tools bound to the LLM.
 
@@ -240,7 +240,7 @@ Each iteration:
 
 The sync `chat()` method has an identical loop at `:3211` using `graph.invoke()` instead of `astream_events()`.
 
-### Graph Build: `_build_async_graph_with_prompt()` — `core/agent.py:2334`
+### Graph Build: `_build_async_graph_with_prompt()`  -  `core/agent.py:2334`
 
 At `:2398`, the graph builder calls `_resolve_temporary_tools(tc)` to get the set of live TTL'd tool names, then merges them with permanent enablements:
 
@@ -251,7 +251,7 @@ extra_names = (set(tc.enabled_tools) | live_temp) - disabled
 
 Tools are looked up in `ALL_TOOLS`, then `OPTIONAL_TOOLS`, then the tool registry (for MCP/custom tools).
 
-### TTL Eviction: `_resolve_temporary_tools()` — `core/agent.py:2802`
+### TTL Eviction: `_resolve_temporary_tools()`  -  `core/agent.py:2802`
 
 ```python
 def _resolve_temporary_tools(self, tc) -> set:
@@ -265,7 +265,7 @@ def _resolve_temporary_tools(self, tc) -> set:
     return set(live.keys())
 ```
 
-### History Filter: `get_conversation_history()` — `core/agent.py:4365`
+### History Filter: `get_conversation_history()`  -  `core/agent.py:4365`
 
 The `tool_reload_resume` HumanMessage is internal plumbing and is not returned
 as a normal user message. Its text is captured as reload metadata so frontends
@@ -280,7 +280,7 @@ elif internal_type == 'tool_reload_resume':
     continue                       # Hide the raw internal message
 ```
 
-This matches the treatment of `autonomous_wakeup`. The AI messages from the second invocation are then picked up by the turn consolidation logic and rendered as a continuation of the assistant's turn — or as a separate message bubble if there was no active turn (which happens when `Command(goto=END)` ended the first invocation without a final AIMessage).
+This matches the treatment of `autonomous_wakeup`. The AI messages from the second invocation are then picked up by the turn consolidation logic and rendered as a continuation of the assistant's turn  -  or as a separate message bubble if there was no active turn (which happens when `Command(goto=END)` ended the first invocation without a final AIMessage).
 
 ### ThreadConfig Model: `core/thread_config.py:42`
 
@@ -320,9 +320,9 @@ The reload loop checks `abort_event.is_set()` before each iteration (`:4134`). I
 
 `_pending_tool_reload` is cleared in three places to prevent stale entries:
 
-1. **Inside the loop** — `pop()` consumes the entry (`:4136`)
-2. **After the loop** — drains any residual entry (`:4196`)
-3. **In `finally`** — catches exceptions and early exits (`:4289`)
+1. **Inside the loop**  -  `pop()` consumes the entry (`:4136`)
+2. **After the loop**  -  drains any residual entry (`:4196`)
+3. **In `finally`**  -  catches exceptions and early exits (`:4289`)
 
 `_turn_reload_count` is cleaned up in `finally` at `:4288`.
 
@@ -398,7 +398,7 @@ On refresh, the frontend calls `/threads/{id}/history` which invokes `get_conver
 
 The two bubbles appear separate because:
 
-1. The first invocation ends after the marked reload tool result — no final AIMessage.
+1. The first invocation ends after the marked reload tool result  -  no final AIMessage.
 2. The `tool_reload_resume` HumanMessage is filtered out (hidden), but its metadata is captured into a queue.
 3. The second invocation's AIMessages start a new turn; the queued metadata is attached to it as `tool_reload_info`.
 

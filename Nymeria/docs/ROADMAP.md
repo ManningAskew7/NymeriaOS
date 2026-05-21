@@ -1,141 +1,48 @@
 # Nymeria Roadmap
 
-This document tracks planned and completed features.
+This file tracks current product and engineering follow-ups. Completed feature
+descriptions belong in [feature-list.md](./feature-list.md), implementation
+details belong in the relevant system doc, and one-off historical plans should
+not be added here.
 
----
+## Active Follow-Ups
 
-## Completed Features
+1. Add optional Google Embeddings 2 support for RAG without changing the default
+   embedding provider.
+2. Polish generated-image artifact UX: gallery/history affordances, retry and
+   error recovery, and provider-specific configuration defaults.
+3. Review the `notify` tool and notification routing so in-app, push, and
+   external destinations have a clear operator model.
+4. Improve tool search and enablement UX for both users and the agent.
+5. Harden MCP server setup and per-thread MCP tool enablement edge cases.
+6. Improve desktop and mobile streaming state polish, especially processing,
+   thinking, waiting, queued, and final-response transitions.
+7. Add native Gmail tools to the optional tool catalog; current Gmail support
+   is through managed MCP server setup.
+8. Close remaining Nymeria MCP server gaps for provider/model mutation UX,
+   callable-thread workflows, and admin lifecycle ergonomics. Triggers, TODOs,
+   thread config, settings, notifications, profile, and RAG are already
+   API-backed MCP tools.
+9. Add a persistent workspace/file browser panel for produced artifacts; current
+   chat surfaces expose workspace artifact modals and downloads.
+10. Continue `/goal` and `/orchestrate` repair work tracked in
+   [BUG-goal-orchestrate-review-2026-05-18.md](./BUG-goal-orchestrate-review-2026-05-18.md).
 
-### Custom Tool Management (Implemented)
+## Future Product Ideas
 
-Users can create, edit, and manage custom tools through the desktop UI (Settings > Tools) or REST API without writing Python.
+- Sandboxed Python snippet tools for small transformations.
+- Composite tools or reusable workflow chains.
+- Automatic callable-thread routing based on intent.
+- Tool and Skill Kit marketplace distribution.
+- Richer Docker MCP Gateway control, including catalog enablement, secrets,
+  OAuth handoff, and update prompts.
+- Optional OS keychain storage for desktop-hosted secrets.
 
-**Supported implementation types:**
-- **HTTP**: REST API calls with parameter interpolation and secret injection (`${env:VAR_NAME}`)
-- **MCP**: Connect to Model Context Protocol servers via JSON-RPC over stdio
+## Reference Docs
 
-**API endpoints:** `GET/POST /tools/custom`, `PUT/DELETE /tools/custom/{id}`, `POST /tools/custom/{id}/test`
-
-Storage: JSON files in `data/custom_tools/`
-
----
-
-### MCP Paste-Install + Managed Runtime (Implemented)
-
-Rather than filling out the MCP tool form by hand, users (and the agent) can paste an install source and Nymeria takes care of hosting.
-
-**Accepted sources:**
-- Claude Desktop `mcpServers` JSON blob
-- Bare stdio command string (`npx -y @modelcontextprotocol/server-filesystem /tmp`)
-- HTTP/SSE URL (covers Docker MCP Gateway: `docker mcp gateway run --transport streaming`)
-- Official registry id (`io.github.modelcontextprotocol/server-filesystem`)
-- npm and PyPI package pages
-- Git repository URLs
-- `.mcpb`, `.dxt`, and `.zip` bundles by upload or URL
-
-**New components:**
-- `core/mcp_installer.py` — paste parser
-- `core/mcp_runtime.py` — preview, smart-confirm metadata, managed cache/source directories, Git/package/bundle preparation, encrypted config values, disabled failure drafts
-- `core/mcp_registry_client.py` — clients for registry.modelcontextprotocol.io + Smithery
-- `tools/search_mcp.py` — agent-facing `search_mcp` + `install_mcp_server`
-- `POST /mcp-servers/install/preview`, `/preview-upload`, `/install`, and `/{server_id}/retry` — REST endpoints for the desktop paste box
-- HTTP transport in `core/mcp_manager.py` alongside the existing stdio path
-- Lifecycle fixes: process-group spawn + kill, stderr drain thread, per-phase timeouts (init 10s / list 30s / call 60s)
-
-**Settings:** `MCP_REGISTRY_URL`, `SMITHERY_API_KEY` (optional).
-
----
-
-### Callable Threads (Implemented, replaces Sub-Agent System)
-
-Any thread with `callable=True` becomes a directly invocable tool. Replaces the old sub-agent registry with a thread-based approach where each callable thread has its own system prompt, LLM overrides, and tool configuration.
-
-**Built-in callable threads:** BrowserAgent, OutlookAgent, CalendarAgent, SelfModifyAgent
-
-**Features:**
-- Configure via thread settings UI or `PATCH /threads/{id}/config`
-- Direct tool invocation: `ResearchAgent(task="...")` — no wrapper needed
-- Live SSE streaming of callable thread activity to frontend
-- Cascading abort support (parent→child)
-- Thread title always equals callable_name — renaming syncs both
-
----
-
-### Event-Driven Triggers (Implemented)
-
-Trigger system that fires agent prompts or actions in response to events.
-
-**Source types:** `webhook` (generic incoming), `outlook_email` (polls Microsoft Graph), `rss`, `http_poll`, `slack` (Events API), `teams` (Microsoft Teams events)
-
-**Components:** `core/trigger_manager.py`, `triggers/sources/base.py`, trigger tools (`trigger_config`, `trigger_info`)
-
----
-
-### Per-Thread Configuration (Implemented)
-
-Each thread can have custom instructions, disabled/enabled tools, and LLM settings overrides.
-
-**Component:** `core/thread_config.py`, UI in ThreadSettingsPanel
-
----
-
-### Server-Side Thread Metadata (Implemented)
-
-Thread metadata (titles, pins, platform) is now server-authoritative instead of frontend-only localStorage. All surfaces (desktop, Discord, Telegram, Slack, webhooks) share the same view.
-
-**Key features:**
-- `thread_metadata.py`: Per-user JSON storage with thread-safe locks
-- Auto-title generation from first message (mirrors frontend logic)
-- Title sources: `auto`, `user` (manual rename), `callable` (synced from callable_name)
-- Platform field stored in metadata instead of inferred from ID prefixes
-- All trigger sources create metadata on first message
-- `PATCH /threads/{id}/metadata` syncs renames back to callable_name and rebuilds tool registry
-- Frontend syncs from backend metadata on startup via `GET /threads`
-
----
-
-## Planned Features
-
-### Python Snippet Tools (Sandboxed)
-Allow custom tools to execute sandboxed Python code for simple transformations.
-
-### Composite Tools / Workflows
-Chain multiple tools together into reusable workflows.
-
-### Automatic Callable-Thread Routing
-Detect when to route messages to callable threads based on intent classification or keyword matching.
-
-### Tool Sharing / Marketplace
-Central repository for community-created custom tools and callable-thread configurations.
-
-### MCP Paste-Install Phase 2
-Follow-up work on top of the Phase 1 paste-install feature:
-- **Docker MCP Gateway control**: programmatically enable/disable catalog entries, manage secrets via `docker mcp secret`, drive the OAuth flow for remote servers — so users do not have to run the gateway themselves.
-- **OS keychain secrets**: optionally replace Fernet-on-disk values with `keyring`-backed storage on desktop hosts.
-- **Stdio auto-reconnect**: exponential backoff + restart on unexpected server exit (today we only mark the connection dead).
-- **Registry-driven config UX**: richer forms from registry metadata, OAuth handoff, and version update prompts.
-
----
-
-## Open Questions
-
-1. **Tool versioning**: How to handle changes to tool definitions?
-2. **Sharing**: Should users be able to share tools/agents?
-3. **Marketplace**: Central repository of community tools?
-4. **Testing**: Automated testing for custom tools?
-5. **Permissions**: Fine-grained access control for tools?
-
----
-
-## Recently Implemented but not fully reflected elsewhere yet
-
-- MCP server management endpoints are now part of the API surface.
-- Voice endpoints (`/voice/chat`, `/voice/tts`, `/voice/stt`) and device registration are now first-class runtime features.
-- A `twitch-bot` runtime exists alongside CLI, API, worker, MCP, and Discord modes.
-- CLI session export/import: `/export [json|md|jsonl]`, `/import <file>`, and `--export` CLI flag for non-interactive use.
-
-## Related Documents
-
-- [Architecture Overview](./architecture.md)
-- [Tools Reference](./tools.md)
-- [API Documentation](./api.md)
+- [architecture.md](./architecture.md)
+- [tools.md](./tools.md)
+- [api.md](./api.md)
+- [skills.md](./skills.md)
+- [notifications.md](./notifications.md)
+- [deployment/README.md](./deployment/README.md)

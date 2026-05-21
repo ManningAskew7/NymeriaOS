@@ -1,23 +1,23 @@
 # Triggers
 
-Event-driven automations that react to external events — webhooks, emails, RSS feeds, Slack messages, URL changes, and more. Triggers complement recurring TODOs (time-based) with event-based autonomous work.
+Event-driven automations that react to external events  -  webhooks, emails, RSS feeds, Slack messages, URL changes, and more. Triggers complement recurring TODOs (time-based) with event-based autonomous work.
 
 ## Concepts
 
-**Source** — watches for external events (webhook, email, RSS, etc.). Lightweight, no LLM calls. Poll sources are checked every 30s by the ticker; webhook sources fire on-demand.
+**Source**  -  watches for external events (webhook, email, RSS, etc.). Lightweight, no LLM calls. Poll sources are checked every 30s by the ticker; webhook sources fire on-demand.
 
-**Action** — what to do when events arrive. Three types:
-- `agent_prompt` — send a prompt to Nymeria in the trigger's bound thread
-- `notify` — publish a notification via SSE
-- `create_todo` — add a TODO item
+**Action**  -  what to do when events arrive. Three types:
+- `agent_prompt`  -  send a prompt to Nymeria in the trigger's bound thread
+- `notify`  -  publish a notification via SSE
+- `create_todo`  -  add a TODO item
 
-**Condition** — optional AND-logic filters applied to events before firing. Evaluated against event fields using operators like `contains`, `equals`, `matches_regex`.
+**Condition**  -  optional AND-logic filters applied to events before firing. Evaluated against event fields using operators like `contains`, `equals`, `matches_regex`.
 
-**Thread binding** — every trigger is bound to exactly one thread. When the agent creates a trigger, it auto-binds to the current conversation thread. API-created triggers can specify `thread_id` explicitly, or leave it empty to get a dedicated `trigger-{id}` thread.
+**Thread binding**  -  every trigger is bound to exactly one thread. When the agent creates a trigger, it auto-binds to the current conversation thread. API-created triggers can specify `thread_id` explicitly, or leave it empty to get a dedicated `trigger-{id}` thread.
 
-**Health** — automatic tracking of source errors. 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle). Resets to `healthy` on success.
+**Health**  -  automatic tracking of source errors. 2 consecutive failures → `degraded`, 5 → `failing` with exponential backoff (only retries every 10th cycle). Resets to `healthy` on success.
 
-**Busy-thread deferral** — for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check). If busy, events are stored in `pending_events` and retried next cycle. No thread-pool slots are blocked. Webhook triggers bypass this — they POST to `/chat` which queues on the lock naturally.
+**Busy-thread deferral**  -  for `agent_prompt` actions, poll-sourced triggers check if the target thread is busy (non-blocking lock check). If busy, events are stored in `pending_events` and retried next cycle. No thread-pool slots are blocked. Webhook triggers bypass this  -  they POST to `/chat` which queues on the lock naturally.
 
 ## Available Sources
 
@@ -53,7 +53,7 @@ Template variables: any keys in the POST body, plus `{fired_at}`, `{source_ip}`,
 
 Template variables: `{subject}`, `{from_address}`, `{from_name}`, `{preview}`, `{received_at}`, `{importance}`, `{has_attachments}`.
 
-Requires Microsoft OAuth — shares auth infrastructure with the Outlook add-in.
+Requires Microsoft OAuth  -  shares auth infrastructure with the Outlook add-in.
 
 ### RSS/Atom Feed
 
@@ -201,10 +201,10 @@ Ask Nymeria directly: "Create a trigger that watches my inbox for emails from X 
 ### Via Desktop/Mobile UI
 
 The Triggers section in the right panel provides:
-- **TriggerFeed** — lists all triggers (This Thread / Global tabs)
-- **TriggerSetupWizard** — 5-step guided creation (source → config → conditions → action → review)
-- **TriggerItem** — toggle, test, view history, edit
-- **TriggerHistoryPanel** — execution timeline with expandable details
+- **TriggerFeed**  -  lists all triggers (This Thread / Global tabs)
+- **TriggerSetupWizard**  -  5-step guided creation (source → config → conditions → action → review)
+- **TriggerItem**  -  toggle, test, view history, edit
+- **TriggerHistoryPanel**  -  execution timeline with expandable details
 
 ## Testing Triggers
 
@@ -215,7 +215,7 @@ curl -X POST http://localhost:8000/triggers/{trigger_id}/test?user_id=default \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-Returns a preview of what would happen if the trigger fired — sample event data, rendered action template, whether conditions would pass — without actually executing the action.
+Returns a preview of what would happen if the trigger fired  -  sample event data, rendered action template, whether conditions would pass  -  without actually executing the action.
 
 ### Webhook fire (real execution)
 
@@ -255,7 +255,7 @@ Health status is tracked per trigger based on source check outcomes:
 |--------|-----------|----------|
 | `healthy` | 0 consecutive errors | Normal 30s polling |
 | `degraded` | 2+ consecutive errors | Normal polling, warning logged |
-| `failing` | 5+ consecutive errors | Exponential backoff — only checks every 10th cycle (~5 min) |
+| `failing` | 5+ consecutive errors | Exponential backoff  -  only checks every 10th cycle (~5 min) |
 
 Resets to `healthy` on the first successful check. Health status and last error are visible in the UI and API responses.
 
@@ -267,7 +267,7 @@ When an `agent_prompt` trigger fires, the agent's response streams live into the
 
 Triggers fire through **two different code paths** depending on the source:
 
-**Path A — Poll sources (email, RSS, HTTP poll, Slack, Teams)**
+**Path A  -  Poll sources (email, RSS, HTTP poll, Slack, Teams)**
 ```
 Ticker (30s loop)
   → TriggerManager.check_triggers()
@@ -279,7 +279,7 @@ Ticker (30s loop)
           → publish_autonomous_event() for each chunk
 ```
 
-**Path B — Webhook source**
+**Path B  -  Webhook source**
 ```
 POST /triggers/fire/{id}
   → trigger_api.py fire_trigger endpoint
@@ -319,8 +319,8 @@ Earlier versions published `task_started` the moment a trigger fire began. That 
 The fix: **defer `task_started` until the first non-`queued` streaming chunk actually arrives** from `agent.astream()` or the sync `iter_agent_astream()` bridge. By that point the thread lock has been acquired and any prior user chat has released it, so `chatStore.isStreaming` is false and the frontend engages streaming mode cleanly.
 
 This is implemented in both execution paths:
-- Path A: `TriggerManager._stream_live()` in `trigger_manager.py` — accepts `task_started_data` and publishes `task_started` on the first non-`queued` chunk.
-- Path B: `/chat` endpoint in `triggers/api.py` — tracks `autonomous_started` and publishes `task_started` on the first non-`queued` chunk of `agent.astream()`.
+- Path A: `TriggerManager._stream_live()` in `trigger_manager.py`  -  accepts `task_started_data` and publishes `task_started` on the first non-`queued` chunk.
+- Path B: `/chat` endpoint in `triggers/api.py`  -  tracks `autonomous_started` and publishes `task_started` on the first non-`queued` chunk of `agent.astream()`.
 
 The frontend treats `task_started` as the normal handoff, but it also has a
 recovery path: if a current-thread autonomous `thinking`, `tool_call`,
@@ -346,7 +346,7 @@ case 'task_started':
   }
 ```
 
-Subsequent `response`, `thinking`, `tool_call`, `tool_result` events then append to the placeholder — same treatment as TODO autonomous streams.
+Subsequent `response`, `thinking`, `tool_call`, `tool_result` events then append to the placeholder  -  same treatment as TODO autonomous streams.
 
 If the trigger fires into a thread the user is **not currently viewing**, events are still published but the streaming UI isn't engaged for that thread. The response is saved to history and visible next time the user opens the thread.
 
@@ -366,7 +366,7 @@ Before dispatching, the webhook fire endpoint atomically checks `cooldown_second
 
 Both execution paths include `trigger_id` and `trigger_name` in the `task_started` and `task_completed` payloads. The frontend's `classifyAutonomousSource()` uses these to label the prompt bubble as a trigger (vs. scheduler/watchdog/autonomous), and `threadsStore.ensureThread()` uses `trigger_name` on `task_started` to auto-create a sidebar entry for triggers bound to new threads.
 
-For the webhook path, these flow through two optional fields on `ChatRequest` (`trigger_id`, `trigger_name`) which the internal fire POST sets — the `/chat` event_generator merges them into every autonomous event it publishes.
+For the webhook path, these flow through two optional fields on `ChatRequest` (`trigger_id`, `trigger_name`) which the internal fire POST sets  -  the `/chat` event_generator merges them into every autonomous event it publishes.
 
 ### Pending events cap
 
@@ -375,17 +375,17 @@ Poll-sourced triggers that fire into a busy thread store events in `pending_even
 ## Architecture
 
 **Storage:**
-- `data/triggers/{user_id}.json` — trigger definitions
-- `data/triggers/{user_id}_executions.json` — execution log (rolling 200 entries, JSON array)
+- `data/triggers/{user_id}.json`  -  trigger definitions
+- `data/triggers/{user_id}_executions.json`  -  execution log (rolling 200 entries, JSON array)
 
-`TriggerManager.get_all_users_with_triggers()` filters out `*_executions.json` files when enumerating users — otherwise the ticker would treat the execution log as a user's trigger store, fail to parse it as `TriggerStore`, and `atomic_update`'s save-on-exit would clobber the log.
+`TriggerManager.get_all_users_with_triggers()` filters out `*_executions.json` files when enumerating users  -  otherwise the ticker would treat the execution log as a user's trigger store, fail to parse it as `TriggerStore`, and `atomic_update`'s save-on-exit would clobber the log.
 
 **Event bus:**
-- `nymeria/core/event_bus.py` — in-memory `EventBus` with per-subscriber `Queue`
-- `nymeria/core/event_bus_redis.py` — `RedisEventBus` for cross-container delivery; API + worker containers both subscribe
+- `nymeria/core/event_bus.py`  -  in-memory `EventBus` with per-subscriber `Queue`
+- `nymeria/core/event_bus_redis.py`  -  `RedisEventBus` for cross-container delivery; API + worker containers both subscribe
 - All `publish_autonomous_event()` calls route through `get_event_bus()`
 
-**Redis round-trip:** When `RedisEventBus.publish()` is called, it publishes to Redis only — local dispatch happens via the subscriber thread receiving the message back from Redis. This means API container events round-trip through Redis to reach that same container's SSE subscribers. Adds a few ms of latency but is what makes cross-container delivery work.
+**Redis round-trip:** When `RedisEventBus.publish()` is called, it publishes to Redis only  -  local dispatch happens via the subscriber thread receiving the message back from Redis. This means API container events round-trip through Redis to reach that same container's SSE subscribers. Adds a few ms of latency but is what makes cross-container delivery work.
 
 **Docker trigger firing (single agent runtime):** In Docker, the worker
 container schedules polls but no longer runs the agent. When a poll-based
@@ -395,7 +395,7 @@ populated. The worker keeps publishing `task_started` /
 `task_completed` and mirroring agent stream chunks itself with the
 stable task id `f"trigger-{trigger.id}"`; the API suppresses its own
 autonomous mirroring for the call to avoid duplicates. Webhook fires
-(`POST /triggers/fire/{id}`) are unaffected — they already enter the
+(`POST /triggers/fire/{id}`) are unaffected  -  they already enter the
 API directly and use `publish_autonomous_events=True` (the default).
 
 ## Code Map
@@ -411,7 +411,7 @@ Which file does what, for quick navigation:
 | `nymeria/triggers/sources/` | Individual source implementations (webhook, outlook_email, rss, http_poll, slack, teams). Each exposes `check()`, `validate_config()`, `get_sample_event()` |
 | `nymeria/tools/triggers.py` | Agent-callable trigger tools: `trigger_config` for configuration mutations and `trigger_info` for read-only inspection. Auto-binds created triggers to the current thread via `get_thread_id(config)` |
 | `nymeria/core/event_bus.py` | `EventBus`, `AutonomousEvent`, `publish_autonomous_event`, `publish_sync_event`, factory `create_event_bus()` |
-| `nymeria/core/event_bus_redis.py` | `RedisEventBus` — pub/sub across containers |
+| `nymeria/core/event_bus_redis.py` | `RedisEventBus`  -  pub/sub across containers |
 | `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Desktop autonomous SSE subscriber. Uses fetch streaming with Bearer auth, reconnect/idle guards, reconnect catch-up, sampled diagnostics, and `handleEvent()` dispatch by type. `classifyAutonomousSource()` labels triggers via `event.trigger_id \|\| event.trigger_name` |
 | `nymeria-mobile/src/lib/stores/autonomous.svelte.ts` | Mobile autonomous SSE subscriber. Uses fetch streaming with Bearer auth, reconnect/idle guards, reconnect catch-up, Capacitor Network offline/online handling, and mobile lifecycle pause/resume. Keeps the legacy `api_key` query fallback for WebView compatibility. |
 | `nymeria-desktop/src/lib/components/triggers/` | UI: `TriggerFeed`, `TriggerSetupWizard`, `TriggerItem`, `TriggerHistoryPanel` |
@@ -420,9 +420,9 @@ Which file does what, for quick navigation:
 
 The webhook source works with any service that can send HTTP POST requests:
 
-- **IFTTT** — Use the Webhooks service to POST to `http://your-server:8000/triggers/fire/{trigger_id}?secret=<value>`
-- **Zapier** — Use the Webhook action to POST JSON payloads with the secret as a query parameter
-- **GitHub** — Configure repository webhooks to send events to your trigger endpoint
-- **Workflow tools / custom scripts** — Any `curl` or HTTP client can fire a webhook trigger
+- **IFTTT**  -  Use the Webhooks service to POST to `http://your-server:8000/triggers/fire/{trigger_id}?secret=<value>`
+- **Zapier**  -  Use the Webhook action to POST JSON payloads with the secret as a query parameter
+- **GitHub**  -  Configure repository webhooks to send events to your trigger endpoint
+- **Workflow tools / custom scripts**  -  Any `curl` or HTTP client can fire a webhook trigger
 
 The secret query parameter is required for public webhook calls. Treat webhook URLs as secrets because the shared secret is embedded in the URL for many third-party webhook integrations.

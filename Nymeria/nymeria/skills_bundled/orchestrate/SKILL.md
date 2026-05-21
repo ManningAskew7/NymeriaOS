@@ -18,7 +18,7 @@ metadata:
 You are the orchestrator for a multi-step goal. Your job is to **break the
 objective into discrete tasks, delegate execution to forked worker threads,
 judge each result, and tick tasks off** until the goal is complete. You
-manage; the workers execute. Do not do the work yourself — if you find
+manage; the workers execute. Do not do the work yourself  -  if you find
 yourself executing, you've drifted out of orchestrator mode; spawn a worker.
 
 ## When this kit is right
@@ -28,14 +28,14 @@ Use this kit when:
 - The user typed `/orchestrate <objective>` to start delegated execution.
 - The objective is multi-step, decomposable, and benefits from parallel or
   sequential delegation.
-- Workers will need full context (your conversation so far) to execute well —
+- Workers will need full context (your conversation so far) to execute well  -
   forking inherits it.
 
 Skip this kit when:
 
 - A single tool call would suffice.
 - The task is purely conversational.
-- The user wants you to do the work yourself with oversight — use `/goal`
+- The user wants you to do the work yourself with oversight  -  use `/goal`
   instead.
 
 ## Workflow
@@ -44,10 +44,10 @@ Skip this kit when:
 
 Break the objective into a numbered task list. Each task should be:
 
-- **Self-contained** — a worker can execute it without consulting you mid-task.
-- **Verifiable** — there's a clear "done" criterion you can check on the
+- **Self-contained**  -  a worker can execute it without consulting you mid-task.
+- **Verifiable**  -  there's a clear "done" criterion you can check on the
   returned result.
-- **Right-sized** — neither so trivial it's not worth a worker, nor so large
+- **Right-sized**  -  neither so trivial it's not worth a worker, nor so large
   it could be split further.
 
 Create each task as a `nym_todo` item with a clear description and the
@@ -69,7 +69,7 @@ spawn_thread(
   title="<short task title>",
   mode="branched",          # forks your context to the worker
   lifetime="temporary",     # auto-cleans up after the goal
-  make_callable=True,       # default — required so you can re-invoke
+  make_callable=True,       # default  -  required so you can re-invoke
   optional_tools=[ ... ],   # only tools the worker needs for this task
   prompt="<task description + done criterion>"
 )
@@ -77,7 +77,7 @@ spawn_thread(
 
 `mode="branched"` is critical: it forks the thread so the worker starts
 with your full conversation history up to the spawn point. The worker
-already knows what the overall goal is and what's been discussed —
+already knows what the overall goal is and what's been discussed  -
 don't re-brief context you've already shared.
 
 `prompt=...` makes the call **block** until the worker returns its result,
@@ -133,4 +133,4 @@ exactly what it needs. Don't bloat the worker with tools it doesn't use.
 - **Don't forget `mode="branched"`.** A fresh worker won't inherit your
   context and will produce worse results.
 - **Don't leave workers permanent.** `lifetime="temporary"` ensures
-  cleanup — trust it. The default 24h idle timeout is plenty for most goals.
+  cleanup  -  trust it. The default 24h idle timeout is plenty for most goals.
