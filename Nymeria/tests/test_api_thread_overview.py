@@ -177,6 +177,46 @@ def test_thread_overview_empty_default_config(tmp_path: Path, api_client_builder
     assert body["section_errors"] == {}
 
 
+def test_thread_overview_tool_counts_use_defaults_plus_overrides(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, _settings, token = _client(tmp_path, api_client_builder)
+    thread_id = "tool-counts"
+    promoted_optional = next(iter(OPTIONAL_TOOLS))
+    thread_extra = next(name for name in OPTIONAL_TOOLS if name != promoted_optional)
+    default_core = ALL_TOOLS[0].name
+
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    with agent.profile_manager.atomic_update("owner") as profile:
+        profile.tool_preferences.default_thread_tools = [
+            default_core,
+            promoted_optional,
+        ]
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            enabled_tools=[promoted_optional, thread_extra],
+            disabled_tools=[promoted_optional],
+        )
+    )
+
+    response = client.get(
+        f"/threads/{thread_id}/overview",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    tools = response.json()["tools"]
+    assert tools["default_tool_names"] == sorted([default_core, promoted_optional])
+    assert tools["enabled_optional_names"] == sorted(
+        [promoted_optional, thread_extra]
+    )
+    assert tools["disabled_names"] == [promoted_optional]
+    assert tools["effective_builtin_count"] == 2
+    assert tools["total_effective_count"] == 2
+
+
 def test_thread_overview_returns_resolved_sections(
     tmp_path: Path,
     api_client_builder,

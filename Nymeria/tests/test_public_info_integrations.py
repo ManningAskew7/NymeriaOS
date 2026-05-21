@@ -186,6 +186,40 @@ def test_rss_feed_read_parses_feed(monkeypatch):
     ]
 
 
+def test_get_text_honors_ssl_verify_flag(monkeypatch):
+    from nymeria.tools import public_info_integrations as tools
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeResponse:
+        text = "feed text"
+
+        def raise_for_status(self):
+            return None
+
+    def fake_request_with_policy(method, url, *, client, **kwargs):
+        captured.update({"method": method, "url": url, "policy_kwargs": kwargs})
+        return FakeResponse(), [], None
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    monkeypatch.setattr(tools, "httpx_request_with_policy", fake_request_with_policy)
+
+    assert tools._get_text("https://example.com/feed.xml", verify=False) == "feed text"
+    assert captured["client_kwargs"]["verify"] is False
+
+
 def test_nasa_apod_requires_key_and_sends_key(monkeypatch):
     from nymeria.tools import public_info_integrations as tools
 

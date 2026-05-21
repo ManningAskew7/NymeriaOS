@@ -10,7 +10,7 @@ provider redirects the user's browser back, this handler:
    endpoint.
 3. Promotes the placeholder vault credential to ``active`` via
    ``finalize_oauth_credential``.
-4. Resolves the coordinator future so the agent unblocks.
+4. Resolves the coordinator future so the prompt done-callback can run.
 5. Renders a success/failure HTML page (the caller does the rendering;
    we just return the title/message/status).
 

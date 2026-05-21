@@ -13,6 +13,13 @@ import textwrap
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from nymeria.core.thread_config import ThreadConfig
+from nymeria.tools import (
+    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
+    ALL_TOOLS,
+    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    OPTIONAL_TOOLS,
+)
 from nymeria.vendor.react_agent.config import CheckpointerConfig
 
 
@@ -88,6 +95,15 @@ def _make_agent():
     return agent
 
 
+def _ordinary_optional_tool_name(exclude: set[str] | None = None) -> str:
+    excluded = set(exclude or set())
+    blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES | DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+    for name in OPTIONAL_TOOLS:
+        if name not in blocked and name not in excluded:
+            return name
+    raise AssertionError("no ordinary optional tool found")
+
+
 def test_select_tools_shared_by_both_build_paths():
     """Both _build_graph_with_prompt and _build_async_graph_with_prompt
     call _select_tools_for_graph — the tool list is identical."""
@@ -108,6 +124,44 @@ def test_select_tools_shared_by_both_build_paths():
 
     assert len(calls) == 2
     assert calls[0][1:] == calls[1][1:]
+
+
+def test_select_tools_resolves_defaults_plus_thread_overrides_without_double_counting():
+    agent = _make_agent()
+    default_core = ALL_TOOLS[0].name
+    promoted_optional = _ordinary_optional_tool_name()
+    thread_extra = _ordinary_optional_tool_name({promoted_optional})
+
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        tool_preferences=SimpleNamespace(
+            default_thread_tools=[default_core, promoted_optional],
+        ),
+    )
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        enabled_tools=[promoted_optional, thread_extra],
+    )
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    names = [tool.name for tool in tools]
+
+    assert default_core in names
+    assert thread_extra in names
+    assert names.count(promoted_optional) == 1
+
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        enabled_tools=[promoted_optional, thread_extra],
+        disabled_tools=[promoted_optional],
+    )
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    names = [tool.name for tool in tools]
+
+    assert default_core in names
+    assert thread_extra in names
+    assert promoted_optional not in names
 
 
 def test_sync_async_differ_only_in_checkpointer():

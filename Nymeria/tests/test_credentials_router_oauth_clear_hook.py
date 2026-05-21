@@ -1,10 +1,10 @@
 """Regression test for the credential-delete OAuth post_clear_hook wiring.
 
-Phase 8 added :func:`_fire_oauth_post_clear_hook` in
-``nymeria/api/routers/credentials.py`` so that disconnecting a Gmail
-credential (hard delete or disable) also tears down the exported MCP
-google-auth credentials file. Without this test, the hook could silently
-become dead code again on a future refactor.
+``nymeria/api/routers/credentials.py`` uses
+:func:`_fire_oauth_post_clear_hook` so that disconnecting a Gmail credential
+(hard delete or disable) also tears down the exported MCP google-auth
+credentials file. Without this test, the hook could silently become dead code
+again on a future refactor.
 """
 
 from __future__ import annotations

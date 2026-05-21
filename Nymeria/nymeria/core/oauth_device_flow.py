@@ -5,16 +5,16 @@ The flow:
 1. ``request_credential(kind="oauth", flow="device_code", ...)`` performs the
    initial ``POST {device_authorization_uri}`` (in ``oauth_start``) to obtain
    the ``device_code``/``user_code``/``verification_uri``/``interval``/``expires_in``.
-2. It then spawns :func:`poll_device_token` as an asyncio task and stashes the
-   task handle on ``PendingPrompt.metadata["device_poll_task"]`` so a cancel
-   can interrupt cleanly.
+2. It then spawns :func:`poll_device_token` as an asyncio task and registers
+   the task in this module's in-memory ``_POLL_TASKS`` map so cancellation can
+   interrupt cleanly without storing non-JSON data on ``PendingPrompt``.
 3. The poller posts to ``{token_uri}`` at the provider-suggested ``interval``.
    On any of the RFC 8628 error codes:
        - ``authorization_pending`` → keep polling.
        - ``slow_down`` → increase interval by 5s and keep polling.
        - ``expired_token``/``access_denied`` → resolve as failure.
    On success it hands off to :func:`finalize_oauth_credential`, which writes
-   the vault record and resolves the coordinator future the agent is awaiting.
+   the vault record and resolves the coordinator future.
 
 This module never touches the agent directly; the only public surface is the
 poll task, which the start helper schedules.

@@ -11,9 +11,8 @@ provider, this module:
    fields and stashing ``scopes``/``email``/``expires_at`` in metadata.
 3. Fires the descriptor's optional ``post_save_hook`` (e.g. gmail MCP
    credential export).
-4. Resolves the coordinator future the agent is awaiting.
-5. Publishes ``auth_prompt_resolved`` so the modal closes and bots can
-   render a follow-up.
+4. Resolves the coordinator future so the prompt done-callback can run.
+5. Publishes ``auth_prompt_resolved`` so clients can close the active prompt.
 """
 
 from __future__ import annotations
