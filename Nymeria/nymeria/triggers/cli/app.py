@@ -3074,6 +3074,7 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "input-area": "",
         "text-area": "",
         "text-area.prompt": "",
+        "slash-hint": ptk_style(theme, "separator"),
         "slash-panel": ptk_style(theme, "status_fg"),
         "slash-panel.name": ptk_style(theme, "status_accent", bold=True),
         "slash-panel.desc": ptk_style(theme, "status_fg"),

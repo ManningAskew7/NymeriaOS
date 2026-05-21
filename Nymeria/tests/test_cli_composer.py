@@ -14,6 +14,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.filters import is_done
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Window
+from prompt_toolkit.layout.processors import TransformationInput
 from rich.cells import cell_len
 
 from nymeria.triggers.cli.commands import Command, CommandRegistry
@@ -28,6 +29,9 @@ from nymeria.triggers.cli.input import (
     ComposerCompleter,
     ComposerController,
     ComposerSubmission,
+    SlashUsageHintProcessor,
+    create_full_screen_composer,
+    create_rich_repl_composer,
     create_session,
     get_prompt,
     parse_composer_submission,
@@ -62,6 +66,45 @@ def _slash_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+def _usage_registry() -> CommandRegistry:
+    registry = CommandRegistry()
+    registry.register(
+        Command(
+            name="color",
+            description="Set session color",
+            usage="/color [red|blue|green|yellow|default]",
+            handler=lambda _state, _args: None,
+        )
+    )
+    return registry
+
+
+def _slash_hint_transform(
+    registry: CommandRegistry,
+    text: str,
+    *,
+    width: int = 80,
+    cursor_position: int | None = None,
+    fragments: list[tuple[str, str]] | None = None,
+    lineno: int = 0,
+):
+    document = Document(
+        text,
+        len(text) if cursor_position is None else cursor_position,
+    )
+    return SlashUsageHintProcessor(registry).apply_transformation(
+        TransformationInput(
+            buffer_control=SimpleNamespace(),
+            document=document,
+            lineno=lineno,
+            source_to_display=lambda position: position,
+            fragments=fragments if fragments is not None else [("", text)],
+            width=width,
+            height=1,
+        )
+    ).fragments
 
 
 def test_command_completions_include_descriptions() -> None:
@@ -240,6 +283,77 @@ def test_full_screen_prompt_fragments_use_composer_labels() -> None:
     assert queued.prompt_fragments() == [("class:composer.queued", "› 2: ")]
     assert error.prompt_fragments() == [("class:composer.error", "› ")]
     assert all(">" not in text for fragments in prompts for _, text in fragments)
+
+
+def test_slash_usage_hint_processor_appends_exact_command_hint() -> None:
+    registry = _usage_registry()
+
+    fragments = _slash_hint_transform(
+        registry,
+        "/color",
+        fragments=[("class:text-area.prompt", "› "), ("", "/color")],
+    )
+    trailing_fragments = _slash_hint_transform(registry, "/color ")
+
+    assert fragments[-1] == (
+        "class:slash-hint",
+        " [red|blue|green|yellow|default]",
+    )
+    assert trailing_fragments[-1] == (
+        "class:slash-hint",
+        "[red|blue|green|yellow|default]",
+    )
+
+
+def test_slash_usage_hint_processor_skips_ineligible_text() -> None:
+    registry = _usage_registry()
+
+    assert _slash_hint_transform(registry, "/co") == [("", "/co")]
+    assert _slash_hint_transform(registry, "/color red") == [("", "/color red")]
+    assert _slash_hint_transform(registry, " /color") == [("", " /color")]
+    assert _slash_hint_transform(registry, "/color", cursor_position=3) == [
+        ("", "/color")
+    ]
+    assert _slash_hint_transform(registry, "/color\n", lineno=1) == [
+        ("", "/color\n")
+    ]
+
+
+def test_slash_usage_hint_processor_truncates_and_replaces_history_hint() -> None:
+    registry = _usage_registry()
+
+    fragments = _slash_hint_transform(
+        registry,
+        "/color",
+        width=16,
+        fragments=[("", "/color"), ("class:auto-suggestion", " red")],
+    )
+
+    assert all("auto-suggestion" not in style for style, _text in fragments)
+    assert fragments[-1][0] == "class:slash-hint"
+    assert cell_len("".join(text for _style, text in fragments)) <= 16
+
+
+def test_inline_slash_usage_hints_are_rich_repl_only(tmp_path: Path) -> None:
+    registry = _usage_registry()
+
+    rich = create_rich_repl_composer(
+        command_registry=registry,
+        history_path=tmp_path / "rich_history",
+    )
+    full_screen = create_full_screen_composer(
+        command_registry=registry,
+        history_path=tmp_path / "full_history",
+    )
+
+    assert any(
+        isinstance(processor, SlashUsageHintProcessor)
+        for processor in rich.text_area.control.input_processors
+    )
+    assert not any(
+        isinstance(processor, SlashUsageHintProcessor)
+        for processor in full_screen.text_area.control.input_processors
+    )
 
 
 def test_composer_slash_panel_callbacks_are_gated() -> None:

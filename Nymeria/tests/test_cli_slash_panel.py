@@ -5,6 +5,7 @@ from nymeria.triggers.cli.rendering.slash_panel import (
     filter_commands,
     slash_panel_fragments,
     slash_panel_height,
+    slash_usage_hint,
     slash_panel_visible,
 )
 
@@ -82,6 +83,60 @@ def test_filter_narrows_subcommands_by_suffix() -> None:
     matches = filter_commands("/model gpt", _registry())
     names = [match.text for match in matches]
     assert names == ["/model gpt-5.5"]
+
+
+def test_usage_hint_uses_exact_command_usage_suffix() -> None:
+    registry = CommandRegistry()
+    registry.register(
+        Command(
+            name="model",
+            description="Change the active LLM",
+            usage="/model [name] [global|thread]",
+            handler=lambda _s, _a: None,
+            subcommands={
+                "set": Command(
+                    name="set",
+                    description="Set model",
+                    usage="set <model-id>",
+                    handler=lambda _s, _a: None,
+                )
+            },
+        )
+    )
+
+    assert slash_usage_hint("/help", registry) == " [query]"
+    assert slash_usage_hint("/help ", registry) == "[query]"
+    assert slash_usage_hint("/model", registry) == " [name] [global|thread]"
+    assert slash_usage_hint("/model ", registry) == "[name] [global|thread]"
+    assert slash_usage_hint("/model set", registry) == " <model-id>"
+    assert slash_usage_hint("/model set ", registry) == "<model-id>"
+
+
+def test_usage_hint_ignores_non_exact_or_hidden_commands() -> None:
+    registry = CommandRegistry()
+    registry.register(
+        Command(
+            name="color",
+            description="Set session color",
+            usage="/color [red|blue|default]",
+            handler=lambda _s, _a: None,
+        )
+    )
+    registry.register(
+        Command(
+            name="secret",
+            description="Hidden command",
+            usage="/secret <value>",
+            handler=lambda _s, _a: None,
+            hidden=True,
+        )
+    )
+
+    assert slash_usage_hint("/co", registry) == ""
+    assert slash_usage_hint("/color red", registry) == ""
+    assert slash_usage_hint(" /color", registry) == ""
+    assert slash_usage_hint("/secret", registry) == ""
+    assert slash_usage_hint("/cls", registry) == ""
 
 
 def test_height_matches_visible_rows() -> None:
