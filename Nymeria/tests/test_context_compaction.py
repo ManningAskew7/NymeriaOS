@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
+
+from langchain_core.messages import HumanMessage
 
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.agent_compaction import CompactionManager
@@ -142,10 +145,14 @@ def test_check_and_compact_sync_honors_token_mode_and_thread_override():
     assert agent._compaction.check_and_compact_sync("thread-under", "user-a") is None
 
     triggered: list[str] = []
-    agent._compaction._do_compact_sync = lambda tid, uid: triggered.append(tid) or {  # type: ignore[method-assign]
-        "success": True,
-        "thread_id": tid,
-    }
+    def fake_do_compact_sync(tid: str, _uid: str, **_kwargs: Any) -> dict[str, Any]:
+        triggered.append(tid)
+        return {
+            "success": True,
+            "thread_id": tid,
+        }
+
+    agent._compaction._do_compact_sync = fake_do_compact_sync  # type: ignore[method-assign]
     result = agent._compaction.check_and_compact_sync("thread-over", "user-a")
     assert result == {"success": True, "thread_id": "thread-over"}
     assert triggered == ["thread-over"]
@@ -163,3 +170,76 @@ def test_check_and_compact_sync_honors_token_mode_and_thread_override():
     result = agent._compaction.check_and_compact_sync("thread-override", "user-a")
     assert result == {"success": True, "thread_id": "thread-override"}
     assert triggered == ["thread-override"]
+
+
+class _StubAsyncGraph:
+    def __init__(self, messages: list[Any]) -> None:
+        self.messages = messages
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        return SimpleNamespace(values={"messages": self.messages})
+
+
+def test_manual_compact_start_callback_waits_for_message_count_check():
+    agent = SimpleNamespace(
+        settings=SimpleNamespace(compact_keep_messages=3),
+        _default_async_graph=_StubAsyncGraph([
+            HumanMessage(content="one"),
+            HumanMessage(content="two"),
+        ]),
+        _flush_memories_before_trim=lambda *_args: None,
+    )
+    manager = CompactionManager(agent)
+    started: list[str] = []
+
+    result = asyncio.run(
+        manager.compact_now(
+            "thread-a",
+            "user-a",
+            on_started=lambda: started.append("started"),
+        )
+    )
+
+    assert result["success"] is False
+    assert "Not enough messages" in result["reason"]
+    assert started == []
+
+
+def test_manual_compact_start_callback_runs_when_compaction_starts():
+    agent = SimpleNamespace(
+        settings=SimpleNamespace(compact_keep_messages=3),
+        _default_async_graph=_StubAsyncGraph([
+            HumanMessage(content="one"),
+            HumanMessage(content="two"),
+            HumanMessage(content="three"),
+        ]),
+        _flush_memories_before_trim=lambda *_args: None,
+    )
+    manager = CompactionManager(agent)
+    started: list[str] = []
+
+    async def fake_generate_summary(thread_id: str, user_id: str) -> str:
+        return "summary"
+
+    async def fake_clear_and_reset(
+        thread_id: str,
+        msg_count_before: int,
+        summary: str = "",
+        auto_resumed: bool = False,
+    ) -> bool:
+        return True
+
+    manager._generate_summary = fake_generate_summary  # type: ignore[method-assign]
+    manager._clear_and_reset = fake_clear_and_reset  # type: ignore[method-assign]
+    manager._read_thread_notepad = lambda _thread_id: ""  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        manager.compact_now(
+            "thread-a",
+            "user-a",
+            on_started=lambda: started.append("started"),
+        )
+    )
+
+    assert result["success"] is True
+    assert started == ["started"]

@@ -288,7 +288,7 @@ def test_dispatch_compacting_flushes_first():
 def test_dispatch_compacting_default_message():
     h = RecordingHandler()
     asyncio.run(dispatch_event({"type": "compacting"}, h, 0))
-    assert h.calls[1] == ("on_compacting", {"message": "Compacting context..."})
+    assert h.calls[1] == ("on_compacting", {"message": "Compacting thread context..."})
 
 
 def test_dispatch_compacted_flushes_first():

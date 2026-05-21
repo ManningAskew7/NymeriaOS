@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import logging
 import uuid as _uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
@@ -25,6 +27,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COMPACTION_TIMEOUT_SECONDS = 900
+COMPACTING_MESSAGE = "Compacting thread context..."
+CompactionStartCallback = Callable[[], Any]
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -140,6 +144,29 @@ def create_compaction_marker(
         "timestamp": utc_now().isoformat(),
     })
     return marker
+
+
+async def _notify_compaction_started(
+    on_started: Optional[CompactionStartCallback],
+) -> None:
+    if on_started is None:
+        return
+    result = on_started()
+    if inspect.isawaitable(result):
+        await result
+
+
+def _notify_compaction_started_sync(
+    on_started: Optional[CompactionStartCallback],
+) -> None:
+    if on_started is None:
+        return
+    result = on_started()
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        logger.debug("Ignoring async compaction start callback from sync compaction path")
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +357,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str,
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Optional[Dict[str, Any]]:
         """Check if compaction is needed and prepare it (auto-compact).
 
@@ -338,12 +367,18 @@ class CompactionManager:
         """
         if not self.should_auto_compact_now(thread_id, user_id):
             return None
-        return await self._do_auto_compact(thread_id, user_id)
+        return await self._do_auto_compact(
+            thread_id,
+            user_id,
+            on_started=on_started,
+        )
 
     async def check_and_compact_for_next_turn(
         self,
         thread_id: str,
         user_id: str,
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Optional[Dict[str, Any]]:
         """Pre-flight async compaction; stores summary for the user message."""
         if not self.should_auto_compact_now(
@@ -351,7 +386,7 @@ class CompactionManager:
         ):
             return None
 
-        result = await self.compact_now(thread_id, user_id)
+        result = await self.compact_now(thread_id, user_id, on_started=on_started)
         if result.get("success"):
             result["auto_preflight"] = True
         return result
@@ -360,6 +395,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str = "default",
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
         """Manually trigger compaction (/compact command).
 
@@ -381,6 +418,7 @@ class CompactionManager:
                 "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
             }
 
+        await _notify_compaction_started(on_started)
         logger.info(f"Thread {thread_id}: Manual compact starting ({msg_count_before} messages)")
 
         try:
@@ -579,6 +617,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str,
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
         """Prepare auto-compaction (astream() streams the resume afterward).
 
@@ -603,6 +643,7 @@ class CompactionManager:
                 "reason": f"Not enough messages ({msg_count_before}, need {min_messages})",
             }
 
+        await _notify_compaction_started(on_started)
         logger.info(f"Thread {thread_id}: Auto-compact starting ({msg_count_before} messages)")
 
         try:
@@ -655,6 +696,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str,
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Optional[Dict[str, Any]]:
         """Pre-flight auto-compact for the sync stream()/chat() path.
 
@@ -681,12 +724,14 @@ class CompactionManager:
         if usage.context_tokens < trigger_tokens:
             return None
 
-        return self._do_compact_sync(thread_id, user_id)
+        return self._do_compact_sync(thread_id, user_id, on_started=on_started)
 
     def _do_compact_sync(
         self,
         thread_id: str,
         user_id: str,
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
         """Sync auto-compact: flush -> summarize -> clear -> store pending summary."""
         agent = self._agent
@@ -699,6 +744,7 @@ class CompactionManager:
         if msg_count < agent.settings.compact_keep_messages:
             return {"success": False, "reason": f"Not enough messages ({msg_count})"}
 
+        _notify_compaction_started_sync(on_started)
         logger.info(f"Thread {thread_id}: Sync auto-compact starting ({msg_count} messages)")
 
         try:
@@ -835,6 +881,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str = "default",
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
         """Recover from provider context overflow by rewinding before compaction.
 
@@ -883,7 +931,11 @@ class CompactionManager:
                         "reason": "No suitable checkpoint and direct trim failed",
                     }
 
-            result = await self.compact_now(thread_id, user_id)
+            result = await self.compact_now(
+                thread_id,
+                user_id,
+                on_started=on_started,
+            )
             if result.get("success"):
                 result["overflow_recovery"] = True
                 result["rewound"] = bool(rewound)
@@ -902,7 +954,11 @@ class CompactionManager:
                     thread_id,
                 )
                 if trimmed:
-                    result = await self.compact_now(thread_id, user_id)
+                    result = await self.compact_now(
+                        thread_id,
+                        user_id,
+                        on_started=on_started,
+                    )
                     if result.get("success"):
                         result["overflow_recovery"] = True
                         result["rewound"] = True
@@ -924,6 +980,8 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str = "default",
+        *,
+        on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
         """Sync version of rewind_and_compact() for chat()/CLI callers."""
         agent = self._agent
@@ -967,7 +1025,11 @@ class CompactionManager:
                         "reason": "No suitable checkpoint and direct trim failed",
                     }
 
-            result = self._do_compact_sync(thread_id, user_id)
+            result = self._do_compact_sync(
+                thread_id,
+                user_id,
+                on_started=on_started,
+            )
             if result.get("success"):
                 result["overflow_recovery"] = True
                 result["rewound"] = bool(rewound)
@@ -986,7 +1048,11 @@ class CompactionManager:
                     thread_id,
                 )
                 if trimmed:
-                    result = self._do_compact_sync(thread_id, user_id)
+                    result = self._do_compact_sync(
+                        thread_id,
+                        user_id,
+                        on_started=on_started,
+                    )
                     if result.get("success"):
                         result["overflow_recovery"] = True
                         result["rewound"] = True

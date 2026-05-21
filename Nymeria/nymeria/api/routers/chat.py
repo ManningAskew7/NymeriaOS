@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -12,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ...core.accounts import AuthenticatedUser
+from ...core.agent_compaction import COMPACTING_MESSAGE
 from ...core.event_bus import (
     publish_agent_stream_chunk as default_publish_agent_stream_chunk,
     publish_autonomous_event as default_publish_autonomous_event,
@@ -463,25 +465,66 @@ def create_chat_router(
                         ),
                     }
                     yield f"data: {json.dumps(dispatch_event)}\n\n"
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {
-                            "type": "compacting",
-                            "message": "Compacting context...",
-                            "thread_id": original_thread_id
-                            if dispatched_target
-                            else thread_id,
-                            **_dispatch_stream_fields(
-                                dispatched_target,
-                                original_thread_id,
-                            ),
-                        }
+                compact_started = asyncio.Event()
+
+                async def _on_compaction_started() -> None:
+                    compact_started.set()
+
+                compact_task = asyncio.create_task(
+                    agent.compact_now(
+                        thread_id,
+                        user_id,
+                        on_started=_on_compaction_started,
                     )
-                    + "\n\n"
                 )
-                # Perform compaction (this may take a few seconds)
-                result = await agent.compact_now(thread_id, user_id)
+                start_task = asyncio.create_task(compact_started.wait())
+                sent_compacting = False
+                try:
+                    await asyncio.wait(
+                        {compact_task, start_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if compact_started.is_set():
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "compacting",
+                                    "message": COMPACTING_MESSAGE,
+                                    "thread_id": original_thread_id
+                                    if dispatched_target
+                                    else thread_id,
+                                    **_dispatch_stream_fields(
+                                        dispatched_target,
+                                        original_thread_id,
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
+                        sent_compacting = True
+                    result = await compact_task
+                    if compact_started.is_set() and not sent_compacting:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "compacting",
+                                    "message": COMPACTING_MESSAGE,
+                                    "thread_id": original_thread_id
+                                    if dispatched_target
+                                    else thread_id,
+                                    **_dispatch_stream_fields(
+                                        dispatched_target,
+                                        original_thread_id,
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
+                finally:
+                    if not start_task.done():
+                        start_task.cancel()
                 # Send response based on result
                 if result.get("success"):
                     messages_removed = result.get("messages_removed", 0)

@@ -20,6 +20,8 @@ import inspect
 import re
 from typing import Any, AsyncIterable, Dict, List, Protocol, runtime_checkable
 
+from ..core.agent_compaction import COMPACTING_MESSAGE
+
 _ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
 
 
@@ -255,7 +257,7 @@ async def dispatch_event(
     elif etype == "compacting":
         await handler.flush_text(final=True)
         await handler.on_compacting(
-            event.get("message") or "Compacting context...",
+            event.get("message") or COMPACTING_MESSAGE,
         )
 
     elif etype == "compacted":

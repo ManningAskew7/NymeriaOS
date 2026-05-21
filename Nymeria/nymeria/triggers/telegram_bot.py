@@ -42,6 +42,7 @@ from telegram.ext import (
     filters,
 )
 
+from nymeria.core.agent_compaction import COMPACTING_MESSAGE
 from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATIVE_SWITCH_THREAD_PREFIXES
 
 from . import attachment_helpers
@@ -1983,18 +1984,14 @@ class NymeriaTelegramBot:
         if user_id is None:
             return
         thread_id = self.resolve_thread_id_for_chat(chat_id)
-        try:
-            result = await self.api.compact(thread_id, user_id)
-            if result.get("success"):
-                removed = result.get("messages_removed", 0)
-                await update.message.reply_text(
-                    f"Compacted: {removed} messages summarized."
-                )
-            else:
-                reason = result.get("reason", "Unknown")
-                await update.message.reply_text(f"Compaction skipped: {reason}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        await self._stream_to_chat(
+            chat_id=chat_id,
+            message="/compact",
+            thread_id=thread_id,
+            user_id=user_id,
+            context=context,
+            telegram_user_id=update.effective_user.id if update.effective_user else None,
+        )
 
     async def _cmd_thread(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /thread."""
@@ -2902,7 +2899,7 @@ class NymeriaTelegramBot:
                 _ensure_state()
                 await _flush_buffer()
                 try:
-                    status = event.get("message") or "Compacting context..."
+                    status = event.get("message") or COMPACTING_MESSAGE
                     await self._send_html(chat_id, f"<i>{escape_html(status)}</i>")
                 except Exception as e:
                     logger.warning(f"Failed to send autonomous compacting status: {e}")
