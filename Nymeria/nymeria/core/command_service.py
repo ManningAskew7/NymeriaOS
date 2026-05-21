@@ -400,6 +400,29 @@ def _truncate(text: str, limit: int = 4000) -> str:
     return text[: limit - 80] + f"\n\n**Note:** Output truncated (was {len(text)} chars)."
 
 
+def _dict_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _optional_dict_result(value: Any) -> dict[str, Any] | None:
+    result = _dict_result(value)
+    return result or None
+
+
+def _dict_list_result(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_dict_result(item) for item in value if isinstance(item, dict)]
+
+
+def _string_set_result(value: Any) -> set[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
 def _format_legacy_output(text: str) -> tuple[bool, str]:
     """Convert old dispatcher prefixes into markdown command output."""
     stripped = text.strip()
@@ -833,6 +856,8 @@ class CommandBackendClient:
             "llm_extended_thinking": settings.llm_extended_thinking,
             "llm_use_model_defaults": settings.llm_use_model_defaults,
             "llm_base_url": settings.llm_base_url,
+            "llm_context_length": settings.llm_context_length,
+            "llm_ollama_num_ctx": settings.llm_ollama_num_ctx,
             "openai_api_mode": settings.openai_api_mode,
             "llm_stream_max_retries": settings.llm_stream_max_retries,
             "llm_stream_retry_initial_delay": settings.llm_stream_retry_initial_delay,
@@ -1239,6 +1264,8 @@ class CommandBackendClient:
             "llm_extended_thinking",
             "llm_use_model_defaults",
             "llm_base_url",
+            "llm_context_length",
+            "llm_ollama_num_ctx",
             "openai_api_mode",
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",
@@ -3793,6 +3820,8 @@ class _CommandExecutor:
             ("Provider", settings_dict.get("llm_provider", "")),
             ("Model", settings_dict.get("llm_model", "")),
             ("Base URL", str(settings_dict.get("llm_base_url", ""))[:80]),
+            ("Context", settings_dict.get("llm_context_length") or "auto"),
+            ("Ollama num_ctx", settings_dict.get("llm_ollama_num_ctx") or "auto"),
             ("Status", "available"),
         ]
         width = max(len(label) for label, _ in rows)
@@ -3815,14 +3844,10 @@ class _CommandExecutor:
             self.api.list_todos(self.user_id),
             return_exceptions=True,
         )
-        if isinstance(settings, Exception):
-            settings = {}
-        if isinstance(ctx, Exception):
-            ctx = {}
-        if isinstance(tools_data, Exception):
-            tools_data = {}
-        if isinstance(todos, Exception):
-            todos = []
+        settings = _dict_result(settings)
+        ctx = _dict_result(ctx)
+        tools_data = _dict_result(tools_data)
+        todos = _dict_list_result(todos)
 
         model = settings.get("llm_model", "?")
         provider = settings.get("llm_provider", "?")
@@ -3905,16 +3930,11 @@ class _CommandExecutor:
             self.api.get_default_tools(self.user_id),
             return_exceptions=True,
         )
-        if isinstance(ctx, Exception):
-            ctx = {}
-        if isinstance(thread_cfg, Exception):
-            thread_cfg = None
-        if isinstance(settings, Exception):
-            settings = {}
-        if isinstance(categories, Exception):
-            categories = {}
-        if isinstance(tools_data, Exception):
-            tools_data = {}
+        ctx = _dict_result(ctx)
+        thread_cfg = _optional_dict_result(thread_cfg)
+        settings = _dict_result(settings)
+        categories = _dict_result(categories)
+        tools_data = _dict_result(tools_data)
 
         effective_model = ctx.get("model") or settings.get("llm_model", "?")
         provider = settings.get("llm_provider", "?")
@@ -3924,7 +3944,7 @@ class _CommandExecutor:
 
         lines = ["Context Breakdown", "", "Model", f"  {effective_model} | {provider}"]
         if thread_cfg:
-            llm_cfg = thread_cfg.get("llm_config") or {}
+            llm_cfg = _dict_result(thread_cfg.get("llm_config"))
             tm = llm_cfg.get("model")
             if tm and tm != settings.get("llm_model"):
                 lines.append(f"  thread override: model={tm}")
@@ -3950,21 +3970,25 @@ class _CommandExecutor:
             mode_line += f" (threshold {int(threshold * 100)}%)"
         lines.append(mode_line)
 
-        default_tools = set(tools_data.get("default_tools", []))
-        available_tools = tools_data.get("available_tools", [])
-        cats = categories.get("categories", {}) if isinstance(categories, dict) else {}
-        disabled = set()
-        extra_enabled = set()
+        default_tools = _string_set_result(tools_data.get("default_tools"))
+        available_tools = _dict_list_result(tools_data.get("available_tools"))
+        raw_cats = _dict_result(categories.get("categories"))
+        cats = {
+            cat_name: _string_set_result(cat_tools)
+            for cat_name, cat_tools in raw_cats.items()
+        }
+        disabled: set[str] = set()
+        extra_enabled: set[str] = set()
         if thread_cfg:
-            disabled = set(thread_cfg.get("disabled_tools") or [])
-            extra_enabled = set(thread_cfg.get("enabled_tools") or [])
+            disabled = _string_set_result(thread_cfg.get("disabled_tools"))
+            extra_enabled = _string_set_result(thread_cfg.get("enabled_tools"))
         effective = (default_tools - disabled) | extra_enabled
 
         lines.append("")
         lines.append("Tools")
         lines.append(f"  {len(effective)} enabled (of {len(available_tools)} available)")
-        for cat_name in sorted(cats.keys()):
-            cat_tools = set(cats[cat_name])
+        for cat_name in sorted(cats):
+            cat_tools = cats[cat_name]
             enabled_in_cat = len(cat_tools & effective)
             total_in_cat = len(cat_tools)
             if enabled_in_cat == total_in_cat:
@@ -4279,26 +4303,28 @@ class _CommandExecutor:
         if thread_error:
             return thread_error
         data = await self.api.get_default_tools(self.user_id)
-        default_names = set(data.get("default_tools", []))
-        available = data.get("available_tools", [])
+        data = _dict_result(data)
+        default_names = _string_set_result(data.get("default_tools"))
+        available = _dict_list_result(data.get("available_tools"))
         tc = await self.api.get_thread_config(self.thread_id)
-        thread_extras = set(tc.get("enabled_tools", [])) if tc else set()
-        thread_disabled = set(tc.get("disabled_tools", [])) if tc else set()
+        tc = _optional_dict_result(tc)
+        thread_extras: set[str] = _string_set_result(tc.get("enabled_tools")) if tc else set()
+        thread_disabled: set[str] = _string_set_result(tc.get("disabled_tools")) if tc else set()
         all_enabled = (default_names | thread_extras) - thread_disabled
 
         lines = [f"Enabled Tools on this thread: {len(all_enabled)} active"]
-        core_active = sorted(n for n in all_enabled if n in default_names)
+        core_active: list[str] = sorted(n for n in all_enabled if n in default_names)
         lines.append("")
         lines.append(f"Core ({len(core_active)}):")
         lines.append(f"  {', '.join(core_active) if core_active else 'none'}")
 
-        disabled_core = sorted(thread_disabled & default_names)
+        disabled_core: list[str] = sorted(thread_disabled & default_names)
         if disabled_core:
             lines.append("")
             lines.append(f"Core disabled on this thread ({len(disabled_core)}):")
             lines.append(f"  {', '.join(disabled_core)}")
 
-        optional_active = sorted(n for n in all_enabled if n not in default_names)
+        optional_active: list[str] = sorted(n for n in all_enabled if n not in default_names)
         if optional_active:
             avail_by_name = {t["name"]: t for t in available}
             lines.append("")
