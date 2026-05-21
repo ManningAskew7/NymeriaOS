@@ -13,7 +13,7 @@ import { ChatApi } from './chat';
 
 export class ThreadsApi extends ChatApi {
   async listThreads(): Promise<{ thread_id: string; platform: string }[]> {
-    const response = await fetch(`${this.getBaseUrl()}/threads`, {
+    const response = await fetch(`${this.getBaseUrl()}/threads?owned_only=true`, {
       headers: this.getHeaders()
     });
 
@@ -45,7 +45,7 @@ export class ThreadsApi extends ChatApi {
     }>;
     total: number;
   }> {
-    const response = await fetch(`${this.getBaseUrl()}/threads`, {
+    const response = await fetch(`${this.getBaseUrl()}/threads?owned_only=true`, {
       headers: this.getHeaders()
     });
 

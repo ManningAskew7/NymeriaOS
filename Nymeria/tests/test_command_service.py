@@ -56,6 +56,41 @@ class FakeCommandApi:
         self.calls.append(("get_thread_config", (thread_id,), {"user_id": user_id}))
         return {"enabled_tools": [], "disabled_tools": []}
 
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("get_settings", (), {"user_id": user_id}))
+        return {
+            "llm_provider": "openai",
+            "llm_model": "gpt-test",
+            "llm_base_url": None,
+            "llm_extended_thinking": False,
+            "llm_reasoning_effort": None,
+            "context_management": "auto_compact",
+            "compact_threshold": 0.8,
+        }
+
+    async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
+        self.calls.append(("get_context_stats", (thread_id,), {}))
+        return {
+            "model": "gpt-test",
+            "total_tokens": 1200,
+            "context_limit": 8000,
+            "usage_percentage": 15,
+            "compaction_count": 0,
+            "context_management": "auto_compact",
+            "cumulative_tokens": 2400,
+        }
+
+    async def get_tool_categories(self) -> dict[str, Any]:
+        self.calls.append(("get_tool_categories", (), {}))
+        return {"categories": {"core": ["bash_execute"], "web": ["browser"]}}
+
+    async def list_todos(self, user_id: str) -> list[dict[str, Any]]:
+        self.calls.append(("list_todos", (user_id,), {}))
+        return [
+            {"status": "pending"},
+            {"status": "in_progress"},
+        ]
+
     async def get_env_var(
         self,
         key: str,
@@ -103,6 +138,23 @@ class _FakeThreadMetadataManager:
 class _FakeAsyncGraph:
     async def aget_state(self, config: dict) -> SimpleNamespace:
         return SimpleNamespace(values={"messages": []})
+
+
+class _GatherBaseFailure(BaseException):
+    pass
+
+
+class _PartiallyFailingCommandApi(FakeCommandApi):
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        raise _GatherBaseFailure("settings unavailable")
+
+
+class _FailingContextCommandApi(FakeCommandApi):
+    async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
+        raise _GatherBaseFailure("context unavailable")
+
+    async def get_tool_categories(self) -> dict[str, Any]:
+        raise _GatherBaseFailure("categories unavailable")
 
 
 class _FakeAgent:
@@ -220,6 +272,47 @@ def test_alias_resolution_and_command_path_execution() -> None:
     assert result.level == "success"
     assert "### Core Tools" in result.markdown
     assert "bash_execute" in result.markdown
+
+
+def test_status_degrades_when_parallel_fetch_returns_base_exception() -> None:
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/status",
+            api=_PartiallyFailingCommandApi(),
+        )
+    )
+
+    assert result.success is True
+    assert "### Nymeria Status" in result.markdown
+    assert "1 pending / 1 in progress" in result.markdown
+
+
+def test_context_degrades_when_parallel_fetch_returns_base_exception() -> None:
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/context",
+            api=_FailingContextCommandApi(),
+        )
+    )
+
+    assert result.success is True
+    assert "### Context Breakdown" in result.markdown
+    assert "gpt-test | openai" in result.markdown
+    assert "0 / 0 tokens" in result.markdown
 
 
 def test_default_execution_uses_current_agent_backend_without_http(
