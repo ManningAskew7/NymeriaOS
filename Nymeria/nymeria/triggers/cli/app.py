@@ -31,6 +31,7 @@ from .autonomous import AutonomousStreamMonitor
 from .header import CLIHeaderSnapshot, build_header_snapshot, concise_connection_label
 from .rendering.indicator import FRAME_INTERVAL_SECONDS
 from .rendering.slash_panel import (
+    filter_commands,
     slash_panel_fragments,
     slash_panel_height,
     slash_panel_visible,
@@ -154,6 +155,9 @@ class _RichReplRuntime:
         self._autonomous_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
         self.current_turn_task: asyncio.Task[bool] | None = None
+        self._slash_panel_filter_text = ""
+        self._slash_panel_match_count = 0
+        self._slash_panel_selected_index = 0
         self._autonomous_monitor = AutonomousStreamMonitor(
             client_getter=lambda: self.app._client,
             user_id_getter=lambda: self.app.state.user_id,
@@ -360,13 +364,55 @@ class _RichReplRuntime:
         return slash_panel_height(self._composer_text(), self.app.registry)
 
     def slash_panel_fragments(self):
+        self._sync_slash_panel_selection()
         return list(
             slash_panel_fragments(
                 self._composer_text(),
                 self.app.registry,
                 width=self.terminal_width(),
+                selected_index=self._slash_panel_selected_index,
             )
         )
+
+    def slash_panel_selectable(self) -> bool:
+        return bool(self._sync_slash_panel_selection())
+
+    def move_slash_panel_selection(self, delta: int) -> bool:
+        matches = self._sync_slash_panel_selection()
+        if not matches:
+            return False
+        self._slash_panel_selected_index = (
+            self._slash_panel_selected_index + delta
+        ) % len(matches)
+        self.invalidate()
+        return True
+
+    def accept_slash_panel_selection(self, buffer: Any) -> bool:
+        matches = self._sync_slash_panel_selection()
+        if not matches:
+            return False
+        selected = matches[self._slash_panel_selected_index].text
+        buffer.text = selected
+        buffer.cursor_position = len(selected)
+        self.invalidate()
+        return True
+
+    def _sync_slash_panel_selection(self) -> list[Any]:
+        text = self._composer_text()
+        matches = filter_commands(text, self.app.registry)
+        if text != self._slash_panel_filter_text:
+            self._slash_panel_filter_text = text
+            self._slash_panel_selected_index = 0
+        if len(matches) != self._slash_panel_match_count:
+            self._slash_panel_match_count = len(matches)
+        if not matches:
+            self._slash_panel_selected_index = 0
+            return []
+        self._slash_panel_selected_index = max(
+            0,
+            min(self._slash_panel_selected_index, len(matches) - 1),
+        )
+        return matches
 
     def _reserved_footer_height(self, size: Any) -> int:
         return min(self.footer_height(), max(1, int(size.rows) - 2))
@@ -1052,6 +1098,9 @@ class _RichReplPromptToolkitShell:
             on_stop=self._request_stop,
             is_busy=lambda: self.runtime.busy,
             queued_count=lambda: self.runtime.queued_count,
+            slash_panel_is_active=self.runtime.slash_panel_selectable,
+            on_slash_panel_move=self.runtime.move_slash_panel_selection,
+            on_slash_panel_accept=self.runtime.accept_slash_panel_selection,
         )
         if self.runtime.scroll_region_enabled():
             controller.text_area.window.height = lambda: Dimension.exact(
@@ -3028,6 +3077,18 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "slash-panel": ptk_style(theme, "status_fg"),
         "slash-panel.name": ptk_style(theme, "status_accent", bold=True),
         "slash-panel.desc": ptk_style(theme, "status_fg"),
+        "slash-panel.selected": ptk_style(theme, "status_fg", bg_slot="input_border"),
+        "slash-panel.selected.name": ptk_style(
+            theme,
+            "status_accent",
+            bg_slot="input_border",
+            bold=True,
+        ),
+        "slash-panel.selected.desc": ptk_style(
+            theme,
+            "status_fg",
+            bg_slot="input_border",
+        ),
         "slash-panel.empty": ptk_style(theme, "status_fg"),
         "slash-panel.more": ptk_style(theme, "separator"),
     }

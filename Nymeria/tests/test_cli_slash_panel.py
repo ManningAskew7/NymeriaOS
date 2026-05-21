@@ -50,7 +50,7 @@ def _registry() -> CommandRegistry:
 
 def test_visibility_requires_leading_slash() -> None:
     assert slash_panel_visible("/") is True
-    assert slash_panel_visible("  /loop") is True
+    assert slash_panel_visible("  /loop") is False
     assert slash_panel_visible("") is False
     assert slash_panel_visible("hello") is False
     assert slash_panel_visible(" hi /loop") is False
@@ -132,6 +132,54 @@ def test_fragments_include_command_text() -> None:
     assert "recurring interval" in rendered
 
 
+def test_fragments_mark_selected_row() -> None:
+    fragments = slash_panel_fragments("/lo", _registry(), width=80, selected_index=1)
+
+    selected_names = [
+        text
+        for style, text in fragments
+        if style == "class:slash-panel.selected.name"
+    ]
+
+    assert selected_names
+    assert selected_names[0].strip() == "/loop"
+
+
+def test_fragments_scroll_window_to_selected_overflow_row() -> None:
+    registry = CommandRegistry()
+    for index in range(15):
+        registry.register(
+            Command(
+                name=f"cmd{index:02d}",
+                description=f"Command {index}",
+                handler=lambda _s, _a: None,
+            )
+        )
+
+    target_index = next(
+        index
+        for index, item in enumerate(filter_commands("/", registry))
+        if item.text == "/cmd14"
+    )
+    fragments = slash_panel_fragments(
+        "/",
+        registry,
+        width=80,
+        selected_index=target_index,
+    )
+    rendered = "".join(text for _style, text in fragments)
+    selected_names = [
+        text
+        for style, text in fragments
+        if style == "class:slash-panel.selected.name"
+    ]
+
+    assert "/cmd14" in rendered
+    assert "/cmd00" not in rendered
+    assert selected_names[0].strip() == "/cmd14"
+
+
 def test_fragments_empty_when_panel_hidden() -> None:
     assert slash_panel_fragments("", _registry(), width=80) == []
+    assert slash_panel_fragments(" /lo", _registry(), width=80) == []
     assert slash_panel_fragments("hello", _registry(), width=80) == []
