@@ -105,13 +105,14 @@
     if (!todo.recurrence) return null;
     const legacy: Record<string, string> = {
       '5min': '5m', '10min': '10m', '15min': '15m', '30min': '30m',
-      hourly: '1h', daily: '1d', weekly: '1w', monthly: '30d'
+      hourly: '1h', daily: '1d', weekly: '1w', monthly: '1mo'
     };
     const canonical = legacy[todo.recurrence.toLowerCase()] ?? todo.recurrence.toLowerCase();
     if (canonical === '1h') return 'Hourly';
     if (canonical === '1d') return 'Daily';
     if (canonical === '1w') return 'Weekly';
-    if (/^\d+(s|m|h|d|w)$/.test(canonical)) return `Every ${canonical}`;
+    if (canonical === '1mo') return 'Monthly';
+    if (/^\d+(mo|s|m|h|d|w)$/.test(canonical)) return `Every ${canonical}`;
     return todo.recurrence;
   });
 

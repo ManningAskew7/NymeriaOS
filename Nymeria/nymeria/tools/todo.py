@@ -142,10 +142,12 @@ def nym_todo(
             "YYYY-MM-DDTHH:MM", or ISO datetimes with timezone.
         status: "pending", "in_progress", or "done"
         notes: Additional notes (max 1000 chars)
-        recurrence: Interval as a duration string (Nm, Nh, Nd, Nw; or Ns
-            with a 60s minimum). Examples: "5m", "2h", "1d", "1w". Legacy
-            preset names also accepted: "hourly", "daily", "weekly",
-            "monthly", "5min", "10min", "15min", "30min".
+        recurrence: Interval as a duration string (Nm, Nh, Nd, Nw, Nmo;
+            or Ns with a 60s minimum). Examples: "5m", "2h", "1d", "1w",
+            "1mo". Calendar-month intervals use calendar arithmetic, so a
+            TODO anchored on the 31st fires on the last day of shorter
+            months. Legacy preset names also accepted: "hourly", "daily",
+            "weekly", "monthly", "5min", "10min", "15min", "30min".
         clear_schedule: Remove scheduled time
         clear_recurrence: Remove recurrence pattern
 

@@ -14,20 +14,20 @@
 
   let { isOpen, onClose, editTodo = null }: Props = $props();
 
-  type RecurrenceUnit = '' | 's' | 'm' | 'h' | 'd' | 'w';
+  type RecurrenceUnit = '' | 's' | 'm' | 'h' | 'd' | 'w' | 'mo';
 
   // Mirrors Nymeria.core.todo_constants.LEGACY_RECURRENCE_ALIASES so the form
   // can populate amount/unit when editing a TODO created before arbitrary
   // intervals existed.
   const LEGACY_ALIASES: Record<string, string> = {
     '5min': '5m', '10min': '10m', '15min': '15m', '30min': '30m',
-    hourly: '1h', daily: '1d', weekly: '1w', monthly: '30d'
+    hourly: '1h', daily: '1d', weekly: '1w', monthly: '1mo'
   };
 
   function parseRecurrenceForForm(value: string | undefined): { amount: number; unit: RecurrenceUnit } {
     if (!value) return { amount: 1, unit: '' };
     const canonical = LEGACY_ALIASES[value.toLowerCase()] ?? value.toLowerCase();
-    const match = /^(\d+)(s|m|h|d|w)$/.exec(canonical);
+    const match = /^(\d+)(mo|s|m|h|d|w)$/.exec(canonical);
     if (!match) return { amount: 1, unit: '' };
     return { amount: parseInt(match[1], 10), unit: match[2] as RecurrenceUnit };
   }
@@ -254,10 +254,13 @@
           <option value="h">Hours</option>
           <option value="d">Days</option>
           <option value="w">Weeks</option>
+          <option value="mo">Months</option>
         </select>
       </div>
       {#if recurrenceUnit === 's'}
         <span class="form-hint">Minimum 60 seconds.</span>
+      {:else if recurrenceUnit === 'mo'}
+        <span class="form-hint">Calendar months. Anchored on the 31st clamps to the last day of shorter months.</span>
       {/if}
     </div>
 
