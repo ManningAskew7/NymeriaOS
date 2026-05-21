@@ -39,7 +39,28 @@ def _estimate_cost(
     input_tokens: int,
     output_tokens: int,
     model: str,
+    provider: str = "",
 ) -> float | None:
+    """Best-effort USD cost from token counts, model id, and provider.
+
+    Delegates to :mod:`nymeria.config.pricing_table` for cache-aware rates,
+    falling back to the legacy OpenRouter-only pricing on the
+    :mod:`nymeria.config.model_capabilities` cache if pricing_table has no
+    entry for the model. Returns ``None`` when neither source knows the model.
+    """
+    try:
+        from ....config import pricing_table
+        from ....core import cost_calc
+
+        rates = pricing_table.get_rates(provider, model)
+        if rates is not None:
+            usage = cost_calc.NormalizedUsage(
+                prompt_tokens=int(input_tokens),
+                completion_tokens=int(output_tokens),
+            )
+            return cost_calc.compute_cost_usd(usage, rates)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from ....config.model_capabilities import get_model_info
 
@@ -225,9 +246,21 @@ def _format_thread_usage(
     if cumulative and cumulative != total_tokens:
         lines.append(f"  Cumulative      {_fmt_tokens(cumulative)}")
 
-    cost = _estimate_cost(input_tokens, output_tokens, model)
-    if cost is not None:
-        lines.append(f"  Turn cost       ~${cost:.4f}")
+    cost_unavailable = bool(stats.get("cost_unavailable"))
+    if cost_unavailable:
+        lines.append("  Turn cost       N/A (subscription/local)")
+        lines.append("  Total cost      N/A")
+    else:
+        last_cost = stats.get("cost_usd_last")
+        if isinstance(last_cost, (int, float)):
+            lines.append(f"  Turn cost       ${float(last_cost):.4f}")
+        else:
+            fallback = _estimate_cost(input_tokens, output_tokens, model)
+            if fallback is not None:
+                lines.append(f"  Turn cost       ~${fallback:.4f}")
+        cumulative_cost = stats.get("cost_usd_cumulative")
+        if isinstance(cumulative_cost, (int, float)) and float(cumulative_cost) > 0:
+            lines.append(f"  Total cost      ${float(cumulative_cost):.4f}")
 
     if compactions:
         lines.append(f"  Compactions     {compactions}")

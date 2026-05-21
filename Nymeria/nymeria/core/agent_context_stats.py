@@ -33,7 +33,8 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
 
     This handles the case where the server was restarted and the in-memory
     token tracker is empty, but the thread has conversation history in the
-    checkpoint database with usage metadata.
+    checkpoint database with usage metadata. Also seeds the cumulative USD
+    cost from the persisted ``ThreadMetadata.total_cost_usd_micros``.
     """
     try:
         config = {"configurable": {"thread_id": thread_id}}
@@ -61,9 +62,40 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
             usage = agent._token_tracker.get_usage(thread_id)
             usage.total_input_tokens = total_input
             usage.total_output_tokens = total_output
+            # Reset the cost high-water index so new turns post-restart only
+            # bill messages added from this point forward; the cumulative
+            # total comes from persisted metadata below.
+            usage.last_recorded_message_index = len(messages)
             logger.debug(f"Rehydrated token usage for thread {thread_id}: cumulative={total_input}+{total_output}, last_call={last_input}+{last_output}")
+
+        _rehydrate_cost_from_metadata(agent, thread_id)
     except Exception as e:
         logger.debug(f"Could not rehydrate token usage for thread {thread_id}: {e}")
+
+
+def _rehydrate_cost_from_metadata(agent: "NymeriaAgent", thread_id: str) -> None:
+    """Seed the in-memory cumulative cost from persisted ThreadMetadata."""
+    try:
+        manager = getattr(agent, "thread_metadata_manager", None)
+        if manager is None:
+            return
+        # ThreadMetadata is keyed per-user; we don't know the owner from
+        # thread_id alone. Walk known users and pick the first hit.
+        for path in manager.metadata_dir.glob("*.json"):
+            user_id = path.stem
+            meta = manager.get_thread(user_id, thread_id)
+            if meta is None:
+                continue
+            micros = getattr(meta, "total_cost_usd_micros", 0) or 0
+            if micros > 0:
+                usage = agent._token_tracker.get_usage(thread_id)
+                # Ensure the usage row exists in the tracker so the seeded
+                # cost survives the read.
+                agent._token_tracker._usage.setdefault(thread_id, usage)
+                usage.total_cost_usd = float(micros) / 1_000_000.0
+            return
+    except Exception as exc:  # noqa: BLE001 - best-effort.
+        logger.debug("Cost rehydration skipped for %s: %s", thread_id, exc)
 
 
 def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
@@ -104,4 +136,7 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
         "compaction_count": usage.compaction_count,
         "last_compaction": usage.last_compaction_at.isoformat() if usage.last_compaction_at else None,
         "context_management": agent.settings.context_management,
+        "cost_usd_last": usage.last_cost_usd,
+        "cost_usd_cumulative": round(usage.total_cost_usd, 6),
+        "cost_unavailable": usage.cost_unavailable,
     }
