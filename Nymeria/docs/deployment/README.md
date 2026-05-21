@@ -2,6 +2,8 @@
 
 Nymeria supports two deployment shapes from the same codebase. Pick the one that matches your use case. You can switch later.
 
+New here? Read [shapes-explained.md](./shapes-explained.md) first for a beginner-friendly tour of SSE, Redis, SQLite vs Postgres, and why two shapes exist. This page is the chooser; that one is the explainer.
+
 ## Decision tree
 
 | Goal | Use |
