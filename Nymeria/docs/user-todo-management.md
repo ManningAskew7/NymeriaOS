@@ -135,12 +135,12 @@ def _datetime_to_timestamp(dt: datetime) -> float:
 **File:** `nymeria/core/ticker.py`
 
 In Docker, the `worker` container drives `Ticker` but no longer constructs
-a `NymeriaAgent` — it relays each due TODO to the `api` container via
+a `NymeriaAgent`  -  it relays each due TODO to the `api` container via
 `POST /chat` with `publish_autonomous_events=False`. The worker stays the
 sole publisher of `task_started` / `task_completed` and per-chunk events
 for that TODO, using `todo.id` as the stable task id. Slim runs the ticker
 in-process against the local agent (no change in behaviour). The injection
-point is the `TurnExecutor` passed to `Ticker.__init__` — `LocalAgentExecutor`
+point is the `TurnExecutor` passed to `Ticker.__init__`  -  `LocalAgentExecutor`
 in slim, `APIClientExecutor` in the Docker worker. See
 `nymeria/core/turn_executor.py`.
 

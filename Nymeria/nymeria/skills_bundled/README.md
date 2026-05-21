@@ -4,6 +4,6 @@ Built-in SKILL.md bundles shipped with Nymeria. Each subdirectory contains a SKI
 
 ## Contents
 
-- `callable-thread-builder/` — skill for creating callable threads
-- `self-improve/` — skill for agent self-improvement workflows
-- `trigger-management/` — skill for managing event triggers
+- `callable-thread-builder/`  -  skill for creating callable threads
+- `self-improve/`  -  skill for agent self-improvement workflows
+- `trigger-management/`  -  skill for managing event triggers

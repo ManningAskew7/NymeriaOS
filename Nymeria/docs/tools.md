@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. Treat the counts below as approximate only when noted, because the optional surface evolves over time.
+Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 17 core tools in `ALL_TOOLS` and 1,250 optional tools in `OPTIONAL_TOOLS` as of 2026-05-20; use `tools-index.md` for the generated exhaustive inventory.
 
 ## Summary Table
 
@@ -18,13 +18,15 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
 | 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
 | 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
-| 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO — scheduled TODOs auto-wake the agent |
+| 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO  -  scheduled TODOs auto-wake the agent |
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
 | 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
 | 15 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
+| 16 | `auth_manager` | Credentials | MODERATE | On | Manage native OAuth/API-key connections through the credential vault |
+| 17 | `request_credential` | Credentials | SAFE | On | Ask the user to provide a missing credential through a frontend prompt |
 
-> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active — it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
+> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
 > **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
 
@@ -62,959 +64,10 @@ which binds the facades below with a TTL.
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
-### Optional: Service Integration Tools (944)
+### Optional: Integration And Service Tools
 
-Not loaded by default. These are the first batch of general-purpose utility
-integrations and public information services. Tools that need connection details first look
-in the credential vault for provider-specific saved connections scoped to
-`native_tool:<tool_name>` or `native_tool:*`, then fall back to env settings.
+Not loaded by default. Nymeria has 1,123 optional integration and service tools registered across utility, public-info, media, community, HR, device, marketing, developer, build/CI, file storage, AWS, business, productivity, work-tracking, project-management, data, CRM, messaging, commerce, monitoring, enrichment, chat-platform, Google, and Microsoft Graph modules as of 2026-05-20. The exhaustive generated inventory lives in `tools-index.md`; this page keeps only the architectural notes and hand-maintained special cases so the reference does not drift.
 
-| # | Tool | Category | Security | Description |
-|---|------|----------|----------|-------------|
-| 1 | `calculator` | Integrations | SAFE | Evaluate deterministic arithmetic expressions with a safe local parser |
-| 2 | `wikipedia_search` | Integrations | SAFE | Search Wikipedia via `langchain_community`'s Wikipedia wrapper |
-| 3 | `wolfram_alpha_query` | Integrations | SAFE | Query Wolfram\|Alpha via `langchain_community`; uses vault provider `wolfram_alpha` or `WOLFRAM_ALPHA_APP_ID` |
-| 4 | `searxng_search` | Integrations | SAFE | Search a configured SearXNG instance; uses vault provider `searxng` or `SEARXNG_BASE_URL` |
-| 5 | `coingecko_price` | Integrations | SAFE | Get current crypto prices from CoinGecko |
-| 6 | `coingecko_coin_markets` | Integrations | SAFE | List CoinGecko market data |
-| 7 | `hackernews_search` | Integrations | SAFE | Search Hacker News via Algolia |
-| 8 | `hackernews_get_item` | Integrations | SAFE | Fetch a Hacker News item by ID |
-| 9 | `hackernews_get_user` | Integrations | SAFE | Fetch a Hacker News user profile |
-| 10 | `npm_package_info` | Integrations | SAFE | Fetch npm package metadata; optional vault provider `npm` |
-| 11 | `npm_package_search` | Integrations | SAFE | Search npm packages; optional vault provider `npm` |
-| 12 | `open_thesaurus_synonyms` | Integrations | SAFE | Get German synonyms from OpenThesaurus |
-| 13 | `rss_feed_read` | Integrations | MODERATE | Read an RSS/Atom feed URL |
-| 14 | `nasa_apod` | Integrations | SAFE | Get NASA Astronomy Picture of the Day; uses vault provider `nasa` or `NASA_API_KEY` |
-| 15 | `openweathermap_current` | Integrations | SAFE | Get current weather; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
-| 16 | `openweathermap_forecast` | Integrations | SAFE | Get a 5-day forecast; uses vault provider `openweathermap` or `OPENWEATHERMAP_API_KEY` |
-| 17 | `quickchart_create_url` | Integrations | SAFE | Create a QuickChart chart URL from labels and data |
-| 18 | `github_get_repository` | Integrations | SAFE | Get GitHub repository metadata; optional vault provider `github` |
-| 19 | `github_search_repositories` | Integrations | SAFE | Search GitHub repositories; optional vault provider `github` |
-| 20 | `github_list_issues` | Integrations | SAFE | List GitHub repository issues; optional vault provider `github` |
-| 21 | `github_get_issue` | Integrations | SAFE | Get a GitHub issue by repository issue number; optional vault provider `github` |
-| 22 | `github_list_pull_requests` | Integrations | SAFE | List GitHub repository pull requests; optional vault provider `github` |
-| 23 | `github_list_releases` | Integrations | SAFE | List GitHub repository releases; optional vault provider `github` |
-| 24 | `github_get_release` | Integrations | SAFE | Get a GitHub release by tag name; optional vault provider `github` |
-| 25 | `gitlab_get_project` | Integrations | SAFE | Get GitLab project metadata; optional vault provider `gitlab` |
-| 26 | `gitlab_search_projects` | Integrations | SAFE | Search GitLab projects; optional vault provider `gitlab` |
-| 27 | `gitlab_list_project_issues` | Integrations | SAFE | List GitLab project issues; optional vault provider `gitlab` |
-| 28 | `gitlab_get_project_issue` | Integrations | SAFE | Get a GitLab project issue by internal issue ID; optional vault provider `gitlab` |
-| 29 | `gitlab_list_project_releases` | Integrations | SAFE | List GitLab project releases; optional vault provider `gitlab` |
-| 30 | `gitlab_get_project_release` | Integrations | SAFE | Get a GitLab project release by tag name; optional vault provider `gitlab` |
-| 31 | `gitlab_list_user_projects` | Integrations | SAFE | List projects owned by a GitLab user ID; optional vault provider `gitlab` |
-| 32 | `bitly_get_bitlink` | Integrations | SAFE | Get Bitly bitlink metadata; uses vault provider `bitly` |
-| 33 | `bitly_create_bitlink` | Integrations | MODERATE | Create a Bitly short link; uses vault provider `bitly` |
-| 34 | `bitly_update_bitlink` | Integrations | MODERATE | Update Bitly bitlink metadata; uses vault provider `bitly` |
-| 35 | `brandfetch_get_brand` | Integrations | SAFE | Get Brandfetch company, industry, colors, fonts, and logos |
-| 36 | `brandfetch_get_brand_logos` | Integrations | SAFE | Get Brandfetch logo/icon metadata |
-| 37 | `brandfetch_get_brand_colors` | Integrations | SAFE | Get Brandfetch color metadata |
-| 38 | `marketstack_get_eod` | Integrations | SAFE | Get Marketstack end-of-day market data |
-| 39 | `marketstack_get_ticker` | Integrations | SAFE | Get Marketstack ticker metadata |
-| 40 | `marketstack_get_exchange` | Integrations | SAFE | Get Marketstack exchange metadata |
-| 41 | `deepl_translate_text` | Integrations | MODERATE | Translate text with DeepL |
-| 42 | `deepl_list_languages` | Integrations | SAFE | List DeepL source or target languages |
-| 43 | `todoist_list_tasks` | Integrations | SAFE | List Todoist tasks; uses vault provider `todoist` |
-| 44 | `todoist_get_task` | Integrations | SAFE | Get a Todoist task by ID |
-| 45 | `todoist_create_task` | Integrations | MODERATE | Create a Todoist task |
-| 46 | `todoist_update_task` | Integrations | MODERATE | Update a Todoist task |
-| 47 | `todoist_close_task` | Integrations | MODERATE | Close a Todoist task |
-| 48 | `todoist_list_projects` | Integrations | SAFE | List Todoist projects |
-| 49 | `todoist_get_project` | Integrations | SAFE | Get a Todoist project by ID |
-| 50 | `todoist_create_project` | Integrations | MODERATE | Create a Todoist project |
-| 51 | `trello_search` | Integrations | SAFE | Search Trello boards and cards |
-| 52 | `trello_get_board` | Integrations | SAFE | Get Trello board metadata |
-| 53 | `trello_list_board_lists` | Integrations | SAFE | List Trello lists on a board |
-| 54 | `trello_list_cards` | Integrations | SAFE | List Trello cards in a list |
-| 55 | `trello_get_card` | Integrations | SAFE | Get Trello card metadata |
-| 56 | `trello_create_card` | Integrations | MODERATE | Create a Trello card |
-| 57 | `trello_update_card` | Integrations | MODERATE | Update a Trello card |
-| 58 | `trello_add_card_comment` | Integrations | MODERATE | Add a comment to a Trello card |
-| 59 | `asana_get_user` | Integrations | SAFE | Get an Asana user by ID or `me` |
-| 60 | `asana_list_users` | Integrations | SAFE | List Asana users in a workspace |
-| 61 | `asana_list_projects` | Integrations | SAFE | List Asana projects by workspace or team |
-| 62 | `asana_get_project` | Integrations | SAFE | Get an Asana project by GID |
-| 63 | `asana_create_project` | Integrations | MODERATE | Create an Asana project in a team |
-| 64 | `asana_update_project` | Integrations | MODERATE | Update an Asana project |
-| 65 | `asana_list_tasks` | Integrations | SAFE | List Asana tasks by project or workspace filters |
-| 66 | `asana_search_tasks` | Integrations | SAFE | Search Asana tasks in a workspace |
-| 67 | `asana_get_task` | Integrations | SAFE | Get an Asana task by GID |
-| 68 | `asana_create_task` | Integrations | MODERATE | Create an Asana task |
-| 69 | `asana_create_subtask` | Integrations | MODERATE | Create an Asana subtask |
-| 70 | `asana_update_task` | Integrations | MODERATE | Update an Asana task |
-| 71 | `asana_add_task_comment` | Integrations | MODERATE | Add a comment/story to an Asana task |
-| 72 | `linear_list_teams` | Integrations | SAFE | List Linear teams |
-| 73 | `linear_list_users` | Integrations | SAFE | List Linear users |
-| 74 | `linear_list_workflow_states` | Integrations | SAFE | List Linear workflow states |
-| 75 | `linear_list_issues` | Integrations | SAFE | List Linear issues |
-| 76 | `linear_get_issue` | Integrations | SAFE | Get a Linear issue by ID or identifier |
-| 77 | `linear_create_issue` | Integrations | MODERATE | Create a Linear issue |
-| 78 | `linear_update_issue` | Integrations | MODERATE | Update a Linear issue |
-| 79 | `linear_add_issue_comment` | Integrations | MODERATE | Add a comment to a Linear issue |
-| 80 | `linear_add_issue_link` | Integrations | MODERATE | Attach a URL link to a Linear issue |
-| 81 | `jira_get_myself` | Integrations | SAFE | Get the current Jira user |
-| 82 | `jira_list_projects` | Integrations | SAFE | List Jira projects |
-| 83 | `jira_search_issues` | Integrations | SAFE | Search Jira issues with JQL |
-| 84 | `jira_get_issue` | Integrations | SAFE | Get a Jira issue by key or ID |
-| 85 | `jira_create_issue` | Integrations | MODERATE | Create a Jira issue |
-| 86 | `jira_update_issue` | Integrations | MODERATE | Update a Jira issue or transition it |
-| 87 | `jira_list_issue_transitions` | Integrations | SAFE | List available Jira transitions for an issue |
-| 88 | `jira_list_users` | Integrations | SAFE | Search Jira users |
-| 89 | `jira_list_issue_comments` | Integrations | SAFE | List comments on a Jira issue |
-| 90 | `jira_add_issue_comment` | Integrations | MODERATE | Add a comment to a Jira issue |
-| 91 | `clickup_list_teams` | Integrations | SAFE | List ClickUp workspaces/teams |
-| 92 | `clickup_list_spaces` | Integrations | SAFE | List ClickUp spaces |
-| 93 | `clickup_list_folders` | Integrations | SAFE | List ClickUp folders |
-| 94 | `clickup_list_lists` | Integrations | SAFE | List ClickUp lists |
-| 95 | `clickup_get_task` | Integrations | SAFE | Get a ClickUp task by ID |
-| 96 | `clickup_list_tasks` | Integrations | SAFE | List ClickUp tasks in a list |
-| 97 | `clickup_create_task` | Integrations | MODERATE | Create a ClickUp task |
-| 98 | `clickup_update_task` | Integrations | MODERATE | Update a ClickUp task |
-| 99 | `clickup_list_task_comments` | Integrations | SAFE | List comments on a ClickUp task |
-| 100 | `clickup_add_task_comment` | Integrations | MODERATE | Add a comment to a ClickUp task |
-| 101 | `slack_list_channels` | Integrations | SAFE | List Slack conversations |
-| 102 | `slack_get_channel_history` | Integrations | SAFE | Get recent Slack conversation messages |
-| 103 | `slack_search_messages` | Integrations | SAFE | Search Slack messages |
-| 104 | `slack_list_users` | Integrations | SAFE | List Slack users |
-| 105 | `slack_get_user` | Integrations | SAFE | Get Slack user metadata |
-| 106 | `slack_post_message` | Integrations | MODERATE | Post a Slack message |
-| 107 | `slack_update_message` | Integrations | MODERATE | Update a Slack message |
-| 108 | `slack_add_reaction` | Integrations | MODERATE | Add a Slack message reaction |
-| 109 | `notion_search` | Integrations | SAFE | Search Notion pages and data sources |
-| 110 | `notion_get_page` | Integrations | SAFE | Retrieve Notion page properties |
-| 111 | `notion_get_block_children` | Integrations | SAFE | Retrieve Notion page or block children |
-| 112 | `notion_query_data_source` | Integrations | SAFE | Query a Notion data source |
-| 113 | `notion_create_page` | Integrations | MODERATE | Create a Notion page |
-| 114 | `notion_update_page` | Integrations | MODERATE | Update a Notion page |
-| 115 | `notion_append_block_children` | Integrations | MODERATE | Append children to a Notion page or block |
-| 116 | `airtable_list_bases` | Integrations | SAFE | List Airtable bases |
-| 117 | `airtable_get_base_schema` | Integrations | SAFE | Get Airtable base schema |
-| 118 | `airtable_list_records` | Integrations | SAFE | List Airtable records |
-| 119 | `airtable_get_record` | Integrations | SAFE | Get an Airtable record |
-| 120 | `airtable_create_records` | Integrations | MODERATE | Create Airtable records |
-| 121 | `airtable_update_records` | Integrations | MODERATE | Update Airtable records |
-| 122 | `airtable_delete_record` | Integrations | MODERATE | Delete an Airtable record |
-| 123 | `hubspot_list_crm_objects` | Integrations | SAFE | List HubSpot CRM objects |
-| 124 | `hubspot_search_crm_objects` | Integrations | SAFE | Search HubSpot CRM objects |
-| 125 | `hubspot_get_crm_object` | Integrations | SAFE | Get a HubSpot CRM object |
-| 126 | `hubspot_create_crm_object` | Integrations | MODERATE | Create a HubSpot CRM object |
-| 127 | `hubspot_update_crm_object` | Integrations | MODERATE | Update a HubSpot CRM object |
-| 128 | `hubspot_archive_crm_object` | Integrations | MODERATE | Archive/delete a HubSpot CRM object |
-| 129 | `zendesk_search` | Integrations | SAFE | Search Zendesk tickets, users, organizations, and groups |
-| 130 | `zendesk_get_ticket` | Integrations | SAFE | Get a Zendesk ticket |
-| 131 | `zendesk_list_tickets` | Integrations | SAFE | List Zendesk tickets |
-| 132 | `zendesk_create_ticket` | Integrations | MODERATE | Create a Zendesk ticket |
-| 133 | `zendesk_update_ticket` | Integrations | MODERATE | Update a Zendesk ticket |
-| 134 | `zendesk_get_user` | Integrations | SAFE | Get a Zendesk user |
-| 135 | `zendesk_search_users` | Integrations | SAFE | Search Zendesk users |
-| 136 | `mailchimp_list_audiences` | Integrations | SAFE | List Mailchimp audiences |
-| 137 | `mailchimp_list_members` | Integrations | SAFE | List Mailchimp audience members |
-| 138 | `mailchimp_get_member` | Integrations | SAFE | Get a Mailchimp audience member |
-| 139 | `mailchimp_add_or_update_member` | Integrations | MODERATE | Add or update a Mailchimp audience member |
-| 140 | `mailchimp_update_member_tags` | Integrations | MODERATE | Add or remove Mailchimp member tags |
-| 141 | `mailchimp_list_campaigns` | Integrations | SAFE | List Mailchimp campaigns |
-| 142 | `freshdesk_list_tickets` | Integrations | SAFE | List Freshdesk tickets |
-| 143 | `freshdesk_search_tickets` | Integrations | SAFE | Search Freshdesk tickets |
-| 144 | `freshdesk_get_ticket` | Integrations | SAFE | Get a Freshdesk ticket |
-| 145 | `freshdesk_create_ticket` | Integrations | MODERATE | Create a Freshdesk ticket |
-| 146 | `freshdesk_update_ticket` | Integrations | MODERATE | Update a Freshdesk ticket |
-| 147 | `freshdesk_delete_ticket` | Integrations | MODERATE | Delete a Freshdesk ticket |
-| 148 | `freshdesk_list_contacts` | Integrations | SAFE | List Freshdesk contacts |
-| 149 | `freshdesk_get_contact` | Integrations | SAFE | Get a Freshdesk contact |
-| 150 | `freshdesk_create_contact` | Integrations | MODERATE | Create a Freshdesk contact |
-| 151 | `freshdesk_update_contact` | Integrations | MODERATE | Update a Freshdesk contact |
-| 152 | `helpscout_list_mailboxes` | Integrations | SAFE | List Help Scout mailboxes |
-| 153 | `helpscout_get_mailbox` | Integrations | SAFE | Get a Help Scout mailbox |
-| 154 | `helpscout_list_conversations` | Integrations | SAFE | List Help Scout conversations |
-| 155 | `helpscout_get_conversation` | Integrations | SAFE | Get a Help Scout conversation |
-| 156 | `helpscout_create_conversation` | Integrations | MODERATE | Create a Help Scout conversation |
-| 157 | `helpscout_create_thread` | Integrations | MODERATE | Create a Help Scout conversation thread |
-| 158 | `helpscout_list_customers` | Integrations | SAFE | List Help Scout customers |
-| 159 | `helpscout_get_customer` | Integrations | SAFE | Get a Help Scout customer |
-| 160 | `helpscout_create_customer` | Integrations | MODERATE | Create a Help Scout customer |
-| 161 | `helpscout_update_customer` | Integrations | MODERATE | Update a Help Scout customer |
-| 162 | `intercom_list_contacts` | Integrations | SAFE | List Intercom contacts |
-| 163 | `intercom_search_contacts` | Integrations | SAFE | Search Intercom contacts |
-| 164 | `intercom_get_contact` | Integrations | SAFE | Get an Intercom contact |
-| 165 | `intercom_create_contact` | Integrations | MODERATE | Create an Intercom contact |
-| 166 | `intercom_update_contact` | Integrations | MODERATE | Update an Intercom contact |
-| 167 | `intercom_archive_contact` | Integrations | MODERATE | Archive an Intercom contact |
-| 168 | `intercom_list_conversations` | Integrations | SAFE | List Intercom conversations |
-| 169 | `intercom_get_conversation` | Integrations | SAFE | Get an Intercom conversation |
-| 170 | `intercom_reply_conversation` | Integrations | MODERATE | Reply to an Intercom conversation |
-| 171 | `pipedrive_list_records` | Integrations | SAFE | List Pipedrive deals, people, organizations, activities, leads, notes, or products |
-| 172 | `pipedrive_search_records` | Integrations | SAFE | Search Pipedrive deals, people, organizations, products, or leads |
-| 173 | `pipedrive_get_record` | Integrations | SAFE | Get a Pipedrive CRM record |
-| 174 | `pipedrive_create_record` | Integrations | MODERATE | Create a Pipedrive CRM record |
-| 175 | `pipedrive_update_record` | Integrations | MODERATE | Update a Pipedrive CRM record |
-| 176 | `pipedrive_delete_record` | Integrations | MODERATE | Delete a Pipedrive CRM record |
-| 177 | `pipedrive_list_users` | Integrations | SAFE | List Pipedrive users |
-| 178 | `twilio_send_message` | Integrations | MODERATE | Send SMS, MMS, or WhatsApp messages with Twilio |
-| 179 | `twilio_list_messages` | Integrations | SAFE | List Twilio messages |
-| 180 | `twilio_get_message` | Integrations | SAFE | Get a Twilio message by SID |
-| 181 | `twilio_make_call` | Integrations | MODERATE | Start an outbound Twilio voice call |
-| 182 | `sendgrid_send_email` | Integrations | MODERATE | Send transactional email with SendGrid |
-| 183 | `sendgrid_list_contacts` | Integrations | SAFE | List or search SendGrid marketing contacts |
-| 184 | `sendgrid_get_contact` | Integrations | SAFE | Get a SendGrid marketing contact |
-| 185 | `sendgrid_upsert_contacts` | Integrations | MODERATE | Create or update SendGrid marketing contacts |
-| 186 | `sendgrid_list_lists` | Integrations | SAFE | List SendGrid marketing contact lists |
-| 187 | `mailgun_send_email` | Integrations | MODERATE | Send email with Mailgun |
-| 188 | `mailgun_list_events` | Integrations | SAFE | List Mailgun delivery events |
-| 189 | `mailgun_get_domain` | Integrations | SAFE | Get Mailgun sending domain metadata |
-| 190 | `brevo_send_email` | Integrations | MODERATE | Send transactional email with Brevo |
-| 191 | `brevo_list_contacts` | Integrations | SAFE | List Brevo contacts |
-| 192 | `brevo_get_contact` | Integrations | SAFE | Get a Brevo contact |
-| 193 | `brevo_create_contact` | Integrations | MODERATE | Create a Brevo contact |
-| 194 | `brevo_update_contact` | Integrations | MODERATE | Update a Brevo contact |
-| 195 | `brevo_list_senders` | Integrations | SAFE | List Brevo senders |
-| 196 | `mailjet_send_email` | Integrations | MODERATE | Send email with Mailjet |
-| 197 | `mailjet_send_sms` | Integrations | MODERATE | Send SMS with Mailjet |
-| 198 | `mailjet_list_contacts` | Integrations | SAFE | List Mailjet contacts |
-| 199 | `mailjet_get_contact` | Integrations | SAFE | Get a Mailjet contact |
-| 200 | `mandrill_send_email` | Integrations | MODERATE | Send email with Mandrill / Mailchimp Transactional |
-| 201 | `mandrill_send_template` | Integrations | MODERATE | Send a Mandrill template email |
-| 202 | `messagebird_send_sms` | Integrations | MODERATE | Send SMS with MessageBird |
-| 203 | `messagebird_get_balance` | Integrations | SAFE | Get MessageBird account balance |
-| 204 | `mocean_send_sms` | Integrations | MODERATE | Send SMS with Mocean |
-| 205 | `mocean_send_voice` | Integrations | MODERATE | Start a Mocean text-to-speech voice call |
-| 206 | `mocean_get_balance` | Integrations | SAFE | Get Mocean account balance |
-| 207 | `msg91_send_sms` | Integrations | MODERATE | Send SMS with MSG91 |
-| 208 | `stripe_list_records` | Integrations | SAFE | List Stripe customers, charges, payment intents, invoices, subscriptions, products, or prices |
-| 209 | `stripe_search_records` | Integrations | SAFE | Search Stripe billing records with Stripe Search query syntax |
-| 210 | `stripe_get_record` | Integrations | SAFE | Get a Stripe billing record by ID |
-| 211 | `stripe_get_balance` | Integrations | SAFE | Get Stripe account balance details |
-| 212 | `stripe_create_customer` | Integrations | MODERATE | Create a Stripe customer |
-| 213 | `stripe_update_customer` | Integrations | MODERATE | Update a Stripe customer |
-| 214 | `shopify_list_records` | Integrations | SAFE | List Shopify products, orders, or customers |
-| 215 | `shopify_get_record` | Integrations | SAFE | Get a Shopify product, order, or customer by ID |
-| 216 | `shopify_create_product` | Integrations | MODERATE | Create a Shopify product |
-| 217 | `shopify_update_product` | Integrations | MODERATE | Update a Shopify product |
-| 218 | `woocommerce_list_records` | Integrations | SAFE | List WooCommerce products, orders, or customers |
-| 219 | `woocommerce_get_record` | Integrations | SAFE | Get a WooCommerce product, order, or customer by ID |
-| 220 | `woocommerce_create_record` | Integrations | MODERATE | Create a WooCommerce product, order, or customer |
-| 221 | `woocommerce_update_record` | Integrations | MODERATE | Update a WooCommerce product, order, or customer |
-| 222 | `chargebee_list_records` | Integrations | SAFE | List Chargebee customers, subscriptions, invoices, transactions, items, item prices, or plans |
-| 223 | `chargebee_get_record` | Integrations | SAFE | Get a Chargebee billing record by ID |
-| 224 | `chargebee_create_customer` | Integrations | MODERATE | Create a Chargebee customer |
-| 225 | `chargebee_update_customer` | Integrations | MODERATE | Update a Chargebee customer |
-| 226 | `pushbullet_send_push` | Integrations | MODERATE | Send a Pushbullet note or link push |
-| 227 | `pushbullet_list_pushes` | Integrations | SAFE | List Pushbullet push history |
-| 228 | `pushbullet_update_push` | Integrations | MODERATE | Dismiss or update a Pushbullet push |
-| 229 | `pushbullet_delete_push` | Integrations | MODERATE | Delete a Pushbullet push |
-| 230 | `pushcut_send_notification` | Integrations | MODERATE | Send a Pushcut notification |
-| 231 | `gotify_send_message` | Integrations | MODERATE | Send a Gotify message |
-| 232 | `gotify_list_messages` | Integrations | SAFE | List Gotify messages |
-| 233 | `gotify_delete_message` | Integrations | MODERATE | Delete a Gotify message |
-| 234 | `pushover_send_message` | Integrations | MODERATE | Send a Pushover message |
-| 235 | `signl4_send_alert` | Integrations | MODERATE | Send a SIGNL4 alert |
-| 236 | `signl4_resolve_alert` | Integrations | MODERATE | Resolve a SIGNL4 alert by external ID |
-| 237 | `wordpress_list_records` | Integrations | SAFE | List WordPress posts, pages, users, or media |
-| 238 | `wordpress_get_record` | Integrations | SAFE | Get a WordPress post, page, user, or media item by ID |
-| 239 | `wordpress_create_record` | Integrations | MODERATE | Create a WordPress post, page, media item, or user |
-| 240 | `wordpress_update_record` | Integrations | MODERATE | Update a WordPress post, page, media item, or user |
-| 241 | `wordpress_delete_record` | Integrations | MODERATE | Delete a WordPress post, page, media item, or user |
-| 242 | `strapi_list_entries` | Integrations | SAFE | List Strapi entries in a collection |
-| 243 | `strapi_get_entry` | Integrations | SAFE | Get a Strapi entry by collection and ID |
-| 244 | `strapi_create_entry` | Integrations | MODERATE | Create a Strapi collection entry |
-| 245 | `strapi_update_entry` | Integrations | MODERATE | Update a Strapi collection entry |
-| 246 | `strapi_delete_entry` | Integrations | MODERATE | Delete a Strapi collection entry |
-| 247 | `contentful_list_records` | Integrations | SAFE | List Contentful entries or assets |
-| 248 | `contentful_get_record` | Integrations | SAFE | Get a Contentful entry or asset by ID |
-| 249 | `ghost_list_posts` | Integrations | SAFE | List Ghost posts through the Content API |
-| 250 | `ghost_get_post` | Integrations | SAFE | Get a Ghost post by ID or slug |
-| 251 | `ghost_create_post` | Integrations | MODERATE | Create a Ghost post through the Admin API |
-| 252 | `ghost_update_post` | Integrations | MODERATE | Update a Ghost post through the Admin API |
-| 253 | `ghost_delete_post` | Integrations | MODERATE | Delete a Ghost post through the Admin API |
-| 254 | `storyblok_list_stories` | Integrations | SAFE | List Storyblok stories through the Content API |
-| 255 | `storyblok_get_story` | Integrations | SAFE | Get a Storyblok story by path, UUID, or ID |
-| 256 | `storyblok_publish_story` | Integrations | MODERATE | Publish a Storyblok story through the Management API |
-| 257 | `storyblok_unpublish_story` | Integrations | MODERATE | Unpublish a Storyblok story through the Management API |
-| 258 | `storyblok_delete_story` | Integrations | MODERATE | Delete a Storyblok story through the Management API |
-| 259 | `netlify_list_sites` | Integrations | SAFE | List Netlify sites |
-| 260 | `netlify_get_site` | Integrations | SAFE | Get a Netlify site |
-| 261 | `netlify_list_deploys` | Integrations | SAFE | List Netlify deploys for a site |
-| 262 | `netlify_get_deploy` | Integrations | SAFE | Get a Netlify deploy |
-| 263 | `netlify_cancel_deploy` | Integrations | MODERATE | Cancel a Netlify deploy |
-| 264 | `netlify_delete_site` | Integrations | MODERATE | Delete a Netlify site |
-| 265 | `uptimerobot_get_account` | Integrations | SAFE | Get UptimeRobot account details |
-| 266 | `uptimerobot_list_monitors` | Integrations | SAFE | List UptimeRobot monitors |
-| 267 | `uptimerobot_get_monitor` | Integrations | SAFE | Get an UptimeRobot monitor |
-| 268 | `uptimerobot_create_monitor` | Integrations | MODERATE | Create an UptimeRobot monitor |
-| 269 | `uptimerobot_update_monitor` | Integrations | MODERATE | Update an UptimeRobot monitor |
-| 270 | `uptimerobot_delete_monitor` | Integrations | MODERATE | Delete an UptimeRobot monitor |
-| 271 | `uptimerobot_reset_monitor` | Integrations | MODERATE | Reset an UptimeRobot monitor |
-| 272 | `pagerduty_list_incidents` | Integrations | SAFE | List PagerDuty incidents |
-| 273 | `pagerduty_get_incident` | Integrations | SAFE | Get a PagerDuty incident |
-| 274 | `pagerduty_create_incident` | Integrations | MODERATE | Create a PagerDuty incident |
-| 275 | `pagerduty_update_incident` | Integrations | MODERATE | Update a PagerDuty incident |
-| 276 | `pagerduty_add_incident_note` | Integrations | MODERATE | Add a note to a PagerDuty incident |
-| 277 | `pagerduty_list_services` | Integrations | SAFE | List PagerDuty services |
-| 278 | `pagerduty_get_user` | Integrations | SAFE | Get a PagerDuty user |
-| 279 | `sentry_list_organizations` | Integrations | SAFE | List Sentry organizations |
-| 280 | `sentry_list_projects` | Integrations | SAFE | List Sentry projects |
-| 281 | `sentry_list_project_issues` | Integrations | SAFE | List Sentry project issues |
-| 282 | `sentry_get_issue` | Integrations | SAFE | Get a Sentry issue |
-| 283 | `sentry_update_issue` | Integrations | MODERATE | Update a Sentry issue |
-| 284 | `sentry_list_project_events` | Integrations | SAFE | List Sentry project events |
-| 285 | `sentry_get_event` | Integrations | SAFE | Get a Sentry event |
-| 286 | `cloudflare_list_zones` | Integrations | SAFE | List Cloudflare zones |
-| 287 | `cloudflare_list_dns_records` | Integrations | SAFE | List Cloudflare DNS records |
-| 288 | `cloudflare_create_dns_record` | Integrations | MODERATE | Create a Cloudflare DNS record |
-| 289 | `cloudflare_update_dns_record` | Integrations | MODERATE | Update a Cloudflare DNS record |
-| 290 | `cloudflare_delete_dns_record` | Integrations | MODERATE | Delete a Cloudflare DNS record |
-| 291 | `cloudflare_list_origin_certificates` | Integrations | SAFE | List Cloudflare origin pull certificates |
-| 292 | `cloudflare_get_origin_certificate` | Integrations | SAFE | Get a Cloudflare origin pull certificate |
-| 293 | `cloudflare_upload_origin_certificate` | Integrations | MODERATE | Upload a Cloudflare origin pull certificate |
-| 294 | `cloudflare_delete_origin_certificate` | Integrations | MODERATE | Delete a Cloudflare origin pull certificate |
-| 295 | `grafana_search_dashboards` | Integrations | SAFE | Search Grafana dashboards |
-| 296 | `grafana_get_dashboard` | Integrations | SAFE | Get a Grafana dashboard by UID |
-| 297 | `grafana_create_dashboard` | Integrations | MODERATE | Create or update a Grafana dashboard |
-| 298 | `grafana_delete_dashboard` | Integrations | MODERATE | Delete a Grafana dashboard |
-| 299 | `grafana_list_teams` | Integrations | SAFE | List Grafana teams |
-| 300 | `metabase_list_questions` | Integrations | SAFE | List Metabase questions |
-| 301 | `metabase_get_question` | Integrations | SAFE | Get a Metabase question |
-| 302 | `metabase_query_question` | Integrations | SAFE | Run a Metabase question |
-| 303 | `metabase_list_dashboards` | Integrations | SAFE | List Metabase dashboards |
-| 304 | `metabase_get_dashboard` | Integrations | SAFE | Get a Metabase dashboard |
-| 305 | `elasticsearch_list_indices` | Integrations | SAFE | List Elasticsearch indices |
-| 306 | `elasticsearch_search` | Integrations | SAFE | Search Elasticsearch documents |
-| 307 | `elasticsearch_get_document` | Integrations | SAFE | Get an Elasticsearch document |
-| 308 | `elasticsearch_index_document` | Integrations | MODERATE | Create or replace an Elasticsearch document |
-| 309 | `elasticsearch_delete_document` | Integrations | MODERATE | Delete an Elasticsearch document |
-| 310 | `splunk_list_saved_searches` | Integrations | SAFE | List Splunk saved searches |
-| 311 | `splunk_create_search_job` | Integrations | MODERATE | Create a Splunk search job |
-| 312 | `splunk_get_search_job` | Integrations | SAFE | Get a Splunk search job |
-| 313 | `splunk_get_search_results` | Integrations | SAFE | Get Splunk search results |
-| 314 | `urlscan_search_scans` | Integrations | SAFE | Search archived urlscan.io scans |
-| 315 | `urlscan_get_result` | Integrations | SAFE | Get a urlscan.io scan result |
-| 316 | `urlscan_submit_scan` | Integrations | MODERATE | Submit a URL to urlscan.io for scanning |
-| 317 | `hunter_domain_search` | Integrations | SAFE | Find domain-associated email addresses with Hunter |
-| 318 | `hunter_email_finder` | Integrations | SAFE | Find a likely professional email with Hunter |
-| 319 | `hunter_email_verifier` | Integrations | SAFE | Verify email deliverability with Hunter |
-| 320 | `mailcheck_check_email` | Integrations | SAFE | Check an email address with Mailcheck |
-| 321 | `peekalink_preview_url` | Integrations | SAFE | Return link preview metadata with Peekalink |
-| 322 | `peekalink_check_availability` | Integrations | SAFE | Check Peekalink preview availability |
-| 323 | `jina_reader_fetch_url` | Integrations | SAFE | Fetch a URL through Jina Reader |
-| 324 | `jina_search_web` | Integrations | SAFE | Search the web through Jina Search |
-| 325 | `jina_deep_research` | Integrations | MODERATE | Run a Jina DeepSearch research query |
-| 326 | `misp_search_attributes` | Integrations | SAFE | Search MISP attributes |
-| 327 | `misp_search_events` | Integrations | SAFE | Search MISP events |
-| 328 | `misp_get_event` | Integrations | SAFE | Get a MISP event by ID |
-| 329 | `misp_create_event` | Integrations | MODERATE | Create a MISP event |
-| 330 | `misp_list_tags` | Integrations | SAFE | List MISP tags |
-| 331 | `misp_add_event_tag` | Integrations | MODERATE | Add a tag to a MISP event |
-| 332 | `misp_remove_event_tag` | Integrations | MODERATE | Remove a tag from a MISP event |
-| 333 | `thehive_list_cases` | Integrations | SAFE | List or query TheHive cases |
-| 334 | `thehive_get_case` | Integrations | SAFE | Get a TheHive case |
-| 335 | `thehive_create_case` | Integrations | MODERATE | Create a TheHive case |
-| 336 | `thehive_list_alerts` | Integrations | SAFE | List or query TheHive alerts |
-| 337 | `thehive_get_alert` | Integrations | SAFE | Get a TheHive alert |
-| 338 | `thehive_create_alert` | Integrations | MODERATE | Create a TheHive alert |
-| 339 | `securityscorecard_get_company_scorecard` | Integrations | SAFE | Get SecurityScorecard company scorecard data |
-| 340 | `securityscorecard_list_company_factors` | Integrations | SAFE | List SecurityScorecard company factor scores |
-| 341 | `securityscorecard_get_company_history` | Integrations | SAFE | Get SecurityScorecard company score history |
-| 342 | `securityscorecard_list_portfolios` | Integrations | SAFE | List SecurityScorecard portfolios |
-| 343 | `securityscorecard_add_portfolio_company` | Integrations | MODERATE | Add a company to a SecurityScorecard portfolio |
-| 344 | `securityscorecard_remove_portfolio_company` | Integrations | MODERATE | Remove a company from a SecurityScorecard portfolio |
-| 345 | `elastic_security_list_cases` | Integrations | SAFE | List Elastic Security cases |
-| 346 | `elastic_security_get_case` | Integrations | SAFE | Get an Elastic Security case |
-| 347 | `elastic_security_list_case_tags` | Integrations | SAFE | List Elastic Security case tags |
-| 348 | `elastic_security_create_case` | Integrations | MODERATE | Create an Elastic Security case |
-| 349 | `elastic_security_add_case_comment` | Integrations | MODERATE | Add a comment to an Elastic Security case |
-| 350 | `baserow_list_tables` | Integrations | SAFE | List Baserow tables |
-| 351 | `baserow_list_fields` | Integrations | SAFE | List Baserow table fields |
-| 352 | `baserow_list_rows` | Integrations | SAFE | List Baserow table rows |
-| 353 | `baserow_get_row` | Integrations | SAFE | Get a Baserow row |
-| 354 | `baserow_create_row` | Integrations | MODERATE | Create a Baserow row |
-| 355 | `baserow_update_row` | Integrations | MODERATE | Update a Baserow row |
-| 356 | `baserow_delete_row` | Integrations | MODERATE | Delete a Baserow row |
-| 357 | `nocodb_list_bases` | Integrations | SAFE | List NocoDB bases |
-| 358 | `nocodb_get_base` | Integrations | SAFE | Get NocoDB base metadata |
-| 359 | `nocodb_list_records` | Integrations | SAFE | List NocoDB records |
-| 360 | `nocodb_get_record` | Integrations | SAFE | Get a NocoDB record |
-| 361 | `nocodb_count_records` | Integrations | SAFE | Count NocoDB records |
-| 362 | `nocodb_create_record` | Integrations | MODERATE | Create a NocoDB record |
-| 363 | `nocodb_update_record` | Integrations | MODERATE | Update a NocoDB record |
-| 364 | `nocodb_delete_record` | Integrations | MODERATE | Delete a NocoDB record |
-| 365 | `coda_list_docs` | Integrations | SAFE | List Coda docs |
-| 366 | `coda_list_tables` | Integrations | SAFE | List Coda tables and views |
-| 367 | `coda_list_table_rows` | Integrations | SAFE | List Coda table rows |
-| 368 | `coda_get_table_row` | Integrations | SAFE | Get a Coda table row |
-| 369 | `coda_create_table_row` | Integrations | MODERATE | Create a Coda table row |
-| 370 | `coda_update_table_row` | Integrations | MODERATE | Update a Coda table row |
-| 371 | `coda_delete_table_row` | Integrations | MODERATE | Delete a Coda table row |
-| 372 | `coda_list_formulas` | Integrations | SAFE | List Coda formulas |
-| 373 | `coda_list_controls` | Integrations | SAFE | List Coda controls |
-| 374 | `grist_list_orgs` | Integrations | SAFE | List Grist organizations |
-| 375 | `grist_list_workspaces` | Integrations | SAFE | List Grist workspaces |
-| 376 | `grist_list_docs` | Integrations | SAFE | List Grist docs |
-| 377 | `grist_list_tables` | Integrations | SAFE | List Grist tables |
-| 378 | `grist_list_columns` | Integrations | SAFE | List Grist table columns |
-| 379 | `grist_list_records` | Integrations | SAFE | List Grist table records |
-| 380 | `grist_create_record` | Integrations | MODERATE | Create a Grist record |
-| 381 | `grist_update_record` | Integrations | MODERATE | Update a Grist record |
-| 382 | `grist_delete_records` | Integrations | MODERATE | Delete Grist records |
-| 383 | `discord_list_guild_channels` | Integrations | SAFE | List Discord guild channels |
-| 384 | `discord_get_channel` | Integrations | SAFE | Get Discord channel metadata |
-| 385 | `discord_get_channel_messages` | Integrations | SAFE | Get Discord channel messages |
-| 386 | `discord_send_channel_message` | Integrations | MODERATE | Send a Discord channel message |
-| 387 | `discord_delete_message` | Integrations | MODERATE | Delete a Discord message |
-| 388 | `mattermost_get_me` | Integrations | SAFE | Get the current Mattermost user |
-| 389 | `mattermost_list_teams` | Integrations | SAFE | List Mattermost teams |
-| 390 | `mattermost_list_channels` | Integrations | SAFE | List Mattermost team channels |
-| 391 | `mattermost_list_channel_posts` | Integrations | SAFE | List Mattermost channel posts |
-| 392 | `mattermost_create_post` | Integrations | MODERATE | Create a Mattermost post |
-| 393 | `mattermost_delete_post` | Integrations | MODERATE | Delete a Mattermost post |
-| 394 | `matrix_whoami` | Integrations | SAFE | Get the current Matrix account |
-| 395 | `matrix_list_joined_rooms` | Integrations | SAFE | List joined Matrix rooms |
-| 396 | `matrix_get_room_messages` | Integrations | SAFE | Get Matrix room messages |
-| 397 | `matrix_send_room_message` | Integrations | MODERATE | Send a Matrix room message |
-| 398 | `matrix_leave_room` | Integrations | MODERATE | Leave a Matrix room |
-| 399 | `rocketchat_get_me` | Integrations | SAFE | Get the current Rocket.Chat user |
-| 400 | `rocketchat_list_channels` | Integrations | SAFE | List Rocket.Chat public channels |
-| 401 | `rocketchat_get_channel_history` | Integrations | SAFE | Get Rocket.Chat channel history |
-| 402 | `rocketchat_post_message` | Integrations | MODERATE | Post a Rocket.Chat message |
-| 403 | `rocketchat_delete_message` | Integrations | MODERATE | Delete a Rocket.Chat message |
-| 404 | `zulip_get_profile` | Integrations | SAFE | Get the current Zulip profile |
-| 405 | `zulip_list_streams` | Integrations | SAFE | List Zulip streams |
-| 406 | `zulip_get_messages` | Integrations | SAFE | Get Zulip messages |
-| 407 | `zulip_send_message` | Integrations | MODERATE | Send a Zulip message |
-| 408 | `zulip_delete_message` | Integrations | MODERATE | Delete a Zulip message |
-| 409 | `google_books_search` | Integrations | SAFE | Search Google Books volume metadata |
-| 410 | `google_books_get_volume` | Integrations | SAFE | Get a Google Books volume by ID |
-| 411 | `youtube_search` | Integrations | SAFE | Search YouTube videos, channels, or playlists |
-| 412 | `youtube_get_videos` | Integrations | SAFE | Get YouTube video metadata |
-| 413 | `youtube_get_channels` | Integrations | SAFE | Get YouTube channel metadata |
-| 414 | `youtube_list_playlist_items` | Integrations | SAFE | List YouTube playlist items |
-| 415 | `spotify_search` | Integrations | SAFE | Search Spotify catalog metadata |
-| 416 | `spotify_get_track` | Integrations | SAFE | Get Spotify track metadata |
-| 417 | `spotify_get_artist` | Integrations | SAFE | Get Spotify artist metadata |
-| 418 | `spotify_get_album` | Integrations | SAFE | Get Spotify album metadata |
-| 419 | `spotify_get_playlist` | Integrations | SAFE | Get Spotify playlist metadata |
-| 420 | `reddit_search_posts` | Integrations | SAFE | Search Reddit posts |
-| 421 | `reddit_list_subreddit_posts` | Integrations | SAFE | List subreddit posts |
-| 422 | `reddit_get_post` | Integrations | SAFE | Get a Reddit post and comments |
-| 423 | `reddit_get_subreddit` | Integrations | SAFE | Get subreddit metadata |
-| 424 | `reddit_get_user` | Integrations | SAFE | Get Reddit user metadata |
-| 425 | `reddit_create_post` | Integrations | MODERATE | Create a Reddit post |
-| 426 | `reddit_create_comment` | Integrations | MODERATE | Create a Reddit comment or reply |
-| 427 | `reddit_delete_thing` | Integrations | MODERATE | Delete a Reddit post or comment |
-| 428 | `discourse_search` | Integrations | SAFE | Search a Discourse forum |
-| 429 | `discourse_list_latest_topics` | Integrations | SAFE | List latest Discourse topics |
-| 430 | `discourse_get_topic` | Integrations | SAFE | Get a Discourse topic |
-| 431 | `discourse_get_post` | Integrations | SAFE | Get a Discourse post |
-| 432 | `discourse_create_topic` | Integrations | MODERATE | Create a Discourse topic |
-| 433 | `discourse_create_post` | Integrations | MODERATE | Create a Discourse reply post |
-| 434 | `discourse_update_post` | Integrations | MODERATE | Update a Discourse post |
-| 435 | `medium_get_me` | Integrations | SAFE | Get the authenticated Medium profile |
-| 436 | `medium_list_publications` | Integrations | SAFE | List Medium publications for a user |
-| 437 | `medium_create_post` | Integrations | MODERATE | Create a Medium profile post |
-| 438 | `medium_create_publication_post` | Integrations | MODERATE | Create a Medium publication post |
-| 439 | `bamboohr_list_employees` | Integrations | SAFE | List BambooHR employees |
-| 440 | `bamboohr_get_employee` | Integrations | SAFE | Get a BambooHR employee |
-| 441 | `bamboohr_create_employee` | Integrations | MODERATE | Create a BambooHR employee |
-| 442 | `bamboohr_update_employee` | Integrations | MODERATE | Update BambooHR employee fields |
-| 443 | `bamboohr_get_company_report` | Integrations | SAFE | Run a BambooHR company report |
-| 444 | `beeminder_get_user` | Integrations | SAFE | Get the authenticated Beeminder user |
-| 445 | `beeminder_list_goals` | Integrations | SAFE | List Beeminder goals |
-| 446 | `beeminder_get_goal` | Integrations | SAFE | Get a Beeminder goal |
-| 447 | `beeminder_list_datapoints` | Integrations | SAFE | List Beeminder datapoints |
-| 448 | `beeminder_create_datapoint` | Integrations | MODERATE | Create a Beeminder datapoint |
-| 449 | `beeminder_update_datapoint` | Integrations | MODERATE | Update a Beeminder datapoint |
-| 450 | `beeminder_delete_datapoint` | Integrations | MODERATE | Delete a Beeminder datapoint |
-| 451 | `clockify_list_workspaces` | Integrations | SAFE | List Clockify workspaces |
-| 452 | `clockify_list_users` | Integrations | SAFE | List Clockify users |
-| 453 | `clockify_list_projects` | Integrations | SAFE | List Clockify projects |
-| 454 | `clockify_create_project` | Integrations | MODERATE | Create a Clockify project |
-| 455 | `clockify_list_time_entries` | Integrations | SAFE | List Clockify time entries |
-| 456 | `clockify_create_time_entry` | Integrations | MODERATE | Create a Clockify time entry |
-| 457 | `clockify_update_time_entry` | Integrations | MODERATE | Update a Clockify time entry |
-| 458 | `clockify_delete_time_entry` | Integrations | MODERATE | Delete a Clockify time entry |
-| 459 | `harvest_get_me` | Integrations | SAFE | Get the authenticated Harvest user |
-| 460 | `harvest_get_company` | Integrations | SAFE | Get Harvest company metadata |
-| 461 | `harvest_list_clients` | Integrations | SAFE | List Harvest clients |
-| 462 | `harvest_list_projects` | Integrations | SAFE | List Harvest projects |
-| 463 | `harvest_list_tasks` | Integrations | SAFE | List Harvest tasks |
-| 464 | `harvest_list_time_entries` | Integrations | SAFE | List Harvest time entries |
-| 465 | `harvest_create_time_entry` | Integrations | MODERATE | Create a Harvest time entry |
-| 466 | `harvest_update_time_entry` | Integrations | MODERATE | Update a Harvest time entry |
-| 467 | `harvest_stop_time_entry` | Integrations | MODERATE | Stop a running Harvest time entry |
-| 468 | `harvest_delete_time_entry` | Integrations | MODERATE | Delete a Harvest time entry |
-| 469 | `oura_get_profile` | Integrations | SAFE | Get the authenticated Oura profile |
-| 470 | `oura_get_daily_activity` | Integrations | SAFE | Get Oura daily activity summaries |
-| 471 | `oura_get_daily_readiness` | Integrations | SAFE | Get Oura daily readiness summaries |
-| 472 | `oura_get_daily_sleep` | Integrations | SAFE | Get Oura daily sleep summaries |
-| 473 | `strava_list_activities` | Integrations | SAFE | List Strava activities |
-| 474 | `strava_get_activity` | Integrations | SAFE | Get a Strava activity |
-| 475 | `strava_create_activity` | Integrations | MODERATE | Create a manual Strava activity |
-| 476 | `strava_update_activity` | Integrations | MODERATE | Update a Strava activity |
-| 477 | `strava_list_activity_comments` | Integrations | SAFE | List Strava activity comments |
-| 478 | `strava_get_activity_streams` | Integrations | SAFE | Get Strava activity streams |
-| 479 | `homeassistant_get_config` | Integrations | SAFE | Get Home Assistant configuration metadata |
-| 480 | `homeassistant_check_config` | Integrations | MODERATE | Run Home Assistant config checks |
-| 481 | `homeassistant_list_states` | Integrations | SAFE | List Home Assistant states |
-| 482 | `homeassistant_get_state` | Integrations | SAFE | Get a Home Assistant state |
-| 483 | `homeassistant_set_state` | Integrations | MODERATE | Create or update a Home Assistant state |
-| 484 | `homeassistant_list_services` | Integrations | SAFE | List Home Assistant services |
-| 485 | `homeassistant_call_service` | Integrations | MODERATE | Call a Home Assistant service |
-| 486 | `homeassistant_list_events` | Integrations | SAFE | List Home Assistant event types |
-| 487 | `homeassistant_fire_event` | Integrations | MODERATE | Fire a Home Assistant event |
-| 488 | `homeassistant_render_template` | Integrations | MODERATE | Render a Home Assistant template |
-| 489 | `homeassistant_get_logbook` | Integrations | SAFE | Get Home Assistant logbook entries |
-| 490 | `philips_hue_list_lights` | Integrations | SAFE | List Philips Hue lights |
-| 491 | `philips_hue_get_light` | Integrations | SAFE | Get a Philips Hue light |
-| 492 | `philips_hue_update_light_state` | Integrations | MODERATE | Update Philips Hue light state |
-| 493 | `philips_hue_delete_light` | Integrations | MODERATE | Delete a Philips Hue light |
-| 494 | `activecampaign_list_contacts` | Integrations | SAFE | List ActiveCampaign contacts |
-| 495 | `activecampaign_get_contact` | Integrations | SAFE | Get an ActiveCampaign contact |
-| 496 | `activecampaign_sync_contact` | Integrations | MODERATE | Create or update an ActiveCampaign contact |
-| 497 | `activecampaign_update_contact` | Integrations | MODERATE | Update an ActiveCampaign contact |
-| 498 | `activecampaign_list_lists` | Integrations | SAFE | List ActiveCampaign lists |
-| 499 | `activecampaign_list_tags` | Integrations | SAFE | List ActiveCampaign tags |
-| 500 | `activecampaign_add_contact_to_list` | Integrations | MODERATE | Subscribe or unsubscribe an ActiveCampaign contact to a list |
-| 501 | `activecampaign_add_contact_tag` | Integrations | MODERATE | Add an ActiveCampaign tag to a contact |
-| 502 | `convertkit_get_account` | Integrations | SAFE | Get ConvertKit account details |
-| 503 | `convertkit_list_forms` | Integrations | SAFE | List ConvertKit forms |
-| 504 | `convertkit_list_tags` | Integrations | SAFE | List ConvertKit tags |
-| 505 | `convertkit_list_subscribers` | Integrations | SAFE | List ConvertKit subscribers |
-| 506 | `convertkit_add_subscriber_to_form` | Integrations | MODERATE | Subscribe an email address to a ConvertKit form |
-| 507 | `convertkit_add_subscriber_to_tag` | Integrations | MODERATE | Subscribe an email address to a ConvertKit tag |
-| 508 | `getresponse_list_campaigns` | Integrations | SAFE | List GetResponse campaigns |
-| 509 | `getresponse_list_contacts` | Integrations | SAFE | List GetResponse contacts |
-| 510 | `getresponse_get_contact` | Integrations | SAFE | Get a GetResponse contact |
-| 511 | `getresponse_create_contact` | Integrations | MODERATE | Create a GetResponse contact |
-| 512 | `getresponse_update_contact` | Integrations | MODERATE | Update a GetResponse contact |
-| 513 | `getresponse_delete_contact` | Integrations | MODERATE | Delete a GetResponse contact |
-| 514 | `mailerlite_list_subscribers` | Integrations | SAFE | List MailerLite subscribers |
-| 515 | `mailerlite_get_subscriber` | Integrations | SAFE | Get a MailerLite subscriber |
-| 516 | `mailerlite_create_subscriber` | Integrations | MODERATE | Create a MailerLite subscriber |
-| 517 | `mailerlite_update_subscriber` | Integrations | MODERATE | Update a MailerLite subscriber |
-| 518 | `mailerlite_list_groups` | Integrations | SAFE | List MailerLite groups |
-| 519 | `copper_list_records` | Integrations | SAFE | List Copper CRM records |
-| 520 | `copper_get_record` | Integrations | SAFE | Get a Copper CRM record |
-| 521 | `copper_create_record` | Integrations | MODERATE | Create a Copper CRM record |
-| 522 | `copper_update_record` | Integrations | MODERATE | Update a Copper CRM record |
-| 523 | `copper_delete_record` | Integrations | MODERATE | Delete a Copper CRM record |
-| 524 | `agilecrm_list_records` | Integrations | SAFE | List Agile CRM records |
-| 525 | `agilecrm_get_record` | Integrations | SAFE | Get an Agile CRM record |
-| 526 | `agilecrm_create_record` | Integrations | MODERATE | Create an Agile CRM record |
-| 527 | `agilecrm_update_record` | Integrations | MODERATE | Update an Agile CRM record |
-| 528 | `agilecrm_delete_record` | Integrations | MODERATE | Delete an Agile CRM record |
-| 529 | `monica_list_records` | Integrations | SAFE | List Monica CRM records |
-| 530 | `monica_get_record` | Integrations | SAFE | Get a Monica CRM record |
-| 531 | `monica_create_record` | Integrations | MODERATE | Create a Monica CRM record |
-| 532 | `monica_update_record` | Integrations | MODERATE | Update a Monica CRM record |
-| 533 | `monica_delete_record` | Integrations | MODERATE | Delete a Monica CRM record |
-| 534 | `plivo_send_message` | Integrations | MODERATE | Send SMS or MMS messages with Plivo |
-| 535 | `plivo_get_account` | Integrations | SAFE | Get Plivo account metadata |
-| 536 | `vonage_send_sms` | Integrations | MODERATE | Send SMS messages with Vonage |
-| 537 | `vonage_get_balance` | Integrations | SAFE | Get Vonage account balance |
-| 538 | `seven_send_sms` | Integrations | MODERATE | Send SMS messages with seven.io |
-| 539 | `seven_get_balance` | Integrations | SAFE | Get seven.io account balance |
-| 540 | `raindrop_list_bookmarks` | Integrations | SAFE | List Raindrop bookmarks |
-| 541 | `raindrop_get_bookmark` | Integrations | SAFE | Get a Raindrop bookmark |
-| 542 | `raindrop_create_bookmark` | Integrations | MODERATE | Create a Raindrop bookmark |
-| 543 | `raindrop_update_bookmark` | Integrations | MODERATE | Update a Raindrop bookmark |
-| 544 | `raindrop_delete_bookmark` | Integrations | MODERATE | Delete a Raindrop bookmark |
-| 545 | `raindrop_list_collections` | Integrations | SAFE | List Raindrop collections |
-| 546 | `raindrop_get_collection` | Integrations | SAFE | Get a Raindrop collection |
-| 547 | `raindrop_list_tags` | Integrations | SAFE | List Raindrop tags |
-| 548 | `raindrop_delete_tags` | Integrations | MODERATE | Delete Raindrop tags |
-| 549 | `raindrop_get_user` | Integrations | SAFE | Get Raindrop user metadata |
-| 550 | `yourls_shorten_url` | Integrations | MODERATE | Create a short URL with YOURLS |
-| 551 | `yourls_expand_url` | Integrations | SAFE | Expand a YOURLS short URL |
-| 552 | `yourls_get_url_stats` | Integrations | SAFE | Get YOURLS short URL stats |
-| 553 | `yourls_get_db_stats` | Integrations | SAFE | Get YOURLS database stats |
-| 554 | `circleci_list_pipelines` | Integrations | SAFE | List CircleCI pipelines |
-| 555 | `circleci_get_pipeline` | Integrations | SAFE | Get a CircleCI pipeline |
-| 556 | `circleci_trigger_pipeline` | Integrations | MODERATE | Trigger a CircleCI pipeline |
-| 557 | `travisci_list_builds` | Integrations | SAFE | List Travis CI builds |
-| 558 | `travisci_get_build` | Integrations | SAFE | Get a Travis CI build |
-| 559 | `travisci_trigger_build` | Integrations | MODERATE | Trigger a Travis CI build |
-| 560 | `travisci_restart_build` | Integrations | MODERATE | Restart a Travis CI build |
-| 561 | `travisci_cancel_build` | Integrations | MODERATE | Cancel a Travis CI build |
-| 562 | `jenkins_get_instance` | Integrations | SAFE | Get Jenkins instance metadata |
-| 563 | `jenkins_list_jobs` | Integrations | SAFE | List Jenkins jobs |
-| 564 | `jenkins_list_job_builds` | Integrations | SAFE | List Jenkins job builds |
-| 565 | `jenkins_trigger_job` | Integrations | MODERATE | Trigger a Jenkins job |
-| 566 | `jenkins_trigger_job_with_parameters` | Integrations | MODERATE | Trigger a parameterized Jenkins job |
-| 567 | `jenkins_copy_job` | Integrations | MODERATE | Copy a Jenkins job |
-| 568 | `jenkins_create_job` | Integrations | MODERATE | Create a Jenkins job |
-| 569 | `jenkins_quiet_down` | Integrations | MODERATE | Put Jenkins into quiet-down mode |
-| 570 | `jenkins_cancel_quiet_down` | Integrations | MODERATE | Cancel Jenkins quiet-down mode |
-| 571 | `jenkins_restart_instance` | Integrations | MODERATE | Restart a Jenkins instance |
-| 572 | `jenkins_shutdown_instance` | Integrations | MODERATE | Shut down a Jenkins instance |
-| 573 | `dropbox_get_current_account` | Integrations | SAFE | Get Dropbox account metadata |
-| 574 | `dropbox_get_metadata` | Integrations | SAFE | Get Dropbox file or folder metadata |
-| 575 | `dropbox_list_folder` | Integrations | SAFE | List Dropbox folder entries |
-| 576 | `dropbox_search` | Integrations | SAFE | Search Dropbox files and folders |
-| 577 | `dropbox_download_file` | Integrations | SAFE | Download a Dropbox file preview |
-| 578 | `dropbox_upload_text_file` | Integrations | MODERATE | Upload a text file to Dropbox |
-| 579 | `dropbox_create_folder` | Integrations | MODERATE | Create a Dropbox folder |
-| 580 | `dropbox_copy_path` | Integrations | MODERATE | Copy a Dropbox file or folder |
-| 581 | `dropbox_move_path` | Integrations | MODERATE | Move or rename a Dropbox file or folder |
-| 582 | `dropbox_delete_path` | Integrations | MODERATE | Delete a Dropbox file or folder |
-| 583 | `nextcloud_list_folder` | Integrations | SAFE | List Nextcloud folder entries |
-| 584 | `nextcloud_download_file` | Integrations | SAFE | Download a Nextcloud file preview |
-| 585 | `nextcloud_upload_text_file` | Integrations | MODERATE | Upload a text file to Nextcloud |
-| 586 | `nextcloud_create_folder` | Integrations | MODERATE | Create a Nextcloud folder |
-| 587 | `nextcloud_copy_path` | Integrations | MODERATE | Copy a Nextcloud file or folder |
-| 588 | `nextcloud_move_path` | Integrations | MODERATE | Move or rename a Nextcloud file or folder |
-| 589 | `nextcloud_delete_path` | Integrations | MODERATE | Delete a Nextcloud file or folder |
-| 590 | `nextcloud_list_users` | Integrations | SAFE | List Nextcloud users |
-| 591 | `nextcloud_get_user` | Integrations | SAFE | Get Nextcloud user metadata |
-| 592 | `s3_list_buckets` | Integrations | SAFE | List S3 buckets |
-| 593 | `s3_list_objects` | Integrations | SAFE | List S3 objects |
-| 594 | `s3_get_object_text` | Integrations | SAFE | Download an S3 object preview |
-| 595 | `s3_upload_text_object` | Integrations | MODERATE | Upload a text object to S3 |
-| 596 | `s3_copy_object` | Integrations | MODERATE | Copy an S3 object |
-| 597 | `s3_delete_object` | Integrations | MODERATE | Delete an S3 object |
-| 598 | `s3_create_folder` | Integrations | MODERATE | Create an S3 folder marker object |
-| 599 | `s3_create_bucket` | Integrations | MODERATE | Create an S3 bucket |
-| 600 | `s3_delete_bucket` | Integrations | MODERATE | Delete an empty S3 bucket |
-| 601 | `clearbit_enrich_company` | Integrations | MODERATE | Enrich company data from a domain |
-| 602 | `clearbit_autocomplete_company` | Integrations | MODERATE | Autocomplete company names and domains |
-| 603 | `clearbit_enrich_person` | Integrations | MODERATE | Enrich person data from an email address |
-| 604 | `uplead_enrich_company` | Integrations | MODERATE | Enrich company data by domain or name |
-| 605 | `uplead_enrich_person` | Integrations | MODERATE | Enrich person data by email or identity hints |
-| 606 | `dropcontact_submit_enrichment` | Integrations | MODERATE | Submit a contact enrichment request |
-| 607 | `dropcontact_fetch_request` | Integrations | MODERATE | Fetch a submitted enrichment request |
-| 608 | `humantic_create_profile` | Integrations | MODERATE | Create a contact-intelligence profile |
-| 609 | `humantic_get_profile` | Integrations | MODERATE | Get a contact-intelligence profile |
-| 610 | `humantic_update_profile_text` | Integrations | MODERATE | Update a profile with additional text |
-| 611 | `lonescale_create_list` | Integrations | MODERATE | Create a prospecting list |
-| 612 | `lonescale_add_people_item` | Integrations | MODERATE | Add a person to a prospecting list |
-| 613 | `lonescale_add_company_item` | Integrations | MODERATE | Add a company to a prospecting list |
-| 614 | `uproc_get_profile` | Integrations | MODERATE | Get the saved enrichment account profile |
-| 615 | `uproc_process` | Integrations | MODERATE | Run an enrichment processor with explicit JSON parameters |
-| 616 | `datetime_current` | Integrations | SAFE | Get the current date or time |
-| 617 | `datetime_add` | Integrations | SAFE | Add a duration to a date/time |
-| 618 | `datetime_subtract` | Integrations | SAFE | Subtract a duration from a date/time |
-| 619 | `datetime_format` | Integrations | SAFE | Parse and format a date/time |
-| 620 | `datetime_between` | Integrations | SAFE | Get the time difference between two dates |
-| 621 | `datetime_extract` | Integrations | SAFE | Extract part of a date/time |
-| 622 | `datetime_round` | Integrations | SAFE | Round a date/time to a calendar boundary |
-| 623 | `crypto_hash_text` | Integrations | SAFE | Hash text locally |
-| 624 | `crypto_hmac_text` | Integrations | MODERATE | Create an HMAC with a saved secret |
-| 625 | `crypto_generate_random` | Integrations | SAFE | Generate a random UUID or string |
-| 626 | `crypto_sign_text` | Integrations | MODERATE | Sign text with a saved private key |
-| 627 | `jwt_decode_token` | Integrations | SAFE | Decode a JWT without verification |
-| 628 | `jwt_sign_claims` | Integrations | MODERATE | Sign JWT claims with saved credentials |
-| 629 | `jwt_verify_token` | Integrations | MODERATE | Verify a JWT with saved credentials |
-| 630 | `compression_gzip_text` | Integrations | SAFE | Gzip text and return base64 |
-| 631 | `compression_gunzip_text` | Integrations | SAFE | Decompress base64 gzip text |
-| 632 | `compression_zip_text_files` | Integrations | SAFE | Create a base64 zip from text files |
-| 633 | `compression_unzip_text_files` | Integrations | SAFE | Extract base64 zip text files |
-| 634 | `aws_lambda_list_functions` | Integrations | SAFE | List AWS Lambda functions |
-| 635 | `aws_lambda_invoke` | Integrations | MODERATE | Invoke an AWS Lambda function |
-| 636 | `aws_sns_list_topics` | Integrations | SAFE | List AWS SNS topics |
-| 637 | `aws_sns_create_topic` | Integrations | MODERATE | Create an AWS SNS topic |
-| 638 | `aws_sns_publish` | Integrations | MODERATE | Publish a message to an AWS SNS topic |
-| 639 | `aws_sns_delete_topic` | Integrations | MODERATE | Delete an AWS SNS topic |
-| 640 | `aws_ses_send_email` | Integrations | MODERATE | Send email with Amazon SES |
-| 641 | `aws_ses_list_identities` | Integrations | SAFE | List Amazon SES identities |
-| 642 | `aws_ses_verify_email_identity` | Integrations | MODERATE | Start Amazon SES email identity verification |
-| 643 | `aws_ses_list_templates` | Integrations | SAFE | List Amazon SES email templates |
-| 644 | `aws_ses_get_template` | Integrations | SAFE | Get an Amazon SES email template |
-| 645 | `aws_ses_create_template` | Integrations | MODERATE | Create an Amazon SES email template |
-| 646 | `aws_ses_update_template` | Integrations | MODERATE | Update an Amazon SES email template |
-| 647 | `aws_ses_delete_template` | Integrations | MODERATE | Delete an Amazon SES email template |
-| 648 | `aws_textract_analyze_expense` | Integrations | MODERATE | Analyze a receipt or invoice with Amazon Textract |
-| 649 | `aws_transcribe_start_job` | Integrations | MODERATE | Start an Amazon Transcribe transcription job |
-| 650 | `aws_transcribe_get_job` | Integrations | SAFE | Get an Amazon Transcribe job |
-| 651 | `aws_transcribe_list_jobs` | Integrations | SAFE | List Amazon Transcribe jobs |
-| 652 | `aws_transcribe_delete_job` | Integrations | MODERATE | Delete an Amazon Transcribe job |
-| 653 | `freshservice_list_tickets` | Integrations | SAFE | List Freshservice tickets |
-| 654 | `freshservice_get_ticket` | Integrations | SAFE | Get a Freshservice ticket |
-| 655 | `freshservice_create_ticket` | Integrations | MODERATE | Create a Freshservice ticket |
-| 656 | `freshservice_update_ticket` | Integrations | MODERATE | Update a Freshservice ticket |
-| 657 | `freshservice_list_requesters` | Integrations | SAFE | List Freshservice requesters |
-| 658 | `freshservice_get_requester` | Integrations | SAFE | Get a Freshservice requester |
-| 659 | `servicenow_list_records` | Integrations | SAFE | List ServiceNow table records |
-| 660 | `servicenow_get_record` | Integrations | SAFE | Get a ServiceNow table record |
-| 661 | `servicenow_create_record` | Integrations | MODERATE | Create a ServiceNow table record |
-| 662 | `servicenow_update_record` | Integrations | MODERATE | Update a ServiceNow table record |
-| 663 | `servicenow_delete_record` | Integrations | MODERATE | Delete a ServiceNow table record |
-| 664 | `zammad_list_records` | Integrations | SAFE | List or search Zammad tickets, users, organizations, or groups |
-| 665 | `zammad_get_record` | Integrations | SAFE | Get a Zammad ticket, user, organization, or group |
-| 666 | `zammad_create_record` | Integrations | MODERATE | Create a Zammad ticket, user, organization, or group |
-| 667 | `zammad_update_record` | Integrations | MODERATE | Update a Zammad ticket, user, organization, or group |
-| 668 | `supabase_list_rows` | Integrations | SAFE | List rows from a Supabase table |
-| 669 | `supabase_insert_rows` | Integrations | MODERATE | Insert rows into a Supabase table |
-| 670 | `supabase_update_rows` | Integrations | MODERATE | Update Supabase rows matching a filter |
-| 671 | `supabase_delete_rows` | Integrations | MODERATE | Delete Supabase rows matching a filter |
-| 672 | `quickbase_list_fields` | Integrations | SAFE | List fields for a Quickbase table |
-| 673 | `quickbase_query_records` | Integrations | SAFE | Query Quickbase records |
-| 674 | `quickbase_upsert_records` | Integrations | MODERATE | Create or update Quickbase records |
-| 675 | `quickbase_delete_records` | Integrations | MODERATE | Delete Quickbase records matching a where clause |
-| 676 | `seatable_get_metadata` | Integrations | SAFE | Get SeaTable base metadata |
-| 677 | `seatable_list_rows` | Integrations | SAFE | List SeaTable rows |
-| 678 | `seatable_get_row` | Integrations | SAFE | Get a SeaTable row by ID |
-| 679 | `seatable_create_row` | Integrations | MODERATE | Create a SeaTable row |
-| 680 | `seatable_update_row` | Integrations | MODERATE | Update a SeaTable row |
-| 681 | `seatable_delete_row` | Integrations | MODERATE | Delete a SeaTable row |
-| 682 | `stackby_list_rows` | Integrations | SAFE | List Stackby rows |
-| 683 | `stackby_get_row` | Integrations | SAFE | Get a Stackby row by ID |
-| 684 | `stackby_create_rows` | Integrations | MODERATE | Create Stackby rows |
-| 685 | `stackby_delete_rows` | Integrations | MODERATE | Delete Stackby rows |
-| 686 | `salesforce_query_records` | Integrations | SAFE | Run a Salesforce SOQL SELECT query |
-| 687 | `salesforce_get_record` | Integrations | SAFE | Get a Salesforce object record |
-| 688 | `salesforce_create_record` | Integrations | MODERATE | Create a Salesforce object record |
-| 689 | `salesforce_update_record` | Integrations | MODERATE | Update a Salesforce object record |
-| 690 | `salesforce_delete_record` | Integrations | MODERATE | Delete a Salesforce object record |
-| 691 | `zoho_crm_list_records` | Integrations | SAFE | List Zoho CRM module records |
-| 692 | `zoho_crm_search_records` | Integrations | SAFE | Search Zoho CRM module records |
-| 693 | `zoho_crm_get_record` | Integrations | SAFE | Get a Zoho CRM module record |
-| 694 | `zoho_crm_create_records` | Integrations | MODERATE | Create Zoho CRM module records |
-| 695 | `zoho_crm_update_record` | Integrations | MODERATE | Update a Zoho CRM module record |
-| 696 | `zoho_crm_delete_record` | Integrations | MODERATE | Delete a Zoho CRM module record |
-| 697 | `freshworks_crm_list_records` | Integrations | SAFE | List Freshworks CRM records |
-| 698 | `freshworks_crm_search_records` | Integrations | SAFE | Search Freshworks CRM records |
-| 699 | `freshworks_crm_get_record` | Integrations | SAFE | Get a Freshworks CRM record |
-| 700 | `freshworks_crm_create_record` | Integrations | MODERATE | Create a Freshworks CRM record |
-| 701 | `freshworks_crm_update_record` | Integrations | MODERATE | Update a Freshworks CRM record |
-| 702 | `freshworks_crm_delete_record` | Integrations | MODERATE | Delete a Freshworks CRM record |
-| 703 | `salesmate_list_users` | Integrations | SAFE | List active Salesmate users |
-| 704 | `salesmate_search_records` | Integrations | SAFE | Search Salesmate records |
-| 705 | `salesmate_get_record` | Integrations | SAFE | Get a Salesmate record |
-| 706 | `salesmate_create_record` | Integrations | MODERATE | Create a Salesmate record |
-| 707 | `salesmate_update_record` | Integrations | MODERATE | Update a Salesmate record |
-| 708 | `salesmate_delete_record` | Integrations | MODERATE | Delete a Salesmate record |
-| 709 | `customerio_list_campaigns` | Integrations | SAFE | List Customer.io campaigns |
-| 710 | `customerio_get_campaign` | Integrations | SAFE | Get a Customer.io campaign |
-| 711 | `customerio_upsert_customer` | Integrations | MODERATE | Create or update a Customer.io customer profile |
-| 712 | `customerio_track_event` | Integrations | MODERATE | Track a Customer.io event for a known customer |
-| 713 | `customerio_track_anonymous_event` | Integrations | MODERATE | Track a Customer.io anonymous event |
-| 714 | `customerio_update_segment` | Integrations | MODERATE | Add or remove customers from a Customer.io manual segment |
-| 715 | `iterable_list_lists` | Integrations | SAFE | List Iterable static lists |
-| 716 | `iterable_get_user` | Integrations | SAFE | Get an Iterable user by email or user ID |
-| 717 | `iterable_upsert_user` | Integrations | MODERATE | Create or update an Iterable user |
-| 718 | `iterable_track_event` | Integrations | MODERATE | Track an Iterable event |
-| 719 | `iterable_update_list_subscribers` | Integrations | MODERATE | Subscribe or unsubscribe Iterable list members |
-| 720 | `posthog_capture_event` | Integrations | MODERATE | Capture a PostHog event |
-| 721 | `posthog_identify` | Integrations | MODERATE | Identify a PostHog user |
-| 722 | `posthog_create_alias` | Integrations | MODERATE | Create a PostHog alias |
-| 723 | `posthog_track_page_or_screen` | Integrations | MODERATE | Track a PostHog page or screen view |
-| 724 | `segment_identify` | Integrations | MODERATE | Send a Segment identify call |
-| 725 | `segment_track` | Integrations | MODERATE | Send a Segment track event |
-| 726 | `segment_group` | Integrations | MODERATE | Send a Segment group call |
-| 727 | `telegram_get_me` | Integrations | SAFE | Get the Telegram bot profile |
-| 728 | `telegram_get_chat` | Integrations | SAFE | Get Telegram chat metadata |
-| 729 | `telegram_send_message` | Integrations | MODERATE | Send a Telegram text message |
-| 730 | `telegram_delete_message` | Integrations | MODERATE | Delete a Telegram message |
-| 731 | `webex_list_rooms` | Integrations | SAFE | List Webex rooms |
-| 732 | `webex_get_room` | Integrations | SAFE | Get Webex room metadata |
-| 733 | `webex_list_messages` | Integrations | SAFE | List Webex messages |
-| 734 | `webex_get_message` | Integrations | SAFE | Get a Webex message |
-| 735 | `webex_send_message` | Integrations | MODERATE | Send a Webex message |
-| 736 | `webex_delete_message` | Integrations | MODERATE | Delete a Webex message |
-| 737 | `whatsapp_list_phone_numbers` | Integrations | SAFE | List WhatsApp Business Cloud phone numbers |
-| 738 | `whatsapp_send_text_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud text message |
-| 739 | `whatsapp_send_template_message` | Integrations | MODERATE | Send a WhatsApp Business Cloud template message |
-| 740 | `whatsapp_get_media_url` | Integrations | SAFE | Get a WhatsApp Business Cloud media URL |
-| 741 | `whatsapp_delete_media` | Integrations | MODERATE | Delete WhatsApp Business Cloud media |
-| 742 | `graphql_execute_query` | Integrations | MODERATE | Execute a GraphQL query or mutation against an explicit or saved endpoint |
-| 743 | `totp_generate_code` | Integrations | MODERATE | Generate a TOTP code from a saved secret |
-| 744 | `totp_verify_code` | Integrations | MODERATE | Verify a TOTP code against a saved secret |
-| 745 | `lingvanex_translate_text` | Integrations | MODERATE | Translate text with LingvaNex |
-| 746 | `lingvanex_list_languages` | Integrations | SAFE | List LingvaNex supported languages |
-| 747 | `apitemplate_list_templates` | Integrations | SAFE | List APITemplate templates |
-| 748 | `apitemplate_get_account` | Integrations | SAFE | Get APITemplate account information |
-| 749 | `apitemplate_create_image` | Integrations | MODERATE | Create an image from an APITemplate image template |
-| 750 | `apitemplate_create_pdf` | Integrations | MODERATE | Create a PDF from an APITemplate PDF template |
-| 751 | `onesimple_create_pdf` | Integrations | MODERATE | Create a PDF URL for a webpage |
-| 752 | `onesimple_create_screenshot` | Integrations | MODERATE | Create a screenshot URL for a webpage |
-| 753 | `onesimple_get_page_info` | Integrations | MODERATE | Get webpage SEO and metadata |
-| 754 | `onesimple_get_exchange_rate` | Integrations | MODERATE | Convert a currency amount |
-| 755 | `onesimple_get_image_metadata` | Integrations | MODERATE | Get image metadata from an image URL |
-| 756 | `onesimple_validate_email` | Integrations | MODERATE | Validate an email address |
-| 757 | `onesimple_expand_url` | Integrations | MODERATE | Expand a shortened URL |
-| 758 | `onesimple_create_qr_code` | Integrations | MODERATE | Create a QR-code image URL |
-| 759 | `paddle_list_products` | Integrations | SAFE | List Paddle products |
-| 760 | `paddle_list_plans` | Integrations | SAFE | List Paddle subscription plans |
-| 761 | `paddle_list_subscription_users` | Integrations | SAFE | List Paddle subscription users |
-| 762 | `paddle_list_payments` | Integrations | SAFE | List Paddle subscription payments |
-| 763 | `paddle_get_order` | Integrations | SAFE | Get a Paddle order by checkout ID |
-| 764 | `paddle_list_coupons` | Integrations | SAFE | List Paddle coupons for a product |
-| 765 | `paddle_create_coupon` | Integrations | MODERATE | Create Paddle coupon codes |
-| 766 | `paddle_update_coupon` | Integrations | MODERATE | Update Paddle coupon metadata |
-| 767 | `paddle_reschedule_payment` | Integrations | MODERATE | Reschedule a Paddle subscription payment |
-| 768 | `profitwell_get_settings` | Integrations | SAFE | Get ProfitWell account settings |
-| 769 | `profitwell_get_metrics` | Integrations | SAFE | Get ProfitWell daily or monthly metrics |
-| 770 | `tapfiliate_list_affiliates` | Integrations | SAFE | List Tapfiliate affiliates |
-| 771 | `tapfiliate_get_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate |
-| 772 | `tapfiliate_create_affiliate` | Integrations | MODERATE | Create a Tapfiliate affiliate |
-| 773 | `tapfiliate_delete_affiliate` | Integrations | MODERATE | Delete a Tapfiliate affiliate |
-| 774 | `tapfiliate_add_affiliate_metadata` | Integrations | MODERATE | Add metadata fields to a Tapfiliate affiliate |
-| 775 | `tapfiliate_remove_affiliate_metadata` | Integrations | MODERATE | Remove a Tapfiliate affiliate metadata field |
-| 776 | `tapfiliate_update_affiliate_metadata` | Integrations | MODERATE | Update a Tapfiliate affiliate metadata field |
-| 777 | `tapfiliate_list_program_affiliates` | Integrations | SAFE | List affiliates in a Tapfiliate program |
-| 778 | `tapfiliate_get_program_affiliate` | Integrations | SAFE | Get a Tapfiliate affiliate in a program |
-| 779 | `tapfiliate_add_program_affiliate` | Integrations | MODERATE | Add a Tapfiliate affiliate to a program |
-| 780 | `tapfiliate_approve_program_affiliate` | Integrations | MODERATE | Approve a Tapfiliate affiliate for a program |
-| 781 | `tapfiliate_disapprove_program_affiliate` | Integrations | MODERATE | Disapprove a Tapfiliate affiliate for a program |
-| 782 | `actionnetwork_list_records` | Integrations | SAFE | List Action Network events, people, petitions, tags, attendances, signatures, or taggings |
-| 783 | `actionnetwork_get_record` | Integrations | SAFE | Get an Action Network record by ID |
-| 784 | `actionnetwork_create_person` | Integrations | MODERATE | Create an Action Network person |
-| 785 | `actionnetwork_update_person` | Integrations | MODERATE | Update an Action Network person |
-| 786 | `actionnetwork_create_event` | Integrations | MODERATE | Create an Action Network event |
-| 787 | `actionnetwork_create_petition` | Integrations | MODERATE | Create an Action Network petition |
-| 788 | `actionnetwork_create_attendance` | Integrations | MODERATE | Create an Action Network attendance |
-| 789 | `actionnetwork_create_signature` | Integrations | MODERATE | Create an Action Network petition signature |
-| 790 | `actionnetwork_add_person_tag` | Integrations | MODERATE | Tag an Action Network person |
-| 791 | `actionnetwork_remove_person_tag` | Integrations | MODERATE | Remove an Action Network person tag |
-| 792 | `autopilot_list_contacts` | Integrations | SAFE | List Autopilot contacts |
-| 793 | `autopilot_get_contact` | Integrations | SAFE | Get an Autopilot contact |
-| 794 | `autopilot_upsert_contact` | Integrations | MODERATE | Create or update an Autopilot contact |
-| 795 | `autopilot_delete_contact` | Integrations | MODERATE | Delete an Autopilot contact |
-| 796 | `autopilot_list_lists` | Integrations | SAFE | List Autopilot lists |
-| 797 | `autopilot_create_list` | Integrations | MODERATE | Create an Autopilot list |
-| 798 | `autopilot_update_contact_list_membership` | Integrations | MODERATE | Add, remove, or check Autopilot list membership |
-| 799 | `autopilot_add_contact_to_journey` | Integrations | MODERATE | Add an Autopilot contact to a journey trigger |
-| 800 | `egoi_list_lists` | Integrations | SAFE | List E-goi lists |
-| 801 | `egoi_list_contacts` | Integrations | SAFE | List E-goi contacts |
-| 802 | `egoi_get_contact` | Integrations | SAFE | Get an E-goi contact |
-| 803 | `egoi_create_contact` | Integrations | MODERATE | Create an E-goi contact |
-| 804 | `egoi_update_contact` | Integrations | MODERATE | Update an E-goi contact |
-| 805 | `vero_identify_user` | Integrations | MODERATE | Create or update a Vero user profile |
-| 806 | `vero_alias_user` | Integrations | MODERATE | Alias a Vero user ID |
-| 807 | `vero_update_user_subscription` | Integrations | MODERATE | Unsubscribe, resubscribe, or delete a Vero user |
-| 808 | `vero_update_user_tags` | Integrations | MODERATE | Add or remove Vero user tags |
-| 809 | `vero_track_event` | Integrations | MODERATE | Track a Vero event |
-| 810 | `adalo_list_records` | Integrations | SAFE | List Adalo collection records |
-| 811 | `adalo_get_record` | Integrations | SAFE | Get an Adalo collection record |
-| 812 | `adalo_create_record` | Integrations | MODERATE | Create an Adalo collection record |
-| 813 | `adalo_update_record` | Integrations | MODERATE | Update an Adalo collection record |
-| 814 | `adalo_delete_record` | Integrations | MODERATE | Delete an Adalo collection record |
-| 815 | `bubble_list_objects` | Integrations | SAFE | List Bubble Data API objects |
-| 816 | `bubble_get_object` | Integrations | SAFE | Get a Bubble Data API object |
-| 817 | `bubble_create_object` | Integrations | MODERATE | Create a Bubble Data API object |
-| 818 | `bubble_update_object` | Integrations | MODERATE | Update a Bubble Data API object |
-| 819 | `bubble_delete_object` | Integrations | MODERATE | Delete a Bubble Data API object |
-| 820 | `cockpit_list_collections` | Integrations | SAFE | List Cockpit collection names |
-| 821 | `cockpit_list_collection_entries` | Integrations | SAFE | List Cockpit collection entries |
-| 822 | `cockpit_save_collection_entry` | Integrations | MODERATE | Create or update a Cockpit collection entry |
-| 823 | `cockpit_list_singletons` | Integrations | SAFE | List Cockpit singleton names |
-| 824 | `cockpit_get_singleton` | Integrations | SAFE | Get a Cockpit singleton |
-| 825 | `cockpit_submit_form` | Integrations | MODERATE | Submit a Cockpit form |
-| 826 | `monday_get_me` | Integrations | SAFE | Get the current Monday user |
-| 827 | `monday_list_boards` | Integrations | SAFE | List Monday boards |
-| 828 | `monday_get_board` | Integrations | SAFE | Get a Monday board by ID |
-| 829 | `monday_create_board` | Integrations | MODERATE | Create a Monday board |
-| 830 | `monday_archive_board` | Integrations | MODERATE | Archive a Monday board |
-| 831 | `monday_list_board_columns` | Integrations | SAFE | List Monday board columns |
-| 832 | `monday_create_board_column` | Integrations | MODERATE | Create a Monday board column |
-| 833 | `monday_list_board_groups` | Integrations | SAFE | List Monday board groups |
-| 834 | `monday_create_board_group` | Integrations | MODERATE | Create a Monday board group |
-| 835 | `monday_list_items` | Integrations | SAFE | List Monday board items |
-| 836 | `monday_get_item` | Integrations | SAFE | Get Monday items by ID |
-| 837 | `monday_create_item` | Integrations | MODERATE | Create a Monday item |
-| 838 | `monday_update_item_columns` | Integrations | MODERATE | Update Monday item column values |
-| 839 | `monday_add_item_update` | Integrations | MODERATE | Add an update/comment to a Monday item |
-| 840 | `monday_move_item` | Integrations | MODERATE | Move a Monday item to another group |
-| 841 | `monday_delete_item` | Integrations | MODERATE | Delete a Monday item |
-| 842 | `taiga_list_projects` | Integrations | SAFE | List Taiga projects |
-| 843 | `taiga_list_records` | Integrations | SAFE | List Taiga epics, issues, tasks, or user stories |
-| 844 | `taiga_get_record` | Integrations | SAFE | Get a Taiga epic, issue, task, or user story |
-| 845 | `taiga_create_record` | Integrations | MODERATE | Create a Taiga epic, issue, task, or user story |
-| 846 | `taiga_update_record` | Integrations | MODERATE | Update a Taiga epic, issue, task, or user story |
-| 847 | `taiga_delete_record` | Integrations | MODERATE | Delete a Taiga epic, issue, task, or user story |
-| 848 | `wekan_get_current_user` | Integrations | SAFE | Get the current Wekan user |
-| 849 | `wekan_list_users` | Integrations | SAFE | List Wekan users |
-| 850 | `wekan_list_user_boards` | Integrations | SAFE | List Wekan boards for a user |
-| 851 | `wekan_get_board` | Integrations | SAFE | Get a Wekan board by ID |
-| 852 | `wekan_create_board` | Integrations | MODERATE | Create a Wekan board |
-| 853 | `wekan_delete_board` | Integrations | MODERATE | Delete a Wekan board |
-| 854 | `wekan_list_lists` | Integrations | SAFE | List Wekan lists on a board |
-| 855 | `wekan_create_list` | Integrations | MODERATE | Create a Wekan list |
-| 856 | `wekan_delete_list` | Integrations | MODERATE | Delete a Wekan list |
-| 857 | `wekan_list_cards` | Integrations | SAFE | List Wekan cards from a list or swimlane |
-| 858 | `wekan_get_card` | Integrations | SAFE | Get a Wekan card by ID |
-| 859 | `wekan_create_card` | Integrations | MODERATE | Create a Wekan card |
-| 860 | `wekan_update_card` | Integrations | MODERATE | Update a Wekan card |
-| 861 | `wekan_delete_card` | Integrations | MODERATE | Delete a Wekan card |
-| 862 | `wekan_list_card_comments` | Integrations | SAFE | List comments on a Wekan card |
-| 863 | `wekan_add_card_comment` | Integrations | MODERATE | Add a comment to a Wekan card |
-| 864 | `erpnext_get_logged_user` | Integrations | SAFE | Get the current ERPNext user |
-| 865 | `erpnext_list_documents` | Integrations | SAFE | List ERPNext documents for a DocType |
-| 866 | `erpnext_get_document` | Integrations | SAFE | Get an ERPNext document by DocType and document name |
-| 867 | `erpnext_create_document` | Integrations | MODERATE | Create an ERPNext document |
-| 868 | `erpnext_update_document` | Integrations | MODERATE | Update an ERPNext document |
-| 869 | `erpnext_delete_document` | Integrations | MODERATE | Delete an ERPNext document |
-| 870 | `odoo_get_server_version` | Integrations | SAFE | Get the Odoo server version |
-| 871 | `odoo_list_records` | Integrations | SAFE | List Odoo records from a model |
-| 872 | `odoo_get_record` | Integrations | SAFE | Get an Odoo record by ID |
-| 873 | `odoo_create_record` | Integrations | MODERATE | Create an Odoo record |
-| 874 | `odoo_update_record` | Integrations | MODERATE | Update an Odoo record |
-| 875 | `odoo_delete_record` | Integrations | MODERATE | Delete an Odoo record |
-| 876 | `invoiceninja_list_records` | Integrations | SAFE | List Invoice Ninja records |
-| 877 | `invoiceninja_get_record` | Integrations | SAFE | Get an Invoice Ninja record by ID |
-| 878 | `invoiceninja_create_record` | Integrations | MODERATE | Create an Invoice Ninja record |
-| 879 | `invoiceninja_delete_record` | Integrations | MODERATE | Delete an Invoice Ninja record |
-| 880 | `invoiceninja_email_invoice_or_quote` | Integrations | MODERATE | Email an Invoice Ninja invoice or quote |
-| 881 | `demio_list_events` | Integrations | SAFE | List Demio events |
-| 882 | `demio_get_event` | Integrations | SAFE | Get a Demio event or event date/session |
-| 883 | `demio_register_event` | Integrations | MODERATE | Register a Demio event attendee |
-| 884 | `demio_get_session_participants` | Integrations | SAFE | Get Demio participant report rows |
-| 885 | `zoom_list_meetings` | Integrations | SAFE | List Zoom meetings |
-| 886 | `zoom_get_meeting` | Integrations | SAFE | Get a Zoom meeting by ID |
-| 887 | `zoom_create_meeting` | Integrations | MODERATE | Create a Zoom meeting |
-| 888 | `zoom_update_meeting` | Integrations | MODERATE | Update a Zoom meeting |
-| 889 | `zoom_delete_meeting` | Integrations | MODERATE | Delete a Zoom meeting |
-| 890 | `gotowebinar_list_webinars` | Integrations | SAFE | List GoToWebinar webinars |
-| 891 | `gotowebinar_get_webinar` | Integrations | SAFE | Get a GoToWebinar webinar |
-| 892 | `gotowebinar_create_webinar` | Integrations | MODERATE | Create a GoToWebinar webinar |
-| 893 | `gotowebinar_update_webinar` | Integrations | MODERATE | Update a GoToWebinar webinar |
-| 894 | `gotowebinar_list_sessions` | Integrations | SAFE | List GoToWebinar sessions |
-| 895 | `gotowebinar_get_session` | Integrations | SAFE | Get a GoToWebinar session |
-| 896 | `gotowebinar_list_registrants` | Integrations | SAFE | List GoToWebinar registrants |
-| 897 | `gotowebinar_get_registrant` | Integrations | SAFE | Get a GoToWebinar registrant |
-| 898 | `gotowebinar_create_registrant` | Integrations | MODERATE | Create a GoToWebinar registrant |
-| 899 | `gotowebinar_delete_registrant` | Integrations | MODERATE | Delete a GoToWebinar registrant |
-| 900 | `dhl_track_shipment` | Integrations | SAFE | Get DHL shipment tracking details |
-| 901 | `onfleet_test_auth` | Integrations | SAFE | Validate the saved Onfleet API connection |
-| 902 | `onfleet_list_tasks` | Integrations | SAFE | List Onfleet tasks |
-| 903 | `onfleet_get_task` | Integrations | SAFE | Get an Onfleet task by ID or short ID |
-| 904 | `onfleet_list_workers` | Integrations | SAFE | List Onfleet workers |
-| 905 | `onfleet_get_worker` | Integrations | SAFE | Get an Onfleet worker |
-| 906 | `onfleet_list_teams` | Integrations | SAFE | List Onfleet teams |
-| 907 | `onfleet_get_team` | Integrations | SAFE | Get an Onfleet team |
-| 908 | `onfleet_complete_task` | Integrations | MODERATE | Force-complete an Onfleet task |
-| 909 | `phantombuster_list_agents` | Integrations | SAFE | List Phantombuster agents |
-| 910 | `phantombuster_get_agent` | Integrations | SAFE | Get Phantombuster agent metadata |
-| 911 | `phantombuster_get_agent_output` | Integrations | SAFE | Get Phantombuster agent output |
-| 912 | `phantombuster_launch_agent` | Integrations | MODERATE | Launch a Phantombuster agent |
-| 913 | `phantombuster_delete_agent` | Integrations | MODERATE | Delete a Phantombuster agent |
-| 914 | `webflow_list_sites` | Integrations | SAFE | List Webflow sites |
-| 915 | `webflow_list_site_collections` | Integrations | SAFE | List Webflow CMS collections for a site |
-| 916 | `webflow_get_collection` | Integrations | SAFE | Get Webflow CMS collection metadata and fields |
-| 917 | `webflow_list_collection_items` | Integrations | SAFE | List Webflow CMS collection items |
-| 918 | `webflow_get_collection_item` | Integrations | SAFE | Get a Webflow CMS collection item |
-| 919 | `webflow_create_collection_item` | Integrations | MODERATE | Create a Webflow CMS collection item |
-| 920 | `webflow_update_collection_item` | Integrations | MODERATE | Update a Webflow CMS collection item |
-| 921 | `webflow_delete_collection_item` | Integrations | MODERATE | Delete a Webflow CMS collection item |
-| 922 | `lemlist_list_campaigns` | Integrations | SAFE | List Lemlist campaigns |
-| 923 | `lemlist_get_campaign_stats` | Integrations | SAFE | Get Lemlist campaign stats |
-| 924 | `lemlist_list_activities` | Integrations | SAFE | List Lemlist activities |
-| 925 | `lemlist_get_lead` | Integrations | SAFE | Get a Lemlist lead |
-| 926 | `lemlist_create_lead` | Integrations | MODERATE | Create or update a Lemlist campaign lead |
-| 927 | `lemlist_remove_lead` | Integrations | MODERATE | Remove or unsubscribe a Lemlist campaign lead |
-| 928 | `lemlist_get_team` | Integrations | SAFE | Get Lemlist team metadata |
-| 929 | `lemlist_get_team_credits` | Integrations | SAFE | Get Lemlist team credit balances |
-| 930 | `lemlist_list_unsubscribes` | Integrations | SAFE | List Lemlist global unsubscribes |
-| 931 | `lemlist_update_unsubscribe` | Integrations | MODERATE | Add or remove a Lemlist global unsubscribe |
-| 932 | `sendy_create_campaign` | Integrations | MODERATE | Create a Sendy campaign |
-| 933 | `sendy_add_subscriber` | Integrations | MODERATE | Add a Sendy subscriber to a list |
-| 934 | `sendy_get_subscriber_status` | Integrations | SAFE | Get a Sendy subscriber status |
-| 935 | `sendy_count_active_subscribers` | Integrations | SAFE | Count active Sendy subscribers |
-| 936 | `sendy_update_subscriber_subscription` | Integrations | MODERATE | Unsubscribe, remove, or delete a Sendy subscriber |
-| 937 | `emelia_list_campaigns` | Integrations | SAFE | List Emelia campaigns |
-| 938 | `emelia_get_campaign` | Integrations | SAFE | Get an Emelia campaign |
-| 939 | `emelia_create_campaign` | Integrations | MODERATE | Create an Emelia campaign |
-| 940 | `emelia_update_campaign_status` | Integrations | MODERATE | Start or pause an Emelia campaign |
-| 941 | `emelia_duplicate_campaign` | Integrations | MODERATE | Duplicate an Emelia campaign |
-| 942 | `emelia_add_contact_to_campaign` | Integrations | MODERATE | Add a contact to an Emelia campaign |
-| 943 | `emelia_list_contact_lists` | Integrations | SAFE | List Emelia contact lists |
-| 944 | `emelia_add_contact_to_list` | Integrations | MODERATE | Add a contact to an Emelia contact list |
 ### Optional: Private B Tools (4)
 
 Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
@@ -1092,14 +145,14 @@ Not loaded by default. Enable per-thread to let the agent create new conversatio
 
 ### Callable Thread Tools (Dynamic)
 
-Any thread with `callable=True` in its thread config becomes a tool that other threads can invoke. There are no hardcoded agents — callable threads are fully configurable via the UI:
+Any thread with `callable=True` in its thread config becomes a tool that other threads can invoke. There are no hardcoded agents  -  callable threads are fully configurable via the UI:
 
 - **Model**: Set per-thread via `llm_config.model` in thread settings (inherits global default if not set)
 - **Tools**: Enable/disable any optional tools per-thread
 - **System prompt**: Custom `system_prompt` or `instructions` per-thread
 - **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
 
-Create a callable thread: open thread settings → Agent → check "Make Callable" → set a name and description. On desktop, the thread row's Agent shortcut opens this tab directly. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs — callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
+Create a callable thread: open thread settings → Agent → check "Make Callable" → set a name and description. On desktop, the thread row's Agent shortcut opens this tab directly. The thread becomes available as a tool to **the creator's own threads** after `sync_agent_tools()` runs  -  callables are scoped to their owner (the user who created them) and the `_thread_owners` table determines visibility. Two users can independently create callables with the same `callable_name`; each user's graph binds their own version, and the runtime ownership gate in `agents/tool_factory.py` blocks cross-user invocation.
 
 Callable tools default to blocking `mode="ask"`, which returns the target thread's final answer. Use `mode="handoff"` to transfer work to the target thread without waiting; the caller receives only a dispatch receipt while the target thread streams through its normal autonomous output channels.
 
@@ -1126,7 +179,7 @@ bash_execute(command: str, working_directory: Optional[str] = None, timeout_seco
 
 **Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
 
-**Security:** MODERATE — runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
+**Security:** MODERATE  -  runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
 
 ---
 
@@ -1246,7 +299,7 @@ consult(question: str, context: Optional[str] = None, model: Optional[str] = Non
 **Parameters:**
 - `question` (`str`): The question or problem to get help with
 - `context` (`Optional[str]`, default `None`): Additional context to include
-- `model` (`Optional[str]`, default `None`): Model alias — `"gemini-3-pro"` (default), `"gemini-2.5-pro"`, or `"gemini-2.5-flash"`
+- `model` (`Optional[str]`, default `None`): Model alias  -  `"gemini-3-pro"` (default), `"gemini-2.5-pro"`, or `"gemini-2.5-flash"`
 
 **Model mapping:**
 
@@ -1266,7 +319,7 @@ consult(question: str, context: Optional[str] = None, model: Optional[str] = Non
 
 ### claude_code (Optional, admin-only)
 
-Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default** — lives in `OPTIONAL_TOOLS` and is gated by `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` (only admins may enable it).
+Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default**  -  lives in `OPTIONAL_TOOLS` and is gated by `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` (only admins may enable it).
 
 ```python
 claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
@@ -1276,7 +329,7 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 **Parameters:**
 - `prompt` (`str`): The coding task or question
 - `working_dir` (`Optional[str]`, default `None`): Directory to run in. Defaults to the backend process working directory.
-- `model` (`str`, default `"sonnet"`): Model — `"sonnet"`, `"opus"`, or `"haiku"`
+- `model` (`str`, default `"sonnet"`): Model  -  `"sonnet"`, `"opus"`, or `"haiku"`
 - `allow_edit` (`bool`, default `True`): Allow Claude Code to edit files
 - `allow_bash` (`bool`, default `True`): Allow Claude Code to run commands.
 - `timeout` (`int`, default `300`): Timeout in seconds
@@ -1291,10 +344,10 @@ claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet
 
 ## Memory Tools
 
-Three unified primitives — `memory_add`, `memory_edit`, `memory_read` — cover both global user-profile facts and per-thread notepad content. The `scope` argument selects which store:
+Three unified primitives  -  `memory_add`, `memory_edit`, `memory_read`  -  cover both global user-profile facts and per-thread notepad content. The `scope` argument selects which store:
 
-- `scope="global"` — keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json`.
-- `scope="thread"` — free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
+- `scope="global"`  -  keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json`.
+- `scope="thread"`  -  free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
 
 Empty `content` (in `memory_add`) or empty `replace` whose result empties the entry (in `memory_edit`) deletes cleanly: profile rows are popped, notepad files are unlinked. There is no separate `memory_forget` because the storage layer treats blank-as-delete, so edit-to-blank leaves no zombie entries.
 
@@ -1353,7 +406,7 @@ memory_edit(scope="thread", find="obsolete bullet point\n", replace="")   # dele
 
 **Behavior:**
 - If the resulting value is empty, the entry/notepad is removed.
-- For long profile values use `memory_add` to overwrite — `memory_edit` shines for thread-notepad surgical edits.
+- For long profile values use `memory_add` to overwrite  -  `memory_edit` shines for thread-notepad surgical edits.
 
 ---
 
@@ -1380,7 +433,7 @@ memory_read(scope="thread", query="deadline")            # only matching notepad
 ```
 
 **Notes:**
-- Profile memories are auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts — `memory_read(scope="global")` gives an explicit listing.
+- Profile memories are auto-injected into the system prompt, but weaker models may struggle to extract exact keys from long prompts  -  `memory_read(scope="global")` gives an explicit listing.
 
 ---
 
@@ -1418,10 +471,10 @@ When retrieved RAG chunks are included in hidden prompt context, they are marked
 
 **Indexing is automatic.** As of 2026-04, `opt_in.rag_enabled` defaults to `True` for new profiles, and existing profiles are migrated to `True` on first load (one-time, watermarked by `opt_in.rag_migrated`). Conversation turns are indexed in four places, in this order of frequency:
 
-1. **Per turn** — `_index_conversation_turn` runs after every chat turn (`core/agent.py`).
-2. **Pre-compact** — manual `/compact`, async auto-compact, and sync auto-compact all flush via `_pre_trim_memory_flush` before clearing messages.
-3. **Pre-clear** — `POST /threads/{id}/clear` flushes before deleting checkpoints.
-4. **Delete cleanup** — `DELETE /threads/{id}` runs the full thread cascade, including `MemoryIndex.delete_by_thread`, so `rag_search` doesn't surface chunks from deleted threads and thread-bound TODOs/triggers cannot wake the deleted thread again.
+1. **Per turn**  -  `_index_conversation_turn` runs after every chat turn (`core/agent.py`).
+2. **Pre-compact**  -  manual `/compact`, async auto-compact, and sync auto-compact all flush via `_pre_trim_memory_flush` before clearing messages.
+3. **Pre-clear**  -  `POST /threads/{id}/clear` flushes before deleting checkpoints.
+4. **Delete cleanup**  -  `DELETE /threads/{id}` runs the full thread cascade, including `MemoryIndex.delete_by_thread`, so `rag_search` doesn't surface chunks from deleted threads and thread-bound TODOs/triggers cannot wake the deleted thread again.
 
 To opt out, use the RAG settings API or the frontend settings UI. The migration watermark prevents re-flipping on subsequent loads.
 
@@ -1429,7 +482,7 @@ To opt out, use the RAG settings API or the frontend settings UI. The migration 
 
 ## TODO Tools
 
-TODOs are the **primary driver for autonomous operation**. Active TODOs are automatically injected into the system prompt. Every TODO must have a `scheduled_for` time — TODOs are for the agent's autonomous work queue, not a general task list.
+TODOs are the **primary driver for autonomous operation**. Active TODOs are automatically injected into the system prompt. Every TODO must have a `scheduled_for` time  -  TODOs are for the agent's autonomous work queue, not a general task list.
 
 > **Implementation note:** `nym_todo`, `nym_todo_delete`, and `nym_todo_list` all accept an injected `config` parameter for user/thread identification. The LLM never passes this.
 >
@@ -1448,14 +501,14 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Parameters:**
 - `todo_id` (`Optional[str]`): Omit to create a new TODO, provide the 8-character ID to update an existing one
-- `task` (`str`): Task description — **required** for create, optional for update
-- `scheduled_for` (`str`): When to execute — **required** for create, optional for update. Formats:
+- `task` (`str`): Task description  -  **required** for create, optional for update
+- `scheduled_for` (`str`): When to execute  -  **required** for create, optional for update. Formats:
   - Relative: any positive seconds/minutes/hours/days/weeks duration, e.g. `"45s"`, `"17m"`, `"3h"`, `"2d"`, `"1w"`
   - Absolute: `"YYYY-MM-DD HH:MM[:SS]"` or `"YYYY-MM-DDTHH:MM[:SS]"` (user timezone)
   - ISO with timezone: `"YYYY-MM-DDTHH:MM:SSZ"` or `"YYYY-MM-DDTHH:MM:SS-04:00"`
 - `status` (`Optional[str]`): `"pending"`, `"in_progress"`, or `"done"` (update only)
 - `notes` (`Optional[str]`): Add or update notes (max 1000 characters)
-- `recurrence` (`Optional[str]`): Interval as a canonical duration string — `Nm`, `Nh`, `Nd`, `Nw` (or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`, `"1w"`. Legacy preset names are also accepted on input and normalised: `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"5min"`, `"10min"`, `"15min"`, `"30min"`.
+- `recurrence` (`Optional[str]`): Interval as a canonical duration string  -  `Nm`, `Nh`, `Nd`, `Nw` (or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`, `"1w"`. Legacy preset names are also accepted on input and normalised: `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"5min"`, `"10min"`, `"15min"`, `"30min"`.
 - `clear_schedule` (`bool`, default `False`): Remove scheduled time (update only)
 - `clear_recurrence` (`bool`, default `False`): Remove recurrence pattern (update only)
 
@@ -1467,7 +520,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 **Statuses:** `pending` (default), `in_progress`, `done`. Use `nym_todo(todo_id=..., status="done")` to complete a TODO.
 
-**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done** — regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the prior scheduled fire time, not the later completion time, so a task scheduled hourly for `10:00` moves to `11:00` even if the agent marks it done at `10:03`. If Nymeria was offline long enough to miss intervals, it skips forward to the next future slot. The status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
+**Recurring TODOs:** Recurring TODOs **auto-reschedule when marked done**  -  regardless of whether the ticker executed them or the agent/user marked them done manually. The next `scheduled_for` is calculated from the prior scheduled fire time, not the later completion time, so a task scheduled hourly for `10:00` moves to `11:00` even if the agent marks it done at `10:03`. If Nymeria was offline long enough to miss intervals, it skips forward to the next future slot. The status resets to `pending`. This applies to all completion paths: the `nym_todo` tool, the REST API, and the MCP server. To permanently stop a recurring TODO, use `nym_todo(todo_id=..., clear_recurrence=True)` or `nym_todo_delete`.
 
 **Auto-purge:** Completed TODOs remain visible to `nym_todo_list(filter_status="done")` and `GET /todos?filter_status=done` until the ticker cleanup removes them from `data/todos/{user_id}.json`. The retention is controlled by `TODO_AUTO_ARCHIVE_DAYS` (default 7 days, range 1-30). There is no separate completed-TODO archive file; use activity/RAG history for historical outcome lookup after cleanup.
 
@@ -1475,7 +528,7 @@ nym_todo(todo_id: Optional[str] = None, task: Optional[str] = None,
 
 ### nym_todo_delete
 
-Delete a TODO permanently. No archive — immediately removed. Cancels any scheduled execution.
+Delete a TODO permanently. No archive  -  immediately removed. Cancels any scheduled execution.
 
 ```python
 nym_todo_delete(todo_id: str)
@@ -2288,23 +1341,23 @@ tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str |
 ```
 
 **Actions:**
-- `enable` — Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable` — Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive — it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
-- `list_categories` — List all tool categories with tool counts.
-- `status` / `inspect` — Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
+- `enable`  -  Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
+- `disable`  -  Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive  -  it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
+- `list_categories`  -  List all tool categories with tool counts.
+- `status` / `inspect`  -  Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
 **Parameters:**
 - `action` (`str`): One of: `enable`, `disable`, `list_categories`, `status`.
 - `tools` (`list[str]`): Specific tool names to enable or disable.
 - `category` (`str`): Category name to enable all tools in.
 - `ttl` (`str`): Required for `enable` only; ignored by other actions. Duration format: `Nm` (minutes), `Nh` (hours), `Nd` (days), `Nw` (weeks), or `"never"`/`"permanent"` for no expiry. Examples: `"30m"`, `"2h"`, `"7d"`, `"4w"`, `"never"`.
-- `force` (`bool`): For `disable` only — set `True` to allow disabling core tools. Default `False`.
+- `force` (`bool`): For `disable` only  -  set `True` to allow disabling core tools. Default `False`.
 
-**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order — (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS — the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set — `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
+**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order  -  (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS  -  the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set  -  `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
 
-The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in ALL_TOOLS}`). Tools that live in `ALL_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. Note: the bucket is called `Already bound (default set)` — not "core" — to avoid conflating it with the `disable` guard's "core" protection, which uses the broader `ALL_TOOLS` list.
+The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in ALL_TOOLS}`). Tools that live in `ALL_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. Note: the bucket is called `Already bound (default set)`  -  not "core"  -  to avoid conflating it with the `disable` guard's "core" protection, which uses the broader `ALL_TOOLS` list.
 
-**`disabled_tools` is authoritative in graph-build.** The graph-build pipeline is: start with the default-bound set, filter out `disabled_tools`, then add extras from `enabled_tools ∪ live_temporary_tools` — BUT extras are also filtered by `disabled_tools` before merging. So a tool listed in both `enabled_tools` and `disabled_tools` is unbound (disable wins). This lets `disable` be non-destructive: it only appends to `disabled_tools` and leaves `enabled_tools` / `temporary_tools` alone. An `enable` on that same tool just removes it from `disabled_tools`; the preserved permanent/TTL entry comes back automatically. Without this rule, `disable` would have to destructively mutate `enabled_tools` to actually disable an overlapping tool, and a disable→enable round-trip would silently strip the permanent badge.
+**`disabled_tools` is authoritative in graph-build.** The graph-build pipeline is: start with the default-bound set, filter out `disabled_tools`, then add extras from `enabled_tools ∪ live_temporary_tools`  -  BUT extras are also filtered by `disabled_tools` before merging. So a tool listed in both `enabled_tools` and `disabled_tools` is unbound (disable wins). This lets `disable` be non-destructive: it only appends to `disabled_tools` and leaves `enabled_tools` / `temporary_tools` alone. An `enable` on that same tool just removes it from `disabled_tools`; the preserved permanent/TTL entry comes back automatically. Without this rule, `disable` would have to destructively mutate `enabled_tools` to actually disable an overlapping tool, and a disable→enable round-trip would silently strip the permanent badge.
 
 **Status display filters disabled tools from the enabled sections.** Because `disabled_tools` is authoritative, a tool that has a preserved `enabled_tools` or `temporary_tools` entry while ALSO being in `disabled_tools` is currently unbound. The `status` and `search` renderers suppress such tools from the `Enabled (permanent)` / `Enabled (TTL)` sections and annotate them in the `Disabled` section with `(preserved: permanent)` or `(preserved: Xm left)`, so the user can still see what will round-trip back on un-disable without seeing the same tool in two places.
 
@@ -2364,7 +1417,7 @@ When the agent calls `tool_enable(action="enable", tools=[...])` during a turn, 
 4. Builds a fresh graph with the new tools bound to the LLM.
 5. Injects an internal resume message (`internal_type="tool_reload_resume"`) and drives the new graph against it, streaming into the same SSE connection.
 
-To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_enable(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice — the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
+To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_enable(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice  -  the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
 `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path) honor the auto-continue. The streaming path emits `tool_reload` and then drives the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. Scheduled TODOs, triggers, callable threads, spawned threads, and the CLI consume `astream()` through `core/stream_bridge.py`, which keeps async-only tools such as `tool_create` available outside regular chat. The bridge uses one process-local asyncio loop for synchronous callers, and async graph caches plus provider SDK HTTP pools are loop-local so FastAPI-loop chat and bridge-loop callable calls do not share loop-bound transports. Autonomous callers use `stream_and_collect()` for shared response/thinking collection, error propagation, and iteration-limit tracking before publishing their own completion payloads. `chat()` remains non-streaming and returns only the final string.
 
@@ -2376,7 +1429,7 @@ Each enablement (other than `ttl="never"` or `ttl="permanent"`) gets an `expires
 2. Persists the cleaned config back to disk.
 3. Returns the still-live set for inclusion in the tool list.
 
-Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run — there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="never"` or `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` adds the name to `disabled_tools` without deleting preserved permanent/TTL state, so a later enable restores that state.
+Eviction never happens mid-invocation, so a tool that was bound at the start of a graph run is callable for the whole run  -  there are no surprise eviction errors. Calling `enable` on a tool already in `temporary_tools` refreshes `expires_at`; calling `enable` with `ttl="never"` or `ttl="permanent"` promotes the entry into `enabled_tools` (which has no expiry and is also what the UI/API writes to). Calling `disable` adds the name to `disabled_tools` without deleting preserved permanent/TTL state, so a later enable restores that state.
 
 Pick the shortest TTL that covers your task. Use `30m` or `2h` for short work, `7d` or `14d` for multi-day projects, and `never` only if the tool should remain as a standing capability on the thread.
 
@@ -2413,7 +1466,7 @@ self_modify_rollback(file_path: str)
 
 **Returns:** Success or error message.
 
-**Security:** **SENSITIVE** — disabled by default. Requires explicit opt-in via user tool preferences or per-thread config.
+**Security:** **SENSITIVE**  -  disabled by default. Requires explicit opt-in via user tool preferences or per-thread config.
 
 **Availability:** This is not an always-loaded core tool. It is surfaced through self-modify or optional tool paths.
 
@@ -2421,7 +1474,7 @@ self_modify_rollback(file_path: str)
 
 ## Trigger Tools (Optional)
 
-Event-driven automation — triggers fire agent prompts or actions in response to external events. These complement recurring TODOs, which handle time-based work.
+Event-driven automation  -  triggers fire agent prompts or actions in response to external events. These complement recurring TODOs, which handle time-based work.
 
 > **Note:** Trigger tools are **not loaded by default** for the main agent. They are available in `OPTIONAL_TOOLS` for per-thread enabling, and are always available to SelfModifyAgent.
 
@@ -2445,9 +1498,9 @@ trigger_config(
 ```
 
 **Actions:**
-- `create` — Create a new trigger, bound to the current thread.
-- `update` — Patch an existing trigger's display name, enabled state, source/action config, cooldown, or conditions.
-- `delete` — Delete a trigger permanently.
+- `create`  -  Create a new trigger, bound to the current thread.
+- `update`  -  Patch an existing trigger's display name, enabled state, source/action config, cooldown, or conditions.
+- `delete`  -  Delete a trigger permanently.
 
 **Parameters:**
 - `action` (`str`): `"create"`, `"update"`, or `"delete"`
@@ -2455,9 +1508,9 @@ trigger_config(
 - `name` (`str`): Human-friendly trigger name (e.g., `"Wake-up morning briefing"`)
 - `source_type` (`str`): Event source type. Use `"webhook"` for HTTP push triggers. Call `trigger_info(action="sources")` to see available sources.
 - `action_type` (`str`): What to do when triggered:
-  - `"agent_prompt"` — send a prompt to the agent (most powerful, triggers an LLM call)
-  - `"notify"` — send a notification to the user (no LLM call)
-  - `"create_todo"` — create a TODO item (no LLM call)
+  - `"agent_prompt"`  -  send a prompt to the agent (most powerful, triggers an LLM call)
+  - `"notify"`  -  send a notification to the user (no LLM call)
+  - `"create_todo"`  -  create a TODO item (no LLM call)
 - `action_config` (`dict`): Action-specific configuration:
   - `agent_prompt`: `{"prompt_template": "...", "thread_id": "optional"}`
   - `notify`: `{"message_template": "...", "platform": "auto"}`
@@ -2501,11 +1554,11 @@ trigger_info(
 ```
 
 **Actions:**
-- `list` — List trigger summaries.
-- `detail` — Show one trigger's configuration, health, conditions, pending events, and thread binding.
-- `test` — Dry-run one trigger with sample event data. Does not fire the trigger.
-- `history` — Show recent execution history for one trigger.
-- `sources` — Show available trigger source types, config fields, template variables, and examples.
+- `list`  -  List trigger summaries.
+- `detail`  -  Show one trigger's configuration, health, conditions, pending events, and thread binding.
+- `test`  -  Dry-run one trigger with sample event data. Does not fire the trigger.
+- `history`  -  Show recent execution history for one trigger.
+- `sources`  -  Show available trigger source types, config fields, template variables, and examples.
 
 **Parameters:**
 - `action` (`str`, default `"list"`): `"list"`, `"detail"`, `"test"`, `"history"`, or `"sources"`
@@ -2529,9 +1582,9 @@ trigger_info(action="sources")
 
 ## Slash Command Tool (Optional)
 
-Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots — so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
+Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots  -  so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
 
-> **Note:** Not loaded by default. Lives in `OPTIONAL_TOOLS` — enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
+> **Note:** Not loaded by default. Lives in `OPTIONAL_TOOLS`  -  enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
 
 ### slash_command
 
@@ -2544,22 +1597,22 @@ slash_command(command: str)
 **Parameters:**
 - `command` (`str`): The slash command string (with or without a leading `/`). Values with spaces may be quoted.
 
-**How to use:** Tell the agent to call `/help` first. The help output is the source of truth for syntax — the tool's own description only lists a handful of examples to keep the tool schema small.
+**How to use:** Tell the agent to call `/help` first. The help output is the source of truth for syntax  -  the tool's own description only lists a handful of examples to keep the tool schema small.
 
 **Example commands:**
-- `/help` — list every supported command
-- `/status` — model, context, tools, tasks summary
-- `/config set llm_model claude-opus-4-6` — change global model
-- `/env get PERPLEXITY_API_KEY` — fetch unmasked secret
-- `/memory save color "deep blue"` — save a user memory
-- `/tools enable browser` — turn on a category on this thread
-- `/skill <name> [prompt]` — activate a markdown-only skill for this turn
-- `/kit <name> [ttl] [prompt]` — activate a visible Skill Kit and bind tools
-- `/skills list` — show skill and Skill Kit activation status on the current thread
-- `/todos add Check logs | 2h | daily` — scheduled repeating TODO
-- `/notepad write replace:new notepad contents` — overwrite the thread notepad
+- `/help`  -  list every supported command
+- `/status`  -  model, context, tools, tasks summary
+- `/config set llm_model claude-opus-4-6`  -  change global model
+- `/env get PERPLEXITY_API_KEY`  -  fetch unmasked secret
+- `/memory save color "deep blue"`  -  save a user memory
+- `/tools enable browser`  -  turn on a category on this thread
+- `/skill <name> [prompt]`  -  activate a markdown-only skill for this turn
+- `/kit <name> [ttl] [prompt]`  -  activate a visible Skill Kit and bind tools
+- `/skills list`  -  show skill and Skill Kit activation status on the current thread
+- `/todos add Check logs | 2h | daily`  -  scheduled repeating TODO
+- `/notepad write replace:new notepad contents`  -  overwrite the thread notepad
 
-**Blocked commands:** `/ask`, `/stop`, `/clear`, `/compact`, `/restart`, `/start` — these would interrupt or destroy the current conversation and are rejected before any API call.
+**Blocked commands:** `/ask`, `/stop`, `/clear`, `/compact`, `/restart`, `/start`  -  these would interrupt or destroy the current conversation and are rejected before any API call.
 
 **Returns:** Markdown from the centralized command service. The REST command
 endpoint also includes a structured `level` (`info`, `success`, `warning`, or
@@ -2680,11 +1733,11 @@ tool_create(
 ```
 
 **Actions:**
-- `draft` — Save or update a per-user draft in `data/tool_drafts/{user_id}/`. Requires `tool_id`, `description`, `parameters`, and `http_config`.
-- `test` — Execute a saved draft with `sample_params` and record whether the request succeeded.
-- `publish` — Save a successfully tested draft into the global `data/custom_tools/` registry, reload custom tools, and enable the new tool on the current thread.
-- `list` — Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
-- `delete` — Delete this user's draft only. It does not delete a globally published tool.
+- `draft`  -  Save or update a per-user draft in `data/tool_drafts/{user_id}/`. Requires `tool_id`, `description`, `parameters`, and `http_config`.
+- `test`  -  Execute a saved draft with `sample_params` and record whether the request succeeded.
+- `publish`  -  Save a successfully tested draft into the global `data/custom_tools/` registry, reload custom tools, and enable the new tool on the current thread.
+- `list`  -  Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
+- `delete`  -  Delete this user's draft only. It does not delete a globally published tool.
 
 **Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
 
@@ -2743,11 +1796,11 @@ skill_config(
 ```
 
 **Actions:**
-- `draft` — Validate and save a per-user draft in `data/skill_drafts/{user_id}/`.
-- `validate` — Validate inline fields or a saved draft without publishing.
-- `publish` — Write a validated `SKILL.md` to `data/skills/users/{user_id}/` or admin-only `data/skills/global/`, reload skills, and by default enable it on the current thread.
-- `list` — Show this user's drafts plus installed skills visible to the user.
-- `delete` — With `scope="draft"`, delete a draft. With `scope="user"` or `scope="global"`, uninstall that skill scope; global delete requires admin.
+- `draft`  -  Validate and save a per-user draft in `data/skill_drafts/{user_id}/`.
+- `validate`  -  Validate inline fields or a saved draft without publishing.
+- `publish`  -  Write a validated `SKILL.md` to `data/skills/users/{user_id}/` or admin-only `data/skills/global/`, reload skills, and by default enable it on the current thread.
+- `list`  -  Show this user's drafts plus installed skills visible to the user.
+- `delete`  -  With `scope="draft"`, delete a draft. With `scope="user"` or `scope="global"`, uninstall that skill scope; global delete requires admin.
 
 **V1 limits:** `skill_config` writes only `SKILL.md`. It cannot create scripts, assets, references, or arbitrary paths. It rejects body text that includes YAML frontmatter; agents pass `name`, `description`, `allowed_tools`, `required_tools`, and `tool_ttl` as structured parameters.
 
@@ -2785,8 +1838,8 @@ skill_kit_create(
 ```
 
 Actions:
-- `draft`, `validate`, `publish`, `package`, `list` — Skill Kit lifecycle.
-- `draft_http_tool`, `test_http_tool`, `publish_http_tool` — guided HTTP tool
+- `draft`, `validate`, `publish`, `package`, `list`  -  Skill Kit lifecycle.
+- `draft_http_tool`, `test_http_tool`, `publish_http_tool`  -  guided HTTP tool
   creation before packaging a Skill Kit around it.
 
 `publish`/`package` use the Skill publish reload path with
@@ -2801,7 +1854,7 @@ HTTP tool on the current thread.
 
 ## Watchdog Tools (Optional)
 
-Tools for the Smart Watchdog — an intelligent scheduler thread that observes system activity and dispatches work to other threads. Not loaded by default; enable per-thread via thread config.
+Tools for the Smart Watchdog  -  an intelligent scheduler thread that observes system activity and dispatches work to other threads. Not loaded by default; enable per-thread via thread config.
 
 ### activity_feed
 
@@ -2816,7 +1869,7 @@ activity_feed(minutes_ago: int = 10)
 
 **Returns:** Structured text report grouped by thread showing user messages, autonomous tasks, TODO changes, and notifications. Returns "No activity" if the window is empty.
 
-**Data source:** Reads from the persisted activity log (`data/activity/{user_id}.json`). Only as complete as what gets logged — user messages, TODO state changes, autonomous task execution, and notifications are all captured.
+**Data source:** Reads from the persisted activity log (`data/activity/{user_id}.json`). Only as complete as what gets logged  -  user messages, TODO state changes, autonomous task execution, and notifications are all captured.
 
 ### watchdog_dispatch
 
@@ -2829,7 +1882,7 @@ watchdog_dispatch(target_thread_id: str, task: str, scheduled_for: str = "now", 
 **Parameters:**
 - `target_thread_id` (`str`): Thread ID to dispatch the TODO to (must differ from caller)
 - `task` (`str`): Clear, specific description of what the target thread should do
-- `scheduled_for` (`str`): When to fire — `"now"`, any relative duration such as `"30s"`, `"17m"`, `"1h"`, `"1d"`, `"1w"`, or an absolute/ISO datetime
+- `scheduled_for` (`str`): When to fire  -  `"now"`, any relative duration such as `"30s"`, `"17m"`, `"1h"`, `"1d"`, `"1w"`, or an absolute/ISO datetime
 - `notes` (`str`): Supporting context for the target thread
 
 **Returns:** Confirmation with the created TODO ID, or error if self-targeting or limit reached.
@@ -2896,10 +1949,10 @@ spawn_thread(
 
 - `title` (required for create): User-visible thread title. Truncated to 80 chars.
 - `instructions`: Extra system-prompt instructions **APPENDED** to `soul.md` (max 5000 chars). Cannot replace the base personality. Also used as the callable tool's description if provided.
-- `optional_tools`: List of optional tool names to enable (e.g. `["memory_clear_all", "browser_navigate"]`). Core tools are inherited automatically — only list extras.
+- `optional_tools`: List of optional tool names to enable (e.g. `["memory_clear_all", "browser_navigate"]`). Core tools are inherited automatically  -  only list extras.
 - `tool_categories`: List of categories (e.g. `["email", "browser"]`) to bulk-enable every optional tool in that category. Merged with `optional_tools`.
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
-- `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot — the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
+- `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot  -  the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
 - `llm_*`: Optional LLM overrides. Omit to inherit global settings.
 - `prompt`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
 - `mode` (default `"fresh"`): `"fresh"` builds an empty thread. `"branched"` forks the calling thread's full checkpoint history and configuration via `branch_thread()`; the new thread starts with the parent's conversation context, then the spawn-thread overrides are layered on top. Requires a parent thread.
@@ -2916,7 +1969,7 @@ spawn_thread(
 
 - `delete_thread_id` (required for delete): The spawned thread's ID (must start with `"spawned-"`).
 - Only the **calling thread** (the original spawn parent, tracked via `platform_meta.spawn_parent`) can delete a given spawned thread. If the stored spawn_parent is empty (e.g. an older spawn without lineage), any thread may delete it.
-- Cleans up: metadata, config, checkpoints (SQLite or Postgres), notepad, and — if the thread was callable — unregisters the tool globally via `sync_agent_tools()`.
+- Cleans up: metadata, config, checkpoints (SQLite or Postgres), notepad, and  -  if the thread was callable  -  unregisters the tool globally via `sync_agent_tools()`.
 - Publishes a `thread_deleted` sync event so all connected clients remove it from their sidebars.
 
 **Delete returns:** `[Deleted]: thread_id=spawned-...` on success.
@@ -2938,7 +1991,7 @@ spawn_thread(
 
 ## Callable Thread Tools (Dynamic)
 
-Any thread with `callable=True` in its thread config becomes a callable tool — there are no hardcoded agent names or fixed configurations. Each callable thread is fully configurable via the UI:
+Any thread with `callable=True` in its thread config becomes a callable tool  -  there are no hardcoded agent names or fixed configurations. Each callable thread is fully configurable via the UI:
 
 - **Name**: The tool name equals the thread's sidebar title (synced via `callable_name` in thread config)
 - **Model**: Set per-thread via `llm_config.model` (inherits global default if not set)
@@ -3050,11 +2103,11 @@ The agent connects Google Calendar by calling `request_credential(provider="goog
 | `calendar_get_event` | `(event_id, calendar_id="primary", account_id?)` | Get full event details. |
 | `calendar_search_events` | `(query, calendar_id="primary", max_results=10, account_id?)` | Search events by text. Output includes full event IDs for chaining into `calendar_get_event`. |
 | `calendar_create_event` | `(summary, start_time, end_time, calendar_id="primary", description?, location?, attendees?, timezone?, account_id?)` | Create a new event. Supports all-day (date-only) and timed events. |
-| `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?, account_id?)` | Update an existing event (patch — only sends changed fields). |
+| `calendar_update_event` | `(event_id, calendar_id="primary", summary?, start_time?, end_time?, description?, location?, account_id?)` | Update an existing event (patch  -  only sends changed fields). |
 | `calendar_delete_event` | `(event_id, calendar_id="primary", account_id?)` | Delete a calendar event. |
 | `calendar_respond_to_event` | `(event_id, response, calendar_id="primary", account_id?)` | Respond to invitation: `"accepted"`, `"declined"`, `"tentative"`. |
 | `calendar_get_freebusy` | `(time_min, time_max, calendars?, account_id?)` | Get free/busy info. `calendars` is comma-separated IDs. |
-| `calendar_get_current_time` | `()` | Get current time in ISO 8601 (no API call — local system time). |
+| `calendar_get_current_time` | `()` | Get current time in ISO 8601 (no API call  -  local system time). |
 | `calendar_list_colors` | `(account_id?)` | List available event colors. |
 
 **Requires:** `GOOGLE_OAUTH_CREDENTIALS` env var pointing to the OAuth Desktop App credentials JSON from Google Cloud Console. Tokens are stored per Nymeria user at `data/auth_tokens/<user_id>/google_calendar.json` with auto-refresh. Node.js/npx are **not** required.
@@ -3150,6 +2203,13 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
 5. Users enable or disable optional tools via thread settings or `PATCH /threads/{id}/config`
+
+Effective tools are resolved as `(default_thread_tools ∪ enabled_tools) - disabled_tools`.
+This means promoting an optional tool to the profile defaults makes it available
+to existing threads on the next graph build, unless that thread already lists the
+tool in `disabled_tools`. The desktop UI preserves those disabled overrides even
+when a tool is not currently in the default set, so a thread-specific opt-out
+continues to apply if the tool is promoted later.
 
 The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread. Tool discovery is role-filtered; `hello_test` remains in `OPTIONAL_TOOLS` for admin/test validation but is hidden from non-admin search/listing surfaces and rejected by non-admin enable paths.
 
@@ -3317,7 +2377,7 @@ Nymeria containers and `http://localhost:8889/mcp` for local MCP clients. See
 
 ## Scheduled TODO Execution
 
-Nymeria operates autonomously 24/7 through **scheduled TODOs** — TODOs with a `scheduled_for` datetime that are automatically executed when due.
+Nymeria operates autonomously 24/7 through **scheduled TODOs**  -  TODOs with a `scheduled_for` datetime that are automatically executed when due.
 
 ### How It Works
 

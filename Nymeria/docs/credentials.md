@@ -15,7 +15,7 @@ The vault uses four SQLite tables:
 | Table | Purpose |
 |-------|---------|
 | `credentials` | Public metadata: name, provider, kind, status, allowed targets, ownership |
-| `credential_secret_fields` | Actual secrets — each is a named field (e.g. `api_key`, `token`) stored as Fernet ciphertext, fully separate from metadata |
+| `credential_secret_fields` | Actual secrets - each is a named field (e.g. `api_key`, `token`) stored as Fernet ciphertext, fully separate from metadata |
 | `credential_bindings` | Explicit links between a credential and a consumer (e.g. "this Todoist key is for the `todoist_tasks` tool") |
 | `credential_audit_events` | Immutable log of every action: created, used, bound, tested, disabled, decrypt failures |
 
@@ -27,8 +27,8 @@ The vault uses four SQLite tables:
 - `metadata`: arbitrary JSON (account info, source tracking)
 - `scopes`: OAuth scope list (for OAuth-based credentials)
 - `allowed_targets`: list of target strings that controls who can decrypt (see Access Control)
-- `status`: `active`, `pending_setup`, or `disabled`
-- `secret_fields`: list of field names only — plaintext and ciphertext are never exposed in API responses
+- `status`: `active`, `pending_setup`, `invalid`, or `disabled`
+- `secret_fields`: list of field names only - plaintext and ciphertext are never exposed in API responses
 
 ## How Secrets Enter the Vault
 
@@ -44,10 +44,11 @@ Fernet and stores the ciphertext. The plaintext is never persisted.
 
 The agent calls the `request_credential` tool to create a placeholder
 credential with `status: pending_setup`. The agent never handles actual
-secrets. The user completes the setup in a server-hosted form:
+secrets. The user completes setup through an app modal or hosted form:
 
-- Desktop receives the existing `auth_prompt` event and opens the credential
-  modal.
+- Desktop receives the existing `auth_prompt` event and opens the floating
+  `AuthPromptModal`. Mobile currently has the Settings > Connections manager
+  but no global `auth_prompt` modal.
 - Chat bots receive an `auth_prompt` event containing a one-time setup link
   shaped as `${NYMERIA_PUBLIC_URL}/connect/credentials/{prompt_id}#<token>`.
 
@@ -57,25 +58,24 @@ requests and access logs see only `/connect/credentials/{prompt_id}`. The
 browser form copies the fragment token into an `Authorization: Bearer` header
 when calling the prompt-token API endpoints.
 
-If `NYMERIA_PUBLIC_URL` is unset, desktop prompts still work, but text-chat
-surfaces report that a public URL is required and warn users not to paste
-secrets into chat.
+If `NYMERIA_PUBLIC_URL` is unset, desktop API-key/PAT/form prompts still work
+because the modal uses authenticated `/credential-prompts/*` API calls. Text
+chat surfaces cannot build hosted setup links without a public URL and warn
+users not to paste secrets into chat. OAuth authorization-code prompts also
+need a browser-reachable callback URL unless the agent retries with
+`use_localhost=True`.
 
-**Fire-and-forget tool contract (Phase 11):** `request_credential` returns
-immediately with `status="dispatched"`. The agent does not block waiting for
-the user. When the user submits (or cancels, or the prompt times out), the
-coordinator's future resolves and a fresh agent turn fires automatically with
-a one-line summary like
-`CREDENTIAL_PROMPT_RESOLVED: provider=google_gmail status=active credential_id=cred_abc ...`
-delivered as a `source="credential_resolution"` autonomous turn. The summary
-is filtered from user-facing history (the user sees the agent's natural
-response, not the synthetic resolution line). See
-`nymeria/core/credential_prompt_injector.py` for the formatter and
-`nymeria/tools/credential_prompt.py:_make_resolution_callback` for the wiring.
+**Fire-and-forget tool contract:** `request_credential` returns immediately
+with `status="dispatched"`. The agent does not block waiting for the user and
+no automatic follow-up turn fires when the prompt is submitted, cancelled, or
+swept. The coordinator future still resolves inside the API process so the
+done-callback can cancel any device-code poller, apply a valid `bind_target`,
+restart an MCP connection when needed, and log the result. The user drives the
+next step by saying something like "done" or "try again".
 
-The agent should write a short acknowledgement after dispatching the prompt
-(e.g. "Opening the sign-in prompt, I'll pick it up when you're done") so the
-user knows the call landed.
+The agent should write a short acknowledgement after dispatching the prompt,
+ask the user to finish the prompt, and ask them to ping the agent when done or
+paste any inline error back into chat.
 
 **Two new optional args on `request_credential`:**
 
@@ -89,19 +89,19 @@ user knows the call landed.
   and force-restarts that server's connection so the next tool call resolves
   the new env value) and `"native_tool:<name>"` (scopes the credential to one
   native tool). Bind failures are non-fatal: the credential still saves and
-  the resolution summary tells the agent what went wrong. Validation regex:
+  the failure is logged. Validation regex:
   `^(mcp_server|native_tool):[A-Za-z0-9_-]{1,64}$`.
 
 ### 3. Auto-Migration at Startup
 
 When the agent boots (`agent.py`), two migration functions run automatically:
 
-- `migrate_auth_token_files()` — finds old per-user JSON files in
+- `migrate_auth_token_files()` - finds old per-user JSON files in
   `data/auth_tokens/<user_id>/` and moves them into the vault as
   `legacy_token_cache` credentials. Provider-specific files under `mcp/`
   subdirectories are left in place because third-party MCP servers still read
   those files directly.
-- `migrate_mcp_encrypted_env_vars()` — converts legacy `encrypted_env_vars`
+- `migrate_mcp_encrypted_env_vars()` - converts legacy `encrypted_env_vars`
   in MCP server configs into vault credentials. The original server definition
   is rewritten to use `${credential:id.value}` references. If decryption or
   import fails, the original value is left untouched and a warning is logged.
@@ -125,14 +125,13 @@ finish in **Settings > Connections**.
 
 ## How Tools Automatically Get Their Credentials
 
-Tools never hardcode API keys. There are four resolution paths depending on
+Tools never hardcode API keys. There are five resolution paths depending on
 tool type.
 
 ### Path 1: Native Tools
 
-There are ~34 service integration files (e.g. `productivity_service_integrations.py`,
-`project_management_service_integrations.py`). Each tool has a helper that
-calls:
+Service integration modules (e.g. `productivity_service_integrations.py`,
+`project_management_service_integrations.py`) use helpers that call:
 
 ```python
 get_native_credential_value(
@@ -186,7 +185,7 @@ building an LLM graph, it searches for vault credentials with:
 - `kind` in `{api_key, llm_provider, llm_connection, provider_connection, openai_compatible, connection}`
 - `provider` matching the target LLM provider (normalized)
 
-The scoring also considers **thread-level targeting** — you can store one
+The scoring also considers **thread-level targeting** - you can store one
 OpenAI key scoped to `thread:<thread-id>` and a different one as the global
 fallback. The resolver also reads `base_url` from secret fields or metadata,
 supporting custom endpoints per credential.
@@ -211,10 +210,10 @@ Two flows are wired in:
   agent's tool builds an authorization URL with PKCE (when the descriptor
   enables it) and emits an `auth_url` the modal opens in the user's browser.
   The browser is redirected back to
-  `${NYMERIA_PUBLIC_URL}/connect/credentials/oauth/callback?code=…&state=…`,
+  `${NYMERIA_PUBLIC_URL}/connect/credentials/oauth/callback?code=<code>&state=<state>`,
   which exchanges the code for tokens and writes the vault record. The
   redirect URI path is **static** so the user only registers one URI per
-  origin in their Google Cloud Console / Azure Portal — `prompt_id` and a
+  origin in their Google Cloud Console / Azure Portal - `prompt_id` and a
   one-time nonce are packed into the OAuth `state` parameter
   (`"<prompt_id>:<nonce>"`). The callback handler unpacks the state, looks
   up the prompt by id, then `hmac.compare_digest` checks the nonce against
@@ -273,19 +272,19 @@ call to the correct store.
 - **Allowed targets**: A list like `["native_tool:todoist_tasks", "mcp_server:my-server"]`
   restricts which consumers can decrypt. `"*"` or empty list = unrestricted.
   Supported target strings include `native_tool:<name>`, `mcp_server:<id>`,
-  `custom_tool:<id>`, `llm_provider:<provider>`, `thread:<id>`, and wildcard
-  forms like `native_tool:*`.
+  `custom_http_tool:<id>`, `llm_provider:<provider>`, `thread:<id>`, and
+  wildcard forms like `native_tool:*`.
 - **Bindings**: Explicit credential-to-target links stored in the
   `credential_bindings` table. Bindings override the scoring system (highest
   priority).
-- **Status**: `active`, `pending_setup`, `disabled`. Disabled credentials
-  are never returned by the resolution functions.
+- **Status**: `active`, `pending_setup`, `invalid`, `disabled`. Runtime
+  resolution functions use active credentials only.
 - **Agent safety**: The `auth_manager` tool that the agent uses never returns
   plaintext secrets, ciphertext, or partial keys. It can list metadata, create
-  placeholders, bind credentials, and disable them — but actual secret entry
+  placeholders, bind credentials, and disable them - but actual secret entry
   must happen through the UI or authenticated API.
 
-## Agent Access — `auth_manager` Tool
+## Agent Access - `auth_manager` Tool
 
 The `auth_manager` tool (default-enabled on every new thread) provides
 metadata-only credential management from within chat. It supports these
@@ -309,28 +308,28 @@ The agent cannot manage system credentials or retrieve plaintext secrets.
 |-------|--------|---------|
 | `/credentials` | GET | List credentials (`scope=visible\|mine\|system\|all`) |
 | `/credentials` | POST | Create credential (accepts `secret_fields` as plaintext) |
-| `/credentials/{id}` | GET | Get one credential's metadata |
-| `/credentials/{id}` | PATCH | Update credential metadata or secret fields |
-| `/credentials/{id}` | DELETE | Delete credential and all bindings |
-| `/credentials/{id}/test` | POST | Test credential (provider-specific health check) |
-| `/credentials/{id}/bindings` | GET | List bindings for a credential |
-| `/credentials/{id}/bindings` | POST | Create a new binding |
-| `/credential-bindings/{id}` | DELETE | Remove a binding |
+| `/credentials/{credential_id}` | GET | Get one credential's metadata |
+| `/credentials/{credential_id}` | PATCH | Update credential metadata or secret fields |
+| `/credentials/{credential_id}` | DELETE | Disable by default, or hard-delete with `?hard=true` |
+| `/credentials/{credential_id}/test` | POST | Test credential (provider-specific health check) |
+| `/credentials/{credential_id}/bindings` | GET | List bindings for a credential |
+| `/credentials/{credential_id}/bindings` | POST | Create a new binding |
+| `/credential-bindings/{binding_id}` | DELETE | Remove a binding |
 | `/credential-setup-sessions` | POST | Create a setup session (agent workflow) |
-| `/credential-prompts/{id}/test` | POST | Test fields for an active desktop prompt |
-| `/credential-prompts/{id}/submit` | POST | Save fields for an active desktop prompt |
-| `/credential-prompts/{id}/exit` | POST | Close a desktop prompt with an optional note |
-| `/credential-prompts/{id}/cancel` | POST | Cancel a desktop prompt with an optional note |
-| `/connect/credentials/{id}` | GET | Hosted credential form shell for chat-bot links |
-| `/connect/credentials/{id}/prompt` | GET | Prompt-token metadata endpoint |
-| `/connect/credentials/{id}/test` | POST | Prompt-token provider test endpoint |
-| `/connect/credentials/{id}/submit` | POST | Prompt-token save endpoint |
-| `/connect/credentials/{id}/exit` | POST | Prompt-token close endpoint |
-| `/connect/credentials/{id}/cancel` | POST | Prompt-token cancel endpoint |
-| `/connect/credentials/oauth/callback` | GET | Static OAuth authorization-code redirect target. Unpacks `prompt_id` + nonce from `state`, verifies the nonce, exchanges the code, writes the vault, resolves the agent prompt, and renders a success/failure HTML page. |
+| `/credential-prompts/{prompt_id}/test` | POST | Test fields for an active desktop prompt |
+| `/credential-prompts/{prompt_id}/submit` | POST | Save fields for an active desktop prompt |
+| `/credential-prompts/{prompt_id}/exit` | POST | Close a desktop prompt with an optional note |
+| `/credential-prompts/{prompt_id}/cancel` | POST | Cancel a desktop prompt with an optional note |
+| `/connect/credentials/{prompt_id}` | GET | Hosted credential form shell for chat-bot links |
+| `/connect/credentials/{prompt_id}/prompt` | GET | Prompt-token metadata endpoint |
+| `/connect/credentials/{prompt_id}/test` | POST | Prompt-token provider test endpoint |
+| `/connect/credentials/{prompt_id}/submit` | POST | Prompt-token save endpoint |
+| `/connect/credentials/{prompt_id}/exit` | POST | Prompt-token close endpoint |
+| `/connect/credentials/{prompt_id}/cancel` | POST | Prompt-token cancel endpoint |
+| `/connect/credentials/oauth/callback` | GET | Static OAuth authorization-code redirect target. Unpacks `prompt_id` + nonce from `state`, verifies the nonce, exchanges the code, writes the vault, resolves the pending prompt, and renders a success/failure HTML page. |
 
 Writes accept `secret_fields` as plaintext. Responses only return metadata
-and the list of stored secret field names — never plaintext or ciphertext.
+and the list of stored secret field names - never plaintext or ciphertext.
 The `/connect/credentials/*` API endpoints authenticate with the one-time
 prompt token from the hosted setup link and do not grant general API access.
 
@@ -342,14 +341,16 @@ fields inside the API process and return a redacted status object:
 `ok`, `message`, `code`, and `verified`.
 
 The initial registry includes probes for GitHub, Todoist, Anthropic, and known
-OpenAI-compatible LLM providers. If a provider has no tester, Nymeria saves the
-credential as active but returns `tested=false` and `test_status=not_verified`
-with an explicit "no verification probe yet" message rather than pretending the
-provider accepted the key.
+OpenAI-compatible LLM providers. If a provider has no tester, the test result is
+`ok=true`, `verified=false`, `code="no_tester"`, with an explicit "no
+verification probe yet" message rather than pretending the provider accepted
+the key. Prompt submit responses expose this as `tested=false` and
+`test_status="not_verified"`; direct credential responses expose only the
+credential metadata plus `last_tested_at`.
 
 The desktop prompt has separate **Test** and **Save** actions. Save re-runs the
-provider test before resolving the agent tool; failed tests stay in the prompt
-so the user can retry.
+provider test before resolving the prompt; failed tests keep the prompt open so
+the user can retry.
 
 ## Example End-to-End Flow
 
@@ -358,11 +359,11 @@ Using the Todoist tool as an example:
 1. You go to **Settings > Connections** in the desktop/mobile app
 2. You add a credential: provider = `todoist`, field = `api_key`, value = your
    Todoist API key, allowed target = `native_tool:*`
-3. The UI calls `POST /credentials` — the vault encrypts the key with Fernet
+3. The UI calls `POST /credentials` - the vault encrypts the key with Fernet
    and stores the ciphertext
 4. Later, in chat, the agent calls the `todoist_tasks` tool
-5. Inside the tool, `get_native_credential_value(provider="todoist", ...)`
-   fires
+5. Inside the tool, `get_native_credential_value` runs with
+   `provider="todoist"`
 6. The vault finds your credential, confirms it is active and allowed for
    `native_tool:todoist_tasks`, decrypts the key, logs an audit event, and
    returns the plaintext to the tool internals
@@ -388,8 +389,8 @@ Using the Todoist tool as an example:
 
 ## Planned: Password Guard for Token Operations
 
-The credential vault itself is properly gated — all API endpoints require a
-valid bearer token. However, the CLI (`python run.py users rotate-token`)
+The credential vault itself is properly gated - all API endpoints require a
+valid bearer token. However, the CLI (`python3 run.py users rotate-token`)
 bypasses the API and writes directly to SQLite with no authentication. On
 shared or bare-metal production installs, this means any local user could
 mint an admin token and access all vault credentials.
@@ -410,6 +411,8 @@ Full details in [`accounts.md`](accounts.md).
 | `nymeria/core/auth_prompt_coordinator.py` | In-process prompt futures, one-time prompt tokens, and prompt lookup |
 | `nymeria/core/credential_tests.py` | Provider test registry and redacted probe helpers |
 | `nymeria/core/llm_credentials.py` | LLM provider credential resolution from the vault |
+| `nymeria/core/mcp_auth_bridge.py` | Gmail MCP OAuth-token export and cleanup bridge |
+| `nymeria/core/mcp_runtime.py` | Managed MCP install credential-reference creation |
 | `nymeria/tools/native_credentials.py` | Native tool credential resolution |
 | `nymeria/tools/auth_manager.py` | Agent-facing metadata-only tool |
 | `nymeria/tools/credential_prompt.py` | Agent-facing `request_credential` tool |
@@ -418,11 +421,17 @@ Full details in [`accounts.md`](accounts.md).
 | `nymeria/core/oauth_callback_handler.py` | Finalize OAuth: code exchange, userinfo, vault write, coordinator resolve |
 | `nymeria/core/oauth_device_flow.py` | RFC 8628 device-code poller |
 | `nymeria/tools/auth_cache_utils.py` | OAuth token cache I/O (vault-first, file fallback) |
-| `nymeria/core/custom_tools.py` | `${credential:...}` resolution in custom HTTP tools |
-| `nymeria/core/mcp_manager.py` | `${credential:...}` resolution in MCP server config |
+| `nymeria/core/custom_tools.py` | `${credential:<id>.<field>}` resolution in custom HTTP tools |
+| `nymeria/core/mcp_manager.py` | `${credential:<id>.<field>}` resolution in MCP server config |
 | `nymeria/api/routers/credentials.py` | REST API router |
 | `nymeria/api/routers/credential_prompts.py` | Desktop and hosted-form prompt resolution endpoints |
 | `nymeria/api/schemas/credentials.py` | Pydantic request/response schemas |
+| `nymeria-desktop/src/lib/components/credentials/AuthPromptModal.svelte` | Desktop floating credential prompt panel |
+| `nymeria-desktop/src/lib/stores/autonomous.svelte.ts` | Desktop `auth_prompt` SSE dispatch into prompt state |
+| `nymeria-desktop/src/lib/stores/authPrompt.svelte.ts` | Desktop active prompt state from SSE |
+| `nymeria-desktop/src/lib/components/credentials/CredentialManagerPanel.svelte` and mobile counterpart | Settings > Connections manager |
+| `nymeria-desktop/src/lib/services/api/credentials.ts` and mobile counterpart | Typed frontend credential API client |
+| `nymeria-desktop/src/lib/types/index.ts` and mobile counterpart | Credential and auth-prompt frontend types |
 | `tests/test_credential_vault.py` | Vault unit tests |
 | `tests/test_credential_prompt_flow.py` | Prompt flow integration tests |
 | `tests/test_credential_tests.py` | Provider test registry tests |

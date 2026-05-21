@@ -9,9 +9,10 @@ tool-preference, Skills, voice, Agent Threads, activity/notification, TODO
 dashboard, autonomous stream, custom tools, classic tool discovery/default/
 callable routes, unified tools, MCP server management, settings/model catalog,
 thread config/callable-team routes, chat-app/BYO Telegram routes, command
-routes, and Chat SSE routes now live under `Nymeria/nymeria/api/routers/`,
-while the rest of the
-surface still lives in `Nymeria/nymeria/triggers/api.py` during the migration.
+routes, and Chat SSE routes now live under `Nymeria/nymeria/api/routers/`.
+Application construction, shared dependency injection, auth helpers, router
+registration, and hosted-frontend/static fallback remain in
+`Nymeria/nymeria/triggers/api.py`.
 
 ## Authentication
 
@@ -21,7 +22,7 @@ Most endpoints require Bearer token authentication:
 Authorization: Bearer <token>
 ```
 
-Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Created via `python run.py users add` — see `docs/accounts.md`. Resolve to the user they were issued to.
+Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Created via `python3 run.py users add`  -  see `docs/accounts.md`. Resolve to the user they were issued to.
 
 `X-Nymeria-Act-As: <user_id>` is honored only for admin-role callers and rewrites the effective user to the target (403 for non-admin, 404 for unknown/disabled target).
 
@@ -84,6 +85,44 @@ required dependency fails.
 
 ---
 
+### Restart API Server
+
+```http
+POST /restart
+Authorization: Bearer <admin-token>
+```
+
+Admin-only. Requests a restart of the API process and returns
+`{"message": "Server restarting..."}` before the process exits.
+
+---
+
+### Report Problem
+
+```http
+POST /report
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Sends a support email with optional thread/message identifiers, a description,
+client info, and up to the latest 10 included messages. The backend sends the
+report through the Outlook email tool.
+
+**Request Body:**
+```json
+{
+  "thread_id": "optional-thread-id",
+  "message_id": "optional-message-id",
+  "description": "What went wrong",
+  "messages": [],
+  "timestamp": "2026-05-20T12:00:00Z",
+  "client_info": {"platform": "desktop"}
+}
+```
+
+---
+
 ### Who Am I
 
 ```http
@@ -128,12 +167,12 @@ tokens.
 | `provider_user_id` | Platform-native user ID (string) |
 
 **Responses:**
-- `200` — `{"user_id": "bob"}`
-- `400` — `{"detail": "Unknown provider"}`
-- `403` — `{"detail": "Admin only"}` (non-admin token)
-- `404` — `{"detail": "Not linked"}`
+- `200`  -  `{"user_id": "bob"}`
+- `400`  -  `{"detail": "Unknown provider"}`
+- `403`  -  `{"detail": "Admin only"}` (non-admin token)
+- `404`  -  `{"detail": "Not linked"}`
 
-Create mappings via `POST /admin/users/{id}/platforms` (see Account & User Administration below).
+Create mappings via `POST /admin/users/{user_id}/platforms` (see Account & User Administration below).
 
 ---
 
@@ -171,6 +210,7 @@ resolution. Text-chat setup links use separate prompt-token routes:
 
 ```http
 GET /connect/credentials/{prompt_id}
+GET /connect/credentials/oauth/callback
 GET /connect/credentials/{prompt_id}/prompt
 POST /connect/credentials/{prompt_id}/test
 POST /connect/credentials/{prompt_id}/submit
@@ -189,35 +229,35 @@ See [`credentials.md`](credentials.md) for the storage model and migration notes
 
 ### Account & User Administration
 
-Self endpoints (`/me/*`) work for any authenticated user. Admin endpoints (`/admin/users/*`) require an admin token. Raw tokens are returned **once** in the response of any creation/issue/rotate call — they cannot be retrieved later.
+Self endpoints (`/me/*`) work for any authenticated user. Admin endpoints (`/admin/users/*`) require an admin token. Raw tokens are returned **once** in the response of any creation/issue/rotate call  -  they cannot be retrieved later.
 
 Token revoke endpoints address tokens by `token_hash_prefix` (the first 8 hex chars of the sha256, returned in token list responses). The frontend never sees raw token material for tokens it didn't just mint.
 
-**Self — any authenticated user:**
+**Self  -  any authenticated user:**
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | `PATCH` | `/me` | `{display_name?}` | Update your own display name. Empty value → 400. |
-| `GET` | `/me/tokens` | — | List your tokens (no raw values). |
+| `GET` | `/me/tokens` |  -  | List your tokens (no raw values). |
 | `POST` | `/me/tokens` | `{label?}` | Issue yourself a token. Returns `{raw_token, metadata}`. |
-| `DELETE` | `/me/tokens/{prefix}` | — | Revoke. 400 on ambiguous prefix, 404 on no match. |
+| `DELETE` | `/me/tokens/{token_hash_prefix}` |  -  | Revoke. 400 on ambiguous prefix, 404 on no match. |
 
-**Admin — caller must be admin:**
+**Admin  -  caller must be admin:**
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| `GET` | `/admin/users` | — | List every user with `token_count` and `last_token_use`. |
+| `GET` | `/admin/users` |  -  | List every user with `token_count` and `last_token_use`. |
 | `POST` | `/admin/users` | `{email, display_name?, role?, id?, token_label?}` | Create + issue first token. Returns `IssuedTokenResponse`. |
-| `GET` | `/admin/users/{id}` | — | Single user with `thread_count`, `todo_count`, `platform_count`. |
-| `PATCH` | `/admin/users/{id}` | `{display_name?, role?, disabled?}` | 409 if it would leave zero enabled admins. |
-| `DELETE` | `/admin/users/{id}` | — | 409 if user owns threads or todos; clean those first. |
-| `GET` | `/admin/users/{id}/tokens` | — | List a user's tokens. |
-| `POST` | `/admin/users/{id}/tokens` | `{label?}` | Issue a token for the user. |
-| `POST` | `/admin/users/{id}/tokens/rotate` | `{label?}` | Revoke all + issue one. Returns `RotatedTokensResponse` with `revoked_count`. |
-| `DELETE` | `/admin/users/{id}/tokens/{prefix}` | — | Revoke single by hash prefix. |
-| `GET` | `/admin/users/{id}/platforms` | — | List chat-platform identities. |
-| `POST` | `/admin/users/{id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
-| `DELETE` | `/admin/users/{id}/platforms/{provider}/{provider_user_id}` | — | Unlink. |
+| `GET` | `/admin/users/{user_id}` |  -  | Single user with `thread_count`, `todo_count`, `platform_count`. |
+| `PATCH` | `/admin/users/{user_id}` | `{display_name?, role?, disabled?}` | 409 if it would leave zero enabled admins. |
+| `DELETE` | `/admin/users/{user_id}` |  -  | 409 if user owns threads or todos; clean those first. |
+| `GET` | `/admin/users/{user_id}/tokens` |  -  | List a user's tokens. |
+| `POST` | `/admin/users/{user_id}/tokens` | `{label?}` | Issue a token for the user. |
+| `POST` | `/admin/users/{user_id}/tokens/rotate` | `{label?}` | Revoke all + issue one. Returns `RotatedTokensResponse` with `revoked_count`. |
+| `DELETE` | `/admin/users/{user_id}/tokens/{token_hash_prefix}` |  -  | Revoke single by hash prefix. |
+| `GET` | `/admin/users/{user_id}/platforms` |  -  | List chat-platform identities. |
+| `POST` | `/admin/users/{user_id}/platforms` | `{provider, provider_user_id}` | Link. 409 if already owned by another user. |
+| `DELETE` | `/admin/users/{user_id}/platforms/{provider}/{provider_user_id}` |  -  | Unlink. |
 
 **Response shapes** (Pydantic models for this account surface live in
 `Nymeria/nymeria/api/schemas/accounts.py`; other extracted schemas such as
@@ -226,8 +266,8 @@ Telegram, and dashboard activity/notifications live under
 `Nymeria/nymeria/api/schemas/`):
 
 ```jsonc
-// IssuedTokenResponse — returned by POST /me/tokens, POST /admin/users,
-// POST /admin/users/{id}/tokens. Raw token shown ONCE; the metadata.token_hash_prefix
+// IssuedTokenResponse  -  returned by POST /me/tokens, POST /admin/users,
+// POST /admin/users/{user_id}/tokens. Raw token shown ONCE; the metadata.token_hash_prefix
 // is the stable handle for revocation.
 {
   "raw_token": "nym_...",
@@ -240,7 +280,7 @@ Telegram, and dashboard activity/notifications live under
   }
 }
 
-// RotatedTokensResponse — returned by POST /admin/users/{id}/tokens/rotate.
+// RotatedTokensResponse  -  returned by POST /admin/users/{user_id}/tokens/rotate.
 // Same as IssuedTokenResponse plus the count of tokens that were just revoked.
 {
   "raw_token": "nym_...",
@@ -248,8 +288,8 @@ Telegram, and dashboard activity/notifications live under
   "revoked_count": 3
 }
 
-// TokenInfo — returned by GET /me/tokens and GET /admin/users/{id}/tokens.
-// No raw_token field — that's only ever in the issue/rotate response.
+// TokenInfo  -  returned by GET /me/tokens and GET /admin/users/{user_id}/tokens.
+// No raw_token field  -  that's only ever in the issue/rotate response.
 {
   "token_hash_prefix": "a3f9b1c2",
   "label": "iPhone",
@@ -258,8 +298,8 @@ Telegram, and dashboard activity/notifications live under
   "revoked_at": null
 }
 
-// AdminUserResponse — returned by GET /admin/users (as a list) and
-// GET /admin/users/{id}. The thread/todo/platform counts are present on
+// AdminUserResponse  -  returned by GET /admin/users (as a list) and
+// GET /admin/users/{user_id}. The thread/todo/platform counts are present on
 // the single-user GET; null in the list response (kept in sync with the
 // frontend's `thread_count?: number` shape).
 {
@@ -277,8 +317,8 @@ Telegram, and dashboard activity/notifications live under
   "platform_count": 2
 }
 
-// PlatformIdentityResponse — returned by GET /admin/users/{id}/platforms (as a list)
-// and POST /admin/users/{id}/platforms (single).
+// PlatformIdentityResponse  -  returned by GET /admin/users/{user_id}/platforms (as a list)
+// and POST /admin/users/{user_id}/platforms (single).
 {
   "provider": "discord",
   "provider_user_id": "699436710118817823",
@@ -344,33 +384,33 @@ in `Nymeria/nymeria/api/schemas/chat_apps.py`. The desktop/mobile Chat App
 wizard uses the self-service routes. Shared bot/webhook clients use the
 admin/service-token routes, which are rate-limited per admin token and endpoint.
 
-**Self-service — any authenticated user:**
+**Self-service  -  any authenticated user:**
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| `GET` | `/me/platforms` | — | List linked chat-platform identities for the caller. |
+| `GET` | `/me/platforms` |  -  | List linked chat-platform identities for the caller. |
 | `POST` | `/me/platform-link-codes` | `{provider:"telegram\|slack\|matrix\|whatsapp\|messenger\|instagram\|webex\|mattermost\|zulip\|rocketchat\|teams\|googlechat\|line\|signal"}` | Issue a 10-minute self-link code. Telegram responses include an optional `t.me` deep link; shared bot providers use the raw `link <code>` command. |
 | `POST` | `/threads/{thread_id}/chatapp/bind-code` | `{provider:"telegram\|slack\|matrix\|whatsapp\|messenger\|instagram\|webex\|mattermost\|zulip\|rocketchat\|teams\|googlechat\|line\|signal"}` | Issue a 10-minute thread-bind code. Caller must own the thread and the thread must not already be bound. |
-| `GET` | `/threads/{thread_id}/chatapp/bindings` | — | List chat-app bindings for a thread the caller owns. |
-| `DELETE` | `/threads/{thread_id}/chatapp/bindings/{binding_id}` | — | Delete a binding owned by the caller and emit sidebar platform sync. |
-| `GET` | `/me/telegram-bots` | — | List user-owned Telegram bots without token material. |
+| `GET` | `/threads/{thread_id}/chatapp/bindings` |  -  | List chat-app bindings for a thread the caller owns. |
+| `DELETE` | `/threads/{thread_id}/chatapp/bindings/{binding_id}` |  -  | Delete a binding owned by the caller and emit sidebar platform sync. |
+| `GET` | `/me/telegram-bots` |  -  | List user-owned Telegram bots without token material. |
 | `POST` | `/me/telegram-bots` | `{bot_token}` | Validate via Telegram `getMe`, encrypt with `NYMERIA_SECRETS_KEY`, and register idempotently for the same owner. |
-| `GET` | `/me/telegram-bots/{bot_id}` | — | Fetch one owned bot; used by the wizard while waiting for supervisor heartbeat. |
-| `DELETE` | `/me/telegram-bots/{bot_id}` | — | Delete an owned bot and cascade-delete bindings served by that bot. |
+| `GET` | `/me/telegram-bots/{bot_id}` |  -  | Fetch one owned bot; used by the wizard while waiting for supervisor heartbeat. |
+| `DELETE` | `/me/telegram-bots/{bot_id}` |  -  | Delete an owned bot and cascade-delete bindings served by that bot. |
 
-**Bot/admin — caller must be admin:**
+**Bot/admin  -  caller must be admin:**
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| `GET` | `/admin/chatapp/bindings` | — | List all bindings, optionally filtered by `?provider=telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, or `signal`. |
-| `GET` | `/admin/chatapp/bindings/lookup` | — | Resolve by exactly one of `platform_chat_id` or `thread_id`. |
+| `GET` | `/admin/chatapp/bindings` |  -  | List all bindings, optionally filtered by `?provider=telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, or `signal`. |
+| `GET` | `/admin/chatapp/bindings/lookup` |  -  | Resolve by exactly one of `platform_chat_id` or `thread_id`. |
 | `POST` | `/admin/chatapp/bindings/claim` | `{code, provider, platform_chat_id, expected_provider_user_id}` | Shared-bot bind-code claim; verifies the platform user is linked to the issuing Nymeria user before consuming the code. |
 | `POST` | `/admin/chatapp/bindings/claim-via-bot` | `{code, provider, platform_chat_id, via_user_telegram_bot_id}` | User-owned bot bind-code claim; authorizes by bot owner instead of platform identity. |
-| `DELETE` | `/admin/chatapp/bindings/by-chat` | — | Remove a binding by `provider` and `platform_chat_id`; optional `user_id` and `user_telegram_bot_id` query params scope bot-initiated deletes to the expected owner/bot. |
+| `DELETE` | `/admin/chatapp/bindings/by-chat` |  -  | Remove a binding by `provider` and `platform_chat_id`; optional `user_id` and `user_telegram_bot_id` query params scope bot-initiated deletes to the expected owner/bot. |
 | `POST` | `/admin/chatapp/bindings/switch` | `{provider, platform_chat_id, thread_id, user_id, user_telegram_bot_id?}` | Move a chat-app binding to another existing user-owned non-native thread. |
 | `POST` | `/admin/platform/link-codes/claim` | `{code, provider, platform_user_id}` | Consume a self-link code and create the platform identity row. |
-| `GET` | `/admin/telegram-bots` | — | Supervisor-only list of enabled user-owned bots with decrypted tokens. |
-| `POST` | `/admin/telegram-bots/{bot_id}/seen` | — | Supervisor heartbeat update for `last_seen_at`. |
+| `GET` | `/admin/telegram-bots` |  -  | Supervisor-only list of enabled user-owned bots with decrypted tokens. |
+| `POST` | `/admin/telegram-bots/{bot_id}/seen` |  -  | Supervisor heartbeat update for `last_seen_at`. |
 
 Bind-code claim routes inspect and authorize before consuming a code. If
 authorization or binding creation fails, the code remains reusable until it
@@ -460,7 +500,7 @@ subscribers using the same `client_id` can suppress their own echoes.
 |-------|------|----------|---------|-------------|
 | `message` | string | Yes | - | User message |
 | `thread_id` | string | No | auto-generated | Conversation thread ID |
-| `user_id` | string | No | `"default"` | User ID for profile/memory isolation |
+| `user_id` | string | No | `"default"` | Legacy compatibility field. The backend ignores client-claimed user IDs and uses the bearer token or admin `X-Nymeria-Act-As` as the effective user. |
 | `attachments` | array | No | - | Optional multimodal attachments (images/documents) |
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
 | `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the watchdog worker; gated by the same Bearer-auth check as any `/chat` call. |
@@ -530,7 +570,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:** Same as the streaming endpoint, including the optional `is_self_invoke` and `trigger_override` fields. Self-invoke behavior here is identical to `/chat` — it's a pass-through to `agent.chat()` with those flags.
+**Request Body:** Same as the streaming endpoint, including the optional `is_self_invoke` and `trigger_override` fields. Self-invoke behavior here is identical to `/chat`  -  it's a pass-through to `agent.chat()` with those flags.
 
 **Response:**
 ```json
@@ -677,6 +717,88 @@ Get context window usage statistics for a thread.
 
 ---
 
+### Get Thread Platform Metadata
+
+```http
+GET /threads/{thread_id}/metadata
+Authorization: Bearer <token>
+```
+
+Returns platform metadata parsed from the thread ID, such as Discord guild or
+channel IDs, Telegram channel IDs, Webex room/DM type, or `{"platform":
+"desktop"}` for ordinary desktop/mobile/API threads.
+
+---
+
+### Thread Attachment Limits
+
+```http
+GET /threads/{thread_id}/attachment_limits
+Authorization: Bearer <token>
+```
+
+Returns attachment caps for the thread's effective provider/model after
+per-thread LLM overrides are applied.
+
+**Response:**
+```json
+{
+  "effective_provider": "openrouter",
+  "effective_model": "anthropic/claude-sonnet-4",
+  "limits": {
+    "max_images_per_request": 100,
+    "max_image_bytes": null,
+    "max_pdf_pages": null,
+    "max_total_bytes": null
+  }
+}
+```
+
+---
+
+### Validate Thread Attachments
+
+```http
+POST /threads/{thread_id}/attachments/validate
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Preflights attachment compatibility against the thread's effective model. It
+does not send content to a model.
+
+**Request Body:**
+```json
+{
+  "attachments": [
+    {
+      "file_type": "image",
+      "data_url": "data:image/png;base64,...",
+      "mime_type": "image/png",
+      "file_name": "diagram.png"
+    }
+  ]
+}
+```
+
+**Response:** includes `compatible`, effective provider/model, required and
+unsupported modalities, warnings, `can_force_send`, and the same `limits`
+object returned by `/attachment_limits`.
+
+---
+
+### Download Thread Attachment
+
+```http
+GET /threads/{thread_id}/attachments/{attachment_id}/download
+Authorization: Bearer <token>
+```
+
+Streams original bytes from the thread's attachment sandbox. The caller must
+own the thread or be an admin acting as that user.
+
+---
+
 ### Delete Thread
 
 ```http
@@ -720,10 +842,31 @@ surface failed after the critical cleanup completed.
 
 ---
 
+### Clear Thread Conversation
+
+```http
+POST /threads/{thread_id}/clear
+Authorization: Bearer <token>
+```
+
+Deletes checkpoint history for the thread and removes its metadata entry while
+preserving thread config, notepad content, and other thread settings. Use
+`DELETE /threads/{thread_id}` for full cascade deletion.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "thread_id": "abc123"
+}
+```
+
+---
+
 ### Compact Thread
 
 ```http
-POST /threads/{thread_id}/compact?user_id=default
+POST /threads/{thread_id}/compact
 Authorization: Bearer <token>
 ```
 
@@ -740,6 +883,19 @@ Manually trigger context compaction for a thread.
 ```
 
 Manual compaction persists a visible `compaction_notice` immediately. When `summary_pending` is `true`, the same summary will be attached to the user's next message in that thread.
+
+---
+
+### Prune Thread Tool Returns
+
+```http
+POST /threads/{thread_id}/prune
+Authorization: Bearer <token>
+```
+
+Deterministically rewrites large tool-result messages in the active state to
+short placeholders without an LLM call. It preserves message IDs and
+tool-call IDs so existing assistant/tool linkage remains valid.
 
 ---
 
@@ -1085,22 +1241,25 @@ data: {"type":"task_completed","notify":false,"content":"Found 2 new emails.","t
 
 ## Multi-User Support
 
-The `user_id` field enables per-user memory isolation:
+Per-user isolation is driven by account tokens, not by trusted request bodies:
 
-- Each `user_id` has its own profile and memories
-- Memories saved by user A are not visible to user B
-- Default is `"default"` for single-user deployments
-- Useful for multi-tenant applications sharing one API
+- Each account has its own profile, memories, threads, tools, skills, TODOs,
+  activity feed, and notifications.
+- Client-supplied `user_id` fields or query parameters are ignored on routes
+  that use the authenticated-user dependency.
+- Admin callers target another user with `X-Nymeria-Act-As: <user_id>`.
+- The bootstrap owner account is usually `default` on single-user deployments.
 
 **Example:**
-```json
-{
-  "message": "My name is Alex",
-  "user_id": "user_123"
-}
+```http
+POST /chat
+Authorization: Bearer nym_alice...
+
+{"message": "My name is Alex"}
 ```
 
-This will save the name to user_123's profile, isolated from other users.
+This stores any learned profile facts under the account that owns
+`nym_alice...`, isolated from other users.
 
 ---
 
@@ -1111,13 +1270,15 @@ This will save the name to user_123's profile, isolated from other users.
 ```python
 import httpx
 
+TOKEN = "nym_..."
+
 response = httpx.post(
     "http://localhost:8000/chat/sync",
     json={
         "message": "Hello",
         "user_id": "my_user"
     },
-    headers={"Authorization": "Bearer dev-key"}
+    headers={"Authorization": f"Bearer {TOKEN}"}
 )
 print(response.json()["response"])
 ```
@@ -1127,11 +1288,13 @@ print(response.json()["response"])
 ```python
 import httpx
 
+TOKEN = "nym_..."
+
 with httpx.stream(
     "POST",
     "http://localhost:8000/chat",
     json={"message": "Search for Python tutorials"},
-    headers={"Authorization": "Bearer dev-key"}
+    headers={"Authorization": f"Bearer {TOKEN}"}
 ) as r:
     for line in r.iter_lines():
         if line.startswith("data: "):
@@ -1152,12 +1315,14 @@ with httpx.stream(
 import httpx
 import asyncio
 
+TOKEN = "nym_..."
+
 async def chat():
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "http://localhost:8000/chat/sync",
             json={"message": "Hello"},
-            headers={"Authorization": "Bearer dev-key"}
+            headers={"Authorization": f"Bearer {TOKEN}"}
         )
         return response.json()
 
@@ -1423,11 +1588,14 @@ Returns cached OpenRouter model metadata. The backend fetches model data from th
 ### List Threads
 
 ```http
-GET /threads?user_id=default
+GET /threads?owned_only=false
 Authorization: Bearer <token>
 ```
 
 Returns all threads with server-authoritative metadata (titles, pins, platform).
+The effective user comes from the bearer token or admin `X-Nymeria-Act-As`;
+client-supplied `?user_id=` values are ignored. Set `owned_only=true` for
+cleanup tooling and tests that should skip recovered checkpoint/resource rows.
 When a thread's saved config has `callable=true`, the list response reports
 `callable=true` and uses `callable_name` as the title. `platform` remains the
 thread's visible origin surface for native or explicitly bound chat-app
@@ -1478,7 +1646,7 @@ owned by another user is not returned.
 ### Update Thread Metadata
 
 ```http
-PATCH /threads/{thread_id}/metadata?user_id=default
+PATCH /threads/{thread_id}/metadata
 Content-Type: application/json
 Authorization: Bearer <token>
 ```
@@ -1491,7 +1659,9 @@ Authorization: Bearer <token>
 }
 ```
 
-Updates the thread's server-side metadata. If the thread is callable, renaming also updates its `callable_name` in thread config and rebuilds the tool registry (so the LLM sees the new tool name). Name collisions with core tools or other callables are silently skipped.
+Updates server-side display metadata. Callable thread tool names are edited
+through `PATCH /threads/{thread_id}/config` with `callable_name`; the thread
+list derives a callable thread's visible title from `callable_name`.
 
 **Response:**
 ```json
@@ -1499,6 +1669,27 @@ Updates the thread's server-side metadata. If the thread is callable, renaming a
   "status": "ok",
   "thread_id": "abc123",
   "updated_fields": ["title", "title_source"]
+}
+```
+
+---
+
+### Migrate Thread Metadata
+
+```http
+POST /threads/metadata/migrate
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Imports frontend-local thread metadata into the backend metadata store for the
+effective user. This is a compatibility migration endpoint and only creates
+metadata for threads that do not already have it.
+
+**Response:**
+```json
+{
+  "migrated_threads": 12
 }
 ```
 
@@ -1567,10 +1758,14 @@ Aborts a running stream on the thread. Cascades to any active callable child thr
 **Response:**
 ```json
 {
-  "status": "ok",
-  "message": "Abort signal sent for thread abc123"
+  "status": "stopping",
+  "thread_id": "abc123",
+  "message": "Stop signal sent. Thread was held by 'chat' for 12s. Will stop at next iteration boundary."
 }
 ```
+
+If the thread is idle, the response is `{"status":"idle","thread_id":"abc123",
+"message":"Thread was not running. No stop signal needed."}`.
 
 ---
 
@@ -1583,7 +1778,7 @@ Authorization: Bearer <token>
 
 Eagerly registers the calling user as the owner of `thread_id` in the `thread_owners` table. The desktop frontend calls this from `threadsStore.createThread()` immediately after generating a UUID, so the backend has an ownership row before any chat-app routing (Telegram/Discord via `X-Nymeria-Act-As`) can hit `/chat` and TOFU-claim the thread for someone else.
 
-Idempotent — safe to call multiple times.
+Idempotent  -  safe to call multiple times.
 
 **Response (200):**
 ```json
@@ -1594,8 +1789,8 @@ Idempotent — safe to call multiple times.
 ```
 
 **Errors:**
-- `400` — `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`, `slack_C...`, `matrix_!room...`, `whatsapp_group_<id>`, `webex_<room>`, `mattermost_<server>_<channel>`, `zulip_<realm>_<stream>`, `rocketchat_<server>_<room>`, `signal_group_<group>`). These are inherently multi-user and cannot be per-user-claimed.
-- `404` — Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
+- `400`  -  `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`, `slack_C...`, `matrix_!room...`, `whatsapp_group_<id>`, `webex_<room>`, `mattermost_<server>_<channel>`, `zulip_<realm>_<stream>`, `rocketchat_<server>_<room>`, `signal_group_<group>`). These are inherently multi-user and cannot be per-user-claimed.
+- `404`  -  Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
 
 See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the full lifecycle.
 
@@ -1628,6 +1823,26 @@ No query parameters.
 **Response:**
 ```json
 ["default", "discord_699436710118817823", "telegram_5551234567"]
+```
+
+---
+
+### Thread TODO Counts
+
+```http
+GET /todos/thread-counts
+Authorization: Bearer <token>
+```
+
+Returns active TODO counts keyed by thread ID for the effective user. The
+frontend uses this for sidebar badges.
+
+**Response:**
+```json
+{
+  "thread-xyz": 2,
+  "default-default": 1
+}
 ```
 
 ---
@@ -1776,11 +1991,12 @@ Authorization: Bearer <token>
 ### Get Activity
 
 ```http
-GET /activity?user_id=default&limit=50
+GET /activity?limit=50
 Authorization: Bearer <token>
 ```
 
-Returns recent activity entries (autonomous tasks, tool executions, etc.).
+Returns recent activity entries (autonomous tasks, tool executions, etc.) for
+the effective user.
 
 **Response:**
 ```json
@@ -1811,11 +2027,11 @@ the full reference.
 ### In-app feed
 
 ```http
-GET    /notifications?user_id=default
-POST   /notifications/{notification_id}/read?user_id=default
-POST   /notifications/read-all?user_id=default
-DELETE /notifications/{notification_id}?user_id=default
-DELETE /notifications?user_id=default
+GET    /notifications
+POST   /notifications/{notification_id}/read
+POST   /notifications/read-all
+DELETE /notifications/{notification_id}
+DELETE /notifications
 ```
 
 `GET /notifications` response (rows include audit-log metadata):
@@ -2092,9 +2308,18 @@ Import tools from a JSON array.
 
 ## Callable Threads API
 
-Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool — but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
+Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool  -  but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
 
 Callable teams optionally narrow that owner-wide list. If the caller thread has `callable_team_id`, it only receives callable tools whose thread configs have the same `callable_team_id`. Threads without a team keep the legacy owner-wide callable list.
+
+### List Agent Templates
+
+```http
+GET /agents/templates
+Authorization: Bearer <token>
+```
+
+Legacy template endpoint. It currently returns `{"templates": [], "total": 0}`.
 
 ### List Callable Threads
 
@@ -2114,6 +2339,19 @@ Content-Type: application/json
 ```
 
 Creates a callable thread directly from the API.
+
+**Request Body:**
+```json
+{
+  "callable_name": "Researcher",
+  "callable_description": "Research support",
+  "system_prompt": "You are a focused research assistant.",
+  "llm_provider": "openrouter",
+  "llm_model": "anthropic/claude-sonnet-4",
+  "llm_temperature": 0.2,
+  "llm_max_tokens": 4096
+}
+```
 
 ---
 
@@ -2199,7 +2437,10 @@ Updates thread config. Key fields for callable threads:
 | `llm_temperature` | float | Override temperature |
 | `llm_config.openai_api_mode` | string | OpenAI-only API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 
-**Callable thread naming:** The thread's sidebar title always equals `callable_name`. Renaming the thread via `PATCH /threads/{id}/metadata` automatically updates `callable_name` and rebuilds the tool registry.
+**Callable thread naming:** A callable thread's sidebar title is derived from
+`callable_name`. Rename the callable tool binding by updating `callable_name`
+through `PATCH /threads/{thread_id}/config`; `PATCH /threads/{thread_id}/metadata`
+only updates display metadata for non-callable threads.
 
 ```http
 DELETE /threads/{thread_id}/config
@@ -2252,11 +2493,151 @@ Response shape:
 
 ---
 
+## Skills API
+
+Agent skills are markdown bundles managed by the `SkillManager`. The API
+supports installed-skill discovery, marketplace search/install, uninstall, and
+effective skill resolution for a thread.
+
+### List Installed Skills
+
+```http
+GET /skills?scope=user
+Authorization: Bearer <token>
+```
+
+Lists skills visible to the effective user. `scope` is optional and can be
+`user`, `global`, or `bundled`.
+
+### Search Skill Marketplace
+
+```http
+GET /skills/marketplace/search?source=anthropic&q=calendar
+Authorization: Bearer <token>
+```
+
+Searches a marketplace source and returns matching skill metadata. Unsupported
+sources return `501`; marketplace fetch failures return `502`.
+
+### Get Skill Detail
+
+```http
+GET /skills/{name}
+Authorization: Bearer <token>
+```
+
+Returns skill metadata, full markdown body, path, license, scripts, and
+references for an installed skill.
+
+### Install Skill
+
+```http
+POST /skills/install
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "name": "calendar",
+  "source": "anthropic",
+  "scope": "user"
+}
+```
+
+`scope=user` installs for the caller. `scope=global` is admin-only because a
+skill bundle can include scripts and shared assets.
+
+### Uninstall Skill
+
+```http
+DELETE /skills/{name}?scope=user
+Authorization: Bearer <token>
+```
+
+Removes the skill from user or global scope. Global uninstall is admin-only.
+
+### Thread Active Skills
+
+```http
+GET /threads/{thread_id}/skills
+Authorization: Bearer <token>
+```
+
+Returns global-enabled, thread-enabled, thread-disabled, and resolved active
+skills for the thread after ownership and scope checks.
+
+### Global Skill Defaults
+
+```http
+GET /settings/global-skills
+PUT /settings/global-skills
+Authorization: Bearer <token>
+```
+
+The `PUT` body is `{"skill_names":["skill-a","skill-b"]}` and replaces the
+effective user's enabled-by-default skill list.
+
+---
+
+## User Memories API
+
+Profile memories are keyed text facts stored on a user profile. Path `user_id`
+must match the effective authenticated user; admins target another user with
+`X-Nymeria-Act-As`.
+
+### List Memories
+
+```http
+GET /users/{user_id}/memories
+Authorization: Bearer <token>
+```
+
+Returns memory key/value rows with creation/access metadata.
+
+### Save Memory
+
+```http
+POST /users/{user_id}/memories
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "key": "timezone",
+  "value": "America/New_York"
+}
+```
+
+Creates or updates the memory and syncs a memory chunk into the user's RAG
+index when RAG is available.
+
+### Delete Memory
+
+```http
+DELETE /users/{user_id}/memories/{key}
+Authorization: Bearer <token>
+```
+
+Removes the memory and its RAG memory chunk.
+
+### Search Memories
+
+```http
+GET /users/{user_id}/memories/search?q=timezone
+Authorization: Bearer <token>
+```
+
+Searches profile memories by key or value substring.
+
+---
+
 ## RAG Management API
 
 Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
-`rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the frontend settings UI — the watermark prevents re-flipping.
+`rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the frontend settings UI  -  the watermark prevents re-flipping.
 
 Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. Saved profile memories are also synced into the memory chunk index when created or updated through the REST API or agent tools, and removed from the index when forgotten. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
 
@@ -2501,7 +2882,8 @@ Resets all tool preferences to defaults.
 
 Access built-in, MCP server, and admin-visible custom tools through one API
 surface. This is also where default enablement, description overrides, and
-tool configuration updates live.
+tool configuration updates live. Path `user_id` must match the effective
+authenticated user; admins target another user with `X-Nymeria-Act-As`.
 
 ### List Unified Tools
 
@@ -2511,85 +2893,30 @@ Authorization: Bearer <token>
 ```
 
 Returns all visible tools in a unified format. Custom tool definitions include
-HTTP/MCP configuration, so they are only returned to admin users.
+HTTP/MCP configuration, so they are only returned to admin users. The response
+uses `tool_type` values `builtin`, `mcp_server`, or `custom`, plus
+`builtin_count` and `custom_count`.
 
 ### Enable Unified Tool
 
 ```http
 PUT /users/{user_id}/tools/unified/{tool_id}/enable
+Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-Enable or disable a built-in or MCP server tool through the unified tool
-identity.
+```json
+{
+  "enabled": true
+}
+```
+
+Enable or disable a built-in or live MCP server tool by mutating the user's
+`default_thread_tools`. Role-gated tools still require an admin caller. Custom
+tool execution is controlled through thread `enabled_tools` and custom-tool
+definition state, not this endpoint.
 
 ### Update Unified Tool Description
-
-```http
-PUT /users/{user_id}/tools/unified/{tool_id}/description
-Authorization: Bearer <token>
-```
-
-Override the user-visible description for a tool.
-
-### Update Unified Tool Config
-
-```http
-PUT /users/{user_id}/tools/unified/{tool_id}/config
-Authorization: Bearer <token>
-```
-
-Update configuration for a unified tool entry.
-
-**Response:**
-```json
-{
-  "user_id": "default",
-  "tools": [
-    {
-      "id": "bash_execute",
-      "name": "bash_execute",
-      "description": "Execute shell commands...",
-      "type": "builtin",
-      "category": "core",
-      "enabled": true,
-      "parameters": {...}
-    },
-    {
-      "id": "get_weather",
-      "name": "Get Weather",
-      "description": "Get current weather...",
-      "type": "custom",
-      "category": "custom",
-      "enabled": true,
-      "parameters": {...}
-    }
-  ],
-  "total": 48
-}
-```
-
----
-
-### Enable Unified Tool
-
-```http
-PUT /users/{user_id}/tools/unified/{tool_id}/enable
-Authorization: Bearer <token>
-```
-
-Works for both built-in and custom tools.
-
-**Response:**
-```json
-{
-  "message": "Tool 'get_weather' enabled"
-}
-```
-
----
-
-### Update Tool Description
 
 ```http
 PUT /users/{user_id}/tools/unified/{tool_id}/description
@@ -2597,23 +2924,16 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:**
 ```json
 {
   "description": "Updated description for the tool"
 }
 ```
 
-**Response:**
-```json
-{
-  "message": "Description updated for tool 'get_weather'"
-}
-```
+Overrides the user-visible description for a built-in or custom tool. Passing
+`{"description": null}` clears the override.
 
----
-
-### Configure Unified Tool
+### Update Unified Tool Config
 
 ```http
 PUT /users/{user_id}/tools/unified/{tool_id}/config
@@ -2621,19 +2941,86 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:**
 ```json
 {
-  "timeout_seconds": 30,
-  "custom_option": "value"
+  "config": {
+    "timeout_seconds": 30,
+    "custom_option": "value"
+  }
 }
 ```
 
-**Response:**
+Sets per-user runtime config for a built-in or custom tool. Passing an empty
+config object clears existing config.
+
+**List Response Example:**
 ```json
 {
-  "message": "Tool 'get_weather' configured",
-  "config": {...}
+  "tools": [
+    {
+      "id": "bash_execute",
+      "name": "bash_execute",
+      "description": "Execute shell commands...",
+      "tool_type": "builtin",
+      "category": "core",
+      "enabled": true,
+      "parameters": null
+    },
+    {
+      "id": "get_weather",
+      "name": "Get Weather",
+      "description": "Get current weather...",
+      "tool_type": "custom",
+      "category": "custom",
+      "enabled": true,
+      "parameters": {...}
+    }
+  ],
+  "total": 48,
+  "builtin_count": 40,
+  "custom_count": 1
+}
+```
+
+---
+
+### Create Unified Custom Tool
+
+```http
+POST /tools/unified
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+```
+
+Creates a custom HTTP or MCP tool and reloads the tool registry. The request
+body matches `POST /tools/custom`.
+
+### Update Unified Custom Tool
+
+```http
+PUT /tools/unified/{tool_id}
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+```
+
+Updates an existing custom tool and reloads the tool registry. Built-in tools
+cannot be edited through this route.
+
+### Delete Unified Custom Tool
+
+```http
+DELETE /tools/unified/{tool_id}
+Authorization: Bearer <admin-token>
+```
+
+Deletes a custom tool definition and reloads custom tools. Built-in tools
+cannot be deleted.
+
+**Delete Response:**
+```json
+{
+  "status": "ok",
+  "deleted": "get_weather"
 }
 ```
 
@@ -2829,8 +3216,8 @@ Authorization: Bearer <token>
 ```
 
 **Query parameters:**
-- `enabled_only` (`bool`, default `false`) — return only enabled triggers
-- `thread_id` (`str`, optional) — filter to triggers whose action targets the given thread
+- `enabled_only` (`bool`, default `false`)  -  return only enabled triggers
+- `thread_id` (`str`, optional)  -  filter to triggers whose action targets the given thread
 
 ### Get Trigger
 
@@ -2920,7 +3307,10 @@ All errors follow this format:
 
 | Status Code | Meaning |
 |-------------|---------|
-| 401 | Missing or invalid API key |
+| 401 | Missing, invalid, or revoked bearer token |
+| 403 | Authenticated caller is not allowed to perform the action |
+| 404 | Resource not found or not visible to the effective user |
+| 409 | Resource state conflict, such as a busy thread or executing TODO |
 | 422 | Invalid request body |
 | 500 | Internal server error |
 

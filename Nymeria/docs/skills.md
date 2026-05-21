@@ -2,7 +2,7 @@
 
 Agent Skills are bundles of procedural knowledge that the agent loads on
 demand. They follow the [Anthropic SKILL.md open standard][spec] (December
-2025), which is also adopted by Claude Code, OpenCode, and ClawHub — so
+2025), which is also adopted by Claude Code, OpenCode, and ClawHub  -  so
 Nymeria-installed skills are portable to those tools and vice versa.
 
 [spec]: https://github.com/anthropics/skills
@@ -172,7 +172,7 @@ Three layers:
    to use an enabled tool such as `bash_execute` for them. `assets/` are never auto-read.
 
 This is what lets a user keep dozens of skills installed without context
-bloat — the agent pays tokens only for the skills it actually activates.
+bloat  -  the agent pays tokens only for the skills it actually activates.
 
 ## Where skills live on disk
 
@@ -229,7 +229,7 @@ Capability-expansion tools are optional and normally arrive through
 draft/test/publish flow for reusable HTTP tools before publishing the kit.
 `skill_config` and `tool_create` remain optional compatibility internals.
 
-The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS` —
+The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS`  -
 it's synthesized per-graph in
 `NymeriaAgent._build_skill_meta_tool()` and only appears on threads with ≥1
 active skill.
@@ -240,14 +240,14 @@ active skill.
 queries find the right skill even when the query and the skill name share no
 keywords:
 
-1. **Semantic** — OpenAI-compatible embeddings indexed in `sqlite-vec`,
+1. **Semantic**  -  OpenAI-compatible embeddings indexed in `sqlite-vec`,
    using `EMBEDDING_MODEL` (default `text-embedding-3-small`) and
    `EMBEDDING_API_KEY`. Returns top-k by cosine similarity on
    `name + description + allowed-tools`.
-2. **BM25 / FTS5** — sqlite `FTS5` full-text search with Porter stemming,
+2. **BM25 / FTS5**  -  sqlite `FTS5` full-text search with Porter stemming,
    ranked by `bm25()`. No model, no network. Kicks in when semantic is
    unavailable or returns no results.
-3. **Substring** — last-resort case-insensitive substring match over names
+3. **Substring**  -  last-resort case-insensitive substring match over names
    and descriptions.
 
 The tool's JSON response always includes a ``mode`` field (`"semantic"`,
@@ -268,7 +268,7 @@ uninstall, or reload-skills tool call). Marketplace entries live in
 `marketplace:<source>` namespaces and are refreshed lazily with a 15-minute
 TTL when the agent searches `source="anthropic"`.
 
-Index storage: `data/skills/index.db` (sqlite). Zero new Python deps —
+Index storage: `data/skills/index.db` (sqlite). Zero new Python deps  -
 `openai` is installed transitively by the OpenAI/LangChain dependencies, and
 `sqlite-vec` is installed through `requirements-sqlite.txt`, which
 `requirements.txt` includes for the default local backend.
@@ -279,14 +279,14 @@ The Anthropic marketplace fetcher downloads the entire `anthropics/skills`
 repo as a single tarball (~few MB) via GitHub's codeload endpoint and
 caches the bytes for 15 minutes. Both `list()` (parse all SKILL.md
 frontmatter in-memory) and `fetch()` (extract a single skill's subtree)
-share that cache — a typical "search → install" flow hits the network
+share that cache  -  a typical "search → install" flow hits the network
 exactly once.
 
 ## Marketplace
 
 Phase 1 supports Anthropic's `anthropics/skills` repo only, fetched via the
 GitHub Contents API. ClawHub (`openclaw.io`) and arbitrary git URLs are
-stubbed with fixed interfaces — Phase 2 will wire them without any API change.
+stubbed with fixed interfaces  -  Phase 2 will wire them without any API change.
 
 Marketplace list results are cached for 15 minutes per source. The install
 path runs a light suspicious-pattern scan (`curl … | sh`, `rm -rf /`, fork
@@ -308,13 +308,13 @@ skill's body (not frontmatter) propagate immediately without a cache flush.
 
 ## Desktop UI
 
-- **Settings → Skills** — install, uninstall, and toggle globally-enabled
+- **Settings → Skills**  -  install, uninstall, and toggle globally-enabled
   skills. "Browse Marketplace" opens a modal for searching
   `anthropics/skills`. Skill Kits show required-tool chips in their rows.
-- **Thread Settings → Skills** — per-thread enable/disable of any installed
+- **Thread Settings → Skills**  -  per-thread enable/disable of any installed
   skill, showing which are already active via the global default and which
   tools a Skill Kit will bind on activation.
-- **Chat rendering** — when the agent fires `Skill(name=...)` the invocation
+- **Chat rendering**  -  when the agent fires `Skill(name=...)` the invocation
   renders as a distinguishable `SkillCard` (colored border, markdown-rendered
   body) rather than a generic `ToolCallCard`.
 
@@ -340,7 +340,7 @@ installs or thread enables through `skill_manage` use `source="skill_install"`.
 
 ## Security posture
 
-- Skill bodies execute nothing themselves — they are instructions to the
+- Skill bodies execute nothing themselves  -  they are instructions to the
   model. Actual side effects go through Nymeria's existing tools
   (`bash_execute`, `file_write`, etc.) which already honor the thread's
   enabled-tools and disabled-tools lists.
@@ -362,14 +362,14 @@ installs or thread enables through `skill_manage` use `source="skill_install"`.
   can be used by pointing `EMBEDDING_BASE_URL` at the server and setting
   `EMBEDDING_API_KEY` to that server's accepted token. The current sqlite-vec
   schema expects 1536-dimensional vectors, so use a compatible model.
-- **Agent-authored skill resources** — v1 writes only `SKILL.md`; future work
+- **Agent-authored skill resources**  -  v1 writes only `SKILL.md`; future work
   can add validated reference files, assets, and scripts when a concrete use
   case needs them.
-- **ClawHub + arbitrary git URL marketplaces** — the `marketplace.py`
+- **ClawHub + arbitrary git URL marketplaces**  -  the `marketplace.py`
   fetcher stubs are ready for Phase 2.
-- **Skill version pinning and semver resolution** — currently always
+- **Skill version pinning and semver resolution**  -  currently always
   grabs `main`.
-- **Graph RAG-Tool Fusion / hybrid retrieval** — combining semantic +
+- **Graph RAG-Tool Fusion / hybrid retrieval**  -  combining semantic +
   BM25 with reciprocal rank fusion beats either alone past ~100 skills
   (see research-doc citation). Not worth the code until the installed
   library outgrows ~50 skills.
@@ -382,4 +382,4 @@ installs or thread enables through `skill_manage` use `source="skill_install"`.
 - Skills module: `nymeria/skills/` (loader, meta-tool factory, marketplace, embedding index)
 - Agent-facing tools: `nymeria/tools/search_skills.py`
 - Desktop UI: `nymeria-desktop/src/lib/components/skills/`, `stores/skills.svelte.ts`
-- [Anthropic `tool_search_with_embeddings` cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/tool_use/tool_search_with_embeddings.ipynb) — canonical embedding-search pattern that this implementation mirrors (differs only in embedding model: we reuse Nymeria's existing `text-embedding-3-small` instead of `all-MiniLM-L6-v2` to avoid shipping a local model)
+- [Anthropic `tool_search_with_embeddings` cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/tool_use/tool_search_with_embeddings.ipynb)  -  canonical embedding-search pattern that this implementation mirrors (differs only in embedding model: we reuse Nymeria's existing `text-embedding-3-small` instead of `all-MiniLM-L6-v2` to avoid shipping a local model)

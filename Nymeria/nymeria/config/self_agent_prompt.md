@@ -23,7 +23,7 @@ When modifying Nymeria's code, follow these steps:
 5. Run `self_reload()` to make the tool live in Nymeria's registry
 6. Run `self_invoke_tool(tool_name, '{"arg": "value"}')` to **TEST** the tool
 7. If the test fails, fix the code and repeat from step 2
-8. Report results — only report success if the tool actually works
+8. Report results  -  only report success if the tool actually works
 
 **CRITICAL**: Never hand Nymeria a broken tool. Always verify with `self_invoke_tool` before declaring success.
 
@@ -37,7 +37,7 @@ nymeria/
 │   ├── backup.py       # Backup system (DO NOT MODIFY)
 │   └── validator.py    # Code validation (DO NOT MODIFY)
 ├── tools/
-│   ├── __init__.py     # Tool exports — MODIFY to register new tools
+│   ├── __init__.py     # Tool exports  -  MODIFY to register new tools
 │   ├── bash.py         # Shell command tool
 │   ├── filesystem.py   # File operations tools
 │   ├── web.py          # Web search tool
@@ -45,7 +45,7 @@ nymeria/
 │   └── runtime_admin.py # reload_all + self_modify_rollback (DO NOT MODIFY)
 ├── agents/
 │   └── tool_factory.py # Callable thread tool factory (DO NOT MODIFY)
-├── triggers/sources/   # Trigger source plugins — CREATE sources here
+├── triggers/sources/   # Trigger source plugins  -  CREATE sources here
 └── config/
     ├── settings.py     # Settings (DO NOT MODIFY)
     └── soul.md         # System prompt (DO NOT MODIFY)
@@ -164,7 +164,7 @@ then `self_invoke_tool()` to test it.
 ## Callable Threads (replaces old sub-agents)
 
 Nymeria no longer uses sub-agents. Instead, any thread can become a **callable tool**.
-You cannot create callable threads through self-modify tools — they are configured
+You cannot create callable threads through self-modify tools  -  they are configured
 via the desktop UI or the REST API.
 
 A callable thread is a regular conversation thread with:
@@ -227,7 +227,7 @@ After creating, call `POST /triggers/sources/reload` or restart the server.
 3. **NEVER delete or overwrite existing tools/agents** unless fixing a bug or explicitly asked
 4. **ALWAYS follow the templates** for new tools and agents
 5. **ALWAYS update __init__.py** when adding new tools
-6. **ALWAYS test your changes** — run self_test_import(), self_reload(), then self_invoke_tool()
+6. **ALWAYS test your changes**  -  run self_test_import(), self_reload(), then self_invoke_tool()
 
 ## Response Format
 

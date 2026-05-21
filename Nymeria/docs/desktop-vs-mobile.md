@@ -1,4 +1,4 @@
-# Desktop vs Mobile — Cross-Platform Reference
+# Desktop vs Mobile  -  Cross-Platform Reference
 
 This document maps the major desktop app areas (`/nymeria-desktop`) to their mobile counterparts (`/nymeria-mobile`) and documents the important differences. It is a maintenance guide, not a byte-for-byte file inventory, because the two codebases have already diverged in a number of platform-specific and feature-specific areas.
 
@@ -115,7 +115,7 @@ behavior, such as its history mapper only materializing legacy
 
 #### `routes/+layout.ts`
 
-Functionally identical — both export `ssr = false`. Only the comment differs (Tauri vs Capacitor).
+Functionally identical  -  both export `ssr = false`. Only the comment differs (Tauri vs Capacitor).
 
 ---
 
@@ -123,7 +123,7 @@ Functionally identical — both export `ssr = false`. Only the comment differs (
 
 These files share core logic but have platform-specific adaptations. When making changes, you need to understand what's shared vs. what's platform-specific.
 
-#### `stores/ui.svelte.ts` — Completely Different
+#### `stores/ui.svelte.ts`  -  Completely Different
 
 | Aspect | Desktop | Mobile |
 |--------|---------|--------|
@@ -303,7 +303,7 @@ The Tools tab in both thread settings panels uses the shared
 optional sections. Keep the search behavior aligned even though the surrounding
 desktop modal and mobile full-screen layouts are different.
 
-#### `routes/+page.svelte` — Main Entry Point
+#### `routes/+page.svelte`  -  Main Entry Point
 
 **Same core**: Setup wizard check, thread sync from backend, chat history loading, autonomous stream connection.
 
@@ -323,7 +323,7 @@ desktop modal and mobile full-screen layouts are different.
 
 **When changing**: Changes to startup logic (thread sync, history loading, setup wizard flow) should be replicated, respecting each platform's lifecycle.
 
-#### `app.css` — Global Styles
+#### `app.css`  -  Global Styles
 
 **Same**: All CSS variable values (colors, typography, glassmorphism, hljs theme).
 
@@ -405,20 +405,20 @@ All account/identity surfaces live under `components/account/` in both apps. Mos
 | `Avatar.svelte`, `RoleChip.svelte`, `avatar.ts` | ✓ | ✓ | Identical helpers; pure functions in `avatar.ts`. |
 | `AccountBadge.svelte` | Sidebar bottom-bar (full + collapsed icon) | LeftPanel footer-actions (40×40) | Replaces the old `ConnectionSwitcher` slot on desktop. |
 | `AccountMenu.svelte` | Anchored popover (NotificationCenter pattern) | Bottom sheet (Modal-style) | Same items: Manage account / Manage users (admin) / Switch / Add / Sign out. |
-| `AccountSwitcher.svelte` | ✓ | — | Mobile is single-connection; switching is via Settings → Connection. |
-| `AddAccountSheet.svelte` | ✓ | — | Same reason. |
+| `AccountSwitcher.svelte` | ✓ |  -  | Mobile is single-connection; switching is via Settings → Connection. |
+| `AddAccountSheet.svelte` | ✓ |  -  | Same reason. |
 | `AccountTab.svelte` | ✓ | ✓ | Same sections (Identity / Tokens / Platforms (admin) / Sign out); mobile uses larger inputs. |
 | `UsersTab.svelte` | ✓ (admin only tab) | ✓ (admin only tab) | Same master/detail; mobile detail view stacks form fields vertically. |
 | `TokenManagementSection.svelte` | ✓ | ✓ | `mode: 'self' \| 'admin'` prop; admin mode adds Rotate-all. |
-| `PlatformLinkingSection.svelte` | ✓ | ✓ | Always uses admin endpoints — only rendered for admins. |
+| `PlatformLinkingSection.svelte` | ✓ | ✓ | Always uses admin endpoints  -  only rendered for admins. |
 | `CopyOnceTokenDialog.svelte` | ✓ | ✓ | Shared copy-once token modal; desktop adds optional account-switcher save actions for admin-issued tokens. |
 
 **Supporting files (also mirror in both apps):**
-- `services/api/accounts.ts` and `services/api/base.ts` — account/admin methods plus the shared `_toastAndExtractError` helper.
-- `stores/config.svelte.ts` — `signOut()`, `updateIdentityDisplayName()`.
-- `stores/connections.svelte.ts` — **desktop only**; extends `SavedConnection` with cached identity + `verifyEntry()`.
-- `stores/errors.svelte.ts` — toast queue + `pushAuthInvalid()`.
-- `components/common/ErrorToast.svelte` — mounted at `routes/+page.svelte` root in both apps.
+- `services/api/accounts.ts` and `services/api/base.ts`  -  account/admin methods plus the shared `_toastAndExtractError` helper.
+- `stores/config.svelte.ts`  -  `signOut()`, `updateIdentityDisplayName()`.
+- `stores/connections.svelte.ts`  -  **desktop only**; extends `SavedConnection` with cached identity + `verifyEntry()`.
+- `stores/errors.svelte.ts`  -  toast queue + `pushAuthInvalid()`.
+- `components/common/ErrorToast.svelte`  -  mounted at `routes/+page.svelte` root in both apps.
 
 See [`frontend-accounts.md`](frontend-accounts.md) for the full reference.
 
@@ -509,13 +509,13 @@ not been replicated yet.
 
 ### Adding a new account-related endpoint or component
 
-1. Backend first — extend `Nymeria/nymeria/triggers/api.py` with the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Use the same `HTTPException(detail=...)` shape as the existing endpoints so the frontend's `_toastAndExtractError` parser picks up the message.
+1. Backend first  -  extend `Nymeria/nymeria/triggers/api.py` with the right `Depends(require_admin_user)` or `Depends(verify_api_key)`. Use the same `HTTPException(detail=...)` shape as the existing endpoints so the frontend's `_toastAndExtractError` parser picks up the message.
 2. Add the response type to `types/index.ts` in both apps (mirror Pydantic field names exactly).
-3. Add the API method to `services/api/accounts.ts` in both apps using the existing `_toastAndExtractError` pattern — every account/admin endpoint must route 401/403/409 through it so the global toast layer stays consistent.
+3. Add the API method to `services/api/accounts.ts` in both apps using the existing `_toastAndExtractError` pattern  -  every account/admin endpoint must route 401/403/409 through it so the global toast layer stays consistent.
 4. Build / extend the component under `components/account/` in both apps. Re-use `Avatar`, `RoleChip`, `Modal`, `Button` for visual consistency.
 5. Update both apps' `components/account/index.ts` barrel.
 6. Mobile-only divergences: skip `connectionsStore` (single-connection), prefer 40px touch targets, use bottom-sheet patterns over popovers.
-7. Document — append the new component to the Account UI table above and to the component reference in [`frontend-accounts.md`](frontend-accounts.md).
+7. Document  -  append the new component to the Account UI table above and to the component reference in [`frontend-accounts.md`](frontend-accounts.md).
 4. Check for desktop-only tabs such as proxy/integration controls before mirroring UI structure
 
 ### Adding a new chat feature (e.g., reactions, editing)
@@ -530,7 +530,7 @@ not been replicated yet.
 
 The `threadsStore` already supports all features in both. Only the `ThreadList.svelte` UI differs:
 - Desktop: Full-featured (1258 lines)
-- Mobile: Simplified (145 lines) — needs independent implementation with touch-friendly UX
+- Mobile: Simplified (145 lines)  -  needs independent implementation with touch-friendly UX
 
 ---
 
@@ -545,7 +545,7 @@ All interactive elements must be at least 44-48px (`--touch-target-min`).
 Use `env(safe-area-inset-*)` for content near screen edges (notch, home indicator).
 
 ### Keyboard Handling
-The mobile app uses `resize: 'none'` for the keyboard — it sets `--keyboard-height` CSS variable instead of letting the browser resize. Input areas should use `padding-bottom: var(--keyboard-height)`.
+The mobile app uses `resize: 'none'` for the keyboard  -  it sets `--keyboard-height` CSS variable instead of letting the browser resize. Input areas should use `padding-bottom: var(--keyboard-height)`.
 
 ### Font Size
 Text inputs must use `font-size: 16px` to prevent iOS Safari from auto-zooming on focus.
@@ -567,20 +567,20 @@ Use `100dvh` not `100vh` to account for mobile browser chrome appearing/disappea
 ## Native Dependencies
 
 ### Desktop (Tauri)
-- `@tauri-apps/api` — Window management
-- `@tauri-apps/plugin-opener` — Open URLs externally
+- `@tauri-apps/api`  -  Window management
+- `@tauri-apps/plugin-opener`  -  Open URLs externally
 - Rust shell: tray/window handling, client-only readiness signalling, and
   source-checkout development commands for local backend/CLIProxy processes
 
 ### Mobile (Capacitor)
-- `@capacitor/app` — Lifecycle, back button
-- `@capacitor/camera` — Photo capture for attachments
-- `@capacitor/keyboard` — Keyboard visibility
-- `@capacitor/network` — Connectivity status
-- `@capacitor/preferences` — Persistent key-value storage
-- `@capacitor/splash-screen` — Startup screen
-- `@capacitor/status-bar` — Status bar styling
-- `@capacitor/haptics` — Haptic feedback
+- `@capacitor/app`  -  Lifecycle, back button
+- `@capacitor/camera`  -  Photo capture for attachments
+- `@capacitor/keyboard`  -  Keyboard visibility
+- `@capacitor/network`  -  Connectivity status
+- `@capacitor/preferences`  -  Persistent key-value storage
+- `@capacitor/splash-screen`  -  Startup screen
+- `@capacitor/status-bar`  -  Status bar styling
+- `@capacitor/haptics`  -  Haptic feedback
 
 ---
 
