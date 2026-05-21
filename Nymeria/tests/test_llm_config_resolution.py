@@ -24,6 +24,8 @@ class _Settings:
     llm_extended_thinking = False
     llm_use_model_defaults = False
     llm_base_url = None
+    llm_context_length = None
+    llm_ollama_num_ctx = None
     openai_api_mode = "responses"
     llm_stream_max_retries = 2
     llm_stream_retry_initial_delay = 1.0
@@ -167,3 +169,38 @@ def test_anthropic_thread_provider_derives_cliproxy_subscription_base_url():
     assert config.provider == "anthropic"
     assert config.base_url == "http://cli-proxy-api:8317"
     assert config.api_key == "anthropic-proxy-key"
+
+
+def test_context_overrides_resolve_from_thread_before_global():
+    agent = _make_agent(
+        ThreadLLMConfig(context_length=32_000, ollama_num_ctx=24_000),
+        llm_context_length=128_000,
+        llm_ollama_num_ctx=64_000,
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.context_length == 32_000
+    assert config.ollama_num_ctx == 24_000
+
+
+def test_local_ollama_context_probe_caps_detected_num_ctx_to_override():
+    agent = _make_agent(
+        ThreadLLMConfig(
+            provider="ollama",
+            model="qwen3:8b",
+            context_length=16_000,
+        )
+    )
+
+    with (
+        patch("nymeria.core.agent_llm_config.detect_local_server_type", return_value="ollama"),
+        patch("nymeria.core.agent_llm_config.query_local_context_length") as query_context,
+        patch("nymeria.core.agent_llm_config.query_ollama_num_ctx", return_value=65_536),
+    ):
+        config = agent._get_llm_config_for_thread("thread-1")
+
+    query_context.assert_not_called()
+    assert config.provider == "ollama"
+    assert config.context_length == 16_000
+    assert config.ollama_num_ctx == 16_000

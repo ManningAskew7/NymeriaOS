@@ -634,6 +634,18 @@ class Settings(BaseSettings):
         default=None,
         description="Override base URL for LLM API (e.g., local proxy at http://localhost:8317/v1)"
     )
+    llm_context_length: Optional[int] = Field(
+        default=None,
+        ge=1_000,
+        le=2_000_000,
+        description="Manual context window override for the selected LLM model"
+    )
+    llm_ollama_num_ctx: Optional[int] = Field(
+        default=None,
+        ge=1_000,
+        le=2_000_000,
+        description="Ollama num_ctx override passed in extra_body.options.num_ctx"
+    )
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = Field(
         default="responses",
         description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'"

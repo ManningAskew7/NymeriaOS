@@ -159,6 +159,8 @@
   let llmExtendedThinking = $state(false);
   let llmUseModelDefaults = $state(false);
   let llmBaseUrl = $state('');
+  let llmContextLength = $state<number | null | undefined>(null);
+  let llmOllamaNumCtx = $state<number | null | undefined>(null);
   let openaiApiMode = $state<OpenAIApiMode>('responses');
   let showAdvancedLlm = $state(false);
 
@@ -223,6 +225,8 @@
       llmExtendedThinking = serverSettings.llm_extended_thinking;
       llmUseModelDefaults = serverSettings.llm_use_model_defaults;
       llmBaseUrl = serverSettings.llm_base_url || '';
+      llmContextLength = serverSettings.llm_context_length;
+      llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
       contextManagement = serverSettings.context_management;
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
@@ -315,6 +319,10 @@
     savingSettings = true;
     testMessage = '';
     try {
+      const optionalNumberUpdate = (
+        value: number | null | undefined,
+        original: number | null | undefined
+      ): number | null | undefined => value == null ? (original != null ? null : undefined) : value;
       const result = await api.updateServerSettings({
         llm_provider: llmProvider,
         llm_model: llmModel,
@@ -328,6 +336,8 @@
         llm_extended_thinking: llmExtendedThinking,
         llm_use_model_defaults: llmUseModelDefaults,
         llm_base_url: llmBaseUrl || null,
+        llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
+        llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
         openai_api_mode: openaiApiMode,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
@@ -705,6 +715,36 @@
                     bind:value={llmBaseUrl}
                   />
                   <p class="hint">Override the API endpoint for proxies</p>
+                </div>
+
+                <div class="setting-group">
+                  <label class="setting-label" for="llm-context-length">Context Window Tokens</label>
+                  <input
+                    id="llm-context-length"
+                    type="number"
+                    class="setting-input"
+                    min="1000"
+                    max="2000000"
+                    step="1"
+                    placeholder="Auto-detect"
+                    bind:value={llmContextLength}
+                  />
+                  <p class="hint">Manual context window override for local servers or proxies that do not report it</p>
+                </div>
+
+                <div class="setting-group">
+                  <label class="setting-label" for="llm-ollama-num-ctx">Ollama num_ctx</label>
+                  <input
+                    id="llm-ollama-num-ctx"
+                    type="number"
+                    class="setting-input"
+                    min="1000"
+                    max="2000000"
+                    step="1"
+                    placeholder="Auto-detect"
+                    bind:value={llmOllamaNumCtx}
+                  />
+                  <p class="hint">Passed to Ollama as options.num_ctx. Leave empty unless you need a VRAM cap.</p>
                 </div>
               </div>
             {/if}

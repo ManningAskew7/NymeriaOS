@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
-LOCAL_MODEL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
+from ..config.local_llm import is_local_llm_base_url
 
 
 def redact_secrets(text: str, *secrets: str | None) -> str:
@@ -41,14 +40,7 @@ def http_error_detail(response: httpx.Response, *secrets: str | None) -> str:
 
 
 def base_url_allows_no_api_key(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    parse_target = base_url if "://" in base_url else f"http://{base_url}"
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-    return (parsed.hostname or "").lower() in LOCAL_MODEL_HOSTS
+    return is_local_llm_base_url(base_url)
 
 
 def first_int(source: dict[str, Any], *keys: str) -> int | None:

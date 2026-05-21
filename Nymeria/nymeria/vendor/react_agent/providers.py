@@ -43,6 +43,7 @@ from nymeria.config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from nymeria.config.local_llm import is_local_llm_base_url
 
 try:
     from langchain_openai import ChatOpenAI as _LangChainChatOpenAI
@@ -62,7 +63,6 @@ else:
 logger = logging.getLogger(__name__)
 
 
-_LOCAL_LLM_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _OPENROUTER_RESPONSES_FALLBACK_EVENTS = {
@@ -658,25 +658,46 @@ def _normalize_openai_base_url(base_url: str) -> str:
 
 def _should_disable_streaming_for_local_base_url(base_url: str) -> bool:
     """Return True for known local inference URLs with fragile tool streaming."""
-    parse_target = base_url.strip()
-    if "://" not in parse_target:
-        parse_target = f"http://{parse_target}"
-
-    try:
-        parsed = urlparse(parse_target)
-    except ValueError:
-        return False
-
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return False
-
     # CLIProxy sidecars are OpenAI-compatible proxy servers, not local inference
     # engines, and we rely on streaming to surface reasoning deltas.
     if looks_like_cliproxy_url(base_url):
         return False
 
-    return host in _LOCAL_LLM_HOSTS
+    return is_local_llm_base_url(base_url)
+
+
+def _merge_extra_body(kwargs: dict[str, Any], extra_body: dict[str, Any]) -> None:
+    if not extra_body:
+        return
+    merged = dict(kwargs.get("extra_body") or {})
+    for key, value in extra_body.items():
+        if key == "options" and isinstance(value, dict):
+            options = dict(merged.get("options") or {})
+            options.update(value)
+            merged["options"] = options
+        else:
+            merged[key] = value
+    kwargs["extra_body"] = merged
+
+
+def _local_llm_extra_body(config: LLMConfig, base_url: str | None) -> dict[str, Any]:
+    """Provider-specific request body additions for local OpenAI-compatible servers."""
+    if not base_url or not is_local_llm_base_url(base_url):
+        return {}
+    provider = normalize_llm_provider(config.provider)
+    is_ollama = provider == "ollama" or bool(config.ollama_num_ctx)
+    if not is_ollama:
+        return {}
+
+    extra_body: dict[str, Any] = {}
+    if config.ollama_num_ctx:
+        extra_body["options"] = {"num_ctx": int(config.ollama_num_ctx)}
+
+    effort = str(config.reasoning_effort or "").strip().lower()
+    reasoning_disabled = (not config.extended_thinking and not effort) or effort == "none"
+    if reasoning_disabled:
+        extra_body["think"] = False
+    return extra_body
 
 
 class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
@@ -1285,7 +1306,10 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
 
 def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     """Create direct OpenAI LLM."""
+    base_url = _normalize_openai_base_url(config.base_url) if config.base_url else None
     api_key = config.api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key and base_url and is_local_llm_base_url(base_url):
+        api_key = "not-needed"
     if not api_key:
         raise ValueError("OpenAI requires OPENAI_API_KEY")
 
@@ -1301,8 +1325,7 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout
 
-    if config.base_url:
-        base_url = _normalize_openai_base_url(config.base_url)
+    if base_url:
         kwargs["base_url"] = base_url
         if base_url != config.base_url.strip().rstrip("/"):
             logger.info(
@@ -1323,6 +1346,7 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
                 f"[LLM] Local base_url detected ({base_url}); "
                 f"streaming=False for reliable tool-call parsing"
             )
+        _merge_extra_body(kwargs, _local_llm_extra_body(config, base_url))
 
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
@@ -1413,6 +1437,7 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
             "streaming=False for reliable tool-call parsing",
             base_url,
         )
+    _merge_extra_body(kwargs, _local_llm_extra_body(config, base_url))
 
     api_mode = config.openai_api_mode or (spec.default_api_mode if spec else "chat_completions")
     if api_mode == "responses":

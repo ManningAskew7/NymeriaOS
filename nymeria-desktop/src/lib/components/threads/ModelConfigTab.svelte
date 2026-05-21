@@ -20,6 +20,8 @@
     llmApiKey: string;
     llmTemperature: string;
     llmMaxTokens: string;
+    llmContextLength: string;
+    llmOllamaNumCtx: string;
     llmExtendedThinking: 'default' | 'true' | 'false';
     llmReasoningEffort: string;
     llmUseModelDefaults: 'default' | 'true' | 'false';
@@ -37,6 +39,8 @@
     llmApiKey = $bindable(),
     llmTemperature = $bindable(),
     llmMaxTokens = $bindable(),
+    llmContextLength = $bindable(),
+    llmOllamaNumCtx = $bindable(),
     llmExtendedThinking = $bindable(),
     llmReasoningEffort = $bindable(),
     llmUseModelDefaults = $bindable(),
@@ -237,6 +241,36 @@
       bind:value={llmMaxTokens}
       placeholder="Default"
     />
+  </div>
+
+  <div class="field-group">
+    <label class="field-label" for="llm-context-length">Context Window Tokens</label>
+    <input
+      id="llm-context-length"
+      class="field-input"
+      type="number"
+      min="1000"
+      max="2000000"
+      step="1"
+      bind:value={llmContextLength}
+      placeholder="Default"
+    />
+    <span class="field-hint">Manual local-model context override. Leave empty to inherit global or auto-detected metadata.</span>
+  </div>
+
+  <div class="field-group">
+    <label class="field-label" for="llm-ollama-num-ctx">Ollama num_ctx</label>
+    <input
+      id="llm-ollama-num-ctx"
+      class="field-input"
+      type="number"
+      min="1000"
+      max="2000000"
+      step="1"
+      bind:value={llmOllamaNumCtx}
+      placeholder="Default"
+    />
+    <span class="field-hint">Per-thread Ollama options.num_ctx override. Leave empty to inherit global or auto-detect.</span>
   </div>
 
   <div class="field-group">

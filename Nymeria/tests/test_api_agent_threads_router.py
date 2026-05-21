@@ -135,6 +135,8 @@ def test_create_agent_thread_claims_metadata_syncs_tools_and_publishes_event(
         "use_model_defaults": None,
         "openai_api_mode": None,
         "base_url": None,
+        "context_length": None,
+        "ollama_num_ctx": None,
         "api_key": None,
         "compact_threshold_mode": None,
         "compact_threshold": None,

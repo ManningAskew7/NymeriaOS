@@ -24,6 +24,10 @@ from ..config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from ..config.local_llm import (
+    detect_local_server_type,
+    query_local_context_length,
+)
 from ..config.model_capabilities import register_model_metadata
 from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from .llm_credentials import get_llm_provider_credential
@@ -713,6 +717,21 @@ async def run_provider_test_suite(
             prefer_free=options.prefer_free_model,
             local_provider=local_provider,
         )
+        if selected_model and local_provider:
+            local_metadata = extract_model_metadata(selected_metadata or {})
+            if not local_metadata.get("context_length"):
+                server_type = detect_local_server_type(clean_base_url, api_key=api_key)
+                detected_context = query_local_context_length(
+                    selected_model,
+                    clean_base_url,
+                    api_key=api_key,
+                    server_type=server_type,
+                )
+                if detected_context:
+                    selected_metadata = {
+                        **(selected_metadata or {"id": selected_model}),
+                        "context_length": detected_context,
+                    }
         if selected_metadata:
             metadata = extract_model_metadata(selected_metadata)
             register_model_metadata(

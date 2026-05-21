@@ -210,6 +210,8 @@ export interface ThreadLLMConfig {
   use_model_defaults?: boolean | null;
   openai_api_mode?: 'chat_completions' | 'responses' | null;
   base_url?: string | null;
+  context_length?: number | null;
+  ollama_num_ctx?: number | null;
   api_key?: string | null;
   compact_threshold_mode?: 'percentage' | 'tokens' | null;
   compact_threshold?: number | null;
@@ -928,6 +930,8 @@ export interface ServerSettings {
   dynamic_tool_binding: boolean;
   llm_use_model_defaults: boolean;
   llm_base_url: string | null;
+  llm_context_length: number | null;
+  llm_ollama_num_ctx: number | null;
   openai_api_mode: OpenAIApiMode | null;
   llm_stream_max_retries: number;
   llm_stream_retry_initial_delay: number;
@@ -974,6 +978,8 @@ export interface ServerSettingsUpdate {
   dynamic_tool_binding?: boolean;
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
+  llm_context_length?: number | null;
+  llm_ollama_num_ctx?: number | null;
   openai_api_mode?: OpenAIApiMode | null;
   // Provider/capability credentials are write-only through PATCH /settings.
   anthropic_api_key?: string | null;

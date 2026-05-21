@@ -55,6 +55,8 @@ LLM_CONFIG_FIELDS = {
     "use_model_defaults",
     "openai_api_mode",
     "base_url",
+    "context_length",
+    "ollama_num_ctx",
 }
 
 CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")

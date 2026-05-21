@@ -48,6 +48,8 @@ class ServerSettingsResponse(BaseModel):
     dynamic_tool_binding: bool = True
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
+    llm_context_length: Optional[int] = None
+    llm_ollama_num_ctx: Optional[int] = None
     openai_api_mode: Optional[OpenAIApiMode] = "responses"
     llm_stream_max_retries: int
     llm_stream_retry_initial_delay: float
@@ -96,6 +98,8 @@ class ServerSettingsUpdate(BaseModel):
     dynamic_tool_binding: Optional[bool] = None
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
+    llm_context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
+    llm_ollama_num_ctx: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
     openai_api_mode: Optional[OpenAIApiMode] = None
     # Accepted by PATCH /settings only. Secret values are intentionally absent
     # from ServerSettingsResponse.

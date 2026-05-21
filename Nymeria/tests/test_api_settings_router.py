@@ -43,6 +43,8 @@ class FakeSettings:
     dynamic_tool_binding: bool = False
     llm_use_model_defaults: bool = False
     llm_base_url: str | None = None
+    llm_context_length: int | None = None
+    llm_ollama_num_ctx: int | None = None
     openai_api_mode: str | None = "responses"
     llm_stream_max_retries: int = 2
     llm_stream_retry_initial_delay: float = 1.0
@@ -132,6 +134,10 @@ class FakeSettingsProvider:
             value = os.environ.get(name)
             return default if value is None else int(value)
 
+        def env_optional_int(name: str, default: int | None) -> int | None:
+            value = os.environ.get(name)
+            return default if value is None else int(value) if value else None
+
         self.settings = replace(
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
@@ -155,6 +161,14 @@ class FakeSettingsProvider:
             compact_threshold_tokens=env_int(
                 "COMPACT_THRESHOLD_TOKENS",
                 self.settings.compact_threshold_tokens,
+            ),
+            llm_context_length=env_optional_int(
+                "LLM_CONTEXT_LENGTH",
+                self.settings.llm_context_length,
+            ),
+            llm_ollama_num_ctx=env_optional_int(
+                "LLM_OLLAMA_NUM_CTX",
+                self.settings.llm_ollama_num_ctx,
             ),
             anthropic_api_key=os.environ.get(
                 "ANTHROPIC_API_KEY",
@@ -635,6 +649,47 @@ def test_patch_settings_hot_reloads_compact_token_threshold(
     assert agent.settings.compact_threshold_tokens == 250000
     assert agent.settings.compact_threshold == 0.5
     assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_can_clear_local_llm_context_overrides(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text(
+        "LLM_CONTEXT_LENGTH=64000\nLLM_OLLAMA_NUM_CTX=32000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_CONTEXT_LENGTH", "64000")
+    monkeypatch.setenv("LLM_OLLAMA_NUM_CTX", "32000")
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        llm_context_length=64000,
+        llm_ollama_num_ctx=32000,
+    )
+    client, agent, token, provider = _client(
+        monkeypatch,
+        tmp_path,
+        settings=settings,
+    )
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_context_length": None, "llm_ollama_num_ctx": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["llm_context_length", "llm_ollama_num_ctx"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LLM_CONTEXT_LENGTH=" in env_text
+    assert "LLM_OLLAMA_NUM_CTX=" in env_text
+    assert os.environ["LLM_CONTEXT_LENGTH"] == ""
+    assert os.environ["LLM_OLLAMA_NUM_CTX"] == ""
+    assert provider.cache_clear_count == 1
+    assert agent.settings.llm_context_length is None
+    assert agent.settings.llm_ollama_num_ctx is None
+    assert agent.graph_rebuilds == ["sync", "async"]
 
 
 def test_patch_settings_rejects_invalid_compact_token_threshold(

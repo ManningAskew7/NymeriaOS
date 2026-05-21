@@ -39,6 +39,8 @@ class ThreadLLMConfig(BaseModel):
     use_model_defaults: Optional[bool] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
+    context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
+    ollama_num_ctx: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
     # Per-thread API key. Lets a thread point at a different CLIProxy sidecar
     # (or any OpenAI-compatible endpoint) with its own auth without touching
     # global env vars. None = fall back to per-provider env key or global proxy key.

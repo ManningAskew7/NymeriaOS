@@ -22,6 +22,13 @@ from ..config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from ..config.local_llm import (
+    detect_local_server_type,
+    is_local_llm_base_url,
+    query_local_context_length,
+    query_ollama_num_ctx,
+)
+from ..config.model_capabilities import register_model_metadata
 from ..vendor.react_agent import LLMConfig, LLMFallbackConfig
 from .llm_credentials import (
     get_llm_provider_credential,
@@ -33,6 +40,7 @@ if TYPE_CHECKING:
 
 
 _FALLBACK_PROVIDER_PREFIXES = {"custom", *ALL_LLM_PROVIDERS.keys()}
+_LOCAL_PROVIDER_IDS = {"ollama", "lmstudio", "llamacpp", "vllm", "localai", "litellm", "tgi"}
 
 
 def _resolve_thread_llm_override(thread_value: Any, global_value: Any) -> Any:
@@ -64,6 +72,16 @@ def _parse_llm_fallback_models(value: Any) -> list[str]:
         seen.add(model)
         models.append(model)
     return models
+
+
+def _positive_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _split_llm_fallback_ref(
@@ -101,6 +119,12 @@ def get_llm_config_for_thread(
     extended_thinking = resolve("extended_thinking", agent.settings.llm_extended_thinking)
     reasoning_effort = resolve("reasoning_effort", agent.settings.llm_reasoning_effort)
     use_model_defaults = resolve("use_model_defaults", agent.settings.llm_use_model_defaults)
+    context_length_override = _positive_int(
+        resolve("context_length", getattr(agent.settings, "llm_context_length", None))
+    )
+    ollama_num_ctx_override = _positive_int(
+        resolve("ollama_num_ctx", getattr(agent.settings, "llm_ollama_num_ctx", None))
+    )
 
     top_p = agent.settings.llm_top_p
     frequency_penalty = agent.settings.llm_frequency_penalty
@@ -204,6 +228,44 @@ def get_llm_config_for_thread(
         else:
             api_key = resolve_provider_api_key(provider, settings=agent.settings)
 
+    probe_base_url = base_url
+    if not probe_base_url and provider in _LOCAL_PROVIDER_IDS:
+        probe_base_url = resolve_provider_base_url(
+            provider,
+            settings=agent.settings,
+            include_default=True,
+        )
+
+    context_length = context_length_override
+    ollama_num_ctx = ollama_num_ctx_override
+    if model and probe_base_url and is_local_llm_base_url(probe_base_url):
+        server_type = detect_local_server_type(probe_base_url, api_key=api_key)
+        if context_length is None:
+            context_length = query_local_context_length(
+                str(model),
+                probe_base_url,
+                api_key=api_key,
+                server_type=server_type,
+            )
+        if ollama_num_ctx is None and (server_type == "ollama" or provider == "ollama"):
+            detected_num_ctx = query_ollama_num_ctx(
+                str(model),
+                probe_base_url,
+                api_key=api_key,
+            )
+            if detected_num_ctx:
+                if context_length_override and detected_num_ctx > context_length_override:
+                    ollama_num_ctx = context_length_override
+                else:
+                    ollama_num_ctx = detected_num_ctx
+
+    if model and context_length:
+        register_model_metadata(
+            model_id=str(model),
+            name=str(model),
+            context_length=context_length,
+        )
+
     def base_url_for_provider(fallback_provider: str) -> str | None:
         if fallback_provider == provider:
             return base_url
@@ -278,6 +340,8 @@ def get_llm_config_for_thread(
                     "openai_api_mode",
                     agent.settings.openai_api_mode,
                 ),
+                context_length=None,
+                ollama_num_ctx=None,
             )
         )
 
@@ -294,6 +358,8 @@ def get_llm_config_for_thread(
         presence_penalty=presence_penalty,
         reasoning_effort=reasoning_effort,
         extended_thinking=extended_thinking,
+        context_length=context_length,
+        ollama_num_ctx=ollama_num_ctx,
         openai_api_mode=resolve("openai_api_mode", agent.settings.openai_api_mode),
         stream_max_retries=agent.settings.llm_stream_max_retries,
         stream_retry_initial_delay=agent.settings.llm_stream_retry_initial_delay,

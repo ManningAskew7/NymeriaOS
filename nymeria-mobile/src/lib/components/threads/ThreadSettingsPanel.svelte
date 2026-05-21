@@ -120,6 +120,8 @@
   let llmApiKey = $state('');
   let llmTemperature = $state('');
   let llmMaxTokens = $state('');
+  let llmContextLength = $state('');
+  let llmOllamaNumCtx = $state('');
   let llmExtendedThinking = $state<'default' | 'true' | 'false'>('default');
   let llmReasoningEffort = $state('');
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>('default');
@@ -459,6 +461,8 @@
     llmApiKey = cfg?.llmConfig?.api_key ?? '';
     llmTemperature = cfg?.llmConfig?.temperature != null ? String(cfg.llmConfig.temperature) : '';
     llmMaxTokens = cfg?.llmConfig?.max_tokens != null ? String(cfg.llmConfig.max_tokens) : '';
+    llmContextLength = cfg?.llmConfig?.context_length != null ? String(cfg.llmConfig.context_length) : '';
+    llmOllamaNumCtx = cfg?.llmConfig?.ollama_num_ctx != null ? String(cfg.llmConfig.ollama_num_ctx) : '';
     llmExtendedThinking = cfg?.llmConfig?.extended_thinking != null
       ? (String(cfg.llmConfig.extended_thinking) as 'true' | 'false')
       : 'default';
@@ -508,6 +512,10 @@
     const origApiKey = orig?.llmConfig?.api_key ?? '';
     const origTemp = orig?.llmConfig?.temperature != null ? String(orig.llmConfig.temperature) : '';
     const origMaxTokens = orig?.llmConfig?.max_tokens != null ? String(orig.llmConfig.max_tokens) : '';
+    const origContextLength = orig?.llmConfig?.context_length != null
+      ? String(orig.llmConfig.context_length) : '';
+    const origOllamaNumCtx = orig?.llmConfig?.ollama_num_ctx != null
+      ? String(orig.llmConfig.ollama_num_ctx) : '';
     const origExtThinking = orig?.llmConfig?.extended_thinking != null
       ? String(orig.llmConfig.extended_thinking) : 'default';
     const origReasoning = orig?.llmConfig?.reasoning_effort ?? '';
@@ -545,6 +553,8 @@
     if (llmApiKey !== origApiKey) return true;
     if (llmTemperature !== origTemp) return true;
     if (llmMaxTokens !== origMaxTokens) return true;
+    if (llmContextLength !== origContextLength) return true;
+    if (llmOllamaNumCtx !== origOllamaNumCtx) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseDefaults) return true;
@@ -619,6 +629,7 @@
 
       // LLM config
       const hasLlm = llmProvider || llmModel || llmTemperature || llmMaxTokens ||
+        llmContextLength || llmOllamaNumCtx ||
         llmBaseUrl || llmApiKey ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
         llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' ||
@@ -636,6 +647,8 @@
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
+        llm.context_length = llmContextLength ? parseInt(llmContextLength, 10) : null;
+        llm.ollama_num_ctx = llmOllamaNumCtx ? parseInt(llmOllamaNumCtx, 10) : null;
         if (llmExtendedThinking !== 'default') {
           llm.extended_thinking = llmExtendedThinking === 'true';
         }
@@ -1016,6 +1029,36 @@
             bind:value={llmMaxTokens}
             placeholder="Default"
           />
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="thread-llm-context-length">Context Window Tokens</label>
+          <input
+            id="thread-llm-context-length"
+            type="number"
+            class="setting-input"
+            min="1000"
+            max="2000000"
+            step="1"
+            bind:value={llmContextLength}
+            placeholder="Default"
+          />
+          <p class="hint">Manual local-model context override. Leave empty to inherit global or auto-detected metadata.</p>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="thread-llm-ollama-num-ctx">Ollama num_ctx</label>
+          <input
+            id="thread-llm-ollama-num-ctx"
+            type="number"
+            class="setting-input"
+            min="1000"
+            max="2000000"
+            step="1"
+            bind:value={llmOllamaNumCtx}
+            placeholder="Default"
+          />
+          <p class="hint">Per-thread Ollama options.num_ctx override. Leave empty to inherit global or auto-detect.</p>
         </div>
 
         <div class="setting-group">

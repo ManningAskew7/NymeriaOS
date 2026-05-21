@@ -1029,6 +1029,46 @@ def test_local_llm_base_url_still_disables_streaming():
     assert llm.streaming is False
 
 
+def test_local_llm_private_urls_disable_streaming():
+    assert _should_disable_streaming_for_local_base_url("http://192.168.1.20:8080/v1")
+    assert _should_disable_streaming_for_local_base_url("http://100.77.243.5:11434/v1")
+
+
+def test_openai_local_llm_allows_missing_key_and_adds_ollama_options(monkeypatch):
+    captured: list[dict] = []
+
+    class CaptureModel:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(providers, "ChatOpenAIWithReasoning", CaptureModel)
+    monkeypatch.setattr(
+        providers,
+        "_attach_loop_local_openai_async_http_client",
+        lambda kwargs, **_options: None,
+    )
+
+    providers._create_openai_llm(
+        _openai_config(
+            api_key=None,
+            model="qwen3:8b",
+            base_url="http://localhost:11434/v1",
+            ollama_num_ctx=32768,
+            extended_thinking=False,
+            reasoning_effort=None,
+        )
+    )
+
+    kwargs = captured[0]
+    assert kwargs["api_key"] == "not-needed"
+    assert kwargs["streaming"] is False
+    assert kwargs["extra_body"] == {
+        "options": {"num_ctx": 32768},
+        "think": False,
+    }
+
+
 def test_streaming_heuristic_handles_schemeless_urls():
     assert not _should_disable_streaming_for_local_base_url("localhost:8318/v1")
     assert _should_disable_streaming_for_local_base_url("localhost:8080/v1")
