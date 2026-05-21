@@ -437,7 +437,7 @@
         type="button"
         class="plus-btn"
         onclick={openFilePicker}
-        disabled={disabled || isStreaming || pendingFiles.length >= FILE_CONSTRAINTS.MAX_FILES_PER_MESSAGE}
+        disabled={disabled || isStreaming}
         title="Attach files"
         aria-label="Attach files"
       >
@@ -557,41 +557,6 @@
 
   .plus-btn.danger:hover:not(:disabled) {
     background: color-mix(in srgb, var(--error) 15%, transparent);
-  }
-
-  .pill-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    background: transparent;
-    border: none;
-    border-radius: var(--radius-md);
-    color: var(--text-muted);
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: color var(--transition-fast), background var(--transition-fast);
-  }
-
-  .pill-btn:hover:not(:disabled) {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .pill-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .pill-btn.danger {
-    color: var(--error);
-  }
-
-  .pill-btn.danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--error) 15%, transparent);
-    color: var(--error);
   }
 
   .send-btn {

@@ -603,16 +603,6 @@
     flex-wrap: wrap;
   }
 
-  .subtitle-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    font-size: 11px;
-    color: var(--text-muted);
-    line-height: 1.5;
-  }
-
   .action-kind {
     display: inline-flex;
     align-items: center;

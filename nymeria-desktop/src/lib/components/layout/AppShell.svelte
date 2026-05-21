@@ -109,9 +109,13 @@
 
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
     recomputeMainMin();
     return () => {
       window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
     };
   });
 </script>
@@ -119,8 +123,6 @@
 <div
   class="app-shell"
   class:dragging
-  onpointermove={onPointerMove}
-  onpointerup={onPointerUp}
 >
   <aside
     class="sidebar"

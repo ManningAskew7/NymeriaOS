@@ -1528,18 +1528,19 @@ export type AuthPromptFlow = 'auth_code' | 'device_code';
 export interface AuthPromptField {
   name: string;
   label: string;
-  type: 'password' | 'text' | string;
-  required: boolean;
-  placeholder?: string | null;
-  help?: string | null;
+  secret: boolean;
+  kind?: 'password' | 'text' | 'textarea';
+  placeholder?: string;
+  help?: string;
 }
 
 export interface AuthPromptExistingAccount {
-  id: string;
-  label: string;
+  credential_id: string;
+  name: string;
+  account_label: string | null;
   status: CredentialStatus;
-  scopes: string[];
-  last_tested_at?: string | null;
+  last_used_at: string | null;
+  last_tested_at: string | null;
 }
 
 export interface AuthPromptEvent {
@@ -1549,6 +1550,7 @@ export interface AuthPromptEvent {
   display_name: string;
   mode: AuthPromptMode;
   description: string;
+  instructions?: string;
   fields: AuthPromptField[];
   account_label: string;
   existing_accounts: AuthPromptExistingAccount[];

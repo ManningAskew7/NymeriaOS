@@ -18,6 +18,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import { filterToolSearch } from '$lib/utils/toolSearch';
+  import { computeEffectiveToolCounts, isMcpToolName } from '$lib/utils/toolCounts';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     fromThreadDisplayProvider,
@@ -99,10 +100,6 @@
   const initialToolState = computeInitialToolState();
   let disabledTools = $state<Set<string>>(initialToolState.disabled);
   let enabledTools = $state<Set<string>>(initialToolState.enabled);
-
-  function isMcpToolName(name: string): boolean {
-    return name.startsWith('mcp__');
-  }
 
   // Optional non-MCP tools (derived from defaultToolsStore — tools NOT in the user's core set)
   const optionalTools = $derived.by(() => {
@@ -299,9 +296,11 @@
 
   // Effective tool count for this thread (default tools minus disabled, plus optional enabled)
   const effectiveToolCount = $derived.by(() => {
-    const coreNames = defaultToolsStore.defaultToolNames;
-    const activeCore = coreNames.filter(n => !disabledTools.has(n)).length;
-    return activeCore + enabledTools.size;
+    return computeEffectiveToolCounts({
+      defaultToolNames: defaultToolsStore.defaultToolNames,
+      enabledTools: [...enabledTools],
+      disabledTools: [...disabledTools],
+    }).totalActiveCount;
   });
 
   // Ensure tools, triggers, and model metadata are loaded
@@ -377,9 +376,17 @@
     }))
   );
 
-  const disabledToolCount = $derived([...disabledTools].filter((name) => !isMcpToolName(name)).length);
+  const currentToolCounts = $derived.by(() =>
+    computeEffectiveToolCounts({
+      defaultToolNames: defaultToolsStore.defaultToolNames,
+      enabledTools: [...enabledTools],
+      disabledTools: [...disabledTools],
+    })
+  );
 
-  const enabledToolCount = $derived([...enabledTools].filter((name) => !isMcpToolName(name)).length);
+  const disabledToolCount = $derived(currentToolCounts.disabledNonMcpCount);
+
+  const enabledToolCount = $derived(currentToolCounts.enabledExtraNonMcpCount);
 
   const mcpOverrideCount = $derived(
     [...disabledTools].filter(isMcpToolName).length +
@@ -525,9 +532,10 @@
         updates.clear_instructions = true;
       }
 
-      // Disabled tools — only persist tools that are actually in the default set
-      const coreSet = new Set(defaultToolsStore.defaultToolNames);
-      const effectiveDisabled = [...disabledTools].filter(t => coreSet.has(t));
+      // Disabled tools are authoritative thread overrides and must be preserved
+      // even if the tool is not currently in the global default set. If it is
+      // promoted later, this thread remains explicitly opted out.
+      const effectiveDisabled = [...disabledTools];
       if (effectiveDisabled.length > 0) {
         updates.disabled_tools = effectiveDisabled;
       } else {

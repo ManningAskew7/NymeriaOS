@@ -18,7 +18,9 @@
 
   const isEditing = $derived(existing !== null);
 
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let name = $state(existing?.name ?? '');
+  // svelte-ignore state_referenced_locally - intentional one-time form initialization
   let selected = $state<Record<string, boolean>>(
     Object.fromEntries(
       destinations.map((d) => [d.name, existing?.destinationNames.includes(d.name) ?? false])

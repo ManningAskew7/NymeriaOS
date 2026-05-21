@@ -57,6 +57,7 @@
   async function handleSave() {
     const ok = await defaultToolsStore.save([...selectedTools]);
     if (ok) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
       saveStatus = 'success';
       saveMessage = 'MCP default tools saved!';
     } else {

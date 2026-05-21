@@ -80,8 +80,11 @@ function createDefaultToolsStore() {
       error = null;
       try {
         await api.setDefaultTools(toolNames, userId);
-        defaultToolNames = [...toolNames];
-        tools = tools.map(t => ({ ...t, is_default: toolNames.includes(t.name) }));
+        const response = await api.getDefaultTools(userId);
+        tools = response.available_tools;
+        defaultToolNames = response.default_tools;
+        callableThreadCount = response.callable_thread_count;
+        loaded = true;
         return true;
       } catch (e) {
         error = e instanceof Error ? e.message : 'Failed to save default tools';
@@ -101,6 +104,7 @@ function createDefaultToolsStore() {
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
+        loaded = true;
         return true;
       } catch (e) {
         error = e instanceof Error ? e.message : 'Failed to reset default tools';
