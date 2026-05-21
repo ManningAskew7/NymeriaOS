@@ -5,20 +5,20 @@ The flow:
 
 1. ``request_credential`` (an async tool) creates a pending credential, then
    calls :meth:`AuthPromptCoordinator.register` to get an ``asyncio.Future``.
-2. The tool publishes an ``auth_prompt`` SSE event with the ``prompt_id`` and
-   awaits the future (up to a per-tool timeout — typically 180s).
+2. The tool publishes an ``auth_prompt`` SSE event with the ``prompt_id``,
+   attaches a done-callback, and returns ``status="dispatched"`` immediately.
 3. The desktop frontend renders a modal. When the user submits, the
-   ``POST /api/credential-prompts/{prompt_id}/submit`` endpoint writes the
+   ``POST /credential-prompts/{prompt_id}/submit`` endpoint writes the
    secrets and either:
        - on test failure, returns the error inline (modal shows retry) and
          calls :meth:`record_attempt` to track the failure
-       - on test success, calls :meth:`resolve` to wake the tool
+       - on test success, calls :meth:`resolve` to run the done-callback
 4. ``/exit`` and ``/cancel`` similarly resolve the future with a non-success
-   payload so the agent can react.
+   payload so cleanup side effects can run.
 
 Single-process only: the future lives in this process. If the API is ever
 scaled to multiple workers, the resolver path needs to use Redis pub/sub
-to fan out to whichever worker is awaiting the future.
+to fan out to whichever worker owns the pending prompt.
 """
 
 from __future__ import annotations
@@ -36,9 +36,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# How long an orphaned prompt sits in memory before it's swept. Slightly
-# longer than the longest expected per-tool timeout (180s) so a graceful
-# tool-side timeout always wins the race.
+# How long an orphaned prompt sits in memory before it's swept. Prompt tokens
+# have their own shorter expiry; this catches abandoned in-process futures.
 _ORPHAN_TTL_SECONDS = 600
 _SWEEP_INTERVAL_SECONDS = 60
 _PROMPT_TOKEN_BYTES = 32
@@ -83,8 +82,9 @@ class AuthPromptCoordinator:
         token_expires_at: Optional[float] = None,
         token_expires_at_iso: Optional[str] = None,
     ) -> asyncio.Future:
-        """Create a future the agent tool will await on. Must be called from
-        within a running event loop (tools run via ``SafeToolNode.ainvoke``)."""
+        """Create the in-process future resolved by prompt endpoints. Must be
+        called from within a running event loop (tools run via
+        ``SafeToolNode.ainvoke``)."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         prompt = PendingPrompt(

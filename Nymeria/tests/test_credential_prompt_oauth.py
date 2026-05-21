@@ -12,7 +12,7 @@ verify that:
     ``status="pending_setup"``,
   * the prompt is registered with the coordinator,
   * the auth URL embeds the expected redirect_uri / scopes / state,
-  * the tool returns ``pending`` only after we let it time out.
+  * the tool returns ``dispatched`` immediately.
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ Modes:
 
 The flow is described in ``nymeria/core/auth_prompt_coordinator.py``.
 
-Fire-and-forget contract (Phase 11): this tool returns IMMEDIATELY with
+Fire-and-forget contract: this tool returns IMMEDIATELY with
 ``status="dispatched"``. The agent does not block waiting for the user.
 
 When the user submits the prompt the credential lands in the vault and the
@@ -77,7 +77,7 @@ _BIND_TARGET_RE = re.compile(r"^(mcp_server|native_tool):[A-Za-z0-9_\-]{1,64}$")
 
 def _generic_fields(provider: str) -> list[dict[str, Any]]:
     """Fallback field schema when the caller doesn't supply ``fields`` and
-    no descriptor is available (Phase 1). One secret value, named ``value``."""
+    no descriptor is available. One secret value, named ``value``."""
     return [
         {
             "name": "value",

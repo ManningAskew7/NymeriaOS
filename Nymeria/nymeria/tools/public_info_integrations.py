@@ -91,7 +91,7 @@ def _get_text(url: str, *, verify: bool = True) -> str:
         with httpx.Client(
             timeout=_HTTP_TIMEOUT,
             follow_redirects=False,
-            verify=True,
+            verify=verify,
             limits=httpx.Limits(max_keepalive_connections=0),
             trust_env=False,
         ) as client:
