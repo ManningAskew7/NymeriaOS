@@ -13,10 +13,10 @@
   --text-secondary: #9aa0a6;
   --text-muted: #6b7280;
 
-  /* Accent (Blue/Cyan) */
-  --accent-primary: #22d3ee;
-  --accent-secondary: #3b82f6;
-  --accent-hover: #06b6d4;
+  /* Accent (calm cyan — bright reserved for primary actions only) */
+  --accent-primary: #5fb8cc;
+  --accent-secondary: #5b8bbf;
+  --accent-hover: #4ba3b8;
 
   /* Semantic */
   --success: #34d399;
@@ -81,13 +81,13 @@
   --glass-blur-strong: blur(20px);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 
-  /* Accent derived */
-  --accent-primary-rgb: 34, 211, 238;
-  --accent-primary-alpha: rgba(34, 211, 238, 0.15);
+  /* Accent derived — RGB triplet for the muted Midnight cyan (#5fb8cc) */
+  --accent-primary-rgb: 95, 184, 204;
+  --accent-primary-alpha: rgba(95, 184, 204, 0.15);
 
   /* Accent glow variants */
-  --accent-glow-sm: 0 0 12px rgba(34, 211, 238, 0.15);
-  --accent-glow-md: 0 0 20px rgba(34, 211, 238, 0.2);
+  --accent-glow-sm: 0 0 12px rgba(95, 184, 204, 0.15);
+  --accent-glow-md: 0 0 20px rgba(95, 184, 204, 0.2);
 }
 
 /* Reset and base styles */
@@ -194,7 +194,7 @@ input:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+  box-shadow: 0 0 0 3px var(--accent-primary-alpha);
 }
 
 input::placeholder,
@@ -363,10 +363,10 @@ pre code {
 
 @keyframes glowPulse {
   0%, 100% {
-    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 8px rgba(34, 211, 238, 0.1);
+    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 8px rgba(var(--accent-primary-rgb), 0.1);
   }
   50% {
-    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 16px rgba(34, 211, 238, 0.25);
+    box-shadow: 0 0 0 1px var(--accent-primary), 0 0 16px rgba(var(--accent-primary-rgb), 0.25);
   }
 }
 
@@ -455,50 +455,11 @@ html[data-theme="platinum"] .sidebar-header .logo {
 }
 
 /* ============================================================
- * CUSTOM TOOLTIPS — Themed alternative to the browser title= bubble.
+ * CUSTOM TOOLTIPS — Rendered via a global portal in TooltipPortal.svelte
+ * so they always sit above every other element regardless of stacking
+ * context or overflow clipping on the anchor.
+ *
  * Usage: <button data-tooltip="Rename thread">…</button>
+ * Optional placement: data-tooltip-pos="bottom"
  * ============================================================ */
-
-[data-tooltip] {
-  position: relative;
-}
-
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%) translateY(2px);
-  padding: 4px 8px;
-  background: var(--bg-elevated-2);
-  color: var(--text-primary);
-  font-size: var(--font-size-xs);
-  font-weight: 400;
-  white-space: nowrap;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 120ms ease, transform 120ms ease;
-  z-index: 9999;
-}
-
-[data-tooltip]:hover::after,
-[data-tooltip]:focus-visible::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  transition-delay: 350ms;
-}
-
-[data-tooltip][data-tooltip-pos="bottom"]::after {
-  bottom: auto;
-  top: calc(100% + 6px);
-  transform: translateX(-50%) translateY(-2px);
-}
-
-[data-tooltip][data-tooltip-pos="bottom"]:hover::after,
-[data-tooltip][data-tooltip-pos="bottom"]:focus-visible::after {
-  transform: translateX(-50%) translateY(0);
-}
 

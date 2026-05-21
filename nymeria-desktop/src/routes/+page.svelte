@@ -6,6 +6,8 @@
   import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import AuthPromptModal from '$lib/components/credentials/AuthPromptModal.svelte';
+  import RulerOverlay from '$lib/components/dev/RulerOverlay.svelte';
+  import TooltipPortal from '$lib/components/common/TooltipPortal.svelte';
   import { authPromptStore } from '$lib/stores/authPrompt.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
@@ -273,3 +275,13 @@
 
 <!-- Global auth-prompt modal — opens when the agent calls request_credential. -->
 <AuthPromptModal prompt={authPromptStore.active} onResolved={() => authPromptStore.clear()} />
+
+<!-- Dev ruler overlay — draggable guides, crosshair, and measurement box for
+     pixel-perfect alignment work. Toggle with the pin in the bottom-right
+     corner or Ctrl+Shift+R. -->
+<RulerOverlay />
+
+<!-- Global tooltip portal — renders any [data-tooltip] hover/focus bubble in
+     a fixed-position layer with the max possible z-index so it can never be
+     clipped by an ancestor's overflow or covered by another stacking context. -->
+<TooltipPortal />

@@ -51,7 +51,7 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-sm, 8px);
-    padding: 0;
+    padding: 0 var(--spacing-md) 0 calc(var(--spacing-md) + 8px);
     font-size: 0.7rem;
     color: var(--text-secondary);
     background: transparent;

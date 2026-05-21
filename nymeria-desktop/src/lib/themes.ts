@@ -100,7 +100,7 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
 
   monokai: {
     name: 'Monokai',
-    description: 'Classic editor theme with hot-pink accents',
+    description: 'Classic editor theme with calm hot-pink accents',
     colors: {
       bgBase: '#272822',
       bgElevated: '#2f3028',
@@ -110,9 +110,11 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       textPrimary: '#f8f8f2',
       textSecondary: '#d9d9c6',
       textMuted: '#8e8a6f',
-      accentPrimary: '#f92672',
-      accentSecondary: '#fd971f',
-      accentHover: '#ff5b95',
+      // Muted to ~47% HSL saturation to match the calmer-accent design.
+      // Original was '#f92672' / '#fd971f' / '#ff5b95'.
+      accentPrimary: '#cc5478',
+      accentSecondary: '#cc8746',
+      accentHover: '#d97aa3',
       success: '#a6e22e',
       warning: '#fd971f',
       error: '#ff6e6e',
@@ -127,7 +129,7 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
 
   dracula: {
     name: 'Dracula',
-    description: 'Velvet dark theme with purple and pink accents',
+    description: 'Velvet dark theme with calm purple and pink accents',
     colors: {
       bgBase: '#282a36',
       bgElevated: '#2e3140',
@@ -137,9 +139,11 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       textPrimary: '#f8f8f2',
       textSecondary: '#d6d6c8',
       textMuted: '#7d85b3',
-      accentPrimary: '#bd93f9',
-      accentSecondary: '#ff79c6',
-      accentHover: '#d5b5fc',
+      // Muted to ~47% HSL saturation to match the calmer-accent design.
+      // Original was '#bd93f9' / '#ff79c6' / '#d5b5fc'.
+      accentPrimary: '#a796cc',
+      accentSecondary: '#c98ab1',
+      accentHover: '#bdadd9',
       success: '#50fa7b',
       warning: '#f1fa8c',
       error: '#ff5555',
@@ -154,28 +158,40 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
 
   light: {
     name: 'Light',
-    description: 'Warm-paper editorial theme with teal and amber',
+    description: 'Warm-paper editorial theme with calm teal and amber',
     colors: {
-      bgBase: '#f7f5ef',
-      bgElevated: '#ffffff',
-      bgElevated2: '#eeebe1',
-      bgHover: '#e3dfd1',
-      bgActive: '#d4cfbf',
-      textPrimary: '#1c1917',
-      textSecondary: '#57534e',
-      textMuted: '#8b857a',
-      accentPrimary: '#0d9488',
-      accentSecondary: '#d97706',
-      accentHover: '#14b8a6',
+      // Deeper, more saturated warm paper for the main canvas — gives the
+      // theme a real "aged page" character instead of near-white wash.
+      bgBase: '#f1ead7',
+      // Bright off-white for elevated surfaces (sidebar, dashboard panel,
+      // cards) — sits cleanly *above* the warm base so layout depth reads.
+      bgElevated: '#fdfbf2',
+      bgElevated2: '#e7e0c7',
+      bgHover: '#dbd2b7',
+      bgActive: '#c9bf9d',
+      textPrimary: '#1a1612',
+      // Ink-on-paper greys: secondary and muted both shifted darker so the
+      // typography (timestamps, meta, hint copy) stays comfortably legible.
+      textSecondary: '#3d3830',
+      textMuted: '#544c3f',
+      // Muted to ~47% HSL saturation to match the calmer-accent design.
+      // Untouched per user request.
+      accentPrimary: '#2d7d75',
+      accentSecondary: '#b07a3a',
+      accentHover: '#3a988e',
       success: '#16a34a',
       warning: '#ca8a04',
       error: '#dc2626',
       info: '#2563eb',
-      bubbleUser: '#cce6e3',
-      bubbleAi: '#ffffff',
-      bubbleTool: '#f5ebd9',
-      borderSubtle: '#e5e2d6',
-      borderDefault: '#c9c3b1',
+      // Bubbles tuned to the new palette so they sit on the page coherently
+      // instead of looking pasted on.
+      bubbleUser: '#c9e3df',
+      bubbleAi: '#fdfbf2',
+      bubbleTool: '#efe3c4',
+      // Borders given a touch more warmth and visibility so card outlines
+      // actually delineate the surfaces.
+      borderSubtle: '#d4ccb1',
+      borderDefault: '#ab9f81',
     },
   },
 
@@ -298,8 +314,21 @@ export function applyTheme(themeName: ThemeName): void {
   root.style.setProperty('--glass-bg-strong', hexToRgba(colors.bgElevated, light ? 0.92 : 0.85));
   root.style.setProperty('--glass-border', light ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)');
   root.style.setProperty('--glass-shadow', light
-    ? '0 8px 32px rgba(0, 0, 0, 0.1)'
+    ? '0 8px 32px rgba(0, 0, 0, 0.08)'
     : '0 8px 32px rgba(0, 0, 0, 0.3)');
+
+  // Card shadows — the defaults in app.css use rgba(0,0,0,0.3-0.5) which is
+  // appropriate for dark themes but creates a heavy dark edge on a paper
+  // background. Light themes get softer, lower-opacity shadows.
+  if (light) {
+    root.style.setProperty('--shadow-sm', '0 1px 2px rgba(0, 0, 0, 0.04)');
+    root.style.setProperty('--shadow-md', '0 2px 6px rgba(0, 0, 0, 0.06)');
+    root.style.setProperty('--shadow-lg', '0 8px 20px rgba(0, 0, 0, 0.08)');
+  } else {
+    root.style.setProperty('--shadow-sm', '0 1px 2px rgba(0, 0, 0, 0.3)');
+    root.style.setProperty('--shadow-md', '0 4px 6px rgba(0, 0, 0, 0.4)');
+    root.style.setProperty('--shadow-lg', '0 10px 15px rgba(0, 0, 0, 0.5)');
+  }
 
   // Accent derived — RGB triplet and alpha variant used by many components
   const accent = hexToRgb(colors.accentPrimary);

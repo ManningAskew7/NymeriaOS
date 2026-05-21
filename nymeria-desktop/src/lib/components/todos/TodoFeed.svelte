@@ -165,7 +165,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     color: var(--text-muted);
-    font-size: var(--font-size-sm);
+    font-size: 13.5px;
     font-weight: 500;
     cursor: pointer;
     transition: all var(--transition-fast);

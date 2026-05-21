@@ -244,7 +244,7 @@
   }
 
   .new-thread-wrap :global(.new-thread-label) {
-    transform: translateY(-1px);
+    transform: translateY(0);
   }
 
   .threads-container {

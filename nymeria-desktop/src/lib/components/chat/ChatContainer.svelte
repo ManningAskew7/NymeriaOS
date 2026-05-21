@@ -6,6 +6,8 @@
 
   let containerRef = $state<HTMLDivElement | null>(null);
   let showCompactedEmpty = $derived((chatStore.contextStats?.compactionCount ?? 0) > 0);
+  let isScrolledUp = $state(false);
+  const SCROLL_BUTTON_THRESHOLD = 160;
 
   // Auto-scroll when new messages arrive or during streaming
   $effect(() => {
@@ -40,9 +42,16 @@
       });
     }
   }
+
+  function onScroll() {
+    if (!containerRef) return;
+    const distance = containerRef.scrollHeight - containerRef.scrollTop - containerRef.clientHeight;
+    isScrolledUp = distance > SCROLL_BUTTON_THRESHOLD;
+  }
 </script>
 
-<div class="chat-container" bind:this={containerRef}>
+<div class="chat-wrap">
+<div class="chat-container" bind:this={containerRef} onscroll={onScroll}>
   {#if chatStore.isLoadingHistory}
     <div class="loading-state">
       <Spinner size="lg" />
@@ -83,12 +92,65 @@
   {/if}
 </div>
 
+<button
+  type="button"
+  class="jump-to-bottom"
+  class:visible={isScrolledUp}
+  onclick={() => scrollToBottom('smooth')}
+  aria-label="Jump to latest message"
+  tabindex={isScrolledUp ? 0 : -1}
+>
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="m6 9 6 6 6-6" />
+  </svg>
+</button>
+</div>
+
 <style>
+  .chat-wrap {
+    position: relative;
+    height: 100%;
+    min-height: 0;
+  }
+
   .chat-container {
     height: 100%;
     overflow-y: auto;
     padding: var(--spacing-lg);
     /* scroll-behavior handled programmatically via scrollToBottom() */
+  }
+
+  .jump-to-bottom {
+    position: absolute;
+    right: 18px;
+    bottom: 14px;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-default);
+    border-radius: 50%;
+    color: var(--text-secondary);
+    cursor: pointer;
+    box-shadow: var(--shadow-md);
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition: opacity 160ms ease, transform 160ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+    z-index: 5;
+  }
+  .jump-to-bottom.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .jump-to-bottom:hover {
+    color: var(--accent-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+    background: var(--bg-elevated);
   }
 
   .empty-state,

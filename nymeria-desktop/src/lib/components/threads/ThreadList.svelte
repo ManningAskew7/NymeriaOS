@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -189,6 +190,62 @@
 
     return ids;
   }
+
+  function toggleSelectThread(threadId: string) {
+    const next = new Set(selectedIds);
+    if (next.has(threadId)) {
+      next.delete(threadId);
+    } else {
+      next.add(threadId);
+    }
+    selectedIds = next;
+    lastClickedId = threadId;
+  }
+
+  // Arrow Up / Down cycles through the visible threads in the sidebar once a
+  // thread is active. Guarded so it never hijacks normal arrow-key behavior
+  // inside inputs, the message bar, or dialogs.
+  async function handleArrowNav(e: KeyboardEvent) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+
+    const target = e.target as HTMLElement | null;
+    if (target) {
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      if (target.isContentEditable) return;
+      if (target.closest('[contenteditable="true"], [contenteditable=""]')) return;
+      if (target.closest('[role="dialog"]')) return;
+    }
+
+    const currentId = threadsStore.currentThreadId;
+    if (!currentId) return;
+
+    const ids = getVisibleThreadIds();
+    if (ids.length === 0) return;
+
+    const idx = ids.indexOf(currentId);
+    if (idx === -1) return;
+
+    const nextIdx = e.key === 'ArrowDown'
+      ? Math.min(ids.length - 1, idx + 1)
+      : Math.max(0, idx - 1);
+    if (nextIdx === idx) {
+      e.preventDefault();
+      return;
+    }
+
+    const nextId = ids[nextIdx];
+    const title = threadsStore.threads.find(t => t.id === nextId)?.title ?? nextId;
+    e.preventDefault();
+    await switchToThread(nextId, { ensureTitle: title });
+  }
+
+  onMount(() => {
+    // capture: true so we see the originally-focused element via e.target
+    // before any default behavior moves focus.
+    window.addEventListener('keydown', handleArrowNav, true);
+    return () => window.removeEventListener('keydown', handleArrowNav, true);
+  });
 
   function handleThreadClick(threadId: string, event: MouseEvent) {
     const isCtrl = event.ctrlKey || event.metaKey;
@@ -664,6 +721,7 @@
                   onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
                   onTogglePin={() => threadsStore.togglePinThread(thread.id)}
                   onExport={() => handleExportThread(thread)}
+                  onToggleSelect={() => toggleSelectThread(thread.id)}
                 />
               {/each}
             </div>
@@ -689,6 +747,7 @@
               onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
               onTogglePin={() => threadsStore.togglePinThread(thread.id)}
               onExport={() => handleExportThread(thread)}
+              onToggleSelect={() => toggleSelectThread(thread.id)}
             />
           {/each}
         </div>
@@ -754,6 +813,7 @@
                   onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
                   onTogglePin={() => threadsStore.togglePinThread(thread.id)}
                   onExport={() => handleExportThread(thread)}
+                  onToggleSelect={() => toggleSelectThread(thread.id)}
                 />
               {/each}
             </div>
@@ -779,6 +839,7 @@
               onOpenAgentConfig={() => handleOpenAgentConfig(thread)}
               onTogglePin={() => threadsStore.togglePinThread(thread.id)}
               onExport={() => handleExportThread(thread)}
+              onToggleSelect={() => toggleSelectThread(thread.id)}
             />
           {/each}
         </div>
@@ -865,21 +926,23 @@
       {/if}
       <div class="bulk-action-content">
         <span class="bulk-count">{selectedIds.size} selected</span>
-        <button class="bulk-btn bulk-group" type="button" onclick={handleBulkGroup}>
-          <Icon name="folder" size={14} />
-          Folder
-        </button>
-        <button class="bulk-btn bulk-group" type="button" onclick={handleBulkTeam}>
-          <Icon name="users" size={14} />
-          Team
-        </button>
-        <button class="bulk-btn bulk-delete" type="button" onclick={handleBulkDelete}>
-          <Icon name="trash" size={14} />
-          Delete
-        </button>
-        <button class="bulk-btn bulk-cancel" type="button" onclick={clearSelection}>
+        <button class="bulk-btn bulk-cancel" type="button" onclick={clearSelection} aria-label="Clear selection" data-tooltip="Clear selection">
           <Icon name="x" size={14} />
         </button>
+        <div class="bulk-actions-row">
+          <button class="bulk-btn bulk-group" type="button" onclick={handleBulkGroup}>
+            <Icon name="folder" size={14} />
+            Folder
+          </button>
+          <button class="bulk-btn bulk-group" type="button" onclick={handleBulkTeam}>
+            <Icon name="users" size={14} />
+            Team
+          </button>
+          <button class="bulk-btn bulk-delete" type="button" onclick={handleBulkDelete}>
+            <Icon name="trash" size={14} />
+            Delete
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -1202,25 +1265,35 @@
 
   .bulk-action-content {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--spacing-sm);
+    gap: 6px;
     padding: var(--spacing-sm) var(--spacing-md);
   }
 
+  .bulk-actions-row {
+    flex: 1 1 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
   .bulk-count {
+    flex: 1 1 auto;
     font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
-    margin-right: auto;
+    white-space: nowrap;
   }
 
   .bulk-btn {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
+    padding: 4px 8px;
     font-size: var(--font-size-xs);
     font-weight: 500;
+    white-space: nowrap;
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--transition-fast);
@@ -1251,6 +1324,7 @@
     background: transparent;
     border: none;
     padding: 4px;
+    margin-left: auto;
   }
 
   .bulk-cancel:hover {

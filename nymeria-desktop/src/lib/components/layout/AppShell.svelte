@@ -16,18 +16,10 @@
   let dragging = $state<null | 'sidebar' | 'right'>(null);
   let dragStartX = 0;
   let dragStartWidth = 0;
-  // Frozen at first paint: the main panel's natural width with both sidebars
-  // at their default sizes. We forbid the center column from shrinking below
-  // this, so dragging a sidebar wider is only possible while there is room.
-  let mainMinWidth = 0;
-
-  function recomputeMainMin() {
-    if (typeof window === 'undefined') return;
-    // Lock to whatever the main panel is right now (assumed default layout).
-    const sidebar = uiStore.sidebarCollapsed ? 0 : uiStore.sidebarWidth;
-    const right = uiStore.rightPanelCollapsed ? 0 : uiStore.rightPanelWidth;
-    mainMinWidth = Math.max(0, window.innerWidth - sidebar - right);
-  }
+  // Hard floor for the center chat column so the conversation stays readable
+  // when a sidebar is dragged wider. Small enough that sidebars can still grow
+  // meaningfully on a typical 1280–1920px wide window.
+  const MAIN_MIN_WIDTH = 360;
 
   function startSidebarDrag(e: PointerEvent) {
     if (uiStore.sidebarCollapsed) return;
@@ -53,12 +45,12 @@
     const viewport = typeof window !== 'undefined' ? window.innerWidth : 0;
     if (dragging === 'sidebar') {
       const otherSide = uiStore.rightPanelCollapsed ? 0 : uiStore.rightPanelWidth;
-      const maxByMain = Math.max(0, viewport - otherSide - mainMinWidth);
+      const maxByMain = Math.max(0, viewport - otherSide - MAIN_MIN_WIDTH);
       const next = Math.min(dragStartWidth + dx, maxByMain);
       uiStore.setSidebarWidth(next);
     } else {
       const otherSide = uiStore.sidebarCollapsed ? 0 : uiStore.sidebarWidth;
-      const maxByMain = Math.max(0, viewport - otherSide - mainMinWidth);
+      const maxByMain = Math.max(0, viewport - otherSide - MAIN_MIN_WIDTH);
       const next = Math.min(dragStartWidth - dx, maxByMain);
       uiStore.setRightPanelWidth(next);
     }
@@ -111,7 +103,6 @@
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
-    recomputeMainMin();
     return () => {
       window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('pointermove', onPointerMove);
