@@ -19,6 +19,8 @@ class LLMFallbackConfig:
     api_key: Optional[str] = field(default=None, repr=False)
     base_url: Optional[str] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+    context_length: Optional[int] = None
+    ollama_num_ctx: Optional[int] = None
 
 
 @dataclass
@@ -31,6 +33,8 @@ class LLMConfig:
     base_url: Optional[str] = field(default_factory=lambda: os.getenv("LLM_BASE_URL"))
     temperature: Optional[float] = 1.0  # None = don't send (use model defaults)
     max_tokens: Optional[int] = None
+    context_length: Optional[int] = None
+    ollama_num_ctx: Optional[int] = None
 
     # Advanced sampling parameters
     top_p: Optional[float] = None  # Nucleus sampling (0.0-1.0)

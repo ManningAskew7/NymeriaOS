@@ -52,6 +52,11 @@ from ..schemas.settings import (
 
 logger = logging.getLogger(__name__)
 
+_CLEARABLE_NULL_SETTINGS = {
+    "llm_context_length",
+    "llm_ollama_num_ctx",
+}
+
 
 def _env_mapping() -> dict[str, str]:
     """Return settings-field to environment-variable mapping for PATCH /settings."""
@@ -71,6 +76,8 @@ def _env_mapping() -> dict[str, str]:
         "dynamic_tool_binding": "DYNAMIC_TOOL_BINDING",
         "llm_use_model_defaults": "LLM_USE_MODEL_DEFAULTS",
         "llm_base_url": "LLM_BASE_URL",
+        "llm_context_length": "LLM_CONTEXT_LENGTH",
+        "llm_ollama_num_ctx": "LLM_OLLAMA_NUM_CTX",
         "openai_api_mode": "OPENAI_API_MODE",
         "llm_stream_max_retries": "LLM_STREAM_MAX_RETRIES",
         "llm_stream_retry_initial_delay": "LLM_STREAM_RETRY_INITIAL_DELAY",
@@ -718,6 +725,8 @@ def _env_categories() -> dict[str, list[str]]:
             "dynamic_tool_binding",
             "llm_use_model_defaults",
             "llm_base_url",
+            "llm_context_length",
+            "llm_ollama_num_ctx",
             "openai_api_mode",
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",
@@ -1121,6 +1130,8 @@ def create_settings_router(
             dynamic_tool_binding=settings.dynamic_tool_binding,
             llm_use_model_defaults=settings.llm_use_model_defaults,
             llm_base_url=settings.llm_base_url,
+            llm_context_length=settings.llm_context_length,
+            llm_ollama_num_ctx=settings.llm_ollama_num_ctx,
             openai_api_mode=settings.openai_api_mode,
             llm_stream_max_retries=settings.llm_stream_max_retries,
             llm_stream_retry_initial_delay=settings.llm_stream_retry_initial_delay,
@@ -1324,8 +1335,13 @@ def create_settings_router(
             existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
         env_mapping = _env_mapping()
+        dumped_updates = updates.model_dump()
+        explicitly_set = updates.model_fields_set
         updates_dict = {
-            k: v for k, v in updates.model_dump().items() if v is not None
+            k: v
+            for k, v in dumped_updates.items()
+            if v is not None
+            or (k in _CLEARABLE_NULL_SETTINGS and k in explicitly_set)
         }
 
         if not updates_dict:
@@ -1339,6 +1355,8 @@ def create_settings_router(
             for setting_name, env_var in env_mapping.items():
                 if setting_name in updates_dict and line.startswith(f"{env_var}="):
                     value = updates_dict[setting_name]
+                    if value is None:
+                        value = ""
                     if isinstance(value, bool):
                         value = str(value).lower()
                     new_lines.append(f"{env_var}={value}")
@@ -1353,6 +1371,8 @@ def create_settings_router(
             if setting_name not in updated_vars:
                 env_var = env_mapping.get(setting_name)
                 if env_var:
+                    if value is None:
+                        value = ""
                     if isinstance(value, bool):
                         value = str(value).lower()
                     new_lines.append(f"{env_var}={value}")
@@ -1390,6 +1410,8 @@ def create_settings_router(
             "dynamic_tool_binding",
             "llm_use_model_defaults",
             "llm_base_url",
+            "llm_context_length",
+            "llm_ollama_num_ctx",
             "openai_api_mode",
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",

@@ -178,6 +178,18 @@
       : '';
   }
 
+  function getInitialLlmContextLength(): string {
+    return threadConfig?.llmConfig?.context_length != null
+      ? String(threadConfig.llmConfig.context_length)
+      : '';
+  }
+
+  function getInitialLlmOllamaNumCtx(): string {
+    return threadConfig?.llmConfig?.ollama_num_ctx != null
+      ? String(threadConfig.llmConfig.ollama_num_ctx)
+      : '';
+  }
+
   function getInitialLlmExtendedThinking(): 'default' | 'true' | 'false' {
     return threadConfig?.llmConfig?.extended_thinking != null
       ? String(threadConfig.llmConfig.extended_thinking) as 'true' | 'false'
@@ -222,6 +234,8 @@
   let llmApiKey = $state(getInitialLlmApiKey());
   let llmTemperature = $state<string>(getInitialLlmTemperature());
   let llmMaxTokens = $state<string>(getInitialLlmMaxTokens());
+  let llmContextLength = $state<string>(getInitialLlmContextLength());
+  let llmOllamaNumCtx = $state<string>(getInitialLlmOllamaNumCtx());
   let llmExtendedThinking = $state<'default' | 'true' | 'false'>(getInitialLlmExtendedThinking());
   let llmReasoningEffort = $state(getInitialLlmReasoningEffort());
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
@@ -436,6 +450,10 @@
       ? String(threadConfig.llmConfig.temperature) : '';
     const origMaxTokens = threadConfig?.llmConfig?.max_tokens != null
       ? String(threadConfig.llmConfig.max_tokens) : '';
+    const origContextLength = threadConfig?.llmConfig?.context_length != null
+      ? String(threadConfig.llmConfig.context_length) : '';
+    const origOllamaNumCtx = threadConfig?.llmConfig?.ollama_num_ctx != null
+      ? String(threadConfig.llmConfig.ollama_num_ctx) : '';
     const origExtThinking = threadConfig?.llmConfig?.extended_thinking != null
       ? String(threadConfig.llmConfig.extended_thinking) : 'default';
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
@@ -475,6 +493,8 @@
     if (llmApiKey !== origApiKey) return true;
     if (llmTemperature !== origTemp) return true;
     if (llmMaxTokens !== origMaxTokens) return true;
+    if (llmContextLength !== origContextLength) return true;
+    if (llmOllamaNumCtx !== origOllamaNumCtx) return true;
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseModelDefaults) return true;
@@ -563,6 +583,7 @@
 
       // LLM config
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
+        llmContextLength || llmOllamaNumCtx ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
         llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
         compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
@@ -586,6 +607,8 @@
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;
+        llm.context_length = llmContextLength ? parseInt(llmContextLength, 10) : null;
+        llm.ollama_num_ctx = llmOllamaNumCtx ? parseInt(llmOllamaNumCtx, 10) : null;
         if (llmExtendedThinking !== 'default') {
           llm.extended_thinking = llmExtendedThinking === 'true';
         }
@@ -984,6 +1007,8 @@
           bind:llmApiKey
           bind:llmTemperature
           bind:llmMaxTokens
+          bind:llmContextLength
+          bind:llmOllamaNumCtx
           bind:llmExtendedThinking
           bind:llmReasoningEffort
           bind:llmUseModelDefaults

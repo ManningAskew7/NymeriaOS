@@ -179,6 +179,8 @@ export interface ThreadLLMConfig {
   provider?: LLMProvider | null;
   model?: string | null;
   base_url?: string | null;
+  context_length?: number | null;
+  ollama_num_ctx?: number | null;
   api_key?: string | null;
   temperature?: number | null;
   max_tokens?: number | null;
@@ -771,6 +773,8 @@ export interface ServerSettings {
   llm_extended_thinking: boolean;
   llm_use_model_defaults: boolean;
   llm_base_url: string | null;
+  llm_context_length: number | null;
+  llm_ollama_num_ctx: number | null;
   openai_api_mode: OpenAIApiMode | null;
   llm_stream_max_retries: number;
   llm_stream_retry_initial_delay: number;
@@ -816,6 +820,8 @@ export interface ServerSettingsUpdate {
   llm_extended_thinking?: boolean;
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
+  llm_context_length?: number | null;
+  llm_ollama_num_ctx?: number | null;
   openai_api_mode?: OpenAIApiMode | null;
   // Provider/capability credentials are write-only through PATCH /settings.
   anthropic_api_key?: string | null;

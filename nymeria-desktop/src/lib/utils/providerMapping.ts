@@ -87,7 +87,29 @@ const MANAGED_BASE_URLS = [
 
 export function isLocalBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return false;
-  return LOCAL_HOSTS.some((host) => baseUrl.includes(host));
+  const normalized = baseUrl.includes('://') ? baseUrl : `http://${baseUrl}`;
+  let host = '';
+  try {
+    host = new URL(normalized).hostname.toLowerCase();
+  } catch {
+    return LOCAL_HOSTS.some((localHost) => baseUrl.includes(localHost));
+  }
+  if (LOCAL_HOSTS.includes(host)) return true;
+  if (host.endsWith('.docker.internal') || host.endsWith('.podman.internal') || host.endsWith('.lima.internal')) {
+    return true;
+  }
+  const parts = host.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first, second] = parts;
+  return (
+    first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254)
+    || (first === 100 && second >= 64 && second <= 127)
+  );
 }
 
 export function normalizeBaseUrl(baseUrl: string | null | undefined): string {

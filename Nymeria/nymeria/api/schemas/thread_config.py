@@ -17,6 +17,8 @@ class ThreadLLMConfigRequest(BaseModel):
     use_model_defaults: bool | None = None
     openai_api_mode: Literal["chat_completions", "responses"] | None = None
     base_url: str | None = None
+    context_length: int | None = Field(default=None, ge=1_000, le=2_000_000)
+    ollama_num_ctx: int | None = Field(default=None, ge=1_000, le=2_000_000)
     api_key: str | None = None
     compact_threshold_mode: Literal["percentage", "tokens"] | None = None
     compact_threshold: float | None = Field(default=None, ge=0.05, le=0.95)
