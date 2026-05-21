@@ -146,11 +146,6 @@
     (message.role === 'assistant' && parsedAssistantContent.hidden)
   );
 
-  // Use contextSummary from message prop OR parsed from content
-  let effectiveContextSummary = $derived(
-    message.contextSummary || parsedUserContent.contextSummary
-  );
-
   let isUser = $derived(message.role === 'user');
   let isStreaming = $derived(message.status === 'streaming');
   let hasSteps = $derived(message.steps && message.steps.length > 0);
@@ -403,14 +398,6 @@
       {/if}
       {#if parsedUserContent.text}
         <p class="user-text">{parsedUserContent.text}</p>
-      {/if}
-      {#if effectiveContextSummary}
-        <details class="context-summary-collapsible">
-          <summary>Context Summary</summary>
-          <div class="context-summary-content">
-            {@html renderMarkdown(effectiveContextSummary)}
-          </div>
-        </details>
       {/if}
     {:else}
       <!-- Assistant message: render steps in arrival order for proper interleaving -->
