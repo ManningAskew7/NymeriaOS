@@ -34,15 +34,23 @@ class RedisEventBus(EventBus):
 
     CHANNEL_NAME = "nymeria:autonomous_events"
 
-    def __init__(self, redis_url: str):
+    def __init__(self, redis_url: str, *, enable_subscriber: bool = True):
         """
         Initialize Redis event bus.
 
         Args:
             redis_url: Redis connection URL (e.g., redis://localhost:6379)
+            enable_subscriber: When True (default), start a pub/sub subscriber
+                thread so this bus can receive cross-process events and
+                dispatch them to local SSE subscribers. Set False for
+                publisher-only processes (e.g. the Docker worker) that
+                only need to fan events out and do not hold any local SSE
+                subscribers. Avoids running a no-op subscriber thread that
+                otherwise raises socket-timeout warnings every few seconds.
         """
         super().__init__()
         self.redis_url = redis_url
+        self._enable_subscriber = enable_subscriber
         self._redis_client: Optional[Any] = None
         self._pubsub: Optional[Any] = None
         self._subscriber_thread: Optional[threading.Thread] = None
@@ -76,12 +84,16 @@ class RedisEventBus(EventBus):
             self._redis_client.ping()
             self._connected = True
             logger.info(
-                "[REDIS EVENT BUS] Connected to Redis at %s",
+                "[REDIS EVENT BUS] Connected to Redis at %s (subscriber=%s)",
                 redact_url_credentials(self.redis_url),
+                self._enable_subscriber,
             )
 
-            # Start subscriber thread
-            self._start_subscriber()
+            # Start subscriber thread only when this process needs to receive
+            # cross-process events. Publisher-only processes (e.g. the Docker
+            # worker) skip this to avoid the idle socket-timeout warning loop.
+            if self._enable_subscriber:
+                self._start_subscriber()
             return True
 
         except ImportError:

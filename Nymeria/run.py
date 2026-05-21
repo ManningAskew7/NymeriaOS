@@ -566,12 +566,19 @@ def run_worker(args: argparse.Namespace) -> None:
 
     # Initialize Redis event bus if configured (worker still publishes
     # task_started / agent stream chunks / task_completed for the TODOs
-    # and triggers it dispatches — the API call carries
+    # and triggers it dispatches; the API call carries
     # publish_autonomous_events=False so we don't get duplicates).
+    # Publisher-only mode skips the pub/sub subscriber thread: the worker
+    # never reads events back, and the API container is the sole
+    # subscriber. Avoids the idle socket-timeout warning loop on a
+    # subscriber that nothing consumes from.
     if settings.redis_enabled and settings.redis_url:
-        event_bus = create_event_bus(settings)
+        event_bus = create_event_bus(settings, enable_subscriber=False)
         set_event_bus(event_bus)
-        print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
+        print(
+            f"  - Redis event bus (publisher-only): "
+            f"{_redis_url_for_display(settings.redis_url)}"
+        )
 
     # Initialize FCM if enabled (for autonomous notifications, dispatched
     # by the same notification helpers the ticker uses).
