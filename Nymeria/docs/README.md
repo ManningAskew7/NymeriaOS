@@ -43,6 +43,7 @@ and implementation disagree.
 | Topic | Doc |
 | --- | --- |
 | Slim vs Docker shapes | [deployment/README.md](./deployment/README.md) |
+| Deployment architecture explainer (SSE, Redis, SQLite vs Postgres) | [deployment/shapes-explained.md](./deployment/shapes-explained.md) |
 | Slim single-process launcher | [deployment/slim.md](./deployment/slim.md) |
 | Remote access | [deployment/remote-access.md](./deployment/remote-access.md) |
 | Docker production deployment | [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md) |
