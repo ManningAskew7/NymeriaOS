@@ -155,10 +155,10 @@
     {:else}
       <span class="folder-name">{folder.name}</span>
     {/if}
+    <span class="folder-count">{threads.length}</span>
     {#if isPinned}
       <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
     {/if}
-    <span class="folder-count">{threads.length}</span>
   </div>
 
   {#if !folder.collapsed}
@@ -282,6 +282,8 @@
   .pin-indicator {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    min-width: 18px;
     color: var(--text-muted);
     opacity: 0.6;
     flex-shrink: 0;
@@ -291,7 +293,9 @@
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    padding: 0 2px;
+    justify-content: center;
+    min-width: 18px;
+    padding: 0;
     font-size: 11px;
     font-weight: 500;
     color: var(--text-muted);
