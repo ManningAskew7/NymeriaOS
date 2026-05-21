@@ -24,6 +24,10 @@ def _fake_usage(
     last_output: int = 0,
     compaction_count: int = 0,
     last_compaction_at: datetime | None = None,
+    last_cost_usd: float | None = None,
+    total_cost_usd: float = 0.0,
+    cost_unavailable: bool = False,
+    last_recorded_message_index: int = 0,
 ) -> Any:
     """SimpleNamespace stand-in for TokenUsage.
 
@@ -40,6 +44,10 @@ def _fake_usage(
         last_compaction_at=last_compaction_at,
         context_tokens=last_input,  # mirrors the real property
         total_tokens=total_input + total_output,  # mirrors the real property
+        last_cost_usd=last_cost_usd,
+        total_cost_usd=total_cost_usd,
+        cost_unavailable=cost_unavailable,
+        last_recorded_message_index=last_recorded_message_index,
     )
 
 
@@ -187,6 +195,9 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
         "compaction_count": 2,
         "last_compaction": compaction_at.isoformat(),
         "context_management": "auto_compact",
+        "cost_usd_last": None,
+        "cost_usd_cumulative": 0.0,
+        "cost_unavailable": False,
     }
 
 

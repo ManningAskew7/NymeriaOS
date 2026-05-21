@@ -1,11 +1,13 @@
 """NymeriaAgent - main agent wrapper around the vendored LangGraph runtime."""
 
 import asyncio
+import ipaddress
 import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
@@ -35,6 +37,7 @@ from .memory_index import MemoryIndex
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
 from .thread_lock_manager import ThreadLockManager
+from .time_utils import utc_now
 from .checkpointer_config import (
     build_async_checkpointer_config,
     build_checkpointer_config,
@@ -48,6 +51,45 @@ logger = logging.getLogger(__name__)
 
 # Global reference to the current agent instance (for tools that need to trigger reload)
 _current_agent: Optional["NymeriaAgent"] = None
+_LOCAL_COST_PROVIDER_IDS = {
+    "ollama",
+    "lmstudio",
+    "lm-studio",
+    "llamacpp",
+    "llama.cpp",
+    "vllm",
+    "localai",
+    "litellm",
+    "tgi",
+}
+_LOCAL_COST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
+_LOCAL_COST_SUFFIXES = (".docker.internal", ".podman.internal", ".lima.internal")
+_TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_local_cost_base_url(base_url: str | None) -> bool:
+    clean = str(base_url or "").strip().rstrip("/")
+    if not clean:
+        return False
+    parse_target = clean if "://" in clean else f"http://{clean}"
+    try:
+        parsed = urlparse(parse_target)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in _LOCAL_COST_HOSTS:
+        return True
+    if any(host.endswith(suffix) for suffix in _LOCAL_COST_SUFFIXES):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_private or addr.is_loopback or addr.is_link_local:
+        return True
+    return isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT
 
 
 def get_current_agent() -> Optional["NymeriaAgent"]:
@@ -631,6 +673,138 @@ class NymeriaAgent:
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """Extract token usage from the latest AIMessage's metadata."""
         return extract_last_from_messages(messages)
+
+    # ------------------------------------------------------------------
+    # USD cost tracking
+    # ------------------------------------------------------------------
+
+    def _is_cost_unavailable_for_thread(self, llm_config: "LLMConfig") -> bool:
+        """Return True when per-token cost is not meaningful for this thread.
+
+        OAuth-subscription proxies (CLIProxy for Claude Max, Codex/GPT-5.5)
+        and local-LLM endpoints (Ollama, LM Studio, llama.cpp, etc.) are
+        flat-rate or free, so cost is reported as N/A rather than $0.00.
+        """
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        base_url = getattr(llm_config, "base_url", None) or ""
+        provider = (getattr(llm_config, "provider", None) or "").lower()
+        if base_url and looks_like_cliproxy_url(base_url):
+            return True
+        if base_url and _is_local_cost_base_url(base_url):
+            return True
+        if provider in _LOCAL_COST_PROVIDER_IDS:
+            return True
+        return False
+
+    def _compute_turn_cost(
+        self,
+        thread_id: str,
+        messages: List,
+        llm_config: "LLMConfig",
+    ) -> tuple:
+        """Compute USD cost for AIMessages added since the last recorded turn.
+
+        Returns ``(cost_usd, cost_unavailable)``. When ``cost_unavailable`` is
+        True the caller should not accumulate a number (the thread is on an
+        OAuth subscription or local endpoint). When ``cost_usd`` is None the
+        rates table did not know about the model -- the thread keeps its
+        existing cumulative total unchanged.
+        """
+        from ..config import pricing_table
+        from . import cost_calc
+
+        if self._is_cost_unavailable_for_thread(llm_config):
+            return None, True
+
+        # Ensure a persistent usage row exists so the high-water index sticks.
+        # ``get_usage`` returns a transient row when the thread has never been
+        # recorded, which would otherwise drop the index update on the floor.
+        if thread_id not in self._token_tracker._usage:
+            from .token_tracker import ThreadTokenUsage
+            self._token_tracker._usage[thread_id] = ThreadTokenUsage(thread_id=thread_id)
+        usage = self._token_tracker._usage[thread_id]
+        since_index = usage.last_recorded_message_index
+        new_messages, next_index = cost_calc.slice_new_ai_messages(
+            list(messages), since_index
+        )
+        # Update the high-water index regardless of whether we found usage so
+        # the next turn starts fresh.
+        usage.last_recorded_message_index = next_index
+        if not new_messages:
+            return None, False
+
+        provider = (getattr(llm_config, "provider", None) or "").lower()
+        model = getattr(llm_config, "model", "") or ""
+        summed, contributing = cost_calc.parse_usage_from_messages(new_messages, provider)
+        if contributing == 0:
+            return None, False
+
+        rates = pricing_table.get_rates(provider, model)
+        cost = cost_calc.compute_cost_usd(summed, rates)
+        logger.info(
+            "[COST] thread=%s provider=%s model=%s tokens=%d/%d cached=%d cache_write_5m=%d cache_write_1h=%d reasoning=%d provider_reported=%s rates_source=%s computed=%s",
+            thread_id,
+            provider,
+            model,
+            summed.prompt_tokens,
+            summed.completion_tokens,
+            summed.cached_tokens,
+            summed.cache_write_5m_tokens,
+            summed.cache_write_1h_tokens,
+            summed.reasoning_tokens,
+            summed.provider_reported_cost_usd,
+            getattr(rates, "source", None) if rates else None,
+            cost,
+        )
+        if cost is None:
+            return None, False
+        return cost, False
+
+    def _record_turn_cost(
+        self,
+        thread_id: str,
+        user_id: str,
+        cost_usd: Optional[float],
+        cost_unavailable: bool,
+    ) -> None:
+        """Persist the per-turn cost increment onto ``ThreadMetadata``.
+
+        In-memory accumulation happens via ``TokenTracker.record_usage``; this
+        method is the durable write so ``total_cost_usd_micros`` survives
+        restart. Skips disk I/O when the thread is on a subscription/local
+        endpoint or when no rates were available.
+        """
+        if cost_unavailable:
+            return
+        if cost_usd is None or cost_usd <= 0:
+            return
+        try:
+            increment = int(round(cost_usd * 1_000_000))
+            if increment <= 0:
+                return
+            from .thread_metadata import ThreadMetadata, classify_platform
+            with self.thread_metadata_manager.atomic_update(user_id) as store:
+                meta = store.threads.get(thread_id)
+                if meta is None:
+                    # Sync chat path creates threads without metadata rows;
+                    # mint one now so cost persists.
+                    meta = ThreadMetadata(
+                        thread_id=thread_id,
+                        platform=classify_platform(thread_id),
+                        total_cost_usd_micros=increment,
+                    )
+                    store.threads[thread_id] = meta
+                else:
+                    meta.total_cost_usd_micros += increment
+                    meta.updated_at = utc_now()
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort.
+            logger.debug(
+                "Thread %s: failed to persist cost increment $%.6f: %s",
+                thread_id,
+                cost_usd,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Compaction delegates (implementation in agent_compaction.py)
@@ -1341,10 +1515,21 @@ class NymeriaAgent:
                     ai_response=response,
                 )
 
-                # Track token usage
+                # Track token usage + USD cost.
                 input_tok, output_tok = self._extract_tokens_from_response(messages)
-                if input_tok or output_tok:
-                    self._token_tracker.record_usage(thread_id, input_tok, output_tok)
+                llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
+                cost_usd, cost_unavailable = self._compute_turn_cost(
+                    thread_id, messages, llm_config_for_cost
+                )
+                if input_tok or output_tok or cost_usd is not None or cost_unavailable:
+                    self._token_tracker.record_usage(
+                        thread_id,
+                        input_tok,
+                        output_tok,
+                        cost_usd=cost_usd,
+                        cost_unavailable=cost_unavailable,
+                    )
+                    self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
 
                 # Detect if the agent was stopped by a turn safety guard.
                 max_iterations = self._max_iterations_for_thread(thread_id)
@@ -2085,14 +2270,25 @@ class NymeriaAgent:
                         }
                         yield halt_evt
 
-                # Track token usage for auto-compact
-                # Get messages from state to extract usage metadata
+                # Track token usage for auto-compact + USD cost.
+                # Get messages from state to extract usage metadata.
                 try:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
                     input_tok, output_tok = self._extract_tokens_from_response(result_messages)
-                    if input_tok or output_tok:
-                        self._token_tracker.record_usage(thread_id, input_tok, output_tok)
+                    llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
+                    cost_usd, cost_unavailable = self._compute_turn_cost(
+                        thread_id, result_messages, llm_config_for_cost
+                    )
+                    if input_tok or output_tok or cost_usd is not None or cost_unavailable:
+                        self._token_tracker.record_usage(
+                            thread_id,
+                            input_tok,
+                            output_tok,
+                            cost_usd=cost_usd,
+                            cost_unavailable=cost_unavailable,
+                        )
+                        self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
                         logger.debug(
                             f"Thread {thread_id}: Recorded {input_tok}+{output_tok} tokens "
                             f"(context: {self._token_tracker.get_usage(thread_id).context_tokens}, "
@@ -2191,13 +2387,24 @@ class NymeriaAgent:
                     )
                 yield self._classify_stream_exception(e)
 
-                # Try to track tokens even after error so status bar stays alive
+                # Try to track tokens + cost even after error so status bar stays alive
                 try:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
                     input_tok, output_tok = self._extract_tokens_from_response(result_messages)
-                    if input_tok or output_tok:
-                        self._token_tracker.record_usage(thread_id, input_tok, output_tok)
+                    llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
+                    cost_usd, cost_unavailable = self._compute_turn_cost(
+                        thread_id, result_messages, llm_config_for_cost
+                    )
+                    if input_tok or output_tok or cost_usd is not None or cost_unavailable:
+                        self._token_tracker.record_usage(
+                            thread_id,
+                            input_tok,
+                            output_tok,
+                            cost_usd=cost_usd,
+                            cost_unavailable=cost_unavailable,
+                        )
+                        self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
                 except Exception:
                     logger.debug("Failed to extract token usage after stream error")
         finally:

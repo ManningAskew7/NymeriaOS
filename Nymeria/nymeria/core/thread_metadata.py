@@ -73,6 +73,11 @@ class ThreadMetadata(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     # How the title was set: default | auto | user | callable | platform
     title_source: str = "default"
+    # Running USD cost across all LLM calls on this thread. Stored as integer
+    # micros (USD × 1_000_000) to avoid float drift across many additions.
+    # Zero when the thread has only been routed through OAuth-subscription or
+    # local endpoints (see ``cost_unavailable`` in ThreadTokenUsage).
+    total_cost_usd_micros: int = 0
 
 
 class ThreadMetadataStore(BaseModel):

@@ -711,7 +711,10 @@ Get context window usage statistics for a thread.
   "usage_percentage": 22.5,
   "compaction_count": 1,
   "last_compaction": "2025-01-15T10:30:00Z",
-  "context_management": "auto_compact"
+  "context_management": "auto_compact",
+  "cost_usd_last": 0.012345,
+  "cost_usd_cumulative": 0.123456,
+  "cost_unavailable": false
 }
 ```
 
