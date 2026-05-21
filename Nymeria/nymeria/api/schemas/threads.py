@@ -67,5 +67,10 @@ class ThreadMetadataUpdateRequest(BaseModel):
     pinned: bool | None = None
 
 
+class ThreadClaimRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    platform: str | None = Field(default=None, max_length=32)
+
+
 class ThreadMetadataMigrateRequest(BaseModel):
     threads: list[dict[str, Any]] = Field(default_factory=list)

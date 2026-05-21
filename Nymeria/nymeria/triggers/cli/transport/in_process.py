@@ -301,7 +301,7 @@ class InProcessAgentClient:
 
         user_id = user_id or self.default_user_id
         selected_thread_id = thread_id or str(uuid.uuid4())[:8]
-        fields: dict[str, Any] = {}
+        fields: dict[str, Any] = {"platform": "cli"}
         if title:
             fields["title"] = title
             fields["title_source"] = "user"

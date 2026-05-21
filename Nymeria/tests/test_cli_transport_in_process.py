@@ -424,6 +424,7 @@ def test_thread_metadata_operations_stay_behind_client_boundary() -> None:
 
     assert created["title"] == "OldHelper"
     assert created["title_source"] == "callable"
+    assert created["platform"] == "cli"
     assert updated["title"] == "OldHelper"
     assert updated["pinned"] is True
     assert deleted["metadata_deleted"] is True

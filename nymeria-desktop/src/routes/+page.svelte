@@ -106,7 +106,7 @@
   ) {
     const restorableIds = new Set(
       backendThreads
-        .filter((t) => t.platform === 'desktop' || t.platform === 'callable')
+        .filter((t) => t.platform === 'desktop' || t.platform === 'cli' || t.platform === 'callable')
         .map((t) => t.thread_id)
     );
     return threadsStore.threads
@@ -132,8 +132,8 @@
 
   /**
    * Validate the restored thread against the backend and load its history.
-   * If the restored thread is non-desktop (trigger, webhook), switch to
-   * the most recent desktop thread instead.
+   * If the restored thread is native-platform-only (trigger, webhook), switch
+   * to the most recent personal thread instead.
    */
   function restoreThread(restoredId: string) {
     api.listThreads().then((backendThreads) => {
@@ -147,8 +147,8 @@
         return;
       }
 
-      if (match.platform !== 'desktop' && match.platform !== 'callable') {
-        debugLog(`[Page] Restored thread ${restoredId} is ${match.platform}, finding desktop thread`);
+      if (match.platform !== 'desktop' && match.platform !== 'cli' && match.platform !== 'callable') {
+        debugLog(`[Page] Restored thread ${restoredId} is ${match.platform}, finding personal thread`);
         selectFallbackOrClear(backendThreads, restoredId);
         return;
       }

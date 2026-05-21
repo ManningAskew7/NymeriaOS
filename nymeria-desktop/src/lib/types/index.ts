@@ -146,7 +146,7 @@ export interface ToolCall {
 }
 
 // Thread types
-export type ThreadPlatform = 'desktop' | 'callable' | 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'trigger';
+export type ThreadPlatform = 'desktop' | 'cli' | 'callable' | 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'trigger';
 export type ChatAppProvider = 'discord' | 'telegram' | 'twitch' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal';
 
 export interface Thread {

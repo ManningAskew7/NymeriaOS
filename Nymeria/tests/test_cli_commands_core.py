@@ -131,7 +131,7 @@ class CoreFakeClient:
             "thread_id": selected,
             "title": title or "New Chat",
             "pinned": False,
-            "platform": "desktop",
+            "platform": "cli",
         }
         self.threads.append(created)
         return copy.deepcopy(created)

@@ -581,3 +581,28 @@ def test_thread_claim_rejects_shared_and_hides_other_user_owner(
     assert hidden.json()["detail"] == "Not found"
     assert admin.status_code == 200
     assert admin.json() == {"thread_id": "other-thread", "owner": "other"}
+
+
+def test_thread_claim_can_seed_cli_metadata(tmp_path: Path, api_client_builder):
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+
+    response = client.post(
+        "/threads/cli-thread/claim",
+        headers=api_client_builder.auth(token),
+        json={"title": "CLI Draft", "platform": "cli"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["thread_id"] == "cli-thread"
+    assert body["owner"] == "owner"
+    assert body["title"] == "CLI Draft"
+    assert body["title_source"] == "user"
+    assert body["platform"] == "cli"
+
+    listed = client.get("/threads", headers=api_client_builder.auth(token))
+    assert listed.status_code == 200
+    [thread] = listed.json()["threads"]
+    assert thread["thread_id"] == "cli-thread"
+    assert thread["platform"] == "cli"
