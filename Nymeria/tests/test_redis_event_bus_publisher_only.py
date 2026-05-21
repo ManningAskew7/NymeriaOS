@@ -37,7 +37,7 @@ def test_publisher_only_mode_skips_pubsub(fake_redis_module):
     """enable_subscriber=False must not create a pubsub or subscriber thread."""
     from nymeria.core.event_bus_redis import RedisEventBus
 
-    _, fake_client, _ = fake_redis_module
+    fake_redis, fake_client, _ = fake_redis_module
 
     with patch.object(RedisEventBus, "_start_subscriber") as mock_start:
         bus = RedisEventBus("redis://localhost:6379", enable_subscriber=False)
@@ -46,7 +46,10 @@ def test_publisher_only_mode_skips_pubsub(fake_redis_module):
     assert bus._connected is True
     assert bus._pubsub is None
     assert bus._subscriber_thread is None
+    assert bus._subscriber_client is None
     fake_client.pubsub.assert_not_called()
+    # Only the publisher client should have been created (one from_url call).
+    assert fake_redis.from_url.call_count == 1
     bus.close()
 
 
@@ -54,11 +57,38 @@ def test_default_mode_starts_subscriber(fake_redis_module):
     """Default (enable_subscriber=True) preserves the API's subscriber path."""
     from nymeria.core.event_bus_redis import RedisEventBus
 
+    fake_redis, _, _ = fake_redis_module
+
     with patch.object(RedisEventBus, "_start_subscriber") as mock_start:
         bus = RedisEventBus("redis://localhost:6379")
         mock_start.assert_called_once()
 
     assert bus._connected is True
+    assert bus._subscriber_client is not None
+    bus.close()
+
+
+def test_subscriber_client_has_no_socket_timeout(fake_redis_module):
+    """The subscriber client must be built with socket_timeout=None.
+
+    This is what stops the idle TimeoutError-every-5s log loop on the
+    API. The publisher client keeps socket_timeout=5 so a stuck publish
+    still fails fast.
+    """
+    from nymeria.core.event_bus_redis import RedisEventBus
+
+    fake_redis, _, _ = fake_redis_module
+
+    with patch.object(RedisEventBus, "_start_subscriber"):
+        bus = RedisEventBus("redis://localhost:6379")
+
+    calls = fake_redis.from_url.call_args_list
+    assert len(calls) == 2, "expected one publisher + one subscriber from_url call"
+    publisher_kwargs = calls[0].kwargs
+    subscriber_kwargs = calls[1].kwargs
+    assert publisher_kwargs.get("socket_timeout") == 5
+    assert subscriber_kwargs.get("socket_timeout") is None
+    assert subscriber_kwargs.get("socket_connect_timeout") == 5
     bus.close()
 
 

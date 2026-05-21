@@ -51,7 +51,12 @@ class RedisEventBus(EventBus):
         super().__init__()
         self.redis_url = redis_url
         self._enable_subscriber = enable_subscriber
+        # Publisher uses socket_timeout=5 so a stuck publish fails fast.
+        # Subscriber gets its own client (created in _connect when needed)
+        # with socket_timeout=None so listen() blocks indefinitely on idle
+        # instead of raising TimeoutError every ~5s and re-creating pubsub.
         self._redis_client: Optional[Any] = None
+        self._subscriber_client: Optional[Any] = None
         self._pubsub: Optional[Any] = None
         self._subscriber_thread: Optional[threading.Thread] = None
         self._running = False
@@ -93,6 +98,17 @@ class RedisEventBus(EventBus):
             # cross-process events. Publisher-only processes (e.g. the Docker
             # worker) skip this to avoid the idle socket-timeout warning loop.
             if self._enable_subscriber:
+                # Dedicated subscriber client: no socket_timeout so the
+                # pub/sub listener can sit idle indefinitely without
+                # raising TimeoutError. Real connection drops surface
+                # as ConnectionError and are still caught by the
+                # subscriber loop's except handler.
+                self._subscriber_client = redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_timeout=None,
+                    socket_connect_timeout=5,
+                )
                 self._start_subscriber()
             return True
 
@@ -115,9 +131,9 @@ class RedisEventBus(EventBus):
             return
 
         self._running = True
-        if self._redis_client is None:
+        if self._subscriber_client is None:
             return
-        self._pubsub = self._redis_client.pubsub()
+        self._pubsub = self._subscriber_client.pubsub()
         self._pubsub.subscribe(self.CHANNEL_NAME)
 
         def subscriber_loop():
@@ -221,9 +237,9 @@ class RedisEventBus(EventBus):
                         "[REDIS EVENT BUS] failed to close stale pubsub",
                         exc_info=True,
                     )
-            if self._redis_client is None:
+            if self._subscriber_client is None:
                 return
-            self._pubsub = self._redis_client.pubsub()
+            self._pubsub = self._subscriber_client.pubsub()
             self._pubsub.subscribe(self.CHANNEL_NAME)
             logger.info("[REDIS EVENT BUS] pubsub recreated and re-subscribed")
         except Exception as exc:
@@ -359,6 +375,13 @@ class RedisEventBus(EventBus):
             except Exception:
                 logger.debug("Error closing Redis client during shutdown")
             self._redis_client = None
+
+        if self._subscriber_client:
+            try:
+                self._subscriber_client.close()
+            except Exception:
+                logger.debug("Error closing Redis subscriber client during shutdown")
+            self._subscriber_client = None
 
         self._connected = False
         logger.info("[REDIS EVENT BUS] Closed")
