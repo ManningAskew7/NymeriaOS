@@ -6,7 +6,7 @@ This feature allows users to create, edit, complete, and delete TODOs for Nymeri
 
 **Key Features:**
 - Full CRUD operations for TODOs via REST API
-- Arbitrary recurrence intervals as duration strings (`5m`, `2h`, `1d`, `1w`, etc.); minimum 60s. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min`/`10min`/`15min`/`30min`) are still accepted on input and normalised to canonical form on storage.
+- Arbitrary recurrence intervals as duration strings (`5m`, `2h`, `1d`, `1w`, `1mo`, etc.); minimum 60s. Calendar months (`Nmo`) use calendar arithmetic so monthly TODOs don't drift; everything else is a fixed duration. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min`/`10min`/`15min`/`30min`) are still accepted on input and normalised to canonical form on storage (note: `monthly` now resolves to `1mo`, not `30d`).
 - Visual distinction between user-created vs agent-created TODOs
 - Visual distinction between recurring vs one-time TODOs
 - Thread selection and per-thread task counts for scheduled TODO output
@@ -69,7 +69,7 @@ class TodoItem(BaseModel):
 
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created: 'agent' or 'user'")
-    recurrence: Optional[str] = Field(default=None, description="Canonical duration string (e.g. '5m', '2h', '1d', '1w'). Validated by core.todo_constants.validate_recurrence; legacy preset names are accepted on input.")
+    recurrence: Optional[str] = Field(default=None, description="Canonical duration string (e.g. '5m', '2h', '1d', '1w', '1mo'). Calendar months (Nmo) use calendar arithmetic; everything else is a fixed duration. Validated by core.todo_constants.validate_recurrence; legacy preset names are accepted on input.")
 ```
 
 ### REST API Endpoints
@@ -91,7 +91,7 @@ class TodoCreateRequest(BaseModel):
     task: str
     notes: Optional[str]
     scheduled_for: Optional[str] # "45s", "17m", "2h", "1w", absolute, or ISO datetime
-    recurrence: Optional[str]    # Duration string: "5m", "2h", "1d", "1w" (min 60s). Legacy names "hourly", "daily", "weekly", "monthly", "5min" ... "30min" still accepted.
+    recurrence: Optional[str]    # Duration string: "5m", "2h", "1d", "1w", "1mo" (min 60s). Calendar months use calendar arithmetic. Legacy names "hourly", "daily", "weekly", "monthly", "5min" ... "30min" still accepted.
     thread_id: Optional[str]     # Thread for scheduled execution output
 
 class TodoUpdateRequest(BaseModel):
@@ -154,24 +154,32 @@ When a scheduled TODO is executed:
 The interval calculation lives in `core/todo_constants.py`:
 
 ```python
-def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta]:
-    """Accept canonical durations ("5m", "2h", "1d", "1w", "30s") and legacy
-    preset names ("hourly", "daily", "weekly", "monthly", "5min" ... "30min").
-    Returns None for unparseable input."""
+def parse_recurrence_interval(value: Optional[str]) -> Optional[timedelta | relativedelta]:
+    """Accept canonical durations ("5m", "2h", "1d", "1w", "30s"), calendar
+    months ("1mo", "3mo"), and legacy preset names ("hourly", "daily",
+    "weekly", "monthly", "5min" ... "30min"). Returns a relativedelta for
+    month intervals and a timedelta for everything else; None for
+    unparseable input."""
 
 def validate_recurrence(value: str) -> str:
     """Return the canonical duration string, raising ValueError if the
-    interval is below MIN_RECURRENCE_SECONDS (60s) or malformed."""
+    interval is below MIN_RECURRENCE_SECONDS (60s) or malformed.
+    Month intervals are exempt from the 60s floor."""
 
 def calculate_next_recurrence_time(recurrence: str, anchor: datetime, ...):
     """Advance the anchor by parse_recurrence_interval(recurrence), skipping
-    any intervals that have already passed."""
+    any intervals that have already passed. Month intervals step forward
+    one calendar month at a time so a TODO anchored on the 31st clamps to
+    the last day of shorter months."""
 ```
 
 Legacy preset names map to canonical durations via `LEGACY_RECURRENCE_ALIASES`:
-`hourly → 1h`, `daily → 1d`, `weekly → 1w`, `monthly → 30d` (approximate),
+`hourly → 1h`, `daily → 1d`, `weekly → 1w`, `monthly → 1mo`,
 `5min → 5m` ... `30min → 30m`. The API, agent tool, CLI and command service
 all call `validate_recurrence(...)` and persist the returned canonical string.
+Existing TODO data stored as `30d` (the previous canonical for `monthly`)
+keeps working as a 30-day fixed interval; only new TODOs and re-saved ones
+pick up the calendar-month behaviour.
 
 ### Completed TODO Retention
 
@@ -319,11 +327,13 @@ datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
 
 ### 4. Recurrence Drift
 
-**Risk:** Monthly recurrence uses 30-day approximation, causing drift over time.
-
-**Current Behavior:** `timedelta(days=30)` for monthly recurrence.
-
-**Potential Fix:** Use `dateutil.relativedelta` for accurate month calculations.
+**Status:** Fixed for monthly recurrence. The legacy `monthly` alias now
+resolves to `1mo` and `calculate_next_recurrence_time` advances via
+`dateutil.relativedelta`, so a TODO anchored at 11:00 on the 15th fires at
+11:00 on the 15th of every subsequent month. Anchors on the 31st clamp to
+the last day of shorter months (Feb 28/29), matching Google Calendar's
+"monthly on the 31st" convention. Existing data stored as `30d` keeps its
+prior 30-day-fixed behaviour until edited or recreated.
 
 ### 5. Timezone Edge Cases
 

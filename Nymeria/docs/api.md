@@ -973,7 +973,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
-| `compacting` | Context summary generation has started | `message` |
+| `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
 | `compacted` | Context was compacted; async streams may resume afterward | `messages_removed`, `auto_resumed`, `summary` |
 | `queued` | Legacy: thread is busy with another turn; client should wait. Now emitted alongside `prompt_queued`; will be dropped once frontends adopt the new event. | `content`, `holder`, `held_seconds` |
 | `prompt_queued` | Prompt was placed on the per-thread sub-turn queue because the thread was busy. The currently-running turn will halt at its next sub-turn boundary and absorb the queued prompt. | `position`, `holder`, `held_seconds`, `source` |
@@ -1124,7 +1124,7 @@ request/response commands. Send the command as the message:
 
 | Command | Description |
 |---------|-------------|
-| `/compact` | Manually trigger context compaction. Emits `compacting`, `compacted`, then a `response` confirmation. |
+| `/compact` | Manually trigger context compaction. Emits `compacting`, `compacted`, then a `response` confirmation when compaction starts; skipped compaction returns only a `response` and `done`. |
 
 Example:
 ```json
@@ -1133,7 +1133,7 @@ Example:
 
 Response:
 ```
-data: {"type": "compacting", "message": "Compacting context...", "thread_id": "abc123"}
+data: {"type": "compacting", "message": "Compacting thread context...", "thread_id": "abc123"}
 data: {"type": "compacted", "messages_removed": 42, "auto_resumed": false, "summary": "...", "thread_id": "abc123"}
 data: {"type": "response", "content": "✓ Conversation compacted. 42 messages summarized."}
 data: {"type": "done", "thread_id": "abc123", "context_stats": {...}, "model": "..."}
@@ -1202,7 +1202,7 @@ and `timestamp` fields plus the event-specific payload. Internal fields such as
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `response` | Response text chunks | `content` |
 | `context_attached` | Previous context summary attached to this autonomous prompt | `summary` |
-| `compacting` | Context summary generation has started | `message` |
+| `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
 | `compacted` | Context was compacted | `messages_removed`, `auto_resumed`, `summary` |
 | `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `max_iterations`, `tool_call_count`, optional repeated-tool fields |
 | `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
@@ -1342,7 +1342,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -1486,6 +1486,8 @@ Authorization: Bearer <admin-token>
   "llm_presence_penalty": 0.3,
   "llm_reasoning_effort": "medium",
   "llm_use_model_defaults": false,
+  "llm_context_length": 128000,
+  "llm_ollama_num_ctx": 32768,
   "openai_api_mode": "responses",
   "openai_api_key": "sk-...",
   "anthropic_api_key": "sk-ant-or-cpx-...",
@@ -1514,6 +1516,8 @@ Authorization: Bearer <admin-token>
 | `llm_presence_penalty` | float | -2.0-2.0 | Encourage new topics |
 | `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
+| `llm_context_length` | int | 1000-2000000 | Manual context-window override for local endpoints or proxies that do not report context metadata |
+| `llm_ollama_num_ctx` | int | 1000-2000000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI-compatible API mode. `responses` is honored only for registry providers that advertise Responses support; Chat Completions is the compatibility baseline. |
 | `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
 | `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
@@ -2453,6 +2457,8 @@ Updates thread config. Key fields for callable threads:
 | `llm_model` | string | Override model |
 | `llm_config.base_url` | string | Per-thread provider base URL. For CLIProxy sidecars, this is the URL reachable from the Nymeria backend container, e.g. `http://cli-proxy-api-latest:8317/v1`. |
 | `llm_config.api_key` | string | Per-thread provider API key. For CLIProxy sidecars, this is the local sidecar gatekeeper key, not an upstream OpenAI key. |
+| `llm_config.context_length` | int | Per-thread context-window override for local endpoints or proxies with missing metadata |
+| `llm_config.ollama_num_ctx` | int | Per-thread Ollama `options.num_ctx` override |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |

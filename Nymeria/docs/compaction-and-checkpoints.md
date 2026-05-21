@@ -85,7 +85,7 @@ If a provider rejects a turn because the request is already over the context win
 6. If no suitable checkpoint exists, RemoveMessage trims the oldest prefix until the state is below a conservative target, then compacts.
 ```
 
-For async `/chat` streaming, the client receives `compacting` with `Context too large  -  rewinding and compacting...`, then `compacted` on success. For sync `chat()` callers, recovery stores the compacted summary as pending and returns a short instruction to send the message again; the next prompt resumes from the compacted state.
+For async `/chat` streaming, the client receives `compacting` after recovery reaches the compaction step, then `compacted` on success. For sync `chat()` callers, recovery stores the compacted summary as pending and returns a short instruction to send the message again; the next prompt resumes from the compacted state.
 
 ### Checkpoint pruning and deletion
 
@@ -290,7 +290,7 @@ Only `core/` files should show activity/notification constructor calls. If you s
 
 - **Multiple checkpoint_ns values**  -  LangGraph supports multiple namespaces per thread; Nymeria only uses `''`. The prune SQL scopes to `checkpoint_ns = ''` explicitly to avoid touching any future subgraph checkpoints.
 
-- **Auto-compact firing during an async `/chat` stream**  -  if prior token usage already crossed the trigger, pre-flight compaction runs before the new user message is sent to the model and the summary is attached to that message. If usage crosses the trigger after a graph invocation finishes, the stream emits `compacting`, persists the `compaction_notice`, emits `compacted` with the full summary, then streams the internal auto-resume turn's normal `thinking`/`tool_call`/`tool_result`/`response` events.
+- **Auto-compact firing during an async `/chat` stream**  -  if prior token usage already crossed the trigger, pre-flight compaction runs before the new user message is sent to the model and the summary is attached to that message. If usage crosses the trigger after a graph invocation finishes, the stream emits `compacting` only after the compaction path has passed its start checks, persists the `compaction_notice`, emits `compacted` with the full summary, then streams the internal auto-resume turn's normal `thinking`/`tool_call`/`tool_result`/`response` events.
 
 - **Cross-thread contamination**  -  not possible; all SQL is scoped by `thread_id`.
 

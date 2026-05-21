@@ -42,6 +42,9 @@ Edit `Nymeria/.env.docker` (working tree only  -  do NOT commit instance-specifi
 LLM_PROVIDER=openai
 LLM_BASE_URL=http://host.docker.internal:8080/v1
 LLM_MODEL=local-llm
+# Optional when auto-detection is wrong or unavailable:
+# LLM_CONTEXT_LENGTH=16384
+# LLM_OLLAMA_NUM_CTX=16384
 ```
 
 The `host.docker.internal` hostname lets the Nymeria containers (api, worker, mcp) reach the llama-server running on the Windows/Mac host. This works because `docker-compose.yml` includes `extra_hosts: ["host.docker.internal:host-gateway"]` on all three services.
@@ -56,6 +59,25 @@ docker restart nymeria-api
 Settings → LLM tab → Provider: **Local LLM (OpenAI-compatible)** → enter `local-llm` as the model name → the API Base URL auto-populates to `http://host.docker.internal:8080/v1` → Save.
 
 Per-thread overrides also work: Thread Settings → Model tab → Provider: Local LLM.
+
+---
+
+## Supported Local Endpoint Shapes
+
+Nymeria treats loopback, `host.docker.internal`, container-local hostnames, private LAN IPs, link-local IPs, and Tailscale `100.64.0.0/10` addresses as local inference endpoints. Local OpenAI-compatible endpoints do not need an API key. When `LLM_PROVIDER=openai` points at one of those URLs and no OpenAI key is configured, Nymeria sends the placeholder key `not-needed`.
+
+Common local engines:
+
+| Engine | Base URL | Metadata Nymeria checks |
+|--------|----------|-------------------------|
+| Ollama | `http://host.docker.internal:11434/v1` | `/api/tags` for detection and `/api/show` for `num_ctx` or GGUF `context_length` |
+| llama.cpp | `http://host.docker.internal:8080/v1` | `/v1/props` or `/props` for `default_generation_settings.n_ctx` |
+| LM Studio | `http://host.docker.internal:1234/v1` | `/api/v1/models` for loaded-instance `context_length` |
+| vLLM or other OpenAI-compatible servers | provider URL ending in `/v1` | `/v1/models/{model}` and `/v1/models` for `max_model_len`, `context_length`, or `max_tokens` |
+
+`LLM_CONTEXT_LENGTH` overrides the detected context window for compaction and frontend context accounting. `LLM_OLLAMA_NUM_CTX` is Ollama-specific and is sent on each request as `extra_body.options.num_ctx`. Use it when the loaded Ollama runtime context should be smaller than the model's GGUF training maximum.
+
+Per-thread model settings expose the same controls as `context_length` and `ollama_num_ctx`, so one experimentation thread can run a smaller local window while the global default stays unchanged.
 
 ---
 
