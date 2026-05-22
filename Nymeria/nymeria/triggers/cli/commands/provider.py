@@ -21,13 +21,24 @@ from ..credentials_provider import (
     load_provider_credentials,
     save_provider_credentials,
 )
+from nymeria.config.llm_providers import (
+    ProviderTier,
+    get_llm_provider_spec,
+    list_llm_provider_specs,
+)
 
+# Display labels for the providers Nymeria can manage credentials for locally.
+# Other providers fall back to the registry's LLMProviderSpec.label via
+# _provider_label() below.
 PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "openrouter": "OpenRouter",
 }
 
+# Credential storage is scoped to providers Nymeria knows how to apply to
+# backend settings. Adding a new provider here also requires plumbing through
+# update_settings on the API side.
 PROVIDER_SECRET_SETTINGS = {
     "anthropic": {
         "api_key": "anthropic_api_key",
@@ -45,6 +56,13 @@ DEFAULT_PROVIDER_MODELS = {
 
 OPENAI_API_MODES = {"chat_completions", "responses"}
 PROVIDERS = tuple(PROVIDER_LABELS)
+
+_TIER_BADGES: dict[ProviderTier, str] = {
+    "native": "[NATIVE]",
+    "gateway": "[GATEWAY]",
+    "unverified": "[UNVERIFIED]",
+}
+_TIER_ORDER: tuple[ProviderTier, ...] = ("native", "gateway", "unverified")
 
 
 async def _handle_provider(
@@ -68,17 +86,30 @@ async def _handle_provider_show(
     config = load_provider_credentials(_credentials_path(context))
     active_provider = _normalize_provider(mapping_get(settings, "llm_provider", ""))
     active = status.get(active_provider)
+    active_spec = get_llm_provider_spec(active_provider) if active_provider else None
 
+    tier_text = "unknown"
+    if active_spec is not None:
+        tier_text = f"{active_spec.tier} {_TIER_BADGES[active_spec.tier]}"
+    credential_text = (
+        _status_text(active)
+        if active
+        else (
+            "not managed by /provider"
+            if active_provider and active_provider not in PROVIDER_SECRET_SETTINGS
+            else "missing key"
+        )
+    )
     rows = [
         ("Active provider", _provider_label(active_provider) if active_provider else "Unknown"),
+        ("Tier", tier_text),
         ("Model", mapping_get(settings, "llm_model", "") or "Unknown"),
         ("Base URL", mapping_get(settings, "llm_base_url", "") or "Provider default"),
-        (
-            "Credential",
-            _status_text(active) if active else "missing key",
-        ),
+        ("Credential", credential_text),
         ("Local store", str(_credentials_path(context))),
     ]
+    if active_spec is not None and active_spec.notes_for_user:
+        rows.append(("Note", active_spec.notes_for_user))
     lines = _aligned_rows(rows, title="Provider")
     providers = _provider_entries(settings, status, config)
     return CommandResult.completed(
@@ -100,13 +131,27 @@ async def _handle_provider_list(
     config = load_provider_credentials(_credentials_path(context))
     entries = _provider_entries(settings, status, config)
 
-    lines = ["Providers", "  Provider    Active  Status          Source"]
+    grouped: dict[ProviderTier, list[dict[str, Any]]] = {tier: [] for tier in _TIER_ORDER}
     for entry in entries:
-        active = "yes" if entry["active"] else "no"
-        lines.append(
-            f"  {entry['provider']:<10}  {active:<6} "
-            f"{entry['status']:<14} {entry['source'] or '-'}"
-        )
+        grouped[entry["tier"]].append(entry)
+
+    lines = ["Providers (grouped by tier)"]
+    header = "  Provider                    Active  Status          Source"
+    for tier in _TIER_ORDER:
+        rows = grouped.get(tier, [])
+        if not rows:
+            continue
+        lines.append("")
+        lines.append(f"  {_TIER_BADGES[tier]}")
+        lines.append(header)
+        for entry in rows:
+            active = "yes" if entry["active"] else "no"
+            lines.append(
+                f"  {entry['provider']:<26}  {active:<6} "
+                f"{entry['status']:<14} {entry['source'] or '-'}"
+            )
+            if entry["tier"] == "unverified" and entry["notes_for_user"]:
+                lines.append(f"    Note: {entry['notes_for_user']}")
     return CommandResult.completed(
         CommandMessage("\n".join(lines), title="Providers"),
         json_payload=entries,
@@ -395,18 +440,51 @@ def _provider_entries(
 ) -> list[dict[str, Any]]:
     active_provider = _normalize_provider(mapping_get(settings, "llm_provider", ""))
     entries: list[dict[str, Any]] = []
-    for provider in PROVIDERS:
-        record = config.get(provider)
+    seen: set[str] = set()
+    for spec in list_llm_provider_specs():
+        provider = spec.id
+        seen.add(provider)
+        has_credential_store = provider in PROVIDER_SECRET_SETTINGS
+        record = config.get(provider) if has_credential_store else None
         status_entry = status.get(provider, {})
+        if has_credential_store:
+            status_text = status_entry.get("status", "missing key")
+            source_text = status_entry.get("source", "")
+            local_fields = sorted(record.values) if record else []
+            server_fields = sorted(PROVIDER_SECRET_SETTINGS[provider].values())
+        else:
+            status_text = "n/a"
+            source_text = ""
+            local_fields = []
+            server_fields = []
         entries.append(
             {
                 "provider": provider,
-                "label": _provider_label(provider),
+                "label": spec.label,
+                "tier": spec.tier,
+                "notes_for_user": spec.notes_for_user,
                 "active": provider == active_provider,
-                "status": status_entry.get("status", "missing key"),
-                "source": status_entry.get("source", ""),
-                "local_fields": sorted(record.values) if record else [],
-                "server_fields": sorted(PROVIDER_SECRET_SETTINGS[provider].values()),
+                "status": status_text,
+                "source": source_text,
+                "local_fields": local_fields,
+                "server_fields": server_fields,
+            }
+        )
+    # Surface an active provider that isn't registered (custom or removed). It
+    # belongs at the top of the unverified group so the status line is still
+    # legible.
+    if active_provider and active_provider not in seen:
+        entries.append(
+            {
+                "provider": active_provider,
+                "label": active_provider,
+                "tier": "unverified",
+                "notes_for_user": "",
+                "active": True,
+                "status": "unknown provider",
+                "source": "",
+                "local_fields": [],
+                "server_fields": [],
             }
         )
     return entries
@@ -538,7 +616,13 @@ def _restart_suffix(result: Any) -> str:
 
 
 def _provider_label(provider: str) -> str:
-    return PROVIDER_LABELS.get(_normalize_provider(provider), str(provider or "Unknown"))
+    canonical = _normalize_provider(provider)
+    if canonical in PROVIDER_LABELS:
+        return PROVIDER_LABELS[canonical]
+    spec = get_llm_provider_spec(canonical) if canonical else None
+    if spec is not None:
+        return spec.label
+    return str(provider or "Unknown")
 
 
 def _normalize_provider(value: Any) -> str:

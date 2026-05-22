@@ -863,6 +863,8 @@ export type LLMProvider = string;
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
+export type ProviderTier = 'native' | 'gateway' | 'unverified';
+
 export interface LLMProviderSpec {
   id: string;
   label: string;
@@ -879,6 +881,10 @@ export interface LLMProviderSpec {
   docs_url: string | null;
   notes: string;
   aliases: string[];
+  // New fields (backend ships these as of the tier-labels refactor). Old
+  // backends do not, so callers must default to 'unverified' and ''.
+  tier?: ProviderTier;
+  notes_for_user?: string;
 }
 
 // Available model from provider (from GET /models/available)

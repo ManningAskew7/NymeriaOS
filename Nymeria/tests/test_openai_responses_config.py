@@ -1081,3 +1081,52 @@ def test_streaming_heuristic_matches_cliproxy_hostname_not_path():
     assert _should_disable_streaming_for_local_base_url(
         "http://localhost:8080/cliproxy-alike/v1"
     )
+
+
+def test_notes_for_user_flows_through_catalog_response():
+    """The catalog response surfaces tier and notes_for_user for unverified providers.
+
+    Regression guard for the dossier-driven warning text in DeepSeek and xAI
+    specs. If the registry value drifts or the schema/router projection drops
+    the field, this test catches the break before users see stale picker chips.
+    """
+    from nymeria.api.schemas.settings import LLMProviderSpecResponse
+    from nymeria.config.llm_providers import list_llm_provider_specs
+
+    deepseek_spec = None
+    for spec in list_llm_provider_specs():
+        if spec.id == "deepseek":
+            deepseek_spec = spec
+            break
+    assert deepseek_spec is not None
+    assert deepseek_spec.tier == "unverified"
+    assert deepseek_spec.notes_for_user, "deepseek should carry user-visible warning"
+
+    response = LLMProviderSpecResponse(
+        id=deepseek_spec.id,
+        label=deepseek_spec.label,
+        api_format=deepseek_spec.api_format,
+        default_base_url=deepseek_spec.default_base_url,
+        api_key_env_vars=list(deepseek_spec.api_key_env_vars),
+        base_url_env_vars=list(deepseek_spec.base_url_env_vars),
+        default_model=deepseek_spec.default_model,
+        default_api_mode=deepseek_spec.default_api_mode,
+        supports_chat_completions=deepseek_spec.supports_chat_completions,
+        supports_responses=deepseek_spec.supports_responses,
+        requires_api_key=deepseek_spec.requires_api_key,
+        requires_base_url=deepseek_spec.requires_base_url,
+        docs_url=deepseek_spec.docs_url,
+        notes=deepseek_spec.notes,
+        aliases=list(deepseek_spec.aliases),
+        tier=deepseek_spec.tier,
+        notes_for_user=deepseek_spec.notes_for_user,
+        verified=deepseek_spec.verified,
+    )
+
+    assert response.tier == "unverified"
+    assert response.notes_for_user == deepseek_spec.notes_for_user
+    assert response.verified is False
+    # JSON serialization includes the new fields.
+    payload = response.model_dump()
+    assert payload["tier"] == "unverified"
+    assert payload["notes_for_user"] == deepseek_spec.notes_for_user

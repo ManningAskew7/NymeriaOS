@@ -363,26 +363,39 @@ def _warn_responses_converter_fallback(reason: str) -> None:
 def _warn_if_unverified_provider(provider: str) -> None:
     """Warn once per provider when the user picks an unverified provider.
 
-    Only ``anthropic``, ``openai``, and ``openrouter`` are smoke-tested in
-    Nymeria today. Every other entry in ``llm_providers.py`` is OpenAI-chat
-    "compatible" on paper but the divergent corners (tool-call deltas,
-    response_format, finish_reason, usage shape) have not been exercised — so
-    the user should know that hitting one is at-your-own-risk until verified.
+    Providers in the ``native`` and ``gateway`` tiers have a known reasoning
+    and tool-call story (dedicated partner package, canonical API, or
+    smoke-tested gateway). Everything else is OpenAI-chat "compatible" on
+    paper but its divergent corners (tool-call deltas, response_format,
+    finish_reason, usage shape, reasoning round-trip) have not been
+    exercised, so the user should know that hitting one is at-your-own-risk.
+
+    When the registry attaches a ``notes_for_user`` to the provider (e.g.
+    DeepSeek's tool-follow-up 400, xAI's Grok 4 reasoning gap), that text
+    is included in the warning so the failure mode is explicit.
     """
     spec = get_llm_provider_spec(provider)
-    if spec is None or spec.verified:
+    if spec is None or spec.tier != "unverified":
         return
     if provider in _UNVERIFIED_PROVIDER_WARNED:
         return
     _UNVERIFIED_PROVIDER_WARNED.add(provider)
-    logger.warning(
-        "[LLM] Provider %r (%s) is not yet verified end-to-end in Nymeria. "
-        "OpenAI-compatible chat completions vary by upstream (tool calls, "
-        "streaming, response_format), so expect rough edges until smoke-tested. "
-        "Verified providers: anthropic, openai, openrouter.",
-        provider,
-        spec.label,
-    )
+    if spec.notes_for_user:
+        logger.warning(
+            "[LLM] Provider %r (%s) is in the unverified tier. %s",
+            provider,
+            spec.label,
+            spec.notes_for_user,
+        )
+    else:
+        logger.warning(
+            "[LLM] Provider %r (%s) is in the unverified tier: tool-call "
+            "streaming and reasoning round-trips are not smoke-tested. "
+            "Native-tier providers: anthropic, openai, google, bedrock, "
+            "ollama-native. See docs/chat_completions_providers.md.",
+            provider,
+            spec.label,
+        )
 
 
 def _convert_responses_chunk_to_generation_chunk_fallback(
@@ -1135,6 +1148,12 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         return _create_openai_llm(config)
     elif config.provider == "anthropic":
         return _create_anthropic_llm(config)
+    elif config.provider == "google":
+        return _create_google_genai_llm(config)
+    elif config.provider == "bedrock":
+        return _create_bedrock_llm(config)
+    elif config.provider == "ollama-native":
+        return _create_ollama_native_llm(config)
     elif is_openai_compatible_provider(config.provider):
         return _create_openai_compatible_llm(config)
     elif config.provider == "custom":
@@ -2071,3 +2090,192 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     chat_model_cls = _anthropic_chat_model_class_for_config(ChatAnthropic, config)
     return chat_model_cls(**kwargs)
+
+
+# langchain-google-genai 4.x interprets max_retries=0 as "use the Google SDK
+# default of 5 retries", not "disable retries". Setting it to 1 is the only way
+# to actually defer retry policy to Nymeria's centralized stream retry logic.
+# https://github.com/langchain-ai/langchain-google/discussions/1422
+_GOOGLE_GENAI_DISABLE_RETRIES = 1
+
+
+def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
+    """Create a Google Gemini LLM using the dedicated partner package.
+
+    Gemini 3+ returns thought signatures on its reasoning content blocks that
+    must round-trip on every tool-call follow-up or the API returns 4xx. The
+    OpenAI-compatible shim at https://generativelanguage.googleapis.com/v1beta/openai
+    does not surface those signatures, so multi-turn agentic flows with
+    reasoning enabled were silently broken. ``langchain-google-genai`` 4.x
+    handles signature round-trip natively.
+
+    Trade-off (accepted): the 4.0 release switched transport from gRPC to REST,
+    which has been measured by the upstream community at a 50-90% latency
+    increase on small Gemini Flash calls. That regression is the price of
+    correctness for reasoning + tool-call interleaving on Gemini 3+.
+    """
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError as exc:
+        raise ImportError(
+            "langchain-google-genai is required for the Google Gemini "
+            "provider. Install with: pip install langchain-google-genai"
+        ) from exc
+
+    api_key = (
+        config.api_key
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+    )
+    if not api_key:
+        raise ValueError(
+            "Google Gemini requires GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY)"
+        )
+
+    kwargs: dict[str, Any] = {
+        "model": config.model,
+        "google_api_key": api_key,
+        "max_retries": _GOOGLE_GENAI_DISABLE_RETRIES,
+    }
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
+    if config.top_p is not None:
+        kwargs["top_p"] = config.top_p
+    if config.top_k is not None:
+        kwargs["top_k"] = config.top_k
+    if config.max_tokens is not None:
+        # Note: Gemini uses max_output_tokens, not max_tokens.
+        kwargs["max_output_tokens"] = config.max_tokens
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
+
+    # Gemini 3+ uses thinking_level (low/medium/high); Gemini 2.5 uses
+    # thinking_budget (int tokens). Map Nymeria's reasoning_effort axis onto
+    # whichever the model accepts. We pick thinking_level when extended
+    # thinking is requested for any 3.x model, and thinking_budget for older
+    # 2.x reasoning models.
+    if config.extended_thinking or config.reasoning_effort is not None:
+        model_name = (config.model or "").lower()
+        is_gemini_3_plus = "gemini-3" in model_name or "gemini-4" in model_name
+        effort = (config.reasoning_effort or "medium").lower()
+        if is_gemini_3_plus:
+            level_map = {"low": "low", "medium": "medium", "high": "high"}
+            kwargs["thinking_level"] = level_map.get(effort, "medium")
+        else:
+            budget_map = {"low": 1024, "medium": 4096, "high": 16384}
+            kwargs["thinking_budget"] = budget_map.get(effort, 4096)
+
+    return ChatGoogleGenerativeAI(**kwargs)
+
+
+def _create_bedrock_llm(config: LLMConfig) -> BaseChatModel:
+    """Create an AWS Bedrock chat model via ChatBedrockConverse.
+
+    Uses the Converse API (recommended over the legacy ChatBedrock) so the
+    same ``thinking`` parameter shape works across all Bedrock models that
+    support extended reasoning (Anthropic Claude, etc.). Credentials are
+    resolved through boto3's default chain (env vars, ~/.aws/credentials,
+    IAM role); Nymeria does not parse inline access-key/secret pairs.
+
+    Future: detect ``model_id`` starting with ``anthropic.`` and specialize to
+    ``ChatAnthropicBedrock`` for closer parity with native Anthropic feature
+    flags. Out of scope for the Tier 1 adoption.
+    """
+    try:
+        from langchain_aws import ChatBedrockConverse
+    except ImportError as exc:
+        raise ImportError(
+            "langchain-aws is required for the AWS Bedrock provider. "
+            "Install with: pip install langchain-aws"
+        ) from exc
+
+    kwargs: dict[str, Any] = {
+        "model_id": config.model,
+        "max_retries": 0,
+    }
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    if region:
+        kwargs["region_name"] = region
+
+    endpoint = config.base_url or os.getenv("AWS_BEDROCK_ENDPOINT_URL")
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
+    if config.top_p is not None:
+        kwargs["top_p"] = config.top_p
+    if config.max_tokens is not None:
+        kwargs["max_tokens"] = config.max_tokens
+    if config.request_timeout is not None:
+        # langchain-aws plumbs HTTP timeouts via the boto3 Config object,
+        # not a top-level kwarg. Surface as a hint via additional_kwargs so
+        # downstream wrappers can act on it without forcing a botocore import.
+        kwargs.setdefault("additional_model_request_fields", {})
+
+    return ChatBedrockConverse(**kwargs)
+
+
+def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
+    """Create an Ollama chat model speaking the native /api/chat protocol.
+
+    ``langchain-ollama`` covers Ollama's native protocol only (port 11434,
+    ``/api/chat`` and ``/api/generate``). Reasoning-capable Ollama builds
+    (qwen3, deepseek-r1, gpt-oss) surface ``<think>`` content via the
+    ``reasoning_content`` channel here, which round-trips natively.
+
+    The OpenAI-compatible shim at ``/v1/chat/completions`` continues to route
+    through ``_create_openai_compatible_llm`` under the existing ``ollama``
+    provider id. Use this provider (``ollama-native``) when you need native
+    reasoning round-trip; use ``ollama`` for OpenAI-compat parity with other
+    chat surfaces.
+    """
+    try:
+        from langchain_ollama import ChatOllama
+    except ImportError as exc:
+        raise ImportError(
+            "langchain-ollama is required for the native Ollama provider. "
+            "Install with: pip install langchain-ollama"
+        ) from exc
+
+    base_url = config.base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"
+    # Strip trailing /v1 if present: the native protocol lives at the root, not
+    # under /v1 (which is the OpenAI-compat shim).
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[: -len("/v1")]
+
+    kwargs: dict[str, Any] = {
+        "model": config.model,
+        "base_url": base_url,
+    }
+
+    if config.temperature is not None:
+        kwargs["temperature"] = config.temperature
+    if config.top_p is not None:
+        kwargs["top_p"] = config.top_p
+    if config.top_k is not None:
+        kwargs["top_k"] = config.top_k
+    if config.max_tokens is not None:
+        # Ollama uses num_predict (max tokens to generate).
+        kwargs["num_predict"] = config.max_tokens
+    if config.ollama_num_ctx is not None:
+        kwargs["num_ctx"] = int(config.ollama_num_ctx)
+    if config.request_timeout is not None:
+        kwargs["timeout"] = config.request_timeout
+
+    # Native Ollama exposes reasoning via the `reasoning` toggle (string for
+    # gpt-oss, bool for qwen3/deepseek-r1). Map both onto reasoning_effort when
+    # extended thinking is requested; let the ChatOllama default handle the
+    # remaining models.
+    if config.extended_thinking or config.reasoning_effort is not None:
+        effort = (config.reasoning_effort or "").lower()
+        model_name = (config.model or "").lower()
+        if "gpt-oss" in model_name and effort in {"low", "medium", "high"}:
+            kwargs["reasoning"] = effort
+        else:
+            kwargs["reasoning"] = True
+
+    return ChatOllama(**kwargs)
