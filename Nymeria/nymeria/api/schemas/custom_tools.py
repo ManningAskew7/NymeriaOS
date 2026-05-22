@@ -33,14 +33,44 @@ class ToolParameterModel(BaseModel):
 class HTTPToolConfigModel(BaseModel):
     """API model for HTTP tool configuration."""
 
-    method: HTTPMethod = "GET"
-    url: str
-    headers: dict[str, str] = {}
-    body_template: str | None = None
-    query_params: dict[str, str] = {}
-    timeout_seconds: int = 30
-    response_path: str | None = None
-    response_format: ResponseFormat = "auto"
+    method: HTTPMethod = Field(default="GET", description="HTTP method")
+    url: str = Field(
+        ...,
+        description=(
+            "URL template with ${param} placeholders. Use "
+            "${credential:cred_id.field} for secret values."
+        ),
+    )
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "HTTP headers. Sensitive headers must use "
+            "${credential:cred_id.field}; raw secrets are rejected."
+        ),
+    )
+    body_template: str | None = Field(
+        default=None,
+        description=(
+            "JSON/text body template with ${param} placeholders. Use "
+            "${credential:cred_id.field} for secret values."
+        ),
+    )
+    query_params: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Query parameter templates. Use ${credential:cred_id.field} for "
+            "secret values."
+        ),
+    )
+    timeout_seconds: int = Field(default=30, description="Request timeout in seconds")
+    response_path: str | None = Field(
+        default=None,
+        description="Optional JSON path to extract from a JSON response",
+    )
+    response_format: ResponseFormat = Field(
+        default="auto",
+        description="Response parsing mode",
+    )
 
 
 class MCPToolConfigModel(BaseModel):

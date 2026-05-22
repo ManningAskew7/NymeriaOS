@@ -7,6 +7,8 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from .execution_environment import resolve_tool_working_directory
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,8 @@ def bash_execute(
 
     Args:
         command: The shell command to execute
-        working_directory: Optional directory to run the command in
+        working_directory: Optional directory to run the command in. Relative
+            paths resolve from Nymeria's detected default tool cwd.
         timeout_seconds: Maximum time to wait for command (default 120s).
             Set lower (e.g. 5) for commands that might hang.
         run_in_background: If True, launch the command as a detached
@@ -40,11 +43,18 @@ def bash_execute(
     logger.info(f"Executing command: {command[:100]}...")
 
     try:
+        cwd = resolve_tool_working_directory(working_directory)
+        if not cwd.exists():
+            return f"[Error]: Working directory does not exist: {cwd}"
+        if not cwd.is_dir():
+            return f"[Error]: Working directory is not a directory: {cwd}"
+        cwd_str = str(cwd)
+
         if run_in_background:
             # Launch detached — the process keeps running independently
             kwargs = {
                 "shell": True,
-                "cwd": working_directory,
+                "cwd": cwd_str,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
                 "stdin": subprocess.DEVNULL,
@@ -69,7 +79,7 @@ def bash_execute(
         result = subprocess.run(
             command,
             shell=True,
-            cwd=working_directory,
+            cwd=cwd_str,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,

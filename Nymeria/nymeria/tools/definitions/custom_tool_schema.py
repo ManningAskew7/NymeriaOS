@@ -37,12 +37,14 @@ class ToolParameter(BaseModel):
 class HTTPToolConfig(BaseModel):
     """Configuration for HTTP-based custom tools.
 
-    Supports URL and body templating with ${param} syntax.
-    Secrets can be referenced via ${env:VAR_NAME} syntax.
+    Supports ${param} interpolation in URL, headers, query params, and body.
+    Secrets should use credential-vault references such as
+    ${credential:cred_id.value}; agent-created tools reject raw secrets and
+    ${env:...} secret references.
 
     Example:
         url: "https://api.example.com/users/${user_id}"
-        headers: {"Authorization": "Bearer ${env:API_KEY}"}
+        headers: {"Authorization": "Bearer ${credential:cred_id.value}"}
         body_template: '{"query": "${query}", "limit": ${limit}}'
     """
 
@@ -52,19 +54,31 @@ class HTTPToolConfig(BaseModel):
     )
     url: str = Field(
         ...,
-        description="URL template with ${param} placeholders",
+        description=(
+            "URL template with ${param} placeholders. Secret values should use "
+            "${credential:cred_id.field}, not raw keys."
+        ),
     )
     headers: Dict[str, str] = Field(
         default_factory=dict,
-        description="HTTP headers (supports ${env:VAR} for secrets)",
+        description=(
+            "HTTP headers. Sensitive headers such as Authorization or X-API-Key "
+            "must use ${credential:cred_id.field}; raw secrets are rejected."
+        ),
     )
     body_template: Optional[str] = Field(
         default=None,
-        description="JSON body template with ${param} placeholders",
+        description=(
+            "JSON/text body template with ${param} placeholders. Secret values "
+            "should use ${credential:cred_id.field}."
+        ),
     )
     query_params: Dict[str, str] = Field(
         default_factory=dict,
-        description="Query parameters template",
+        description=(
+            "Query parameter templates. Secret values should use "
+            "${credential:cred_id.field}."
+        ),
     )
     timeout_seconds: int = Field(
         default=30,

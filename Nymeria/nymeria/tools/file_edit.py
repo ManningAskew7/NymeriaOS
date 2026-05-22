@@ -67,7 +67,12 @@ class FileEditOperation(BaseModel):
 class FileEditInput(BaseModel):
     """Input schema for ``file_edit``."""
 
-    file_path: str = Field(description="Absolute or relative path to an existing file.")
+    file_path: str = Field(
+        description=(
+            "Absolute or relative path to an existing file. Relative paths "
+            "resolve from Nymeria's detected default tool cwd."
+        ),
+    )
     edits: list[FileEditOperation] = Field(
         description="Ordered exact edit operations to apply all-or-nothing.",
     )
@@ -374,7 +379,8 @@ def file_edit(
     Nothing is written unless every edit validates successfully.
 
     Args:
-        file_path: Absolute or relative path to an existing file
+        file_path: Absolute or relative path to an existing file. Relative
+            paths resolve from Nymeria's detected default tool cwd.
         edits: Ordered edit objects. operation is replace, delete,
             insert_before, insert_after, or replace_range.
         encoding: File encoding (default utf-8)

@@ -388,6 +388,24 @@ class NymeriaAgent:
         if tools:
             self.tool_registry.register_all(tools)
 
+        # Detect shell/path runtime facts once at startup and expose them in
+        # shell/file tool descriptions before any graph is built.
+        try:
+            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            from ..tools.execution_environment import (
+                configure_environment_aware_tool_descriptions,
+                detect_execution_environment,
+            )
+
+            self.execution_environment = detect_execution_environment()
+            configure_environment_aware_tool_descriptions(
+                [*ALL_TOOLS, *OPTIONAL_TOOLS.values()],
+                self.execution_environment,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.execution_environment = None
+            logger.warning("Execution environment detection failed (non-fatal): %s", e)
+
         # Load custom tools
         self._custom_tool_loader = None
         self._load_custom_tools()

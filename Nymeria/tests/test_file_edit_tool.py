@@ -8,6 +8,7 @@ import pytest
 
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools import filesystem
+from nymeria.tools import execution_environment
 from nymeria.tools.file_edit import file_edit
 from nymeria.tools.filesystem import file_write
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
@@ -236,16 +237,25 @@ def test_file_edit_rejects_paths_outside_workspace_when_enabled(tmp_path, monkey
 
 
 def test_file_write_is_confined_to_workspace_when_enabled(tmp_path, monkeypatch):
+    project_root = tmp_path.parent / f"{tmp_path.name}-project"
+    project_root.mkdir()
     monkeypatch.setattr(
         filesystem,
         "get_settings",
         lambda: type("Settings", (), {"nymeria_confine_file_to_workspace": True})(),
     )
-    ok = file_write.func("reports/result.txt", "hello")
+    monkeypatch.setattr(
+        execution_environment,
+        "get_settings",
+        lambda: type("Settings", (), {"project_root": project_root})(),
+    )
+    ok = file_write.func(str(tmp_path / "reports" / "result.txt"), "hello")
+    relative_denied = file_write.func("reports/relative-result.txt", "nope")
     denied = file_write.func(str(tmp_path.parent / "outside-write.txt"), "nope")
 
     assert ok.startswith("[Success]")
     assert (tmp_path / "reports" / "result.txt").read_text(encoding="utf-8") == "hello"
+    assert relative_denied.startswith("[Error]: Path outside workspace")
     assert denied.startswith("[Error]: Path outside workspace")
 
 
