@@ -71,6 +71,7 @@ class ServerSettingsResponse(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: int
     tool_output_max_chars: int
+    memory_char_limit: int = 8000
     log_level: str
     watchdog_enabled: bool
     watchdog_interval_minutes: int
@@ -670,6 +671,7 @@ class ServerSettingsUpdate(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
+    memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None

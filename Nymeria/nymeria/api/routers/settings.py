@@ -94,6 +94,7 @@ def _env_mapping() -> dict[str, str]:
         "compact_model": "COMPACT_MODEL",
         "sliding_window_cycles": "SLIDING_WINDOW_CYCLES",
         "tool_output_max_chars": "TOOL_OUTPUT_MAX_CHARS",
+        "memory_char_limit": "MEMORY_CHAR_LIMIT",
         "log_level": "LOG_LEVEL",
         "watchdog_enabled": "WATCHDOG_ENABLED",
         "watchdog_interval_minutes": "WATCHDOG_INTERVAL_MINUTES",
@@ -757,6 +758,7 @@ def _env_categories() -> dict[str, list[str]]:
             "compact_keep_messages",
             "compact_model",
             "sliding_window_cycles",
+            "memory_char_limit",
         ],
         "System": [
             "log_level",
@@ -1183,6 +1185,7 @@ def create_settings_router(
             compact_model=settings.compact_model,
             sliding_window_cycles=settings.sliding_window_cycles,
             tool_output_max_chars=settings.tool_output_max_chars,
+            memory_char_limit=settings.memory_char_limit,
             log_level=settings.log_level,
             watchdog_enabled=settings.watchdog_enabled,
             watchdog_interval_minutes=settings.watchdog_interval_minutes,

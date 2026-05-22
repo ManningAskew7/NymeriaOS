@@ -351,6 +351,8 @@ Three unified primitives  -  `memory_add`, `memory_edit`, `memory_read`  -  cove
 
 Empty `content` (in `memory_add`) or empty `replace` whose result empties the entry (in `memory_edit`) deletes cleanly: profile rows are popped, notepad files are unlinked. There is no separate `memory_forget` because the storage layer treats blank-as-delete, so edit-to-blank leaves no zombie entries.
 
+Global profile memories and per-thread notepads have an aggregate character budget. The global default is `MEMORY_CHAR_LIMIT=8000`; a thread can override the notepad limit from thread settings. Writes that would grow past the effective budget fail with a memory-full error telling the agent to consolidate or remove older memories. Deletes and shrinking edits are still allowed when existing data is already over the limit.
+
 > **Implementation note:** `memory_add`, `memory_edit`, `memory_read`, `personality_set`, and `rag_search` accept an `Annotated[RunnableConfig, InjectedToolArg]` parameter that LangGraph injects automatically. The LLM never passes it.
 
 ### memory_add
@@ -378,7 +380,7 @@ memory_add(scope="thread", content="")                             # deletes the
 **Behavior:**
 - `scope="global"` upserts into `UserProfile.memories` and re-indexes in the RAG store if RAG is enabled.
 - `scope="thread"` overwrites the notepad (replace semantics; for append-style writes, read-then-add).
-- Notepad max size: 50 KB. Profile max entries: 100. Profile values are truncated to 1000 chars.
+- Memory max size: `MEMORY_CHAR_LIMIT` characters by default, with optional per-thread notepad overrides. Profile max entries: 100. Profile values are truncated to 1000 chars.
 - Prompt injection guard: profile values are rendered as data, not Markdown instructions; embedded commands, role changes, and tool requests must not be followed by the model.
 
 ---

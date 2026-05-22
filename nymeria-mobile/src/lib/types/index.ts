@@ -216,6 +216,7 @@ export interface ThreadConfig {
   enabledTools: string[];
   llmConfig?: ThreadLLMConfig | null;
   activeLlmFallback?: ActiveLLMFallback | null;
+  memoryCharLimit?: number | null;
   systemPrompt?: string | null;
   callable: boolean;
   callableName?: string | null;
@@ -263,6 +264,7 @@ export interface ThreadConfigUpdateRequest {
   callable_max_iterations?: number | null;
   callable_team_id?: string | null;
   callable_team_name?: string | null;
+  memory_char_limit?: number | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
@@ -275,6 +277,7 @@ export interface ThreadConfigUpdateRequest {
   clear_disabled_skills?: boolean;
   clear_llm_config?: boolean;
   clear_system_prompt?: boolean;
+  clear_memory_char_limit?: boolean;
 }
 
 // =========================================================================
@@ -832,6 +835,7 @@ export interface ServerSettings {
   compact_model: string | null;
   sliding_window_cycles: number;
   tool_output_max_chars: number;
+  memory_char_limit: number;
   log_level: LogLevel;
   watchdog_enabled: boolean;
   watchdog_interval_minutes: number;
@@ -1250,6 +1254,7 @@ export interface ServerSettingsUpdate {
   compact_model?: string | null;
   sliding_window_cycles?: number;
   tool_output_max_chars?: number;
+  memory_char_limit?: number;
   log_level?: LogLevel;
   watchdog_enabled?: boolean;
   watchdog_interval_minutes?: number;

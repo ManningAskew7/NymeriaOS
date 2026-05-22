@@ -869,6 +869,7 @@ class CommandBackendClient:
             "compact_model": settings.compact_model,
             "sliding_window_cycles": settings.sliding_window_cycles,
             "tool_output_max_chars": settings.tool_output_max_chars,
+            "memory_char_limit": settings.memory_char_limit,
             "log_level": settings.log_level,
             "watchdog_enabled": settings.watchdog_enabled,
             "watchdog_interval_minutes": settings.watchdog_interval_minutes,
@@ -1013,13 +1014,28 @@ class CommandBackendClient:
             logger.warning("Failed to remove memory '%s' from RAG index: %s", key, e)
 
     async def save_memory(self, user_id: str, key: str, value: str) -> dict:
+        from .memory_limits import (
+            get_global_memory_char_limit,
+            validate_profile_memory_write,
+        )
+
         target_user_id = self._checked_user_id(user_id)
         with self.agent.profile_manager.atomic_update(target_user_id) as profile:
+            limit_error = validate_profile_memory_write(
+                profile,
+                key=key,
+                value=value,
+                limit=get_global_memory_char_limit(getattr(self.agent, "settings", None)),
+            )
+            if limit_error:
+                _raise_http_status(400, limit_error)
             success = profile.add_memory(key, value)
             max_memories = profile.MAX_MEMORIES
+            stored = profile.get_memory(key)
+            stored_value = stored.value if stored else value
         if not success:
             _raise_http_status(400, f"Memory limit reached ({max_memories})")
-        self._upsert_memory_rag_chunk(target_user_id, key, value)
+        self._upsert_memory_rag_chunk(target_user_id, key, stored_value)
         return {"status": "ok", "key": key}
 
     async def forget_memory(self, user_id: str, key: str) -> dict:
@@ -1353,6 +1369,10 @@ class CommandBackendClient:
             else:
                 for key, value in llm_data.items():
                     setattr(tc.llm_config, key, value)
+        if kwargs.get("clear_memory_char_limit"):
+            tc.memory_char_limit = None
+        elif "memory_char_limit" in kwargs and kwargs["memory_char_limit"] is not None:
+            tc.memory_char_limit = int(kwargs["memory_char_limit"])
 
         if not self.agent.thread_config_manager.save_config(tc):
             _raise_http_status(500, "Failed to save thread config")
@@ -2065,6 +2085,15 @@ class CommandService:
             category="Memory",
             usage="/memory search <query>",
             aliases=("memory_search",),
+        )
+        self.register(
+            "memory limit",
+            description="Show or change memory character limits",
+            category="Memory",
+            usage="/memory limit [global <chars>|thread <chars>|thread inherit]",
+            aliases=("memory_limit",),
+            mutates_state=True,
+            danger_level="normal",
         )
         self.register(
             "todos list",
@@ -4155,6 +4184,7 @@ class _CommandExecutor:
         threshold = settings.get("compact_threshold", 0) or 0
         lines.append(f"  compact threshold: {int(threshold * 100)}%")
         lines.append(f"  keep messages: {settings.get('compact_keep_messages', '?')}")
+        lines.append(f"  memory char limit: {settings.get('memory_char_limit', '?')}")
         compact_model = settings.get("compact_model")
         if compact_model:
             lines.append(f"  compact model: {compact_model}")
@@ -4480,6 +4510,97 @@ class _CommandExecutor:
             lines.append(f"  {mem.get('key', '?')}: {preview}")
         return _truncate("[Info]: " + "\n".join(lines))
 
+    async def _cmd_memory_limit(self, args: list[str], rest: str) -> str:
+        from .memory_limits import (
+            MAX_MEMORY_CHAR_LIMIT,
+            get_effective_thread_memory_char_limit,
+            get_global_memory_char_limit,
+            profile_memory_text_from_records,
+        )
+        from ..config import get_settings
+        from ..tools.thread_notes import read_notepad
+
+        def parse_limit(raw: str) -> int | None:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return None
+            if value < 1 or value > MAX_MEMORY_CHAR_LIMIT:
+                return None
+            return value
+
+        agent = self._agent()
+        settings = getattr(agent, "settings", None) if agent is not None else None
+        if settings is None:
+            settings = get_settings()
+
+        if not args:
+            memories = await self.api.list_memories(self.user_id)
+            global_limit = get_global_memory_char_limit(settings)
+            lines = [
+                "Memory Limits",
+                f"  global: {len(profile_memory_text_from_records(memories))} / {global_limit} chars",
+            ]
+            if self.thread_id:
+                manager = getattr(agent, "thread_config_manager", None) if agent is not None else None
+                effective_limit = get_effective_thread_memory_char_limit(
+                    self.thread_id,
+                    settings=settings,
+                    thread_config_manager=manager,
+                )
+                try:
+                    thread_cfg = await self.api.get_thread_config(self.thread_id)
+                except Exception:  # noqa: BLE001
+                    thread_cfg = {}
+                override = (thread_cfg or {}).get("memory_char_limit")
+                source = f"override {override}" if override is not None else "inherits global"
+                notepad = read_notepad(self.thread_id) or ""
+                lines.append(
+                    f"  thread: {len(notepad)} / {effective_limit} chars ({source})"
+                )
+            return "[Info]: " + "\n".join(lines)
+
+        scope = args[0].lower()
+        if scope == "global":
+            if len(args) != 2:
+                return "[Error]: Usage: /memory limit global <chars>"
+            limit = parse_limit(args[1])
+            if limit is None:
+                return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+            result = await self.api.update_settings(
+                user_id=self.user_id,
+                memory_char_limit=limit,
+            )
+            msg = f"[Success]: Global memory character limit set to {limit}."
+            if result.get("restart_required"):
+                msg += " (restart required to take effect)"
+            return msg
+
+        if scope == "thread":
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
+            if len(args) != 2:
+                return "[Error]: Usage: /memory limit thread <chars|inherit>"
+            if args[1].lower() in ("inherit", "default", "global"):
+                await self.api.update_thread_config(
+                    self.thread_id,
+                    clear_memory_char_limit=True,
+                    user_id=self.user_id,
+                )
+                return "[Success]: This thread now inherits the global memory character limit."
+            limit = parse_limit(args[1])
+            if limit is None:
+                return f"[Error]: Limit must be an integer from 1 to {MAX_MEMORY_CHAR_LIMIT}."
+            await self.api.update_thread_config(
+                self.thread_id,
+                memory_char_limit=limit,
+                user_id=self.user_id,
+            )
+            return f"[Success]: This thread's memory character limit set to {limit}."
+
+        return "[Error]: Usage: /memory limit [global <chars>|thread <chars>|thread inherit]"
+
     # ── TODOs ─────────────────────────────────────────────────────────────
 
     async def _cmd_todos_list(self, args: list[str], rest: str) -> str:
@@ -4582,24 +4703,17 @@ class _CommandExecutor:
         raw = rest
         if not raw:
             return "[Error]: Usage: /notepad write <content>  (or: replace:<content>)"
-        from ..tools.thread_notes import _notepad_path, MAX_NOTEPAD_SIZE
+        from ..tools.thread_notes import write_notepad
         if raw.lower().startswith("replace:"):
             write_mode = "replace"
             content = raw[8:].strip()
         else:
             write_mode = "append"
             content = raw
-        path = _notepad_path(self.thread_id)
-        if write_mode == "append":
-            existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            new_content = (existing.rstrip() + "\n\n" + content) if existing else content
-        else:
-            new_content = content
-        if len(new_content.encode("utf-8")) > MAX_NOTEPAD_SIZE:
-            return f"[Error]: Notepad would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit."
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_content, encoding="utf-8")
-        return f"[Success]: Notepad updated ({write_mode}): {len(new_content.encode('utf-8'))} bytes."
+        result = write_notepad(self.thread_id, content, mode=write_mode)
+        if result.startswith("[Saved]:"):
+            return result.replace("[Saved]:", "[Success]:", 1)
+        return result
 
     async def _cmd_notepad_clear(self, args: list[str], rest: str) -> str:
         thread_error = self._require_thread()

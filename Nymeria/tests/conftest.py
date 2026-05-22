@@ -23,6 +23,7 @@ class ApiTestSettings:
     fcm_credentials_json: str | None = None
     context_management: str = "none"
     sliding_window_cycles: int = 20
+    memory_char_limit: int = 8000
     todo_auto_archive_days: int = 7
     nymeria_debug: bool = False
     api_docs_enabled: bool = False

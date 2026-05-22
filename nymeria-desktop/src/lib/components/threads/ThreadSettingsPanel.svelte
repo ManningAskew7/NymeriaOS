@@ -302,12 +302,17 @@
     return threadConfig?.notificationProfile ?? null;
   }
 
+  function getInitialMemoryCharLimit(): string {
+    return threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
+  }
+
   let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
   let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
   let showPromptMetadata = $state(getInitialShowPromptMetadata());
   let telegramAutonomousDelivery = $state<TelegramAutonomousDelivery>(getInitialTelegramAutonomousDelivery());
   let inAppNotificationLevel = $state<InAppNotificationLevel>(getInitialInAppNotificationLevel());
   let notificationProfile = $state<string | null>(getInitialNotificationProfile());
+  let memoryCharLimit = $state<string | number>(getInitialMemoryCharLimit());
 
   // Search
   let toolSearch = $state('');
@@ -533,6 +538,9 @@
     const origNotificationProfile = threadConfig?.notificationProfile ?? null;
     if ((notificationProfile ?? null) !== origNotificationProfile) return true;
 
+    const origMemoryCharLimit = threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
+    if (String(memoryCharLimit ?? '').trim() !== origMemoryCharLimit) return true;
+
     return false;
   }
 
@@ -666,6 +674,12 @@
       } else {
         updates.notification_profile = notificationProfile;
       }
+      const memoryLimitValue = String(memoryCharLimit ?? '').trim();
+      if (memoryLimitValue) {
+        updates.memory_char_limit = parseInt(memoryLimitValue, 10);
+      } else {
+        updates.clear_memory_char_limit = true;
+      }
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -727,6 +741,7 @@
       telegramAutonomousDelivery = 'full';
       inAppNotificationLevel = 'notify_only';
       notificationProfile = null;
+      memoryCharLimit = '';
       threadsStore.updateThread(thread.id, {
         callable: false,
         platform: platformAfterCallableChange(thread, false),
@@ -749,6 +764,7 @@
         telegramAutonomousDelivery: 'full',
         inAppNotificationLevel: 'notify_only',
         notificationProfile: null,
+        memoryCharLimit: null,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -997,6 +1013,26 @@
                 <span class="char-count">{callableDescription.length} / 500</span>
               </div>
             {/if}
+          </div>
+
+          <div class="agent-config-section">
+            <h3 class="section-title">Memory</h3>
+            <p class="field-hint">
+              Limit the persistent notepad for this thread. Leave blank to inherit the global limit{serverSettingsStore.memoryCharLimit ? ` (${serverSettingsStore.memoryCharLimit.toLocaleString()} chars)` : ''}.
+            </p>
+            <div class="field-group">
+              <label class="field-label" for="thread-memory-limit-input">Memory Character Limit</label>
+              <input
+                id="thread-memory-limit-input"
+                class="field-input"
+                type="number"
+                min="1"
+                max="2000000"
+                step="500"
+                bind:value={memoryCharLimit}
+                placeholder="Inherit global"
+              />
+            </div>
           </div>
         </div>
 

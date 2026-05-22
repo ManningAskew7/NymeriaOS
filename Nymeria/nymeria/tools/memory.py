@@ -27,6 +27,10 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.user_profile import UserProfileManager
 from ..core.memory_index import MemoryIndex
+from ..core.memory_limits import (
+    get_global_memory_char_limit,
+    validate_profile_memory_write,
+)
 from . import thread_notes
 from .utils import get_thread_id, get_user_id
 
@@ -138,7 +142,7 @@ def memory_add(
     Returns:
         Global: "[Saved]: I'll remember '<key>'..." or "[Deleted]: Forgot
         '<key>'..." (when content is empty). Thread: "[Saved]: Notepad
-        updated (N bytes)...". Errors: "[Error]: <reason>".
+        updated (N chars)...". Errors: "[Error]: <reason>".
     """
     err = _validate_scope(scope)
     if err:
@@ -160,11 +164,20 @@ def memory_add(
                 return f"[Info]: No memory with key '{key}' to delete."
 
         with manager.atomic_update(user_id) as profile:
+            stored_content = content[: profile.MAX_VALUE_LENGTH]
+            limit_error = validate_profile_memory_write(
+                profile,
+                key=key,
+                value=stored_content,
+                limit=get_global_memory_char_limit(),
+            )
+            if limit_error:
+                return limit_error
             ok = profile.add_memory(key, content)
             if not ok:
                 return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Delete some first."
-            logger.info(f"Memory saved for user {user_id}: {key}={content[:50]}")
-            _rag_index_global(user_id, key, content)
+            logger.info(f"Memory saved for user {user_id}: {key}={stored_content[:50]}")
+            _rag_index_global(user_id, key, stored_content)
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
 
     # scope == "thread"
@@ -235,9 +248,18 @@ def memory_edit(
                 _rag_remove_global(user_id, key)
                 return f"[Deleted]: Edit emptied '{key}'; entry removed."
 
+            stored_value = updated_value[: profile.MAX_VALUE_LENGTH]
+            limit_error = validate_profile_memory_write(
+                profile,
+                key=key,
+                value=stored_value,
+                limit=get_global_memory_char_limit(),
+            )
+            if limit_error:
+                return limit_error
             profile.add_memory(key, updated_value)
             logger.info(f"Memory '{key}' edited for user {user_id}")
-            _rag_index_global(user_id, key, updated_value)
+            _rag_index_global(user_id, key, stored_value)
             return f"[Saved]: Updated '{key}'."
 
     # scope == "thread"

@@ -672,6 +672,7 @@ or tool explicitly requires them.
 | `MAUTIC_PASSWORD` | - | Mautic basic-auth password fallback |
 | `MAUTIC_USERNAME` | - | Mautic basic-auth username fallback |
 | `MCP_REGISTRY_URL` | `https://registry.modelcontextprotocol.io` | Official MCP registry base URL used by `search_mcp` and `install_mcp_server` |
+| `MEMORY_CHAR_LIMIT` | `8000` | Default aggregate character budget for global profile memories and per-thread notepads. Threads can override their notepad limit in thread settings |
 | `MICROSOFT_GRAPH_ACCESS_TOKEN` | - | Microsoft Graph OAuth access token fallback for native productivity tools |
 | `MICROSOFT_GRAPH_BASE_URL` | `https://graph.microsoft.com/v1.0` | Microsoft Graph API base URL |
 | `OKTA_ACCESS_TOKEN` | - | Okta SSWS API token fallback |
@@ -1691,6 +1692,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # LLM_PRESENCE_PENALTY=0.0
 # LLM_REASONING_EFFORT=medium  # For reasoning models
 # LLM_USE_MODEL_DEFAULTS=false # Let provider use model-specific optimal defaults
+# MEMORY_CHAR_LIMIT=8000       # Global/default persisted memory character budget
 
 # Web search (optional but recommended)
 PERPLEXITY_API_KEY=pplx-...
