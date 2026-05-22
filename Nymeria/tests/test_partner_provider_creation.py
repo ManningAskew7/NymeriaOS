@@ -18,11 +18,17 @@ from typing import Any
 import pytest
 
 from nymeria.config.llm_providers import (
+    _DOWNGRADED_ROUTE_WARNED,
     get_llm_provider_spec,
     get_provider_tier,
     is_openai_compatible_provider,
     is_provider_verified,
     list_llm_provider_specs,
+    normalize_llm_provider,
+    provider_default_route,
+    provider_supports_route,
+    resolve_provider_base_url,
+    resolve_provider_route,
 )
 from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
@@ -53,7 +59,8 @@ def _bedrock_config(**overrides) -> LLMConfig:
 
 def _ollama_native_config(**overrides) -> LLMConfig:
     values = {
-        "provider": "ollama-native",
+        "provider": "ollama",
+        "provider_route": "native",
         "model": "qwen3",
         "api_key": None,
         "temperature": None,
@@ -201,7 +208,7 @@ def test_bedrock_uses_aws_region_env(monkeypatch):
 
 
 def test_ollama_native_dispatches_to_partner_package(monkeypatch):
-    """provider="ollama-native" routes to langchain-ollama ChatOllama."""
+    """provider="ollama" defaults to langchain-ollama ChatOllama."""
     capture = _fresh_capture()
     import sys
     import types
@@ -248,12 +255,12 @@ def test_ollama_native_max_tokens_maps_to_num_predict(monkeypatch):
     assert "max_tokens" not in kwargs
 
 
-def test_ollama_native_distinct_from_ollama_openai_compat(monkeypatch):
-    """provider="ollama" stays on OpenAI-compat path; "ollama-native" uses partner pkg.
+def test_ollama_route_toggle_switches_between_native_and_openai_compat(monkeypatch):
+    """provider_route chooses Ollama native or OpenAI-compatible adapter.
 
-    Regression guard for the dual-routing design: existing thread configs
-    storing provider="ollama" must continue to hit _create_openai_compatible_llm,
-    only the new "ollama-native" id routes through langchain-ollama.
+    The public provider id is a single "ollama" entry. Native is the default
+    because it preserves reasoning round-trip; openai_compat remains available
+    as an explicit route override.
     """
     native_capture = _fresh_capture()
     import sys
@@ -275,14 +282,20 @@ def test_ollama_native_distinct_from_ollama_openai_compat(monkeypatch):
 
     monkeypatch.setattr(providers, "_create_openai_compatible_llm", fake_openai_compat)
 
-    # "ollama" → openai-compat
-    cfg_compat = LLMConfig(provider="ollama", model="llama3.1", api_key="x", base_url=None)
+    # "ollama" + route=openai_compat -> OpenAI-compatible shim
+    cfg_compat = LLMConfig(
+        provider="ollama",
+        provider_route="openai_compat",
+        model="llama3.1",
+        api_key="x",
+        base_url=None,
+    )
     create_llm(cfg_compat)
     assert len(openai_compat_calls) == 1
     assert len(native_capture.captured) == 0
 
-    # "ollama-native" → partner package
-    cfg_native = LLMConfig(provider="ollama-native", model="qwen3", api_key=None, base_url=None)
+    # "ollama" default route -> partner package
+    cfg_native = LLMConfig(provider="ollama", model="qwen3", api_key=None, base_url=None)
     create_llm(cfg_native)
     assert len(openai_compat_calls) == 1  # unchanged
     assert len(native_capture.captured) == 1
@@ -294,6 +307,7 @@ def test_tier_field_populated_for_known_specs():
     assert get_provider_tier("openai") == "native"
     assert get_provider_tier("google") == "native"
     assert get_provider_tier("bedrock") == "native"
+    assert get_provider_tier("ollama") == "native"
     assert get_provider_tier("ollama-native") == "native"
     assert get_provider_tier("openrouter") == "gateway"
     assert get_provider_tier("vercel") == "gateway"
@@ -317,13 +331,14 @@ def test_legacy_is_provider_verified_shim():
     assert is_provider_verified("openrouter") is True  # gateway still counts
     assert is_provider_verified("google") is True
     assert is_provider_verified("bedrock") is True
+    assert is_provider_verified("ollama") is True
     assert is_provider_verified("ollama-native") is True
     assert is_provider_verified("deepseek") is False
     assert is_provider_verified("nonexistent-provider") is False
 
 
-def test_new_native_providers_excluded_from_openai_compat_path():
-    """google / bedrock / ollama-native should NOT match is_openai_compatible_provider.
+def test_new_native_providers_excluded_from_default_openai_compat_path():
+    """google / bedrock / ollama should NOT default to openai_chat api_format.
 
     Regression guard: if their api_format ever drifts back to "openai_chat",
     they'd fall through to _create_openai_compatible_llm and silently lose
@@ -333,8 +348,44 @@ def test_new_native_providers_excluded_from_openai_compat_path():
     assert is_openai_compatible_provider("google") is False
     assert is_openai_compatible_provider("bedrock") is False
     assert is_openai_compatible_provider("ollama-native") is False
-    # The OpenAI-compat ollama provider stays on the compat path.
-    assert is_openai_compatible_provider("ollama") is True
+    assert is_openai_compatible_provider("ollama") is False
+
+
+def test_route_metadata_for_dual_route_providers():
+    """Dual-route providers advertise native defaults plus compat base URLs."""
+    google = get_llm_provider_spec("google")
+    assert google is not None
+    assert google.supported_routes == ("native", "openai_compat")
+    assert google.default_route == "native"
+    assert google.openai_compat_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    ollama = get_llm_provider_spec("ollama")
+    assert ollama is not None
+    assert ollama.supported_routes == ("native", "openai_compat")
+    assert ollama.default_route == "native"
+    assert ollama.openai_compat_base_url == "http://localhost:11434/v1"
+    assert normalize_llm_provider("ollama-native") == "ollama"
+    assert provider_supports_route("ollama", "openai_compat") is True
+    assert provider_default_route("ollama") == "native"
+
+
+def test_resolve_provider_base_url_uses_route_specific_compat_url(monkeypatch):
+    """OpenAI-compat route can resolve a different base URL from native."""
+    assert resolve_provider_base_url("google", provider_route="native") is None
+    assert (
+        resolve_provider_base_url("google", provider_route="openai_compat")
+        == "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    assert (
+        resolve_provider_base_url("ollama", provider_route="native")
+        == "http://localhost:11434"
+    )
+    assert (
+        resolve_provider_base_url("ollama", provider_route="openai_compat")
+        == "http://localhost:11434/v1"
+    )
 
 
 def test_notes_for_user_populated_for_known_issue_providers():
@@ -376,3 +427,152 @@ def test_google_genai_missing_api_key_raises(monkeypatch):
     cfg = LLMConfig(provider="google", model="gemini-2.5-pro", api_key=None)
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
         providers._create_google_genai_llm(cfg)
+
+
+# ---------------------------------------------------------------------------
+# resolve_provider_route — precedence chain + silent downgrade
+# ---------------------------------------------------------------------------
+
+
+def test_provider_route_thread_overrides_global():
+    """Thread override beats global default even when both are set and supported."""
+    # ollama supports both routes, so both candidates are valid; thread should win.
+    resolved = resolve_provider_route(
+        "ollama",
+        route_override="openai_compat",
+        global_route="native",
+    )
+    assert resolved == "openai_compat"
+
+
+def test_provider_route_global_used_when_thread_unset():
+    """Global default takes effect when the thread override is None or blank."""
+    resolved = resolve_provider_route(
+        "ollama",
+        route_override=None,
+        global_route="openai_compat",
+    )
+    assert resolved == "openai_compat"
+    # Empty string is treated the same as None.
+    resolved = resolve_provider_route(
+        "ollama",
+        route_override="",
+        global_route="openai_compat",
+    )
+    assert resolved == "openai_compat"
+
+
+def test_provider_route_falls_back_to_spec_default_when_both_unset():
+    """No override + no global → provider's declared default route."""
+    # ollama defaults to native.
+    assert resolve_provider_route("ollama") == "native"
+    # bedrock only supports native.
+    assert resolve_provider_route("bedrock") == "native"
+    # openrouter only supports openai_compat.
+    assert resolve_provider_route("openrouter") == "openai_compat"
+
+
+def test_provider_route_silently_downgrades_to_default_when_unsupported(caplog):
+    """Recognised but unsupported override silently downgrades and logs once.
+
+    Regression guard for the documented behaviour: when a user has
+    ``provider_route="native"`` saved against a provider whose
+    ``supported_routes=("openai_compat",)`` (e.g. deepseek today), the dispatch
+    layer must not crash. It downgrades to the spec's default route and emits
+    a single warning so the misconfiguration is visible without log spam.
+    """
+    _DOWNGRADED_ROUTE_WARNED.clear()
+    # deepseek's supported_routes is ("openai_compat",); requesting native is invalid.
+    # Scope caplog to the registry logger and force propagation so the warning
+    # is captured regardless of any other test's logging config.
+    with caplog.at_level("WARNING", logger="nymeria.config.llm_providers"):
+        resolved = resolve_provider_route("deepseek", route_override="native")
+    assert resolved == "openai_compat"  # downgraded to default
+    warning_messages = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name == "nymeria.config.llm_providers"
+    ]
+    assert any(
+        "does not support thread provider_route='native'" in msg
+        and "deepseek" in msg
+        for msg in warning_messages
+    ), f"Expected downgrade warning for deepseek; got: {warning_messages}"
+
+    # Second call with the same (provider, route) should not warn again (dedup).
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="nymeria.config.llm_providers"):
+        resolve_provider_route("deepseek", route_override="native")
+    warnings_after_dedup = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name == "nymeria.config.llm_providers"
+    ]
+    assert not warnings_after_dedup, (
+        f"Downgrade warning should dedup, but got: {warnings_after_dedup}"
+    )
+
+
+def test_provider_route_downgrade_distinguishes_thread_vs_global_scope(caplog):
+    """The downgrade warning indicates whether thread or global supplied the bad route."""
+    _DOWNGRADED_ROUTE_WARNED.clear()
+    # bedrock supports only native; an openai_compat global override should downgrade.
+    with caplog.at_level("WARNING", logger="nymeria.config.llm_providers"):
+        resolved = resolve_provider_route("bedrock", global_route="openai_compat")
+    assert resolved == "native"
+    warning_messages = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name == "nymeria.config.llm_providers"
+    ]
+    assert any(
+        "global provider_route='openai_compat'" in msg and "bedrock" in msg
+        for msg in warning_messages
+    ), f"Expected global-scoped warning; got: {warning_messages}"
+
+
+def test_catalog_response_round_trips_all_new_route_fields():
+    """LLMProviderSpecResponse must surface tier, notes_for_user, AND route fields.
+
+    Wider sibling to the existing notes_for_user round-trip test: also assert
+    supported_routes / default_route / openai_compat_base_url flow through the
+    schema. Without this, a future router change could silently drop one of
+    the route fields and the picker UX would regress.
+    """
+    from nymeria.api.schemas.settings import LLMProviderSpecResponse
+
+    google_spec = get_llm_provider_spec("google")
+    assert google_spec is not None
+    assert google_spec.is_multi_route
+
+    response = LLMProviderSpecResponse(
+        id=google_spec.id,
+        label=google_spec.label,
+        api_format=google_spec.api_format,
+        default_base_url=google_spec.default_base_url,
+        api_key_env_vars=list(google_spec.api_key_env_vars),
+        base_url_env_vars=list(google_spec.base_url_env_vars),
+        default_model=google_spec.default_model,
+        default_api_mode=google_spec.default_api_mode,
+        supports_chat_completions=google_spec.supports_chat_completions,
+        supports_responses=google_spec.supports_responses,
+        requires_api_key=google_spec.requires_api_key,
+        requires_base_url=google_spec.requires_base_url,
+        docs_url=google_spec.docs_url,
+        notes=google_spec.notes,
+        aliases=list(google_spec.aliases),
+        tier=google_spec.tier,
+        notes_for_user=google_spec.notes_for_user,
+        supported_routes=list(google_spec.supported_routes),
+        default_route=google_spec.default_route,
+        openai_compat_base_url=google_spec.openai_compat_base_url,
+        verified=google_spec.verified,
+    )
+
+    payload = response.model_dump()
+    assert payload["supported_routes"] == ["native", "openai_compat"]
+    assert payload["default_route"] == "native"
+    assert payload["openai_compat_base_url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+    assert payload["tier"] == "native"

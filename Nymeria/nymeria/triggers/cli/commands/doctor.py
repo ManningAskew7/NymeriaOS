@@ -138,6 +138,7 @@ async def _handle_doctor_model(
     rows = [
         ("Provider", mapping_get(diagnostics, "provider", mapping_get(diagnostics, "llm_provider", ""))),
         ("Model", mapping_get(diagnostics, "model", mapping_get(diagnostics, "llm_model", ""))),
+        ("Route", mapping_get(diagnostics, "provider_route", "") or "default"),
         ("Mode", mapping_get(diagnostics, "mode", "")),
         ("Base URL", one_line(mapping_get(diagnostics, "base_url", ""), limit=80)),
         ("Status", mapping_get(diagnostics, "status", "available")),

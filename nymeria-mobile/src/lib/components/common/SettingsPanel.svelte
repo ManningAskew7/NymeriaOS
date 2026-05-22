@@ -6,14 +6,22 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
-  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel } from '$lib/types';
+  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
+  import ProviderSelect from './ProviderSelect.svelte';
   import { CredentialManagerPanel } from '../credentials';
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import { AccountTab, UsersTab } from '../account';
+  import {
+    coerceProviderRoute,
+    hasRouteChoice,
+    providerRouteLabel,
+    supportedRoutesForProvider,
+  } from '$lib/utils/providerRoutes';
 
   interface Props {
     open: boolean;
@@ -26,63 +34,10 @@
   type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
   type TabConfig = { id: Tab; label: string; disabled: boolean };
   const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
-  const hostedOpenAiCompatibleProviders = [
-    ['openrouter', 'OpenRouter'],
-    ['openai', 'OpenAI'],
-    ['azure-foundry', 'Azure AI Foundry'],
-    ['xai', 'xAI'],
-    ['google', 'Google Gemini'],
-    ['google-vertex', 'Google Vertex AI'],
-    ['groq', 'Groq'],
-    ['deepseek', 'DeepSeek'],
-    ['mistral', 'Mistral AI'],
-    ['cohere', 'Cohere'],
-    ['togetherai', 'Together AI'],
-    ['fireworks-ai', 'Fireworks AI'],
-    ['perplexity', 'Perplexity'],
-    ['cerebras', 'Cerebras'],
-    ['sambanova', 'SambaNova'],
-    ['nvidia', 'NVIDIA NIM'],
-    ['huggingface', 'Hugging Face'],
-    ['deepinfra', 'DeepInfra'],
-    ['moonshotai', 'Moonshot / Kimi'],
-    ['aihubmix', 'AIHubMix'],
-    ['alibaba', 'Alibaba / Qwen'],
-    ['alibaba-coding-plan', 'Alibaba Coding Plan'],
-    ['qwen-oauth', 'Qwen Portal'],
-    ['zai', 'Z.ai'],
-    ['zhipuai', 'Zhipu AI'],
-    ['qianfan', 'Baidu Qianfan'],
-    ['stepfun', 'StepFun'],
-    ['volcengine', 'Volcengine Ark'],
-    ['volcengine-coding-plan', 'Volcengine Coding Plan'],
-    ['byteplus', 'BytePlus ModelArk'],
-    ['vercel', 'Vercel AI Gateway'],
-    ['v0', 'Vercel v0'],
-    ['github-models', 'GitHub Models'],
-    ['github-copilot', 'GitHub Copilot'],
-    ['requesty', 'Requesty'],
-    ['poe', 'Poe'],
-    ['gmi', 'GMI Cloud'],
-    ['nous', 'Nous Research'],
-    ['tencent-tokenhub', 'Tencent TokenHub'],
-    ['novita-ai', 'Novita AI'],
-    ['siliconflow', 'SiliconFlow'],
-    ['arcee', 'Arcee AI'],
-    ['chutes', 'Chutes'],
-    ['venice', 'Venice AI'],
-    ['kilocode', 'Kilo Code Gateway'],
-    ['ollama-cloud', 'Ollama Cloud'],
-  ];
-  const localOpenAiCompatibleProviders = [
-    ['ollama', 'Ollama local'],
-    ['lmstudio', 'LM Studio'],
-    ['llamacpp', 'llama.cpp server'],
-    ['vllm', 'vLLM'],
-    ['localai', 'LocalAI'],
-    ['litellm', 'LiteLLM proxy'],
-    ['tgi', 'Hugging Face TGI'],
-  ];
+  // Tier-grouped picker options sourced from the live provider catalog.
+  // Mobile has no synthetic display providers (no anthropic_proxy /
+  // anthropic_direct / openai_custom variants like desktop), so the helper
+  // can just bucket catalog specs by tier. See utils/providerGroups.ts.
   let activeTab = $state<Tab>('connection');
   let isAdmin = $derived(configStore.identity?.role === 'admin');
 
@@ -148,6 +103,7 @@
 
   // LLM settings
   let llmProvider = $state<LLMProvider>('anthropic');
+  let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
   let llmTemperature = $state(1);
   let llmMaxTokens = $state<number | null>(null);
@@ -163,6 +119,8 @@
   let llmOllamaNumCtx = $state<number | null | undefined>(null);
   let openaiApiMode = $state<OpenAIApiMode>('responses');
   let showAdvancedLlm = $state(false);
+  let providerCatalog = $state<LLMProviderSpec[]>([]);
+  let mobileProviderGroups = $derived(buildMobileProviderGroups(providerCatalog));
 
   // Agent settings
   let contextManagement = $state<string>('auto_compact');
@@ -207,13 +165,39 @@
     void loadAvailableModels(llmProvider, availableModelsState, llmBaseUrl);
   });
 
+  $effect(() => {
+    if (hasRouteChoice(llmProvider, providerCatalog)) {
+      llmProviderRoute = coerceProviderRoute(llmProvider, providerCatalog, llmProviderRoute);
+    } else {
+      llmProviderRoute = null;
+    }
+  });
+
+  function showProviderRouteSelect(provider: string = llmProvider): boolean {
+    return hasRouteChoice(provider, providerCatalog);
+  }
+
+  function showOpenAiApiMode(provider: string = llmProvider): boolean {
+    if (!provider || provider === 'anthropic' || provider === 'bedrock') return false;
+    if (hasRouteChoice(provider, providerCatalog)) {
+      return coerceProviderRoute(provider, providerCatalog, llmProviderRoute) === 'openai_compat';
+    }
+    return provider !== 'google' && provider !== 'ollama';
+  }
+
   // Load server settings
   async function loadServerSettings() {
     if (!configStore.isConfigured) return;
     loadingSettings = true;
     try {
-      serverSettings = await api.getServerSettings();
+      const [settings, catalog] = await Promise.all([
+        api.getServerSettings(),
+        api.getLLMProviderCatalog(),
+      ]);
+      serverSettings = settings;
+      providerCatalog = catalog;
       llmProvider = serverSettings.llm_provider;
+      llmProviderRoute = serverSettings.llm_provider_route;
       llmModel = serverSettings.llm_model;
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
@@ -338,6 +322,7 @@
         llm_base_url: llmBaseUrl || null,
         llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
         llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
+        llm_provider_route: showProviderRouteSelect() ? llmProviderRoute : null,
         openai_api_mode: openaiApiMode,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
@@ -476,22 +461,32 @@
           <div class="loading-state">Loading settings...</div>
         {:else}
           <div class="setting-group">
-            <label class="setting-label">Provider</label>
-            <select class="setting-input" bind:value={llmProvider}>
-              <option value="anthropic">Anthropic</option>
-              <optgroup label="Hosted OpenAI-compatible">
-                {#each hostedOpenAiCompatibleProviders as option}
-                  <option value={option[0]}>{option[1]}</option>
-                {/each}
-              </optgroup>
-              <optgroup label="Local / self-hosted">
-                {#each localOpenAiCompatibleProviders as option}
-                  <option value={option[0]}>{option[1]}</option>
-                {/each}
-              </optgroup>
-            </select>
+            <label class="setting-label" for="mobile-llm-provider">Provider</label>
+            <ProviderSelect
+              id="mobile-llm-provider"
+              bind:value={llmProvider}
+              groups={mobileProviderGroups}
+            />
             <p class="hint">Save credentials in Connections or set the provider key in the server environment.</p>
           </div>
+
+          {#if showProviderRouteSelect()}
+            <div class="setting-group">
+              <label class="setting-label" for="mobile-llm-provider-route">Provider Route</label>
+              <select id="mobile-llm-provider-route" class="setting-input" bind:value={llmProviderRoute}>
+                {#each supportedRoutesForProvider(llmProvider, providerCatalog) as route}
+                  <option value={route}>{providerRouteLabel(route)}</option>
+                {/each}
+              </select>
+              <p class="hint">
+                {#if llmProviderRoute === 'openai_compat'}
+                  Uses the provider's OpenAI-compatible API surface.
+                {:else}
+                  Uses the dedicated LangChain provider package when available.
+                {/if}
+              </p>
+            </div>
+          {/if}
 
           <div class="setting-group">
             <label class="setting-label">Model</label>
@@ -589,7 +584,7 @@
             <p class="hint">Enable thinking tokens for compatible models</p>
           </div>
 
-          {#if llmProvider !== 'anthropic'}
+          {#if showOpenAiApiMode()}
             <div class="setting-group">
               <label class="setting-label" for="openai-api-mode">API Mode</label>
               <select id="openai-api-mode" class="setting-input" bind:value={openaiApiMode}>

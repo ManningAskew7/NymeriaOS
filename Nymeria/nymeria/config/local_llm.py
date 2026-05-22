@@ -169,7 +169,7 @@ def detect_local_server_type(
                 if response.status_code == 200:
                     detected = "lm-studio"
             except httpx.HTTPError:
-                pass
+                pass  # probe miss; try the next local-server protocol.
 
             if detected is None:
                 try:
@@ -178,7 +178,7 @@ def detect_local_server_type(
                         if "models" in response.json():
                             detected = "ollama"
                 except (ValueError, httpx.HTTPError):
-                    pass
+                    pass  # probe miss; try the next local-server protocol.
 
             if detected is None:
                 try:
@@ -188,7 +188,7 @@ def detect_local_server_type(
                     if response.status_code == 200 and "default_generation_settings" in response.text:
                         detected = "llamacpp"
                 except httpx.HTTPError:
-                    pass
+                    pass  # probe miss; try the next local-server protocol.
 
             if detected is None:
                 try:
@@ -197,7 +197,7 @@ def detect_local_server_type(
                         if "version" in response.json():
                             detected = "vllm"
                 except (ValueError, httpx.HTTPError):
-                    pass
+                    pass  # probe miss; no more protocols to try.
     except Exception as exc:  # noqa: BLE001 - probe failures are non-fatal.
         logger.debug("Local LLM server detection failed for %s: %s", root, exc)
 

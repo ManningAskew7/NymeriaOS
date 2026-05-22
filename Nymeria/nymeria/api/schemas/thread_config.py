@@ -15,6 +15,7 @@ class ThreadLLMConfigRequest(BaseModel):
     extended_thinking: bool | None = None
     reasoning_effort: str | None = None
     use_model_defaults: bool | None = None
+    provider_route: Literal["native", "openai_compat"] | None = None
     openai_api_mode: Literal["chat_completions", "responses"] | None = None
     base_url: str | None = None
     context_length: int | None = Field(default=None, ge=1_000, le=2_000_000)

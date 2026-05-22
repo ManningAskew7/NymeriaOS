@@ -30,6 +30,7 @@ EXACT_MATCH: set[str] = {
     "lib/components/chat/FilePreview.svelte",
     "lib/components/chat/StreamingText.svelte",
     "lib/components/common/Collapsible.svelte",
+    "lib/components/common/ProviderSelect.svelte",
     "lib/components/common/Spinner.svelte",
     "lib/components/common/ThinkingIndicator.svelte",
     "lib/components/credentials/CredentialManagerPanel.svelte",
@@ -49,6 +50,7 @@ EXACT_MATCH: set[str] = {
     "lib/utils/fileProcessing.ts",
     "lib/utils/ids.ts",
     "lib/utils/models.ts",
+    "lib/utils/providerRoutes.ts",
     "lib/utils/todoTools.ts",
     "lib/utils/toolSearch.ts",
 }

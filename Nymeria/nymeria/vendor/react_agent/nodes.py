@@ -282,6 +282,7 @@ def _llm_config_for_fallback(
         provider = llm_config.provider
         api_key = llm_config.api_key
         base_url = llm_config.base_url
+        provider_route = getattr(llm_config, "provider_route", None)
         openai_api_mode = llm_config.openai_api_mode
         context_length = getattr(llm_config, "context_length", None)
         ollama_num_ctx = getattr(llm_config, "ollama_num_ctx", None)
@@ -290,6 +291,7 @@ def _llm_config_for_fallback(
         model = getattr(fallback, "model", "")
         api_key = getattr(fallback, "api_key", None)
         base_url = getattr(fallback, "base_url", None)
+        provider_route = getattr(fallback, "provider_route", None)
         context_length = getattr(fallback, "context_length", None)
         ollama_num_ctx = getattr(fallback, "ollama_num_ctx", None)
         openai_api_mode = (
@@ -301,6 +303,8 @@ def _llm_config_for_fallback(
                 api_key = llm_config.api_key
             if base_url is None:
                 base_url = llm_config.base_url
+            if provider_route is None:
+                provider_route = getattr(llm_config, "provider_route", None)
             if context_length is None:
                 context_length = getattr(llm_config, "context_length", None)
             if ollama_num_ctx is None:
@@ -312,6 +316,7 @@ def _llm_config_for_fallback(
         model=model,
         api_key=api_key,
         base_url=base_url,
+        provider_route=provider_route,
         openai_api_mode=openai_api_mode,
         context_length=context_length,
         ollama_num_ctx=ollama_num_ctx,

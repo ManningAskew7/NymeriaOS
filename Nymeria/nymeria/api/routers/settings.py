@@ -15,6 +15,7 @@ from ...config.llm_providers import (
     normalize_llm_provider,
     provider_requires_api_key,
     provider_supports_responses,
+    resolve_provider_route,
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 _CLEARABLE_NULL_SETTINGS = {
     "llm_context_length",
     "llm_ollama_num_ctx",
+    "llm_provider_route",
 }
 
 
@@ -78,6 +80,7 @@ def _env_mapping() -> dict[str, str]:
         "llm_base_url": "LLM_BASE_URL",
         "llm_context_length": "LLM_CONTEXT_LENGTH",
         "llm_ollama_num_ctx": "LLM_OLLAMA_NUM_CTX",
+        "llm_provider_route": "LLM_PROVIDER_ROUTE",
         "openai_api_mode": "OPENAI_API_MODE",
         "llm_stream_max_retries": "LLM_STREAM_MAX_RETRIES",
         "llm_stream_retry_initial_delay": "LLM_STREAM_RETRY_INITIAL_DELAY",
@@ -727,6 +730,7 @@ def _env_categories() -> dict[str, list[str]]:
             "llm_base_url",
             "llm_context_length",
             "llm_ollama_num_ctx",
+            "llm_provider_route",
             "openai_api_mode",
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",
@@ -911,10 +915,18 @@ def _clear_settings_cache(get_settings_fn: Callable[[], Any]) -> None:
 
 
 
-def _normalize_openai_test_base_url(provider: str, base_url: str | None) -> str:
+def _normalize_openai_test_base_url(
+    provider: str,
+    base_url: str | None,
+    *,
+    provider_route: str | None = None,
+) -> str:
     provider = normalize_llm_provider(provider)
     if not base_url:
-        resolved = resolve_provider_base_url(provider)
+        resolved = resolve_provider_base_url(
+            provider,
+            provider_route=provider_route,
+        )
         if resolved:
             return resolved
         if provider == "openrouter":
@@ -954,6 +966,11 @@ async def _test_llm_provider_config(
     model = request.llm_model
     api_key = request.api_key.get_secret_value() if request.api_key else None
     base_url = request.llm_base_url
+    provider_route = resolve_provider_route(
+        provider,
+        route_override=request.provider_route,
+        global_route=getattr(settings, "llm_provider_route", None) if settings else None,
+    )
     openai_api_mode = request.openai_api_mode or "chat_completions"
 
     if not api_key:
@@ -969,7 +986,11 @@ async def _test_llm_provider_config(
         api_key = resolve_provider_api_key(provider, settings=settings)
 
     if not api_key:
-        resolved_base = base_url or resolve_provider_base_url(provider, settings=settings)
+        resolved_base = base_url or resolve_provider_base_url(
+            provider,
+            provider_route=provider_route,
+            settings=settings,
+        )
         if base_url_allows_no_api_key(resolved_base):
             api_key = "not-needed"
         elif provider_requires_api_key(provider):
@@ -977,6 +998,7 @@ async def _test_llm_provider_config(
                 ok=False,
                 provider=provider,
                 model=model,
+                provider_route=provider_route,
                 openai_api_mode=None,
                 message="No API key provided and none found in vault, settings, or environment.",
                 error_type="missing_api_key",
@@ -1000,11 +1022,16 @@ async def _test_llm_provider_config(
         }
         response_api_mode = None
     else:
-        if not is_openai_compatible_provider(provider) and not base_url:
+        if (
+            not is_openai_compatible_provider(provider)
+            and provider_route != "openai_compat"
+            and not base_url
+        ):
             return LLMProviderTestResponse(
                 ok=False,
                 provider=provider,
                 model=model,
+                provider_route=provider_route,
                 openai_api_mode=None,
                 message=(
                     f"Provider '{provider}' is not in Nymeria's OpenAI-compatible "
@@ -1012,7 +1039,11 @@ async def _test_llm_provider_config(
                 ),
                 error_type="unknown_provider",
             )
-        clean_base = _normalize_openai_test_base_url(provider, base_url)
+        clean_base = _normalize_openai_test_base_url(
+            provider,
+            base_url,
+            provider_route=provider_route,
+        )
         headers = {"Authorization": f"Bearer {api_key}"}
         if provider == "openrouter":
             headers.update({
@@ -1054,6 +1085,7 @@ async def _test_llm_provider_config(
             ok=False,
             provider=provider,
             model=model,
+            provider_route=provider_route,
             openai_api_mode=response_api_mode,
             message="Provider did not respond before the 15s timeout.",
             error_type="timeout",
@@ -1070,6 +1102,7 @@ async def _test_llm_provider_config(
             ok=False,
             provider=provider,
             model=model,
+            provider_route=provider_route,
             openai_api_mode=response_api_mode,
             message=f"Provider returned HTTP {status_code}: {detail}",
             status_code=status_code,
@@ -1085,6 +1118,7 @@ async def _test_llm_provider_config(
             ok=False,
             provider=provider,
             model=model,
+            provider_route=provider_route,
             openai_api_mode=response_api_mode,
             message=redact_secrets(str(exc), api_key, base_url)[:300],
             error_type=type(exc).__name__,
@@ -1094,6 +1128,7 @@ async def _test_llm_provider_config(
         ok=True,
         provider=provider,
         model=model,
+        provider_route=provider_route,
         openai_api_mode=response_api_mode,
         message="Provider test succeeded.",
     )
@@ -1132,6 +1167,7 @@ def create_settings_router(
             llm_base_url=settings.llm_base_url,
             llm_context_length=settings.llm_context_length,
             llm_ollama_num_ctx=settings.llm_ollama_num_ctx,
+            llm_provider_route=settings.llm_provider_route,
             openai_api_mode=settings.openai_api_mode,
             llm_stream_max_retries=settings.llm_stream_max_retries,
             llm_stream_retry_initial_delay=settings.llm_stream_retry_initial_delay,
@@ -1236,6 +1272,9 @@ def create_settings_router(
                 aliases=list(spec.aliases),
                 tier=spec.tier,
                 notes_for_user=spec.notes_for_user,
+                supported_routes=list(spec.supported_routes),
+                default_route=spec.default_route,
+                openai_compat_base_url=spec.openai_compat_base_url,
                 verified=spec.verified,
             )
             for spec in list_llm_provider_specs()
@@ -1269,6 +1308,7 @@ def create_settings_router(
         response = LLMRuntimeDiagnosticsResponse(
             provider=llm_cfg.provider,
             model=llm_cfg.model,
+            provider_route=llm_cfg.provider_route,
             llm_max_tokens=settings.llm_max_tokens,
             effective_max_tokens=effective_max_tokens,
             source_env_files=source_env_files,
@@ -1414,6 +1454,7 @@ def create_settings_router(
             "llm_base_url",
             "llm_context_length",
             "llm_ollama_num_ctx",
+            "llm_provider_route",
             "openai_api_mode",
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",

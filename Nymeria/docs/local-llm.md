@@ -81,16 +81,16 @@ Per-thread model settings expose the same controls as `context_length` and `olla
 
 ### Ollama: native vs OpenAI-compat
 
-Nymeria registers Ollama under two provider IDs that route through different paths. Pick the one that matches your use case:
+Nymeria registers Ollama under one provider ID with two route choices. The default route is native because it preserves reasoning content across tool follow-ups.
 
-| Provider ID | Wire shape | Adapter | When to use |
-|-------------|-----------|---------|-------------|
-| `ollama` | OpenAI Chat Completions at `:11434/v1/chat/completions` | `ChatOpenAIWithReasoning` | You want parity with the rest of Nymeria's OpenAI-compatible stack (CLIProxy, OpenRouter, etc.) and your model does not emit `<think>` blocks. |
-| `ollama-native` | Ollama native protocol at `:11434/api/chat` | `langchain-ollama` `ChatOllama` | You want native reasoning round-trip on `qwen3`, `deepseek-r1`, `gpt-oss`, or any other Ollama build that surfaces `<think>` content. Sets the `reasoning` flag automatically when extended thinking is enabled. |
+| Provider ID | Route | Wire shape | Adapter | When to use |
+|-------------|-------|-----------|---------|-------------|
+| `ollama` | `native` (default) | Ollama native protocol at `:11434/api/chat` | `langchain-ollama` `ChatOllama` | You want native reasoning round-trip on `qwen3`, `deepseek-r1`, `gpt-oss`, or any other Ollama build that surfaces `<think>` content. Sets the `reasoning` flag automatically when extended thinking is enabled. |
+| `ollama` | `openai_compat` | OpenAI Chat Completions at `:11434/v1/chat/completions` | `ChatOpenAIWithReasoning` | You want parity with the rest of Nymeria's OpenAI-compatible stack and your model does not emit `<think>` blocks. |
 
-`langchain-ollama` covers Ollama's native protocol only. The OpenAI-compat shim that Ollama also exposes at `/v1/chat/completions` continues to route through `_create_openai_compatible_llm` under the legacy `ollama` provider id, so existing thread configs keep working unchanged.
+`langchain-ollama` covers Ollama's native protocol only. The OpenAI-compat shim that Ollama also exposes at `/v1/chat/completions` routes through `_create_openai_compatible_llm` when `provider_route="openai_compat"`.
 
-Existing per-thread `provider="ollama"` configs do not auto-migrate to the native path. To opt into reasoning round-trip, change the provider explicitly to `ollama-native` in thread settings.
+Set `LLM_PROVIDER_ROUTE=openai_compat` for the global default, or use the per-thread Provider Route selector to override one thread. The old `ollama-native` provider id is accepted as an alias for `ollama` on the native route.
 
 ---
 

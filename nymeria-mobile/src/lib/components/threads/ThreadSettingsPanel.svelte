@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SkillMetadata, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool } from '$lib/types';
+  import type { SkillMetadata, ThreadConfig, ThreadConfigUpdateRequest, UnifiedTool, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -9,10 +9,12 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Button from '$lib/components/common/Button.svelte';
+  import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
@@ -23,6 +25,12 @@
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
   import type { MCPServerCreateRequest } from '$lib/types';
+  import {
+    coerceProviderRoute,
+    hasRouteChoice,
+    providerRouteLabel,
+    supportedRoutesForProvider,
+  } from '$lib/utils/providerRoutes';
   import { untrack } from 'svelte';
 
   interface Props {
@@ -36,63 +44,8 @@
   type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
-  const hostedOpenAiCompatibleProviders = [
-    ['openrouter', 'OpenRouter'],
-    ['openai', 'OpenAI'],
-    ['azure-foundry', 'Azure AI Foundry'],
-    ['xai', 'xAI'],
-    ['google', 'Google Gemini'],
-    ['google-vertex', 'Google Vertex AI'],
-    ['groq', 'Groq'],
-    ['deepseek', 'DeepSeek'],
-    ['mistral', 'Mistral AI'],
-    ['cohere', 'Cohere'],
-    ['togetherai', 'Together AI'],
-    ['fireworks-ai', 'Fireworks AI'],
-    ['perplexity', 'Perplexity'],
-    ['cerebras', 'Cerebras'],
-    ['sambanova', 'SambaNova'],
-    ['nvidia', 'NVIDIA NIM'],
-    ['huggingface', 'Hugging Face'],
-    ['deepinfra', 'DeepInfra'],
-    ['moonshotai', 'Moonshot / Kimi'],
-    ['aihubmix', 'AIHubMix'],
-    ['alibaba', 'Alibaba / Qwen'],
-    ['alibaba-coding-plan', 'Alibaba Coding Plan'],
-    ['qwen-oauth', 'Qwen Portal'],
-    ['zai', 'Z.ai'],
-    ['zhipuai', 'Zhipu AI'],
-    ['qianfan', 'Baidu Qianfan'],
-    ['stepfun', 'StepFun'],
-    ['volcengine', 'Volcengine Ark'],
-    ['volcengine-coding-plan', 'Volcengine Coding Plan'],
-    ['byteplus', 'BytePlus ModelArk'],
-    ['vercel', 'Vercel AI Gateway'],
-    ['v0', 'Vercel v0'],
-    ['github-models', 'GitHub Models'],
-    ['github-copilot', 'GitHub Copilot'],
-    ['requesty', 'Requesty'],
-    ['poe', 'Poe'],
-    ['gmi', 'GMI Cloud'],
-    ['nous', 'Nous Research'],
-    ['tencent-tokenhub', 'Tencent TokenHub'],
-    ['novita-ai', 'Novita AI'],
-    ['siliconflow', 'SiliconFlow'],
-    ['arcee', 'Arcee AI'],
-    ['chutes', 'Chutes'],
-    ['venice', 'Venice AI'],
-    ['kilocode', 'Kilo Code Gateway'],
-    ['ollama-cloud', 'Ollama Cloud'],
-  ];
-  const localOpenAiCompatibleProviders = [
-    ['ollama', 'Ollama local'],
-    ['lmstudio', 'LM Studio'],
-    ['llamacpp', 'llama.cpp server'],
-    ['vllm', 'vLLM'],
-    ['localai', 'LocalAI'],
-    ['litellm', 'LiteLLM proxy'],
-    ['tgi', 'Hugging Face TGI'],
-  ];
+  // Tier-grouped picker options sourced from the live provider catalog. See
+  // utils/providerGroups.ts.
   let activeTab = $state<Tab>('instructions');
 
   // Config loaded from API
@@ -115,6 +68,7 @@
 
   // Form state — Model
   let llmProvider = $state('');
+  let llmProviderRoute = $state<'default' | ProviderRoute>('default');
   let llmModel = $state('');
   let llmBaseUrl = $state('');
   let llmApiKey = $state('');
@@ -129,6 +83,8 @@
   let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>('default');
   let compactThresholdPct = $state('');
   let compactThresholdTokens = $state('');
+  let providerCatalog = $state<LLMProviderSpec[]>([]);
+  let mobileThreadProviderGroups = $derived(buildMobileProviderGroups(providerCatalog));
 
   // Form state — Tools
   let disabledTools = $state<Set<string>>(new Set());
@@ -177,13 +133,34 @@
     return llmProvider || serverSettingsStore.provider || '';
   }
 
+  function selectedRoute(): ProviderRoute {
+    const provider = getEffectiveProvider();
+    const inherited = serverSettingsStore.providerRoute as ProviderRoute | null;
+    const route = llmProviderRoute === 'default' ? inherited : llmProviderRoute;
+    return coerceProviderRoute(provider, providerCatalog, route);
+  }
+
+  function showProviderRouteSelect(): boolean {
+    return hasRouteChoice(getEffectiveProvider(), providerCatalog);
+  }
+
   function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
-    return !!provider && provider !== 'anthropic';
+    if (!provider || provider === 'anthropic' || provider === 'bedrock') return false;
+    if (hasRouteChoice(provider, providerCatalog)) return selectedRoute() === 'openai_compat';
+    return provider !== 'google' && provider !== 'ollama';
   }
 
   $effect(() => {
     if (open) {
       void loadAvailableModels(getEffectiveProvider(), availableModelsState, llmBaseUrl);
+    }
+  });
+
+  $effect(() => {
+    if (open) {
+      void api.getLLMProviderCatalog().then((catalog) => {
+        providerCatalog = catalog;
+      });
     }
   });
 
@@ -456,6 +433,7 @@
     callableName = cfg?.callableName ?? '';
     callableDescription = cfg?.callableDescription ?? '';
     llmProvider = cfg?.llmConfig?.provider ?? '';
+    llmProviderRoute = cfg?.llmConfig?.provider_route ?? 'default';
     llmModel = cfg?.llmConfig?.model ?? '';
     llmBaseUrl = cfg?.llmConfig?.base_url ?? '';
     llmApiKey = cfg?.llmConfig?.api_key ?? '';
@@ -521,6 +499,7 @@
     const origReasoning = orig?.llmConfig?.reasoning_effort ?? '';
     const origUseDefaults = orig?.llmConfig?.use_model_defaults != null
       ? String(orig.llmConfig.use_model_defaults) : 'default';
+    const origProviderRoute = orig?.llmConfig?.provider_route ?? 'default';
     const origOpenAiApiMode = orig?.llmConfig?.openai_api_mode ?? 'default';
     const origCompactMode = orig?.llmConfig?.compact_threshold_mode ?? 'default';
     const origCompactPct = orig?.llmConfig?.compact_threshold != null
@@ -558,6 +537,7 @@
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseDefaults) return true;
+    if (llmProviderRoute !== origProviderRoute) return true;
     if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
     if (compactThresholdMode !== origCompactMode) return true;
     if (compactThresholdPct !== origCompactPct) return true;
@@ -632,16 +612,17 @@
         llmContextLength || llmOllamaNumCtx ||
         llmBaseUrl || llmApiKey ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' ||
+        llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
+        llmOpenAiApiMode !== 'default' ||
         compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         llm.provider = llmProvider || null;
-        llm.base_url = getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'
+        llm.base_url = supportsApiMode()
           ? (llmBaseUrl || null)
           : null;
-        llm.api_key = getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'
+        llm.api_key = supportsApiMode()
           ? (llmApiKey || null)
           : null;
         llm.model = llmModel || null;
@@ -658,6 +639,7 @@
         } else {
           llm.use_model_defaults = null;
         }
+        llm.provider_route = llmProviderRoute !== 'default' ? llmProviderRoute : null;
         llm.openai_api_mode = supportsApiMode() && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
@@ -892,22 +874,29 @@
 
       {:else if activeTab === 'model'}
         <div class="setting-group">
-          <label class="setting-label">Provider</label>
-          <select class="setting-input" bind:value={llmProvider}>
-            <option value="">Default (inherit global)</option>
-            <option value="anthropic">Anthropic</option>
-            <optgroup label="Hosted OpenAI-compatible">
-              {#each hostedOpenAiCompatibleProviders as option}
-                <option value={option[0]}>{option[1]}</option>
-              {/each}
-            </optgroup>
-            <optgroup label="Local / self-hosted">
-              {#each localOpenAiCompatibleProviders as option}
-                <option value={option[0]}>{option[1]}</option>
-              {/each}
-            </optgroup>
-          </select>
+          <label class="setting-label" for="mobile-thread-provider">Provider</label>
+          <ProviderSelect
+            id="mobile-thread-provider"
+            bind:value={llmProvider}
+            groups={mobileThreadProviderGroups}
+            includeDefault={true}
+            defaultLabel="Default (inherit global)"
+            defaultDescription="Use the provider configured in global Settings."
+          />
         </div>
+
+        {#if showProviderRouteSelect()}
+          <div class="setting-group">
+            <label class="setting-label" for="thread-provider-route">Provider Route</label>
+            <select id="thread-provider-route" class="setting-input" bind:value={llmProviderRoute}>
+              <option value="default">Default (inherit global)</option>
+              {#each supportedRoutesForProvider(getEffectiveProvider(), providerCatalog) as route}
+                <option value={route}>{providerRouteLabel(route)}</option>
+              {/each}
+            </select>
+            <p class="hint">Current route: {providerRouteLabel(selectedRoute())}</p>
+          </div>
+        {/if}
 
         {#if supportsApiMode()}
           <div class="setting-group">
@@ -921,7 +910,7 @@
           </div>
         {/if}
 
-        {#if getEffectiveProvider() && getEffectiveProvider() !== 'anthropic'}
+        {#if getEffectiveProvider() && supportsApiMode()}
           <div class="setting-group">
             <label class="setting-label" for="llm-base-url">API Base URL</label>
             <input

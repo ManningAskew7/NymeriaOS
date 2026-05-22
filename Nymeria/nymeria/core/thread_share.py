@@ -53,6 +53,7 @@ LLM_CONFIG_FIELDS = {
     "extended_thinking",
     "reasoning_effort",
     "use_model_defaults",
+    "provider_route",
     "openai_api_mode",
     "base_url",
     "context_length",

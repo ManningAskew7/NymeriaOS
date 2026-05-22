@@ -1,16 +1,23 @@
 <script lang="ts">
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { api } from '$lib/services/api.svelte';
+  import type { LLMProviderSpec, ProviderRoute } from '$lib/types';
+  import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
-    HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
-    LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
-    VERIFIED_PROVIDER_OPTIONS,
+    buildProviderGroups,
     fromThreadDisplayProvider,
     supportsOpenAiApiMode,
     type ThreadDisplayProvider,
   } from '$lib/utils/providerMapping';
+  import {
+    coerceProviderRoute,
+    hasRouteChoice,
+    providerRouteLabel,
+    supportedRoutesForProvider,
+  } from '$lib/utils/providerRoutes';
 
   interface Props {
     threadDisplayProvider: ThreadDisplayProvider;
@@ -25,6 +32,7 @@
     llmExtendedThinking: 'default' | 'true' | 'false';
     llmReasoningEffort: string;
     llmUseModelDefaults: 'default' | 'true' | 'false';
+    llmProviderRoute: 'default' | ProviderRoute;
     llmOpenAiApiMode: 'default' | 'chat_completions' | 'responses';
     compactThresholdMode: 'default' | 'percentage' | 'tokens';
     compactThresholdPct: string;
@@ -44,6 +52,7 @@
     llmExtendedThinking = $bindable(),
     llmReasoningEffort = $bindable(),
     llmUseModelDefaults = $bindable(),
+    llmProviderRoute = $bindable(),
     llmOpenAiApiMode = $bindable(),
     compactThresholdMode = $bindable(),
     compactThresholdPct = $bindable(),
@@ -51,6 +60,13 @@
   }: Props = $props();
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
+  let providerCatalog = $state<LLMProviderSpec[]>([]);
+  // Tier-grouped picker options. Drops the synthetic "Local LLM
+  // (OpenAI-compatible)" entry here since the per-thread surface picks a
+  // concrete provider id; users override base_url separately further down.
+  let threadProviderGroups = $derived(
+    buildProviderGroups(providerCatalog, { includeLocalOpenAISentinel: false })
+  );
 
   let availableModelsState = $state<AvailableModelsState>({
     models: [],
@@ -62,12 +78,35 @@
     return llmProvider || serverSettingsStore.provider || '';
   }
 
+  function selectedRoute(): ProviderRoute {
+    const provider = getEffectiveProvider();
+    const inherited = serverSettingsStore.providerRoute as ProviderRoute | null;
+    const route = llmProviderRoute === 'default' ? inherited : llmProviderRoute;
+    return coerceProviderRoute(provider, providerCatalog, route);
+  }
+
+  function showProviderRouteSelect(): boolean {
+    return hasRouteChoice(getEffectiveProvider(), providerCatalog);
+  }
+
+  function supportsApiMode(provider: string = getEffectiveProvider()): boolean {
+    if (!provider || provider === 'anthropic' || provider === 'bedrock') return false;
+    if (hasRouteChoice(provider, providerCatalog)) return selectedRoute() === 'openai_compat';
+    return supportsOpenAiApiMode(provider) && provider !== 'google' && provider !== 'ollama';
+  }
+
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
     const ep = getEffectiveProvider();
-    const baseUrlOverride = supportsOpenAiApiMode(ep) ? llmBaseUrl : '';
+    const baseUrlOverride = supportsApiMode(ep) ? llmBaseUrl : '';
     void loadAvailableModels(ep, availableModelsState, baseUrlOverride);
+  });
+
+  $effect(() => {
+    void api.getLLMProviderCatalog().then((catalog) => {
+      providerCatalog = catalog;
+    });
   });
 
   $effect(() => {
@@ -80,27 +119,32 @@
 <div class="tab-panel">
   <div class="field-group">
     <label class="field-label" for="llm-provider">Provider</label>
-    <select id="llm-provider" class="field-select" bind:value={threadDisplayProvider}>
-      <option value="">Default (inherit global)</option>
-      <optgroup label="Verified">
-        {#each VERIFIED_PROVIDER_OPTIONS as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </optgroup>
-      <optgroup label="Other hosted (unverified)">
-        {#each HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </optgroup>
-      <optgroup label="Local / self-hosted (unverified)">
-        {#each LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </optgroup>
-    </select>
+    <ProviderSelect
+      id="llm-provider"
+      bind:value={threadDisplayProvider}
+      groups={threadProviderGroups}
+      includeDefault={true}
+      defaultLabel="Default (inherit global)"
+      defaultDescription="Use the provider configured in global Settings."
+    />
   </div>
 
-  {#if getEffectiveProvider() && supportsOpenAiApiMode(getEffectiveProvider())}
+  {#if showProviderRouteSelect()}
+    <div class="field-group">
+      <label class="field-label" for="llm-provider-route">Provider Route</label>
+      <select id="llm-provider-route" class="field-select" bind:value={llmProviderRoute}>
+        <option value="default">Default (inherit global)</option>
+        {#each supportedRoutesForProvider(getEffectiveProvider(), providerCatalog) as route}
+          <option value={route}>{providerRouteLabel(route)}</option>
+        {/each}
+      </select>
+      <span class="field-hint">
+        Current route: {providerRouteLabel(selectedRoute())}
+      </span>
+    </div>
+  {/if}
+
+  {#if getEffectiveProvider() && supportsApiMode(getEffectiveProvider())}
     <div class="field-group">
       <label class="field-label" for="llm-base-url">API Base URL</label>
       <input
@@ -131,7 +175,7 @@
     </div>
   {/if}
 
-  {#if supportsOpenAiApiMode(getEffectiveProvider())}
+  {#if supportsApiMode(getEffectiveProvider())}
     <div class="field-group">
       <label class="field-label" for="llm-openai-api-mode">API Mode</label>
       <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>

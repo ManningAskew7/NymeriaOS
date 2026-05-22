@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, ProviderRoute } from '$lib/types';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -212,6 +212,10 @@
     return threadConfig?.llmConfig?.openai_api_mode ?? 'default';
   }
 
+  function getInitialLlmProviderRoute(): 'default' | ProviderRoute {
+    return threadConfig?.llmConfig?.provider_route ?? 'default';
+  }
+
   function getInitialCompactThresholdMode(): 'default' | 'percentage' | 'tokens' {
     return threadConfig?.llmConfig?.compact_threshold_mode ?? 'default';
   }
@@ -241,6 +245,7 @@
   let llmExtendedThinking = $state<'default' | 'true' | 'false'>(getInitialLlmExtendedThinking());
   let llmReasoningEffort = $state(getInitialLlmReasoningEffort());
   let llmUseModelDefaults = $state<'default' | 'true' | 'false'>(getInitialLlmUseModelDefaults());
+  let llmProviderRoute = $state<'default' | ProviderRoute>(getInitialLlmProviderRoute());
   let llmOpenAiApiMode = $state<'default' | 'chat_completions' | 'responses'>(getInitialLlmOpenAiApiMode());
   let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>(getInitialCompactThresholdMode());
   let compactThresholdPct = $state<string>(getInitialCompactThreshold());
@@ -461,6 +466,7 @@
     const origReasoning = threadConfig?.llmConfig?.reasoning_effort ?? '';
     const origUseModelDefaults = threadConfig?.llmConfig?.use_model_defaults != null
       ? String(threadConfig.llmConfig.use_model_defaults) : 'default';
+    const origProviderRoute = threadConfig?.llmConfig?.provider_route ?? 'default';
     const origOpenAiApiMode = threadConfig?.llmConfig?.openai_api_mode ?? 'default';
     const origCompactMode = threadConfig?.llmConfig?.compact_threshold_mode ?? 'default';
     const origCompactPct = threadConfig?.llmConfig?.compact_threshold != null
@@ -500,6 +506,7 @@
     if (llmExtendedThinking !== origExtThinking) return true;
     if (llmReasoningEffort !== origReasoning) return true;
     if (llmUseModelDefaults !== origUseModelDefaults) return true;
+    if (llmProviderRoute !== origProviderRoute) return true;
     if (llmOpenAiApiMode !== origOpenAiApiMode) return true;
     if (compactThresholdMode !== origCompactMode) return true;
     if (compactThresholdPct !== origCompactPct) return true;
@@ -587,7 +594,8 @@
       const hasLlm = threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens ||
         llmContextLength || llmOllamaNumCtx ||
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
-        llmUseModelDefaults !== 'default' || llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
+        llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
+        llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
         compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
 
       if (hasLlm) {
@@ -621,6 +629,7 @@
           // Explicitly clear to remove stale per-thread override
           llm.use_model_defaults = null;
         }
+        llm.provider_route = llmProviderRoute !== 'default' ? llmProviderRoute : null;
         llm.openai_api_mode = supportsOpenAiApiMode(getEffectiveProvider()) && llmOpenAiApiMode !== 'default'
           ? llmOpenAiApiMode
           : null;
@@ -1005,6 +1014,7 @@
           bind:llmExtendedThinking
           bind:llmReasoningEffort
           bind:llmUseModelDefaults
+          bind:llmProviderRoute
           bind:llmOpenAiApiMode
           bind:compactThresholdMode
           bind:compactThresholdPct

@@ -75,7 +75,8 @@ and (when wired) the desktop/mobile picker.
   and tool-call deltas round-trip across turns and across tool follow-ups.
   Current native providers: `anthropic`, `openai`, `google` (Gemini via
   `langchain-google-genai`), `bedrock` (AWS via `langchain-aws`
-  `ChatBedrockConverse`), `ollama-native` (via `langchain-ollama`).
+  `ChatBedrockConverse`), `ollama` with `provider_route="native"` (via
+  `langchain-ollama`).
 - **`gateway`**: multiplexes upstream providers behind a single
   OpenAI-compatible surface. Reasoning round-trip depends on the upstream
   provider's behavior. Examples: `openrouter`, `vercel`, `litellm`,
@@ -94,6 +95,11 @@ The `tier` value is metadata: routing decisions still flow through
 `vendor/react_agent/providers.py::create_llm`. A provider can move between
 tiers without any code change if its smoke-test status changes.
 
+Providers that expose more than one adapter path advertise `supported_routes`
+and `default_route` in the catalog. `google` and `ollama` default to
+`native`; set `provider_route="openai_compat"` globally or per thread to use
+their OpenAI-compatible shim.
+
 The legacy `verified: bool` field is preserved on the catalog response,
 derived as `tier in {"native", "gateway"}`.
 
@@ -106,9 +112,9 @@ derived as `tier in {"native", "gateway"}`.
 | `azure-openai` | Azure OpenAI | custom | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY` | Set base URL to the `/openai/v1/` deployment endpoint. |
 | `azure-foundry` | Azure AI Foundry | custom | `AZURE_FOUNDRY_API_KEY`, `AZURE_OPENAI_AUTH_TOKEN`, `AZURE_API_KEY` | Set base URL to the Foundry `/openai/v1/` endpoint. |
 | `xai` | xAI | `https://api.x.ai/v1` | `XAI_API_KEY` | Supports Chat Completions and Responses. |
-| `google` | Google Gemini | n/a | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | Native via `langchain-google-genai`. Required for Gemini 3+ thought-signature round-trip on tool follow-ups. |
+| `google` | Google Gemini | n/a | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | Defaults to native via `langchain-google-genai`. Set `provider_route="openai_compat"` to use `https://generativelanguage.googleapis.com/v1beta/openai`. |
 | `bedrock` | AWS Bedrock | n/a | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Native via `langchain-aws` (`ChatBedrockConverse`). Resolves credentials through boto3 default chain. Set `AWS_REGION` and optionally `AWS_BEDROCK_ENDPOINT_URL`. |
-| `ollama-native` | Ollama (native protocol) | `http://localhost:11434` | none (local server) | Native via `langchain-ollama`. Use this id for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. The legacy `ollama` id stays on the OpenAI-compat path. |
+| `ollama` | Ollama local | `http://localhost:11434` | none (local server) | Defaults to native via `langchain-ollama`. Set `provider_route="openai_compat"` to use `http://localhost:11434/v1`. The old `ollama-native` id is accepted as an alias for `ollama`. |
 | `google-vertex` | Google Vertex AI | custom | `GOOGLE_VERTEX_ACCESS_TOKEN` | Requires a Google Cloud OAuth access token; token refresh is not automatic. |
 | `groq` | Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | Chat Completions compatible. |
 | `deepseek` | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | Also accepts `/v1` compatibility aliases. |

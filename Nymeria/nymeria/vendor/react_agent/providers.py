@@ -39,7 +39,9 @@ from nymeria.config.llm_providers import (
     is_openai_compatible_provider,
     normalize_llm_provider,
     provider_requires_api_key,
+    provider_supports_route,
     provider_supports_responses,
+    resolve_provider_route,
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
@@ -392,7 +394,7 @@ def _warn_if_unverified_provider(provider: str) -> None:
             "[LLM] Provider %r (%s) is in the unverified tier: tool-call "
             "streaming and reasoning round-trips are not smoke-tested. "
             "Native-tier providers: anthropic, openai, google, bedrock, "
-            "ollama-native. See docs/chat_completions_providers.md.",
+            "ollama. See docs/chat_completions_providers.md.",
             provider,
             spec.label,
         )
@@ -1128,12 +1130,19 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
     provider = normalize_llm_provider(config.provider)
     if provider != config.provider:
         config = dataclass_replace(config, provider=provider)
+    provider_route = resolve_provider_route(
+        provider,
+        route_override=getattr(config, "provider_route", None),
+    )
+    if provider_route != getattr(config, "provider_route", None):
+        config = dataclass_replace(config, provider_route=provider_route)
 
     _warn_if_unverified_provider(provider)
 
     if (
         config.openai_api_mode
         and not is_openai_compatible_provider(config.provider)
+        and config.provider_route != "openai_compat"
         and config.openai_api_mode != "responses"
     ):
         logger.warning(
@@ -1148,11 +1157,16 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         return _create_openai_llm(config)
     elif config.provider == "anthropic":
         return _create_anthropic_llm(config)
+    elif config.provider_route == "openai_compat" and provider_supports_route(
+        config.provider,
+        "openai_compat",
+    ):
+        return _create_openai_compatible_llm(config)
     elif config.provider == "google":
         return _create_google_genai_llm(config)
     elif config.provider == "bedrock":
         return _create_bedrock_llm(config)
-    elif config.provider == "ollama-native":
+    elif config.provider == "ollama":
         return _create_ollama_native_llm(config)
     elif is_openai_compatible_provider(config.provider):
         return _create_openai_compatible_llm(config)
@@ -1425,6 +1439,7 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
     base_url = resolve_provider_base_url(
         provider,
         configured_base_url=config.base_url,
+        provider_route=getattr(config, "provider_route", None),
     )
     if not base_url:
         raise ValueError(f"{label} requires a base URL")
@@ -2226,11 +2241,11 @@ def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
     (qwen3, deepseek-r1, gpt-oss) surface ``<think>`` content via the
     ``reasoning_content`` channel here, which round-trips natively.
 
-    The OpenAI-compatible shim at ``/v1/chat/completions`` continues to route
-    through ``_create_openai_compatible_llm`` under the existing ``ollama``
-    provider id. Use this provider (``ollama-native``) when you need native
-    reasoning round-trip; use ``ollama`` for OpenAI-compat parity with other
-    chat surfaces.
+    The OpenAI-compatible shim at ``/v1/chat/completions`` routes through
+    ``_create_openai_compatible_llm`` when ``provider_route`` is
+    ``openai_compat``. The default ``ollama`` route is native because that is
+    the only route that preserves reasoning round-trip for qwen3, deepseek-r1,
+    and gpt-oss.
     """
     try:
         from langchain_ollama import ChatOllama

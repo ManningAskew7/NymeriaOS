@@ -3,7 +3,16 @@
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api } from '$lib/services/api.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, ThemeName, SavedConnection } from '$lib/types';
+  import type {
+    ServerSettings,
+    LLMProvider,
+    OpenAIApiMode,
+    LogLevel,
+    ThemeName,
+    SavedConnection,
+    LLMProviderSpec,
+    ProviderRoute,
+  } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { modelsStore } from '$lib/stores/models.svelte';
@@ -16,6 +25,7 @@
   import NotificationsPanel from '../notifications/NotificationsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
+  import ProviderSelect from './ProviderSelect.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
@@ -23,15 +33,19 @@
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_LOCAL_BASE_URL,
     DEFAULT_OPENAI_CLIPROXY_BASE_URL,
-    HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
-    LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
-    VERIFIED_PROVIDER_OPTIONS,
+    buildProviderGroups,
     fromSettingsDisplayProvider as fromDisplayProvider,
     isLocalBaseUrl,
     isManagedBaseUrl,
     toSettingsDisplayProvider as toDisplayProvider,
   } from '$lib/utils/providerMapping';
   import type { SettingsDisplayProvider as DisplayProvider } from '$lib/utils/providerMapping';
+  import {
+    coerceProviderRoute,
+    hasRouteChoice,
+    providerRouteLabel,
+    supportedRoutesForProvider,
+  } from '$lib/utils/providerRoutes';
 
   interface Props {
     initialTab?: string;
@@ -57,6 +71,7 @@
   let serverSettings = $state<ServerSettings | null>(null);
   let displayProvider = $state<DisplayProvider>('anthropic_proxy');
   let llmProvider = $state<LLMProvider>('anthropic');
+  let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
   let llmTemperature = $state(1);
   let showModelHelp = $state(false);
@@ -98,6 +113,12 @@
   let sttModel = $state('gpt-4o-mini-transcribe');
   let sttLanguage = $state('');
   let voiceDefaultThreadId = $state('');
+
+  let providerCatalog = $state<LLMProviderSpec[]>([]);
+  // Tier-grouped picker options. Built reactively from the catalog so backend
+  // tier changes (or notes_for_user updates) flow through without a redeploy.
+  // Falls back to an unverified-only grouping until the catalog loads.
+  let settingsProviderGroups = $derived(buildProviderGroups(providerCatalog));
 
   // Theme settings
   let selectedTheme = $state<ThemeName>(configStore.theme);
@@ -189,6 +210,14 @@
     void loadAvailableModels(provider, availableModelsState, baseUrlOverride);
   });
 
+  $effect(() => {
+    if (hasRouteChoice(llmProvider, providerCatalog)) {
+      llmProviderRoute = coerceProviderRoute(llmProvider, providerCatalog, llmProviderRoute);
+    } else {
+      llmProviderRoute = null;
+    }
+  });
+
   // Auto-populate the base URL field when the user picks Local LLM,
   // unless they already have a local URL in there.
   $effect(() => {
@@ -263,9 +292,15 @@
 
     loadingSettings = true;
     try {
-      serverSettings = await api.getServerSettings();
+      const [settings, catalog] = await Promise.all([
+        api.getServerSettings(),
+        api.getLLMProviderCatalog(),
+      ]);
+      serverSettings = settings;
+      providerCatalog = catalog;
       llmProvider = serverSettings.llm_provider;
       displayProvider = toDisplayProvider(serverSettings.llm_provider, serverSettings.llm_base_url || '');
+      llmProviderRoute = serverSettings.llm_provider_route;
       llmModel = serverSettings.llm_model;
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
@@ -326,6 +361,18 @@
       modelsStore.loadModels();
     }
   });
+
+  function showProviderRouteSelect(provider: string = llmProvider): boolean {
+    return hasRouteChoice(provider, providerCatalog);
+  }
+
+  function showOpenAiApiMode(provider: string = llmProvider): boolean {
+    if (!provider || provider === 'anthropic' || provider === 'bedrock') return false;
+    if (hasRouteChoice(provider, providerCatalog)) {
+      return coerceProviderRoute(provider, providerCatalog, llmProviderRoute) === 'openai_compat';
+    }
+    return provider !== 'google' && provider !== 'ollama';
+  }
 
   function handleSaveConnection() {
     configStore.apiUrl = apiUrl;
@@ -460,6 +507,7 @@
         llm_base_url: effectiveBaseUrl,
         llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
         llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
+        llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
         openai_api_mode: openaiApiMode,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
@@ -934,24 +982,11 @@
 
         <div class="field">
           <label for="llm-provider">Provider</label>
-          <select id="llm-provider" bind:value={displayProvider}>
-            <optgroup label="Verified">
-              {#each VERIFIED_PROVIDER_OPTIONS as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </optgroup>
-            <optgroup label="Other hosted (unverified)">
-              {#each HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </optgroup>
-            <optgroup label="Local / self-hosted (unverified)">
-              <option value="local_openai">Local LLM (OpenAI-compatible)</option>
-              {#each LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </optgroup>
-          </select>
+          <ProviderSelect
+            id="llm-provider"
+            bind:value={displayProvider}
+            groups={settingsProviderGroups}
+          />
           <p class="hint">
             {#if displayProvider === 'anthropic_proxy'}
               Routes through CLIProxy using your Claude subscription
@@ -966,6 +1001,24 @@
             {/if}
           </p>
         </div>
+
+        {#if showProviderRouteSelect()}
+          <div class="field">
+            <label for="llm-provider-route">Provider Route</label>
+            <select id="llm-provider-route" bind:value={llmProviderRoute}>
+              {#each supportedRoutesForProvider(llmProvider, providerCatalog) as route}
+                <option value={route}>{providerRouteLabel(route)}</option>
+              {/each}
+            </select>
+            <p class="hint">
+              {#if llmProviderRoute === 'openai_compat'}
+                Uses the provider's OpenAI-compatible API surface.
+              {:else}
+                Uses the dedicated LangChain provider package when available.
+              {/if}
+            </p>
+          </div>
+        {/if}
 
         <div class="field">
           <label for="llm-model">Model</label>
@@ -1104,7 +1157,7 @@
           <p class="hint">Enable/disable thinking tokens for compatible models</p>
         </div>
 
-        {#if llmProvider !== 'anthropic'}
+        {#if showOpenAiApiMode()}
           <div class="field">
             <label for="openai-api-mode">API Mode</label>
             <select id="openai-api-mode" bind:value={openaiApiMode}>

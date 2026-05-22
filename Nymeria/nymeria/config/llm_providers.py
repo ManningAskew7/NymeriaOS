@@ -8,12 +8,15 @@ documentation links to providers that speak the OpenAI Chat Completions shape.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, cast
 
+
+logger = logging.getLogger(__name__)
 
 ProviderTier = Literal["native", "gateway", "unverified"]
 
@@ -24,6 +27,18 @@ except Exception:  # pragma: no cover - python-dotenv is expected via pydantic.
 
 
 ApiMode = str
+
+# Route taxonomy — which adapter path a provider's traffic takes.
+# - "native": dedicated langchain-<provider> partner package (or canonical
+#   OpenAI / Anthropic API).
+# - "openai_compat": the OpenAI Chat Completions shim (Nymeria's
+#   ChatOpenAIWithReasoning subclass).
+# Providers that have BOTH a partner package AND a working OpenAI-compat
+# endpoint advertise both routes in `supported_routes`; users can toggle the
+# route per thread or globally. Single-route providers hide the toggle in the
+# picker UI.
+ProviderRoute = Literal["native", "openai_compat"]
+_PROVIDER_ROUTE_VALUES: tuple[ProviderRoute, ...] = ("native", "openai_compat")
 
 
 @dataclass(frozen=True)
@@ -57,11 +72,28 @@ class LLMProviderSpec:
     # Short warning shown under unverified picker rows. Empty for tiers that
     # don't need user warnings.
     notes_for_user: str = ""
+    # Which adapter routes this provider can run through. Most entries have a
+    # single route. Providers like google or ollama advertise both
+    # ("native", "openai_compat") and the picker exposes a per-thread toggle.
+    supported_routes: tuple[ProviderRoute, ...] = ("native",)
+    # Default route when neither the per-thread override nor the global setting
+    # is set. Must be a member of supported_routes.
+    default_route: ProviderRoute = "native"
+    # Base URL to use when route is forced to "openai_compat" for a provider
+    # whose primary route is "native". Required for multi-route providers; left
+    # as None for single-route entries that already store their base URL in
+    # default_base_url.
+    openai_compat_base_url: str | None = None
 
     @property
     def verified(self) -> bool:
         """Back-compat: a provider is verified if it has a known tier."""
         return self.tier in ("native", "gateway")
+
+    @property
+    def is_multi_route(self) -> bool:
+        """True when the provider exposes more than one adapter path."""
+        return len(self.supported_routes) > 1
 
 
 def _spec(
@@ -83,7 +115,26 @@ def _spec(
     supports_chat_completions: bool = True,
     tier: ProviderTier = "unverified",
     notes_for_user: str = "",
+    supported_routes: Iterable[ProviderRoute] | None = None,
+    default_route: ProviderRoute | None = None,
+    openai_compat_base_url: str | None = None,
 ) -> LLMProviderSpec:
+    # Default route inference: native partner-package providers default to
+    # ("native",), while generic OpenAI-compatible providers default to
+    # ("openai_compat",). Multi-route entries pass supported_routes explicitly.
+    if supported_routes is None:
+        if provider_id in {"anthropic", "openai"} or api_format != "openai_chat":
+            resolved_routes = ("native",)
+        else:
+            resolved_routes = ("openai_compat",)
+    else:
+        resolved_routes = tuple(supported_routes)
+    if default_route is None:
+        default_route = resolved_routes[0]
+    if default_route not in resolved_routes:
+        raise ValueError(
+            f"default_route={default_route!r} not in supported_routes={resolved_routes!r} for provider {provider_id!r}"
+        )
     return LLMProviderSpec(
         id=provider_id,
         label=label,
@@ -102,6 +153,9 @@ def _spec(
         requires_base_url=requires_base_url,
         tier=tier,
         notes_for_user=notes_for_user,
+        supported_routes=resolved_routes,
+        default_route=default_route,
+        openai_compat_base_url=openai_compat_base_url,
     )
 
 
@@ -180,8 +234,15 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://ai.google.dev/gemini-api/docs",
         aliases=("gemini", "google-gemini"),
         api_format="google_genai",
-        supports_chat_completions=False,
+        supports_chat_completions=True,
         tier="native",
+        # Multi-route: native via langchain-google-genai (default) or
+        # OpenAI-compat shim at generativelanguage.googleapis.com/v1beta/openai.
+        # Per-thread toggle lets users trade thought signatures for the
+        # documented latency win on the compat path.
+        supported_routes=("native", "openai_compat"),
+        default_route="native",
+        openai_compat_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
     ),
     _spec(
         "google-vertex",
@@ -666,27 +727,21 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         notes="OpenAI-compatible coding/design model API; requires a v0 plan with API access.",
     ),
     _spec(
-        "ollama-native",
-        "Ollama (native protocol)",
-        base_url="http://localhost:11434",
-        env=(),
-        base_url_env=("OLLAMA_BASE_URL",),
-        docs_url="https://github.com/ollama/ollama/blob/main/docs/api.md",
-        notes="Speaks Ollama's native /api/chat protocol. Required for reasoning round-trip on qwen3 / deepseek-r1 / gpt-oss.",
-        api_format="ollama_native",
-        supports_chat_completions=False,
-        requires_api_key=False,
-        tier="native",
-    ),
-    _spec(
         "ollama",
-        "Ollama local (OpenAI-compat)",
-        base_url="http://localhost:11434/v1",
+        "Ollama local",
+        base_url="http://localhost:11434",
         env=("OLLAMA_API_KEY",),
         base_url_env=("OLLAMA_BASE_URL",),
-        docs_url="https://github.com/ollama/ollama/blob/main/docs/openai.md",
-        notes="OpenAI-compat shim at /v1/chat/completions. Use the ollama-native provider for reasoning round-trip.",
+        docs_url="https://github.com/ollama/ollama/blob/main/docs/api.md",
+        notes="Defaults to Ollama's native /api/chat protocol for reasoning round-trip. Use provider_route=openai_compat for /v1/chat/completions compatibility.",
+        aliases=("ollama-native", "ollama_native"),
+        api_format="ollama_native",
+        supports_chat_completions=True,
         requires_api_key=False,
+        tier="native",
+        supported_routes=("native", "openai_compat"),
+        default_route="native",
+        openai_compat_base_url="http://localhost:11434/v1",
     ),
     _spec(
         "ollama-cloud",
@@ -877,6 +932,88 @@ def is_openai_compatible_provider(provider: str | None) -> bool:
     return bool(spec and spec.api_format == "openai_chat")
 
 
+def normalize_provider_route(route: Any) -> ProviderRoute | None:
+    """Normalize a provider route value, returning None for blanks/unknowns."""
+    value = str(route or "").strip().lower()
+    if value in _PROVIDER_ROUTE_VALUES:
+        return cast(ProviderRoute, value)
+    return None
+
+
+def provider_supported_routes(provider: str | None) -> tuple[ProviderRoute, ...]:
+    """Return adapter routes supported by a provider."""
+    spec = get_llm_provider_spec(provider)
+    if spec:
+        return spec.supported_routes
+    return ("openai_compat",)
+
+
+def provider_supports_route(
+    provider: str | None,
+    route: ProviderRoute | str | None,
+) -> bool:
+    """Return True if a provider advertises the requested adapter route."""
+    normalized = normalize_provider_route(route)
+    if normalized is None:
+        return False
+    return normalized in provider_supported_routes(provider)
+
+
+def provider_default_route(provider: str | None) -> ProviderRoute:
+    """Return the provider's default adapter route."""
+    spec = get_llm_provider_spec(provider)
+    if spec:
+        return spec.default_route
+    return "openai_compat"
+
+
+# Dedup set for the one-shot downgrade warning. Keyed on (provider, requested
+# route) so a user who saves an unsupported override sees one warning, not one
+# per chat turn.
+_DOWNGRADED_ROUTE_WARNED: set[tuple[str, str]] = set()
+
+
+def resolve_provider_route(
+    provider: str | None,
+    *,
+    route_override: Any = None,
+    global_route: Any = None,
+) -> ProviderRoute:
+    """Resolve thread override, global default, then provider default route.
+
+    When a candidate is recognised (a valid ``ProviderRoute`` value) but the
+    provider does not advertise it in ``supported_routes``, the candidate is
+    silently downgraded to the provider's ``default_route`` and a one-shot
+    warning is logged so users notice mis-configured route saves without
+    spamming the log on every chat turn.
+    """
+    canonical_provider = normalize_llm_provider(provider) or "unknown"
+    for candidate, scope in (
+        (route_override, "thread"),
+        (global_route, "global"),
+    ):
+        route = normalize_provider_route(candidate)
+        if route is None:
+            continue
+        if provider_supports_route(provider, route):
+            return route
+        # Recognised but unsupported route — log once per (provider, route).
+        warn_key = (canonical_provider, route)
+        if warn_key not in _DOWNGRADED_ROUTE_WARNED:
+            _DOWNGRADED_ROUTE_WARNED.add(warn_key)
+            supported = provider_supported_routes(provider)
+            logger.warning(
+                "[LLM] Provider %r does not support %s provider_route=%r "
+                "(supported: %s). Falling back to default route %r.",
+                canonical_provider,
+                scope,
+                route,
+                ", ".join(supported) or "none",
+                provider_default_route(provider),
+            )
+    return provider_default_route(provider)
+
+
 def provider_supports_responses(provider: str | None) -> bool:
     spec = get_llm_provider_spec(provider)
     return bool(spec and spec.supports_responses)
@@ -1031,13 +1168,18 @@ def resolve_provider_base_url(
     provider: str | None,
     *,
     configured_base_url: str | None = None,
+    provider_route: ProviderRoute | str | None = None,
     settings: Any | None = None,
     project_root: Path | None = None,
     include_default: bool = True,
 ) -> str | None:
     """Resolve effective base URL for a provider."""
     if configured_base_url:
-        return configured_base_url.strip().rstrip("/")
+        base_url = configured_base_url.strip().rstrip("/")
+        route = normalize_provider_route(provider_route)
+        if normalize_llm_provider(provider) == "ollama" and route == "openai_compat":
+            return _ollama_openai_compat_base_url(base_url)
+        return base_url
 
     spec = get_llm_provider_spec(provider)
     if spec is None:
@@ -1048,13 +1190,30 @@ def resolve_provider_base_url(
         settings=settings,
         project_root=project_root,
     )
-    base_url = env_base or (spec.default_base_url if include_default else None)
+    route = normalize_provider_route(provider_route)
+    default_base_url = spec.default_base_url
+    if route == "openai_compat" and spec.openai_compat_base_url:
+        default_base_url = spec.openai_compat_base_url
+    base_url = env_base or (default_base_url if include_default else None)
     expanded = expand_env_templates(
         base_url,
         settings=settings,
         project_root=project_root,
     )
-    return expanded.strip().rstrip("/") if expanded else None
+    if not expanded:
+        return None
+    resolved = expanded.strip().rstrip("/")
+    if normalize_llm_provider(provider) == "ollama" and route == "openai_compat":
+        return _ollama_openai_compat_base_url(resolved)
+    return resolved
+
+
+def _ollama_openai_compat_base_url(base_url: str) -> str:
+    """Convert an Ollama root URL to the OpenAI-compatible /v1 endpoint."""
+    clean = base_url.strip().rstrip("/")
+    if clean.endswith("/v1"):
+        return clean
+    return f"{clean}/v1"
 
 
 def resolve_provider_api_key(
