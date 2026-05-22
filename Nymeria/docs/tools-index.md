@@ -1003,9 +1003,9 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `shopify_update_product` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a Shopify product. |
 | `signl4_resolve_alert` | `nymeria/tools/notification_service_integrations.py` | Resolve a SIGNL4 alert by external ID. |
 | `signl4_send_alert` | `nymeria/tools/notification_service_integrations.py` | Send a SIGNL4 alert event. |
-| `skill_config` | `nymeria/tools/skill_config.py` | Draft, validate, publish, list, or delete Nymeria Skills and Skill Kits. |
-| `skill_kit_create` | `nymeria/tools/skill_config.py` | Create durable Skills or Skill Kits, optionally drafting HTTP tools first. |
-| `skill_manage` | `nymeria/tools/search_skills.py` | List, search, install, enable, or disable Agent Skills. |
+| `skill_edit` | `nymeria/tools/skill_config.py` | Edit an existing generated Skill or Skill Kit. |
+| `skill_manage` | `nymeria/tools/search_skills.py` | List, search, install, enable, disable, inspect, status, or prune Agent Skills. |
+| `skill_write` | `nymeria/tools/skill_config.py` | Write a Skill or Skill Kit from full SKILL.md markdown. |
 | `slack_add_reaction` | `nymeria/tools/collaboration_data_service_integrations.py` | Add a reaction to a Slack message. |
 | `slack_get_channel_history` | `nymeria/tools/collaboration_data_service_integrations.py` | Get recent messages from a Slack conversation. |
 | `slack_get_user` | `nymeria/tools/collaboration_data_service_integrations.py` | Get Slack user profile metadata. |
@@ -1090,9 +1090,9 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `todoist_list_projects` | `nymeria/tools/productivity_service_integrations.py` | List Todoist projects. |
 | `todoist_list_tasks` | `nymeria/tools/productivity_service_integrations.py` | List Todoist tasks. |
 | `todoist_update_task` | `nymeria/tools/productivity_service_integrations.py` | Update a Todoist task. |
-| `tool_create` | `nymeria/tools/tool_create.py` | Draft, test, publish, list, or delete agent-created HTTP tools. |
-| `tool_enable` | `nymeria/tools/tool_search.py` | Enable, disable, or inspect current-thread tool bindings. |
-| `tool_search` | `nymeria/tools/tool_search.py` | Search available tools by keyword or category. |
+| `tool_create` | `nymeria/tools/tool_create.py` | Draft, test, publish, list, or delete agent-created custom tools. |
+| `tool_manage` | `nymeria/tools/tool_search.py` | Manage current-thread tool bindings: enable, disable, prune, list_categories, status. |
+| `tool_search` | `nymeria/tools/tool_search.py` | Search available tools by keyword/category; enable results with tool_manage. |
 | `totp_generate_code` | `nymeria/tools/transform_utility_integrations.py` | Generate a time-based one-time password from the saved TOTP secret. |
 | `totp_verify_code` | `nymeria/tools/transform_utility_integrations.py` | Verify a time-based one-time password against the saved TOTP secret. |
 | `travisci_cancel_build` | `nymeria/tools/build_ci_service_integrations.py` | Cancel a Travis CI build. |

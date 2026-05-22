@@ -181,6 +181,53 @@ def test_custom_tool_crud_reloads_agent_and_preserves_response_shape(
     assert agent.reload_count == 3
 
 
+def test_custom_tool_crud_supports_python_config(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    loader = FakeCustomToolLoader()
+    client, agent, token = _authenticated_client(
+        tmp_path,
+        api_client_builder,
+        monkeypatch,
+        loader=loader,
+    )
+    headers = api_client_builder.auth(token)
+
+    create_response = client.post(
+        "/tools/custom",
+        headers=headers,
+        json={
+            "id": "python_echo",
+            "name": "Python Echo",
+            "description": "Echo text through Python",
+            "implementation_type": "python",
+            "parameters": {
+                "value": {
+                    "type": "string",
+                    "description": "Value to echo",
+                    "required": True,
+                }
+            },
+            "python_config": {
+                "source_code": "def run(value: str) -> str:\n    return value\n",
+                "entrypoint": "run",
+            },
+            "enabled": True,
+            "tags": ["python"],
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["implementation_type"] == "python"
+    assert created["python_config"]["entrypoint"] == "run"
+    assert created["http_config"] is None
+    assert created["mcp_config"] is None
+    assert agent.reload_count == 1
+
+
 def test_custom_tool_import_export_round_trip_for_mcp_config(
     tmp_path: Path,
     api_client_builder,

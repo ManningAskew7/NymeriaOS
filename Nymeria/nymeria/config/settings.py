@@ -630,9 +630,9 @@ class Settings(BaseSettings):
             "Resolve tools per-step in the model node instead of rebuilding the "
             "graph on enable. Eliminates the Command(goto=END) + tool_reload_resume "
             "round-trip when tools change mid-turn. Default; set False to use the "
-            "legacy rebuild path as a fallback. Falls back to rebuild "
-            "automatically when a newly-created tool isn't in the precomputed "
-            "superset (tool_create / mid-turn MCP install)."
+            "legacy rebuild path as a fallback. The tool executor resolves "
+            "newly-created or newly-installed tools from the live registry before "
+            "rejecting post-build tool calls."
         ),
     )
     llm_use_model_defaults: bool = Field(

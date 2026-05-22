@@ -326,7 +326,12 @@ def create_skill_meta_tool(
                 )
 
         if binding_reload_queued and binding is not None:
-            if should_emit_reload_command(binding.reload_tools):
+            try:
+                configurable = (config or {}).get("configurable") or {}
+                thread_id = str(configurable.get("thread_id") or "")
+            except Exception:
+                thread_id = ""
+            if should_emit_reload_command(binding.reload_tools, thread_id=thread_id):
                 body += (
                     "\n\n---\n"
                     "[Skill Kit reload queued - STOP NOW]\n"
@@ -337,13 +342,16 @@ def create_skill_meta_tool(
                     "after that resume."
                 )
                 return tool_reload_command(body, tool_call_id)
-            # Dynamic mode + tools in superset: skip the rebuild round-trip.
-            # The next agent step's resolver will rebind these tools.
+            # Dynamic mode skips the rebuild round-trip. The next model step
+            # resolves the updated tools, and SafeToolNode can dispatch
+            # post-build tools from the live resolver.
             body += (
                 "\n\n---\n"
-                "[Skill Kit tools bound; available starting next step]\n"
+                "[Skill Kit tools bound; callable on the next model step]\n"
                 "These tools were NOT bound before this Skill Kit activation — "
                 "earlier turns of this conversation did not have access to them. "
+                "They become callable immediately after this tool result without "
+                "a graph rebuild or resume. "
                 "See the binding-result block above for the exact bound-list "
                 "delta; trust those counts over any assumption that the tools "
                 "were already available."

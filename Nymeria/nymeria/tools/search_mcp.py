@@ -168,15 +168,19 @@ def _command_or_text(
     queued_reload: bool,
     tool_call_id: Optional[str],
     new_tool_names: Optional[list[str]] = None,
+    thread_id: str = "",
 ) -> Union[str, Command]:
     """Emit Command(goto=END) for rebuild, else return plain text.
 
     In dynamic-binding mode, ``should_emit_reload_command`` short-circuits
-    the Command when every name in ``new_tool_names`` is already in the
-    graph's superset. For MCP-install paths the new tools usually aren't
-    in the superset, so the rebuild path still triggers.
+    the Command because the next model step resolves tools from the live
+    resolver and SafeToolNode can register post-build MCP tools before
+    dispatch.
     """
-    if queued_reload and tool_call_id and should_emit_reload_command(new_tool_names or []):
+    if queued_reload and tool_call_id and should_emit_reload_command(
+        new_tool_names or [],
+        thread_id=thread_id,
+    ):
         return tool_reload_command(text, tool_call_id)
     return text
 
@@ -392,6 +396,7 @@ def _install_mcp_server_impl(
         bool(binding.reload_tools and not binding.cap_hit),
         tool_call_id,
         binding.reload_tools,
+        thread_id=thread_id,
     )
 
 

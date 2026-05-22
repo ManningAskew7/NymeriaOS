@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
-import importlib
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,18 +10,17 @@ from types import SimpleNamespace
 from langgraph.types import Command
 
 from nymeria.core.agent import set_current_agent
-from nymeria.core.thread_config import ThreadConfigManager
+from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.skills import SkillManager
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_all_tool_metadata
 from nymeria.tools.skill_config import (
-    SkillDraftStore,
-    create_skill_draft,
-    skill_config,
-    skill_kit_create,
+    skill_edit,
+    skill_write,
 )
+from nymeria.tools.search_skills import skill_manage
 
 
 SELF_IMPROVE_MD = """---
@@ -121,97 +118,23 @@ def test_self_improve_global_default_is_profile_setting_and_thread_disable_wins(
     assert profile.global_skill_defaults_migrated is True
 
 
-def test_skill_config_publish_user_skill_activates_thread_and_queues_reload(tmp_path: Path, monkeypatch):
-    skill_config_module = importlib.import_module("nymeria.tools.skill_config")
-
-    monkeypatch.setattr(
-        skill_config_module,
-        "_draft_store",
-        lambda: SkillDraftStore(tmp_path / "drafts"),
-    )
-    agent = _FakeAgent(tmp_path)
-    set_current_agent(agent)
-    try:
-        result = skill_config.func(
-            "publish",
-            name="hello-workflow",
-            description="Use hello_test for a durable greeting workflow.",
-            body="# Hello Workflow\n\nUse hello_test, then summarize the result.",
-            required_tools=["hello_test"],
-            tool_call_id="call-1",
-            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
-        )
-    finally:
-        set_current_agent(None)
-
-    assert isinstance(result, Command)
-    message = result.update["messages"][0]
-    content = message.content
-    payload = _json_prefix(content)
-    assert payload["ok"] is True
-    assert payload["skill"]["name"] == "hello-workflow"
-    assert payload["skill"]["is_skill_kit"] is True
-    assert payload["activated_current_thread"] is True
-    assert agent.skill_manager.get("hello-workflow", user_id="alice") is not None
-    tc = agent.thread_config_manager.get_config("thread-a")
-    assert tc is not None
-    assert "hello-workflow" in tc.enabled_skills
-    assert message.additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
-    assert agent._pending_tool_reload["thread-a"]["source"] == "skill_config"
-    assert agent._pending_tool_reload["thread-a"]["skill_name"] == "hello-workflow"
-
-
-def test_skill_kit_create_package_uses_facade_reload_source(tmp_path: Path, monkeypatch):
-    skill_config_module = importlib.import_module("nymeria.tools.skill_config")
-
-    monkeypatch.setattr(
-        skill_config_module,
-        "_draft_store",
-        lambda: SkillDraftStore(tmp_path / "drafts"),
-    )
-    agent = _FakeAgent(tmp_path)
-    set_current_agent(agent)
-    try:
-        result = asyncio.run(
-            skill_kit_create.coroutine(
-                "package",
-                name="facade-workflow",
-                description="Package an existing workflow through the facade.",
-                body="# Facade Workflow\n\nUse bash_execute only if needed.",
-                required_tools=["bash_execute"],
-                tool_call_id="call-1",
-                config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
-            )
-        )
-    finally:
-        set_current_agent(None)
-
-    assert isinstance(result, Command)
-    message = result.update["messages"][0]
-    payload = _json_prefix(message.content)
-    assert payload["ok"] is True
-    assert payload["skill"]["name"] == "facade-workflow"
-    assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit_create"
-    assert agent._pending_tool_reload["thread-a"]["reason"] == "skill_kit_created"
-
-
-def test_skill_config_rejects_admin_only_required_tool_without_write(tmp_path: Path, monkeypatch):
-    skill_config_module = importlib.import_module("nymeria.tools.skill_config")
-
-    monkeypatch.setattr(
-        skill_config_module,
-        "_draft_store",
-        lambda: SkillDraftStore(tmp_path / "drafts"),
-    )
+def test_skill_write_rejects_admin_only_required_tool_without_write(tmp_path: Path):
     agent = _FakeAgent(tmp_path, role="user")
+    markdown = """---
+name: admin-workflow
+description: Should not publish for non-admin users.
+---
+
+# Admin Workflow
+
+Use reload_all.
+"""
+
     set_current_agent(agent)
     try:
-        result = skill_config.func(
-            "publish",
-            name="admin-workflow",
-            description="Should not publish for non-admin users.",
-            body="# Admin Workflow\n\nUse reload_all.",
-            required_tools=["reload_all"],
+        result = skill_write.func(
+            markdown=markdown,
+            tools=["reload_all"],
             tool_call_id="call-1",
             config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
         )
@@ -226,14 +149,7 @@ def test_skill_config_rejects_admin_only_required_tool_without_write(tmp_path: P
     assert agent.thread_config_manager.get_config("thread-a") is None
 
 
-def test_skill_config_rejects_shadowing_bundled_skill(tmp_path: Path, monkeypatch):
-    skill_config_module = importlib.import_module("nymeria.tools.skill_config")
-
-    monkeypatch.setattr(
-        skill_config_module,
-        "_draft_store",
-        lambda: SkillDraftStore(tmp_path / "drafts"),
-    )
+def test_skill_write_rejects_shadowing_bundled_skill(tmp_path: Path):
     bundled = tmp_path / "bundled"
     _write_skill(bundled, "self-improve", SELF_IMPROVE_MD)
     agent = _FakeAgent(tmp_path)
@@ -241,13 +157,20 @@ def test_skill_config_rejects_shadowing_bundled_skill(tmp_path: Path, monkeypatc
         bundled_dir=bundled,
         data_skills_dir=tmp_path / "skills",
     )
+    markdown = """---
+name: self-improve
+description: Attempt to shadow the bundled default skill.
+---
+
+# Replacement
+
+This should not publish.
+"""
+
     set_current_agent(agent)
     try:
-        result = skill_config.func(
-            "publish",
-            name="self-improve",
-            description="Attempt to shadow the bundled default skill.",
-            body="# Replacement\n\nThis should not publish.",
+        result = skill_write.func(
+            markdown=markdown,
             tool_call_id="call-1",
             config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
         )
@@ -261,35 +184,217 @@ def test_skill_config_rejects_shadowing_bundled_skill(tmp_path: Path, monkeypatc
     assert not (tmp_path / "skills" / "users" / "alice" / "self-improve").exists()
 
 
-def test_skill_config_is_optional_with_metadata():
-    core_names = {tool.name for tool in ALL_TOOLS}
-
-    assert "skill_config" not in core_names
-    assert "skill_config" in OPTIONAL_TOOLS
-    meta = get_all_tool_metadata("skill_config")
-    assert meta is not None
-    assert meta.category == ToolCategory.CUSTOM
-    assert meta.security_level == SecurityLevel.MODERATE
-    assert meta.default_enabled is False
-
-
-def test_create_skill_draft_normalizes_and_validates_dependencies(tmp_path: Path):
+def test_skill_write_creates_skill_kit_with_script_and_activates_thread(tmp_path: Path):
     agent = _FakeAgent(tmp_path)
+    markdown = """---
+name: script-workflow
+description: Use hello_test and a bundled helper script.
+---
+
+# Script Workflow
+
+Run hello_test before using the helper script.
+"""
+
     set_current_agent(agent)
     try:
-        draft = create_skill_draft(
-            user_id="alice",
-            name="hello-workflow",
-            description="Use hello_test for a durable greeting workflow.",
-            body="# Hello Workflow\n\nUse hello_test.",
-            allowed_tools="Read, Write",
-            required_tools=["hello_test", "hello_test"],
-            tool_ttl="4w",
+        result = skill_write.func(
+            markdown=markdown,
+            tools=["hello_test"],
+            scripts=[
+                {
+                    "path": "scripts/helper.py",
+                    "content": "def main():\n    return 'ok'\n",
+                    "executable": True,
+                }
+            ],
+            tool_ttl="30m",
+            tool_call_id="call-write",
+            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
         )
     finally:
         set_current_agent(None)
 
-    assert draft.name == "hello-workflow"
-    assert draft.allowed_tools == ["Read", "Write"]
-    assert draft.required_tools == ["hello_test"]
-    assert draft.tool_ttl == "4w"
+    assert isinstance(result, Command)
+    payload = _json_prefix(result.update["messages"][0].content)
+    assert payload["ok"] is True
+    assert payload["skill"]["name"] == "script-workflow"
+    assert payload["skill"]["required_tools"] == ["hello_test"]
+    script_path = tmp_path / "skills" / "users" / "alice" / "script-workflow" / "scripts" / "helper.py"
+    assert script_path.exists()
+    assert script_path.stat().st_mode & 0o111
+    skill = agent.skill_manager.get("script-workflow", user_id="alice")
+    assert skill is not None
+    assert skill.required_tools == ["hello_test"]
+    assert "script-workflow" in agent.thread_config_manager.get_config("thread-a").enabled_skills
+    assert result.update["messages"][0].additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
+    assert agent._pending_tool_reload["thread-a"]["source"] == "skill_write"
+
+
+def test_skill_edit_rewrites_skill_md_and_preserves_scripts(tmp_path: Path):
+    agent = _FakeAgent(tmp_path)
+    markdown = """---
+name: edit-workflow
+description: Original description.
+---
+
+# Edit Workflow
+
+Original body.
+"""
+
+    set_current_agent(agent)
+    try:
+        write_result = skill_write.func(
+            markdown=markdown,
+            tools=["hello_test"],
+            scripts=[
+                {
+                    "path": "scripts/helper.py",
+                    "content": "def main():\n    return 'ok'\n",
+                }
+            ],
+            activate_current_thread=False,
+            tool_call_id="call-write",
+            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
+        )
+        edit_result = skill_edit.func(
+            name="edit-workflow",
+            description="Updated description.",
+            body="# Edit Workflow\n\nUpdated body.",
+            set_tools="bash_execute",
+            tool_ttl="7d",
+            activate_current_thread=False,
+            tool_call_id="call-edit",
+            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(write_result, str)
+    assert json.loads(write_result)["ok"] is True
+    assert isinstance(edit_result, str)
+    payload = json.loads(edit_result)
+    assert payload["ok"] is True
+    skill = agent.skill_manager.get("edit-workflow", user_id="alice")
+    assert skill is not None
+    assert skill.description == "Updated description."
+    assert skill.required_tools == ["bash_execute"]
+    assert skill.tool_ttl == "7d"
+    assert "Updated body." in skill.body
+    script_path = tmp_path / "skills" / "users" / "alice" / "edit-workflow" / "scripts" / "helper.py"
+    assert script_path.exists()
+
+
+def test_skill_manage_prune_removes_missing_and_noop_thread_entries(tmp_path: Path):
+    agent = _FakeAgent(tmp_path)
+    _write_skill(
+        tmp_path / "skills" / "users" / "alice",
+        "kept-skill",
+        """---
+name: kept-skill
+description: Installed skill should remain.
+---
+
+# Kept Skill
+""",
+    )
+    agent.skill_manager.reload()
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-a",
+            enabled_skills=["kept-skill", "missing-skill"],
+            disabled_skills=["old-noop"],
+        )
+    )
+
+    set_current_agent(agent)
+    try:
+        result = skill_manage.func(
+            action="prune",
+            tool_call_id="call-prune",
+            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["changed"] is True
+    assert payload["removed"]["enabled_missing"] == ["missing-skill"]
+    assert payload["removed"]["disabled_missing"] == ["old-noop"]
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert tc.enabled_skills == ["kept-skill"]
+    assert tc.disabled_skills == []
+
+
+def test_skill_manage_prune_removes_recorded_stale_thread_skill(tmp_path: Path, monkeypatch):
+    from datetime import timedelta
+
+    from nymeria.core import capability_usage
+    from nymeria.core.capability_usage import CapabilityUsageStore
+    from nymeria.core.time_utils import utc_now
+
+    agent = _FakeAgent(tmp_path)
+    _write_skill(
+        tmp_path / "skills" / "users" / "alice",
+        "stale-skill",
+        """---
+name: stale-skill
+description: Skill with old recorded usage.
+---
+
+# Stale Skill
+""",
+    )
+    agent.skill_manager.reload()
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", enabled_skills=["stale-skill"])
+    )
+    store = CapabilityUsageStore(tmp_path / "capability_usage.json")
+    store.record(user_id="alice", thread_id="thread-a", skills=["stale-skill"])
+    data = json.loads(store.path.read_text(encoding="utf-8"))
+    data["alice"]["thread-a"]["skills"]["stale-skill"]["last_used_at"] = (
+        utc_now() - timedelta(days=45)
+    ).isoformat()
+    store.path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(capability_usage, "get_capability_usage_store", lambda: store)
+
+    set_current_agent(agent)
+    try:
+        result = skill_manage.func(
+            action="prune",
+            stale_after_days=30,
+            min_enabled_age_days=0,
+            tool_call_id="call-prune",
+            config={"configurable": {"user_id": "alice", "thread_id": "thread-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["removed"]["enabled_stale_used_before_cutoff"] == ["stale-skill"]
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert tc.enabled_skills == []
+
+
+def test_skill_write_and_edit_are_optional_with_metadata():
+    core_names = {tool.name for tool in ALL_TOOLS}
+
+    assert "skill_config" not in core_names
+    assert "skill_kit_create" not in core_names
+    assert "skill_config" not in OPTIONAL_TOOLS
+    assert "skill_kit_create" not in OPTIONAL_TOOLS
+    assert get_all_tool_metadata("skill_config") is None
+    assert get_all_tool_metadata("skill_kit_create") is None
+    for name in ("skill_write", "skill_edit"):
+        assert name not in core_names
+        assert name in OPTIONAL_TOOLS
+        meta = get_all_tool_metadata(name)
+        assert meta is not None
+        assert meta.category == ToolCategory.CUSTOM
+        assert meta.security_level == SecurityLevel.MODERATE
+        assert meta.default_enabled is False

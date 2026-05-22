@@ -80,7 +80,7 @@ metadata:
 - Binding is strict. If any required tool is unknown, unloadable, or blocked
   by the admin-only gate, activation fails and no tool config is mutated.
 - Activation may remove required tools from `disabled_tools`, matching
-  `tool_enable(action="enable")`; admin-only restrictions still apply.
+  `tool_manage(action="enable")`; admin-only restrictions still apply.
 
 If a Skill Kit binds a new tool, the current graph invocation ends with
 `Command(goto=END)`, Nymeria rebuilds the graph, emits a `tool_reload` event
@@ -140,17 +140,20 @@ or reusable workflow, or before tool search/enabling, MCP search/install,
 skill search/install, API probing, or Skill Kit authoring. Activation binds:
 
 - `tool_search`
-- `tool_enable`
+- `tool_manage`
 - `manage_mcp`
 - `skill_manage`
 - `api_discover`
 - `http_request`
-- `skill_kit_create`
+- `tool_create`
+- `skill_write`
+- `skill_edit`
 
 The Skill Kit teaches the end-to-end sequence: inspect existing capabilities,
 enable tools/skills/MCP servers when they already fit, discover/test APIs when
-needed, create reusable HTTP tools through `skill_kit_create`, then package the
-workflow into a user-scope Skill Kit. Generated Skill Kits are enabled on the
+needed, create reusable HTTP or Python tools through `tool_create`, then write
+or edit the workflow as a user-scope Skill Kit with `skill_write` or
+`skill_edit`. Generated Skill Kits are enabled on the
 current thread by default through `ThreadConfig.enabled_skills`; they are not
 added to `enabled_global_skills` unless the user later enables them globally in
 Settings. Codebase self-modification tools (`claude_code`, `reload_all`, and
@@ -219,15 +222,15 @@ Implementation: the Skills HTTP routes are mounted from
 Capability-expansion tools are optional and normally arrive through
 `Skill(name="self-improve")`, not through the default tool list:
 
-- `skill_manage(action='list'|'search'|'install'|'enable'|'disable'|'inspect', ...)`
+- `skill_manage(action='list'|'search'|'install'|'enable'|'disable'|'inspect'|'status'|'prune', ...)`
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`
 - `search_skills(query, source='installed'|'anthropic', top_k=8)`
 - `install_skill(name, source='anthropic', scope='user'|'global')`
 
-`skill_kit_create` is the preferred authoring facade exposed by
-`self-improve`; it can package existing tools into a Skill Kit or run the
-draft/test/publish flow for reusable HTTP tools before publishing the kit.
-`skill_config` and `tool_create` remain optional compatibility internals.
+`skill_write` and `skill_edit` are the preferred authoring facades exposed by
+`self-improve`; `skill_write` accepts full SKILL.md markdown plus optional
+scripts, and `skill_edit` rewrites an existing SKILL.md while preserving
+auxiliary files. `tool_create` handles reusable HTTP or Python helper tools.
 
 The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS`  -
 it's synthesized per-graph in
@@ -320,23 +323,24 @@ skill's body (not frontmatter) propagate immediately without a cache flush.
 
 ## Agent-authored skills
 
-`skill_config` is the agent-facing write path for generated Skills and Skill
-Kits. It supports `draft`, `validate`, `publish`, `list`, and `delete`.
-Generated skills are user-scope by default; global publish/delete requires
-admin. V1 writes only `SKILL.md`, rejects body text containing frontmatter,
-strictly validates Skill Kit `required_tools`, and refuses to publish a user
-skill that would shadow an existing bundled/global skill.
+`skill_write` is the agent-facing write path for generated Skills and Skill
+Kits. It accepts full SKILL.md markdown plus optional bundled scripts.
+`skill_edit` renames or rewrites an existing generated Skill package while
+preserving auxiliary files. Generated skills are user-scope by default; global
+publish/edit requires admin. Both tools strictly validate Skill Kit
+`required_tools` and refuse to publish a user skill that would shadow an
+existing bundled/global skill.
 
-When `activate_current_thread=true`, `skill_config(action="publish")` updates
-`ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph
-caches, and queues a same-turn reload with `source="skill_config"` and
-`reason="skill_published"`. The emitted `tool_reload` may carry an empty
-`tools` list because the refreshed capability is the `Skill` meta-tool index,
-not a newly bound normal tool.
+When `activate_current_thread=true`, `skill_write`, `skill_edit`, and
+`skill_manage(action="enable")` update `ThreadConfig.enabled_skills`, reload
+the skill manager as needed, invalidate graph caches, and queue a same-turn
+reload with `source="skill_write"`, `source="skill_edit"`, or
+`source="skill_install"` and a matching reason. The emitted `tool_reload` may
+carry an empty `tools` list because the refreshed capability is the `Skill`
+meta-tool index, not a newly bound normal tool.
 
-`skill_kit_create(action="publish"|"package")` uses the same path with
-`source="skill_kit_create"` and `reason="skill_kit_created"`. Marketplace
-installs or thread enables through `skill_manage` use `source="skill_install"`.
+Marketplace installs or thread enables through `skill_manage` use
+`source="skill_install"`.
 
 ## Security posture
 
@@ -345,7 +349,7 @@ installs or thread enables through `skill_manage` use `source="skill_install"`.
   (`bash_execute`, `file_write`, etc.) which already honor the thread's
   enabled-tools and disabled-tools lists.
 - Skill Kits can only bind tools that the same user could enable through
-  `tool_enable(action="enable")`; invalid, unloadable, and admin-blocked
+  `tool_manage(action="enable")`; invalid, unloadable, and admin-blocked
   dependencies fail strictly with no partial writes.
 - `allowed-tools` frontmatter is advisory and portable. Nymeria only appends
   a missing-tool notice when an entry is also a known Nymeria tool name that

@@ -272,7 +272,10 @@ def _delete_in_memory_state(agent: "NymeriaAgent", thread_id: str, result: Threa
     compaction = getattr(agent, "_compaction", None)
     if compaction is not None:
         popped += compaction.clear_thread_state(thread_id)
-    for attr in ("_pending_tool_reload", "_turn_reload_count"):
+    for attr in (
+        "_pending_tool_reload",
+        "_turn_reload_count",
+    ):
         state = getattr(agent, attr, None)
         if isinstance(state, dict) and thread_id in state:
             state.pop(thread_id, None)

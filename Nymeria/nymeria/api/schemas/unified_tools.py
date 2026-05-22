@@ -32,6 +32,7 @@ class UnifiedToolResponse(BaseModel):
     parameters: dict[str, Any] | None = None
     http_config: dict[str, Any] | None = None
     mcp_config: dict[str, Any] | None = None
+    python_config: dict[str, Any] | None = None
     tags: list[str] = []
     editable: bool = False
     configurable: bool = False
@@ -99,6 +100,7 @@ def builtin_tool_to_unified(
         parameters=None,
         http_config=None,
         mcp_config=None,
+        python_config=None,
         tags=[],
         editable=False,
         configurable=configurable,
@@ -118,6 +120,7 @@ def custom_tool_definition_to_unified(
     impl_type = defn.implementation_type
     http_config = None
     mcp_config = None
+    python_config = None
 
     if impl_type == "http" and defn.http_config is not None:
         http_config = {
@@ -142,6 +145,12 @@ def custom_tool_definition_to_unified(
             "working_directory": defn.mcp_config.working_directory,
             "idle_timeout_seconds": defn.mcp_config.idle_timeout_seconds,
             "startup_timeout_seconds": defn.mcp_config.startup_timeout_seconds,
+        }
+    elif impl_type == "python" and defn.python_config is not None:
+        python_config = {
+            "source_code": defn.python_config.source_code,
+            "entrypoint": defn.python_config.entrypoint,
+            "runtime": defn.python_config.runtime,
         }
 
     params = None
@@ -171,6 +180,7 @@ def custom_tool_definition_to_unified(
         parameters=params,
         http_config=http_config,
         mcp_config=mcp_config,
+        python_config=python_config,
         tags=defn.tags or [],
         editable=True,
         configurable=False,

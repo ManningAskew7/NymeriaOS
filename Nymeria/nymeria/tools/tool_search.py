@@ -1,16 +1,17 @@
 """Tool search, discovery, and per-thread binding for Nymeria.
 
-``tool_search`` is intentionally search-only. ``tool_enable`` owns the
+``tool_search`` is intentionally search-only. ``tool_manage`` owns the
 thread-binding mutations that used to live behind ``tool_search(action=...)``.
 
-Enabling a tool with a TTL triggers an in-turn auto-continue: the turn
-finishes the current graph invocation, rebuilds a fresh graph with the new
-tools bound, and resumes via an internal `tool_reload_resume` message so the
-agent can call the newly-enabled tools without waiting for the next user
-message. See `core/agent.py::_do_tool_reload` for the orchestration and
+In dynamic-binding mode, enabling a tool with a TTL returns normal tool text;
+the next model step resolves the updated tool set without a graph rebuild. In
+legacy rebuild mode, the turn finishes the current graph invocation, rebuilds
+a fresh graph, and resumes via an internal `tool_reload_resume` message. See
+`core/agent.py::_do_tool_reload` for the legacy orchestration and
 `docs/tools.md` for the full flow.
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -28,6 +29,19 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_TTL = "2h"
+PROTECTED_MANAGEMENT_TOOL_NAMES = frozenset(
+    {
+        "tool_search",
+        "tool_manage",
+        "skill_manage",
+        "skill_write",
+        "skill_edit",
+        "manage_mcp",
+        "api_discover",
+        "http_request",
+        "tool_create",
+    }
+)
 
 
 @dataclass
@@ -433,7 +447,7 @@ def bind_tools_for_thread(
         )
 
     # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config —
-    # without this, an agent could call tool_enable(action="enable",
+    # without this, an agent could call tool_manage(action="enable",
     # tools=["reload_all"]) to escalate to admin-only tools that are
     # equivalent to authenticated RCE on the shared backend.
     from . import filter_admin_only_tools, filter_developer_only_tools
@@ -630,23 +644,17 @@ def bind_tools_for_thread(
     # un-filtered so they'll be bound on rebuild).
     reload_tools = sorted(set(newly_added) | set(un_disabled))
 
-    # If the turn has already hit the reload cap, we still persist the
-    # enablement but don't force another rebuild. Otherwise the tool would
-    # return Command(goto=END), the graph would exit, and the astream/chat
-    # reload loop would skip (cap exhausted) — leaving an orphan tool_result
-    # with no LLM response. Instead, return a plain string so the LLM can
-    # still respond in-turn; the new binding kicks in on the next user turn.
+    needs_legacy_reload = bool(reload_tools) and should_emit_reload_command(
+        reload_tools or [],
+        thread_id=thread_id,
+    )
+    # The reload cap only applies to the legacy rebuild/resume path. Dynamic
+    # binding returns ordinary tool text and lets the next model step resolve
+    # the updated tool set without touching _pending_tool_reload.
     reload_cap = getattr(agent, "MAX_TOOL_RELOADS_PER_TURN", 1)
     current_reloads = getattr(agent, "_turn_reload_count", {}).get(thread_id, 0)
-    cap_hit = reload_tools and current_reloads >= reload_cap
-
-    # In dynamic-binding mode, skip the _pending_tool_reload write when the
-    # tools are already in the graph's superset. Otherwise the astream/chat
-    # reload loop would still fire (it reads _pending_tool_reload) and
-    # rebuild the graph — undoing the whole point of dynamic mode.
-    will_reload = bool(reload_tools and not cap_hit) and should_emit_reload_command(
-        reload_tools or []
-    )
+    cap_hit = needs_legacy_reload and current_reloads >= reload_cap
+    will_reload = needs_legacy_reload and not cap_hit
     if will_reload:
         if not hasattr(agent, "_pending_tool_reload"):
             agent._pending_tool_reload = {}
@@ -706,15 +714,15 @@ def bind_tools_for_thread(
             "automatic resume."
         )
     elif reload_tools and not cap_hit:
-        # Dynamic-binding mode: tools are already in the graph's superset
-        # and the model node will rebind them on its next step. No reload
-        # round-trip needed.
+        # Dynamic-binding mode: the model node will rebind on its next step,
+        # and SafeToolNode can resolve post-build tools before dispatch.
         delta = new_count - prior_count
         lines.append(
-            "[Tools bound; available starting next step]\n"
+            "[Tools bound; callable on the next model step]\n"
             "These tool(s) were NOT in your bound list before this call — "
             "earlier turns of this conversation did not have access to them. "
-            "They become callable on your next thought.\n"
+            "They become callable immediately after this tool result without "
+            "a graph rebuild or resume.\n"
             f"Your bound list: {prior_count} → {new_count} tool(s)"
             + (f" (+{delta} new binding)." if delta > 0 else ".")
             + " Trust this result over any assumption about earlier-turn "
@@ -759,9 +767,8 @@ def _enable(
     reason: Optional[str] = None,
 ) -> Union[str, Command]:
     """Enable tools for a thread. Returns a string for no-op / refresh-only
-    cases, or a Command(goto=END) when a genuinely new tool was added so the
-    graph terminates immediately and the astream() reload hook can rebuild
-    the tool list before the next agent step.
+    cases and for dynamic-binding mode, or a Command(goto=END) in legacy
+    rebuild mode when a genuinely new tool was added.
     """
     binding = bind_tools_for_thread(
         tool_names,
@@ -775,19 +782,14 @@ def _enable(
         reason=reason,
     )
 
-    # When a reload is queued AND we're under the cap, force the graph to
-    # END after this tool result so the astream()/chat() reload hook fires
-    # immediately. Past the cap, return a plain string so the LLM can
-    # respond in-turn (avoids leaving an orphan tool_result with no
-    # follow-up response when the cap would otherwise eat the reload).
-    # In dynamic-binding mode, skip the Command-goto-END trip when every
-    # newly-bound tool is already in the graph's superset — the next
-    # agent step's resolver will rebind them naturally.
+    # Legacy rebuild mode ends the graph after this tool result so the
+    # astream()/chat() reload hook can rebuild. Dynamic-binding mode skips
+    # Command(goto=END); the next model step resolves the updated tools.
     if (
         binding.reload_tools
         and tool_call_id
         and not binding.cap_hit
-        and should_emit_reload_command(binding.reload_tools)
+        and should_emit_reload_command(binding.reload_tools, thread_id=thread_id)
     ):
         return tool_reload_command(binding.text, tool_call_id)
     return binding.text
@@ -867,7 +869,7 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
         lines.append(
             f"[Warning]: {len(forced_core)} CORE tool(s) disabled (force=True): "
             f"{', '.join(sorted(forced_core))}. "
-            "Re-enable with tool_enable(action=\"enable\", ...) if you need them."
+            "Re-enable with tool_manage(action=\"enable\", ...) if you need them."
         )
     if refused_core:
         lines.append(
@@ -958,6 +960,183 @@ def _status(thread_id: str) -> str:
     return "\n".join(lines)
 
 
+def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
+    from . import ALL_TOOLS, filter_admin_only_tools, filter_developer_only_tools
+
+    try:
+        profile = agent.profile_manager.get_profile(user_id or "default")
+        default_tools_pref = profile.tool_preferences.default_thread_tools
+    except Exception:
+        default_tools_pref = None
+
+    names = {t.name for t in ALL_TOOLS} if default_tools_pref is None else set(default_tools_pref)
+    try:
+        user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+        role = user.role if user else "user"
+        names, _ = filter_admin_only_tools(names, role)
+        names, _ = filter_developer_only_tools(names, role)
+    except Exception:
+        pass
+    return set(names)
+
+
+def _parse_usage_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return ensure_aware_utc(datetime.fromisoformat(str(value)))
+    except Exception:
+        return None
+
+
+def _tool_is_known(name: str, catalog: dict[str, Any], agent: Any) -> bool:
+    if name in catalog:
+        return True
+    registry = getattr(agent, "tool_registry", None)
+    return bool(registry and registry.get_tool(name))
+
+
+def _prune_tools(
+    *,
+    thread_id: str,
+    user_id: str,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
+) -> str:
+    from ..core.agent import get_current_agent
+    from ..core.capability_usage import get_capability_usage_store
+
+    agent = get_current_agent()
+    if agent is None:
+        return json.dumps({"ok": False, "error": "No active agent. Cannot modify thread config."}, indent=2)
+    if not thread_id:
+        return json.dumps({"ok": False, "error": "thread_id is required"}, indent=2)
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        return json.dumps(
+            {
+                "ok": True,
+                "action": "prune",
+                "dry_run": dry_run,
+                "changed": False,
+                "message": "thread has no tool config",
+            },
+            indent=2,
+        )
+
+    stale_days = max(1, int(stale_after_days or 30))
+    min_age_days = max(0, int(min_enabled_age_days or 0))
+    now = utc_now()
+    stale_cutoff = now - timedelta(days=stale_days)
+    config_old_enough = ensure_aware_utc(tc.updated_at) <= now - timedelta(days=min_age_days)
+
+    catalog = _build_catalog()
+    default_bound = _default_bound_tools(agent, user_id)
+    usage_store = get_capability_usage_store()
+
+    enabled = list(tc.enabled_tools or [])
+    disabled = list(tc.disabled_tools or [])
+    temporary = dict(tc.temporary_tools or {})
+
+    expired_temporary = [
+        name
+        for name, entry in temporary.items()
+        if ensure_aware_utc(entry.expires_at) <= now
+    ]
+    unavailable_enabled = [
+        name
+        for name in enabled
+        if name not in PROTECTED_MANAGEMENT_TOOL_NAMES and not _tool_is_known(name, catalog, agent)
+    ]
+    unavailable_disabled = [
+        name
+        for name in disabled
+        if name not in PROTECTED_MANAGEMENT_TOOL_NAMES and not _tool_is_known(name, catalog, agent)
+    ]
+    unavailable_temporary = [
+        name
+        for name in temporary
+        if name not in PROTECTED_MANAGEMENT_TOOL_NAMES and not _tool_is_known(name, catalog, agent)
+    ]
+    redundant_enabled = [
+        name
+        for name in enabled
+        if (
+            name not in PROTECTED_MANAGEMENT_TOOL_NAMES
+            and name in default_bound
+            and name not in disabled
+            and name not in unavailable_enabled
+        )
+    ]
+
+    stale_enabled: list[str] = []
+    if config_old_enough:
+        for name in enabled:
+            if (
+                name in PROTECTED_MANAGEMENT_TOOL_NAMES
+                or name in default_bound
+                or name in disabled
+                or name in unavailable_enabled
+                or name in redundant_enabled
+            ):
+                continue
+            usage = usage_store.get_tool(user_id=user_id, thread_id=thread_id, name=name)
+            last_used = _parse_usage_timestamp(usage.last_used_at)
+            if last_used is not None and last_used <= stale_cutoff:
+                stale_enabled.append(name)
+
+    remove_enabled = set(unavailable_enabled) | set(redundant_enabled) | set(stale_enabled)
+    remove_disabled = set(unavailable_disabled)
+    remove_temporary = set(expired_temporary) | set(unavailable_temporary)
+
+    changed = bool(remove_enabled or remove_disabled or remove_temporary)
+    if changed and not dry_run:
+        tc.enabled_tools = [name for name in enabled if name not in remove_enabled]
+        tc.disabled_tools = [name for name in disabled if name not in remove_disabled]
+        tc.temporary_tools = {
+            name: entry
+            for name, entry in temporary.items()
+            if name not in remove_temporary
+        }
+        if not agent.thread_config_manager.save_config(tc):
+            return json.dumps({"ok": False, "error": "failed to save thread tool config"}, indent=2)
+        if hasattr(agent, "invalidate_thread_config_cache"):
+            agent.invalidate_thread_config_cache(thread_id)
+
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "prune",
+            "dry_run": dry_run,
+            "changed": changed,
+            "thread_id": thread_id,
+            "stale_after_days": stale_days,
+            "min_enabled_age_days": min_age_days,
+            "removed": {
+                "enabled_unavailable": sorted(unavailable_enabled),
+                "enabled_redundant_default": sorted(redundant_enabled),
+                "enabled_stale_used_before_cutoff": sorted(stale_enabled),
+                "disabled_unavailable": sorted(unavailable_disabled),
+                "temporary_expired": sorted(expired_temporary),
+                "temporary_unavailable": sorted(unavailable_temporary),
+            },
+            "protected": sorted(
+                name
+                for name in set(enabled) | set(disabled) | set(temporary)
+                if name in PROTECTED_MANAGEMENT_TOOL_NAMES
+            ),
+            "notes": [
+                "Stale pruning only removes explicit permanent enabled_tools with recorded usage older than the cutoff.",
+                "Bindings with no recorded usage are left intact.",
+            ],
+        },
+        indent=2,
+        default=str,
+    )
+
+
 @tool
 def tool_search(
     query: str = "",
@@ -968,7 +1147,7 @@ def tool_search(
     include_status: bool = True,
 ) -> str:
     """
-    Search available tools by keyword or category.
+    Search available tools by keyword/category; enable results with tool_manage.
 
     Args:
         query: Search keyword.
@@ -998,51 +1177,26 @@ def tool_search(
     )
 
 
-@tool
-def tool_enable(
+def _tool_manage_impl(
     action: str,
     tools: Optional[List[str]] = None,
     category: str = "",
     ttl: Optional[str] = None,
     force: bool = False,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
     config: Annotated[RunnableConfig, InjectedToolArg],
+    source: str = "tool_manage",
 ) -> Union[str, Command]:
-    """
-    Enable, disable, or inspect current-thread tool bindings.
-
-    Args:
-        action: One of: enable, disable, list_categories, status.
-        tools: Tool names to enable or disable.
-        category: Category name to enable or list/filter.
-        ttl: Required for enable action. Duration format: Nm (minutes),
-            Nh (hours), Nd (days), Nw (weeks), or "never" for permanent.
-            "permanent" is also accepted. Examples: "30m", "2h", "7d",
-            "4w", "never". Choose based on how long this task needs the tool;
-            don't default blindly.
-        force: For disable only. Set True to allow disabling core tools.
-
-    Returns:
-        enable: "[Success]: N requested, M newly loaded..." summary
-        with per-tool breakdown. When new tools are loaded, includes
-        "[Tool reload queued - STOP NOW]" — the graph is force-ended
-        via Command(goto=END), rebuilt with the new tools, and the
-        agent is re-prompted via tool_reload_resume. Do not respond
-        or call tools after seeing this directive.
-        When no new tools are loaded (no-op/refresh): plain text
-        summary, no reload.
-        disable: "[Success]: Disabled N tool(s): ...".
-        list_categories: "[Tool Categories]: N categories" with counts.
-        status: "[Thread Tool Status]" with enabled/TTL/disabled sections.
-        Errors: "[Error]: <reason>".
-    """
     action = action.strip().lower()
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
     user_role = _get_user_role(user_id)
     logger.info(
-        f"tool_enable: action={action}, category={category!r}, "
+        f"{source}: action={action}, category={category!r}, "
         f"tools={tools}, ttl={ttl!r}"
     )
 
@@ -1059,18 +1213,71 @@ def tool_enable(
             user_id,
             ttl=ttl,
             tool_call_id=tool_call_id,
-            source="tool_enable",
+            source=source,
         )
     if action == "disable":
         return _disable(tools or [], thread_id, force=force)
+    if action == "prune":
+        return _prune_tools(
+            thread_id=thread_id,
+            user_id=user_id,
+            stale_after_days=stale_after_days,
+            min_enabled_age_days=min_enabled_age_days,
+            dry_run=dry_run,
+        )
     if action == "list_categories":
         return _list_categories(user_role=user_role)
     if action in {"status", "inspect"}:
         return _status(thread_id)
     return (
         f"[Error]: Unknown action '{action}'. "
-        "Use: enable, disable, list_categories, status"
+        "Use: enable, disable, prune, list_categories, status"
     )
 
 
-TOOL_SEARCH_TOOLS = [tool_search, tool_enable]
+@tool
+def tool_manage(
+    action: str,
+    tools: Optional[List[str]] = None,
+    category: str = "",
+    ttl: Optional[str] = None,
+    force: bool = False,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> Union[str, Command]:
+    """
+    Manage current-thread tool bindings: enable, disable, prune, list_categories, status.
+
+    Args:
+        action: One of: enable, disable, prune, list_categories, status.
+        tools: Tool names to enable or disable.
+        category: Category name to enable or list/filter.
+        ttl: Required for enable action. Duration format: Nm (minutes),
+            Nh (hours), Nd (days), Nw (weeks), or "never" for permanent.
+        force: For disable only. Set True to allow disabling core tools.
+        stale_after_days: For prune, remove recorded-stale permanent bindings
+            whose last use is older than this many days.
+        min_enabled_age_days: For prune, require the thread config to be at
+            least this old before stale-age pruning.
+        dry_run: For prune, report changes without saving them.
+    """
+    return _tool_manage_impl(
+        action,
+        tools,
+        category,
+        ttl,
+        force,
+        stale_after_days,
+        min_enabled_age_days,
+        dry_run,
+        tool_call_id=tool_call_id,
+        config=config,
+        source="tool_manage",
+    )
+
+
+TOOL_SEARCH_TOOLS = [tool_search, tool_manage]

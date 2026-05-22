@@ -5,30 +5,48 @@
     <link rel="icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nymeria</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Geist:wght@100..900&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Apply persisted font choice before app loads (testing-only override)
+      try {
+        var f = localStorage.getItem('nymeria_font_family');
+        if (f) document.documentElement.style.setProperty('--font-sans', f);
+      } catch (e) {}
+      // Apply persisted chat-bubble preference
+      try {
+        var b = localStorage.getItem('nymeria_chat_bubbles');
+        if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
+      } catch (e) {}
+    </script>
     
-		<link rel="modulepreload" href="/_app/immutable/entry/start.BhtOz4WC.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/D4DWT5Lj.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CCCxeROu.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CpiRq97K.js">
-		<link rel="modulepreload" href="/_app/immutable/entry/app.CaVvV_h1.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/B2G2m1xk.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/D0zC9YDR.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/D2x7XhFU.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/D_onvFdd.js">
+		<link rel="modulepreload" href="/_app/immutable/entry/start.BIwhkhGQ.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/BLHDxo8a.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/Do8qVmcM.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CRsuxV3v.js">
+		<link rel="modulepreload" href="/_app/immutable/entry/app.BFDk17PF.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CXZUB0IC.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/C17JBP3g.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CRf3b-Dw.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/HyOpPXlE.js">
   </head>
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">
 			<script>
 				{
-					__sveltekit_n2m56m = {
+					__sveltekit_1l1wsd8 = {
 						base: ""
 					};
 
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.BhtOz4WC.js"),
-						import("/_app/immutable/entry/app.CaVvV_h1.js")
+						import("/_app/immutable/entry/start.BIwhkhGQ.js"),
+						import("/_app/immutable/entry/app.BFDk17PF.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});

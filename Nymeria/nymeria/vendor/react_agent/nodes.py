@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, List, Literal, Optional, cast
@@ -1350,6 +1351,7 @@ def create_tools_node(
     tool_timeout: Optional[int] = None,
     on_timeout: Optional[Callable] = None,
     tool_output_max_chars: int = 100000,
+    dynamic_tool_resolver: Optional[Callable[[], tuple]] = None,
 ) -> "SafeToolNode":
     """
     Create a tools node that executes tool calls.
@@ -1362,6 +1364,9 @@ def create_tools_node(
         on_timeout: Optional callback invoked with the input dict and runnable
             config when a timeout occurs
         tool_output_max_chars: Maximum stored characters per ToolMessage result
+        dynamic_tool_resolver: Optional resolver used by dynamic-binding mode.
+            If the model calls a tool that was enabled after graph construction,
+            SafeToolNode refreshes from this resolver before rejecting it.
 
     Returns:
         SafeToolNode instance that handles errors and timeouts gracefully
@@ -1372,6 +1377,7 @@ def create_tools_node(
         tool_timeout=tool_timeout,
         on_timeout=on_timeout,
         tool_output_max_chars=tool_output_max_chars,
+        dynamic_tool_resolver=dynamic_tool_resolver,
     )
 
 
@@ -1394,6 +1400,7 @@ class SafeToolNode(ToolNode):
         tool_timeout: Optional[int] = None,
         on_timeout: Optional[Callable] = None,
         tool_output_max_chars: int = 100000,
+        dynamic_tool_resolver: Optional[Callable[[], tuple]] = None,
     ):
         super().__init__(tools, handle_tool_errors=handle_tool_errors)
         self._handle_errors = handle_tool_errors
@@ -1401,6 +1408,55 @@ class SafeToolNode(ToolNode):
         self._on_timeout = on_timeout  # Optional callback: fn(input_dict, config=None) -> None
         self._tool_output_max_chars = tool_output_max_chars
         self._json_arg_expectations: dict[str, dict[str, set[str]]] = {}
+        self._dynamic_tool_resolver = dynamic_tool_resolver
+        self._dynamic_tool_lock = threading.RLock()
+
+    def _register_dynamic_tool(self, tool: BaseTool) -> None:
+        """Add a late-bound tool to this ToolNode's dispatch table."""
+        if not getattr(tool, "name", None):
+            return
+        with self._dynamic_tool_lock:
+            if tool.name in self.tools_by_name:
+                return
+            self._tools_by_name[tool.name] = tool
+            try:
+                from langgraph.prebuilt.tool_node import _get_all_injected_args
+
+                self._injected_args[tool.name] = _get_all_injected_args(tool)
+            except Exception:  # noqa: BLE001 - injection cache is best-effort.
+                logger.debug(
+                    "Failed to cache injected args for dynamically bound tool %s",
+                    tool.name,
+                    exc_info=True,
+                )
+            self._json_arg_expectations.pop(tool.name, None)
+            logger.info("Dynamically registered tool for dispatch: %s", tool.name)
+
+    def _ensure_dynamic_tools_for_calls(self, tool_calls: list[ToolCall]) -> None:
+        """Refresh dynamic tools when a call targets a post-build tool."""
+        if self._dynamic_tool_resolver is None:
+            return
+        missing = {
+            str(call.get("name") or "")
+            for call in tool_calls
+            if isinstance(call.get("name"), str)
+            and call.get("name") not in self.tools_by_name
+        }
+        missing.discard("")
+        if not missing:
+            return
+        try:
+            resolved_tools, _cache_key = self._dynamic_tool_resolver()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Dynamic tool resolver failed while refreshing missing tools %s",
+                sorted(missing),
+                exc_info=True,
+            )
+            return
+        for tool in resolved_tools or []:
+            if getattr(tool, "name", None) in missing:
+                self._register_dynamic_tool(tool)
 
     @staticmethod
     def _resolve_json_schema_ref(ref: str, root_schema: dict[str, Any]) -> dict[str, Any] | None:
@@ -1553,6 +1609,7 @@ class SafeToolNode(ToolNode):
         input: list[AnyMessage] | dict[str, Any] | BaseModel,
     ) -> tuple[list[ToolCall], Literal["list", "dict", "tool_calls"]]:
         tool_calls, input_type = super()._parse_input(input)
+        self._ensure_dynamic_tools_for_calls(tool_calls)
         return [self._normalize_tool_call_args(call) for call in tool_calls], input_type
 
     def _notify_timeout(self, input, config=None) -> None:
@@ -1591,6 +1648,50 @@ class SafeToolNode(ToolNode):
         else:
             self._on_timeout(input)
 
+    def _record_capability_usage(self, input, config=None) -> None:
+        """Best-effort record of tool/skill use for cleanup heuristics."""
+        try:
+            configurable = {}
+            if isinstance(config, dict):
+                configurable = config.get("configurable") or {}
+            else:
+                configurable = getattr(config, "configurable", {}) or {}
+            thread_id = str(configurable.get("thread_id") or "")
+            user_id = str(configurable.get("user_id") or "default")
+            if not thread_id:
+                return
+
+            messages = input.get("messages", []) if isinstance(input, dict) else []
+            last_message = messages[-1] if messages else None
+            if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+                return
+
+            tools: list[str] = []
+            skills: list[str] = []
+            for tc in last_message.tool_calls:
+                tool_name = str(tc.get("name") or "").strip()
+                if not tool_name:
+                    continue
+                if tool_name == "Skill":
+                    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+                    skill_name = str(args.get("name") or "").strip()
+                    if skill_name:
+                        skills.append(skill_name)
+                else:
+                    tools.append(tool_name)
+
+            if tools or skills:
+                from nymeria.core.capability_usage import record_capability_usage
+
+                record_capability_usage(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    tools=tools,
+                    skills=skills,
+                )
+        except Exception:
+            logger.debug("Failed to record capability usage", exc_info=True)
+
     def invoke(self, input, config=None, **kwargs):
         """Execute tools with a timeout to prevent indefinite hangs.
 
@@ -1603,6 +1704,7 @@ class SafeToolNode(ToolNode):
         unblocked and can proceed. The executor is shut down with wait=False
         so the caller is not blocked by ThreadPoolExecutor cleanup.
         """
+        self._record_capability_usage(input, config)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = executor.submit(super().invoke, input, config, **kwargs)
         try:
@@ -1624,6 +1726,7 @@ class SafeToolNode(ToolNode):
 
     async def ainvoke(self, input, config=None, **kwargs):
         """Async tool execution with timeout."""
+        self._record_capability_usage(input, config)
         try:
             result = await asyncio.wait_for(
                 super().ainvoke(input, config, **kwargs),
@@ -1879,6 +1982,7 @@ class NodeFactory:
             tool_timeout=self.config.tool_timeout,
             on_timeout=self.config.on_timeout,
             tool_output_max_chars=self.config.tool_output_max_chars,
+            dynamic_tool_resolver=self._dynamic_tool_resolver,
         )
 
     def create_router(self) -> Callable[[AgentState], str]:

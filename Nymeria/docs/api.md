@@ -3177,7 +3177,7 @@ Returns available tool categories.
     "todo": ["nym_todo", "nym_todo_delete", "nym_todo_list"],
     "skills": ["skill_manage", "list_installed_skills", "search_skills", "install_skill"],
     "mcp_server": ["manage_mcp", "search_mcp", "install_mcp_server"],
-    "custom": ["tool_search", "tool_enable", "api_discover", "http_request", "tool_create", "skill_config", "skill_kit_create"],
+    "custom": ["tool_search", "tool_manage", "api_discover", "http_request", "tool_create", "skill_write", "skill_edit"],
     "self_modify": ["self_modify_rollback", "reload_all"],
     "thread_spawn": ["spawn_thread"]
   }

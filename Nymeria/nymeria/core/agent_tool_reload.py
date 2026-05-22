@@ -68,8 +68,6 @@ def tool_reload_ttl_phrase(agent: "NymeriaAgent", ttl_seconds: Optional[int]) ->
 
 def tool_reload_source_label(agent: "NymeriaAgent", reload_info: dict) -> str:
     source = reload_info.get("source") or "tool_search"
-    if source == "tool_enable":
-        return 'tool_enable(action="enable")'
     if source == "skill_kit":
         skill_name = reload_info.get("skill_name")
         if skill_name:
@@ -82,19 +80,19 @@ def tool_reload_source_label(agent: "NymeriaAgent", reload_info: dict) -> str:
         if skill_name:
             return f'skill_manage enabling Skill "{skill_name}"'
         return "skill_manage"
-    if source == "skill_kit_create":
+    if source == "skill_write":
         skill_name = reload_info.get("skill_name")
         if skill_name:
-            return f'skill_kit_create publishing Skill Kit "{skill_name}"'
-        return "skill_kit_create"
-    if source == "skill_config":
+            return f'skill_write publishing Skill "{skill_name}"'
+        return "skill_write"
+    if source == "skill_edit":
         skill_name = reload_info.get("skill_name")
         if skill_name:
-            return f'skill_config publishing Skill Kit "{skill_name}"'
-        return "skill_config"
+            return f'skill_edit updating Skill "{skill_name}"'
+        return "skill_edit"
     if source == "tool_create":
         return "tool_create publishing a new tool"
-    return 'tool_enable(action="enable")'
+    return 'tool_manage(action="enable")'
 
 
 def create_tool_reload_resume_message(

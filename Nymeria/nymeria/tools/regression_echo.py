@@ -8,8 +8,8 @@ needing admin privileges.
 This tool is intentionally distinct from `hello_test`:
 - `hello_test` is in `DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES` and admin-only.
 - `regression_echo` is in `OPTIONAL_TOOLS` only — any user can search for it,
-  enable it via `tool_enable`, and call it. That makes it the right target for
-  testing `tool_search → tool_enable → tool_reload → use` flows from a
+  enable it via `tool_manage`, and call it. That makes it the right target for
+  testing `tool_search → tool_manage → tool_reload → use` flows from a
   non-admin regression user.
 
 The output prefix `REGRESSION-ECHO:` is stable so spec assertions can use
@@ -26,7 +26,7 @@ def regression_echo(text: str) -> str:
 
     Used by the regression suite to verify dynamic tool loading: this tool is
     intentionally not in any skill kit's required_tools, so enabling it via
-    `tool_enable` is guaranteed to trigger a real binding change (and a
+    `tool_manage` is guaranteed to trigger a real binding change (and a
     `tool_reload` SSE event), not a TTL refresh.
 
     Args:

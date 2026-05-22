@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ...tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
     HTTPToolConfig,
+    PythonToolConfig,
     ToolParameter,
 )
 from ...tools.definitions.mcp_schema import MCPToolConfig
@@ -16,7 +17,7 @@ from ...tools.definitions.mcp_schema import MCPToolConfig
 ParameterType = Literal["string", "integer", "number", "boolean", "array", "object"]
 HTTPMethod = Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 ResponseFormat = Literal["json", "text", "auto"]
-ImplementationType = Literal["http", "mcp"]
+ImplementationType = Literal["http", "mcp", "python"]
 
 
 class ToolParameterModel(BaseModel):
@@ -54,6 +55,14 @@ class MCPToolConfigModel(BaseModel):
     startup_timeout_seconds: int = 30
 
 
+class PythonToolConfigModel(BaseModel):
+    """API model for subprocess-backed Python custom tools."""
+
+    source_code: str
+    entrypoint: str = "run"
+    runtime: Literal["subprocess"] = "subprocess"
+
+
 class CustomToolResponse(BaseModel):
     """Response model for a custom tool."""
 
@@ -64,6 +73,7 @@ class CustomToolResponse(BaseModel):
     implementation_type: ImplementationType
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
+    python_config: PythonToolConfigModel | None = None
     enabled: bool
     tags: list[str] = []
     created_at: datetime
@@ -80,6 +90,7 @@ class CustomToolCreateRequest(BaseModel):
     implementation_type: ImplementationType
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
+    python_config: PythonToolConfigModel | None = None
     enabled: bool = True
     tags: list[str] = []
 
@@ -92,6 +103,7 @@ class CustomToolUpdateRequest(BaseModel):
     parameters: dict[str, ToolParameterModel] | None = None
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
+    python_config: PythonToolConfigModel | None = None
     enabled: bool | None = None
     tags: list[str] | None = None
 
@@ -152,6 +164,15 @@ def mcp_config_to_core(config: MCPToolConfigModel) -> MCPToolConfig:
     )
 
 
+def python_config_to_core(config: PythonToolConfigModel) -> PythonToolConfig:
+    """Convert an API Python config model to the core config model."""
+    return PythonToolConfig(
+        source_code=config.source_code,
+        entrypoint=config.entrypoint,
+        runtime=config.runtime,
+    )
+
+
 def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:
     """Convert a CustomToolDefinition to API response format."""
     return CustomToolResponse(
@@ -188,6 +209,11 @@ def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomTool
             idle_timeout_seconds=defn.mcp_config.idle_timeout_seconds,
             startup_timeout_seconds=defn.mcp_config.startup_timeout_seconds,
         ) if defn.mcp_config else None,
+        python_config=PythonToolConfigModel(
+            source_code=defn.python_config.source_code,
+            entrypoint=defn.python_config.entrypoint,
+            runtime=defn.python_config.runtime,
+        ) if defn.python_config else None,
         enabled=defn.enabled,
         tags=defn.tags,
         created_at=defn.created_at,

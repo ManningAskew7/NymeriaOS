@@ -12,7 +12,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
@@ -22,10 +22,20 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import get_settings
 from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
+from ..core.python_custom_tools import (
+    DEFAULT_VALIDATION_TIMEOUT_SECONDS,
+    clamp_validation_timeout,
+    validate_python_tool_runtime,
+)
 from ..core.time_utils import utc_now
 from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import tool_reload_command
-from .definitions.custom_tool_schema import CustomToolDefinition, HTTPToolConfig, ToolParameter
+from .definitions.custom_tool_schema import (
+    CustomToolDefinition,
+    HTTPToolConfig,
+    PythonToolConfig,
+    ToolParameter,
+)
 from .tool_search import DEFAULT_TTL, _enable
 from .utils import get_thread_id, get_user_id
 
@@ -41,14 +51,16 @@ CREDENTIAL_REF_PATTERN = re.compile(
 
 
 class HTTPToolDraft(BaseModel):
-    """Persisted draft for an agent-created HTTP tool."""
+    """Persisted draft for an agent-created HTTP or Python tool."""
 
     draft_id: str
     tool_id: str
     name: str
     description: str
     parameters: dict[str, ToolParameter] = Field(default_factory=dict)
-    http_config: HTTPToolConfig
+    implementation_type: Literal["http", "python"] = "http"
+    http_config: Optional[HTTPToolConfig] = None
+    python_config: Optional[PythonToolConfig] = None
     created_by_user_id: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -64,9 +76,11 @@ class HTTPToolDraft(BaseModel):
             "tool_id": self.tool_id,
             "name": self.name,
             "description": self.description,
+            "implementation_type": self.implementation_type,
             "parameter_names": sorted(self.parameters.keys()),
-            "method": self.http_config.method,
-            "url": self.http_config.url,
+            "method": self.http_config.method if self.http_config else None,
+            "url": self.http_config.url if self.http_config else None,
+            "entrypoint": self.python_config.entrypoint if self.python_config else None,
             "last_test_ok": self.last_test_ok,
             "last_tested_at": self.last_tested_at.isoformat() if self.last_tested_at else None,
             "updated_at": self.updated_at.isoformat(),
@@ -226,6 +240,16 @@ def _coerce_http_config(raw: Optional[dict[str, Any]]) -> HTTPToolConfig:
     return config
 
 
+def _coerce_python_config(python_code: str, entrypoint: str = "run") -> PythonToolConfig:
+    code = (python_code or "").strip()
+    if not code:
+        raise ValueError("python_code is required for Python tools")
+    try:
+        return PythonToolConfig(source_code=code, entrypoint=entrypoint or "run")
+    except ValidationError as exc:
+        raise ValueError(f"Invalid python_config: {exc}") from exc
+
+
 def _reserved_tool_names(agent: Any = None) -> set[str]:
     from . import ALL_TOOLS, OPTIONAL_TOOLS
 
@@ -257,6 +281,9 @@ def create_draft_definition(
     description: str,
     parameters: Optional[dict[str, Any]],
     http_config: Optional[dict[str, Any]],
+    implementation_type: str = "http",
+    python_code: str = "",
+    entrypoint: str = "run",
     draft_id: str = "",
     agent: Any = None,
 ) -> HTTPToolDraft:
@@ -273,19 +300,38 @@ def create_draft_definition(
         raise ValueError("name is required")
     if not clean_description:
         raise ValueError("description is required")
+    impl = (implementation_type or "http").strip().lower()
+    if impl not in {"http", "python"}:
+        raise ValueError("implementation_type must be 'http' or 'python'")
+
+    clean_parameters = _coerce_parameters(parameters)
+    clean_http_config = None
+    clean_python_config = None
+    if impl == "http":
+        clean_http_config = _coerce_http_config(http_config)
+    else:
+        clean_python_config = _coerce_python_config(python_code, entrypoint)
 
     return HTTPToolDraft(
         draft_id=normalized_draft_id,
         tool_id=normalized_tool_id,
         name=clean_name[:64],
         description=clean_description[:1000],
-        parameters=_coerce_parameters(parameters),
-        http_config=_coerce_http_config(http_config),
+        parameters=clean_parameters,
+        implementation_type=impl,
+        http_config=clean_http_config,
+        python_config=clean_python_config,
         created_by_user_id=user_id,
     )
 
 
-async def test_draft(store: ToolDraftStore, user_id: str, draft_id: str, sample_params: Optional[dict[str, Any]]) -> dict[str, Any]:
+async def test_draft(
+    store: ToolDraftStore,
+    user_id: str,
+    draft_id: str,
+    sample_params: Optional[dict[str, Any]],
+    validation_timeout_seconds: Optional[int] = None,
+) -> dict[str, Any]:
     draft = store.get(user_id, _normalize_draft_id(draft_id))
     if draft is None:
         raise ValueError(f"Draft not found: {draft_id}")
@@ -294,8 +340,29 @@ async def test_draft(store: ToolDraftStore, user_id: str, draft_id: str, sample_
     if not isinstance(params, dict):
         raise ValueError("sample_params must be an object")
 
-    response = await execute_http_tool(draft.http_config, params)
-    ok = not response.startswith("[Error]:")
+    if draft.implementation_type == "http":
+        if draft.http_config is None:
+            raise ValueError("Draft is missing http_config")
+        response = await execute_http_tool(draft.http_config, params)
+        ok = not response.startswith("[Error]:")
+    elif draft.implementation_type == "python":
+        if draft.python_config is None:
+            raise ValueError("Draft is missing python_config")
+        import asyncio
+
+        run_result = await asyncio.to_thread(
+            validate_python_tool_runtime,
+            tool_id=draft.tool_id,
+            config=draft.python_config,
+            parameters=draft.parameters,
+            sample_params=params,
+            timeout_seconds=clamp_validation_timeout(validation_timeout_seconds),
+        )
+        ok = run_result.ok
+        response = run_result.public_text()
+    else:
+        raise ValueError(f"Unsupported implementation_type: {draft.implementation_type}")
+
     draft.last_test_ok = ok
     draft.last_tested_at = utc_now()
     draft.last_test_params = params
@@ -345,6 +412,8 @@ def _publish_draft(
     thread_id: str,
     ttl: str,
     tool_call_id: str,
+    sample_params: Optional[dict[str, Any]] = None,
+    validation_timeout_seconds: Optional[int] = None,
     reload_source: str = "tool_create",
     reload_reason: str = "tool_published",
 ) -> Union[str, Command]:
@@ -354,12 +423,36 @@ def _publish_draft(
     draft = store.get(user_id, normalized_draft_id)
     if draft is None:
         return _json_result(ok=False, error={"type": "not_found", "message": f"Draft not found: {draft_id}"})
+
+    publish_params: Optional[dict[str, Any]] = draft.last_test_params
+    if sample_params is not None:
+        if not isinstance(sample_params, dict):
+            return _json_result(
+                ok=False,
+                error={"type": "validation_error", "message": "sample_params must be an object"},
+            )
+        publish_params = sample_params
+
     if draft.last_test_ok is not True:
+        if draft.implementation_type == "python" and sample_params is not None:
+            draft.last_test_params = publish_params
+        else:
+            return _json_result(
+                ok=False,
+                error={
+                    "type": "untested_draft",
+                    "message": "Run action='test' successfully before publishing this draft.",
+                },
+            )
+    elif sample_params is not None:
+        draft.last_test_params = publish_params
+
+    if draft.implementation_type == "python" and publish_params is None:
         return _json_result(
             ok=False,
             error={
                 "type": "untested_draft",
-                "message": "Run action='test' successfully before publishing this draft.",
+                "message": "Run action='test' successfully or provide sample_params when publishing this Python draft.",
             },
         )
 
@@ -378,17 +471,67 @@ def _publish_draft(
             error={"type": "duplicate_tool_id", "message": f"tool_id {draft.tool_id!r} already exists"},
         )
 
-    definition = CustomToolDefinition(
-        id=draft.tool_id,
-        name=draft.name,
-        description=draft.description,
-        parameters=draft.parameters,
-        implementation_type="http",
-        http_config=draft.http_config,
-        enabled=True,
-        tags=["agent-created", f"user:{user_id}"],
-    )
+    if draft.implementation_type == "python":
+        if draft.python_config is None:
+            return _json_result(
+                ok=False,
+                error={"type": "validation_error", "message": "Draft is missing python_config"},
+            )
+        validation = validate_python_tool_runtime(
+            tool_id=draft.tool_id,
+            config=draft.python_config,
+            parameters=draft.parameters,
+            sample_params=publish_params,
+            timeout_seconds=clamp_validation_timeout(validation_timeout_seconds),
+        )
+        draft.last_test_ok = validation.ok
+        draft.last_tested_at = utc_now()
+        draft.last_test_response_preview = validation.public_text()[:4000]
+        draft.last_test_error = None if validation.ok else validation.public_text()[:1000]
+        store.save(user_id, draft)
+        if not validation.ok:
+            return _json_result(
+                ok=False,
+                error={
+                    "type": validation.error_type or "validation_error",
+                    "message": validation.error_message or validation.public_text(),
+                },
+            )
+
+    if draft.implementation_type == "http":
+        definition = CustomToolDefinition(
+            id=draft.tool_id,
+            name=draft.name,
+            description=draft.description,
+            parameters=draft.parameters,
+            implementation_type="http",
+            http_config=draft.http_config,
+            enabled=True,
+            tags=["agent-created", f"user:{user_id}"],
+        )
+    elif draft.implementation_type == "python":
+        definition = CustomToolDefinition(
+            id=draft.tool_id,
+            name=draft.name,
+            description=draft.description,
+            parameters=draft.parameters,
+            implementation_type="python",
+            python_config=draft.python_config,
+            enabled=True,
+            tags=["agent-created", "python", f"user:{user_id}"],
+        )
+    else:
+        return _json_result(
+            ok=False,
+            error={"type": "validation_error", "message": f"Unsupported implementation_type: {draft.implementation_type}"},
+        )
     loader = get_custom_tool_loader()
+    registry_before = 0
+    if agent is not None:
+        try:
+            registry_before = len(agent.tool_registry.get_all_tools())
+        except Exception:
+            registry_before = 0
     path = loader.save_definition(definition)
 
     loaded_names: list[str] = []
@@ -396,6 +539,12 @@ def _publish_draft(
         loaded_names = agent.reload_custom_tools()
     else:
         loaded_names = [tool.name for tool in loader.load_all()]
+    registry_after = registry_before
+    if agent is not None:
+        try:
+            registry_after = len(agent.tool_registry.get_all_tools())
+        except Exception:
+            registry_after = registry_before
 
     publish_text = _json_result(
         ok=True,
@@ -405,12 +554,19 @@ def _publish_draft(
         default_enabled_for_other_threads=False,
         saved_path=str(path),
         loaded_tools=loaded_names,
+        registry_before_count=registry_before,
+        registry_after_count=registry_after,
         tool=_published_summary(definition),
     )
 
     if agent is None:
         return publish_text
 
+    enable_reason = (
+        "python_tool_published"
+        if draft.implementation_type == "python" and reload_reason == "tool_published"
+        else reload_reason
+    )
     enable_result = _enable(
         [draft.tool_id],
         "",
@@ -419,7 +575,7 @@ def _publish_draft(
         ttl=ttl_key,
         tool_call_id=tool_call_id,
         source=reload_source,
-        reason=reload_reason,
+        reason=enable_reason,
     )
     return _prefix_command_result(enable_result, publish_text, tool_call_id)
 
@@ -432,28 +588,36 @@ async def tool_create(
     description: str = "",
     parameters: Optional[dict[str, Any]] = None,
     http_config: Optional[dict[str, Any]] = None,
+    implementation_type: str = "http",
+    python_code: str = "",
+    entrypoint: str = "run",
     draft_id: str = "",
     sample_params: Optional[dict[str, Any]] = None,
     ttl: str = DEFAULT_TTL,
+    validation_timeout_seconds: int = DEFAULT_VALIDATION_TIMEOUT_SECONDS,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> Union[str, Command]:
-    """Draft, test, publish, list, or delete agent-created HTTP tools.
+    """Draft, test, publish, list, or delete agent-created custom tools.
 
-    Use this after you have discovered a stable API request with api_discover
-    and tested the payload shape with http_request. V1 only supports HTTP
-    tools and intentionally rejects inline secrets, Authorization/API-key
-    headers, and ${env:...} secret references. Secret-scoped auth is planned
-    for production.
+    Supports HTTP tools and subprocess-backed Python tools. HTTP tools are best
+    after discovering a stable API request with api_discover/http_request.
+    Python tools are for small deterministic helpers that can be expressed as
+    a pure function. Python code is stored in data/custom_tools and executed in
+    a child process; it is never imported into the API process.
 
     Actions:
-      draft:   Save or update a per-user HTTP tool draft. Requires tool_id,
-               description, parameters, and http_config.
+      draft:   Save or update a per-user tool draft. HTTP requires http_config.
+               Python requires implementation_type="python", python_code, and
+               an entrypoint function (default "run").
       test:    Execute a saved draft with sample_params and record whether it
                succeeded.
       publish: Save a successfully tested draft into the global custom-tool
-               registry, reload it, and enable it on this thread with ttl.
+               registry, rerun Python validation when applicable, reload it,
+               and enable it on this thread with ttl. For Python drafts,
+               providing sample_params on publish can validate and publish in
+               one call.
       list:    Show this user's drafts and globally published custom tools
                without exposing request headers or bodies.
       delete:  Delete this user's draft only. It does not delete a globally
@@ -466,6 +630,7 @@ async def tool_create(
     Args:
       ttl: Publish-only TTL for enabling the new tool on this thread. Format:
            Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
+      validation_timeout_seconds: Python test/publish timeout. Default 60s.
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -483,6 +648,9 @@ async def tool_create(
                 description=description,
                 parameters=parameters,
                 http_config=http_config,
+                implementation_type=implementation_type,
+                python_code=python_code,
+                entrypoint=entrypoint,
                 draft_id=draft_id,
                 agent=get_current_agent(),
             )
@@ -491,7 +659,13 @@ async def tool_create(
 
         if action_key == "test":
             target_draft_id = _normalize_draft_id(draft_id or tool_id)
-            result = await test_draft(store, user_id, target_draft_id, sample_params)
+            result = await test_draft(
+                store,
+                user_id,
+                target_draft_id,
+                sample_params,
+                validation_timeout_seconds=validation_timeout_seconds,
+            )
             return _json_result(action="test", **result)
 
         if action_key == "publish":
@@ -503,6 +677,8 @@ async def tool_create(
                 thread_id=thread_id,
                 ttl=ttl,
                 tool_call_id=tool_call_id,
+                sample_params=sample_params,
+                validation_timeout_seconds=validation_timeout_seconds,
             )
 
         if action_key == "list":

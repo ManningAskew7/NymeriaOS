@@ -115,17 +115,16 @@ from ..plugins._prv_a import (
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
-from .tool_search import tool_enable, tool_search, TOOL_SEARCH_TOOLS
+from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
 from .auth_manager import auth_manager, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
 from ._prv_b import _PRV_TOOLS_B
 from .skill_config import (
-    skill_config,
-    skill_kit_create,
+    skill_edit,
+    skill_write,
     SKILL_CONFIG_TOOLS,
-    SKILL_KIT_CREATE_TOOLS,
 )
 from .search_skills import (
     skill_manage,
@@ -1363,7 +1362,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + TOOL_CREATE_TOOLS
     + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
-    + SKILL_KIT_CREATE_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
     + GOAL_TOOLS
@@ -1405,8 +1403,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
-# self-improve Skill Kit. They remain valid explicit per-thread enablements for
-# compatibility, but should not live in profile default_thread_tools.
+# self-improve Skill Kit. They should not live in profile default_thread_tools.
 CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
     t.name
     for t in (
@@ -1416,7 +1413,6 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
         + HTTP_API_TOOLS
         + TOOL_CREATE_TOOLS
         + SKILL_CONFIG_TOOLS
-        + SKILL_KIT_CREATE_TOOLS
     )
 )
 
@@ -2730,7 +2726,7 @@ __all__ = [
     "slash_command",
     "SLASH_COMMAND_TOOLS",
     "tool_search",
-    "tool_enable",
+    "tool_manage",
     "TOOL_SEARCH_TOOLS",
     "http_request",
     "api_discover",
@@ -2742,10 +2738,9 @@ __all__ = [
     "request_credential",
     "REQUEST_CREDENTIAL_TOOLS",
     "_PRV_TOOLS_B",
-    "skill_config",
-    "skill_kit_create",
+    "skill_write",
+    "skill_edit",
     "SKILL_CONFIG_TOOLS",
-    "SKILL_KIT_CREATE_TOOLS",
     "skill_manage",
     "list_installed_skills",
     "search_skills",

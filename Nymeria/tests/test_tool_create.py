@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 
 import pytest
 
 from nymeria.core.custom_tools import CustomToolLoader
+from nymeria.core.python_custom_tools import (
+    run_python_tool_subprocess,
+    validate_python_tool_static,
+)
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
     HTTPToolConfig,
+    PythonToolConfig,
     ToolParameter,
 )
 from nymeria.tools.metadata import SecurityLevel, ToolCategory, clear_custom_tool_metadata, get_all_tool_metadata
@@ -112,6 +118,56 @@ def test_tool_create_publish_requires_successful_test(tmp_path):
     assert payload["error"]["type"] == "untested_draft"
 
 
+def test_python_tool_publish_can_validate_with_sample_params(tmp_path, monkeypatch):
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    tool_create_module = importlib.import_module("nymeria.tools.tool_create")
+    monkeypatch.setattr(tool_create_module, "get_custom_tool_loader", lambda: loader)
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = create_draft_definition(
+        user_id="user-1",
+        tool_id="python_publish_echo",
+        name="Python Publish Echo",
+        description="Echo text during publish validation",
+        parameters={
+            "value": {
+                "type": "string",
+                "description": "Value to echo",
+                "required": True,
+            }
+        },
+        http_config=None,
+        implementation_type="python",
+        python_code=(
+            "def run(value: str) -> str:\n"
+            "    return value.upper()\n"
+        ),
+    )
+    store.save("user-1", draft)
+
+    result = _publish_draft(
+        store=store,
+        user_id="user-1",
+        draft_id="python_publish_echo",
+        thread_id="thread-1",
+        ttl="2h",
+        tool_call_id="call-1",
+        sample_params={"value": "nymeria"},
+        validation_timeout_seconds=10,
+    )
+
+    assert isinstance(result, str)
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["published"] is True
+    assert payload["tool"]["implementation_type"] == "python"
+    assert loader.get_definition("python_publish_echo") is not None
+    saved = store.get("user-1", "python_publish_echo")
+    assert saved is not None
+    assert saved.last_test_ok is True
+
+
 def test_custom_tool_loader_registers_search_metadata(tmp_path):
     clear_custom_tool_metadata()
     loader = CustomToolLoader(tmp_path / "custom_tools")
@@ -157,3 +213,95 @@ def test_tool_create_is_optional_with_metadata():
     assert meta.category == ToolCategory.CUSTOM
     assert meta.security_level == SecurityLevel.MODERATE
     assert meta.default_enabled is False
+
+
+def test_python_tool_static_validation_rejects_top_level_calls():
+    config = PythonToolConfig(
+        source_code=(
+            "print('side effect')\n\n"
+            "def run(value: str) -> str:\n"
+            "    return value\n"
+        )
+    )
+
+    errors = validate_python_tool_static(
+        config=config,
+        parameters={
+            "value": ToolParameter(
+                type="string",
+                description="Value to echo",
+                required=True,
+            )
+        },
+    )
+
+    assert any("top-level Expr" in error for error in errors)
+
+
+def test_python_tool_subprocess_executes_successfully():
+    config = PythonToolConfig(
+        source_code=(
+            "def run(name: str) -> str:\n"
+            "    return f'hello {name}'\n"
+        )
+    )
+
+    result = run_python_tool_subprocess(
+        tool_id="hello_python",
+        config=config,
+        params={"name": "Ada"},
+        timeout_seconds=10,
+    )
+
+    assert result.ok is True
+    assert result.result == "hello Ada"
+
+
+def test_python_tool_subprocess_contains_process_exit():
+    config = PythonToolConfig(
+        source_code=(
+            "def run() -> str:\n"
+            "    import os\n"
+            "    os._exit(7)\n"
+        )
+    )
+
+    result = run_python_tool_subprocess(
+        tool_id="crashy_python",
+        config=config,
+        params={},
+        timeout_seconds=10,
+    )
+
+    assert result.ok is False
+    assert result.error_type == "process_exit"
+    assert "7" in result.error_message
+
+
+def test_custom_tool_loader_registers_python_wrapper_without_importing_user_code(tmp_path):
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    definition = CustomToolDefinition(
+        id="python_echo",
+        name="Python Echo",
+        description="Echo a value through a subprocess-backed Python tool",
+        parameters={
+            "value": ToolParameter(
+                type="string",
+                description="Value to echo",
+                required=True,
+            )
+        },
+        implementation_type="python",
+        python_config=PythonToolConfig(
+            source_code=(
+                "def run(value: str) -> str:\n"
+                "    return value.upper()\n"
+            )
+        ),
+        enabled=True,
+    )
+
+    loader.save_definition(definition)
+    tool_obj = loader._tools["python_echo"]
+
+    assert tool_obj.invoke({"value": "nymeria"}) == "NYMERIA"

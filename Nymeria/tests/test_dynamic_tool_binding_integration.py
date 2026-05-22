@@ -7,7 +7,7 @@ in dynamic mode — verifying that:
   when the flag is on, and through the legacy path when off.
 - The dynamic resolver is constructed and produces ``(tools, hash)`` tuples
   whose hash reflects ThreadConfig changes.
-- ``_compute_tool_superset`` populates ``_current_tool_superset_names`` and
+- ``_compute_tool_superset`` populates the diagnostic superset name set and
   includes core tools.
 - ``create_graph`` is called with the right kwargs in dynamic mode.
 
@@ -102,8 +102,7 @@ def test_flag_on_passes_resolver_and_superset_to_create_graph():
 
 
 def test_flag_on_populates_superset_name_set_on_agent():
-    """should_emit_reload_command reads _current_tool_superset_names; it
-    must be populated by every dynamic graph build."""
+    """Dynamic graph builds populate the diagnostic superset snapshot."""
     agent = _make_agent(dynamic=True)
     with patch("nymeria.core.agent_graph.create_graph", return_value=MagicMock()):
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
