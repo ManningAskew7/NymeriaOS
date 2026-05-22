@@ -39,6 +39,8 @@ class FakeAgent:
         self.aborted_threads: list[str] = []
         self.compactions: list[tuple[str, str]] = []
         self.prunes: list[tuple[str, str]] = []
+        self.rewinds: list[tuple[str, int]] = []
+        self.rewind_return = 0
         self.synced_tools = 0
 
     def _get_llm_config_for_thread(self, thread_id: str) -> ThreadLLMConfig:
@@ -54,6 +56,10 @@ class FakeAgent:
     async def prune_now(self, thread_id: str, user_id: str):
         self.prunes.append((thread_id, user_id))
         return {"success": True, "pruned_count": 3, "chars_saved": 1234}
+
+    def rewind_thread_exchanges(self, thread_id: str, steps: int = 1) -> int:
+        self.rewinds.append((thread_id, steps))
+        return self.rewind_return
 
     def abort_with_cascade(self, thread_id: str):
         self.aborted_threads.append(thread_id)
@@ -176,6 +182,70 @@ def test_prune_route_runs_under_authenticated_user(tmp_path: Path, api_client_bu
         "chars_saved": 1234,
     }
     assert agent.prunes == [(thread_id, "owner")]
+
+
+def test_rewind_route_defaults_to_one_step(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_return = 2
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "thread_id": thread_id,
+        "steps": 1,
+        "removed": 2,
+    }
+    assert agent.rewinds == [(thread_id, 1)]
+
+
+def test_rewind_route_accepts_explicit_steps(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-many"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_return = 5
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": 3},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "thread_id": thread_id,
+        "steps": 3,
+        "removed": 5,
+    }
+    assert agent.rewinds == [(thread_id, 3)]
+
+
+def test_rewind_route_rejects_zero_or_negative_steps(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-bad"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    zero = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": 0},
+    )
+    negative = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": -2},
+    )
+
+    assert zero.status_code == 422
+    assert negative.status_code == 422
+    assert agent.rewinds == []
 
 
 def test_stop_route_aborts_only_when_thread_is_running(tmp_path: Path, api_client_builder):

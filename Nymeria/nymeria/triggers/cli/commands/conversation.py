@@ -60,9 +60,6 @@ async def _handle_retry(
     if not retry_prompt.strip():
         return CommandResult.failed("Cannot retry with an empty message.")
 
-    # TODO: Backend endpoint POST /threads/{id}/rewind needed.
-    # Removes the last N user+assistant exchanges from LangGraph state
-    # using RemoveMessage + update_state (same pattern as context trimming).
     try:
         await call_client_method(
             context,

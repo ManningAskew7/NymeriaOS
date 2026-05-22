@@ -365,11 +365,8 @@ class NymeriaAPIClient:
         """Remove the last N user+assistant exchanges from thread state.
 
         Uses RemoveMessage + update_state on the backend (same mechanism as
-        context trimming). Requires POST /threads/{id}/rewind endpoint.
+        context trimming).
         """
-        # TODO: Backend endpoint POST /threads/{id}/rewind not yet implemented.
-        # It should: get_state → walk messages backward to find `steps` exchanges
-        # → build RemoveMessage commands → graph.update_state(config, {"messages": removes}).
         return await self._post(
             f"/threads/{thread_id}/rewind",
             json={"steps": steps},
