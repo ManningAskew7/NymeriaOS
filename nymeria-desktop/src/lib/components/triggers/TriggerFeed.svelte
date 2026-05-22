@@ -181,7 +181,7 @@
   }
 
   .add-trigger-btn:hover {
-    border-color: var(--border-default);
+    border-color: var(--accent-primary);
     color: var(--text-primary);
     background: var(--bg-hover);
   }
@@ -196,6 +196,8 @@
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
   }
 
   .empty-state p {
@@ -203,7 +205,7 @@
   }
 
   .empty-state .hint {
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
     margin-top: var(--spacing-xs);
   }
 

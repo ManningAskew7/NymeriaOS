@@ -78,7 +78,7 @@
     {#if !isCollapsed}
       <div class="brand">
         <img src="/wolfhead-transparent.png" alt="" class="brand-mark" />
-        <h1 class="logo">Nymeria<span class="logo-os">OS</span></h1>
+        <h1 class="logo"><span class="logo-name">Nymeria</span><span class="logo-os">OS</span></h1>
       </div>
       <span class="new-thread-wrap">
         <Button variant="primary" size="sm" onclick={handleNewChat}>
@@ -174,7 +174,7 @@
   </div>
 </div>
 
-<Modal title="Settings" isOpen={showSettings} onClose={closeSettings}>
+<Modal title="Global Settings" isOpen={showSettings} onClose={closeSettings}>
   <SettingsPanel initialTab={settingsInitialTab} />
 </Modal>
 
@@ -224,16 +224,23 @@
 
   .logo {
     font-family: var(--font-logo);
-    font-size: var(--font-size-xl);
-    font-weight: 700;
-    color: var(--accent-primary);
+    font-size: var(--logo-font-size, var(--font-size-xl));
+    color: var(--logo-color, var(--accent-primary));
     margin: 0;
     letter-spacing: -0.02em;
   }
 
+  /* "Nymeria" — independently controllable weight + opacity. Kept as a span
+     inside .logo so the two halves don't compose opacity multiplicatively. */
+  .logo-name {
+    font-weight: var(--logo-weight-name, 700);
+    opacity: var(--logo-opacity-name, 1);
+  }
+
   .logo-os {
-    color: var(--accent-primary);
-    font-weight: 300;
+    color: var(--logo-color, var(--accent-primary));
+    font-weight: var(--logo-weight-os, 300);
+    opacity: var(--logo-opacity-os, 1);
     text-shadow: none;
   }
 
@@ -241,6 +248,9 @@
     padding: 4px 10px;
     font-size: 12px;
     gap: 5px;
+    /* Nudge the whole pill (background, + icon, and label) 1px down for
+       optical alignment with neighbouring sidebar elements. */
+    transform: translateY(1px);
   }
 
   .new-thread-wrap :global(.new-thread-label) {

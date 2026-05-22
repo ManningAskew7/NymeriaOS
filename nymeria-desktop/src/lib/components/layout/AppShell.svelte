@@ -206,8 +206,8 @@
     display: flex;
     flex-direction: column;
     overflow: visible;
-    transition: width 250ms cubic-bezier(0.4, 0, 0.2, 1),
-                min-width 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+                min-width var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
   }
 
   .sidebar.collapsed {
@@ -244,9 +244,9 @@
     display: flex;
     flex-direction: column;
     overflow: visible;
-    transition: width 250ms cubic-bezier(0.4, 0, 0.2, 1),
-                min-width 250ms cubic-bezier(0.4, 0, 0.2, 1),
-                border-color 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+                min-width var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+                border-color var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
   }
 
   .right-panel.collapsed {

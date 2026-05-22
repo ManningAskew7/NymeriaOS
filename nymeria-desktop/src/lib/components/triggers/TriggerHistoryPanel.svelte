@@ -114,7 +114,9 @@
                   <span class="duration">{exec.duration_seconds.toFixed(1)}s</span>
                   <span class="action-type">{exec.action_type.replace('_', ' ')}</span>
                 </div>
-                <Icon name={expandedId === exec.id ? 'chevronDown' : 'chevronRight'} size={12} />
+                <span class="expand-chevron" class:rotated={expandedId === exec.id}>
+                  <Icon name="chevronRight" size={12} />
+                </span>
               </button>
 
               {#if expandedId === exec.id}
@@ -413,5 +415,18 @@
     color: var(--text-muted);
     padding-top: var(--spacing-xs);
     border-top: 1px solid var(--glass-border);
+  }
+
+  .expand-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  .expand-chevron.rotated {
+    transform: rotate(90deg);
   }
 </style>

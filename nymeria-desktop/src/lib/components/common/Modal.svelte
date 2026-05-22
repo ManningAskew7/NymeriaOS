@@ -94,7 +94,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--spacing-md) var(--spacing-lg);
+    /* Slimmer vertical padding so the header bar reads as a title strip,
+       not a heavy banner. */
+    padding: var(--spacing-xs) var(--spacing-lg);
     border-bottom: 1px solid var(--border-subtle);
   }
 

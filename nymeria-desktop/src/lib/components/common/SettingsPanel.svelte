@@ -166,6 +166,193 @@
     }
   }
 
+  // Logo font picker (testing-only, persisted in localStorage). Same pattern
+  // as the body font picker above but applies to the .logo element via the
+  // --font-logo CSS variable. The default ("system") matches the original
+  // --font-logo declaration in app.css.
+  const LOGO_FONT_STORAGE_KEY = 'nymeria_logo_font';
+  const logoFontOptions = [
+    { id: 'system', name: 'System default', description: 'Original — Segoe UI on Windows', stack: SYSTEM_STACK },
+    { id: 'ibm-plex-sans', name: 'IBM Plex Sans', description: 'Corporate, technical, polished', stack: `'IBM Plex Sans', ${SYSTEM_STACK}` },
+    { id: 'archivo', name: 'Archivo', description: 'Strong professional grotesque', stack: `'Archivo', ${SYSTEM_STACK}` },
+    { id: 'albert-sans', name: 'Albert Sans', description: 'Clean modern professional', stack: `'Albert Sans', ${SYSTEM_STACK}` },
+    { id: 'space-grotesk', name: 'Space Grotesk', description: 'Modern, slightly geometric', stack: `'Space Grotesk', ${SYSTEM_STACK}` },
+    { id: 'sora', name: 'Sora', description: 'Clean geometric, contemporary', stack: `'Sora', ${SYSTEM_STACK}` },
+    { id: 'orbitron', name: 'Orbitron', description: 'Futuristic sci-fi OS feel', stack: `'Orbitron', ${SYSTEM_STACK}` },
+    { id: 'rajdhani', name: 'Rajdhani', description: 'Narrow, technical', stack: `'Rajdhani', ${SYSTEM_STACK}` },
+    { id: 'exo-2', name: 'Exo 2', description: 'Semi-rounded sci-fi', stack: `'Exo 2', ${SYSTEM_STACK}` },
+    { id: 'unbounded', name: 'Unbounded', description: 'Distinctive geometric display', stack: `'Unbounded', ${SYSTEM_STACK}` },
+  ];
+
+  function detectInitialLogoFontId(): string {
+    if (typeof localStorage === 'undefined') return 'system';
+    const stored = localStorage.getItem(LOGO_FONT_STORAGE_KEY);
+    if (!stored) return 'system';
+    const match = logoFontOptions.find((opt) => opt.stack === stored);
+    return match?.id ?? 'system';
+  }
+
+  let selectedLogoFontId = $state(detectInitialLogoFontId());
+
+  function handleLogoFontChange(id: string) {
+    const opt = logoFontOptions.find((o) => o.id === id);
+    if (!opt) return;
+    selectedLogoFontId = id;
+    if (typeof document !== 'undefined') {
+      if (id === 'system') {
+        // Default — clear the override so the stylesheet's --font-logo applies
+        document.documentElement.style.removeProperty('--font-logo');
+      } else {
+        document.documentElement.style.setProperty('--font-logo', opt.stack);
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      if (id === 'system') localStorage.removeItem(LOGO_FONT_STORAGE_KEY);
+      else localStorage.setItem(LOGO_FONT_STORAGE_KEY, opt.stack);
+    }
+  }
+
+  // Logo size / weight / opacity steppers (testing-only). Each control writes
+  // a CSS custom property on :root and persists to localStorage. The same
+  // values are applied by a preload script in app.html so there's no flash.
+  const LOGO_SIZE_KEY = 'nymeria_logo_size';
+  const LOGO_WEIGHT_NAME_KEY = 'nymeria_logo_weight_name';
+  const LOGO_WEIGHT_OS_KEY = 'nymeria_logo_weight_os';
+  const LOGO_OPACITY_NAME_KEY = 'nymeria_logo_opacity_name';
+  const LOGO_OPACITY_OS_KEY = 'nymeria_logo_opacity_os';
+
+  const LOGO_SIZE_DEFAULT = 20; // matches --font-size-xl (1.25rem)
+  const LOGO_SIZE_MIN = 12;
+  const LOGO_SIZE_MAX = 36;
+
+  const LOGO_WEIGHT_NAME_DEFAULT = 700;
+  const LOGO_WEIGHT_OS_DEFAULT = 300;
+  const LOGO_WEIGHT_STEPS = [300, 400, 500, 600, 700];
+
+  const LOGO_OPACITY_DEFAULT = 100; // percent
+  const LOGO_OPACITY_MIN = 10;
+  const LOGO_OPACITY_MAX = 100;
+
+  function readNum(key: string, fallback: number): number {
+    if (typeof localStorage === 'undefined') return fallback;
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  let logoSize = $state(readNum(LOGO_SIZE_KEY, LOGO_SIZE_DEFAULT));
+  let logoWeightName = $state(readNum(LOGO_WEIGHT_NAME_KEY, LOGO_WEIGHT_NAME_DEFAULT));
+  let logoWeightOs = $state(readNum(LOGO_WEIGHT_OS_KEY, LOGO_WEIGHT_OS_DEFAULT));
+  let logoOpacityName = $state(readNum(LOGO_OPACITY_NAME_KEY, LOGO_OPACITY_DEFAULT));
+  let logoOpacityOs = $state(readNum(LOGO_OPACITY_OS_KEY, LOGO_OPACITY_DEFAULT));
+
+  // Logo color — three-way pick between the theme accent (default), white, or
+  // black. Writes --logo-color on :root; the live logo and the preview cards
+  // both inherit from this variable.
+  const LOGO_COLOR_KEY = 'nymeria_logo_color';
+  type LogoColor = 'accent' | 'white' | 'black';
+  const LOGO_COLOR_DEFAULT: LogoColor = 'accent';
+
+  function detectInitialLogoColor(): LogoColor {
+    if (typeof localStorage === 'undefined') return LOGO_COLOR_DEFAULT;
+    const stored = localStorage.getItem(LOGO_COLOR_KEY);
+    if (stored === 'white' || stored === 'black') return stored;
+    return LOGO_COLOR_DEFAULT;
+  }
+
+  let logoColor = $state<LogoColor>(detectInitialLogoColor());
+
+  function setLogoColor(color: LogoColor) {
+    logoColor = color;
+    if (color === 'accent') {
+      applyOrClear('--logo-color', null);
+      persistOrClear(LOGO_COLOR_KEY, null);
+    } else {
+      applyOrClear('--logo-color', color === 'white' ? '#ffffff' : '#000000');
+      persistOrClear(LOGO_COLOR_KEY, color);
+    }
+  }
+
+  function resetLogoColor() { setLogoColor(LOGO_COLOR_DEFAULT); }
+
+  function applyOrClear(cssVar: string, value: string | null) {
+    if (typeof document === 'undefined') return;
+    if (value === null) document.documentElement.style.removeProperty(cssVar);
+    else document.documentElement.style.setProperty(cssVar, value);
+  }
+
+  function persistOrClear(key: string, value: string | null) {
+    if (typeof localStorage === 'undefined') return;
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  }
+
+  function setLogoSize(next: number) {
+    const clamped = Math.max(LOGO_SIZE_MIN, Math.min(LOGO_SIZE_MAX, Math.round(next)));
+    logoSize = clamped;
+    if (clamped === LOGO_SIZE_DEFAULT) {
+      applyOrClear('--logo-font-size', null);
+      persistOrClear(LOGO_SIZE_KEY, null);
+    } else {
+      applyOrClear('--logo-font-size', `${clamped}px`);
+      persistOrClear(LOGO_SIZE_KEY, String(clamped));
+    }
+  }
+
+  function stepLogoWeight(target: 'name' | 'os', delta: 1 | -1) {
+    const current = target === 'name' ? logoWeightName : logoWeightOs;
+    const idx = LOGO_WEIGHT_STEPS.indexOf(current);
+    // If the current value isn't on the step ladder, snap to nearest then step.
+    const baseIdx = idx >= 0
+      ? idx
+      : LOGO_WEIGHT_STEPS.findIndex((w) => w >= current);
+    const safeIdx = baseIdx < 0 ? LOGO_WEIGHT_STEPS.length - 1 : baseIdx;
+    const nextIdx = Math.max(0, Math.min(LOGO_WEIGHT_STEPS.length - 1, safeIdx + delta));
+    const next = LOGO_WEIGHT_STEPS[nextIdx];
+    setLogoWeight(target, next);
+  }
+
+  function setLogoWeight(target: 'name' | 'os', next: number) {
+    if (target === 'name') {
+      logoWeightName = next;
+      const isDefault = next === LOGO_WEIGHT_NAME_DEFAULT;
+      applyOrClear('--logo-weight-name', isDefault ? null : String(next));
+      persistOrClear(LOGO_WEIGHT_NAME_KEY, isDefault ? null : String(next));
+    } else {
+      logoWeightOs = next;
+      const isDefault = next === LOGO_WEIGHT_OS_DEFAULT;
+      applyOrClear('--logo-weight-os', isDefault ? null : String(next));
+      persistOrClear(LOGO_WEIGHT_OS_KEY, isDefault ? null : String(next));
+    }
+  }
+
+  function setLogoOpacity(target: 'name' | 'os', nextPercent: number) {
+    const clamped = Math.max(LOGO_OPACITY_MIN, Math.min(LOGO_OPACITY_MAX, Math.round(nextPercent)));
+    const isDefault = clamped === LOGO_OPACITY_DEFAULT;
+    const cssVar = target === 'name' ? '--logo-opacity-name' : '--logo-opacity-os';
+    const key = target === 'name' ? LOGO_OPACITY_NAME_KEY : LOGO_OPACITY_OS_KEY;
+    if (target === 'name') logoOpacityName = clamped;
+    else logoOpacityOs = clamped;
+    applyOrClear(cssVar, isDefault ? null : (clamped / 100).toString());
+    persistOrClear(key, isDefault ? null : String(clamped));
+  }
+
+  function resetLogoSize() { setLogoSize(LOGO_SIZE_DEFAULT); }
+  function resetLogoWeightName() { setLogoWeight('name', LOGO_WEIGHT_NAME_DEFAULT); }
+  function resetLogoWeightOs() { setLogoWeight('os', LOGO_WEIGHT_OS_DEFAULT); }
+  function resetLogoOpacityName() { setLogoOpacity('name', LOGO_OPACITY_DEFAULT); }
+  function resetLogoOpacityOs() { setLogoOpacity('os', LOGO_OPACITY_DEFAULT); }
+
+  function resetAllLogoTuning() {
+    resetLogoColor();
+    resetLogoSize();
+    resetLogoWeightName();
+    resetLogoWeightOs();
+    resetLogoOpacityName();
+    resetLogoOpacityOs();
+  }
+
   // Chat bubble preference (off by default, on = restore the bubble look)
   const CHAT_BUBBLES_KEY = 'nymeria_chat_bubbles';
   function detectInitialBubbles(): boolean {
@@ -946,6 +1133,102 @@
               <span class="font-desc">{opt.description}</span>
             </button>
           {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Logo font (testing)</span>
+        <p class="hint">Try alternative fonts for the Nymeria&#8202;OS wordmark in the sidebar. Temporary picker — pick a favourite and we'll bake it in.</p>
+        <div class="font-grid">
+          {#each logoFontOptions as opt}
+            <button
+              class="font-card logo-font-card"
+              class:selected={selectedLogoFontId === opt.id}
+              onclick={() => handleLogoFontChange(opt.id)}
+            >
+              <span class="logo-sample" style="font-family: {opt.stack}; font-size: {logoSize}px;">
+                <span class="logo-sample-bold" style="font-weight: {logoWeightName}; opacity: {logoOpacityName / 100};">Nymeria</span><span class="logo-sample-light" style="font-weight: {logoWeightOs}; opacity: {logoOpacityOs / 100};">OS</span>
+              </span>
+              <span class="font-name" style="font-family: {opt.stack};">{opt.name}</span>
+              <span class="font-desc">{opt.description}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="logo-tune-header">
+          <span class="field-label">Logo tuning (testing)</span>
+          <button class="logo-reset-all" onclick={resetAllLogoTuning} type="button">Reset all</button>
+        </div>
+        <p class="hint">Fine-tune the wordmark's size and the weight / opacity of &ldquo;Nymeria&rdquo; and &ldquo;OS&rdquo; independently. Changes apply live to the sidebar and to the previews above.</p>
+
+        <div class="logo-stepper-list">
+          <!-- Color -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">Color</span>
+            <div class="logo-color-controls" role="group" aria-label="Logo color">
+              <button class="color-seg" class:active={logoColor === 'accent'} type="button" onclick={() => setLogoColor('accent')}>Accent</button>
+              <button class="color-seg" class:active={logoColor === 'white'} type="button" onclick={() => setLogoColor('white')}>White</button>
+              <button class="color-seg" class:active={logoColor === 'black'} type="button" onclick={() => setLogoColor('black')}>Black</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoColor === LOGO_COLOR_DEFAULT} onclick={resetLogoColor}>Reset</button>
+          </div>
+
+          <!-- Size -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">Size</span>
+            <div class="logo-stepper-controls">
+              <button class="stepper-btn" type="button" aria-label="Decrease size" disabled={logoSize <= LOGO_SIZE_MIN} onclick={() => setLogoSize(logoSize - 1)}>−</button>
+              <span class="stepper-value">{logoSize}px</span>
+              <button class="stepper-btn" type="button" aria-label="Increase size" disabled={logoSize >= LOGO_SIZE_MAX} onclick={() => setLogoSize(logoSize + 1)}>+</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoSize === LOGO_SIZE_DEFAULT} onclick={resetLogoSize}>Reset</button>
+          </div>
+
+          <!-- Nymeria weight -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">&ldquo;Nymeria&rdquo; weight</span>
+            <div class="logo-stepper-controls">
+              <button class="stepper-btn" type="button" aria-label="Decrease Nymeria weight" disabled={logoWeightName <= LOGO_WEIGHT_STEPS[0]} onclick={() => stepLogoWeight('name', -1)}>−</button>
+              <span class="stepper-value">{logoWeightName}</span>
+              <button class="stepper-btn" type="button" aria-label="Increase Nymeria weight" disabled={logoWeightName >= LOGO_WEIGHT_STEPS[LOGO_WEIGHT_STEPS.length - 1]} onclick={() => stepLogoWeight('name', 1)}>+</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoWeightName === LOGO_WEIGHT_NAME_DEFAULT} onclick={resetLogoWeightName}>Reset</button>
+          </div>
+
+          <!-- Nymeria opacity -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">&ldquo;Nymeria&rdquo; opacity</span>
+            <div class="logo-stepper-controls">
+              <button class="stepper-btn" type="button" aria-label="Decrease Nymeria opacity" disabled={logoOpacityName <= LOGO_OPACITY_MIN} onclick={() => setLogoOpacity('name', logoOpacityName - 10)}>−</button>
+              <span class="stepper-value">{logoOpacityName}%</span>
+              <button class="stepper-btn" type="button" aria-label="Increase Nymeria opacity" disabled={logoOpacityName >= LOGO_OPACITY_MAX} onclick={() => setLogoOpacity('name', logoOpacityName + 10)}>+</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoOpacityName === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityName}>Reset</button>
+          </div>
+
+          <!-- OS weight -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">&ldquo;OS&rdquo; weight</span>
+            <div class="logo-stepper-controls">
+              <button class="stepper-btn" type="button" aria-label="Decrease OS weight" disabled={logoWeightOs <= LOGO_WEIGHT_STEPS[0]} onclick={() => stepLogoWeight('os', -1)}>−</button>
+              <span class="stepper-value">{logoWeightOs}</span>
+              <button class="stepper-btn" type="button" aria-label="Increase OS weight" disabled={logoWeightOs >= LOGO_WEIGHT_STEPS[LOGO_WEIGHT_STEPS.length - 1]} onclick={() => stepLogoWeight('os', 1)}>+</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoWeightOs === LOGO_WEIGHT_OS_DEFAULT} onclick={resetLogoWeightOs}>Reset</button>
+          </div>
+
+          <!-- OS opacity -->
+          <div class="logo-stepper-row">
+            <span class="logo-stepper-label">&ldquo;OS&rdquo; opacity</span>
+            <div class="logo-stepper-controls">
+              <button class="stepper-btn" type="button" aria-label="Decrease OS opacity" disabled={logoOpacityOs <= LOGO_OPACITY_MIN} onclick={() => setLogoOpacity('os', logoOpacityOs - 10)}>−</button>
+              <span class="stepper-value">{logoOpacityOs}%</span>
+              <button class="stepper-btn" type="button" aria-label="Increase OS opacity" disabled={logoOpacityOs >= LOGO_OPACITY_MAX} onclick={() => setLogoOpacity('os', logoOpacityOs + 10)}>+</button>
+            </div>
+            <button class="logo-reset-btn" type="button" disabled={logoOpacityOs === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityOs}>Reset</button>
+          </div>
         </div>
       </div>
 
@@ -1748,11 +2031,11 @@
   .settings-panel {
     display: flex;
     flex-direction: column;
-    /* Fixed dimensions so tabs never resize the modal. 920×620 fits a 220px
-       sidebar + ~660px content column comfortably and stays inside Modal's
+    /* Fixed dimensions so tabs never resize the modal. 1080×720 gives the
+       content column more breathing room while staying inside Modal's
        90vw/90vh ceiling on typical desktop windows. */
-    width: 920px;
-    height: 620px;
+    width: 1080px;
+    height: 720px;
     max-width: 90vw;
     max-height: 90vh;
     /* Pull flush against the parent Modal's content padding so the sidebar
@@ -1940,9 +2223,93 @@
     box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
   }
 
+  /* Custom range slider — replaces the browser's chunky default with a thin
+     rounded track + accent-coloured thumb. accent-color is kept for Firefox
+     (it fills the progress portion natively); WebKit doesn't fill a styled
+     track, so the prominent thumb is what indicates position there. */
   input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
     width: 100%;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
     accent-color: var(--accent-primary);
+  }
+
+  input[type='range']:focus {
+    outline: none;
+  }
+
+  /* Track — WebKit */
+  input[type='range']::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 2px;
+    border: none;
+  }
+
+  /* Track — Firefox */
+  input[type='range']::-moz-range-track {
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 2px;
+    border: none;
+  }
+
+  /* Filled portion left of the thumb — Firefox only (WebKit ignores this
+     when the track is custom-styled). */
+  input[type='range']::-moz-range-progress {
+    height: 4px;
+    background: var(--accent-primary);
+    border-radius: 2px;
+  }
+
+  /* Thumb — WebKit */
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    border: 2px solid var(--bg-base);
+    /* Pull the 14px thumb up so its centre lines up with the 4px track:
+       (14 - 4) / 2 = 5px. */
+    margin-top: -5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease;
+  }
+
+  /* Thumb — Firefox */
+  input[type='range']::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    border: 2px solid var(--bg-base);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease;
+  }
+
+  /* Hover / focus — thumb grows slightly and picks up an accent glow. */
+  input[type='range']:hover::-webkit-slider-thumb,
+  input[type='range']:focus::-webkit-slider-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+
+  input[type='range']:hover::-moz-range-thumb,
+  input[type='range']:focus::-moz-range-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+
+  input[type='range']:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   input[type='checkbox'] {
@@ -2180,6 +2547,176 @@
   .font-desc {
     font-size: 11px;
     color: var(--text-muted);
+  }
+
+  /* Logo font card — wider so the wordmark fits comfortably */
+  .logo-font-card {
+    /* Inherits everything else from .font-card */
+  }
+
+  .logo-sample {
+    font-size: 20px;
+    color: var(--logo-color, var(--accent-primary));
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .logo-sample-bold {
+    font-weight: 700;
+  }
+
+  .logo-sample-light {
+    font-weight: 300;
+  }
+
+  /* Logo tuning steppers */
+  .logo-tune-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+  }
+
+  .logo-reset-all {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .logo-reset-all:hover {
+    border-color: var(--border-default);
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .logo-stepper-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: var(--spacing-sm);
+  }
+
+  .logo-stepper-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) auto auto;
+    align-items: center;
+    gap: var(--spacing-md);
+    padding: 8px 12px;
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .logo-stepper-label {
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .logo-stepper-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .stepper-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .stepper-btn:hover:not(:disabled) {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+  }
+
+  .stepper-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .stepper-value {
+    min-width: 48px;
+    text-align: center;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+  }
+
+  .logo-reset-btn {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .logo-reset-btn:hover:not(:disabled) {
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+  }
+
+  .logo-reset-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  /* Three-way segmented control for logo color */
+  .logo-color-controls {
+    display: inline-flex;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .color-seg {
+    padding: 4px 12px;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+
+  .color-seg:last-child {
+    border-right: none;
+  }
+
+  .color-seg:hover:not(.active) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .color-seg.active {
+    background: var(--accent-primary);
+    color: var(--bg-base);
+    font-weight: 500;
   }
 
   /* Theme selector styles */
