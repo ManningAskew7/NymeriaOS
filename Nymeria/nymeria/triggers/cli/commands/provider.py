@@ -167,7 +167,7 @@ async def _handle_provider_set(
     except Exception as exc:  # noqa: BLE001 - keep partial local-save visible.
         return CommandResult.failed(
             "Saved credentials locally, but backend apply failed: "
-            f"{_redact_secrets(one_line(exc, limit=240), values.values())}",
+            f"{_redact_secrets(one_line(exc, limit=240), list(values.values()))}",
             error_code="provider_apply_failed",
             payload={"provider": provider, "saved": True, "applied": False},
         )

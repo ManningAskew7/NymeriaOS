@@ -60,8 +60,8 @@ class InProcessInstagramAPI:
         self._require_thread_access = require_thread_access_fn
         self._publish_sync_event = publish_sync_event_fn
 
-    async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
-        return self.agent.accounts_repo.resolve_platform(provider, provider_user_id)
+    async def resolve_platform_user(self, platform: str, platform_user_id: str) -> Optional[str]:
+        return self.agent.accounts_repo.resolve_platform(platform, platform_user_id)
 
     async def list_chatapp_bindings(self, provider: str) -> list[dict[str, Any]]:
         return [

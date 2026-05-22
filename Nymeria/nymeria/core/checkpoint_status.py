@@ -66,7 +66,8 @@ def get_postgres_latest_checkpoint_revision(
         with psycopg.connect(postgres_uri) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT to_regclass(%s)", ("checkpoints",))
-                if cur.fetchone()[0] is None:
+                regclass_row = cur.fetchone()
+                if regclass_row is None or regclass_row[0] is None:
                     return None
                 cur.execute(
                     "SELECT checkpoint_id FROM checkpoints "

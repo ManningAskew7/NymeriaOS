@@ -282,6 +282,7 @@ def _generate_gemini(prompt: str, config: dict[str, Any]) -> tuple[bytes, str, s
         model=model,
         contents=[prompt],
         config=types.GenerateContentConfig(
+            # pyrefly: ignore[unexpected-keyword]
             imageConfig=types.ImageConfig(**image_config_kwargs),
         ),
     )

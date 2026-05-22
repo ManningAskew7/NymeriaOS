@@ -104,6 +104,86 @@ class DisconnectedAgentClient:
         del user_id, enabled_only, thread_id
         return []
 
+    async def stop(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        del thread_id, user_id
+        return {"ok": False, "reason": "disconnected"}
+
+    async def get_context_stats(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        del thread_id, user_id
+        return {}
+
+    async def create_thread(
+        self,
+        user_id: str = "default",
+        *,
+        thread_id: str | None = None,
+        title: str | None = None,
+    ) -> Mapping[str, Any]:
+        del user_id, thread_id, title
+        return {}
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+    ) -> Mapping[str, Any]:
+        del thread_id, user_id, title, pinned
+        return {}
+
+    async def delete_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        del thread_id, user_id
+        return {}
+
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        from_message_index: int | None = None,
+    ) -> Mapping[str, Any]:
+        del thread_id, user_id, title, from_message_index
+        return {}
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "cli",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        del command, thread_id, source, actor, surface, user_id
+        return {"success": False, "markdown": DISCONNECTED_MESSAGE}
+
+    async def list_commands(
+        self,
+        *,
+        source: str | None = None,
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        del source, actor, surface, user_id
+        return []
+
 
 def is_disconnected_client(client: Any) -> bool:
     """Return whether ``client`` is the disconnected placeholder transport."""

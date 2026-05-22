@@ -61,7 +61,7 @@ class TriggerCondition(BaseModel):
     """A filter condition evaluated against each event before firing."""
 
     field: str = Field(..., description="Event field name to check")
-    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = Field(
+    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = Field(  # type: ignore[assignment]
         default="contains"
     )
     value: str = Field(default="")
@@ -1012,7 +1012,7 @@ class TriggerManager:
 
         task_id = f"trigger-{trigger.id}"
 
-        completed_data = {
+        completed_data: dict[str, Any] = {
             "content": response,
             "trigger_id": trigger.id,
             "trigger_name": trigger.name,

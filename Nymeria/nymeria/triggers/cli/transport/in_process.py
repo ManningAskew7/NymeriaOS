@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ....core.checkpoint_cleanup import delete_thread_checkpoints
 from ....core.stream_bridge import iter_agent_astream
@@ -103,7 +103,7 @@ class InProcessAgentClient:
                 item = await queue.get()
                 if item is _STREAM_DONE:
                     break
-                yield item
+                yield cast(NormalizedEvent, item)
         finally:
             cancel_event.set()
 
@@ -251,7 +251,7 @@ class InProcessAgentClient:
             items = [item for item in items if getattr(item, "thread_id", None) == thread_id]
         items.sort(
             key=lambda item: (
-                STATUS_ORDER.get(getattr(item, "status", ""), 3),
+                cast(dict[Any, int], STATUS_ORDER).get(getattr(item, "status", None), 3),
                 getattr(item, "created_at", ""),
             )
         )
@@ -419,8 +419,11 @@ class InProcessAgentClient:
         """Execute a backend slash command against the local agent."""
 
         from ....core.command_service import (
+            CommandActor,
             CommandBackendClient,
             CommandContext as BackendCommandContext,
+            CommandSource,
+            CommandSurface,
             get_command_service,
         )
 
@@ -428,9 +431,9 @@ class InProcessAgentClient:
         ctx = BackendCommandContext(
             user_id=selected_user_id,
             thread_id=thread_id,
-            source=source,
-            actor=actor,
-            surface=surface,
+            source=cast(CommandSource, source),
+            actor=cast("CommandActor | None", actor),
+            surface=cast("CommandSurface | None", surface),
             is_admin=True,
         )
         api = CommandBackendClient.from_context(ctx, agent=self.agent)

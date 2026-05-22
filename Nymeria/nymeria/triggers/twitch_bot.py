@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import twitchio
 from twitchio.ext import commands
@@ -973,7 +973,7 @@ class NymeriaTwitchBot(commands.Bot):
         except Exception as e:
             logger.error(f"Auto-setup failed: {e}", exc_info=True)
 
-    async def close(self) -> None:
+    async def close(self, **options: Any) -> None:
         """Clean shutdown."""
         from ..core.twitch_runtime import unregister_twitch_bot
 

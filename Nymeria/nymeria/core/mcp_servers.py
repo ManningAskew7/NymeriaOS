@@ -8,7 +8,7 @@ objects that route execution through the existing MCPServerManager.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union, cast
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -245,7 +245,7 @@ class MCPServerRegistry:
     ) -> type:
         """Create a Pydantic model from MCP JSON Schema input_schema."""
         from pydantic import Field, create_model
-        from typing import Any, Literal, Optional, Union
+        from typing import Any, Optional
 
         def clean_model_name(raw: str) -> str:
             cleaned = "".join(ch for ch in raw.title() if ch.isalnum())
@@ -256,7 +256,7 @@ class MCPServerRegistry:
                 return Any
             if "enum" in schema and isinstance(schema["enum"], list) and schema["enum"]:
                 try:
-                    return Literal.__getitem__(tuple(schema["enum"]))
+                    return cast(Any, Literal)[tuple(schema["enum"])]
                 except Exception:
                     return Any
             if "anyOf" in schema or "oneOf" in schema:
@@ -267,7 +267,7 @@ class MCPServerRegistry:
                 if len(mapped) == 1:
                     return mapped[0]
                 try:
-                    return Union.__getitem__(mapped)
+                    return cast(Any, Union)[mapped]
                 except Exception:
                     return Any
             raw_type = schema.get("type")
@@ -293,7 +293,7 @@ class MCPServerRegistry:
                 if not isinstance(props, dict):
                     return dict[str, Any]
                 required = set(schema.get("required") or [])
-                nested_fields = {}
+                nested_fields: dict[str, Any] = {}
                 for prop_name, prop_schema in props.items():
                     nested_type = schema_type(prop_schema, f"{path}{clean_model_name(str(prop_name))}")
                     default = ... if prop_name in required else prop_schema.get("default", None)
@@ -325,7 +325,7 @@ class MCPServerRegistry:
         properties = input_schema.get("properties", {}) if isinstance(input_schema, dict) else {}
         required_fields = set(input_schema.get("required", [])) if isinstance(input_schema, dict) else set()
 
-        fields = {}
+        fields: dict[str, Any] = {}
         for name, prop in properties.items():
             prop = prop if isinstance(prop, dict) else {}
             python_type = schema_type(prop, f"{tool_name}_{name}")

@@ -298,7 +298,7 @@ def graph_request(
     account_id: Optional[str] = None,
     json_data: Optional[dict] = None,
     params: Optional[dict] = None,
-) -> tuple[bool, dict | str]:
+) -> tuple[bool, Any]:
     """Make a Graph API request on behalf of ``user_id``."""
     token = get_access_token(user_id, account_id)
     if not token:
@@ -542,7 +542,7 @@ def outlook_get_email(
             account_id=account_id,
             params={"$select": _SELECT, "$expand": _EXPAND},
         )
-        if not success:
+        if not success or not isinstance(result, dict):
             return f"[Error]: {result}"
         return f"[Success]: Email details\n\n{_format_single_email(result)}"
 
@@ -555,9 +555,13 @@ def outlook_get_email(
             account_id=account_id,
             params={"$select": _SELECT, "$expand": _EXPAND},
         )
-        subject_hint = result.get("subject", eid[:20]) if success else eid[:20]
+        subject_hint = (
+            result.get("subject", eid[:20])
+            if success and isinstance(result, dict)
+            else eid[:20]
+        )
         header = f"=== Email {i}/{total}: {subject_hint} ==="
-        if not success:
+        if not success or not isinstance(result, dict):
             sections.append(f"{header}\n[Error]: {result}")
         else:
             sections.append(f"{header}\n{_format_single_email(result)}")

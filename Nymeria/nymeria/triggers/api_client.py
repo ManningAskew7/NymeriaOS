@@ -1526,7 +1526,7 @@ class NymeriaAPIClient:
         look up a user's role for admin-gated commands."""
         return await self._get("/me", act_as=act_as)
 
-    async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
+    async def resolve_platform_user(self, platform: str, platform_user_id: str) -> Optional[str]:
         """
         Resolve a platform-native user id (Discord/Telegram/Twitch) to the
         Nymeria account it's linked to. Returns the Nymeria user_id or None
@@ -1536,7 +1536,7 @@ class NymeriaAPIClient:
         try:
             data = await self._get(
                 "/platform/resolve",
-                params={"provider": provider, "provider_user_id": str(provider_user_id)},
+                params={"provider": platform, "provider_user_id": str(platform_user_id)},
             )
             return data.get("user_id")
         except httpx.HTTPStatusError as e:

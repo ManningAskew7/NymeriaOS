@@ -617,14 +617,15 @@ def _visible_callable_threads(
     thread_id: str,
     tc: ThreadConfig,
 ) -> list[dict[str, Any]]:
-    get_scoped = getattr(agent, "_get_team_scoped_callable_threads", None)
+    get_scoped: Any = getattr(agent, "_get_team_scoped_callable_threads", None)
     if not callable(get_scoped):
         return []
     disabled = set(tc.disabled_tools or [])
     own_name = tc.callable_name if tc.callable else None
     visible: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for callable_tc in get_scoped(user_id=user_id, caller_thread_id=thread_id):
+    scoped_results: Any = get_scoped(user_id=user_id, caller_thread_id=thread_id)
+    for callable_tc in scoped_results:
         name = str(getattr(callable_tc, "callable_name", "") or "")
         if not name or getattr(callable_tc, "thread_id", "") == thread_id:
             continue
@@ -734,9 +735,10 @@ def _default_tool_names(agent: Any, user_id: str) -> set[str]:
 
 
 def _live_temporary_tool_names(agent: Any, tc: ThreadConfig) -> set[str]:
-    resolver = getattr(agent, "_resolve_temporary_tools", None)
+    resolver: Any = getattr(agent, "_resolve_temporary_tools", None)
     if callable(resolver):
-        return set(resolver(tc))
+        resolved: Any = resolver(tc)
+        return set(resolved)
     now = utc_now()
     live = set()
     for name, entry in (tc.temporary_tools or {}).items():
@@ -758,9 +760,10 @@ def _effective_tool_names(
     live_temp_names: set[str],
     visible_callables: list[dict[str, Any]],
 ) -> set[str]:
-    selector = getattr(agent, "_select_tools_for_graph", None)
+    selector: Any = getattr(agent, "_select_tools_for_graph", None)
     if callable(selector):
-        tools, _ = selector(user_id, thread_id)
+        selected: Any = selector(user_id, thread_id)
+        tools, _ = selected
         return {str(getattr(tool, "name", "") or "") for tool in tools if getattr(tool, "name", "")}
 
     all_tools = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)

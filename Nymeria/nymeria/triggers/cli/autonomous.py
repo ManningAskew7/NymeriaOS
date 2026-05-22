@@ -76,9 +76,10 @@ class AutonomousStreamMonitor:
         """Consume one stream until it ends or is cancelled."""
 
         client = self.client_getter()
-        stream = getattr(client, "stream_autonomous", None)
-        if not callable(stream):
+        stream_attr = getattr(client, "stream_autonomous", None)
+        if not callable(stream_attr):
             return
+        stream: Any = stream_attr
         async for event in stream(
             self.user_id_getter(),
             client_id=self.client_id,

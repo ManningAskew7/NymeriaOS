@@ -180,8 +180,9 @@ class RocketChatClientProtocol(Protocol):
     async def post_message(self, *, room_id: str, text: str, thread_id: Optional[str] = None) -> Mapping[str, Any]:
         """Post a Rocket.Chat message."""
 
-    async def websocket_events(self, room_ids: list[str]) -> AsyncGenerator[Mapping[str, Any], None]:
+    def websocket_events(self, room_ids: list[str]) -> AsyncGenerator[Mapping[str, Any], None]:
         """Yield realtime Rocket.Chat frames."""
+        ...
 
     async def close(self) -> None:
         """Close client resources."""

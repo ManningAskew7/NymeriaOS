@@ -405,7 +405,7 @@ def _parse_inline(text: str) -> tuple[str, list[InlineSpan]]:
     spans: list[InlineSpan] = []
     # We process the text by scanning for patterns and building a plain-text
     # output with tracked span positions.
-    result = []
+    result: list[str] = []
     i = 0
     length = len(text)
 
@@ -479,7 +479,7 @@ def _parse_inline(text: str) -> tuple[str, list[InlineSpan]]:
 def _parse_inline_simple(text: str) -> tuple[str, list[InlineSpan]]:
     """Simple inline parser for bold/italic only (no links, to avoid recursion)."""
     spans: list[InlineSpan] = []
-    result = []
+    result: list[str] = []
     i = 0
     length = len(text)
 

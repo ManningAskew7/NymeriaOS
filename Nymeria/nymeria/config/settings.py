@@ -1391,8 +1391,9 @@ class Settings(BaseSettings):
     )
 
     # Voice / TTS Configuration
-    tts_provider: Literal["none", "openai", "qwen3", "gemini", "cartesia"] = Field(
-        default="none", description="TTS provider: none, openai, qwen3, gemini, cartesia"
+    tts_provider: Literal["none", "openai", "qwen3", "gemini", "cartesia"] = Field(  # type: ignore[assignment]
+        default="none",
+        description="TTS provider: none, openai, qwen3, gemini, cartesia",
     )
     tts_base_url: Optional[str] = Field(
         default=None,
@@ -1548,9 +1549,9 @@ class Settings(BaseSettings):
             return self.soul_path.read_text(encoding="utf-8")
         return "You are Nymeria, a helpful AI assistant."
 
-    def validate(self) -> Tuple[List[str], List[str]]:
+    def validate_runtime(self) -> Tuple[List[str], List[str]]:
         """
-        Validate configuration settings.
+        Validate runtime configuration settings.
 
         Returns:
             Tuple of (errors, warnings) lists.

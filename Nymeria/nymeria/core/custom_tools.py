@@ -538,7 +538,7 @@ def _create_pydantic_schema(tool_id: str, parameters: Dict[str, Any]) -> type:
     """
     from pydantic import Field, create_model
 
-    fields = {}
+    fields: dict[str, Any] = {}
     for name, param in parameters.items():
         # Map JSON Schema types to Python types
         type_map = {

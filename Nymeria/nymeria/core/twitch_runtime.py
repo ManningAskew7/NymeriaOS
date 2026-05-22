@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any, Optional
 
 import httpx
@@ -89,7 +89,7 @@ class TwitchToolRuntime:
     def client_id(self) -> str:
         return str(getattr(self._require_bot(), "_client_id", ""))
 
-    def run(self, coro_factory: Callable[[], Awaitable[str]]) -> str:
+    def run(self, coro_factory: Callable[[], Coroutine[Any, Any, str]]) -> str:
         """Run an async Twitch operation on the bot loop from a sync tool."""
         bot = self._require_running_bot()
         future = asyncio.run_coroutine_threadsafe(coro_factory(), bot.loop)

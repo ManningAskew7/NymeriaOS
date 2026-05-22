@@ -1717,9 +1717,10 @@ class CLIApp:
             return
         if self._client is None or is_disconnected_client(self._client):
             return
-        create_thread = getattr(self._client, "create_thread", None)
-        if not callable(create_thread):
+        create_thread_attr = getattr(self._client, "create_thread", None)
+        if not callable(create_thread_attr):
             return
+        create_thread: Any = create_thread_attr
         try:
             await create_thread(
                 self.state.user_id,
@@ -1943,8 +1944,9 @@ class CLIApp:
     async def _close_selected_client(self) -> None:
         client = self._client
         self._client = None
-        close = getattr(client, "close", None)
-        if callable(close):
+        close_attr = getattr(client, "close", None)
+        if callable(close_attr):
+            close: Any = close_attr
             await close()
 
     def _create_repl_renderer(
@@ -2955,8 +2957,9 @@ class CLIApp:
         self._client = next_client
         self._apply_selected_client_user(next_client, action.get("user_id"))
         if old_client is not None and old_client is not next_client:
-            close = getattr(old_client, "close", None)
-            if callable(close):
+            close_attr = getattr(old_client, "close", None)
+            if callable(close_attr):
+                close: Any = close_attr
                 await close()
 
     def _apply_selected_client_user(

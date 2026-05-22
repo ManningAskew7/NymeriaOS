@@ -12,7 +12,7 @@ from .mcp_schema import MCPToolConfig
 class ToolParameter(BaseModel):
     """Definition of a single tool parameter."""
 
-    type: Literal["string", "integer", "number", "boolean", "array", "object"] = Field(
+    type: Literal["string", "integer", "number", "boolean", "array", "object"] = Field(  # type: ignore[assignment]
         default="string",
         description="JSON Schema type of the parameter",
     )
@@ -46,7 +46,7 @@ class HTTPToolConfig(BaseModel):
         body_template: '{"query": "${query}", "limit": ${limit}}'
     """
 
-    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] = Field(
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] = Field(  # type: ignore[assignment]
         default="GET",
         description="HTTP method",
     )

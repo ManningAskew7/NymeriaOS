@@ -23,11 +23,16 @@ DEFAULT_API_URL = "http://localhost:8000"
 class CLITransportRuntimeConfig(Protocol):
     """Subset of ``CLIRuntimeConfig`` needed for transport selection."""
 
-    transport: TransportMode
-    api_url: str | None
-    api_key: str | None
-    user_id: str
-    user_id_explicit: bool
+    @property
+    def transport(self) -> TransportMode: ...
+    @property
+    def api_url(self) -> str | None: ...
+    @property
+    def api_key(self) -> str | None: ...
+    @property
+    def user_id(self) -> str: ...
+    @property
+    def user_id_explicit(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +112,9 @@ class APIAgentClient:
     async def close(self) -> None:
         """Close the wrapped API client's HTTP pool when supported."""
 
-        close = getattr(self.api, "close", None)
-        if callable(close):
+        close_attr = getattr(self.api, "close", None)
+        if callable(close_attr):
+            close: Any = close_attr
             await close()
 
     async def aclose(self) -> None:
@@ -558,8 +564,9 @@ def _select_value(*candidates: tuple[str | None, str]) -> tuple[str, str]:
 
 
 async def _close_api_client(api: Any) -> None:
-    close = getattr(api, "close", None)
-    if callable(close):
+    close_attr = getattr(api, "close", None)
+    if callable(close_attr):
+        close: Any = close_attr
         await close()
 
 

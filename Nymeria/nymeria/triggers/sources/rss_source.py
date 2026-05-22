@@ -80,7 +80,8 @@ class RSSSource(BaseTriggerSource):
             import feedparser
             feed = feedparser.parse(resp.text)
             entries = feed.entries
-            feed_title = feed.feed.get("title", "")
+            feed_meta = feed.feed if isinstance(feed.feed, dict) else {}
+            feed_title = feed_meta.get("title", "")
         except ImportError:
             logger.warning("feedparser not installed, using basic XML parsing")
             entries, feed_title = self._basic_parse(resp.text)

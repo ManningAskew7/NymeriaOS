@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TypedDict
 
 import httpx
 
@@ -1068,11 +1068,19 @@ def normalize_attachment_file_type(file_type: str, mime_type: str, file_name: st
     return "unknown"
 
 
+class AttachmentCompatibilityReport(TypedDict):
+    compatible: bool
+    model_input_modalities: List[str]
+    required_modalities: List[str]
+    unsupported_modalities: List[str]
+    warnings: List[str]
+
+
 def evaluate_attachment_compatibility(
     model_id: str,
     provider: str,
     attachments: Optional[List[Dict[str, str]]],
-) -> Dict[str, object]:
+) -> AttachmentCompatibilityReport:
     """Evaluate whether attachments are likely compatible with a model."""
     normalized_provider = (provider or "").strip().lower()
     # Anthropic and OpenRouter both expose machine-readable input modalities;

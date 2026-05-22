@@ -478,12 +478,13 @@ def rss_feed_read(url: str, max_items: int = 20, ignore_ssl: bool = False) -> st
                     "summary": entry.get("summary"),
                 }
             )
+        feed_meta = feed.feed if isinstance(feed.feed, dict) else {}
         return _dump_json(
             {
                 "feed": {
-                    "title": feed.feed.get("title"),
-                    "link": feed.feed.get("link"),
-                    "description": feed.feed.get("description"),
+                    "title": feed_meta.get("title"),
+                    "link": feed_meta.get("link"),
+                    "description": feed_meta.get("description"),
                 },
                 "items": items,
             }

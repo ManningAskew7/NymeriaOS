@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from typing import Any, Literal
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 
@@ -47,8 +47,9 @@ class BackendCommandProvider:
         user_id: str = "default",
     ) -> "BackendCommandProvider":
         """Fetch the backend command catalog through a transport when possible."""
-        list_commands = getattr(client, "list_commands", None)
-        if callable(list_commands):
+        list_commands_attr = getattr(client, "list_commands", None)
+        if callable(list_commands_attr):
+            list_commands: Any = list_commands_attr
             commands = await list_commands(
                 actor="user",
                 surface="cli",
@@ -179,13 +180,14 @@ async def _execute_backend_command(
     args: list[str],
 ) -> CommandResult:
     client = context.client
-    execute_command = getattr(client, "execute_command", None)
-    if not callable(execute_command):
+    execute_command_attr = getattr(client, "execute_command", None)
+    if not callable(execute_command_attr):
         return CommandResult.failed(
             "Connected transport does not expose backend slash commands.",
             command_path=path,
             error_code="unsupported_transport",
         )
+    execute_command: Any = execute_command_attr
 
     raw_command = "/" + " ".join((*path, *[str(arg) for arg in args])).strip()
     result = await execute_command(
@@ -243,10 +245,14 @@ def _cli_category(info: Mapping[str, Any]) -> str:
     return _CLI_CATEGORY_MAP.get(raw, raw)
 
 
-def _message_level(value: str) -> str:
+def _message_level(value: str) -> Literal["error", "info", "success", "warning"]:
     value = value.casefold()
-    if value in {"success", "warning", "error"}:
-        return value
+    if value == "success":
+        return "success"
+    if value == "warning":
+        return "warning"
+    if value == "error":
+        return "error"
     return "info"
 
 

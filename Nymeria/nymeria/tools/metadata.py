@@ -91,7 +91,7 @@ class _BuiltinToolMetadataRegistry(dict):
         self._ensure_loaded()
         return dict.__len__(self)
 
-    def get(self, key: str, default: Optional[ToolMetadata] = None) -> Optional[ToolMetadata]:
+    def get(self, key, default=None):  # type: ignore[override]
         self._ensure_loaded()
         return dict.get(self, key, default)
 

@@ -735,6 +735,7 @@ def _ensure_streaming_assistant(
         )
 
     message = state.messages[index]
+    assert isinstance(message, AssistantMessage)
     if message.status == "streaming" and message.activity_phase == phase:
         return replace(
             state,
@@ -928,7 +929,7 @@ def _with_error_response(
     message: AssistantMessage,
     content: str,
     timestamp: float,
-    status: str,
+    status: MessageStatus,
 ) -> AssistantMessage:
     prefix = "\n\n---\nError: "
     step_text = f"{prefix}{content}"

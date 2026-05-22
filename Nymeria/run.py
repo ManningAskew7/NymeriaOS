@@ -135,7 +135,7 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
     from nymeria.config import get_settings
 
     settings = get_settings()
-    errors, warnings = settings.validate()
+    errors, warnings = settings.validate_runtime()
 
     # Filter out API key error if skip_api_key is True
     if skip_api_key:

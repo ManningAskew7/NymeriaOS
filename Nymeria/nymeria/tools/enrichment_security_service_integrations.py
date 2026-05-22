@@ -1056,7 +1056,7 @@ def misp_search_attributes(
         base_url, headers_or_error, verify = _misp_config("misp_search_attributes", config)
         if isinstance(headers_or_error, str):
             return headers_or_error
-        body = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {}
+        body: dict[str, Any] = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {}
         if value.strip():
             body["value"] = value.strip()
         if tags.strip():
@@ -1090,7 +1090,7 @@ def misp_search_events(
         base_url, headers_or_error, verify = _misp_config("misp_search_events", config)
         if isinstance(headers_or_error, str):
             return headers_or_error
-        body = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {}
+        body: dict[str, Any] = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {}
         if value.strip():
             body["value"] = value.strip()
         if tags.strip():

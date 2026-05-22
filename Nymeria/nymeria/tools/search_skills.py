@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import json
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, Any, List, Literal, Optional, Union, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
@@ -483,9 +483,10 @@ def skill_manage(
     if action_key in {"list", "inspect"}:
         if name:
             agent = _agent()
+            skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
             skill = (
-                agent.skill_manager.get(name, user_id=user_id)
-                if agent is not None and getattr(agent, "skill_manager", None) is not None
+                skill_manager.get(name, user_id=user_id)
+                if skill_manager is not None
                 else None
             )
             if skill is None:
@@ -504,11 +505,11 @@ def skill_manage(
                 },
             )
         list_scope = scope if scope in ("all", "user", "global", "bundled") else "all"
-        return list_installed_skills.func(scope=list_scope, config=config)
+        return cast(Any, list_installed_skills).func(scope=list_scope, config=config)
 
     if action_key == "search":
         search_source = source if source in ("installed", "anthropic") else "installed"
-        return search_skills.func(
+        return cast(Any, search_skills).func(
             query=query or name,
             source=search_source,
             top_k=8,
@@ -518,7 +519,7 @@ def skill_manage(
     if action_key == "install":
         install_source = source if source != "installed" else "anthropic"
         install_scope = "global" if scope == "global" else "user"
-        result = install_skill.func(
+        result = cast(Any, install_skill).func(
             name=name or query,
             source=install_source,
             scope=install_scope,

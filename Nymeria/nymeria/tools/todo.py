@@ -11,7 +11,7 @@ When a TODO has a scheduled time, Nymeria wakes up to work on it.
 import logging
 import uuid as _uuid
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -340,7 +340,7 @@ def nym_todo(
                     )
 
             # Log activity
-            metadata = {"todo_id": todo_id, "status": item.status.value}
+            metadata: dict[str, Any] = {"todo_id": todo_id, "status": item.status.value}
             if scheduled_for:
                 metadata["scheduled_for"] = scheduled_for
             if clear_schedule:

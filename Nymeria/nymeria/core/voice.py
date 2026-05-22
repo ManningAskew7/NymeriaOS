@@ -3,7 +3,7 @@
 import asyncio
 import io
 import logging
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, cast
 
 import httpx
 
@@ -71,6 +71,7 @@ def _audio_to_mp3(audio_bytes: bytes, mime_type: str) -> bytes:
     from pydub import AudioSegment
 
     mt = mime_type.lower().split(";")[0].strip()
+    audio: Any
     if mt in ("audio/l16", "audio/pcm"):
         # Raw 16-bit linear PCM — parse rate/channels from mime params
         rate, channels = 24000, 1
@@ -92,7 +93,7 @@ def _audio_to_mp3(audio_bytes: bytes, mime_type: str) -> bytes:
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
 
     mp3_io = io.BytesIO()
-    audio.export(mp3_io, format="mp3", bitrate="128k")
+    cast(Any, audio).export(mp3_io, format="mp3", bitrate="128k")
     return mp3_io.getvalue()
 
 
@@ -170,7 +171,7 @@ class CartesiaTTSService:
             "Cartesia-Version": self._API_VERSION,
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model_id": self.model,
             "transcript": text,
             "voice": {"mode": "id", "id": self.voice},

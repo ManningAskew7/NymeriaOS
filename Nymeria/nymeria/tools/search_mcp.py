@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated, Dict, Optional, Union
+from typing import Annotated, Any, Dict, Optional, Union, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
@@ -672,7 +672,7 @@ def mcp_manage(
     """
     action_key = (action or "").strip().lower()
     if action_key == "search":
-        return search_mcp.func(query=query or source or name, top_k=10)
+        return cast(Any, search_mcp).func(query=query or source or name, top_k=10)
     if action_key == "preview":
         return _preview_mcp_source(source=source, name=name or None)
     admin_actions = {

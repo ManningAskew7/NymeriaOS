@@ -7,8 +7,8 @@ call time so hot-reloaded tool modules do not capture stale bot objects.
 """
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Optional
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional
 
 import httpx
 from langchain_core.tools import tool
@@ -23,7 +23,7 @@ def _get_runtime() -> TwitchToolRuntime:
     return get_twitch_runtime()
 
 
-def _run_async(coro_factory: Callable[[], Awaitable[str]]) -> str:
+def _run_async(coro_factory: Callable[[], Coroutine[Any, Any, str]]) -> str:
     """Run an async coroutine from sync tool context."""
     return _get_runtime().run(coro_factory)
 
@@ -649,7 +649,7 @@ def twitch_set_channel_info(title: str = "", game: str = "", tags: str = "") -> 
 
     async def _set():
         runtime = _get_runtime()
-        body = {}
+        body: dict[str, Any] = {}
         if title:
             body["title"] = title[:140]
         if game:

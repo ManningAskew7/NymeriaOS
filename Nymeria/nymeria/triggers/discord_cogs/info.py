@@ -232,6 +232,9 @@ class InfoCog(commands.Cog):
     )
     async def cmd_channel_context(self, interaction: discord.Interaction):
         channel_id = interaction.channel_id
+        if channel_id is None:
+            await interaction.response.send_message("Error: no channel context.", ephemeral=True)
+            return
         currently_enabled = self.bot._context_enabled.get(channel_id, True)
         new_state = not currently_enabled
         self.bot._context_enabled[channel_id] = new_state
@@ -250,6 +253,9 @@ class InfoCog(commands.Cog):
     )
     async def cmd_show_tools(self, interaction: discord.Interaction):
         channel_id = interaction.channel_id
+        if channel_id is None:
+            await interaction.response.send_message("Error: no channel context.", ephemeral=True)
+            return
         currently_shown = self.bot._show_tool_calls.get(channel_id, False)
         new_state = not currently_shown
         self.bot._show_tool_calls[channel_id] = new_state

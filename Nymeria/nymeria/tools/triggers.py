@@ -6,7 +6,7 @@ They complement recurring TODOs, which handle time-based autonomous work.
 
 import json
 import logging
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, List, Literal, Optional, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -137,7 +137,10 @@ def _trigger_create(
         except (KeyError, TypeError) as e:
             return f"[Error]: Invalid conditions format: {e}. Each condition needs at least 'field'."
 
-    action = TriggerAction(type=action_type, config=action_config)
+    action = TriggerAction(
+        type=cast(Literal["agent_prompt", "notify", "create_todo"], action_type),
+        config=action_config,
+    )
     trigger = manager.add_trigger(
         user_id=user_id,
         name=name,
@@ -253,7 +256,7 @@ def _trigger_update(
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if name is not None:
         kwargs["name"] = name
     if enabled is not None:
@@ -275,7 +278,10 @@ def _trigger_update(
             return f"[Error]: Trigger '{trigger_id}' not found."
         new_type = action_type or existing.action.type
         new_config = action_config if action_config is not None else existing.action.config
-        kwargs["action"] = TriggerAction(type=new_type, config=new_config)
+        kwargs["action"] = TriggerAction(
+            type=cast(Literal["agent_prompt", "notify", "create_todo"], new_type),
+            config=new_config,
+        )
 
     if not kwargs:
         return "[Error]: No updates specified."

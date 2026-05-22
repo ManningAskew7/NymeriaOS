@@ -37,7 +37,7 @@ def _invalidate_cache(user_id: str, spreadsheet_id: str) -> None:
         del _sheet_cache[k]
 
 
-def _get_sheets_service(user_id: str):
+def _get_sheets_service(user_id: str) -> Any:
     """Build a Google Sheets API v4 service for the given Nymeria user."""
     try:
         from googleapiclient.discovery import build
@@ -57,7 +57,7 @@ def _get_sheets_service(user_id: str):
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
-def _get__prv_a_sheets_service():
+def _get__prv_a_sheets_service() -> Any:
     """Build a read-only Sheets service for _PRV_A reference spreadsheets."""
     try:
         from google.oauth2 import service_account
