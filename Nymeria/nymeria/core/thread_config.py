@@ -51,6 +51,27 @@ class ThreadLLMConfig(BaseModel):
     compact_threshold_tokens: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
 
 
+class ActiveLLMFallback(BaseModel):
+    """Temporary provider/model fallback currently active for a thread."""
+
+    provider: str
+    model: str
+    source_provider: str
+    source_model: str
+    hold_seconds: int = Field(default=7200, ge=0, le=604800)
+    activated_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    provider_route: Optional[Literal["native", "openai_compat"]] = None
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+    reason: Optional[str] = None
+    http_status: Optional[int] = None
+
+    @field_validator("activated_at", "expires_at")
+    @classmethod
+    def _datetimes_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
+
+
 class TemporaryToolEntry(BaseModel):
     """A tool enabled for this thread with a time-to-live.
 
@@ -108,6 +129,7 @@ class ThreadConfig(BaseModel):
     enabled_skills: List[str] = Field(default_factory=list, max_length=50)
     disabled_skills: List[str] = Field(default_factory=list, max_length=50)
     llm_config: Optional[ThreadLLMConfig] = None
+    active_llm_fallback: Optional[ActiveLLMFallback] = None
     # Full system prompt replacement (overrides soul.md entirely)
     system_prompt: Optional[str] = Field(default=None, max_length=50000)
     # Callable thread fields — any thread can become callable by Nymeria
@@ -188,6 +210,8 @@ class ThreadConfig(BaseModel):
             d = self.llm_config.model_dump(exclude_none=True)
             if d:
                 return True
+        if self.active_llm_fallback:
+            return True
         if self.system_prompt:
             return True
         if self.callable:

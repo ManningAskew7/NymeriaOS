@@ -407,6 +407,43 @@ export class ChatApi extends CredentialsApi {
           };
         }
 
+        case 'provider_retry':
+          return {
+            type: 'provider_retry',
+            data: {
+              provider: data.provider as string | undefined,
+              model: data.model as string | undefined,
+              providerRoute: data.provider_route as string | null | undefined,
+              openaiApiMode: data.openai_api_mode as string | null | undefined,
+              attempt: data.attempt as number | undefined,
+              maxRetries: data.max_retries as number | undefined,
+              delaySeconds: data.delay_seconds as number | undefined,
+              reason: data.reason as string | undefined,
+              httpStatus: data.http_status as number | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'provider_fallback':
+          return {
+            type: 'provider_fallback',
+            data: {
+              fromProvider: data.from_provider as string | undefined,
+              fromModel: data.from_model as string | undefined,
+              toProvider: data.to_provider as string | undefined,
+              toModel: data.to_model as string | undefined,
+              toProviderRoute: data.to_provider_route as string | null | undefined,
+              toOpenaiApiMode: data.to_openai_api_mode as string | null | undefined,
+              holdSeconds: data.hold_seconds as number | undefined,
+              expiresAt: data.expires_at as string | null | undefined,
+              reason: data.reason as string | undefined,
+              httpStatus: data.http_status as number | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
         case 'error':
           return {
             type: 'error',

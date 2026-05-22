@@ -205,6 +205,40 @@
     return 'fileText';
   }
 
+  function providerLabel(provider?: string, model?: string): string {
+    if (provider && model) return `${provider}/${model}`;
+    return model || provider || 'provider';
+  }
+
+  function formatProviderDuration(seconds?: number | null): string {
+    if (!seconds || seconds <= 0) return 'this turn';
+    if (seconds >= 3600) {
+      const hours = Math.round(seconds / 3600);
+      return `${hours} hour${hours === 1 ? '' : 's'}`;
+    }
+    if (seconds >= 60) {
+      const minutes = Math.round(seconds / 60);
+      return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+    }
+    return `${Math.round(seconds)} second${Math.round(seconds) === 1 ? '' : 's'}`;
+  }
+
+  function providerStatusText(step: MessageStep): string {
+    if (step.providerStatus === 'retry') {
+      const retryLabel = providerLabel(step.provider, step.model);
+      const attempt = step.attempt && step.maxRetries
+        ? ` (${step.attempt}/${step.maxRetries})`
+        : '';
+      const delay = step.delaySeconds && step.delaySeconds > 0
+        ? ` in ${formatProviderDuration(step.delaySeconds)}`
+        : ' now';
+      return `Provider error. Retrying ${retryLabel}${delay}${attempt}.`;
+    }
+    const fallbackLabel = providerLabel(step.toProvider, step.toModel);
+    const duration = formatProviderDuration(step.holdSeconds);
+    return `Using fallback ${fallbackLabel} for ${duration}.`;
+  }
+
   async function downloadAttachment(file: FileAttachment) {
     const threadId = threadsStore.currentThreadId;
     if (!threadId) {
@@ -376,6 +410,11 @@
                 startTime: step.startTime,
                 endTime: step.endTime
               }} />
+            </div>
+          {:else if step.type === 'provider_status'}
+            <div class="provider-status-step">
+              <Icon name={step.providerStatus === 'fallback' ? 'tool' : 'refresh'} size={14} />
+              <span>{providerStatusText(step)}</span>
             </div>
           {:else if step.type === 'response' && step.content}
             <div class="message-content">
@@ -603,6 +642,23 @@
     color: var(--accent-primary);
     font-size: var(--font-size-xs);
     font-weight: 600;
+  }
+
+  .provider-status-step {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin: var(--spacing-xs) 0 var(--spacing-sm);
+    padding-left: var(--spacing-sm);
+    border-left: 2px solid color-mix(in srgb, var(--accent-primary) 45%, transparent);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+  }
+
+  .provider-status-step :global(.icon) {
+    color: var(--accent-primary);
+    flex-shrink: 0;
   }
 
   .assistant .bubble-content {

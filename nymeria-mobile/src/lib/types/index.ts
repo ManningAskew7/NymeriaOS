@@ -46,9 +46,24 @@ export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'canc
 // Step in a message - either thinking content or a tool call
 // Steps are ordered by arrival time to preserve interleaving
 export interface MessageStep {
-  type: 'thinking' | 'tool_call' | 'response';
+  type: 'thinking' | 'tool_call' | 'response' | 'provider_status';
   // For thinking:
   content?: string;
+  // For provider_status:
+  providerStatus?: 'retry' | 'fallback';
+  provider?: string;
+  model?: string;
+  fromProvider?: string;
+  fromModel?: string;
+  toProvider?: string;
+  toModel?: string;
+  attempt?: number;
+  maxRetries?: number;
+  delaySeconds?: number;
+  holdSeconds?: number;
+  expiresAt?: string | null;
+  reason?: string;
+  httpStatus?: number | null;
   // For tool_call:
   id?: string;
   name?: string;
@@ -200,6 +215,7 @@ export interface ThreadConfig {
   disabledTools: string[];
   enabledTools: string[];
   llmConfig?: ThreadLLMConfig | null;
+  activeLlmFallback?: ActiveLLMFallback | null;
   systemPrompt?: string | null;
   callable: boolean;
   callableName?: string | null;
@@ -217,6 +233,20 @@ export interface ThreadConfig {
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
+}
+
+export interface ActiveLLMFallback {
+  provider: string;
+  model: string;
+  sourceProvider: string;
+  sourceModel: string;
+  holdSeconds: number;
+  activatedAt: string;
+  expiresAt: string;
+  providerRoute?: ProviderRoute | null;
+  openaiApiMode?: 'chat_completions' | 'responses' | null;
+  reason?: string | null;
+  httpStatus?: number | null;
 }
 
 export interface ThreadConfigUpdateRequest {
@@ -483,6 +513,8 @@ export type SSEEventType =
   | 'tool_call'
   | 'tool_result'
   | 'workspace_artifact'
+  | 'provider_retry'
+  | 'provider_fallback'
   | 'dispatched'
   | 'response'
   | 'error'
@@ -791,6 +823,7 @@ export interface ServerSettings {
   llm_stream_max_retries: number;
   llm_stream_retry_initial_delay: number;
   llm_stream_retry_max_delay: number;
+  llm_fallback_hold_seconds: number;
   context_management: string;
   compact_threshold: number;
   compact_threshold_mode: 'percentage' | 'tokens';
@@ -836,6 +869,7 @@ export interface ServerSettingsUpdate {
   llm_ollama_num_ctx?: number | null;
   llm_provider_route?: ProviderRoute | null;
   openai_api_mode?: OpenAIApiMode | null;
+  llm_fallback_hold_seconds?: number;
   // Provider/capability credentials are write-only through PATCH /settings.
   anthropic_api_key?: string | null;
   anthropic_direct_api_key?: string | null;

@@ -637,6 +637,16 @@ def get_graph_for_user_impl(
         )
         return build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
+    if thread_id:
+        try:
+            agent._clear_expired_llm_fallback_if_idle(thread_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to clear expired LLM fallback before graph lookup for %s: %s",
+                thread_id,
+                exc,
+            )
+
     memory_hash = agent._get_memory_hash(user_id, thread_id)
     build_cache_key = cache_key_fn or (lambda u, t: (u, t))
     cache_key = build_cache_key(user_id, thread_id)

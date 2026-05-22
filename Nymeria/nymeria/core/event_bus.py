@@ -289,6 +289,8 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     "context_attached",
     "iteration_limit",
     "tool_reload",
+    "provider_retry",
+    "provider_fallback",
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",

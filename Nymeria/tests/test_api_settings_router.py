@@ -51,6 +51,7 @@ class FakeSettings:
     llm_stream_max_retries: int = 2
     llm_stream_retry_initial_delay: float = 1.0
     llm_stream_retry_max_delay: float = 8.0
+    llm_fallback_hold_seconds: int = 7200
     context_management: str = "none"
     compact_threshold: float = 0.8
     compact_threshold_mode: str = "percentage"

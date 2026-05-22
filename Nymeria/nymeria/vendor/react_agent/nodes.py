@@ -13,6 +13,10 @@ import logging
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, List, Literal, Optional, cast
+from langchain_core.callbacks.manager import (
+    adispatch_custom_event,
+    dispatch_custom_event,
+)
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, SystemMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableLambda
@@ -253,6 +257,31 @@ def _llm_candidate_count(llm_config: Optional[LLMConfig]) -> int:
     return 1 + len(_llm_fallbacks(llm_config))
 
 
+def _llm_initial_candidate_index(llm_config: Optional[LLMConfig]) -> int:
+    if llm_config is None:
+        return 0
+    candidate_count = _llm_candidate_count(llm_config)
+    try:
+        active_index = int(getattr(llm_config, "active_fallback_candidate_index", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    if active_index <= 0:
+        return 0
+    return min(active_index, max(0, candidate_count - 1))
+
+
+def _mark_llm_fallback_active(
+    llm_config: Optional[LLMConfig],
+    candidate_index: int,
+) -> None:
+    if llm_config is None:
+        return
+    try:
+        llm_config.active_fallback_candidate_index = candidate_index
+    except Exception:
+        logger.debug("[LLM FALLBACK] Failed to mark active fallback candidate")
+
+
 def _llm_candidate_label(llm_config: Optional[LLMConfig], candidate_index: int) -> str:
     if candidate_index == 0:
         model = getattr(llm_config, "model", None) if llm_config is not None else None
@@ -271,6 +300,161 @@ def _llm_candidate_label(llm_config: Optional[LLMConfig], candidate_index: int) 
     if provider and model:
         return f"{provider}:{model}"
     return model or f"fallback #{candidate_index}"
+
+
+def _llm_candidate_descriptor(
+    llm_config: Optional[LLMConfig],
+    candidate_index: int,
+) -> dict[str, Any]:
+    if llm_config is None:
+        return {
+            "provider": "unknown",
+            "model": _llm_candidate_label(None, candidate_index),
+            "provider_route": None,
+            "openai_api_mode": None,
+        }
+    if candidate_index == 0:
+        return {
+            "provider": llm_config.provider,
+            "model": llm_config.model,
+            "provider_route": getattr(llm_config, "provider_route", None),
+            "openai_api_mode": getattr(llm_config, "openai_api_mode", None),
+        }
+
+    fallbacks = _llm_fallbacks(llm_config)
+    try:
+        fallback = fallbacks[candidate_index - 1]
+    except IndexError:
+        return {
+            "provider": llm_config.provider,
+            "model": _llm_candidate_label(llm_config, candidate_index),
+            "provider_route": getattr(llm_config, "provider_route", None),
+            "openai_api_mode": getattr(llm_config, "openai_api_mode", None),
+        }
+    if isinstance(fallback, str):
+        return {
+            "provider": llm_config.provider,
+            "model": fallback,
+            "provider_route": getattr(llm_config, "provider_route", None),
+            "openai_api_mode": getattr(llm_config, "openai_api_mode", None),
+        }
+    return {
+        "provider": getattr(fallback, "provider", None) or llm_config.provider,
+        "model": getattr(fallback, "model", "") or "",
+        "provider_route": getattr(fallback, "provider_route", None)
+        or getattr(llm_config, "provider_route", None),
+        "openai_api_mode": getattr(fallback, "openai_api_mode", None)
+        or getattr(llm_config, "openai_api_mode", None),
+    }
+
+
+def _llm_retry_reason(exc: BaseException) -> str:
+    status_code = _extract_status_code(exc)
+    if status_code is not None:
+        if status_code >= 500:
+            return "provider_server_error"
+        if status_code == 429:
+            return "rate_limited"
+        return "retryable_http_error"
+
+    if any(
+        current.__class__.__name__ in _RETRYABLE_EXCEPTION_NAMES
+        for current in _iter_exception_chain(exc)
+    ):
+        text = _llm_exception_text(exc)
+        if "timeout" in text or "timed out" in text:
+            return "timeout"
+        return "transport_error"
+    return "transient_provider_error"
+
+
+def _llm_retry_payload(
+    llm_config: Optional[LLMConfig],
+    candidate_index: int,
+    *,
+    attempt: int,
+    max_retries: int,
+    delay: float,
+    exc: BaseException,
+) -> dict[str, Any]:
+    candidate = _llm_candidate_descriptor(llm_config, candidate_index)
+    return {
+        "provider": candidate["provider"],
+        "model": candidate["model"],
+        "provider_route": candidate["provider_route"],
+        "openai_api_mode": candidate["openai_api_mode"],
+        "attempt": attempt,
+        "max_retries": max_retries,
+        "delay_seconds": delay,
+        "reason": _llm_retry_reason(exc),
+        "http_status": _extract_status_code(exc),
+    }
+
+
+def _llm_fallback_payload(
+    llm_config: Optional[LLMConfig],
+    from_index: int,
+    to_index: int,
+    *,
+    exc: BaseException,
+) -> dict[str, Any]:
+    from_candidate = _llm_candidate_descriptor(llm_config, from_index)
+    to_candidate = _llm_candidate_descriptor(llm_config, to_index)
+    return {
+        "from_provider": from_candidate["provider"],
+        "from_model": from_candidate["model"],
+        "from_provider_route": from_candidate["provider_route"],
+        "from_openai_api_mode": from_candidate["openai_api_mode"],
+        "to_provider": to_candidate["provider"],
+        "to_model": to_candidate["model"],
+        "to_provider_route": to_candidate["provider_route"],
+        "to_openai_api_mode": to_candidate["openai_api_mode"],
+        "reason": _llm_retry_reason(exc),
+        "http_status": _extract_status_code(exc),
+    }
+
+
+def _activate_llm_fallback(
+    llm_config: Optional[LLMConfig],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    callback = getattr(llm_config, "fallback_activation_callback", None)
+    if callback is None:
+        return payload
+    try:
+        activation = callback(dict(payload))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[LLM FALLBACK] fallback activation callback failed: %s", exc)
+        return payload
+    if isinstance(activation, dict):
+        return {**payload, **activation}
+    return payload
+
+
+def _dispatch_provider_event(
+    name: str,
+    payload: dict[str, Any],
+    run_config: Any,
+) -> None:
+    try:
+        dispatch_custom_event(name, payload, config=run_config)
+    except RuntimeError:
+        logger.debug("[LLM] No callback manager for %s event", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[LLM] Failed to dispatch %s event: %s", name, exc)
+
+
+async def _adispatch_provider_event(
+    name: str,
+    payload: dict[str, Any],
+    run_config: Any,
+) -> None:
+    try:
+        await adispatch_custom_event(name, payload, config=run_config)
+    except RuntimeError:
+        logger.debug("[LLM] No callback manager for %s event", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[LLM] Failed to dispatch %s event: %s", name, exc)
 
 
 def _llm_config_for_fallback(
@@ -352,12 +536,12 @@ def _invoke_llm_with_retries(
     llm_config: Optional[LLMConfig],
     primary_llm: BaseChatModel,
     tools: Optional[List[BaseTool]],
+    run_config: Any = None,
 ) -> AIMessage:
     max_retries = _llm_max_retries(llm_config)
     candidate_count = _llm_candidate_count(llm_config)
-    candidate_index = 0
+    candidate_index = _llm_initial_candidate_index(llm_config)
     retry_attempt = 0
-    retryable_failures = 0
     candidate_cache = {0: primary_llm}
 
     while True:
@@ -374,39 +558,53 @@ def _invoke_llm_with_retries(
             if not _is_retryable_llm_error(exc):
                 raise
 
-            retryable_failures += 1
-            if candidate_index + 1 < candidate_count:
-                next_index = candidate_index + 1
-                delay = _llm_retry_delay(llm_config, retryable_failures)
+            if retry_attempt < max_retries:
+                retry_attempt += 1
+                delay = _llm_retry_delay(llm_config, retry_attempt)
                 logger.warning(
-                    "[LLM FALLBACK] transient sync call failure on %s; "
-                    "switching to %s in %.2fs: %s",
+                    "[LLM RETRY] transient sync call failure on %s; "
+                    "retry %d/%d in %.2fs: %s",
                     _llm_candidate_label(llm_config, candidate_index),
-                    _llm_candidate_label(llm_config, next_index),
+                    retry_attempt,
+                    max_retries,
                     delay,
                     exc,
                 )
+                payload = _llm_retry_payload(
+                    llm_config,
+                    candidate_index,
+                    attempt=retry_attempt,
+                    max_retries=max_retries,
+                    delay=delay,
+                    exc=exc,
+                )
+                _dispatch_provider_event("provider_retry", payload, run_config)
                 if delay > 0:
                     time.sleep(delay)
-                candidate_index = next_index
                 continue
 
-            if retry_attempt >= max_retries:
+            if candidate_index + 1 >= candidate_count:
                 raise
 
-            retry_attempt += 1
-            delay = _llm_retry_delay(llm_config, retry_attempt)
+            next_index = candidate_index + 1
             logger.warning(
-                "[LLM RETRY] transient sync call failure on %s; "
-                "retry %d/%d in %.2fs: %s",
+                "[LLM FALLBACK] transient sync call failure on %s after retries; "
+                "switching to %s: %s",
                 _llm_candidate_label(llm_config, candidate_index),
-                retry_attempt,
-                max_retries,
-                delay,
+                _llm_candidate_label(llm_config, next_index),
                 exc,
             )
-            if delay > 0:
-                time.sleep(delay)
+            payload = _llm_fallback_payload(
+                llm_config,
+                candidate_index,
+                next_index,
+                exc=exc,
+            )
+            payload = _activate_llm_fallback(llm_config, payload)
+            _dispatch_provider_event("provider_fallback", payload, run_config)
+            _mark_llm_fallback_active(llm_config, next_index)
+            candidate_index = next_index
+            retry_attempt = 0
 
     raise RuntimeError("LLM retry loop exited unexpectedly")
 
@@ -892,7 +1090,7 @@ def create_agent_node(
 
         return {"messages": [response]}
 
-    def agent_node(state: AgentState) -> dict:
+    def agent_node(state: AgentState, config: Any = None) -> dict:
         """
         The 'reasoning' node - asks the LLM what to do next.
 
@@ -910,10 +1108,11 @@ def create_agent_node(
             llm_config,
             llm_with_tools,
             tools,
+            config,
         )
         return _finish_response(response)
 
-    async def async_agent_node(state: AgentState) -> dict:
+    async def async_agent_node(state: AgentState, config: Any = None) -> dict:
         """
         Async reasoning node that consumes the LLM stream.
 
@@ -937,9 +1136,8 @@ def create_agent_node(
 
         max_retries = _llm_max_retries(llm_config)
         candidate_count = _llm_candidate_count(llm_config)
-        candidate_index = 0
+        candidate_index = _llm_initial_candidate_index(llm_config)
         retry_attempt = 0
-        retryable_failures = 0
         candidate_cache = {0: llm_with_tools}
         while True:
             chunks_this_attempt = 0
@@ -1016,39 +1214,57 @@ def create_agent_node(
                 if not _is_retryable_llm_error(exc):
                     raise
 
-                retryable_failures += 1
-                if candidate_index + 1 < candidate_count:
-                    next_index = candidate_index + 1
-                    delay = _llm_retry_delay(llm_config, retryable_failures)
+                if retry_attempt < max_retries:
+                    retry_attempt += 1
+                    delay = _llm_retry_delay(llm_config, retry_attempt)
                     logger.warning(
-                        "[LLM FALLBACK] transient stream failure before chunks on %s; "
-                        "switching to %s in %.2fs: %s",
+                        "[LLM RETRY] transient stream failure before chunks on %s; "
+                        "retry %d/%d in %.2fs: %s",
                         _llm_candidate_label(llm_config, candidate_index),
-                        _llm_candidate_label(llm_config, next_index),
+                        retry_attempt,
+                        max_retries,
                         delay,
                         exc,
                     )
+                    payload = _llm_retry_payload(
+                        llm_config,
+                        candidate_index,
+                        attempt=retry_attempt,
+                        max_retries=max_retries,
+                        delay=delay,
+                        exc=exc,
+                    )
+                    await _adispatch_provider_event(
+                        "provider_retry",
+                        payload,
+                        config,
+                    )
                     if delay > 0:
                         await asyncio.sleep(delay)
-                    candidate_index = next_index
                     continue
 
-                if retry_attempt >= max_retries:
+                if candidate_index + 1 >= candidate_count:
                     raise
 
-                retry_attempt += 1
-                delay = _llm_retry_delay(llm_config, retry_attempt)
+                next_index = candidate_index + 1
                 logger.warning(
-                    "[LLM RETRY] transient stream failure before chunks on %s; "
-                    "retry %d/%d in %.2fs: %s",
+                    "[LLM FALLBACK] transient stream failure before chunks on %s "
+                    "after retries; switching to %s: %s",
                     _llm_candidate_label(llm_config, candidate_index),
-                    retry_attempt,
-                    max_retries,
-                    delay,
+                    _llm_candidate_label(llm_config, next_index),
                     exc,
                 )
-                if delay > 0:
-                    await asyncio.sleep(delay)
+                payload = _llm_fallback_payload(
+                    llm_config,
+                    candidate_index,
+                    next_index,
+                    exc=exc,
+                )
+                payload = _activate_llm_fallback(llm_config, payload)
+                await _adispatch_provider_event("provider_fallback", payload, config)
+                _mark_llm_fallback_active(llm_config, next_index)
+                candidate_index = next_index
+                retry_attempt = 0
 
         logger.info(
             "[LLM STREAM] async_complete chunks=%d text_chunks=%d text_chars=%d "

@@ -591,6 +591,15 @@ class Settings(BaseSettings):
             "known provider."
         ),
     )
+    llm_fallback_hold_seconds: int = Field(
+        default=7200,
+        ge=0,
+        le=604800,
+        description=(
+            "Seconds to keep a successful fallback provider/model active for a "
+            "thread after primary retry exhaustion. 0 disables timed thread hold."
+        ),
+    )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
 
     # Advanced LLM settings (optional - only sent if explicitly set)

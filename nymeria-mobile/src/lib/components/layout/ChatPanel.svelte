@@ -321,6 +321,54 @@
         break;
       }
 
+      case 'provider_retry': {
+        const data = event.data as {
+          provider?: string;
+          model?: string;
+          attempt?: number;
+          maxRetries?: number;
+          delaySeconds?: number;
+          reason?: string;
+          httpStatus?: number | null;
+        };
+        chatStore.addProviderStatusStep({
+          providerStatus: 'retry',
+          provider: data.provider,
+          model: data.model,
+          attempt: data.attempt,
+          maxRetries: data.maxRetries,
+          delaySeconds: data.delaySeconds,
+          reason: data.reason,
+          httpStatus: data.httpStatus,
+        });
+        break;
+      }
+
+      case 'provider_fallback': {
+        const data = event.data as {
+          fromProvider?: string;
+          fromModel?: string;
+          toProvider?: string;
+          toModel?: string;
+          holdSeconds?: number;
+          expiresAt?: string | null;
+          reason?: string;
+          httpStatus?: number | null;
+        };
+        chatStore.addProviderStatusStep({
+          providerStatus: 'fallback',
+          fromProvider: data.fromProvider,
+          fromModel: data.fromModel,
+          toProvider: data.toProvider,
+          toModel: data.toModel,
+          holdSeconds: data.holdSeconds,
+          expiresAt: data.expiresAt,
+          reason: data.reason,
+          httpStatus: data.httpStatus,
+        });
+        break;
+      }
+
       case 'error':
         chatStore.setLastMessageError((event.data as { message: string }).message);
         break;

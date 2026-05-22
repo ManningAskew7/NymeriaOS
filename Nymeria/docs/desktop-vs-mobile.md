@@ -456,6 +456,14 @@ Autonomous stream transport is intentionally not byte-identical today. Desktop's
 
 `workspace_artifact` is normalized in both apps' `types/index.ts` and API service modules. Both apps render artifact chips from `ToolCallCard.svelte` and open them in a platform-specific `WorkspaceArtifactModal.svelte`: desktop uses a windowed modal, while mobile uses the full-screen mobile modal with touch-sized open/download actions.
 
+Provider retry status is also mirrored across both apps. The API service
+normalizes live `provider_retry` and `provider_fallback` SSE events, the chat
+stores append a `provider_status` message step, and `MessageBubble.svelte`
+renders a compact inline row so users can see retry backoff and temporary
+fallback activation without mixing that status text into the assistant response.
+Autonomous streams handle the same event names in `stores/autonomous.svelte.ts`
+on both platforms.
+
 Compaction UX is shared across both apps: `/history` maps `kind: "compaction_notice"` plus `context_summary`, `messages_removed`, and `auto_resumed`; live `compacted` clears old visible messages, inserts the notice, and creates a fresh assistant stream slot when `auto_resumed` is true. Keep `ChatContainer.svelte`, `MessageBubble.svelte`, `stores/chat.svelte.ts`, and the API service history mapper aligned for this flow.
 
 TODO dashboard invalidation is also shared: live chat handlers and
