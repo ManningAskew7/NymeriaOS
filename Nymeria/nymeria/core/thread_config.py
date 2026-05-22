@@ -37,6 +37,7 @@ class ThreadLLMConfig(BaseModel):
     extended_thinking: Optional[bool] = None
     reasoning_effort: Optional[str] = None
     use_model_defaults: Optional[bool] = None
+    provider_route: Optional[Literal["native", "openai_compat"]] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
     context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)

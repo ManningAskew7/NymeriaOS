@@ -22,6 +22,7 @@ class FakeLLMConfig:
     model: str = "claude-test"
     max_tokens: int | None = 4096
     api_key: str | None = None
+    provider_route: str | None = None
 
 
 @dataclass
@@ -45,6 +46,7 @@ class FakeSettings:
     llm_base_url: str | None = None
     llm_context_length: int | None = None
     llm_ollama_num_ctx: int | None = None
+    llm_provider_route: str | None = None
     openai_api_mode: str | None = "responses"
     llm_stream_max_retries: int = 2
     llm_stream_retry_initial_delay: float = 1.0
@@ -352,6 +354,7 @@ def test_llm_provider_test_normalizes_openai_cliproxy_base_url(
         "model": "gpt-test",
         "message": "Provider test succeeded.",
         "openai_api_mode": "responses",
+        "provider_route": "native",
         "status_code": None,
         "error_type": None,
     }
@@ -459,6 +462,10 @@ def test_get_llm_provider_catalog_includes_openai_compatible_providers(
     assert response.status_code == 200
     providers = {entry["id"]: entry for entry in response.json()}
     assert providers["openai"]["supports_responses"] is True
+    assert providers["google"]["supported_routes"] == ["native", "openai_compat"]
+    assert providers["google"]["default_route"] == "native"
+    assert providers["ollama"]["supported_routes"] == ["native", "openai_compat"]
+    assert providers["ollama"]["openai_compat_base_url"] == "http://localhost:11434/v1"
     assert providers["groq"]["api_format"] == "openai_chat"
     assert "GROQ_API_KEY" in providers["groq"]["api_key_env_vars"]
     assert providers["cohere"]["default_base_url"] == "https://api.cohere.ai/compatibility/v1"

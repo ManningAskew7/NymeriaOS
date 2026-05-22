@@ -26,6 +26,7 @@ class _Settings:
     llm_base_url = None
     llm_context_length = None
     llm_ollama_num_ctx = None
+    llm_provider_route = None
     openai_api_mode = "responses"
     llm_stream_max_retries = 2
     llm_stream_retry_initial_delay = 1.0
@@ -85,14 +86,18 @@ def test_llm_config_resolution_preserves_falsey_thread_overrides():
             extended_thinking=False,
             use_model_defaults=False,
             reasoning_effort="low",
+            provider_route="openai_compat",
             openai_api_mode="chat_completions",
         ),
         llm_extended_thinking=True,
         llm_use_model_defaults=True,
+        llm_provider="google",
     )
 
     config = agent._get_llm_config_for_thread("thread-1")
 
+    assert config.provider == "google"
+    assert config.provider_route == "openai_compat"
     assert config.temperature == 0.0
     assert config.max_tokens == 1
     assert config.extended_thinking is False
@@ -101,6 +106,30 @@ def test_llm_config_resolution_preserves_falsey_thread_overrides():
     assert config.top_p == 0.9
     assert config.frequency_penalty == 0.1
     assert config.presence_penalty == 0.2
+
+
+def test_provider_route_resolution_uses_global_then_provider_default():
+    agent = _make_agent(
+        ThreadLLMConfig(provider="google"),
+        llm_provider="anthropic",
+        llm_provider_route="openai_compat",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.provider == "google"
+    assert config.provider_route == "openai_compat"
+
+    agent = _make_agent(
+        ThreadLLMConfig(provider="bedrock"),
+        llm_provider="anthropic",
+        llm_provider_route="openai_compat",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.provider == "bedrock"
+    assert config.provider_route == "native"
 
 
 def test_empty_string_thread_overrides_inherit_except_base_url_direct_api():

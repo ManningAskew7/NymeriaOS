@@ -187,6 +187,7 @@ export interface ThreadLLMConfig {
   extended_thinking?: boolean | null;
   reasoning_effort?: string | null;
   use_model_defaults?: boolean | null;
+  provider_route?: ProviderRoute | null;
   openai_api_mode?: 'chat_completions' | 'responses' | null;
   compact_threshold_mode?: 'percentage' | 'tokens' | null;
   compact_threshold?: number | null;
@@ -705,6 +706,7 @@ export interface AppConfig {
 // Server settings types
 export type LLMProvider = string;
 export type OpenAIApiMode = 'chat_completions' | 'responses';
+export type ProviderRoute = 'native' | 'openai_compat';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
 export type ProviderTier = 'native' | 'gateway' | 'unverified';
@@ -729,6 +731,9 @@ export interface LLMProviderSpec {
   // backends do not, so callers must default to 'unverified' and ''.
   tier?: ProviderTier;
   notes_for_user?: string;
+  supported_routes?: ProviderRoute[];
+  default_route?: ProviderRoute;
+  openai_compat_base_url?: string | null;
 }
 
 // Available model from provider (from GET /models/available)
@@ -781,6 +786,7 @@ export interface ServerSettings {
   llm_base_url: string | null;
   llm_context_length: number | null;
   llm_ollama_num_ctx: number | null;
+  llm_provider_route: ProviderRoute | null;
   openai_api_mode: OpenAIApiMode | null;
   llm_stream_max_retries: number;
   llm_stream_retry_initial_delay: number;
@@ -828,6 +834,7 @@ export interface ServerSettingsUpdate {
   llm_base_url?: string | null;
   llm_context_length?: number | null;
   llm_ollama_num_ctx?: number | null;
+  llm_provider_route?: ProviderRoute | null;
   openai_api_mode?: OpenAIApiMode | null;
   // Provider/capability credentials are write-only through PATCH /settings.
   anthropic_api_key?: string | null;
@@ -1233,6 +1240,7 @@ export interface LLMProviderTestRequest {
   llm_model: string;
   api_key?: string | null;
   llm_base_url?: string | null;
+  provider_route?: ProviderRoute | null;
   openai_api_mode?: OpenAIApiMode | null;
 }
 
@@ -1242,6 +1250,7 @@ export interface LLMProviderTestResponse {
   model: string;
   message: string;
   openai_api_mode: OpenAIApiMode | null;
+  provider_route: ProviderRoute | null;
   status_code: number | null;
   error_type: string | null;
 }

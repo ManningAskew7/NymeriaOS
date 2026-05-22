@@ -236,6 +236,7 @@ def _build_global_llm_config(settings: Any) -> LLMConfig:
         presence_penalty=None,
         reasoning_effort=None,
         extended_thinking=False,
+        provider_route=getattr(settings, "llm_provider_route", None),
         openai_api_mode=settings.openai_api_mode,
         request_timeout=15,
         stream_max_retries=0,

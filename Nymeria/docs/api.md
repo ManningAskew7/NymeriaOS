@@ -1342,7 +1342,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, and LLM stream retry settings; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -1376,6 +1376,7 @@ to config. The response never echoes the submitted API key.
   "llm_model": "gpt-5.5",
   "api_key": "cpx-...",
   "llm_base_url": "http://localhost:8317/v1",
+  "provider_route": "openai_compat",
   "openai_api_mode": "responses"
 }
 ```
@@ -1436,9 +1437,11 @@ Authorization: Bearer <token>
 ```
 
 Returns Nymeria's provider registry: provider IDs, labels, default base URLs,
-API key env vars, aliases, Chat Completions support, and Responses support.
-Desktop/mobile use this metadata for provider setup and diagnostics; the
-authoritative implementation lives in `nymeria/config/llm_providers.py`.
+API key env vars, aliases, Chat Completions support, Responses support, tier
+metadata, and route metadata (`supported_routes`, `default_route`,
+`openai_compat_base_url`). Desktop/mobile use this metadata for provider setup
+and diagnostics; the authoritative implementation lives in
+`nymeria/config/llm_providers.py`.
 
 ---
 
@@ -1488,6 +1491,7 @@ Authorization: Bearer <admin-token>
   "llm_use_model_defaults": false,
   "llm_context_length": 128000,
   "llm_ollama_num_ctx": 32768,
+  "llm_provider_route": "native",
   "openai_api_mode": "responses",
   "openai_api_key": "sk-...",
   "anthropic_api_key": "sk-ant-or-cpx-...",
@@ -1518,6 +1522,7 @@ Authorization: Bearer <admin-token>
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `llm_context_length` | int | 1000-2000000 | Manual context-window override for local endpoints or proxies that do not report context metadata |
 | `llm_ollama_num_ctx` | int | 1000-2000000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests |
+| `llm_provider_route` | string | `native`/`openai_compat` | Default adapter route for providers that support more than one route. `google` and `ollama` default to `native`; per-thread settings can override this. |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI-compatible API mode. `responses` is honored only for registry providers that advertise Responses support; Chat Completions is the compatibility baseline. |
 | `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
 | `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
@@ -2459,10 +2464,11 @@ Updates thread config. Key fields for callable threads:
 | `llm_config.api_key` | string | Per-thread provider API key. For CLIProxy sidecars, this is the local sidecar gatekeeper key, not an upstream OpenAI key. |
 | `llm_config.context_length` | int | Per-thread context-window override for local endpoints or proxies with missing metadata |
 | `llm_config.ollama_num_ctx` | int | Per-thread Ollama `options.num_ctx` override |
+| `llm_config.provider_route` | string | Per-thread adapter route override: `native` or `openai_compat`. Only applies to providers whose catalog row advertises multiple `supported_routes`. |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |
-| `llm_config.openai_api_mode` | string | OpenAI-only API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
+| `llm_config.openai_api_mode` | string | OpenAI-compatible API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 
 **Callable thread naming:** A callable thread's sidebar title is derived from
 `callable_name`. Rename the callable tool binding by updating `callable_name`

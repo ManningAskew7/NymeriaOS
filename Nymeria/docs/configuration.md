@@ -49,7 +49,8 @@ These variables are deployment-wide server defaults, not per-user account prefer
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native partner-package paths: `anthropic`, `openai`, `google` (Gemini via langchain-google-genai), `bedrock` (AWS via langchain-aws ChatBedrockConverse), `ollama-native` (Ollama native protocol via langchain-ollama). OpenAI-compatible IDs include `openrouter`, `xai`, `groq`, `deepseek`, `mistral`, `ollama`, `lmstudio`, plus the full registry documented in [`chat_completions_providers.md`](chat_completions_providers.md). |
+| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native partner-package paths: `anthropic`, `openai`, `google` (Gemini via langchain-google-genai), `bedrock` (AWS via langchain-aws ChatBedrockConverse), `ollama` (native protocol via langchain-ollama). OpenAI-compatible IDs include `openrouter`, `xai`, `groq`, `deepseek`, `mistral`, `lmstudio`, plus the full registry documented in [`chat_completions_providers.md`](chat_completions_providers.md). |
+| `LLM_PROVIDER_ROUTE` | No | provider default | Adapter route for providers with more than one supported path. Valid values: `native`, `openai_compat`. Today this is exposed for `google` and `ollama`; both default to `native`. Per-thread settings can override it. |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
 | `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend when the primary model fails with a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry. CLI shortcut: `/fallback`. |
@@ -57,15 +58,15 @@ These variables are deployment-wide server defaults, not per-user account prefer
 
 #### Native partner-package providers
 
-Three provider IDs route through dedicated `langchain-<provider>` packages instead of the OpenAI-compatible adapter. Use them when reasoning content must round-trip across tool follow-ups.
+Three provider IDs route through dedicated `langchain-<provider>` packages instead of the OpenAI-compatible adapter by default. Use the native route when reasoning content must round-trip across tool follow-ups.
 
 | Provider ID | Required env vars | Notes |
 |-------------|-------------------|-------|
 | `google` | `GEMINI_API_KEY` (or `GOOGLE_GENERATIVE_AI_API_KEY`) | Routes through `langchain-google-genai`. Gemini 3+ thought signatures round-trip natively; the OpenAI-compat shim drops them. Gemini 4.x SDK has a documented 50-90% latency increase on small Flash calls from the gRPC-to-REST transport switch. `max_retries=0` is interpreted as the SDK default of 5; Nymeria sets `max_retries=1` to actually disable internal retries. |
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (plus optional `AWS_SESSION_TOKEN`); `AWS_REGION` (or `AWS_DEFAULT_REGION`) | Routes through `langchain-aws` `ChatBedrockConverse`. Credentials resolved through the boto3 default chain. Optional `AWS_BEDROCK_ENDPOINT_URL` for VPC endpoints. |
-| `ollama-native` | none (no API key) | Routes through `langchain-ollama` against Ollama's native `/api/chat` protocol. Use this for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. The legacy `ollama` provider id remains on the OpenAI-compat shim at `/v1/chat/completions`. See [`local-llm.md`](local-llm.md) for the full Ollama native vs OpenAI-compat split. |
+| `ollama` | none (no API key) | Defaults to `langchain-ollama` against Ollama's native `/api/chat` protocol. Use this for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. Set `LLM_PROVIDER_ROUTE=openai_compat` or a per-thread route override to use Ollama's `/v1/chat/completions` shim. See [`local-llm.md`](local-llm.md) for the full Ollama native vs OpenAI-compat split. |
 
-Existing thread configs storing `provider="google"` upgrade silently to the partner-package path on the next chat turn. `provider="ollama"` keeps the OpenAI-compat behavior unchanged; users opt into the native protocol explicitly by switching to `ollama-native`.
+Existing thread configs storing `provider="google"` or `provider="ollama"` use the native route unless a global or per-thread `provider_route="openai_compat"` override is set. The old `ollama-native` provider id is accepted as an alias for `ollama` with the native route.
 
 ### Advanced LLM Settings (Optional)
 

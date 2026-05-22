@@ -19,6 +19,7 @@ from typing import Any, TYPE_CHECKING
 from ..config.llm_providers import (
     ALL_LLM_PROVIDERS,
     normalize_llm_provider,
+    resolve_provider_route,
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
@@ -113,6 +114,11 @@ def get_llm_config_for_thread(
 
     provider = normalize_llm_provider(resolve("provider", agent.settings.llm_provider))
     global_provider = normalize_llm_provider(agent.settings.llm_provider)
+    provider_route = resolve_provider_route(
+        provider,
+        route_override=getattr(tc, "provider_route", None) if tc else None,
+        global_route=getattr(agent.settings, "llm_provider_route", None),
+    )
     model = resolve("model", agent.settings.llm_model)
     temperature = resolve("temperature", agent.settings.llm_temperature)
     max_tokens = resolve("max_tokens", agent.settings.llm_max_tokens)
@@ -198,6 +204,7 @@ def get_llm_config_for_thread(
     if not base_url:
         base_url = resolve_provider_base_url(
             provider,
+            provider_route=provider_route,
             settings=agent.settings,
             include_default=False,
         )
@@ -232,6 +239,7 @@ def get_llm_config_for_thread(
     if not probe_base_url and provider in _LOCAL_PROVIDER_IDS:
         probe_base_url = resolve_provider_base_url(
             provider,
+            provider_route=provider_route,
             settings=agent.settings,
             include_default=True,
         )
@@ -287,6 +295,10 @@ def get_llm_config_for_thread(
             return fallback_credential.base_url
         env_base_url = resolve_provider_base_url(
             fallback_provider,
+            provider_route=resolve_provider_route(
+                fallback_provider,
+                global_route=getattr(agent.settings, "llm_provider_route", None),
+            ),
             settings=agent.settings,
             include_default=False,
         )
@@ -327,9 +339,18 @@ def get_llm_config_for_thread(
         ):
             continue
         fallback_base_url = base_url_for_provider(fallback_provider)
+        fallback_route = (
+            provider_route
+            if fallback_provider == provider
+            else resolve_provider_route(
+                fallback_provider,
+                global_route=getattr(agent.settings, "llm_provider_route", None),
+            )
+        )
         fallbacks.append(
             LLMFallbackConfig(
                 provider=fallback_provider,
+                provider_route=fallback_route,
                 model=fallback_model,
                 api_key=api_key_for_provider(
                     fallback_provider,
@@ -360,6 +381,7 @@ def get_llm_config_for_thread(
         extended_thinking=extended_thinking,
         context_length=context_length,
         ollama_num_ctx=ollama_num_ctx,
+        provider_route=provider_route,
         openai_api_mode=resolve("openai_api_mode", agent.settings.openai_api_mode),
         stream_max_retries=agent.settings.llm_stream_max_retries,
         stream_retry_initial_delay=agent.settings.llm_stream_retry_initial_delay,

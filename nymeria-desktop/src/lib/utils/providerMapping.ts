@@ -1,8 +1,115 @@
-import type { LLMProvider } from '$lib/types';
+import type { LLMProvider, LLMProviderSpec, ProviderTier } from '$lib/types';
+import type { ProviderSelectGroup, ProviderSelectOption } from '$lib/components/common/ProviderSelect.svelte';
 
 export type ProviderOption = { value: string; label: string };
 export type SettingsDisplayProvider = string;
 export type ThreadDisplayProvider = string;
+
+// Maps each synthetic display value to (backend provider id it resolves to,
+// short descriptive sub-line for the picker row).
+const SYNTHETIC_DISPLAY_PROVIDERS: Record<string, { backend: string; description: string }> = {
+  anthropic_proxy: {
+    backend: 'anthropic',
+    description: 'Anthropic via CLIProxy (Claude Pro/Max subscription).',
+  },
+  anthropic_direct: {
+    backend: 'anthropic',
+    description: 'Direct Anthropic API (pay-per-token, needs ANTHROPIC_API_KEY).',
+  },
+  openai_custom: {
+    backend: 'openai',
+    description: 'OpenAI client with a custom base URL (e.g. CLIProxy Codex OAuth).',
+  },
+  local_openai: {
+    backend: 'openai',
+    description: 'Local OpenAI-compatible server (llama.cpp, LM Studio, vLLM, ...).',
+  },
+};
+
+function findSpec(catalog: LLMProviderSpec[], id: string): LLMProviderSpec | undefined {
+  const target = id.trim().toLowerCase();
+  return catalog.find((s) => s.id === target || (s.aliases ?? []).includes(target));
+}
+
+function tierForOption(catalog: LLMProviderSpec[], value: string): ProviderTier {
+  const synthetic = SYNTHETIC_DISPLAY_PROVIDERS[value];
+  const lookupId = synthetic ? synthetic.backend : value;
+  const spec = findSpec(catalog, lookupId);
+  return spec?.tier ?? 'unverified';
+}
+
+function enrichOption(
+  option: ProviderOption,
+  catalog: LLMProviderSpec[]
+): ProviderSelectOption {
+  const synthetic = SYNTHETIC_DISPLAY_PROVIDERS[option.value];
+  const lookupId = synthetic ? synthetic.backend : option.value;
+  const spec = findSpec(catalog, lookupId);
+  return {
+    value: option.value,
+    label: option.label,
+    tier: spec?.tier ?? 'unverified',
+    notesForUser: synthetic ? '' : (spec?.notes_for_user ?? ''),
+    description: synthetic?.description,
+  };
+}
+
+const TIER_GROUP_LABELS: Record<ProviderTier, string> = {
+  native: 'Native reasoning',
+  gateway: 'Gateway',
+  unverified: 'Unverified',
+};
+
+const TIER_ORDER: ProviderTier[] = ['native', 'gateway', 'unverified'];
+
+/**
+ * Build tier-grouped picker options from the catalog, layered on top of the
+ * curated display lists. Synthetic display providers (anthropic_proxy,
+ * anthropic_direct, openai_custom, local_openai) are routed to the tier of
+ * their backend provider and carry a short description sub-line.
+ *
+ * Returns groups in the order: native, gateway, unverified. Empty groups are
+ * omitted.
+ */
+export function buildProviderGroups(
+  catalog: LLMProviderSpec[],
+  options: {
+    includeLocal?: boolean;
+    includeLocalOpenAISentinel?: boolean;
+  } = {}
+): ProviderSelectGroup[] {
+  const { includeLocal = true, includeLocalOpenAISentinel = true } = options;
+
+  const curated: ProviderOption[] = [
+    ...VERIFIED_PROVIDER_OPTIONS,
+    ...HOSTED_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
+    ...(includeLocal
+      ? [
+          ...(includeLocalOpenAISentinel
+            ? [{ value: 'local_openai', label: 'Local LLM (OpenAI-compatible)' }]
+            : []),
+          ...LOCAL_OPENAI_COMPATIBLE_PROVIDER_OPTIONS,
+        ]
+      : []),
+  ];
+
+  // Bucket by tier.
+  const buckets: Record<ProviderTier, ProviderSelectOption[]> = {
+    native: [],
+    gateway: [],
+    unverified: [],
+  };
+  for (const opt of curated) {
+    const enriched = enrichOption(opt, catalog);
+    buckets[enriched.tier ?? 'unverified'].push(enriched);
+  }
+
+  return TIER_ORDER.map((tier) => ({
+    label: TIER_GROUP_LABELS[tier],
+    tier,
+    options: buckets[tier],
+  })).filter((g) => g.options.length > 0);
+}
 
 // Smoke-tested end-to-end in Nymeria (matches `verified=True` in
 // nymeria/config/llm_providers.py). The synthetic display values

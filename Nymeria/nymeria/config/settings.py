@@ -646,6 +646,13 @@ class Settings(BaseSettings):
         le=2_000_000,
         description="Ollama num_ctx override passed in extra_body.options.num_ctx"
     )
+    llm_provider_route: Optional[Literal["native", "openai_compat"]] = Field(
+        default=None,
+        description=(
+            "Default provider adapter route when the selected provider supports "
+            "multiple routes. None uses the provider registry default."
+        ),
+    )
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = Field(
         default="responses",
         description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'"

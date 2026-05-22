@@ -628,14 +628,22 @@ def test_provider_list_emits_json_without_secrets(tmp_path, capsys: Any) -> None
     assert run(registry.dispatch_async(ctx, "/provider list --json")).ok is True
 
     payload = json.loads(capsys.readouterr().out)
-    assert {entry["provider"] for entry in payload} == {
-        "anthropic",
-        "openai",
-        "openrouter",
-    }
+    # /provider list now consumes the full registry (Phase 1 tier refactor),
+    # so the JSON payload covers every known provider, not just the three
+    # Nymeria can manage credentials for. Verify the credential-storing ones
+    # are still present and tagged correctly, then assert the new tier/notes
+    # fields flow through, and that no secrets leak.
+    providers = {entry["provider"] for entry in payload}
+    assert {"anthropic", "openai", "openrouter"}.issubset(providers)
     assert "sk-secret" not in json.dumps(payload)
     anthropic = next(entry for entry in payload if entry["provider"] == "anthropic")
     assert anthropic["status"] == "authenticated"
+    assert anthropic["tier"] == "native"
+    # An unverified provider should be present with status "n/a" (Nymeria
+    # doesn't manage its credentials locally).
+    deepseek = next(entry for entry in payload if entry["provider"] == "deepseek")
+    assert deepseek["tier"] == "unverified"
+    assert deepseek["status"] == "n/a"
 
 
 def test_settings_patch_rejects_secret_or_unknown_fields() -> None:

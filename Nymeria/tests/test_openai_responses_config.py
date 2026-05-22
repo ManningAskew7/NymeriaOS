@@ -1120,6 +1120,9 @@ def test_notes_for_user_flows_through_catalog_response():
         aliases=list(deepseek_spec.aliases),
         tier=deepseek_spec.tier,
         notes_for_user=deepseek_spec.notes_for_user,
+        supported_routes=list(deepseek_spec.supported_routes),
+        default_route=deepseek_spec.default_route,
+        openai_compat_base_url=deepseek_spec.openai_compat_base_url,
         verified=deepseek_spec.verified,
     )
 
@@ -1130,3 +1133,5 @@ def test_notes_for_user_flows_through_catalog_response():
     payload = response.model_dump()
     assert payload["tier"] == "unverified"
     assert payload["notes_for_user"] == deepseek_spec.notes_for_user
+    assert payload["supported_routes"] == list(deepseek_spec.supported_routes)
+    assert payload["default_route"] == deepseek_spec.default_route

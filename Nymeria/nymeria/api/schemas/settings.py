@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
+ProviderRoute = Literal["native", "openai_compat"]
 ProviderTier = Literal["native", "gateway", "unverified"]
 
 
@@ -30,6 +31,9 @@ class LLMProviderSpecResponse(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     tier: ProviderTier = "unverified"
     notes_for_user: str = ""
+    supported_routes: list[ProviderRoute] = Field(default_factory=list)
+    default_route: ProviderRoute = "native"
+    openai_compat_base_url: Optional[str] = None
     verified: bool = False
 
 
@@ -53,6 +57,7 @@ class ServerSettingsResponse(BaseModel):
     llm_base_url: Optional[str] = None
     llm_context_length: Optional[int] = None
     llm_ollama_num_ctx: Optional[int] = None
+    llm_provider_route: Optional[ProviderRoute] = None
     openai_api_mode: Optional[OpenAIApiMode] = "responses"
     llm_stream_max_retries: int
     llm_stream_retry_initial_delay: float
@@ -103,6 +108,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_base_url: Optional[str] = None
     llm_context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
     llm_ollama_num_ctx: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
+    llm_provider_route: Optional[ProviderRoute] = None
     openai_api_mode: Optional[OpenAIApiMode] = None
     # Accepted by PATCH /settings only. Secret values are intentionally absent
     # from ServerSettingsResponse.
@@ -689,6 +695,7 @@ class LLMProviderTestRequest(BaseModel):
     llm_model: str = Field(min_length=1)
     api_key: Optional[SecretStr] = None
     llm_base_url: Optional[str] = None
+    provider_route: Optional[ProviderRoute] = None
     openai_api_mode: Optional[OpenAIApiMode] = "chat_completions"
 
     @field_validator("llm_model")
@@ -716,6 +723,7 @@ class LLMProviderTestResponse(BaseModel):
     model: str
     message: str
     openai_api_mode: Optional[OpenAIApiMode] = None
+    provider_route: Optional[ProviderRoute] = None
     status_code: Optional[int] = None
     error_type: Optional[str] = None
 
@@ -808,6 +816,10 @@ class LLMRuntimeDiagnosticsResponse(BaseModel):
 
     provider: str
     model: str
+    # Resolved adapter route at the time of the diagnostic. Populated when the
+    # active LLMConfig has provider_route set; left None for legacy callers
+    # that do not carry one.
+    provider_route: Optional[ProviderRoute] = None
     llm_max_tokens: Optional[int] = None
     effective_max_tokens: Optional[int] = None
     source_env_files: list[str] = []
