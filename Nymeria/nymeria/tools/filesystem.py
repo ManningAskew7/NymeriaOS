@@ -8,6 +8,7 @@ from typing import Optional
 from langchain_core.tools import tool
 
 from ..config import get_settings
+from .execution_environment import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +42,17 @@ def confine_file_tools_to_workspace() -> bool:
 
 def resolve_workspace_write_path(file_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Resolve a requested write target, optionally enforcing workspace confinement."""
+    path = resolve_tool_path(file_path)
     if not confine_file_tools_to_workspace():
-        return Path(file_path).resolve(), None
+        return path, None
 
     workspace_dir = get_workspace_dir()
-    requested = Path(file_path)
-    if not requested.is_absolute():
-        requested = workspace_dir / requested
-    path = requested.resolve()
     if not path.is_relative_to(workspace_dir):
         return None, (
             f"Path outside workspace: {path}. Mutating file tools are confined "
-            f"to {workspace_dir}. Set NYMERIA_WORKSPACE_DIR to change the root."
+            f"to {workspace_dir}. Relative paths resolve from Nymeria's "
+            f"default tool cwd; set NYMERIA_WORKSPACE_DIR or pass an absolute "
+            f"path inside the workspace to change the writable root."
         )
     return path, None
 
@@ -69,7 +69,8 @@ def file_read(
     Use this tool to read text files from the filesystem.
 
     Args:
-        file_path: Absolute or relative path to the file
+        file_path: Absolute or relative path to the file. Relative paths
+            resolve from Nymeria's detected default tool cwd.
         encoding: File encoding (default utf-8)
         max_lines: Maximum number of lines to read (optional, reads all if not specified)
 
@@ -80,7 +81,7 @@ def file_read(
     logger.info(f"Reading file: {file_path}")
 
     try:
-        path = Path(file_path).resolve()
+        path = resolve_tool_path(file_path)
 
         if not path.exists():
             return f"[Error]: File not found: {file_path}"
@@ -137,7 +138,8 @@ def file_write(
     Set attach=True to send the file to the user in chat (Telegram/Discord) after writing.
 
     Args:
-        file_path: Absolute or relative path to the file
+        file_path: Absolute or relative path to the file. Relative paths
+            resolve from Nymeria's detected default tool cwd.
         content: Content to write to the file
         encoding: File encoding (default utf-8)
         create_directories: Create parent directories if they don't exist (default True)

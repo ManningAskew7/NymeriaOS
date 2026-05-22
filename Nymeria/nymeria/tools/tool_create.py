@@ -603,6 +603,9 @@ async def tool_create(
 
     Supports HTTP tools and subprocess-backed Python tools. HTTP tools are best
     after discovering a stable API request with api_discover/http_request.
+    HTTP auth/secrets must use credential-vault references such as
+    ${credential:cred_id.value}; raw secrets and ${env:...} references are
+    rejected for agent-created tools. Plain public headers like Accept are OK.
     Python tools are for small deterministic helpers that can be expressed as
     a pure function. Python code is stored in data/custom_tools and executed in
     a child process; it is never imported into the API process.
@@ -628,6 +631,10 @@ async def tool_create(
     explicitly enable them.
 
     Args:
+      http_config: HTTP request config. Supports ${param} placeholders in URL,
+           headers, query params, and body_template. Sensitive headers
+           (Authorization, X-API-Key, Cookie, etc.) must use
+           ${credential:cred_id.field}; never pass raw secret strings.
       ttl: Publish-only TTL for enabling the new tool on this thread. Format:
            Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
       validation_timeout_seconds: Python test/publish timeout. Default 60s.

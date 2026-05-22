@@ -356,6 +356,16 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
     if skill_tool is not None:
         tools.append(skill_tool)
 
+    try:
+        from ..tools.execution_environment import configure_environment_aware_tool_descriptions
+
+        configure_environment_aware_tool_descriptions(
+            tools,
+            getattr(agent, "execution_environment", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Execution-aware tool description update failed: %s", exc)
+
     return tools, tc
 
 

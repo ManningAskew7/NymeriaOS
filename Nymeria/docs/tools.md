@@ -172,9 +172,11 @@ Execute shell commands in the backend environment. In Docker deployments, the co
 bash_execute(command: str, working_directory: Optional[str] = None, timeout_seconds: int = 120)
 ```
 
+At runtime, Nymeria detects the backend platform, available shells, container status, process cwd, and default tool cwd. The agent sees those facts in the `bash_execute` description before it formats commands. When `working_directory` is omitted, commands run from `settings.project_root`. Relative `working_directory` values resolve from that same default cwd. Directory state is not preserved across calls.
+
 **Parameters:**
 - `command` (`str`): Shell command to execute
-- `working_directory` (`Optional[str]`, default `None`): Directory to run the command in
+- `working_directory` (`Optional[str]`, default `None`): Directory to run the command in. Relative paths resolve from the detected default tool cwd.
 - `timeout_seconds` (`int`, default `120`): Maximum execution time in seconds
 
 **Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
@@ -191,8 +193,10 @@ Read the contents of a file.
 file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None)
 ```
 
+Relative paths resolve from the same detected default tool cwd used by `bash_execute`, normally `settings.project_root`. Shell `cd` commands do not affect file tool paths.
+
 **Parameters:**
-- `file_path` (`str`): Absolute or relative path to the file
+- `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve from the detected default tool cwd.
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read
 
@@ -211,7 +215,7 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 ```
 
 **Parameters:**
-- `file_path` (`str`): Absolute or relative path to the file
+- `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve from the detected default tool cwd.
 - `content` (`str`): Content to write
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `create_directories` (`bool`, default `True`): Create parent directories if they don't exist
@@ -220,7 +224,7 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 
 **Returns:** Success/error message with character count. When `attach=True`, the raw tool result includes an `[attach:/path]` tag for files inside `NYMERIA_WORKSPACE_DIR`, and clients receive a `workspace_artifact` event.
 
-**Optional confinement:** Set `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true` to make relative write paths resolve under `NYMERIA_WORKSPACE_DIR` and reject absolute paths outside that workspace.
+**Optional confinement:** Set `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true` to reject write targets outside `NYMERIA_WORKSPACE_DIR`. Relative write paths still resolve from the detected default tool cwd, so pass an absolute path inside the workspace when using confinement for generated artifacts.
 
 **Protected paths:** Writes to `nymeria/core/`, `nymeria/config/`, `nymeria/triggers/`, `nymeria/gateway/`, and `nymeria/__init__.py` are blocked. Use the SelfModifyAgent for those directories.
 
@@ -235,7 +239,7 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 ```
 
 **Parameters:**
-- `file_path` (`str`): Absolute or relative path to an existing file
+- `file_path` (`str`): Absolute or relative path to an existing file. Relative paths resolve from the detected default tool cwd.
 - `edits` (`list[dict]`): Ordered edit operations. Each operation is applied to the in-memory result of prior operations.
 - `encoding` (`str`, default `"utf-8"`): File encoding
 - `dry_run` (`bool`, default `False`): Return validation and diff without writing
@@ -255,7 +259,7 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 **Safety:** Edits are all-or-nothing and written atomically. The tool does not create backups. It preserves the existing file mode and dominant newline style for inserted/replacement text.
 
-**Limits and protected paths:** Same 10 MB text-file limit and protected Nymeria paths as `file_write`. Set `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true` to apply workspace confinement to edits.
+**Limits and protected paths:** Same 10 MB text-file limit and protected Nymeria paths as `file_write`. Set `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true` to reject edit targets outside `NYMERIA_WORKSPACE_DIR`.
 
 ---
 
@@ -2245,7 +2249,10 @@ The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows no
 
 ## Custom Tools
 
-Custom tools extend Nymeria's capabilities without writing Python. Created via the **Desktop UI** (Settings → Tools), the **REST API**, or the agent-facing `tool_create` workflow for public unauthenticated HTTP tools.
+Custom tools extend Nymeria's capabilities through saved HTTP definitions,
+managed MCP definitions, or subprocess-backed Python functions. They can be
+created via the **Desktop UI** (Settings → Tools), the **REST API**, or the
+agent-facing `tool_create` workflow.
 
 ### Tool Types
 
@@ -2253,15 +2260,22 @@ Custom tools extend Nymeria's capabilities without writing Python. Created via t
 |------|-------------|----------|
 | **HTTP** | Makes REST API calls to external services | Integrate with APIs, webhooks, web services |
 | **MCP** | Connects to Model Context Protocol servers | Use existing MCP tools, complex integrations |
+| **Python** | Runs a tested entrypoint function in a subprocess | Small deterministic helpers that do not need a network API |
 
 ### HTTP Tools
 
 HTTP tools make REST API calls with configurable:
 - **Method**: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
 - **URL**: Supports `${param}` interpolation for dynamic URLs
-- **Headers**: Including `${env:VAR_NAME}` for secrets from environment
+- **Headers**: Public headers can be plain strings. Sensitive headers must use
+  credential-vault references such as `${credential:cred_id.value}`.
 - **Body Template**: JSON template with parameter placeholders
 - **Response Path**: JSONPath to extract specific data from response
+
+Agent-created HTTP tools reject raw secrets and `${env:...}` secret references
+in URLs, headers, query params, and bodies. Store credentials in the vault,
+bind them to `custom_tool:<tool_id>`, and reference them with
+`${credential:<credential_id>.<field>}`.
 
 **Example: Weather API Tool**
 ```json
@@ -2281,7 +2295,7 @@ HTTP tools make REST API calls with configurable:
     "method": "GET",
     "url": "https://api.weather.com/v1/current?city=${city}",
     "headers": {
-      "Authorization": "Bearer ${env:WEATHER_API_KEY}"
+      "Authorization": "Bearer ${credential:cred_weather.value}"
     },
     "response_path": "$.data.temperature"
   }
