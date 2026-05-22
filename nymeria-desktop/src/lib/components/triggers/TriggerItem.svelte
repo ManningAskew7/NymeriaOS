@@ -1,7 +1,23 @@
 <script lang="ts">
   import type { Trigger, TriggerSourceInfo } from '$lib/types';
+  import { slide, crossfade } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+
+  // Crossfade animates an element from its old DOM position to its new one
+  // by computing a transform between the two bounding rects. We use this so
+  // the OUTLOOK chip and the toggle physically slide from the header row to
+  // the action row when the card expands — matched to the box's open speed.
+  const [send, receive] = crossfade({
+    duration: 120,
+    easing: cubicOut,
+    fallback: (node) => ({
+      duration: 100,
+      easing: cubicOut,
+      css: (t) => `opacity: ${t}`,
+    }),
+  });
 
   interface Props {
     trigger: Trigger;
@@ -170,7 +186,55 @@
         : 'Failing'
   );
 
+  // Index of the first character that wasn't visible in the collapsed state.
+  // Characters before this index render instantly; characters at/after it
+  // cascade in via the letter-by-letter animation.
+  let cutoffIndex = $state(0);
+  let titleEl = $state<HTMLSpanElement | null>(null);
+
+  function measureCutoff() {
+    if (!titleEl) {
+      cutoffIndex = 0;
+      return;
+    }
+    const containerWidth = titleEl.clientWidth;
+    if (containerWidth === 0) {
+      cutoffIndex = 0;
+      return;
+    }
+    const computed = window.getComputedStyle(titleEl);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      cutoffIndex = 0;
+      return;
+    }
+    // Reconstruct the font shorthand the browser would use for this element.
+    ctx.font = `${computed.fontStyle} ${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`;
+    const name = trigger.name;
+    const fullWidth = ctx.measureText(name).width;
+    if (fullWidth <= containerWidth) {
+      // Nothing was truncated — all letters are "already visible".
+      cutoffIndex = name.length;
+      return;
+    }
+    const ellipsisWidth = ctx.measureText('…').width;
+    let idx = 0;
+    for (let i = 1; i <= name.length; i++) {
+      const w = ctx.measureText(name.slice(0, i)).width;
+      if (w + ellipsisWidth > containerWidth) {
+        idx = i - 1;
+        break;
+      }
+      idx = i;
+    }
+    cutoffIndex = Math.max(0, idx);
+  }
+
   function toggleExpand() {
+    if (!expanded) {
+      measureCutoff();
+    }
     expanded = !expanded;
   }
 
@@ -232,10 +296,15 @@
   class:expanded
   class:unhealthy={trigger.health_status !== 'healthy' && trigger.enabled}
   style="animation-delay: {animationDelay}ms"
+  role="button"
+  tabindex="0"
+  aria-expanded={expanded}
+  onclick={toggleExpand}
+  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(); } }}
 >
   <span class="health-rail" style="background: {healthColor}" aria-hidden="true"></span>
 
-  <!-- Header row: icon + name + toggle + expand affordance -->
+  <!-- Header row: icon + name + (when collapsed) chip+toggle + expand affordance -->
   <div class="card-header">
     <div class="source-badge" title={sourceLabel}>
       <Icon name={sourceIcon} size={14} />
@@ -243,29 +312,60 @@
 
     <div class="title-col">
       <div class="title-row">
-        <span class="trigger-name" class:muted={!trigger.enabled}>{trigger.name}</span>
-        <span class="source-chip">{sourceLabel}</span>
+        <span
+          class="trigger-name"
+          class:muted={!trigger.enabled}
+          class:expanded-name={expanded}
+          bind:this={titleEl}
+        >
+          {#if expanded}
+            {#each [...trigger.name] as ch, i (i)}
+              <span
+                class="reveal-char"
+                class:instant={i < cutoffIndex}
+                style="--idx: {Math.max(0, i - cutoffIndex)}"
+              >{ch}</span>
+            {/each}
+          {:else}
+            {trigger.name}
+          {/if}
+        </span>
+        {#if !expanded}
+          <span
+            class="source-chip"
+            in:receive={{ key: `chip-${trigger.id}` }}
+            out:send={{ key: `chip-${trigger.id}` }}
+          >{sourceLabel}</span>
+        {/if}
       </div>
     </div>
 
     <div class="header-actions">
-      <ToggleSwitch
-        checked={trigger.enabled}
-        disabled={toggling}
-        onclick={handleToggle}
-        title={trigger.enabled ? 'Disable' : 'Enable'}
-        ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
-        size="sm"
-        variant="outlined"
-      />
+      {#if !expanded}
+        <div
+          class="header-toggle"
+          in:receive={{ key: `toggle-${trigger.id}` }}
+          out:send={{ key: `toggle-${trigger.id}` }}
+        >
+          <ToggleSwitch
+            checked={trigger.enabled}
+            disabled={toggling}
+            onclick={handleToggle}
+            title={trigger.enabled ? 'Disable' : 'Enable'}
+            ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
+            size="sm"
+            variant="outlined"
+          />
+        </div>
+      {/if}
 
       <button
         class="expand-btn"
         class:rotated={expanded}
         type="button"
-        aria-expanded={expanded}
         aria-label={expanded ? 'Collapse trigger details' : 'Expand trigger details'}
-        onclick={toggleExpand}
+        onclick={(e) => { e.stopPropagation(); toggleExpand(); }}
+        tabindex="-1"
       >
         <Icon name="chevronDown" size={12} />
       </button>
@@ -273,38 +373,57 @@
   </div>
 
   {#if expanded}
-    <!-- Thread pill + action preview -->
-    {#if threadTitle || actionTemplate || actionMeta}
-      <div class="thread-action-row">
-        {#if threadTitle}
-          {#if onNavigateToThread}
-            <button
-              class="thread-pill clickable"
-              onclick={handleThreadClick}
-              type="button"
-              title={`Go to thread: ${threadTitle}`}
-            >
-              <Icon name="chat" size={10} />
-              <span class="thread-name">{threadTitle}</span>
-              <Icon name="chevronRight" size={10} />
-            </button>
-          {:else}
-            <span class="thread-pill" title={threadTitle}>
-              <Icon name="chat" size={10} />
-              <span class="thread-name">{threadTitle}</span>
-            </span>
-          {/if}
-        {/if}
-        {#if actionTemplate}
-          <span class="action-preview">{truncate(actionTemplate, 62)}</span>
+  <div class="expanded-wrap" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
+    <!-- Thread pill + chip + toggle + action preview -->
+    <div class="thread-action-row">
+      {#if threadTitle}
+        {#if onNavigateToThread}
+          <button
+            class="thread-pill clickable"
+            onclick={handleThreadClick}
+            type="button"
+            title={`Go to thread: ${threadTitle}`}
+          >
+            <Icon name="chat" size={10} />
+            <span class="thread-name">{threadTitle}</span>
+            <Icon name="chevronRight" size={10} />
+          </button>
         {:else}
-          <span class="action-kind">
-            <Icon name={actionMeta.icon} size={10} />
-            <span>{actionMeta.label}</span>
+          <span class="thread-pill" title={threadTitle}>
+            <Icon name="chat" size={10} />
+            <span class="thread-name">{threadTitle}</span>
           </span>
         {/if}
+      {/if}
+      <span
+        class="source-chip in-action-row"
+        in:receive={{ key: `chip-${trigger.id}` }}
+        out:send={{ key: `chip-${trigger.id}` }}
+      >{sourceLabel}</span>
+      <div
+        class="action-row-toggle"
+        in:receive={{ key: `toggle-${trigger.id}` }}
+        out:send={{ key: `toggle-${trigger.id}` }}
+      >
+        <ToggleSwitch
+          checked={trigger.enabled}
+          disabled={toggling}
+          onclick={handleToggle}
+          title={trigger.enabled ? 'Disable' : 'Enable'}
+          ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
+          size="sm"
+          variant="outlined"
+        />
       </div>
-    {/if}
+      {#if actionTemplate}
+        <span class="action-preview">{truncate(actionTemplate, 62)}</span>
+      {:else if actionMeta}
+        <span class="action-kind">
+          <Icon name={actionMeta.icon} size={10} />
+          <span>{actionMeta.label}</span>
+        </span>
+      {/if}
+    </div>
 
     <!-- Meta stats -->
     <div class="meta-row">
@@ -343,10 +462,9 @@
         <span>{testResult}</span>
       </div>
     {/if}
-  {/if}
 
-  <!-- Expanded details -->
-  {#if expanded && hasDetails}
+    <!-- Expanded details -->
+    {#if hasDetails}
     <div class="details">
       <div class="source-summary">
         <span class="summary-label">Source</span>
@@ -436,6 +554,8 @@
         {/if}
       </div>
     </div>
+    {/if}
+  </div>
   {/if}
 </div>
 
@@ -445,11 +565,12 @@
     display: flex;
     flex-direction: column;
     gap: 9px;
-    padding: 12px 14px 12px 16px;
+    padding: 7px 14px 7px 9px;
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle, var(--border-default));
     border-radius: var(--radius-md);
     overflow: hidden;
+    cursor: pointer;
     animation: cardIn 0.28s ease-out both;
     transition:
       background var(--transition-fast),
@@ -477,27 +598,8 @@
 
   .trigger-card.expanded {
     background: var(--bg-hover);
-  }
-
-  /* Collapsed state: tighter card, smaller source bubble, centered row */
-  .trigger-card:not(.expanded) {
-    padding: 7px 14px 7px 9px;
-  }
-
-  .trigger-card:not(.expanded) .card-header {
-    align-items: center;
-    gap: 9px;
-  }
-
-  .trigger-card:not(.expanded) .source-badge {
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
-  }
-
-  .trigger-card:not(.expanded) .source-badge :global(svg) {
-    width: 12px;
-    height: 12px;
+    /* Extra bottom padding to breathe around the revealed details */
+    padding-bottom: 12px;
   }
 
   /* Health rail — a thin accent rail on the left that reflects status */
@@ -519,16 +621,16 @@
   /* --- Header --- */
   .card-header {
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
+    align-items: center;
+    gap: 9px;
     min-width: 0;
   }
 
   .source-badge {
     flex-shrink: 0;
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -539,6 +641,11 @@
     );
     border: 1px solid rgba(var(--accent-primary-rgb), 0.22);
     color: var(--accent-primary);
+  }
+
+  .source-badge :global(svg) {
+    width: 12px;
+    height: 12px;
   }
 
   .disabled .source-badge {
@@ -573,6 +680,44 @@
     text-overflow: ellipsis;
     flex: 0 1 auto;
     min-width: 0;
+    max-width: 100%;
+  }
+
+  /* When the card is expanded, drop the truncation so the full title can be
+     shown. The reveal effect is driven by the per-character animation
+     below instead of a width transition. */
+  .trigger-name.expanded-name {
+    overflow: visible;
+    text-overflow: clip;
+    max-width: none;
+  }
+
+  /* Each character of the title fades in with a staggered delay so the
+     title appears to type itself in from left to right. The first character
+     is delayed by ~140ms so the OUTLOOK chip + toggle have time to start
+     sliding down before letters start filling that area. */
+  .reveal-char {
+    display: inline;
+    opacity: 0;
+    white-space: pre;
+    animation: triggerNameChar 100ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    /* Wait long enough for the OUTLOOK chip + toggle to start clearing out
+       of the title row (~60ms of the 120ms slide), then cascade fast (10ms
+       per char) so the reveal finishes about the same time the box does. */
+    animation-delay: calc(60ms + var(--idx, 0) * 10ms);
+  }
+
+  /* Characters that were already visible in the collapsed (truncated) state
+     don't animate — they stay put so only the "newly revealed" letters
+     past the ellipsis cascade in. */
+  .reveal-char.instant {
+    opacity: 1;
+    animation: none;
+  }
+
+  @keyframes triggerNameChar {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
   .trigger-name.muted {
@@ -617,7 +762,35 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+    flex: 1 1 100%;
     font-style: italic;
+  }
+
+  /* Wrapper that holds all expanded content. flex column matches the gap the
+     trigger-card has between its direct children so the layout looks the
+     same as before, but lets us drive a single slide transition. */
+  .expanded-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  /* Source chip and toggle when they live in the action row instead of the
+     header. margin-left:auto pushes them to the right side, and the
+     margin-right on the toggle leaves space for the chevron column above —
+     that way the chip+toggle land at the exact same X as their header
+     counterparts and only need to slide straight down. */
+  .source-chip.in-action-row {
+    align-self: center;
+    margin-left: auto;
+  }
+  .action-row-toggle {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    /* Chevron (24px) + gap (6px) reserved above */
+    margin-right: 30px;
   }
 
   .action-preview::before {
@@ -637,6 +810,14 @@
     align-items: center;
     gap: 6px;
     margin-top: 1px;
+  }
+
+  .header-actions :global(.toggle-switch) {
+    transform: translateY(1px);
+  }
+
+  .action-row-toggle :global(.toggle-switch) {
+    transform: translateY(-1px);
   }
 
   .expand-btn {

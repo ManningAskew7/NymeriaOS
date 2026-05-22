@@ -608,6 +608,8 @@
     <ChatContainer />
   </div>
 
+  <ContextStatusBar />
+
   <div class="input-area" class:both-open={bothSidebarsOpen}>
     <QueuedPromptsBar />
     <InputBar
@@ -621,9 +623,6 @@
           ? 'Type to queue (sends at the next sub-turn halt)'
           : 'Type a message...'}
     />
-    <div class="context-status-wrap">
-      <ContextStatusBar />
-    </div>
   </div>
 </div>
 
@@ -723,13 +722,6 @@
     z-index: 1;
   }
 
-  .context-status-wrap {
-    position: absolute;
-    left: calc(var(--spacing-md) + 8px);
-    bottom: 18px;
-    z-index: 2;
-    pointer-events: auto;
-  }
 
   .attachment-warning-modal {
     display: flex;
