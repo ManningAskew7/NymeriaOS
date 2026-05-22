@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { cubicOut } from 'svelte/easing';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -17,9 +17,15 @@
 
   // svelte-ignore state_referenced_locally — intentional one-time initialization
   let isOpen = $state(defaultOpen);
+  // Active during the outro slide. While true the content's bottom border is
+  // forced transparent so it doesn't visibly slide upward as the slide
+  // transition shrinks the content's height (most noticeable on themes where
+  // --border-subtle contrasts with the surrounding panel bg, e.g. Platinum).
+  let isClosing = $state(false);
 
   function toggle() {
     isOpen = !isOpen;
+    if (isOpen) isClosing = false;
   }
 </script>
 
@@ -36,7 +42,13 @@
   </button>
 
   {#if isOpen}
-    <div class="content" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
+    <div
+      class="content"
+      class:closing={isClosing}
+      transition:slide={DROPDOWN_TRANSITION}
+      onoutrostart={() => (isClosing = true)}
+      onoutroend={() => (isClosing = false)}
+    >
       {@render children()}
     </div>
   {/if}
@@ -59,13 +71,17 @@
     color: var(--text-primary);
     text-align: left;
     line-height: 1;
+    /* Bottom border stays 1px wide in both states — only its color changes
+       (visible when closed, transparent when open). Keeping the width
+       constant avoids the layout shift / "flash" you get when style: none is
+       toggled, since border-style isn't an animatable property. */
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+    transition: background var(--transition-fast), border-color 120ms ease-out, border-radius 120ms ease-out;
   }
 
   .open .header {
-    border-bottom: none;
+    border-bottom-color: transparent;
     border-radius: var(--radius-md) var(--radius-md) 0 0;
   }
 
@@ -78,7 +94,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
-    transition: transform var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .open .chevron {
@@ -96,5 +112,13 @@
     border: 1px solid var(--border-subtle);
     border-top: none;
     border-radius: 0 0 var(--radius-md) var(--radius-md);
+    /* Fade the bottom-border color during the outro so the 1px line doesn't
+       visibly slide upward as the slide transition shrinks the content's
+       height. Pairs with .closing below. */
+    transition: border-bottom-color 120ms ease-out;
+  }
+
+  .content.closing {
+    border-bottom-color: transparent;
   }
 </style>

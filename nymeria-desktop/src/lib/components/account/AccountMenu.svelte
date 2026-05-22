@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
@@ -84,7 +86,7 @@
 </script>
 
 {#if isOpen}
-  <div class="account-menu" role="menu">
+  <div class="account-menu" role="menu" transition:slide={DROPDOWN_TRANSITION}>
     <div class="menu-header">
       <Avatar {identity} size={44} state={identity ? 'connected' : 'unverified'} />
       <div class="header-meta">
@@ -147,18 +149,8 @@
     z-index: 999;
     min-width: 240px;
     padding: var(--spacing-xs);
-    animation: menu-in 120ms ease-out both;
-  }
-
-  @keyframes menu-in {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    /* Open/close motion handled by transition:slide={DROPDOWN_TRANSITION} on
+       the element above — one source of truth across the app. */
   }
 
   .menu-header {

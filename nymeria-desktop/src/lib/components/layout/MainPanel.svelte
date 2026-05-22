@@ -656,21 +656,25 @@
     <ChatContainer />
   </div>
 
-  <ContextStatusBar />
-
-  <div class="input-area" class:both-open={bothSidebarsOpen}>
-    <QueuedPromptsBar />
-    <InputBar
-      onSend={handleSendMessage}
-      disabled={false}
-      insertText={pendingInsertText}
-      onInsertConsumed={() => { pendingInsertText = ''; }}
-      placeholder={chatStore.isQueued
-        ? 'Type to queue (sends when current turn finishes)'
-        : chatStore.isStreaming
-          ? 'Type to queue (sends at the next sub-turn halt)'
-          : 'Type a message...'}
-    />
+  <!-- Wrap context bar + input together so the elevated background slides
+       in/out as a single unit when sidebars collapse, instead of leaving
+       the context bar visually orphaned with its own elevated colour. -->
+  <div class="input-section" class:both-open={bothSidebarsOpen}>
+    <ContextStatusBar />
+    <div class="input-area">
+      <QueuedPromptsBar />
+      <InputBar
+        onSend={handleSendMessage}
+        disabled={false}
+        insertText={pendingInsertText}
+        onInsertConsumed={() => { pendingInsertText = ''; }}
+        placeholder={chatStore.isQueued
+          ? 'Type to queue (sends when current turn finishes)'
+          : chatStore.isStreaming
+            ? 'Type to queue (sends at the next sub-turn halt)'
+            : 'Type a message...'}
+      />
+    </div>
   </div>
 </div>
 
@@ -731,6 +735,7 @@
 
 <style>
   .main-panel-content {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -743,31 +748,237 @@
     min-height: 0;
   }
 
-  .input-area {
-    position: relative;
-    padding: 18px var(--spacing-md);
-    background: var(--bg-base);
+  /* Scroll padding lives INSIDE ChatContainer's .chat-container so the chat
+     scroll content can extend behind the absolutely-positioned input-section.
+     Reserving the room here (instead of as padding on .chat-area) keeps
+     chat-area's box flush with the bottom of main-panel-content — when the
+     input-section's ::before sheet slides away on sidebar collapse, the
+     newly transparent section reveals chat scroll content underneath
+     instead of an empty bg-base slab. */
+  .chat-area :global(.chat-container) {
+    /* Must clear the absolutely-positioned input-section's full natural
+       height: 20px bar + 14px top padding + ~50px pill + 14px bottom
+       padding + ~24px hint + ~10px safety = ~140px. Lower values let the
+       tail of the chat scroll under the bar/pill area, hiding messages. */
+    padding-bottom: 140px;
   }
 
-  .input-area::before {
+  /* Wrapper for ContextStatusBar + InputBar. Owns the sliding elevated
+     background so both halves move together when a sidebar collapses.
+     The section itself stays TRANSPARENT — the prompt-window surface is
+     painted by ::before (starts at top: 20px), and the bar surface is
+     painted by ContextStatusBar's .bar-content. When the bar is collapsed,
+     the 20px above the prompt window must read-through to the chat area
+     behind it, so this wrapper must NOT set its own background. */
+  .input-section {
+    /* Absolutely positioned over the bottom of the chat area so that when
+       ::before slides away on sidebar collapse, the now-transparent section
+       reveals chat content underneath — instead of main-panel-content's
+       bg-base, which would read as a dark slab. */
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: transparent;
+  }
+
+  /* Two sliding sheets, both sized to the full section (inset: 0) so a
+     single translateY(100%) actually clears the section. Each pseudo
+     paints only the portion of bg it owns via a clipped linear-gradient;
+     the rest of the pseudo is transparent.
+
+     ::before = BAR  (paints top 20px + has its own border-top divider at
+                      y=0). Earlier in source order so it renders UNDER
+                      ::after — meaning the bar slides BEHIND the prompt
+                      window, hidden by ::after's opaque bg during the
+                      slide instead of passing in front of it. Slides on
+                      local chevron collapse (via :has()) AND on sidebar
+                      collapse.
+     ::after  = PROMPT WINDOW (paints from y=20 down + has a 1px under-bar
+                      divider line at y=20-21). Later in source order so
+                      it renders ON TOP, providing the opaque mask that
+                      hides ::before's slide. Slides on sidebar collapse
+                      only.
+
+     Because both pseudos are the same height and translate by the same
+     distance (= section_height) on sidebar collapse, they move together
+     at a single velocity — unified slide, not a desync.
+
+     Each bg stacks a glass-bg-strong tint over a solid bg-base so the
+     result is fully opaque (no chat bleed-through when both sidebars
+     are open). */
+  /* ::before = BAR (renders under ::after) */
+  .input-section::before {
     content: '';
     position: absolute;
     inset: 0;
-    background: var(--bg-elevated);
-    border-top: 1px solid var(--border-subtle);
+    background:
+      linear-gradient(to bottom, var(--glass-bg-strong) 0 20px, transparent 20px),
+      linear-gradient(to bottom, var(--bg-base) 0 20px, transparent 20px);
+    /* Bar's top divider painted via inset box-shadow at the top edge. */
+    box-shadow: inset 0 1px 0 var(--border-subtle);
     transform: translateY(100%);
-    transition: transform 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
     pointer-events: none;
     z-index: 0;
   }
 
-  .input-area.both-open::before {
+  /* ::after = PROMPT WINDOW (renders on top, masking the bar's slide) */
+  .input-section::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(
+        to bottom,
+        transparent 0 20px,
+        var(--border-subtle) 20px 21px,
+        var(--glass-bg-strong) 21px
+      ),
+      linear-gradient(to bottom, transparent 0 20px, var(--bg-base) 20px);
+    transform: translateY(100%);
+    transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .input-section.both-open::after {
     transform: translateY(0);
   }
 
-  .input-area > :global(*) {
+  /* ::before (bar bg) at rest only when sidebars are both open AND the bar
+     isn't locally collapsed. Chevron click toggles
+     .context-status-bar.collapsed which trips the :has() check, dropping
+     ::before back to translateY(100%) so the bar's bg + top divider slide
+     down behind ::after (the prompt window) alongside the text. */
+  .input-section.both-open:not(:has(.context-status-bar.collapsed))::before {
+    transform: translateY(0);
+  }
+
+  .input-section > :global(*) {
     position: relative;
     z-index: 1;
+  }
+
+  .input-area {
+    /* Single source of truth for the three vertical gaps that flank the
+       prompt input bar:
+         1. above the input-container  (padding-top of .input-area)
+         2. between input-container and the "Press Ctrl+Enter…" hint
+            (the hint's margin-top, overridden via :global below)
+         3. below the hint  (padding-bottom of .input-area)
+       Changing --prompt-stack-gap below resizes ALL THREE gaps in lock step
+       so they remain equal even if the input or hint heights change later.
+       To break this equality intentionally, override the individual values
+       on .input-area or the :global(.hint) rule. */
+    --prompt-stack-gap: 14px;
+    padding: var(--prompt-stack-gap) var(--spacing-md);
+    /* The InputBar component handles its own internal padding. The divider
+       between context bar and input is drawn by the sliding pseudo in
+       .input-section::before so it moves with the bg. */
+  }
+
+  /* Override InputBar's default 18px hint margin-top so it stays locked to
+     the same gap value as the .input-area paddings above and below. */
+  .input-area :global(.hint) {
+    margin-top: var(--prompt-stack-gap);
+  }
+
+  /* When a sidebar collapses, the "Press Ctrl+Enter…" hint that lives at the
+     bottom of the InputBar slides down + collapses out of view. Two effects
+     combine: (1) transform translates it down so it visually slides off the
+     elevated surface, (2) max-height + margin-top + opacity go to 0 so the
+     space it occupied also shrinks — which pulls the prompt input bar lower
+     on the screen (the .input-section is bottom-anchored in MainPanel's
+     flex column, so a shorter section means the top of the bar drops). */
+  .input-section :global(.hint) {
+    max-height: 48px;
+    overflow: hidden;
+    transition:
+      max-height var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+      margin-top var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+      opacity var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+      transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+  }
+  .input-section:not(.both-open) :global(.hint) {
+    max-height: 0;
+    margin-top: 0;
+    opacity: 0;
+    transform: translateY(20px);
+    pointer-events: none;
+  }
+
+  /* Sidebar-closed bar drop-down: when a sidebar is closed, the bg sheets
+     have slid away, leaving the bar's text + dot orphaned at the top of an
+     otherwise transparent section. Translate the whole .context-status-bar
+     down so its contents sit just above the prompt input field instead of
+     floating up where the bar used to live. The whole bar element moves as
+     one unit, so the bar's own overflow:hidden clipping moves with it — no
+     content gets cut off, and the text+dot stay in their normal relative
+     positions inside the (now relocated) bar. */
+  .input-section :global(.context-status-bar) {
+    transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+  }
+  .input-section:not(.both-open) :global(.context-status-bar) {
+    transform: translateY(16px);
+  }
+
+  /* Sidebar collapse: only the ::before / ::after sheets slide. The bar
+     text and chevron stay put and fully functional — the chevron can
+     still toggle the bar text via the bar's own .collapsed state even
+     when both sidebars are closed.
+
+     SIDEBAR-CLOSED CHEVRON ANIMATION:
+     When sidebars are CLOSED and the chevron is clicked to uncollapse
+     the bar, the text slides in left-to-right via a clip-path wipe
+     (collapse goes the other way, clipping right-to-left). This swaps
+     out the bar's normal translateY+opacity slide ONLY in the closed
+     state — when sidebars are open, the bar text still uses its
+     internal vertical slide. */
+  /* Default visible clip-path lives on a rule that's ALWAYS active (no
+     :not() gate) — otherwise the transition has nothing to interpolate
+     from (clip-path defaults to `none`, which can't animate to `inset()`).
+     The transition declaration lives here too so it remains in effect
+     regardless of sidebar state. */
+  .input-section :global(.context-status-bar .bar-content) {
+    visibility: visible;
+    clip-path: inset(0 0 0 0);
+    /* Must list transform + opacity here too, not just clip-path —
+       this :global rule's selector is more specific than the bar's
+       internal .bar-content rule, so it replaces (not augments) the
+       transition shorthand. Dropping transform/opacity would kill the
+       sidebar-open chevron's vertical slide.
+       Visibility flips to visible INSTANTLY on this rule (0s/0s delay) so
+       chevron-uncollapse reveals the text right at the start of the
+       slide-up / clip-path wipe — no fade-in delay needed. */
+    transition:
+      visibility 0s linear 0s,
+      clip-path 360ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+      opacity var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+  }
+  /* Whenever the bar is collapsed — regardless of sidebar state — the text
+     must read as invisible. Visibility flips to hidden AFTER the slide-down
+     completes (delay = sidebar-collapse-duration) so the chevron-collapse
+     animation still plays out, but once hidden, sidebar transitions can't
+     re-show it. This is what kills the "text flashes during sidebar
+     collapse" bug: opacity/transform/clip-path are free to animate to their
+     new staged values behind a visibility:hidden mask, so the user never
+     sees the in-between frames. */
+  .input-section :global(.context-status-bar.collapsed .bar-content) {
+    visibility: hidden;
+    transition:
+      visibility 0s linear var(--sidebar-collapse-duration),
+      clip-path 360ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing),
+      opacity var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+  }
+  .input-section:not(.both-open) :global(.context-status-bar.collapsed .bar-content) {
+    /* Cancel the bar's internal translateY/opacity so only the clip-path
+       wipe is visible when collapsing with sidebars closed. */
+    transform: translateY(0);
+    opacity: 1;
+    clip-path: inset(0 100% 0 0);
   }
 
 

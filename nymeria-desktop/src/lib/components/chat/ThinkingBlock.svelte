@@ -1,5 +1,7 @@
 <script lang="ts">
   import Icon from '$lib/components/common/Icon.svelte';
+  import { slide } from 'svelte/transition';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
 
   interface Props {
@@ -53,7 +55,7 @@
   </button>
 
   {#if isOpen}
-    <div class="thinking-content">
+    <div class="thinking-content" transition:slide={DROPDOWN_TRANSITION}>
       <div class="markdown-content">
         {@html isActivelyStreaming ? renderMarkdownStreaming(content) : renderMarkdown(content)}
       </div>
@@ -93,7 +95,10 @@
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
-    transition: transform var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+    /* Matches the global Collapsible chevron — same 120ms duration and
+       cubic-bezier(0.33, 1, 0.68, 1) easing as every other collapse arrow
+       in the app. */
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
     flex-shrink: 0;
   }
 
@@ -147,22 +152,13 @@
     padding: var(--spacing-sm) var(--spacing-md);
     color: var(--text-secondary);
     font-style: italic;
-    animation: slideDown var(--transition-fast);
+    /* No keyframe animation here — Svelte's `transition:slide` driven by
+       DROPDOWN_TRANSITION handles open + close in lock step with every
+       other dropdown in the app. */
   }
 
   .thinking-content .markdown-content {
     opacity: 0.85;
     font-size: var(--font-size-sm);
-  }
-
-  @keyframes slideDown {
-    from {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 </style>

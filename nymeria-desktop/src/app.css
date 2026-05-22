@@ -29,9 +29,10 @@
   --bubble-ai: #1a1d21;
   --bubble-tool: #1a1f2e;
 
-  /* Borders */
-  --border-subtle: #2a2e33;
-  --border-default: #3a3f45;
+  /* Borders — match midnight theme's runtime values so static fallback
+     stays in sync with the live theme applied via themes.ts. */
+  --border-subtle: #4a5058;
+  --border-default: #5a6068;
   --border-focus: var(--accent-primary);
 
   /* Shadows */
@@ -72,6 +73,15 @@
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
   --transition-slow: 350ms ease;
+
+  /* Single source of truth for the sidebar-collapse choreography. The sidebar
+     widths, the bottom input-section's sliding background, the "Press
+     Ctrl+Enter…" hint that slides with it, and any future element that
+     animates as part of "sidebar opened/closed" should all use these two
+     variables. Changing them here updates every related animation in lock
+     step so the halves never desync. */
+  --sidebar-collapse-duration: 250ms;
+  --sidebar-collapse-easing: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* Glassmorphism (defaults — overridden per-theme in themes.ts) */
   --glass-bg: rgba(26, 29, 33, 0.7);

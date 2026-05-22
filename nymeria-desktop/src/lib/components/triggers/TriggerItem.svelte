@@ -367,7 +367,7 @@
         onclick={(e) => { e.stopPropagation(); toggleExpand(); }}
         tabindex="-1"
       >
-        <Icon name="chevronDown" size={12} />
+        <Icon name="chevronRight" size={12} />
       </button>
     </div>
   </div>
@@ -831,7 +831,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-muted);
-    transition: transform var(--transition-fast);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
     cursor: pointer;
   }
 
@@ -841,7 +841,7 @@
   }
 
   .expand-btn.rotated {
-    transform: rotate(180deg);
+    transform: rotate(90deg);
   }
 
   /* --- Thread pill (global view) --- */

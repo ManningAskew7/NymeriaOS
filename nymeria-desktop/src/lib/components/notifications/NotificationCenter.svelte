@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import { Icon } from '$lib/components/common';
   import { notificationStore } from '$lib/stores/notifications.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import NotificationItem from './NotificationItem.svelte';
 
   interface Props {
@@ -47,7 +49,7 @@
 </script>
 
 {#if isOpen}
-  <div class="notification-center" role="dialog" aria-label="Notifications">
+  <div class="notification-center" role="dialog" aria-label="Notifications" transition:slide={DROPDOWN_TRANSITION}>
     <div class="notification-header">
       <h3 class="notification-title">Notifications</h3>
       <div class="header-actions">

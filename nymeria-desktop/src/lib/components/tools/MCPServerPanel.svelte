@@ -347,7 +347,9 @@
               <span class="tool-badge">{server.discoveredTools.length} tools</span>
               <span class="install-status {getStatusClass(server)}">{getStatusLabel(server)}</span>
               <span class="updated-at">{timeAgo(server.updatedAt)}</span>
-              <Icon name={expandedServer === server.id ? 'chevronDown' : 'chevronRight'} size={16} />
+              <span class="expand-chevron" class:rotated={expandedServer === server.id}>
+                <Icon name="chevronRight" size={16} />
+              </span>
             </button>
             <ToggleSwitch
               checked={server.enabled}
@@ -871,5 +873,18 @@
     font-size: 0.8rem;
     color: var(--error, #ff6b6b);
     animation: fadeIn 0.2s ease;
+  }
+
+  .expand-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  .expand-chevron.rotated {
+    transform: rotate(90deg);
   }
 </style>

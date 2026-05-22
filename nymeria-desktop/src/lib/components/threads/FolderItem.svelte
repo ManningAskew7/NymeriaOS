@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Thread, ThreadFolder } from '$lib/types';
+  import { slide } from 'svelte/transition';
   import { focusOnMount } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import ThreadItem from './ThreadItem.svelte';
 
   interface Props {
@@ -162,7 +164,7 @@
   </div>
 
   {#if !folder.collapsed}
-    <div class="folder-contents">
+    <div class="folder-contents" transition:slide={DROPDOWN_TRANSITION}>
       {#if threads.length === 0}
         <div class="empty-folder">Empty folder</div>
       {:else}
@@ -193,7 +195,7 @@
 
 {#if contextMenu}
   <div class="context-backdrop" onclick={dismissContextMenu} onkeydown={(e) => e.key === 'Escape' && dismissContextMenu()} role="presentation" tabindex="-1"></div>
-  <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+  <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;" transition:slide={DROPDOWN_TRANSITION}>
     {#if onTogglePin}
       <button class="context-item" onclick={handleContextPin} type="button">
         <Icon name="pin" size={14} />
@@ -214,7 +216,19 @@
 <style>
   .folder-item {
     margin-bottom: 2px;
+    /* Stagger fade-in matching ActivityItem + ThreadItem — folders also
+       cascade in from -8px on the X axis when the folders/teams tab
+       re-mounts via {#key}. */
+    animation: staggerFadeIn 0.3s ease-out backwards;
   }
+  .folder-item:nth-child(1) { animation-delay: 0.03s; }
+  .folder-item:nth-child(2) { animation-delay: 0.06s; }
+  .folder-item:nth-child(3) { animation-delay: 0.09s; }
+  .folder-item:nth-child(4) { animation-delay: 0.12s; }
+  .folder-item:nth-child(5) { animation-delay: 0.15s; }
+  .folder-item:nth-child(6) { animation-delay: 0.18s; }
+  .folder-item:nth-child(7) { animation-delay: 0.21s; }
+  .folder-item:nth-child(8) { animation-delay: 0.24s; }
 
   .folder-header {
     display: flex;
@@ -236,7 +250,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
-    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
     flex-shrink: 0;
   }
 
@@ -254,6 +268,9 @@
   .folder-name {
     flex: 1;
     min-width: 0;
+    /* Extra 4px (on top of the parent's 4px gap) so the icon-to-text gap matches
+       the spacing-sm gap used by ThreadItem rows below. */
+    margin-left: 4px;
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
@@ -265,6 +282,7 @@
   .folder-name-input {
     flex: 1;
     min-width: 0;
+    margin-left: 4px;
     padding: 1px 4px;
     font-size: var(--font-size-sm);
     font-weight: 600;
