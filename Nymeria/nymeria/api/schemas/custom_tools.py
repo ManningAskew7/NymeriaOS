@@ -1,7 +1,7 @@
 """Custom tool API schemas and conversion helpers."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,10 +13,16 @@ from ...tools.definitions.custom_tool_schema import (
 from ...tools.definitions.mcp_schema import MCPToolConfig
 
 
+ParameterType = Literal["string", "integer", "number", "boolean", "array", "object"]
+HTTPMethod = Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+ResponseFormat = Literal["json", "text", "auto"]
+ImplementationType = Literal["http", "mcp"]
+
+
 class ToolParameterModel(BaseModel):
     """API model for tool parameters."""
 
-    type: str = "string"
+    type: ParameterType = "string"
     description: str = ""
     required: bool = False
     default: str | None = None
@@ -26,14 +32,14 @@ class ToolParameterModel(BaseModel):
 class HTTPToolConfigModel(BaseModel):
     """API model for HTTP tool configuration."""
 
-    method: str = "GET"
+    method: HTTPMethod = "GET"
     url: str
     headers: dict[str, str] = {}
     body_template: str | None = None
     query_params: dict[str, str] = {}
     timeout_seconds: int = 30
     response_path: str | None = None
-    response_format: str = "auto"
+    response_format: ResponseFormat = "auto"
 
 
 class MCPToolConfigModel(BaseModel):
@@ -55,7 +61,7 @@ class CustomToolResponse(BaseModel):
     name: str
     description: str
     parameters: dict[str, ToolParameterModel]
-    implementation_type: str
+    implementation_type: ImplementationType
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
     enabled: bool
@@ -71,7 +77,7 @@ class CustomToolCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     description: str = Field(..., min_length=1, max_length=1000)
     parameters: dict[str, ToolParameterModel] = {}
-    implementation_type: str = Field(..., pattern=r"^(http|mcp)$")
+    implementation_type: ImplementationType
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
     enabled: bool = True

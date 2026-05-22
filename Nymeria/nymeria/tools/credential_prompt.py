@@ -158,7 +158,7 @@ async def request_credential(
     flow: str = "",
     use_localhost: bool = False,
     bind_target: str = "",
-    config: Annotated[RunnableConfig | None, InjectedToolArg] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """Open a secure in-chat prompt (modal / hosted form / OAuth dance) to
     collect credentials from the user.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Annotated, Awaitable, Callable
+from typing import Annotated, Any, Callable, Coroutine
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, StructuredTool
@@ -24,7 +24,7 @@ async def _dispatch_command(command: str, config: RunnableConfig) -> str:
     return result.markdown
 
 
-def _run_async_from_sync(coro_factory: Callable[[], Awaitable[str]]) -> str:
+def _run_async_from_sync(coro_factory: Callable[[], Coroutine[Any, Any, str]]) -> str:
     """Run async slash-command dispatch from sync tool contexts.
 
     Some tool callers still need a synchronous return value. Provide a sync

@@ -132,7 +132,7 @@ def prepare_astream_input(
             compatibility["warnings"],
         )
 
-    content: List[Dict[str, Any]] = [{"type": "text", "text": message_with_context}]
+    content: List[Dict[str, Any] | str] = [{"type": "text", "text": message_with_context}]
     for att in image_atts:
         content.append({
             "type": "image_url",

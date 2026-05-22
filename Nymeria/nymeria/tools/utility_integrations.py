@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import operator
+from collections.abc import Callable
 from typing import Annotated, Any, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -22,7 +23,7 @@ _MAX_EXPRESSION_CHARS = 500
 _MAX_POWER_ABS_EXPONENT = 100
 _MAX_POWER_ABS_BASE = 1_000_000
 
-_BINARY_OPERATORS = {
+_BINARY_OPERATORS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -32,12 +33,12 @@ _BINARY_OPERATORS = {
     ast.Pow: operator.pow,
 }
 
-_UNARY_OPERATORS = {
+_UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[Any], Any]] = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
 
-_SAFE_FUNCTIONS = {
+_SAFE_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "abs": abs,
     "acos": math.acos,
     "asin": math.asin,

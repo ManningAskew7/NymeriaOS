@@ -341,10 +341,10 @@ def _timestamp(value: Any, *, default: float = 0.0) -> float:
     return default
 
 
-def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+def _mapping_sequence(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
-    return [item for item in value if isinstance(item, Mapping)]
+    return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
 def _mapping_or(value: Any, fallback: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -37,7 +37,7 @@ class BotAPIError(Exception):
 class LineNymeriaAPI(Protocol):
     """Small API surface the LINE client needs from Nymeria."""
 
-    async def resolve_platform_user(self, provider: str, provider_user_id: str) -> Optional[str]:
+    async def resolve_platform_user(self, platform: str, platform_user_id: str) -> Optional[str]:
         ...
 
     async def list_chatapp_bindings(self, provider: str) -> list[dict[str, Any]]:

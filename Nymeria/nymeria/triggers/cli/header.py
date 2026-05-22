@@ -600,7 +600,7 @@ def _local_callable_tools(
     thread_id: str,
     thread_config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    get_scoped = getattr(agent, "_get_team_scoped_callable_threads", None)
+    get_scoped: Any = getattr(agent, "_get_team_scoped_callable_threads", None)
     if not callable(get_scoped):
         return {"callable_threads": []}
     disabled = set(_string_list(thread_config.get("disabled_tools")))
@@ -610,7 +610,8 @@ def _local_callable_tools(
         else ""
     )
     visible = []
-    for config in get_scoped(user_id=user_id, caller_thread_id=thread_id):
+    scoped_results: Any = get_scoped(user_id=user_id, caller_thread_id=thread_id)
+    for config in scoped_results:
         name = str(getattr(config, "callable_name", "") or "")
         if not name or getattr(config, "thread_id", "") == thread_id:
             continue

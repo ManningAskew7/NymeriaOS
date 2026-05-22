@@ -159,7 +159,7 @@ class RichReplRenderer:
             message,
             thread_id=thread_id,
             user_id=user_id,
-            attachments=attachments,
+            attachments=list(attachments) if attachments is not None else None,
             now=now,
         )
         self._response_lengths = _assistant_response_lengths(self.state)

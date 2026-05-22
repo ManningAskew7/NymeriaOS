@@ -111,10 +111,11 @@ def _run_callable_stream(
         try:
             from ..tools.spawn_thread import refresh_thread_activity
 
-            owner_id = None
+            owner_id: str | None = None
             get_owner = getattr(agent.accounts_repo, "get_thread_owner", None)
             if callable(get_owner):
-                owner_id = get_owner(thread_id)
+                raw_owner = get_owner(thread_id)
+                owner_id = str(raw_owner) if raw_owner else None
             refresh_thread_activity(
                 agent, owner_id or caller_user_id, thread_id
             )

@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
 
 import httpx
 from telegram import (
@@ -872,8 +872,8 @@ class NymeriaTelegramBot:
     def _guarded_command(
         self,
         name: str,
-        handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]],
-    ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]:
+        handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]],
+    ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]:
         """Wrap a command handler with the central Telegram access policy."""
 
         async def guarded(
@@ -1119,7 +1119,9 @@ class NymeriaTelegramBot:
                     pass  # HTML fallback to plain text already handled above
             # Other BadRequest (message too old, etc.) — ignore
         except RetryAfter as e:
-            await asyncio.sleep(e.retry_after)
+            _retry_value: Any = e.retry_after
+            _retry_secs = _retry_value.total_seconds() if hasattr(_retry_value, "total_seconds") else _retry_value
+            await asyncio.sleep(float(_retry_secs))
         except TimedOut:
             pass  # timeout during retry-after wait is benign
 
@@ -1149,7 +1151,9 @@ class NymeriaTelegramBot:
                 await bot.send_document(chat_id=chat_id, document=buf, caption=filename)
             return True
         except RetryAfter as e:
-            await asyncio.sleep(e.retry_after)
+            _retry_value: Any = e.retry_after
+            _retry_secs = _retry_value.total_seconds() if hasattr(_retry_value, "total_seconds") else _retry_value
+            await asyncio.sleep(float(_retry_secs))
             return False
         except Exception as e:
             logger.warning("Failed to send file attachment %s: %s", file_path, e)

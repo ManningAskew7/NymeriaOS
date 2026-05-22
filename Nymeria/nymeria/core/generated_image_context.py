@@ -112,6 +112,7 @@ def _image_data_url(path: Path, mime_type: str) -> str:
 
 
 def _content_with_image(content: Any, data_url: str) -> list[Any]:
+    blocks: list[Any]
     if isinstance(content, list):
         blocks = list(content)
     elif isinstance(content, str):

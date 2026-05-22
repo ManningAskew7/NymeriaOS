@@ -219,8 +219,9 @@ class FullScreenPromptToolkitShell:
             await self.shutdown_active_turn(reason="shutdown")
             await cancel_task(self._transcript_activity_refresh_task)
             await cancel_task(self._autonomous_listener_task)
-            close = getattr(self.client, "close", None)
-            if callable(close):
+            close_attr = getattr(self.client, "close", None)
+            if callable(close_attr):
+                close: Any = close_attr
                 await close()
 
     def set_status_notice(
@@ -713,8 +714,9 @@ class FullScreenPromptToolkitShell:
         user_id = str(action.get("user_id") or self.config.user_id)
         self.config = replace(self.config, user_id=user_id)
         if old_client is not next_client:
-            close = getattr(old_client, "close", None)
-            if callable(close):
+            close_attr = getattr(old_client, "close", None)
+            if callable(close_attr):
+                close: Any = close_attr
                 await close()
         if not is_disconnected_client(next_client):
             self._autonomous_listener_task = self._start_autonomous_listener()

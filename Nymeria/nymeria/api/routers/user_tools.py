@@ -86,7 +86,7 @@ def create_user_tools_router(
 
         by_category: Dict[str, List[dict]] = {}
         for tool in tools_list:
-            category = tool.get("category", "unknown")
+            category = str(tool.get("category", "unknown"))
             if category not in by_category:
                 by_category[category] = []
             by_category[category].append(tool)

@@ -852,9 +852,11 @@ def _format_thread_list(
     if teams:
         for team in teams:
             team_threads = _ordered_threads(
-                by_id.get(thread_id)
-                for thread_id in _team_ids(team)
-                if thread_id in by_id
+                [
+                    by_id.get(thread_id)
+                    for thread_id in _team_ids(team)
+                    if thread_id in by_id
+                ]
             )
             if not team_threads:
                 continue
@@ -871,8 +873,8 @@ def _format_thread_list(
     ungrouped = [
         thread for thread in threads if normalize_thread_id(thread) not in grouped_ids
     ]
-    pinned = _ordered_threads(thread for thread in ungrouped if thread.get("pinned"))
-    recent = _ordered_threads(thread for thread in ungrouped if not thread.get("pinned"))
+    pinned = _ordered_threads([thread for thread in ungrouped if thread.get("pinned")])
+    recent = _ordered_threads([thread for thread in ungrouped if not thread.get("pinned")])
     if teams:
         if pinned:
             lines.append("  Pinned")

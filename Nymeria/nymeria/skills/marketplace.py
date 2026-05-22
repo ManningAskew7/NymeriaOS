@@ -214,11 +214,12 @@ class AnthropicSkillsFetcher:
         """List skills available in anthropics/skills (tarball-backed, 15-min cache)."""
         now = time.time()
         with self._cache_lock:
-            cached_ok = (
-                self._list_cache
+            entries: List[MarketplaceSkillEntry] | None = None
+            if (
+                self._list_cache is not None
                 and now - self._list_cache[0] < LIST_CACHE_TTL_SECONDS
-            )
-            entries = self._list_cache[1] if cached_ok else None
+            ):
+                entries = self._list_cache[1]
 
         if entries is None:
             data = self._get_tarball()

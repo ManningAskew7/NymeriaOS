@@ -115,20 +115,21 @@ class PostgresCheckpointCleaner(CheckpointCleaner):
         counts = _empty_delete_counts()
         with psycopg.connect(self.postgres_uri) as conn:
             with conn.cursor() as cur:
+                cur_any: Any = cur
                 existing_tables: list[str] = []
                 for table in CHECKPOINT_TABLES:
-                    cur.execute("SELECT to_regclass(%s)", (table,))
-                    if cur.fetchone()[0] is None:
+                    cur_any.execute("SELECT to_regclass(%s)", (table,))
+                    if cur_any.fetchone()[0] is None:
                         continue
                     existing_tables.append(table)
-                    cur.execute(_delete_thread_sql(table, "%s"), (thread_id,))
-                    counts[f"{table}_deleted"] = _rowcount(cur.rowcount)
+                    cur_any.execute(_delete_thread_sql(table, "%s"), (thread_id,))
+                    counts[f"{table}_deleted"] = _rowcount(cur_any.rowcount)
                 conn.commit()
 
                 remaining = 0
                 for table in existing_tables:
-                    cur.execute(_count_thread_sql(table, "%s"), (thread_id,))
-                    remaining += int(cur.fetchone()[0] or 0)
+                    cur_any.execute(_count_thread_sql(table, "%s"), (thread_id,))
+                    remaining += int(cur_any.fetchone()[0] or 0)
                 counts["checkpoint_rows_remaining"] = remaining
 
         _raise_if_remaining(thread_id, counts["checkpoint_rows_remaining"])

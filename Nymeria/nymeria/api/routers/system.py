@@ -136,7 +136,7 @@ def restart_api_process(agent: Any, settings: Any) -> None:
             [sys.executable] + sys.argv,
             env=child_env,
             creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 if sys.platform == "win32" else 0
             ),
             start_new_session=(sys.platform != "win32"),

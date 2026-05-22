@@ -676,7 +676,7 @@ def _handle_ai_history_message(
         ctx.flush_current_turn(populate_legacy_fields=True)
         return
 
-    entry = {
+    entry: dict[str, Any] = {
         "id": ctx.next_entry_id(),
         "role": "assistant",
         "content": text_content,

@@ -19,11 +19,16 @@ ColorMode = Literal["auto", "always", "never"]
 class CLIRuntimeOverrides(Protocol):
     """Subset of ``CLIRuntimeConfig`` needed for terminal policy."""
 
-    renderer: RendererMode
-    alt_screen: bool
-    animation: bool
-    ascii_only: bool
-    color: ColorMode
+    @property
+    def renderer(self) -> RendererMode: ...
+    @property
+    def alt_screen(self) -> bool: ...
+    @property
+    def animation(self) -> bool: ...
+    @property
+    def ascii_only(self) -> bool: ...
+    @property
+    def color(self) -> ColorMode: ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -161,6 +161,22 @@ project-excludes = [
     "**/dist/**",
 ]
 python-version = "3.11"
+replace-imports-with-any = [
+    "boto3",
+    "boto3.*",
+    "botocore",
+    "botocore.*",
+    "bs4",
+    "playwright",
+    "playwright.*",
+    "slack_bolt",
+    "slack_bolt.*",
+    "langchain_community",
+    "langchain_community.*",
+]
+
+[tool.pyrefly.errors]
+bad-function-definition = false
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config"

@@ -2095,7 +2095,7 @@ def elasticsearch_search(
         base_url, headers_or_error, auth, verify = _elasticsearch_config("elasticsearch_search", config)
         if isinstance(headers_or_error, str):
             return headers_or_error
-        body = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {"query": {"match_all": {}}}
+        body: dict[str, Any] = _parse_json(query_json, expected=dict, label="query_json") if query_json.strip() else {"query": {"match_all": {}}}
         body.setdefault("size", _limit(limit, max_value=1000))
         data = _request_json(
             "POST",

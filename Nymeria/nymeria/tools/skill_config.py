@@ -430,7 +430,10 @@ def _load_draft_or_inline(
 
 
 def _assert_publish_allowed(agent, draft: SkillDraft, scope: SkillScope, user_id: str, overwrite: bool) -> None:
-    target_parent = agent.skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
+    skill_manager = agent.skill_manager
+    if skill_manager is None:
+        raise ValueError("skills subsystem not initialized")
+    target_parent = skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
     target_dir = target_parent / draft.name
     if target_dir.exists():
         if not overwrite:
@@ -445,7 +448,7 @@ def _assert_publish_allowed(agent, draft: SkillDraft, scope: SkillScope, user_id
             )
         return
 
-    existing = agent.skill_manager.get(draft.name, user_id=user_id)
+    existing = skill_manager.get(draft.name, user_id=user_id)
     if existing is not None:
         raise ValueError(
             f"publishing {draft.name!r} in {scope} scope would shadow an existing "
@@ -482,7 +485,10 @@ def _publish_skill(
 
     _assert_publish_allowed(agent, draft, scope, user_id, overwrite)
 
-    target_parent = agent.skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
+    skill_manager = agent.skill_manager
+    if skill_manager is None:
+        raise ValueError("skills subsystem not initialized")
+    target_parent = skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
     target_dir = target_parent / draft.name
     skill_md = target_dir / "SKILL.md"
     old_text = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -508,7 +514,7 @@ def _publish_skill(
                 pass  # directory may not be empty or already removed
         raise
 
-    agent.skill_manager.reload()
+    skill_manager.reload()
     activated = False
     queued_reload = False
     cap_hit = False
@@ -701,7 +707,8 @@ def skill_config(
 
             agent = get_current_agent()
             installed = []
-            if agent is not None and getattr(agent, "skill_manager", None) is not None:
+            skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
+            if skill_manager is not None:
                 installed = [
                     {
                         "name": skill.name,
@@ -711,7 +718,7 @@ def skill_config(
                         "tool_ttl": skill.tool_ttl,
                         "is_skill_kit": skill.is_skill_kit,
                     }
-                    for skill in agent.skill_manager.list_installed(user_id=user_id)
+                    for skill in skill_manager.list_installed(user_id=user_id)
                 ]
             return _json_result(
                 ok=True,
@@ -730,7 +737,8 @@ def skill_config(
             from ..core.agent import get_current_agent
 
             agent = get_current_agent()
-            if agent is None or getattr(agent, "skill_manager", None) is None:
+            skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
+            if agent is None or skill_manager is None:
                 return _json_result(ok=False, error={"type": "unavailable", "message": "skills subsystem not initialized"})
             delete_scope = _coerce_scope(scope_key)
             if delete_scope == "global":
@@ -741,7 +749,7 @@ def skill_config(
                         error={"type": "permission_error", "message": "Global skill delete requires admin role"},
                     )
             target_name = _normalize_skill_name(name or draft_id)
-            deleted = agent.skill_manager.uninstall(
+            deleted = skill_manager.uninstall(
                 target_name,
                 scope=delete_scope,
                 user_id=user_id if delete_scope == "user" else None,
@@ -929,7 +937,8 @@ async def skill_kit_create(
 
             agent = get_current_agent()
             installed = []
-            if agent is not None and getattr(agent, "skill_manager", None) is not None:
+            skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
+            if skill_manager is not None:
                 installed = [
                     {
                         "name": skill.name,
@@ -939,7 +948,7 @@ async def skill_kit_create(
                         "tool_ttl": skill.tool_ttl,
                         "is_skill_kit": skill.is_skill_kit,
                     }
-                    for skill in agent.skill_manager.list_installed(user_id=user_id)
+                    for skill in skill_manager.list_installed(user_id=user_id)
                 ]
             loader = get_custom_tool_loader()
             return _json_result(

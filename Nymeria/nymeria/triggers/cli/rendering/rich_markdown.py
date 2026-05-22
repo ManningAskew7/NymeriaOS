@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 from markdown_it import MarkdownIt
 from rich import box
@@ -514,9 +515,13 @@ def _split_pipe_cells(line: str) -> list[str]:
     return cells
 
 
-def _table_column_justify(justify: str) -> str:
-    if justify in {"left", "center", "right"}:
-        return justify
+def _table_column_justify(justify: str) -> Literal["center", "default", "full", "left", "right"]:
+    if justify == "left":
+        return "left"
+    if justify == "center":
+        return "center"
+    if justify == "right":
+        return "right"
     return "left"
 
 

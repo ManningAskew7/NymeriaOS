@@ -78,7 +78,7 @@ def _parse_json_blob(blob: str, *, name: Optional[str]) -> MCPServerDefinition:
         raise MCPInstallError(f"not valid JSON: {e}") from e
 
     # Accept either `{"mcpServers": {"<key>": {...}}}` or a single server entry.
-    servers: Dict[str, Dict] = data.get("mcpServers") if isinstance(data, dict) else None
+    servers: Optional[Dict[str, Dict]] = data.get("mcpServers") if isinstance(data, dict) else None
     if servers is None and isinstance(data, dict) and ("command" in data or "url" in data):
         servers = {name or "pasted": data}
     if not servers or not isinstance(servers, dict):

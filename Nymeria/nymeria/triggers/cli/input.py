@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -171,26 +171,27 @@ class SlashUsageHintProcessor(Processor):
     def __init__(self, registry: "CommandRegistry") -> None:
         self.registry = registry
 
-    def apply_transformation(self, ti) -> Transformation:
+    def apply_transformation(self, transformation_input) -> Transformation:
+        ti = transformation_input
         if ti.document.line_count != 1 or ti.lineno != 0:
-            return Transformation(ti.fragments)
+            return Transformation(list(ti.fragments))
         if not ti.document.is_cursor_at_the_end:
-            return Transformation(ti.fragments)
+            return Transformation(list(ti.fragments))
 
         hint = slash_usage_hint(ti.document.text_before_cursor, self.registry)
         if not hint:
-            return Transformation(ti.fragments)
+            return Transformation(list(ti.fragments))
 
         fragments = _without_auto_suggestion(ti.fragments)
         used_width = sum(cell_len(text) for _style, text in fragments)
         available_width = max(0, int(ti.width or 0) - used_width)
         if available_width <= 0:
-            return Transformation(fragments)
+            return Transformation(cast(Any, fragments))
 
         fitted_hint = truncate_cell_width(hint, available_width)
         if not fitted_hint.strip():
-            return Transformation(fragments)
-        return Transformation(fragments + [("class:slash-hint", fitted_hint)])
+            return Transformation(cast(Any, fragments))
+        return Transformation(cast(Any, fragments + [("class:slash-hint", fitted_hint)]))
 
 
 class ComposerController:
@@ -269,7 +270,7 @@ class ComposerController:
             return [("class:composer.busy", "› ")]
         return [("class:composer", "› ")]
 
-    def _line_prefix(self, line_number: int, wrap_count: int):
+    def _line_prefix(self, line_number: int, wrap_count: int) -> Any:
         if wrap_count > 0 or line_number > 0:
             prompt_width = sum(len(text) for _, text in self.prompt_fragments())
             return [("", " " * prompt_width)]
@@ -592,9 +593,9 @@ def _add_command_metadata(
         metadata[candidate] = description
 
 
-def _without_auto_suggestion(fragments):
+def _without_auto_suggestion(fragments) -> list[tuple[str, str]]:
     return [
-        (style, text)
+        (str(style), str(text))
         for style, text in fragments
         if "auto-suggestion" not in str(style)
     ]

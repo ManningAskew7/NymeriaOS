@@ -171,8 +171,9 @@ class MattermostClientProtocol(Protocol):
     ) -> Mapping[str, Any]:
         """Create a Mattermost post."""
 
-    async def websocket_events(self) -> AsyncGenerator[Mapping[str, Any], None]:
+    def websocket_events(self) -> AsyncGenerator[Mapping[str, Any], None]:
         """Yield Mattermost WebSocket event frames."""
+        ...
 
     async def close(self) -> None:
         """Close client resources."""
