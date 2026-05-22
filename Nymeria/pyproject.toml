@@ -30,6 +30,11 @@ dependencies = [
   "langchain-core==1.4.0",
   "langchain-openai==1.2.1",
   "langchain-anthropic==1.4.3",
+  # Tier 1 partner packages with native reasoning round-trip. Keep in sync
+  # with requirements.txt; see docs/chat_completions_providers.md.
+  "langchain-google-genai==4.1.2",
+  "langchain-aws==1.4.6",
+  "langchain-ollama==1.1.0",
   "langchain-classic==1.0.7",
   "langchain-community==0.4.1",
   "langchain-protocol==0.0.15",

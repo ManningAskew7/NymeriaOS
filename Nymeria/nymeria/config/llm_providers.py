@@ -12,7 +12,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
+
+
+ProviderTier = Literal["native", "gateway", "unverified"]
 
 try:
     from dotenv import dotenv_values
@@ -42,11 +45,23 @@ class LLMProviderSpec:
     docs_url: str | None = None
     notes: str = ""
     aliases: tuple[str, ...] = field(default_factory=tuple)
-    # End-to-end smoke-tested in Nymeria (tool calls + streaming).
-    # Default False — chat-completions "compatibility" is uneven across providers
-    # (tool_call deltas, response_format, finish_reason, usage), so any provider
-    # we haven't actually exercised should warn the user at startup.
-    verified: bool = False
+    # Three-state classification surfaced in the picker UI.
+    #   native    : dedicated langchain-<provider> partner package adopted, or
+    #               canonical OpenAI/Anthropic API. Reasoning round-trips natively.
+    #   gateway   : multiplexes many upstream providers behind an OpenAI-compatible
+    #               surface. Reasoning depends on upstream provider.
+    #   unverified: OpenAI-chat compatible but not smoke-tested. Tool-call deltas,
+    #               response_format, finish_reason, usage shapes vary; reasoning
+    #               may not round-trip across tool calls.
+    tier: ProviderTier = "unverified"
+    # Short warning shown under unverified picker rows. Empty for tiers that
+    # don't need user warnings.
+    notes_for_user: str = ""
+
+    @property
+    def verified(self) -> bool:
+        """Back-compat: a provider is verified if it has a known tier."""
+        return self.tier in ("native", "gateway")
 
 
 def _spec(
@@ -66,7 +81,8 @@ def _spec(
     requires_base_url: bool = False,
     api_format: str = "openai_chat",
     supports_chat_completions: bool = True,
-    verified: bool = False,
+    tier: ProviderTier = "unverified",
+    notes_for_user: str = "",
 ) -> LLMProviderSpec:
     return LLMProviderSpec(
         id=provider_id,
@@ -84,7 +100,8 @@ def _spec(
         requires_api_key=requires_api_key,
         default_api_mode=default_api_mode,
         requires_base_url=requires_base_url,
-        verified=verified,
+        tier=tier,
+        notes_for_user=notes_for_user,
     )
 
 
@@ -104,7 +121,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         api_format="anthropic_messages",
         supports_chat_completions=False,
         aliases=("claude",),
-        verified=True,
+        tier="native",
     ),
     _spec(
         "openai",
@@ -115,7 +132,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://platform.openai.com/docs/api-reference/chat/create",
         supports_responses=True,
         default_api_mode="responses",
-        verified=True,
+        tier="native",
     ),
     _spec(
         "openrouter",
@@ -126,7 +143,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://openrouter.ai/docs/api-reference/chat-completion",
         supports_responses=True,
         default_api_mode="responses",
-        verified=True,
+        tier="gateway",
     ),
     _spec(
         "azure-openai",
@@ -157,11 +174,14 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec(
         "google",
         "Google Gemini",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        base_url=None,
         env=("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"),
         default_model="gemini-2.5-flash",
-        docs_url="https://ai.google.dev/gemini-api/docs/openai",
+        docs_url="https://ai.google.dev/gemini-api/docs",
         aliases=("gemini", "google-gemini"),
+        api_format="google_genai",
+        supports_chat_completions=False,
+        tier="native",
     ),
     _spec(
         "google-vertex",
@@ -174,6 +194,22 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         notes="Requires a Google Cloud OAuth access token as the OpenAI api_key; Nymeria does not refresh ADC tokens for this provider yet.",
         aliases=("vertex", "vertex-ai", "google-vertex-ai"),
         requires_base_url=True,
+        notes_for_user="Nymeria does not refresh Google Cloud ADC tokens automatically. For Gemini reasoning, prefer the Google Gemini provider.",
+    ),
+    _spec(
+        "bedrock",
+        "AWS Bedrock",
+        base_url=None,
+        env=("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"),
+        base_url_env=("AWS_BEDROCK_ENDPOINT_URL",),
+        default_model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        docs_url="https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html",
+        notes="Uses boto3 default credential chain (env, ~/.aws/credentials, IAM role). Set AWS_REGION (or AWS_DEFAULT_REGION) before connecting.",
+        aliases=("aws-bedrock", "aws"),
+        api_format="bedrock_converse",
+        supports_chat_completions=False,
+        requires_api_key=False,
+        tier="native",
     ),
     _spec(
         "xai",
@@ -185,6 +221,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         aliases=("x-ai", "x.ai", "grok"),
         supports_responses=True,
         default_api_mode="responses",
+        notes_for_user="Grok 4 / 4.1 reasoning is not surfaced beyond the initial Thinking token (langchain issue #35224).",
     ),
     _spec(
         "groq",
@@ -203,6 +240,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://api-docs.deepseek.com/",
         aliases=("deep-seek",),
         notes="DeepSeek also accepts https://api.deepseek.com/v1 as a compatibility alias.",
+        notes_for_user="deepseek-reasoner and V4 thinking models return 400 on tool follow-ups when reasoning_content is not echoed (langchain issues #34166, #34436).",
     ),
     _spec(
         "mistral",
@@ -211,6 +249,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("MISTRAL_API_KEY",),
         default_model="mistral-large-latest",
         docs_url="https://docs.mistral.ai/api/",
+        notes_for_user="Magistral chain-of-thought ships in main content with no native reasoning block; round-trip across tool calls is not guaranteed.",
     ),
     _spec(
         "cohere",
@@ -279,6 +318,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="deepseek-ai/DeepSeek-R1",
         docs_url="https://huggingface.co/docs/inference-providers/index",
         aliases=("hf", "hugging-face", "huggingface-hub"),
+        notes_for_user="Reasoning and tool-call behavior depend on the upstream Hugging Face Inference Provider routing.",
     ),
     _spec(
         "deepinfra",
@@ -312,6 +352,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("AIHUBMIX_API_KEY",),
         docs_url="https://docs.aihubmix.com/en/index",
         notes="OpenAI-compatible routing gateway; https://api.aihubmix.com is the documented backup host.",
+        tier="gateway",
     ),
     _spec(
         "alibaba",
@@ -512,6 +553,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://router.requesty.ai/v1",
         env=("REQUESTY_API_KEY",),
         docs_url="https://docs.requesty.ai/",
+        tier="gateway",
     ),
     _spec(
         "poe",
@@ -519,6 +561,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://api.poe.com/v1",
         env=("POE_API_KEY",),
         docs_url="https://developer.poe.com/server-bots/accessing-other-bots-on-poe",
+        tier="gateway",
     ),
     _spec(
         "github-models",
@@ -554,6 +597,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url_env=("CLOUDFLARE_AI_GATEWAY_BASE_URL",),
         docs_url="https://developers.cloudflare.com/ai-gateway/",
         requires_base_url=True,
+        tier="gateway",
     ),
     _spec(
         "vercel",
@@ -562,6 +606,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"),
         docs_url="https://vercel.com/docs/ai-gateway",
         aliases=("vercel-ai-gateway", "ai-gateway"),
+        tier="gateway",
     ),
     _spec(
         "opencode",
@@ -570,6 +615,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("OPENCODE_API_KEY",),
         docs_url="https://opencode.ai/docs",
         aliases=("opencode-zen", "zen"),
+        tier="gateway",
     ),
     _spec(
         "opencode-go",
@@ -577,6 +623,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://opencode.ai/zen/go/v1",
         env=("OPENCODE_API_KEY",),
         docs_url="https://opencode.ai/docs",
+        tier="gateway",
     ),
     _spec(
         "kilocode",
@@ -586,6 +633,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="kilo/auto",
         docs_url="https://kilocode.ai/docs",
         aliases=("kilo", "kilo-code"),
+        tier="gateway",
     ),
     _spec(
         "gmi",
@@ -618,13 +666,26 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         notes="OpenAI-compatible coding/design model API; requires a v0 plan with API access.",
     ),
     _spec(
+        "ollama-native",
+        "Ollama (native protocol)",
+        base_url="http://localhost:11434",
+        env=(),
+        base_url_env=("OLLAMA_BASE_URL",),
+        docs_url="https://github.com/ollama/ollama/blob/main/docs/api.md",
+        notes="Speaks Ollama's native /api/chat protocol. Required for reasoning round-trip on qwen3 / deepseek-r1 / gpt-oss.",
+        api_format="ollama_native",
+        supports_chat_completions=False,
+        requires_api_key=False,
+        tier="native",
+    ),
+    _spec(
         "ollama",
-        "Ollama local",
+        "Ollama local (OpenAI-compat)",
         base_url="http://localhost:11434/v1",
         env=("OLLAMA_API_KEY",),
         base_url_env=("OLLAMA_BASE_URL",),
         docs_url="https://github.com/ollama/ollama/blob/main/docs/openai.md",
-        notes="Local Ollama usually does not require an API key; set LLM_API_KEY=no-key-required if validation is strict.",
+        notes="OpenAI-compat shim at /v1/chat/completions. Use the ollama-native provider for reasoning round-trip.",
         requires_api_key=False,
     ),
     _spec(
@@ -680,6 +741,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url_env=("LITELLM_BASE_URL",),
         docs_url="https://docs.litellm.ai/docs/proxy/user_keys",
         requires_api_key=False,
+        tier="gateway",
     ),
     _spec(
         "tgi",
@@ -714,11 +776,11 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("dinference", "DInference", base_url="https://api.dinference.com/v1", env=("DINFERENCE_API_KEY",)),
     _spec("drun", "D.Run", base_url="https://chat.d.run/v1", env=("DRUN_API_KEY",)),
     _spec("evroc", "evroc", base_url="https://models.think.evroc.com/v1", env=("EVROC_API_KEY",)),
-    _spec("fastrouter", "FastRouter", base_url="https://go.fastrouter.ai/api/v1", env=("FASTROUTER_API_KEY",)),
+    _spec("fastrouter", "FastRouter", base_url="https://go.fastrouter.ai/api/v1", env=("FASTROUTER_API_KEY",), tier="gateway"),
     _spec("firepass", "Fireworks FirePass", base_url="https://api.fireworks.ai/inference/v1", env=("FIREPASS_API_KEY",)),
     _spec("friendli", "Friendli", base_url="https://api.friendli.ai/serverless/v1", env=("FRIENDLI_TOKEN",)),
     _spec("frogbot", "FrogBot", base_url="https://app.frogbot.ai/api/v1", env=("FROGBOT_API_KEY",)),
-    _spec("helicone", "Helicone AI Gateway", base_url="https://ai-gateway.helicone.ai/v1", env=("HELICONE_API_KEY",)),
+    _spec("helicone", "Helicone AI Gateway", base_url="https://ai-gateway.helicone.ai/v1", env=("HELICONE_API_KEY",), tier="gateway"),
     _spec("hpc-ai", "HPC-AI", base_url="https://api.hpc-ai.com/inference/v1", env=("HPC_AI_API_KEY",)),
     _spec("iflowcn", "iFlow", base_url="https://apis.iflow.cn/v1", env=("IFLOW_API_KEY",)),
     _spec("inception", "Inception", base_url="https://api.inceptionlabs.ai/v1", env=("INCEPTION_API_KEY",)),
@@ -727,7 +789,7 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("jiekou", "Jiekou.AI", base_url="https://api.jiekou.ai/openai", env=("JIEKOU_API_KEY",)),
     _spec("kuae-cloud-coding-plan", "KUAE Cloud Coding Plan", base_url="https://coding-plan-endpoint.kuaecloud.net/v1", env=("KUAE_API_KEY",)),
     _spec("llama", "Meta Llama API", base_url="https://api.llama.com/compat/v1", env=("LLAMA_API_KEY",)),
-    _spec("llmgateway", "LLM Gateway", base_url="https://api.llmgateway.io/v1", env=("LLMGATEWAY_API_KEY",)),
+    _spec("llmgateway", "LLM Gateway", base_url="https://api.llmgateway.io/v1", env=("LLMGATEWAY_API_KEY",), tier="gateway"),
     _spec("lucidquery", "LucidQuery AI", base_url="https://lucidquery.com/api/v1", env=("LUCIDQUERY_API_KEY",)),
     _spec("meganova", "Meganova", base_url="https://api.meganova.ai/v1", env=("MEGANOVA_API_KEY",)),
     _spec("mixlayer", "Mixlayer", base_url="https://models.mixlayer.ai/v1", env=("MIXLAYER_API_KEY",)),
@@ -763,7 +825,7 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("xpersona", "Xpersona", base_url="https://xpersona.co/v1", env=("XPERSONA_API_KEY",)),
     _spec("zai-coding-plan", "Z.ai Coding Plan", base_url="https://api.z.ai/api/coding/paas/v4", env=("ZHIPU_API_KEY", "ZAI_API_KEY")),
     _spec("zhipuai-coding-plan", "Zhipu AI Coding Plan", base_url="https://open.bigmodel.cn/api/coding/paas/v4", env=("ZHIPU_API_KEY",)),
-    _spec("zenmux", "ZenMux", base_url="https://zenmux.ai/api/v1", env=("ZENMUX_API_KEY",)),
+    _spec("zenmux", "ZenMux", base_url="https://zenmux.ai/api/v1", env=("ZENMUX_API_KEY",), tier="gateway"),
 )
 
 
@@ -826,9 +888,21 @@ def provider_requires_api_key(provider: str | None) -> bool:
 
 
 def is_provider_verified(provider: str | None) -> bool:
-    """Return True if the provider has been smoke-tested end-to-end in Nymeria."""
+    """Return True if the provider has a known tier (native or gateway).
+
+    Back-compat shim over the new `tier` taxonomy. Unverified providers return
+    False so existing call sites (e.g., the startup warning in
+    `vendor/react_agent/providers.py::_warn_if_unverified_provider`) continue
+    to behave correctly.
+    """
     spec = get_llm_provider_spec(provider)
     return bool(spec and spec.verified)
+
+
+def get_provider_tier(provider: str | None) -> ProviderTier:
+    """Return the tier classification for a provider (or 'unverified')."""
+    spec = get_llm_provider_spec(provider)
+    return spec.tier if spec else "unverified"
 
 
 def provider_default_api_mode(provider: str | None) -> ApiMode:

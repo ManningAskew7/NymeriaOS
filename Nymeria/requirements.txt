@@ -10,6 +10,12 @@ langchain==1.3.1
 langchain-core==1.4.0
 langchain-openai==1.2.1
 langchain-anthropic==1.4.3
+# Tier 1 partner packages with native reasoning round-trip. Adopted because
+# their dedicated paths fix correctness gaps in the OpenAI-compat shim
+# (e.g., Gemini 3+ thought signatures, Bedrock Converse thinking).
+langchain-google-genai==4.1.2
+langchain-aws==1.4.6
+langchain-ollama==1.1.0
 langchain-classic==1.0.7
 langchain-community==0.4.1  # optional: wikipedia, wolfram alpha, searxng tools
 langchain-protocol==0.0.15

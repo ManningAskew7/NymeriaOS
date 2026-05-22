@@ -63,6 +63,40 @@ Reference coverage checked on 2026-05-14:
   Nymeria agent compatibility. It returns sanitized step results and never
   writes settings.
 
+## Tier classification
+
+Every provider in the registry carries a `tier` (and an optional
+`notes_for_user` string for known caveats). The tier surfaces in the
+`GET /settings/llm/providers` catalog, the CLI `/provider list` command,
+and (when wired) the desktop/mobile picker.
+
+- **`native`**: a dedicated `langchain-<provider>` partner package is used, or
+  the provider IS the canonical API (OpenAI, Anthropic). Reasoning content
+  and tool-call deltas round-trip across turns and across tool follow-ups.
+  Current native providers: `anthropic`, `openai`, `google` (Gemini via
+  `langchain-google-genai`), `bedrock` (AWS via `langchain-aws`
+  `ChatBedrockConverse`), `ollama-native` (via `langchain-ollama`).
+- **`gateway`**: multiplexes upstream providers behind a single
+  OpenAI-compatible surface. Reasoning round-trip depends on the upstream
+  provider's behavior. Examples: `openrouter`, `vercel`, `litellm`,
+  `cloudflare-ai-gateway`, `kilocode`, `requesty`, `aihubmix`, `poe`,
+  `helicone`, `opencode`, `fastrouter`, `llmgateway`, `zenmux`.
+- **`unverified`**: OpenAI Chat Completions compatible on paper but not
+  smoke-tested in Nymeria. Tool-call deltas, response_format, finish_reason,
+  usage shape, and reasoning round-trip vary by upstream. Some entries
+  (DeepSeek, xAI Grok 4.1, Mistral Magistral, Hugging Face Inference Providers)
+  carry an explicit `notes_for_user` warning sourced from the May 2026
+  LangChain partner-package dossier.
+
+The `tier` value is metadata: routing decisions still flow through
+`api_format` (`openai_chat`, `anthropic_messages`, `google_genai`,
+`bedrock_converse`, `ollama_native`) and the explicit dispatch in
+`vendor/react_agent/providers.py::create_llm`. A provider can move between
+tiers without any code change if its smoke-test status changes.
+
+The legacy `verified: bool` field is preserved on the catalog response,
+derived as `tier in {"native", "gateway"}`.
+
 ## First-Class Providers
 
 | Provider ID | Provider | Default base URL | API key env vars | Notes |
@@ -72,7 +106,9 @@ Reference coverage checked on 2026-05-14:
 | `azure-openai` | Azure OpenAI | custom | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY` | Set base URL to the `/openai/v1/` deployment endpoint. |
 | `azure-foundry` | Azure AI Foundry | custom | `AZURE_FOUNDRY_API_KEY`, `AZURE_OPENAI_AUTH_TOKEN`, `AZURE_API_KEY` | Set base URL to the Foundry `/openai/v1/` endpoint. |
 | `xai` | xAI | `https://api.x.ai/v1` | `XAI_API_KEY` | Supports Chat Completions and Responses. |
-| `google` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini OpenAI-compatible adapter. |
+| `google` | Google Gemini | n/a | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | Native via `langchain-google-genai`. Required for Gemini 3+ thought-signature round-trip on tool follow-ups. |
+| `bedrock` | AWS Bedrock | n/a | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Native via `langchain-aws` (`ChatBedrockConverse`). Resolves credentials through boto3 default chain. Set `AWS_REGION` and optionally `AWS_BEDROCK_ENDPOINT_URL`. |
+| `ollama-native` | Ollama (native protocol) | `http://localhost:11434` | none (local server) | Native via `langchain-ollama`. Use this id for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. The legacy `ollama` id stays on the OpenAI-compat path. |
 | `google-vertex` | Google Vertex AI | custom | `GOOGLE_VERTEX_ACCESS_TOKEN` | Requires a Google Cloud OAuth access token; token refresh is not automatic. |
 | `groq` | Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | Chat Completions compatible. |
 | `deepseek` | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | Also accepts `/v1` compatibility aliases. |

@@ -1234,6 +1234,8 @@ def create_settings_router(
                 docs_url=spec.docs_url,
                 notes=spec.notes,
                 aliases=list(spec.aliases),
+                tier=spec.tier,
+                notes_for_user=spec.notes_for_user,
                 verified=spec.verified,
             )
             for spec in list_llm_provider_specs()

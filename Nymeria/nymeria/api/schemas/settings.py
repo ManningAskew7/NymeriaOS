@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
+ProviderTier = Literal["native", "gateway", "unverified"]
 
 
 class LLMProviderSpecResponse(BaseModel):
@@ -27,6 +28,8 @@ class LLMProviderSpecResponse(BaseModel):
     docs_url: Optional[str] = None
     notes: str = ""
     aliases: list[str] = Field(default_factory=list)
+    tier: ProviderTier = "unverified"
+    notes_for_user: str = ""
     verified: bool = False
 
 
