@@ -13,8 +13,8 @@
   );
 
   const isSkillKit = $derived(info.source === 'skill_kit');
-  const isSkillConfig = $derived(info.source === 'skill_config');
-  const isSkillKitCreate = $derived(info.source === 'skill_kit_create');
+  const isSkillWrite = $derived(info.source === 'skill_write');
+  const isSkillEdit = $derived(info.source === 'skill_edit');
   const isSkillInstall = $derived(info.source === 'skill_install');
   const isMcpInstall = $derived(info.source === 'mcp_install');
   const isToolCreate = $derived(info.source === 'tool_create');
@@ -23,10 +23,10 @@
       ? 'MCP Tools Installed'
       : isSkillInstall
         ? 'Skill Enabled'
-        : isSkillKitCreate
-          ? 'Skill Kit Created'
-          : isSkillConfig
-            ? 'Skill Kit Published'
+        : isSkillEdit
+          ? 'Skill Updated'
+          : isSkillWrite
+            ? 'Skill Published'
             : isSkillKit
               ? 'Skill Kit Binding'
               : isToolCreate
@@ -40,19 +40,19 @@
         ? `skill_manage enabling Skill "${info.skillName}"`
         : isSkillInstall
           ? 'skill_manage'
-          : isSkillKitCreate && info.skillName
-            ? `skill_kit_create publishing Skill Kit "${info.skillName}"`
-            : isSkillKitCreate
-              ? 'skill_kit_create'
-              : isMcpInstall
-                ? 'MCP server installation'
-                : isSkillConfig && info.skillName
-                  ? `skill_config publishing Skill Kit "${info.skillName}"`
-                  : isSkillConfig
-                    ? 'skill_config'
+          : isSkillWrite && info.skillName
+            ? `skill_write publishing Skill "${info.skillName}"`
+            : isSkillWrite
+              ? 'skill_write'
+              : isSkillEdit && info.skillName
+                ? `skill_edit updating Skill "${info.skillName}"`
+                : isSkillEdit
+                  ? 'skill_edit'
+                  : isMcpInstall
+                    ? 'MCP server installation'
                     : isToolCreate
                       ? 'tool_create publishing a new tool'
-                      : 'tool_enable(action="enable")'
+                      : 'tool_manage(action="enable")'
   );
 
   const ttlText = $derived(ttlPhrase(info.ttlSeconds, info.ttl));
@@ -78,7 +78,7 @@
 
   const metaText = $derived(
     toolNames
-      ? `${toolNames}${isSkillConfig ? '' : ` (${ttlText})`}`
+      ? `${toolNames}${isSkillWrite || isSkillEdit ? '' : ` (${ttlText})`}`
       : isSkillKit && info.skillName
         ? `from ${sourceText}`
         : sourceText

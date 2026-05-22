@@ -18,6 +18,7 @@ from ..schemas.custom_tools import (
     custom_tool_definition_to_response,
     http_config_to_core,
     mcp_config_to_core,
+    python_config_to_core,
     tool_parameters_to_core,
 )
 
@@ -60,6 +61,7 @@ def create_custom_tools_router(
         try:
             http_config = None
             mcp_config = None
+            python_config = None
 
             if request.implementation_type == "http":
                 if not request.http_config:
@@ -75,6 +77,13 @@ def create_custom_tools_router(
                         detail="mcp_config is required for MCP tools",
                     )
                 mcp_config = mcp_config_to_core(request.mcp_config)
+            elif request.implementation_type == "python":
+                if not request.python_config:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="python_config is required for Python tools",
+                    )
+                python_config = python_config_to_core(request.python_config)
 
             definition = CustomToolDefinition(
                 id=request.id,
@@ -84,6 +93,7 @@ def create_custom_tools_router(
                 implementation_type=request.implementation_type,
                 http_config=http_config,
                 mcp_config=mcp_config,
+                python_config=python_config,
                 enabled=request.enabled,
                 tags=request.tags,
             )
@@ -188,6 +198,8 @@ def create_custom_tools_router(
             definition.http_config = http_config_to_core(request.http_config)
         if request.mcp_config is not None and definition.implementation_type == "mcp":
             definition.mcp_config = mcp_config_to_core(request.mcp_config)
+        if request.python_config is not None and definition.implementation_type == "python":
+            definition.python_config = python_config_to_core(request.python_config)
 
         loader.save_definition(definition)
         get_agent_fn().reload_tools()
@@ -251,6 +263,19 @@ def create_custom_tools_router(
                 result = await loader.mcp_manager.call_tool(
                     definition.mcp_config,
                     request.params,
+                )
+            elif definition.implementation_type == "python":
+                if definition.python_config is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Tool '{tool_id}' is type 'python' but has no python_config",
+                    )
+                from ...core.python_custom_tools import execute_python_tool
+
+                result = await execute_python_tool(
+                    definition.python_config,
+                    request.params,
+                    target_id=definition.id,
                 )
             else:
                 result = f"[Error]: Unknown implementation type: {definition.implementation_type}"

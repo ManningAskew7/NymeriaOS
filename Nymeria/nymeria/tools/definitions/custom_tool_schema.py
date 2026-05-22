@@ -90,11 +90,29 @@ class HTTPToolConfig(BaseModel):
         return v
 
 
+class PythonToolConfig(BaseModel):
+    """Configuration for subprocess-backed Python custom tools."""
+
+    source_code: str = Field(
+        ...,
+        min_length=1,
+        description="Python source code containing the tool entrypoint",
+    )
+    entrypoint: str = Field(
+        default="run",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Callable function name to invoke",
+    )
+    runtime: Literal["subprocess"] = Field(
+        default="subprocess",
+        description="Execution runtime. Python custom tools run out-of-process.",
+    )
+
+
 class CustomToolDefinition(BaseModel):
     """Complete definition of a custom tool.
 
-    Custom tools can be either HTTP-based (REST API calls) or
-    MCP-based (Model Context Protocol servers).
+    Custom tools can be HTTP-based, MCP-based, or subprocess-backed Python.
 
     The tool is converted to a LangChain @tool function at runtime,
     with parameters extracted from the definition.
@@ -123,7 +141,7 @@ class CustomToolDefinition(BaseModel):
         default_factory=dict,
         description="Tool parameters with their schemas",
     )
-    implementation_type: Literal["http", "mcp"] = Field(
+    implementation_type: Literal["http", "mcp", "python"] = Field(
         ...,
         description="Type of tool implementation",
     )
@@ -134,6 +152,10 @@ class CustomToolDefinition(BaseModel):
     mcp_config: Optional[MCPToolConfig] = Field(
         default=None,
         description="MCP tool configuration (required if type is 'mcp')",
+    )
+    python_config: Optional[PythonToolConfig] = Field(
+        default=None,
+        description="Python tool configuration (required if type is 'python')",
     )
     enabled: bool = Field(
         default=True,
@@ -164,6 +186,8 @@ class CustomToolDefinition(BaseModel):
             raise ValueError("http_config is required when implementation_type is 'http'")
         if self.implementation_type == "mcp" and self.mcp_config is None:
             raise ValueError("mcp_config is required when implementation_type is 'mcp'")
+        if self.implementation_type == "python" and self.python_config is None:
+            raise ValueError("python_config is required when implementation_type is 'python'")
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Convert parameters to JSON Schema format for LangChain."""
@@ -195,5 +219,6 @@ __all__ = [
     "CustomToolDefinition",
     "HTTPToolConfig",
     "MCPToolConfig",
+    "PythonToolConfig",
     "ToolParameter",
 ]

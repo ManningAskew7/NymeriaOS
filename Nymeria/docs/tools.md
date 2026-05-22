@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 17 core tools in `ALL_TOOLS` and 1,250 optional tools in `OPTIONAL_TOOLS` as of 2026-05-20; use `tools-index.md` for the generated exhaustive inventory.
+Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 17 core tools in `ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-22; use `tools-index.md` for the generated exhaustive inventory.
 
 ## Summary Table
 
@@ -28,7 +28,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
-> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when the agent activates it.
+> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill/Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when the agent activates it.
 
 > **Note:** `bash_execute` is a core tool for personal-assistant effectiveness and relies on the backend deployment boundary for sandboxing. `claude_code`, `reload_all`, and `self_modify_rollback` live in `OPTIONAL_TOOLS` and are admin-only optional tools. See `nymeria/tools/__init__.py` for the canonical lists.
 
@@ -53,14 +53,14 @@ which binds the facades below with a TTL.
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
 | 1 | `tool_search` | Core | SAFE | Search available tools |
-| 2 | `tool_enable` | Core | MODERATE | Enable, disable, and inspect current-thread tool bindings |
+| 2 | `tool_manage` | Core | MODERATE | Enable, disable, prune, and inspect current-thread tool bindings |
 | 3 | `manage_mcp` | MCP | MODERATE | Search, preview, install, and inspect MCP servers |
-| 4 | `skill_manage` | Skills | MODERATE | List, search, install, enable, disable, and inspect skills |
+| 4 | `skill_manage` | Skills | MODERATE | List, search, install, enable, disable, prune, and inspect skills |
 | 5 | `http_request` | Core | MODERATE | Make a one-off HTTP request to a documented API endpoint |
 | 6 | `api_discover` | Core | MODERATE | Discover OpenAPI/Swagger metadata for an API base URL |
-| 7 | `skill_kit_create` | Custom | MODERATE | Create HTTP tools and package durable Skill Kits |
-| 8 | `tool_create` | Custom | MODERATE | Compatibility low-level HTTP tool authoring |
-| 9 | `skill_config` | Custom | MODERATE | Compatibility low-level Skill Kit authoring |
+| 7 | `tool_create` | Custom | MODERATE | Draft, test, publish, hot-load, and enable reusable HTTP or Python tools |
+| 8 | `skill_write` | Custom | MODERATE | Write a full SKILL.md package with optional scripts and required tools |
+| 9 | `skill_edit` | Custom | MODERATE | Edit an existing SKILL.md body/frontmatter/tool bindings |
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |
 | 11 | `list_installed_skills` / `search_skills` / `install_skill` | Skills | SAFE/MODERATE | Compatibility low-level skill helpers |
 
@@ -595,7 +595,7 @@ notify(message: str, profile: Optional[str] = None)
 ### tool_search
 
 Search available tools by keyword/category. This is search-only; mutations live
-in `tool_enable`.
+in `tool_manage`.
 
 ```python
 tool_search(query: str = "", category: str = "", top_k: int = 15, include_status: bool = True)
@@ -1333,27 +1333,40 @@ This batch includes:
 Credential providers and fallback env vars:
 - Microsoft Graph: provider `microsoft_graph`, fields `access_token`, `accessToken`, `token`, `bearer_token`, or `value`; env fallback `MICROSOFT_GRAPH_ACCESS_TOKEN`. Use `base_url` / `baseUrl` / `url` or `MICROSOFT_GRAPH_BASE_URL` for non-default Graph API roots.
 
-### tool_enable
+### tool_manage
 
-Enable, disable, or inspect current-thread tool bindings. This is normally
-available after the agent activates `Skill(name="self-improve")`.
+Enable, disable, prune, or inspect current-thread tool bindings. This is
+normally available after the agent activates `Skill(name="self-improve")`.
 
 ```python
-tool_enable(action: str, tools: list[str] = None, category: str = "", ttl: str | None = None, force: bool = False)
+tool_manage(
+    action: str,
+    tools: list[str] = None,
+    category: str = "",
+    ttl: str | None = None,
+    force: bool = False,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
+)
 ```
 
 **Actions:**
 - `enable`  -  Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
 - `disable`  -  Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive  -  it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
+- `prune`  -  Conservatively clean current-thread binding clutter. Removes expired temporary tools, missing/unavailable tool names, default-bound tools redundantly listed in `enabled_tools`, and recorded-stale permanent enablements whose last use is older than `stale_after_days`. Bindings with no recorded usage are left intact.
 - `list_categories`  -  List all tool categories with tool counts.
 - `status` / `inspect`  -  Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
 
 **Parameters:**
-- `action` (`str`): One of: `enable`, `disable`, `list_categories`, `status`.
+- `action` (`str`): One of: `enable`, `disable`, `prune`, `list_categories`, `status`.
 - `tools` (`list[str]`): Specific tool names to enable or disable.
 - `category` (`str`): Category name to enable all tools in.
 - `ttl` (`str`): Required for `enable` only; ignored by other actions. Duration format: `Nm` (minutes), `Nh` (hours), `Nd` (days), `Nw` (weeks), or `"never"`/`"permanent"` for no expiry. Examples: `"30m"`, `"2h"`, `"7d"`, `"4w"`, `"never"`.
 - `force` (`bool`): For `disable` only  -  set `True` to allow disabling core tools. Default `False`.
+- `stale_after_days` (`int`): For `prune`, stale-use cutoff. Default `30`.
+- `min_enabled_age_days` (`int`): For `prune`, minimum thread config age before stale-use pruning. Default `7`.
+- `dry_run` (`bool`): For `prune`, report proposed changes without saving.
 
 **Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order  -  (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS  -  the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set  -  `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
 
@@ -1398,20 +1411,35 @@ Connections.
 
 ### skill_manage
 
-List, search, install, enable, disable, or inspect Agent Skills.
+List, search, install, enable, disable, prune, or inspect Agent Skills.
 
 ```python
-skill_manage(action: str, query: str = "", name: str = "", source: str = "installed", scope: str = "user", activate_current_thread: bool = False)
+skill_manage(
+    action: str,
+    query: str = "",
+    name: str = "",
+    source: str = "installed",
+    scope: str = "user",
+    activate_current_thread: bool = False,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
+)
 ```
 
-Actions are `list`, `search`, `install`, `enable`, `disable`, and `inspect`.
+Actions are `list`, `search`, `install`, `enable`, `disable`, `inspect`,
+`status`, and `prune`. `prune` removes missing thread skill references,
+thread-enabled skills that redundantly duplicate the user's global enabled
+skill list, no-op disabled entries, and recorded-stale thread-enabled skills.
+It does not remove Skill Kit tool TTL bindings; use `tool_manage(action="prune")`
+for tool bindings.
 Marketplace installs default to user scope; global scope requires admin.
 When a skill is installed or enabled on the current thread and a graph rebuild
 is needed, reload metadata uses `source="skill_install"`.
 
 #### In-turn auto-continue
 
-When the agent calls `tool_enable(action="enable", tools=[...])` during a turn, the enable result explicitly tells the agent to stop after that tool result. It should not write a final answer, explain the enablement, or attempt to call the newly enabled tool in the same graph invocation. The harness then:
+When the agent calls `tool_manage(action="enable", tools=[...])` during a turn, the enable result explicitly tells the agent to stop after that tool result. It should not write a final answer, explain the enablement, or attempt to call the newly enabled tool in the same graph invocation. The harness then:
 
 1. Persists the enablement to the thread config (with TTL) and invalidates the cached graph.
 2. Finishes the current graph invocation normally.
@@ -1419,7 +1447,7 @@ When the agent calls `tool_enable(action="enable", tools=[...])` during a turn, 
 4. Builds a fresh graph with the new tools bound to the LLM.
 5. Injects an internal resume message (`internal_type="tool_reload_resume"`) and drives the new graph against it, streaming into the same SSE connection.
 
-To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_enable(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice  -  the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
+To the client this looks like one continuous turn: no extra `done` event, no separate user message. The thread lock stays held the whole time. The loop is capped at `AgentCore.MAX_TOOL_RELOADS_PER_TURN` rebuilds per user turn to bound token usage. Once the cap is hit, `tool_manage(action="enable")` and Skill Kit activation stop returning `Command(goto=END)` and instead return a plain string whose body includes a `[Reload cap hit]` notice  -  the agent can still respond in-turn, and the new binding takes effect on the next user message. This prevents an orphaned `tool_result` with no LLM follow-up (symptom: the stream looks like it froze because the last enable's `Command` ended the graph but the reload loop was already exhausted).
 
 `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path) honor the auto-continue. The streaming path emits `tool_reload` and then drives the fresh post-reload graph through the same live event conversion, so resumed `thinking`, `tool_call`, `tool_result`, `workspace_artifact`, and `response` chunks remain visible in the same turn. Scheduled TODOs, triggers, callable threads, spawned threads, and the CLI consume `astream()` through `core/stream_bridge.py`, which keeps async-only tools such as `tool_create` available outside regular chat. The bridge uses one process-local asyncio loop for synchronous callers, and async graph caches plus provider SDK HTTP pools are loop-local so FastAPI-loop chat and bridge-loop callable calls do not share loop-bound transports. Autonomous callers use `stream_and_collect()` for shared response/thinking collection, error propagation, and iteration-limit tracking before publishing their own completion payloads. `chat()` remains non-streaming and returns only the final string.
 
@@ -1644,7 +1672,7 @@ legacy parsed-command callers.
 
 ## HTTP/API and Skill Authoring Tools (Optional)
 
-General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP tools, and generated Skill Kits. These are not loaded by default; normally load `Skill(name="self-improve")`, then enable per-thread with `tool_enable` when needed.
+General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP/Python tools, and generated Skills or Skill Kits. These are not loaded by default; normally load `Skill(name="self-improve")`, then manage per-thread bindings with `tool_manage` when needed.
 
 ### http_request
 
@@ -1718,7 +1746,8 @@ api_discover(
 
 ### tool_create
 
-Draft, test, and publish reusable HTTP tools from inside an agent conversation.
+Draft, test, and publish reusable HTTP or Python custom tools from inside an
+agent conversation.
 
 ```python
 tool_create(
@@ -1728,22 +1757,38 @@ tool_create(
     description: str = "",
     parameters: Optional[dict] = None,
     http_config: Optional[dict] = None,
+    implementation_type: str = "http",
+    python_code: str = "",
+    entrypoint: str = "run",
     draft_id: str = "",
     sample_params: Optional[dict] = None,
     ttl: str = "2h",
+    validation_timeout_seconds: int = 60,
 )
 ```
 
 **Actions:**
-- `draft`  -  Save or update a per-user draft in `data/tool_drafts/{user_id}/`. Requires `tool_id`, `description`, `parameters`, and `http_config`.
-- `test`  -  Execute a saved draft with `sample_params` and record whether the request succeeded.
-- `publish`  -  Save a successfully tested draft into the global `data/custom_tools/` registry, reload custom tools, and enable the new tool on the current thread.
+- `draft`  -  Save or update a per-user draft in `data/tool_drafts/{user_id}/`. HTTP drafts require `tool_id`, `description`, `parameters`, and `http_config`. Python drafts require `implementation_type="python"`, `python_code`, and an entrypoint function, default `run`.
+- `test`  -  Execute a saved draft with `sample_params` and record whether the request succeeded. Python tests run in a subprocess.
+- `publish`  -  Save a successfully tested draft into the global `data/custom_tools/` registry, reload custom tools, and enable the new tool on the current thread. Python drafts may provide `sample_params` on publish to validate and publish in one call.
 - `list`  -  Show this user's drafts plus globally published custom tools without exposing request headers or bodies.
 - `delete`  -  Delete this user's draft only. It does not delete a globally published tool.
 
-**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default `2h`) using the same in-turn auto-reload path as `tool_enable(action="enable")`, but reload metadata uses `source="tool_create"` and `reason="tool_published"`.
+**Publish semantics:** Published tools are global registry entries, so any user can discover and enable them later. They are not added to `default_thread_tools` and are not enabled by default for other users or threads. The publishing thread gets the new tool enabled with a TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default `2h`) using the same binding path as `tool_manage(action="enable")`. With dynamic binding enabled, the tool is callable on the next model step without a graph rebuild. In legacy rebuild mode, reload metadata uses `source="tool_create"` and `reason="tool_published"` or `reason="python_tool_published"`.
 
-**V1 limits:** Only `implementation_type="http"` is supported. Agent-created tools reject inline secrets and `${env:...}` references. Sensitive headers are allowed only when their value uses a credential-vault reference like `${credential:cred_id.value}`.
+**HTTP safety:** Agent-created HTTP tools reject inline secrets and `${env:...}` references. Sensitive headers are allowed only when their value uses a credential-vault reference like `${credential:cred_id.value}`.
+
+**Python safety:** Python custom tools are stored as data-backed definitions,
+not package modules, so Nymeria updates do not overwrite them and publishing
+does not edit `nymeria/tools/__init__.py`. The API registers a stable wrapper
+tool and runs the user code in a child Python process for validation and each
+runtime invocation. Syntax errors, exceptions, `sys.exit`, process crashes, and
+timeouts return tool errors instead of crashing the API process. This is crash
+containment, not a malicious-code security sandbox: the child process still
+runs with the backend container or process user's OS permissions. Publish-time
+validation defaults to `60` seconds and can be overridden with
+`validation_timeout_seconds`; published tool calls use the native
+`tool_timeout` setting.
 
 **Credential vault auth:** Authenticated custom HTTP tools should use `${credential:<credential_id>.<field>}` references in headers, query params, URLs, or bodies instead of raw values. Runtime execution resolves the reference server-side, checks the credential's allowed target, and audits the use without returning secret material to the agent.
 
@@ -1777,82 +1822,61 @@ type `native_tool`; for example, request setup for NASA with
 `target_type="native_tool"`, `target_id="nasa_apod"`, and
 `required_fields=["api_key"]`.
 
-### skill_config
+### skill_write
 
-Draft, validate, publish, list, and delete Nymeria Skills and Skill Kits from inside an agent conversation.
+Write a new Skill or Skill Kit from full SKILL.md markdown, with optional
+script files. This is the preferred agent-facing authoring tool from
+`self-improve`.
 
 ```python
-skill_config(
-    action: str,
-    name: str = "",
-    description: str = "",
-    body: str = "",
-    allowed_tools: Optional[list[str] | str] = None,
-    required_tools: Optional[list[str] | str] = None,
-    tool_ttl: str = "2h",
-    draft_id: str = "",
+skill_write(
+    markdown: str,
+    tools: Optional[list[str] | str] = None,
+    scripts: Optional[list[dict]] = None,
+    tool_ttl: Optional[str] = None,
     scope: str = "user",
     overwrite: bool = False,
     activate_current_thread: bool = True,
+    dry_run: bool = False,
 )
 ```
 
-**Actions:**
-- `draft`  -  Validate and save a per-user draft in `data/skill_drafts/{user_id}/`.
-- `validate`  -  Validate inline fields or a saved draft without publishing.
-- `publish`  -  Write a validated `SKILL.md` to `data/skills/users/{user_id}/` or admin-only `data/skills/global/`, reload skills, and by default enable it on the current thread.
-- `list`  -  Show this user's drafts plus installed skills visible to the user.
-- `delete`  -  With `scope="draft"`, delete a draft. With `scope="user"` or `scope="global"`, uninstall that skill scope; global delete requires admin.
+`markdown` must be a complete SKILL.md with YAML frontmatter and body. If
+`tools` is provided, it replaces `metadata.nymeria.required_tools`; an empty
+tool list creates a plain instruction-only Skill. `scripts` writes files under
+`scripts/` only, rejects unsafe paths and raw secret-looking values, and
+syntax-checks `.py` files before any package is written. The tool validates the
+candidate directory in a temporary location first, then writes it, reloads the
+skill manager, optionally enables the skill on the current thread, and queues a
+same-turn skill reload when needed.
 
-**V1 limits:** `skill_config` writes only `SKILL.md`. It cannot create scripts, assets, references, or arbitrary paths. It rejects body text that includes YAML frontmatter; agents pass `name`, `description`, `allowed_tools`, `required_tools`, and `tool_ttl` as structured parameters.
+### skill_edit
 
-`tool_ttl` controls how long required tools are bound when the Skill Kit is
-activated. It accepts `Nm`, `Nh`, `Nd`, `Nw`, or `"never"`/`"permanent"`;
-default is `"2h"`.
-
-**Skill Kit dependency checks:** `required_tools` are validated before any publish write. Unknown, unloadable, or admin-blocked tools fail strictly. Publishing a user skill that would shadow an existing bundled/global skill is rejected; replacing an existing generated skill requires `overwrite=true` and the existing directory must contain only `SKILL.md`.
-
-**Same-turn activation:** When `activate_current_thread=true`, publish adds the skill name to `ThreadConfig.enabled_skills`, reloads the skill manager, invalidates graph caches, and queues a same-turn `tool_reload` with `source="skill_config"` and `reason="skill_published"`. The event may have an empty `tools` list because the reload refreshes the `Skill` meta-tool index rather than binding a new normal tool.
-
-### skill_kit_create
-
-Preferred facade for durable capability authoring from `self-improve`.
+Edit an existing user/global Skill's SKILL.md. V1 preserves existing scripts,
+references, and assets and only rewrites the frontmatter/body.
 
 ```python
-skill_kit_create(
-    action: str,
-    name: str = "",
+skill_edit(
+    name: str,
+    markdown: str = "",
+    new_name: str = "",
     description: str = "",
     body: str = "",
-    allowed_tools: Optional[list[str] | str] = None,
-    required_tools: Optional[list[str] | str] = None,
-    tool_ttl: str = "2h",
-    draft_id: str = "",
+    set_tools: Optional[list[str] | str] = None,
+    add_tools: Optional[list[str] | str] = None,
+    remove_tools: Optional[list[str] | str] = None,
+    tool_ttl: Optional[str] = None,
     scope: str = "user",
     overwrite: bool = False,
     activate_current_thread: bool = True,
-    tool_id: str = "",
-    parameters: Optional[dict] = None,
-    http_config: Optional[dict] = None,
-    sample_params: Optional[dict] = None,
-    ttl: str = "2h",
+    dry_run: bool = False,
 )
 ```
 
-Actions:
-- `draft`, `validate`, `publish`, `package`, `list`  -  Skill Kit lifecycle.
-- `draft_http_tool`, `test_http_tool`, `publish_http_tool`  -  guided HTTP tool
-  creation before packaging a Skill Kit around it.
-
-`publish`/`package` use the Skill publish reload path with
-`source="skill_kit_create"` and `reason="skill_kit_created"`. Publishing an
-HTTP tool through this facade enables the new tool on the current thread with
-`source="skill_kit_create"` and `reason="http_tool_published_for_skill_kit"`.
-`tool_ttl` is the Skill Kit required-tool TTL and accepts `Nm`, `Nh`, `Nd`,
-`Nw`, or `"never"`/`"permanent"`; `ttl` is only for enabling a newly published
-HTTP tool on the current thread.
-
----
+Pass `markdown` to replace the full SKILL.md, or use structured patch fields
+to rename, update description/body, and set/add/remove Skill Kit required
+tools. Bundled skills are read-only. Renames update the current thread's skill
+references when the edited skill is active there.
 
 ## Watchdog Tools (Optional)
 
@@ -2197,7 +2221,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
-- Utility tools: `claude_code`, `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_config`, `skill_kit_create` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
+- Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
 1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
@@ -2363,9 +2387,9 @@ DELETE /tools/custom/{tool_id} # Delete a tool
 POST /tools/custom/{tool_id}/test  # Test a tool
 ```
 
-**Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID.
+**Storage:** Custom tools are stored as JSON files in `data/custom_tools/`, one `.json` per tool ID. HTTP and MCP tools are declarative definitions. Python tools store source code in the same JSON manifest and execute through the subprocess wrapper.
 
-**Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(query=...)` can find the new tool. Agent-created tools are global but remain opt-in per thread.
+**Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(query=...)` can find the new tool. Agent-created tools are global but remain opt-in per thread. The publishing thread is auto-enabled with the requested TTL through the same hot-load path as `tool_manage`.
 
 ### HexStrike MCP Sidecar
 

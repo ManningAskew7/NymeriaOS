@@ -410,14 +410,14 @@ class NymeriaAgent:
         self._async_user_graphs: Dict[tuple, tuple] = {}  # For async operations
         self._GRAPH_CACHE_MAX = 50  # LRU eviction threshold
 
-        # Mid-turn tool reload: set by tool_enable(action="enable") when a
+        # Mid-turn tool reload: set by tool_manage(action="enable") when a
         # genuinely new tool was added to the thread. Consumed at the end of
         # the current astream() invocation to trigger an in-stream graph
         # rebuild + resume (see _do_tool_reload). Capped at MAX_TOOL_RELOADS
         # per user turn to prevent runaway enable loops.
         self._pending_tool_reload: Dict[str, dict] = {}
         # Per-turn reload counter, written by astream/chat and read by
-        # tool_search._enable/tool_enable to degrade gracefully once the cap is reached
+        # tool_search._enable/tool_manage to degrade gracefully once the cap is reached
         # (returns a plain string instead of Command(goto=END), letting the
         # agent respond in-turn rather than leaving an orphan tool_result).
         self._turn_reload_count: Dict[str, int] = {}
@@ -427,8 +427,9 @@ class NymeriaAgent:
         # PATCH /settings refreshes agent.settings in place, and we want the
         # next graph build to pick up the new value without waiting for a
         # full re-instantiation. See _is_dynamic_tool_binding() for the read.
-        # Name set of the most recently computed graph superset, used by
-        # should_emit_reload_command() to detect "tool not in superset" fallback.
+        # Name set of the most recently computed graph superset. Dynamic mode
+        # no longer relies on this for reload decisions, but keeping it visible
+        # is useful for diagnostics and existing graph-build tests.
         self._current_tool_superset_names: set = set()
 
         # Build default checkpointer config (shared across all graphs)
@@ -1428,7 +1429,7 @@ class NymeriaAgent:
                 messages = result.get("messages", [])
 
                 # Mirror astream()'s in-turn tool-reload loop for sync callers
-                # (MCP `nymeria_chat`, CLI). If tool_enable(action="enable")
+                # (MCP `nymeria_chat`, CLI). If tool_manage(action="enable")
                 # flagged a new tool, rebuild a fresh graph with it bound and
                 # continue via an internal resume message. See
                 # MAX_TOOL_RELOADS_PER_TURN and docs/tools.md.
@@ -2087,7 +2088,7 @@ class NymeriaAgent:
                 async for evt in stream_processor.drive(graph, input_state):
                     yield evt
 
-                # In-turn tool reload: if tool_enable(action="enable") added a
+                # In-turn tool reload: if tool_manage(action="enable") added a
                 # genuinely new tool during the first pass, rebuild a fresh
                 # graph with the new tools bound and resume. See docs/tools.md.
                 reload_count = 0

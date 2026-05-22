@@ -2,13 +2,12 @@
 
 Covers the four contracts that gate correctness:
 1. ``_tool_config_hash`` is stable across no-op reads and changes on mutation.
-2. ``should_emit_reload_command`` returns True in rebuild mode, and in
-   dynamic mode returns False iff every requested tool name is in the
-   current graph's superset.
+2. ``should_emit_reload_command`` returns True in rebuild mode, and False in
+   dynamic mode because missing post-build tools are resolved at execution time.
 3. ``create_dynamic_agent_node`` reuses its bound LLM when the resolver's
    hash is unchanged across consecutive calls, and rebinds when it changes.
 4. ``tool_search._enable`` returns a plain string (not a Command) when
-   running in dynamic mode for tools already in the superset.
+   running in dynamic mode, including for post-build tool names.
 """
 
 from __future__ import annotations
@@ -122,31 +121,20 @@ class ShouldEmitReloadCommandTests(unittest.TestCase):
             self.assertTrue(tool_reload.should_emit_reload_command(["x"]))
             self.assertTrue(tool_reload.should_emit_reload_command([]))
 
-    def test_dynamic_mode_skips_when_all_in_superset(self):
+    def test_dynamic_mode_skips_reload_for_existing_and_new_tool_names(self):
         agent = _stub_agent()
         agent.settings.dynamic_tool_binding = True
         agent._current_tool_superset_names = {"x", "y"}
         with patch("nymeria.core.agent.get_current_agent", return_value=agent):
             self.assertFalse(tool_reload.should_emit_reload_command(["x"]))
             self.assertFalse(tool_reload.should_emit_reload_command(["x", "y"]))
-            # Empty list: vacuously satisfied → skip.
+            self.assertFalse(
+                tool_reload.should_emit_reload_command(
+                    ["unknown_post_build_tool"],
+                    thread_id="thread-a",
+                )
+            )
             self.assertFalse(tool_reload.should_emit_reload_command([]))
-
-    def test_dynamic_mode_emits_when_tool_missing_from_superset(self):
-        agent = _stub_agent()
-        agent.settings.dynamic_tool_binding = True
-        agent._current_tool_superset_names = {"x"}
-        with patch("nymeria.core.agent.get_current_agent", return_value=agent):
-            self.assertTrue(tool_reload.should_emit_reload_command(["unknown"]))
-            self.assertTrue(tool_reload.should_emit_reload_command(["x", "unknown"]))
-
-    def test_dynamic_mode_empty_superset_falls_back_to_emit(self):
-        """Defensive: if the superset attr is unset/empty we don't risk skipping."""
-        agent = _stub_agent()
-        agent.settings.dynamic_tool_binding = True
-        agent._current_tool_superset_names = set()
-        with patch("nymeria.core.agent.get_current_agent", return_value=agent):
-            self.assertTrue(tool_reload.should_emit_reload_command(["x"]))
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +224,7 @@ class DynamicAgentNodeRebindTests(unittest.TestCase):
 
 
 class ToolEnableDynamicReturnTests(unittest.TestCase):
-    """In dynamic mode, _enable should NOT return Command(goto=END) for
-    tools already in the superset — it should return a plain string and
-    let the next agent step's resolver pick up the new binding."""
+    """In dynamic mode, _enable should NOT return Command(goto=END)."""
 
     def test_enable_in_dynamic_mode_returns_string_when_in_superset(self):
         import sys
@@ -293,6 +279,34 @@ class ToolEnableDynamicReturnTests(unittest.TestCase):
                 tool_call_id="call-1",
             )
         self.assertIsInstance(result, Command)
+
+    def test_enable_in_dynamic_mode_returns_string_for_post_build_tool(self):
+        import sys
+        ts_mod = sys.modules["nymeria.tools.tool_search"]
+
+        agent = _stub_agent()
+        agent.settings.dynamic_tool_binding = True
+        agent._current_tool_superset_names = {"tool_search"}
+
+        binding_result = ts_mod.ToolBindingResult(
+            ok=True,
+            text="[Success]: 1 tool enabled.",
+            reload_tools=["new_custom_tool"],
+            cap_hit=False,
+        )
+
+        with patch.object(ts_mod, "bind_tools_for_thread", return_value=binding_result), \
+             patch("nymeria.core.agent.get_current_agent", return_value=agent):
+            result = ts_mod._enable(
+                tool_names=["new_custom_tool"],
+                category="",
+                thread_id="thread-a",
+                user_id="u",
+                ttl="2h",
+                tool_call_id="call-1",
+            )
+        self.assertIsInstance(result, str)
+        self.assertEqual(result, binding_result.text)
 
 
 if __name__ == "__main__":

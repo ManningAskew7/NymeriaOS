@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, Tempor
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.skills import load_skill_directory
 from nymeria.skills.meta_tool import create_skill_meta_tool
-from nymeria.tools.tool_search import bind_tools_for_thread, tool_enable, tool_search
+from nymeria.tools.tool_search import bind_tools_for_thread, tool_manage, tool_search
 
 
 KIT_MD = """---
@@ -73,12 +74,14 @@ Use bash_execute and memory_clear_all.
 
 SELF_IMPROVE_REQUIRED_TOOLS = [
     "tool_search",
-    "tool_enable",
+    "tool_manage",
     "manage_mcp",
     "skill_manage",
     "api_discover",
     "http_request",
-    "skill_kit_create",
+    "tool_create",
+    "skill_write",
+    "skill_edit",
 ]
 
 
@@ -193,7 +196,7 @@ def test_self_improve_required_tools_bind_for_non_admin(tmp_path: Path):
     assert agent._pending_tool_reload["thread-a"]["skill_name"] == "self-improve"
 
 
-def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: Path):
+def test_tool_search_is_search_only_and_tool_manage_manages_bindings(tmp_path: Path):
     agent = _FakeAgent(tmp_path)
     set_current_agent(agent)
     try:
@@ -202,12 +205,12 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
             top_k=5,
         )
-        status_result = tool_enable.func(
+        status_result = tool_manage.func(
             action="status",
             tool_call_id="call-status",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
-        enable_result = tool_enable.func(
+        enable_result = tool_manage.func(
             action="enable",
             tools=["memory_clear_all"],
             ttl="4w",
@@ -222,20 +225,20 @@ def test_tool_search_is_search_only_and_tool_enable_manages_bindings(tmp_path: P
     assert "[Thread Tool Status]" in status_result
     assert isinstance(enable_result, Command)
     assert "memory_clear_all" in agent.thread_config_manager.get_config("thread-a").temporary_tools
-    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
+    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_manage"
 
 
-def test_tool_enable_requires_ttl_and_accepts_flexible_ttl(tmp_path: Path):
+def test_tool_manage_requires_ttl_and_accepts_flexible_ttl(tmp_path: Path):
     agent = _FakeAgent(tmp_path)
     set_current_agent(agent)
     try:
-        enable_result = tool_enable.func(
+        enable_result = tool_manage.func(
             action="enable",
             tools=["hello_test"],
             tool_call_id="call-enable",
             config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
         )
-        enable_with_ttl = tool_enable.func(
+        enable_with_ttl = tool_manage.func(
             action="enable",
             tools=["hello_test"],
             ttl="4w",
@@ -249,7 +252,83 @@ def test_tool_enable_requires_ttl_and_accepts_flexible_ttl(tmp_path: Path):
     assert "ttl is required for enable" in enable_result
     assert isinstance(enable_with_ttl, Command)
     assert "hello_test" in agent.thread_config_manager.get_config("thread-a").temporary_tools
-    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_enable"
+    assert agent._pending_tool_reload["thread-a"]["source"] == "tool_manage"
+
+
+def test_tool_manage_prune_removes_clear_stale_thread_bindings(tmp_path: Path):
+    agent = _FakeAgent(tmp_path)
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-a",
+            enabled_tools=["bash_execute", "memory_clear_all", "missing_tool"],
+            disabled_tools=["missing_disabled"],
+            temporary_tools={
+                "hello_test": TemporaryToolEntry(
+                    expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+                )
+            },
+        )
+    )
+
+    set_current_agent(agent)
+    try:
+        result = tool_manage.func(
+            action="prune",
+            tool_call_id="call-prune",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["changed"] is True
+    assert payload["removed"]["enabled_redundant_default"] == ["bash_execute"]
+    assert payload["removed"]["enabled_unavailable"] == ["missing_tool"]
+    assert payload["removed"]["disabled_unavailable"] == ["missing_disabled"]
+    assert payload["removed"]["temporary_expired"] == ["hello_test"]
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert tc.enabled_tools == ["memory_clear_all"]
+    assert tc.disabled_tools == []
+    assert tc.temporary_tools == {}
+
+
+def test_tool_manage_prune_removes_recorded_stale_permanent_tool(tmp_path: Path, monkeypatch):
+    from nymeria.core import capability_usage
+    from nymeria.core.capability_usage import CapabilityUsageStore
+
+    agent = _FakeAgent(tmp_path)
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", enabled_tools=["memory_clear_all"])
+    )
+    store = CapabilityUsageStore(tmp_path / "capability_usage.json")
+    store.record(user_id="user-a", thread_id="thread-a", tools=["memory_clear_all"])
+    data = json.loads(store.path.read_text(encoding="utf-8"))
+    data["user-a"]["thread-a"]["tools"]["memory_clear_all"]["last_used_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=45)
+    ).isoformat()
+    store.path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(capability_usage, "get_capability_usage_store", lambda: store)
+
+    set_current_agent(agent)
+    try:
+        result = tool_manage.func(
+            action="prune",
+            stale_after_days=30,
+            min_enabled_age_days=0,
+            tool_call_id="call-prune",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["removed"]["enabled_stale_used_before_cutoff"] == ["memory_clear_all"]
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert tc.enabled_tools == []
 
 
 def test_mcp_install_binds_discovered_tools_and_queues_reload(tmp_path: Path, monkeypatch):

@@ -190,7 +190,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
     (ToolCategory.MCP_SERVER, ("SEARCH_MCP_TOOLS",)),
     (ToolCategory.AUTH, ("AUTH_MANAGER_TOOLS", "REQUEST_CREDENTIAL_TOOLS")),
     (ToolCategory.AUTONOMY, ("WATCHDOG_TOOLS",)),
-    (ToolCategory.CUSTOM, ("TOOL_CREATE_TOOLS", "SKILL_CONFIG_TOOLS", "SKILL_KIT_CREATE_TOOLS")),
+    (ToolCategory.CUSTOM, ("TOOL_CREATE_TOOLS", "SKILL_CONFIG_TOOLS")),
 )
 
 
@@ -204,10 +204,11 @@ _CORE_MODERATE_TOOL_NAMES = frozenset(
         "slash_command",
         "http_request",
         "api_discover",
-        "tool_enable",
+        "tool_manage",
         "manage_mcp",
         "skill_manage",
-        "skill_kit_create",
+        "skill_write",
+        "skill_edit",
     }
 )
 

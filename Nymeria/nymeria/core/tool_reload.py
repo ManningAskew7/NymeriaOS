@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.graph import END
@@ -44,18 +44,22 @@ def latest_tool_batch_queued_reload(messages: Sequence[BaseMessage]) -> bool:
     return False
 
 
-def should_emit_reload_command(new_tool_names: Sequence[str]) -> bool:
+def should_emit_reload_command(
+    new_tool_names: Sequence[str],
+    *,
+    thread_id: Optional[str] = None,
+) -> bool:
     """Decide whether a tool-enable call site should emit Command(goto=END).
 
     Rebuild mode: always True — the graph must rebuild to bind new tools.
-    Dynamic mode: True only when a newly-enabled tool is NOT in the current
-    graph's precomputed tool superset (e.g., a tool just created by
-    tool_create or a freshly-installed MCP). For tools already in the
-    superset, the model node rebinds them on its next invocation without
-    a graph rebuild, so a plain-string return is sufficient.
+    Dynamic mode: always False. The model node rebinds tools per step from the
+    live resolver, and SafeToolNode refreshes its dispatch table from the same
+    resolver before rejecting a post-build tool call. This makes newly enabled
+    and newly created tools callable in the next agent step without a
+    graph-rebuild/resume round trip.
 
-    Defensive fall-through: if the agent or its superset attribute is
-    unavailable, return True so the legacy reload path still triggers.
+    Defensive fall-through: if the current agent is unavailable, return True
+    so the legacy reload path still triggers.
     """
     from .agent import get_current_agent
 
@@ -67,7 +71,4 @@ def should_emit_reload_command(new_tool_names: Sequence[str]) -> bool:
     settings = getattr(agent, "settings", None)
     if not bool(getattr(settings, "dynamic_tool_binding", False)):
         return True
-    superset = getattr(agent, "_current_tool_superset_names", None)
-    if not superset:
-        return True
-    return not all(name in superset for name in new_tool_names)
+    return False

@@ -6,12 +6,14 @@ metadata:
   nymeria:
     required_tools:
       - tool_search
-      - tool_enable
+      - tool_manage
       - manage_mcp
       - skill_manage
       - api_discover
       - http_request
-      - skill_kit_create
+      - tool_create
+      - skill_write
+      - skill_edit
     tool_ttl: 2h
 ---
 
@@ -32,12 +34,12 @@ or Skill Kit mechanics.
 
 Use this when the capability already exists in Nymeria's tool registry.
 
-Flow: `tool_search` -> `tool_enable`.
+Flow: `tool_search` -> `tool_manage`.
 
 1. Search by the user-visible task, not by guessed tool names.
 2. Enable only exact tools you need, or a category only when the whole category
    is appropriate.
-3. Pass a deliberate `ttl` every time you call `tool_enable(action="enable")`.
+3. Pass a deliberate `ttl` every time you call `tool_manage(action="enable")`.
 4. If a reload is queued, stop after that tool result and continue only after
    the automatic resume.
 
@@ -70,11 +72,12 @@ instructions plus `required_tools`, so future threads get the right tool
 schemas automatically when the skill is activated. That prevents repeated
 search, enable, and setup work.
 
-Flow: `draft` -> `validate` -> `publish`.
+Flow: write full SKILL.md markdown -> `skill_write`.
 
-Use `skill_kit_create(action="draft")` to save a draft, `validate` to check it,
-and `publish` when ready. Use `package` only for the shortcut case where the
-draft and publish are both clearly safe.
+Use `skill_write` for new Skills and Skill Kits. Use `skill_edit` for existing
+Skills when you only need to rewrite the SKILL.md body, description, name, or
+required tool metadata. Keep custom helper creation in `tool_create`, then
+write or edit the Skill Kit around the published tool.
 
 Choose the artifact:
 
@@ -83,9 +86,9 @@ Choose the artifact:
   empty.
 - Skill Kit: future runs need specific Nymeria tools; put exact tool names in
   `required_tools` and set `tool_ttl`.
-- Custom HTTP tool plus Skill Kit: the reusable workflow needs a parameterized
-  API call. Draft, test, and publish the HTTP tool first, then package a Skill
-  Kit around it.
+- Custom tool plus Skill Kit: the reusable workflow needs a parameterized API
+  call or a small deterministic Python helper. Draft, test, and publish the
+  custom tool first, then package a Skill Kit around it.
 
 ## TTL Reasoning
 
@@ -123,12 +126,9 @@ tool with short operating instructions:
 
 ```json
 {
-  "action": "package",
-  "name": "trigger-monitoring",
-  "description": "Inspect and troubleshoot recurring Nymeria trigger failures.",
-  "required_tools": ["trigger_info"],
+  "markdown": "---\nname: trigger-monitoring\ndescription: Inspect and troubleshoot recurring Nymeria trigger failures.\n---\n\n# Trigger Monitoring\n\nUse trigger_info to inspect recent trigger executions before changing configuration. Summarize whether the failure is source polling, conditions, cooldown, or delivery.",
+  "tools": ["trigger_info"],
   "tool_ttl": "7d",
-  "body": "# Trigger Monitoring\n\nUse trigger_info to inspect recent trigger executions before changing configuration. Summarize whether the failure is source polling, conditions, cooldown, or delivery.",
   "activate_current_thread": true
 }
 ```
@@ -140,7 +140,7 @@ The user needs a reusable API lookup. First prove the endpoint with
 
 ```json
 {
-  "action": "draft_http_tool",
+  "action": "draft",
   "tool_id": "public_status_lookup",
   "name": "Public Status Lookup",
   "description": "Look up a public service status by service slug.",
@@ -163,7 +163,7 @@ Then test and publish the HTTP tool:
 
 ```json
 {
-  "action": "test_http_tool",
+  "action": "test",
   "draft_id": "public_status_lookup",
   "sample_params": {"service": "example"}
 }
@@ -171,21 +171,45 @@ Then test and publish the HTTP tool:
 
 ```json
 {
-  "action": "publish_http_tool",
+  "action": "publish",
   "draft_id": "public_status_lookup"
 }
 ```
+
+## Example: Create A Python Helper Tool
+
+Use Python custom tools only for small pure helpers. Keep executable work inside
+the entrypoint function. Do not use top-level calls, background processes, or
+raw secrets.
+
+```json
+{
+  "action": "draft",
+  "implementation_type": "python",
+  "tool_id": "slugify_text",
+  "name": "Slugify Text",
+  "description": "Convert text into a lowercase URL slug.",
+  "parameters": {
+    "text": {
+      "type": "string",
+      "description": "Text to convert",
+      "required": true
+    }
+  },
+  "python_code": "import re\n\ndef run(text: str) -> str:\n    slug = re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')\n    return slug"
+}
+```
+
+Then call `tool_create(action="test", draft_id="slugify_text",
+sample_params={"text": "Hello Nymeria"})`, and publish only if the test passes.
 
 Finally package a Skill Kit requiring the published tool:
 
 ```json
 {
-  "action": "package",
-  "name": "service-status-checks",
-  "description": "Check public service status pages and explain incidents.",
-  "required_tools": ["public_status_lookup"],
+  "markdown": "---\nname: service-status-checks\ndescription: Check public service status pages and explain incidents.\n---\n\n# Service Status Checks\n\nUse public_status_lookup with the service slug. Explain current status, active incidents, and stale or missing data clearly.",
+  "tools": ["public_status_lookup"],
   "tool_ttl": "24h",
-  "body": "# Service Status Checks\n\nUse public_status_lookup with the service slug. Explain current status, active incidents, and stale or missing data clearly.",
   "activate_current_thread": true
 }
 ```

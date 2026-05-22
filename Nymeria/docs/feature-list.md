@@ -96,16 +96,16 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 
 ### Runtime Capability Expansion (`self-improve`)
 - **Search**  -  `tool_search` finds tools by keyword/category after `self-improve` loads
-- **Enable**  -  `tool_enable` activates optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
+- **Manage**  -  `tool_manage` activates, disables, prunes, and inspects optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
 - **MCP**  -  `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
-- **Skills**  -  `skill_manage` lists, searches, installs, enables, and disables Agent Skills
-- **Skill Kits**  -  `skill_kit_create` packages existing tools or creates HTTP tools before publishing a durable Skill Kit
+- **Skills**  -  `skill_manage` lists, searches, installs, enables, disables, prunes, and inspects Agent Skills
+- **Skills/Skill Kits**  -  `skill_write` writes full SKILL.md packages, `skill_edit` edits existing SKILL.md metadata/body/tool bindings, and `tool_create` publishes reusable HTTP or Python helper tools
 
 ### In-Turn Hot-Loading
 - **Mid-stream graph rebuild**  -  Enable a tool and use it in the same turn (up to 3 reloads per turn)
-- Agent calls `tool_enable(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
+- Agent calls `tool_manage(action="enable")` → graph ends → fresh graph compiled with new tool → agent continues in same SSE stream
 - Skill Kit activation uses the same path when `metadata.nymeria.required_tools` declares required tool schemas
-- `skill_config(action="publish")`, `skill_kit_create`, `skill_manage`, and `manage_mcp(action="install")` use reload metadata to refresh the right schemas/indexes in the same turn
+- `skill_write`, `skill_edit`, `skill_manage`, and `manage_mcp(action="install")` use reload metadata to refresh the right schemas/indexes in the same turn
 - **Sliding renewal**  -  Re-enabling refreshes expiry; promoting to permanent upgrades classification
 - **Lazy eviction**  -  Expired TTL tools filtered at graph-build time, no background scheduler
 
@@ -119,7 +119,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **Progressive disclosure**  -  Only name + description loaded; full body on activation
 - **Skill Kits**  -  Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
 - **Self-improve Skill Kit**  -  Bundled workflow seeded into user global skills by default; users can untick "Enable globally" while generated Skill Kits activate only on the current thread unless explicitly made global
-- **`skill_config`**  -  Validated agent-facing writer for generated `SKILL.md` files; strict dependency checks, user scope by default, global scope admin-only
+- **`skill_write` / `skill_edit`**  -  Validated agent-facing writer/editor for generated Skill packages; strict dependency checks, user scope by default, global scope admin-only
 - **Per-thread control**  -  Enable/disable skills per thread; four scopes (thread > user > global > bundled)
 
 ---
@@ -176,10 +176,10 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Credentials** | `auth_manager`, `request_credential` |
-| **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_enable`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, and `skill_kit_create` only when needed |
+| **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when needed |
 
 The code-owned source of truth is `nymeria/tools/__init__.py`: 17 core tools in
-`ALL_TOOLS` and 1,250 optional tools in `OPTIONAL_TOOLS` as of 2026-05-20.
+`ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-22.
 
 ### Optional Tool Categories
 
@@ -498,7 +498,7 @@ CLIProxyAPI runs as a separate stack from `/opt/NymeriaOS/CLIProxyAPI-main/` (no
 | `data/users/{user_id}/memory.db` | RAG vector store (sqlite-vec + FTS5) |
 | `data/thread_notes/{thread_id}.md` | Thread notepads (per-thread knowledge base) |
 | `data/thread_configs/{thread_id}.json` | Per-thread configuration |
-| `data/custom_tools/` | Custom tool definitions |
+| `data/custom_tools/` | Custom HTTP, MCP, and subprocess-backed Python tool definitions |
 | `data/skill_drafts/` | Agent-authored Skill/Skill Kit drafts |
 | `data/mcp_servers/` | MCP server configurations |
 | `data/skills/` | Installed skills (user/global scope) |

@@ -1,10 +1,11 @@
 """Custom tool loader and executor.
 
 Loads custom tool definitions from JSON files and converts them to
-LangChain @tool functions. Supports HTTP and MCP tool implementations.
+LangChain @tool functions. Supports HTTP, MCP, and Python tool implementations.
 
 HTTP tools make REST API calls with parameter interpolation.
 MCP tools communicate with Model Context Protocol servers via JSON-RPC.
+Python tools execute configured source code in a child process.
 
 Based on MCP best practices 2025-2026:
 - Environment variable interpolation for secrets
@@ -122,6 +123,8 @@ class CustomToolLoader:
                 tool = self._create_http_tool(definition)
             elif definition.implementation_type == "mcp":
                 tool = self._create_mcp_tool(definition)
+            elif definition.implementation_type == "python":
+                tool = self._create_python_tool(definition)
             else:
                 logger.error(f"Unknown implementation type: {definition.implementation_type}")
                 return None
@@ -190,6 +193,32 @@ class CustomToolLoader:
         return StructuredTool.from_function(
             func=lambda **kwargs: mcp_manager.call_tool_sync(config, kwargs),
             coroutine=execute_mcp,
+            name=definition.id,
+            description=definition.description,
+            args_schema=_create_pydantic_schema(definition.id, definition.parameters),
+        )
+
+    def _create_python_tool(self, definition: CustomToolDefinition) -> BaseTool:
+        """Create a subprocess-backed LangChain tool from Python source."""
+        config = definition.python_config
+        assert config is not None
+
+        async def execute_python(**kwargs: Any) -> str:
+            from .python_custom_tools import execute_python_tool
+
+            return await execute_python_tool(
+                config,
+                kwargs,
+                target_id=definition.id,
+            )
+
+        return StructuredTool.from_function(
+            func=lambda **kwargs: _sync_execute_python(
+                config,
+                kwargs,
+                target_id=definition.id,
+            ),
+            coroutine=execute_python,
             name=definition.id,
             description=definition.description,
             args_schema=_create_pydantic_schema(definition.id, definition.parameters),
@@ -470,6 +499,18 @@ def _sync_execute_http(
             actor_user_id=actor_user_id,
         )
     )
+
+
+def _sync_execute_python(
+    config: Any,
+    params: Dict[str, Any],
+    *,
+    target_id: Optional[str] = None,
+) -> str:
+    """Synchronous wrapper for subprocess-backed Python tool execution."""
+    from .python_custom_tools import _sync_execute_python_tool
+
+    return _sync_execute_python_tool(config, params, target_id=target_id)
 
 
 def _extract_json_path(data: Any, path: str) -> Any:

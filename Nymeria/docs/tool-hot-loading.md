@@ -4,14 +4,14 @@ How Nymeria enables and uses optional tools within a single user turn, without r
 
 ## Problem
 
-LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_enable(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation  -  which normally means the next user message.
+LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()`. Once a graph invocation starts, the tool list is frozen. When the agent discovers it needs a tool it doesn't have (e.g. `pdf_write`), calling `tool_manage(action="enable")` persists the enablement but the tool isn't callable until the **next** graph invocation  -  which normally means the next user message.
 
 This breaks the autonomous "search, enable, use" flow:
 
 ```
 Skill("self-improve")       → binds capability expansion tools
 tool_search("pdf")          → finds pdf_view, pdf_edit, pdf_write
-tool_enable(enable, [...])  → persists to thread config
+tool_manage(enable, [...])  → persists to thread config
 pdf_write(...)              → fails: not bound to the LLM
 ```
 
@@ -28,7 +28,7 @@ User: "convert report.docx to PDF"
   │    ├─ tool_call: Skill(name="self-improve")
   │    ├─ tool_call: tool_search(query="pdf")
   │    ├─ tool_result: pdf_view, pdf_edit, pdf_write found
-  │    ├─ tool_call: tool_enable(action="enable", tools=["pdf_write"])
+  │    ├─ tool_call: tool_manage(action="enable", tools=["pdf_write"])
   │    │    ├─ Persists to thread config (with TTL)
   │    │    ├─ Sets agent._pending_tool_reload[thread_id]
   │    │    ├─ Invalidates cached graph
@@ -61,13 +61,13 @@ even when LangGraph also sees a regular post-tools edge.
 
 ## Tool-Call Argument Boundary
 
-On 2026-05-18, `tool_enable(action="enable", tools=["random_cat_fact"], ttl="30m")`
+On 2026-05-18, `tool_manage(action="enable", tools=["random_cat_fact"], ttl="30m")`
 regressed with Claude Opus 4.6 through CLIProxy: the model/provider path emitted
 the `tools` argument as the JSON-encoded string `"[\"random_cat_fact\"]"` instead
-of a JSON array. Pydantic correctly rejected that value before `tool_enable`
+of a JSON array. Pydantic correctly rejected that value before `tool_manage`
 executed because the tool schema expects `tools: Optional[List[str]]`.
 
-The schema and tool signature were unchanged, and `tool_enable(action="status")`
+The schema and tool signature were unchanged, and `tool_manage(action="status")`
 continued to work. That isolated the failure to list-typed tool-call arguments
 at the LLM/tool-adapter boundary, not to dynamic tool binding itself.
 
@@ -87,7 +87,7 @@ without an explicit update.
 
 ## Skill Kit Binding
 
-Skill Kits use the same reload path as `tool_enable`. When `Skill(name=...)`
+Skill Kits use the same binding path as `tool_manage`. When `Skill(name=...)`
 activates a skill whose `metadata.nymeria.required_tools` list contains tools
 that are not currently bound, the Skill tool:
 
@@ -97,10 +97,14 @@ that are not currently bound, the Skill tool:
    skill's `metadata.nymeria.tool_ttl` (`2h` by default; accepts `Nm`, `Nh`,
    `Nd`, `Nw`, or `never`/`permanent`).
 3. Removes required tools from `disabled_tools` when needed, matching
-   `tool_enable(action="enable")`.
-4. Queues `_pending_tool_reload[thread_id]` with `source="skill_kit"`,
-   `skill_name`, and `reason`.
-5. Returns the skill body plus STOP guidance in a marked `Command(goto=END)`
+   `tool_manage(action="enable")`.
+4. In dynamic-binding mode, returns the skill body plus a binding-result block.
+   The model node resolves the updated tool set on its next step, and
+   `SafeToolNode` resolves any post-build tool from the live resolver before
+   dispatch.
+5. In legacy rebuild mode (`DYNAMIC_TOOL_BINDING=false`), queues
+   `_pending_tool_reload[thread_id]` with `source="skill_kit"`, `skill_name`,
+   and `reason`, then returns STOP guidance in a marked `Command(goto=END)`
    tool result so the resumed graph has both the instructions and the newly
    bound tool schemas.
 
@@ -111,30 +115,41 @@ thread; portable names such as `Read`, `Write`, and `Bash(...)` stay quiet.
 
 ## Tool Create Reloads
 
-`tool_create(action="publish")` also uses the reload loop after it writes a
-validated HTTP tool definition, reloads the custom-tool registry, and enables
-the new tool on the publishing thread. These reloads carry
-`source="tool_create"` and `reason="tool_published"` so history, resume text,
-and frontend indicators can distinguish agent-authored tools from a normal
-`tool_enable(action="enable")` request.
+`tool_create(action="publish")` writes a validated custom tool definition,
+reloads the custom-tool registry, and enables the new tool on the publishing
+thread. HTTP tools are declarative definitions; Python tools are validated and
+then executed through a subprocess wrapper.
+
+With dynamic binding enabled, publishing does not use the old graph
+rebuild/resume loop. The publish result includes the thread-binding result, the
+next model step sees the updated schema list from the live resolver, and
+`SafeToolNode` can register the newly published tool from that resolver before
+dispatch if the graph was built before the tool existed.
+
+When legacy rebuild mode is enabled, publish reload metadata carries
+`source="tool_create"` and `reason="tool_published"` or
+`reason="python_tool_published"` so history, resume text, and frontend
+indicators can distinguish agent-authored tools from a normal
+`tool_manage(action="enable")` request.
 
 `manage_mcp(action="install")` uses the same path after successful MCP tool
-discovery. It enables discovered `mcp__...` tools on the current thread and
-queues reload metadata with `source="mcp_install"` so the tools are usable in
-the same user turn.
+discovery. It enables discovered `mcp__...` tools on the current thread. In
+dynamic-binding mode those tools become callable on the next model step without
+a graph rebuild; in legacy rebuild mode the metadata uses
+`source="mcp_install"`.
 
 ## Skill Publish Reloads
 
-`skill_config(action="publish", activate_current_thread=true)` uses the same
+`skill_write` and `skill_edit` use the same
 reload loop after it writes a validated `SKILL.md`, reloads `SkillManager`,
 and updates `ThreadConfig.enabled_skills`. In this case the reload refreshes
 the generated `Skill` meta-tool index rather than binding a normal tool, so
 the emitted `tool_reload` event may have `tools: []` with
-`source="skill_config"`, `skill_name`, and `reason="skill_published"`.
+`source="skill_write"` or `source="skill_edit"`, `skill_name`, and a matching
+reason.
 
 `skill_manage(action="install"|"enable", activate_current_thread=true)` queues
-`source="skill_install"`. `skill_kit_create(action="publish"|"package")`
-queues `source="skill_kit_create"` and `reason="skill_kit_created"`.
+`source="skill_install"`.
 
 ## TTL (Time-to-Live) Enablements
 
@@ -150,7 +165,7 @@ and no longer than about one year (`365d` or `52w`).
 
 `ThreadConfig` has two fields for enabled tools:
 
-- **`enabled_tools: List[str]`**  -  Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_enable(ttl="never")` or `tool_enable(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
+- **`enabled_tools: List[str]`**  -  Permanent enablements. Written by the UI, API (`PATCH /threads/{id}/config`), `spawn_thread`, and `tool_manage(ttl="never")` or `tool_manage(ttl="permanent")`. Unchanged schema means zero back-compat risk for existing callers.
 
 - **`temporary_tools: Dict[str, TemporaryToolEntry]`**  -  TTL'd enablements, agent-managed. Each entry has `enabled_at` and `expires_at` timestamps. This is the new field.
 
@@ -162,7 +177,7 @@ No background scheduler. At graph-build time, `_resolve_temporary_tools()` filte
 
 ### Sliding Renewal
 
-Calling `tool_enable(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="never"` or `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
+Calling `tool_manage(action="enable")` on a tool already in `temporary_tools` refreshes its `expires_at`. Calling with `ttl="never"` or `ttl="permanent"` promotes it from `temporary_tools` into `enabled_tools`.
 
 ### Disable Preserves State
 
@@ -170,17 +185,18 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 
 ## Code Reference
 
-### Entry Points: `tool_search()` and `tool_enable()`  -  `tools/tool_search.py`
+### Entry Points: `tool_search()` and `tool_manage()`  -  `tools/tool_search.py`
 
-`tool_search()` is search-only. `tool_enable()` dispatches on binding actions:
+`tool_search()` is search-only. `tool_manage()` dispatches on binding actions:
 
 | Action | Handler | Returns |
 |--------|---------|---------|
 | `tool_search` | `_search()` | String with up to `top_k` results, optionally annotated with `[ENABLED Xh Ym left]` or `[DISABLED]` |
-| `tool_enable(action="enable")` | `_enable()` | `Command(goto=END)` if reload needed, plain string otherwise |
-| `tool_enable(action="disable")` | `_disable()` | String summary |
-| `tool_enable(action="status")` | `_status()` | Thread's full tool status (permanent, TTL, disabled sections) |
-| `tool_enable(action="list_categories")` | `_list_categories()` | All categories with tool counts |
+| `tool_manage(action="enable")` | `_enable()` | `Command(goto=END)` if reload needed, plain string otherwise |
+| `tool_manage(action="disable")` | `_disable()` | String summary |
+| `tool_manage(action="prune")` | `_prune_tools()` | JSON summary of conservative cleanup actions |
+| `tool_manage(action="status")` | `_status()` | Thread's full tool status (permanent, TTL, disabled sections) |
+| `tool_manage(action="list_categories")` | `_list_categories()` | All categories with tool counts |
 
 ### Enable Classification: `_enable()`  -  `tools/tool_search.py:246`
 
@@ -324,7 +340,8 @@ The reload loop checks `abort_event.is_set()` before each iteration (`:4134`). I
 2. **After the loop**  -  drains any residual entry (`:4196`)
 3. **In `finally`**  -  catches exceptions and early exits (`:4289`)
 
-`_turn_reload_count` is cleaned up in `finally` at `:4288`.
+`_turn_reload_count` is cleaned up in `finally` at `:4288`. Thread deletion
+also clears the per-thread active superset snapshot used by dynamic binding.
 
 At the start of every new `chat()` and `astream()` turn, Nymeria
 also discards any pre-existing pending reload for that thread before resetting
@@ -354,14 +371,14 @@ The `finally` block at `:4280` patches dangling tool calls for **both** invocati
 
 ### Idempotence
 
-If `tool_enable(action="enable")` is called with tools that are already enabled, no reload flag is set (they fall into `already_permanent`, `already_default`, or `refreshed` buckets). No auto-continue triggers, the turn proceeds normally.
+If `tool_manage(action="enable")` is called with tools that are already enabled, no reload flag is set (they fall into `already_permanent`, `already_default`, or `refreshed` buckets). No auto-continue triggers, the turn proceeds normally.
 
 ## SSE Event Protocol
 
 The new `tool_reload` event sits between the two graph invocations:
 
 ```
-tool_call(tool_enable enable) → tool_result → tool_reload → [second invocation events] → done
+tool_call(tool_manage enable) → tool_result → tool_reload → [second invocation events] → done
 ```
 
 | Field | Type | Description |
@@ -370,7 +387,7 @@ tool_call(tool_enable enable) → tool_result → tool_reload → [second invoca
 | `tools` | `string[]` | Names of newly-loaded tools |
 | `ttl` | `string` | TTL key (`"2h"`, `"7d"`, `"4w"`, `"never"`, etc.) |
 | `ttl_seconds` | `int \| null` | TTL in seconds, or null for permanent |
-| `source` | `string` | `"tool_enable"`, `"tool_create"`, `"skill_kit"`, `"skill_config"`, `"mcp_install"`, `"skill_install"`, or `"skill_kit_create"` |
+| `source` | `string` | `"tool_manage"`, `"tool_create"`, `"skill_kit"`, `"skill_write"`, `"skill_edit"`, `"mcp_install"`, or `"skill_install"` |
 | `skill_name` | `string \| null` | Skill Kit/name context for skill-driven reloads |
 | `reason` | `string \| null` | Human-readable reload reason |
 

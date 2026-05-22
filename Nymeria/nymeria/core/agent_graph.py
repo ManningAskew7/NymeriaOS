@@ -303,7 +303,7 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
 
     # Apply per-thread tool filtering. disabled_tools is AUTHORITATIVE —
     # it filters both the default-bound set AND the extras (enabled_tools
-    # ∪ live_temp). Without this, `tool_enable(action="disable", ...)`
+    # ∪ live_temp). Without this, `tool_manage(action="disable", ...)`
     # would have to destructively remove from enabled_tools/temporary_tools
     # to actually disable a tool that's in both lists, which means a
     # subsequent un-disable couldn't restore the original state. By
@@ -417,8 +417,9 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
     Returns (tools_list, names_set). The ToolNode in dynamic mode is
     constructed with the superset so that any tool the model binds at
     any step (which may be a subset varying step-to-step) can still be
-    executed. A tool created mid-turn that isn't in this superset
-    triggers the fallback rebuild path via should_emit_reload_command().
+    executed. A tool created after graph construction can still be
+    dispatched because SafeToolNode refreshes missing tool names from the
+    live dynamic resolver before rejecting a call.
 
     Sources merged (deduped by name):
       - ALL_TOOLS (core)
@@ -560,11 +561,11 @@ def build_dynamic_graph_with_prompt(
     The agent node receives a resolver closure (recomputes tools per call
     from ThreadConfig); the ToolNode is constructed with the superset so
     any tool the resolver may return is executable. ``tool_search`` and
-    peers detect the superset via ``_current_tool_superset_names`` and
-    skip the Command(goto=END) round-trip for tools already in it.
+    the tools node can dynamically resolve post-build tools from the same
+    resolver before dispatch.
     """
-    # Compute superset first so the dispatcher gate (should_emit_reload_command)
-    # sees the latest names on this build. Then build resolver and tc.
+    # Compute the initial executor superset for existing tools. Post-build
+    # tools are resolved dynamically by SafeToolNode from the same resolver.
     superset_tools, superset_names = agent._compute_tool_superset(user_id, thread_id)
     agent._current_tool_superset_names = superset_names
 

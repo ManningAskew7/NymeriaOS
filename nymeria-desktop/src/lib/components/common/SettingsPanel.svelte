@@ -1333,11 +1333,11 @@
                 </label>
                 <p class="hint">
                   Default. Resolves tools per-step in the model node instead of
-                  rebuilding the graph when tools are enabled mid-turn — removes the
-                  <code>tool_reload_resume</code> sentinel round-trip. Falls back to
-                  rebuild automatically when a newly-created tool isn't in the
-                  precomputed superset. Uncheck to force the legacy rebuild path
-                  for the whole installation.
+                  rebuilding the graph when tools are enabled mid-turn. Newly
+                  created or installed tools are resolved from the live registry
+                  before dispatch. Uncheck to force the legacy
+                  <code>tool_reload_resume</code> rebuild path for the whole
+                  installation.
                 </p>
               </div>
 

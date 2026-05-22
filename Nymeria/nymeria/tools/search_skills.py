@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import json
+from datetime import datetime, timedelta
 from typing import Annotated, Any, List, Literal, Optional, Union, cast
 
 from langchain_core.runnables import RunnableConfig
@@ -21,11 +22,14 @@ from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
 from ..core.thread_config import ThreadConfig
+from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .utils import get_user_id
 from .utils import get_thread_id
 
 logger = logging.getLogger(__name__)
+
+PROTECTED_SKILL_NAMES = frozenset({"self-improve"})
 
 
 def _agent():
@@ -39,20 +43,210 @@ def _command_or_text(
     queued_reload: bool,
     tool_call_id: Optional[str],
     new_tool_names: Optional[list[str]] = None,
+    thread_id: str = "",
 ) -> Union[str, Command]:
     """Emit Command(goto=END) only when the rebuild is actually required.
 
     In dynamic-binding mode, ``should_emit_reload_command`` skips the
-    Command for already-in-superset tools (the next agent step rebinds
-    them automatically). Skill-only changes pass an empty list.
+    Command because the next agent step resolves tools and skill metadata from
+    the live resolver. Skill-only changes pass an empty list.
     """
-    if queued_reload and tool_call_id and should_emit_reload_command(new_tool_names or []):
+    if queued_reload and tool_call_id and should_emit_reload_command(
+        new_tool_names or [],
+        thread_id=thread_id,
+    ):
         return tool_reload_command(text, tool_call_id)
     return text
 
 
 def _json_result(**payload) -> str:
     return json.dumps(payload, indent=2, default=str)
+
+
+def _global_enabled_skills(agent: Any, user_id: str) -> set[str]:
+    try:
+        profile = agent.profile_manager.get_profile(user_id or "default")
+        return set(profile.enabled_global_skills or [])
+    except Exception:
+        return set()
+
+
+def _parse_usage_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return ensure_aware_utc(datetime.fromisoformat(str(value)))
+    except Exception:
+        return None
+
+
+def _skill_status(*, user_id: str, thread_id: str) -> str:
+    agent = _agent()
+    if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
+        return _json_result(ok=False, error="skills subsystem not initialized")
+    if not thread_id:
+        return _json_result(ok=False, error="thread_id is required")
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        tc = ThreadConfig(thread_id=thread_id)
+    global_enabled = sorted(_global_enabled_skills(agent, user_id))
+    active = agent.skill_manager.list_for_thread(
+        user_id=user_id,
+        enabled_global_skills=global_enabled,
+        thread_enabled_skills=tc.enabled_skills,
+        thread_disabled_skills=tc.disabled_skills,
+    )
+    return _json_result(
+        ok=True,
+        action="status",
+        thread_id=thread_id,
+        global_enabled_skills=global_enabled,
+        thread_enabled_skills=sorted(tc.enabled_skills),
+        thread_disabled_skills=sorted(tc.disabled_skills),
+        active_skills=[
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "scope": skill.scope,
+                "required_tools": skill.required_tools,
+                "tool_ttl": skill.tool_ttl,
+                "is_skill_kit": skill.is_skill_kit,
+            }
+            for skill in active
+        ],
+    )
+
+
+def _prune_thread_skills(
+    *,
+    user_id: str,
+    thread_id: str,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
+) -> str:
+    from ..core.capability_usage import get_capability_usage_store
+
+    agent = _agent()
+    if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
+        return _json_result(ok=False, error="skills subsystem not initialized")
+    if not thread_id:
+        return _json_result(ok=False, error="thread_id is required")
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        return _json_result(
+            ok=True,
+            action="prune",
+            dry_run=dry_run,
+            changed=False,
+            message="thread has no skill config",
+        )
+
+    stale_days = max(1, int(stale_after_days or 30))
+    min_age_days = max(0, int(min_enabled_age_days or 0))
+    now = utc_now()
+    stale_cutoff = now - timedelta(days=stale_days)
+    config_old_enough = ensure_aware_utc(tc.updated_at) <= now - timedelta(days=min_age_days)
+
+    visible = {
+        skill.name: skill
+        for skill in agent.skill_manager.list_installed(user_id=user_id)
+    }
+    global_enabled = _global_enabled_skills(agent, user_id)
+    enabled = list(tc.enabled_skills or [])
+    disabled = list(tc.disabled_skills or [])
+    usage_store = get_capability_usage_store()
+
+    enabled_missing = [
+        name
+        for name in enabled
+        if name not in PROTECTED_SKILL_NAMES and name not in visible
+    ]
+    disabled_missing = [
+        name
+        for name in disabled
+        if name not in PROTECTED_SKILL_NAMES and name not in visible
+    ]
+    enabled_redundant_global = [
+        name
+        for name in enabled
+        if (
+            name not in PROTECTED_SKILL_NAMES
+            and name in global_enabled
+            and name not in disabled
+            and name not in enabled_missing
+        )
+    ]
+    disabled_redundant_noop = [
+        name
+        for name in disabled
+        if (
+            name not in PROTECTED_SKILL_NAMES
+            and name not in global_enabled
+            and name not in enabled
+            and name not in disabled_missing
+        )
+    ]
+
+    enabled_stale: list[str] = []
+    if config_old_enough:
+        for name in enabled:
+            if (
+                name in PROTECTED_SKILL_NAMES
+                or name in enabled_missing
+                or name in enabled_redundant_global
+                or name in disabled
+            ):
+                continue
+            usage = usage_store.get_skill(user_id=user_id, thread_id=thread_id, name=name)
+            last_used = _parse_usage_timestamp(usage.last_used_at)
+            if last_used is not None and last_used <= stale_cutoff:
+                enabled_stale.append(name)
+
+    remove_enabled = set(enabled_missing) | set(enabled_redundant_global) | set(enabled_stale)
+    remove_disabled = set(disabled_missing) | set(disabled_redundant_noop)
+    changed = bool(remove_enabled or remove_disabled)
+    if changed and not dry_run:
+        tc.enabled_skills = [name for name in enabled if name not in remove_enabled]
+        tc.disabled_skills = [name for name in disabled if name not in remove_disabled]
+        if not agent.thread_config_manager.save_config(tc):
+            return _json_result(ok=False, error="failed to save thread skill config")
+        if hasattr(agent, "invalidate_thread_config_cache"):
+            agent.invalidate_thread_config_cache(thread_id)
+        try:
+            with agent._graph_cache_lock:
+                agent._user_graphs.clear()
+                agent._async_user_graphs.clear()
+        except Exception:
+            logger.debug("Failed to clear graph caches after skill prune", exc_info=True)
+
+    return _json_result(
+        ok=True,
+        action="prune",
+        dry_run=dry_run,
+        changed=changed,
+        thread_id=thread_id,
+        stale_after_days=stale_days,
+        min_enabled_age_days=min_age_days,
+        removed={
+            "enabled_missing": sorted(enabled_missing),
+            "enabled_redundant_global": sorted(enabled_redundant_global),
+            "enabled_stale_used_before_cutoff": sorted(enabled_stale),
+            "disabled_missing": sorted(disabled_missing),
+            "disabled_redundant_noop": sorted(disabled_redundant_noop),
+        },
+        protected=sorted(
+            name
+            for name in set(enabled) | set(disabled)
+            if name in PROTECTED_SKILL_NAMES
+        ),
+        notes=[
+            "Stale pruning only removes thread-enabled skills with recorded usage older than the cutoff.",
+            "Skill Kit required tool TTL bindings are not removed here; use tool_manage(action='prune') for tool bindings.",
+        ],
+    )
 
 
 @tool
@@ -440,7 +634,7 @@ def _set_thread_skill_enabled(
             "\n\n[Reload cap hit]: the skill was enabled on this thread, but "
             "it will not be visible to the model until the next user message."
         )
-    return _command_or_text(payload, queued_reload, tool_call_id)
+    return _command_or_text(payload, queued_reload, tool_call_id, thread_id=thread_id)
 
 
 @tool
@@ -451,19 +645,28 @@ def skill_manage(
     source: Literal["installed", "anthropic"] = "installed",
     scope: Literal["all", "user", "global", "bundled"] = "user",
     activate_current_thread: bool = False,
+    stale_after_days: int = 30,
+    min_enabled_age_days: int = 7,
+    dry_run: bool = False,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> Union[str, Command]:
-    """List, search, install, enable, or disable Agent Skills.
+    """List, search, install, enable, disable, inspect, status, or prune Agent Skills.
 
     Args:
-        action: One of: list, search, install, enable, disable, inspect.
+        action: One of: list, search, install, enable, disable, inspect,
+            status, prune.
         query: Search query.
         name: Skill name for install/enable/disable/inspect.
         source: "installed" or marketplace source "anthropic".
         scope: Install/list scope. Global install requires admin.
         activate_current_thread: After install, enable this skill on the thread.
+        stale_after_days: For prune, remove recorded-stale thread-enabled
+            skills whose last use is older than this many days.
+        min_enabled_age_days: For prune, require the thread config to be at
+            least this old before stale-age pruning.
+        dry_run: For prune, report changes without saving them.
 
     Returns:
         list/inspect: JSON {ok, skill: {name, description, scope, ...}}
@@ -479,6 +682,18 @@ def skill_manage(
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
     action_key = (action or "").strip().lower()
+
+    if action_key == "status":
+        return _skill_status(user_id=user_id, thread_id=thread_id)
+
+    if action_key == "prune":
+        return _prune_thread_skills(
+            user_id=user_id,
+            thread_id=thread_id,
+            stale_after_days=stale_after_days,
+            min_enabled_age_days=min_enabled_age_days,
+            dry_run=dry_run,
+        )
 
     if action_key in {"list", "inspect"}:
         if name:
@@ -567,7 +782,7 @@ def skill_manage(
 
     return _json_result(
         ok=False,
-        error="action must be one of: list, search, install, enable, disable, inspect",
+        error="action must be one of: list, search, install, enable, disable, inspect, status, prune",
     )
 
 

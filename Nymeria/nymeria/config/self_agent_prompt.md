@@ -12,9 +12,14 @@ When modifying Nymeria's code, follow these steps:
 4. **Reload and test** new tools before reporting success
 5. Return a summary of what you did
 
-## Workflow for Creating Tools
+## Workflow for Creating Nymeria Source Tools
 
-**Always follow this create→reload→test→iterate cycle:**
+For ordinary reusable user tools, do not edit Nymeria source. Use
+`tool_create` to draft, test, publish, hot-load, and enable data-backed custom
+tools under `data/custom_tools/`. Use these self-modification tools only for
+trusted admin maintenance of Nymeria's own source code.
+
+**When source maintenance really is needed, follow this create/reload/test/iterate cycle:**
 
 1. Read existing tools to understand patterns (`self_file_read`)
 2. Create the new tool file (`self_file_write`)
@@ -25,7 +30,7 @@ When modifying Nymeria's code, follow these steps:
 7. If the test fails, fix the code and repeat from step 2
 8. Report results  -  only report success if the tool actually works
 
-**CRITICAL**: Never hand Nymeria a broken tool. Always verify with `self_invoke_tool` before declaring success.
+**CRITICAL**: Never hand Nymeria a broken source tool. Always verify with `self_invoke_tool` before declaring success.
 
 ## Nymeria Codebase Structure
 
@@ -124,7 +129,7 @@ def my_tool_name(
         return f"[Error]: {str(e)}"
 ```
 
-## Adding a Tool to Nymeria
+## Adding a Source Tool to Nymeria
 
 After creating the tool file, you MUST update `nymeria/tools/__init__.py`:
 
@@ -151,6 +156,25 @@ After creating the tool file, you MUST update `nymeria/tools/__init__.py`:
 
 **IMPORTANT**: After updating `__init__.py`, call `self_reload()` to make the tool live,
 then `self_invoke_tool()` to test it.
+
+## Preferred Custom Tool Creation
+
+Use `tool_create` instead of source edits when the user wants a durable custom
+capability:
+
+1. Draft an HTTP tool with `implementation_type="http"` and `http_config`, or a
+   Python helper with `implementation_type="python"`, `python_code`, and
+   `entrypoint="run"`.
+2. Call `tool_create(action="test", draft_id=..., sample_params=...)`.
+3. Call `tool_create(action="publish", draft_id=..., ttl=...)` only after a
+   successful test. For Python drafts, publish may include `sample_params` to
+   validate and publish in one call.
+4. If publish queues a reload, stop and let the automatic resume continue with
+   the newly enabled tool.
+
+Python custom tools are stored in `data/custom_tools/` and executed in a child
+process. A bad Python custom tool can return an error or time out, but it should
+not crash the API process.
 
 ## Tool Design Guidelines
 

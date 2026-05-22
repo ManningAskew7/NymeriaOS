@@ -16,6 +16,7 @@ from ..schemas.custom_tools import (
     CustomToolUpdateRequest,
     http_config_to_core,
     mcp_config_to_core,
+    python_config_to_core,
     tool_parameters_to_core,
 )
 from ..schemas.unified_tools import (
@@ -364,6 +365,7 @@ def create_unified_tools_router(
 
         http_config = None
         mcp_config = None
+        python_config = None
         if request.implementation_type == "http":
             if not request.http_config:
                 raise HTTPException(
@@ -378,6 +380,13 @@ def create_unified_tools_router(
                     detail="mcp_config is required for MCP tools",
                 )
             mcp_config = mcp_config_to_core(request.mcp_config)
+        elif request.implementation_type == "python":
+            if not request.python_config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="python_config is required for Python tools",
+                )
+            python_config = python_config_to_core(request.python_config)
 
         definition = CustomToolDefinition(
             id=request.id,
@@ -387,6 +396,7 @@ def create_unified_tools_router(
             implementation_type=request.implementation_type,
             http_config=http_config,
             mcp_config=mcp_config,
+            python_config=python_config,
             enabled=request.enabled,
             tags=request.tags,
         )
@@ -429,6 +439,8 @@ def create_unified_tools_router(
             definition.http_config = http_config_to_core(request.http_config)
         if request.mcp_config is not None and definition.implementation_type == "mcp":
             definition.mcp_config = mcp_config_to_core(request.mcp_config)
+        if request.python_config is not None and definition.implementation_type == "python":
+            definition.python_config = python_config_to_core(request.python_config)
         if request.enabled is not None:
             definition.enabled = request.enabled
         if request.tags is not None:

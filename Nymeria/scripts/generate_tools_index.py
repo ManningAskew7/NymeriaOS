@@ -53,7 +53,7 @@ def main():
     print("# Tools Index")
     print()
     print("Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.")
-    print("Regenerate with: `python scripts/generate_tools_index.py > docs/tools-index.md`")
+    print("Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`")
     print()
     print(f"**{len(all_tools)} tools found.**")
     print()
