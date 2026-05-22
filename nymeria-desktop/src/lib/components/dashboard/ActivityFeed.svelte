@@ -4,6 +4,8 @@
   import ActivityItem from './ActivityItem.svelte';
   import { Icon } from '$lib/components/common';
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
 
   interface Props {
     threadId?: string;
@@ -151,11 +153,11 @@
               <span class="trigger-count">{item.entries.length}</span>
               <span class="trigger-last-time">{formatTimeAgo(item.entries[0].timestamp)}</span>
               <span class="trigger-chevron" class:rotated={expanded}>
-                <Icon name="chevronDown" size={12} />
+                <Icon name="chevronRight" size={12} />
               </span>
             </button>
             {#if expanded}
-              <div class="trigger-group-items">
+              <div class="trigger-group-items" transition:slide={DROPDOWN_TRANSITION}>
                 {#each item.entries as entry (entry.id)}
                   <ActivityItem
                     {entry}
@@ -285,12 +287,12 @@
     display: flex;
     align-items: center;
     color: var(--text-muted);
-    transition: transform var(--transition-fast);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
     flex-shrink: 0;
   }
 
   .trigger-chevron.rotated {
-    transform: rotate(180deg);
+    transform: rotate(90deg);
   }
 
   .trigger-group-items {

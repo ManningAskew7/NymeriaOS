@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import type { ProviderTier } from '$lib/types';
 
   export type ProviderSelectOption = {
@@ -269,6 +271,7 @@
       aria-activedescendant={activeIndex >= 0 ? `provider-row-${activeIndex}` : undefined}
       tabindex="-1"
       onkeydown={handleKeydown}
+      transition:slide={DROPDOWN_TRANSITION}
     >
       {#each flatRows as row, i (i)}
         {#if row.kind === 'group-header'}

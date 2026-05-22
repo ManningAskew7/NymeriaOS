@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import type { SavedConnection } from '$lib/types';
   import { focusOnMount } from '$lib/actions/focus';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
   import RoleChip from './RoleChip.svelte';
@@ -123,7 +125,7 @@
 </script>
 
 {#if isOpen}
-  <div class="account-switcher" role="menu">
+  <div class="account-switcher" role="menu" transition:slide={DROPDOWN_TRANSITION}>
     <div class="switcher-header">
       <span class="switcher-title">Switch account</span>
       <button
@@ -209,7 +211,7 @@
             </button>
 
             {#if isMenuOpen}
-              <div class="row-menu">
+              <div class="row-menu" transition:slide={DROPDOWN_TRANSITION}>
                 <button class="row-menu-item" type="button" onclick={() => handleVerify(entry.id)}>
                   <Icon name="refresh" size={12} />
                   <span>Re-verify</span>
@@ -254,12 +256,8 @@
     max-height: 380px;
     display: flex;
     flex-direction: column;
-    animation: switcher-in 120ms ease-out both;
-  }
-
-  @keyframes switcher-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
+    /* Open/close motion handled by transition:slide={DROPDOWN_TRANSITION} on
+       the element above — one source of truth across the app. */
   }
 
   .switcher-header {

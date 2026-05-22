@@ -4,7 +4,7 @@
   import { todosStore } from '$lib/stores/todos.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { cubicOut } from 'svelte/easing';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
 
   interface Props {
     todo: TodoItemType;
@@ -185,7 +185,7 @@
       <span class="todo-task">{todo.task}</span>
       {#if hasDetails}
         <span class="expand-icon" class:rotated={expanded} aria-hidden="true">
-          <Icon name="chevronDown" size={12} />
+          <Icon name="chevronRight" size={12} />
         </span>
       {/if}
     </div>
@@ -223,7 +223,7 @@
 
     <!-- Expandable details — slide-down to match the trigger card animation -->
     {#if expanded}
-      <div class="todo-details" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
+      <div class="todo-details" transition:slide={DROPDOWN_TRANSITION}>
         {#if todo.notes}
           <div class="detail-row notes">
             <Icon name="fileText" size={12} />
@@ -488,11 +488,11 @@
     align-items: center;
     color: var(--text-muted);
     flex-shrink: 0;
-    transition: transform var(--transition-fast);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .expand-icon.rotated {
-    transform: rotate(180deg);
+    transform: rotate(90deg);
   }
 
   .edit-btn {

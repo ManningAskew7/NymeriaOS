@@ -27,7 +27,7 @@
 </script>
 
 <div class="skill-card" class:running={toolCall.status === 'running'} class:error={isError}>
-  <Collapsible title="Skill" chevronIcon="bolt" chevronSize={20}>
+  <Collapsible title="Skill" chevronIcon="bolt" chevronSize={18}>
     {#snippet header()}
       <div class="skill-header">
         <span class="skill-label">Skill activated</span>
