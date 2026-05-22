@@ -39,6 +39,8 @@ const STREAMING_AUTONOMOUS_EVENT_TYPES = new Set([
   'tool_call',
   'tool_result',
   'tool_reload',
+  'provider_retry',
+  'provider_fallback',
   'workspace_artifact',
   'response'
 ]);
@@ -525,6 +527,41 @@ function createAutonomousStore() {
       case 'thinking':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
           chatStore.addThinkingStep(event.content as string || 'Thinking...');
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
+        }
+        break;
+
+      case 'provider_retry':
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
+          chatStore.addProviderStatusStep({
+            providerStatus: 'retry',
+            provider: event.provider as string | undefined,
+            model: event.model as string | undefined,
+            attempt: event.attempt as number | undefined,
+            maxRetries: event.max_retries as number | undefined,
+            delaySeconds: event.delay_seconds as number | undefined,
+            reason: event.reason as string | undefined,
+            httpStatus: event.http_status as number | null | undefined,
+          });
+        } else if (isCurrentThread && isOurTask) {
+          bufferPendingEvent(event);
+        }
+        break;
+
+      case 'provider_fallback':
+        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
+          chatStore.addProviderStatusStep({
+            providerStatus: 'fallback',
+            fromProvider: event.from_provider as string | undefined,
+            fromModel: event.from_model as string | undefined,
+            toProvider: event.to_provider as string | undefined,
+            toModel: event.to_model as string | undefined,
+            holdSeconds: event.hold_seconds as number | undefined,
+            expiresAt: event.expires_at as string | null | undefined,
+            reason: event.reason as string | undefined,
+            httpStatus: event.http_status as number | null | undefined,
+          });
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
         }

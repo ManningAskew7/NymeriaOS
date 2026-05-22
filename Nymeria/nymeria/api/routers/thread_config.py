@@ -27,6 +27,7 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
         "disabled_tools": [],
         "enabled_tools": [],
         "llm_config": None,
+        "active_llm_fallback": None,
         "system_prompt": None,
         "callable": False,
         "callable_name": None,
@@ -193,6 +194,7 @@ def create_thread_config_router(
             tc.disabled_skills = []
         if request.clear_llm_config:
             tc.llm_config = None
+            tc.active_llm_fallback = None
         if request.clear_system_prompt:
             tc.system_prompt = None
 
@@ -235,6 +237,7 @@ def create_thread_config_router(
         if request.disabled_skills is not None and not request.clear_disabled_skills:
             tc.disabled_skills = request.disabled_skills
         if request.llm_config is not None and not request.clear_llm_config:
+            tc.active_llm_fallback = None
             llm_data = request.llm_config.model_dump(exclude_unset=True)
             if tc.llm_config is None:
                 tc.llm_config = ThreadLLMConfig(

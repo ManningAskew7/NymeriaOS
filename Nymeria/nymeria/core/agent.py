@@ -934,6 +934,10 @@ class NymeriaAgent:
         from .agent_llm_config import get_llm_config_for_thread
         return get_llm_config_for_thread(self, thread_id)
 
+    def _clear_expired_llm_fallback_if_idle(self, thread_id: str) -> bool:
+        from .agent_llm_config import clear_expired_llm_fallback_if_idle
+        return clear_expired_llm_fallback_if_idle(self, thread_id)
+
     def _get_team_scoped_callable_threads(
         self,
         *,
@@ -1685,6 +1689,14 @@ class NymeriaAgent:
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)
+            try:
+                self._clear_expired_llm_fallback_if_idle(thread_id)
+            except Exception as e:
+                logger.warning(
+                    "Thread %s: Failed to clear expired LLM fallback: %s",
+                    thread_id,
+                    e,
+                )
 
     async def astream(
         self, message: str, thread_id: str = "default", user_id: str = "default",
@@ -2550,6 +2562,14 @@ class NymeriaAgent:
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)
+            try:
+                self._clear_expired_llm_fallback_if_idle(thread_id)
+            except Exception as e:
+                logger.warning(
+                    "Thread %s: Failed to clear expired LLM fallback: %s",
+                    thread_id,
+                    e,
+                )
 
     def get_conversation_history(
         self,

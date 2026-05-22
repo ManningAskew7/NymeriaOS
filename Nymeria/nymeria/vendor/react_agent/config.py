@@ -7,7 +7,8 @@ Frameworks can override these by passing custom AgentConfig instances.
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Literal
+from collections.abc import Callable
+from typing import Any, Optional, Literal
 
 
 @dataclass
@@ -61,7 +62,13 @@ class LLMConfig:
     stream_max_retries: int = 2
     stream_retry_initial_delay: float = 1.0
     stream_retry_max_delay: float = 8.0
+    fallback_hold_seconds: int = 7200
     fallbacks: list[LLMFallbackConfig] = field(default_factory=list)
+    active_fallback_candidate_index: int = field(default=0, repr=False)
+    fallback_activation_callback: Optional[Callable[[dict[str, Any]], dict[str, Any] | None]] = field(
+        default=None,
+        repr=False,
+    )
 
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)

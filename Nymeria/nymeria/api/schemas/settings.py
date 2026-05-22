@@ -62,6 +62,7 @@ class ServerSettingsResponse(BaseModel):
     llm_stream_max_retries: int
     llm_stream_retry_initial_delay: float
     llm_stream_retry_max_delay: float
+    llm_fallback_hold_seconds: int
     context_management: str
     compact_threshold: float
     compact_threshold_mode: str = "percentage"
@@ -656,6 +657,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_stream_max_retries: Optional[int] = None
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
+    llm_fallback_hold_seconds: Optional[int] = Field(default=None, ge=0, le=604800)
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None

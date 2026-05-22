@@ -21,7 +21,8 @@ The following settings are applied to future graph builds immediately and also
 clear/rebuild the current default graph caches:
 
 - LLM provider/model/fallback fields, sampling fields, reasoning fields,
-  `LLM_BASE_URL`, `OPENAI_API_MODE`, and stream retry fields
+  `LLM_BASE_URL`, `OPENAI_API_MODE`, stream retry fields, and fallback hold
+  duration
 - LLM provider credentials: Anthropic, Anthropic direct, OpenAI, and OpenRouter
 - `TOOL_OUTPUT_MAX_CHARS`
 
@@ -53,7 +54,7 @@ These variables are deployment-wide server defaults, not per-user account prefer
 | `LLM_PROVIDER_ROUTE` | No | provider default | Adapter route for providers with more than one supported path. Valid values: `native`, `openai_compat`. Today this is exposed for `google` and `ollama`; both default to `native`. Per-thread settings can override it. |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
-| `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend when the primary model fails with a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry. CLI shortcut: `/fallback`. |
+| `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend after primary retries are exhausted for a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry. CLI shortcut: `/fallback`. |
 | `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
 
 #### Native partner-package providers
@@ -89,6 +90,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
+| `LLM_FALLBACK_HOLD_SECONDS` | `7200` | 0 - 604800 | Seconds to keep a fallback provider/model active for a thread after primary retries are exhausted. `0` disables the timed hold. |
 
 **Note:** For model dropdowns and context metadata, Nymeria asks the selected provider's `/models` endpoint through `GET /models/available`. Provider-returned context fields such as `context_length`, `context_window`, or `max_context_tokens` are cached for frontend context-window percentage calculations. Chat Completions itself standardizes usage token fields, not context-window limits. Local endpoints get extra probing: Ollama `/api/show`, LM Studio `/api/v1/models`, llama.cpp `/props`, and common OpenAI-compatible `max_model_len` fields are checked when the base URL is loopback, container-local, private LAN, or Tailscale.
 
@@ -96,10 +98,16 @@ These settings give power users fine-grained control over LLM behavior. All are 
 
 `LLM_FALLBACK_MODELS` is backend-owned, so it applies to every chat surface:
 desktop, mobile, CLI, bots, triggers, scheduled TODOs, and callable-thread
-invocations. Fallbacks are only attempted for retryable failures such as 429s,
-5xx responses, timeouts, or transport errors before the model has emitted any
-response chunks; after streaming starts, Nymeria does not switch models because
-that would duplicate visible output.
+invocations. Nymeria retries the active provider/model first for retryable
+failures such as 429s, 5xx responses, timeouts, or transport errors before the
+model has emitted any response chunks. Live frontends receive `provider_retry`
+events with the backoff delay. If retries are exhausted, Nymeria emits
+`provider_fallback`, switches to the next configured fallback, and keeps that
+fallback active for the thread for `LLM_FALLBACK_HOLD_SECONDS` seconds
+(default: 2 hours). Expiry is lazy: if the hold expires during an active turn,
+the fallback is cleared after the turn releases the thread lock. After
+streaming starts, Nymeria does not switch models because that would duplicate
+visible output.
 
 ### API Keys
 

@@ -85,6 +85,7 @@ def _env_mapping() -> dict[str, str]:
         "llm_stream_max_retries": "LLM_STREAM_MAX_RETRIES",
         "llm_stream_retry_initial_delay": "LLM_STREAM_RETRY_INITIAL_DELAY",
         "llm_stream_retry_max_delay": "LLM_STREAM_RETRY_MAX_DELAY",
+        "llm_fallback_hold_seconds": "LLM_FALLBACK_HOLD_SECONDS",
         "context_management": "CONTEXT_MANAGEMENT",
         "compact_threshold": "COMPACT_THRESHOLD",
         "compact_threshold_mode": "COMPACT_THRESHOLD_MODE",
@@ -735,6 +736,7 @@ def _env_categories() -> dict[str, list[str]]:
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",
             "llm_stream_retry_max_delay",
+            "llm_fallback_hold_seconds",
         ],
         "API Keys": [
             "openai_api_key",
@@ -1172,6 +1174,7 @@ def create_settings_router(
             llm_stream_max_retries=settings.llm_stream_max_retries,
             llm_stream_retry_initial_delay=settings.llm_stream_retry_initial_delay,
             llm_stream_retry_max_delay=settings.llm_stream_retry_max_delay,
+            llm_fallback_hold_seconds=settings.llm_fallback_hold_seconds,
             context_management=settings.context_management,
             compact_threshold=settings.compact_threshold,
             compact_threshold_mode=settings.compact_threshold_mode,
@@ -1459,6 +1462,7 @@ def create_settings_router(
             "llm_stream_max_retries",
             "llm_stream_retry_initial_delay",
             "llm_stream_retry_max_delay",
+            "llm_fallback_hold_seconds",
         }
         graph_fields = llm_fields | {"tool_output_max_chars"}
         llm_credential_fields = {

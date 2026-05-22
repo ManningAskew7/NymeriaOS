@@ -381,6 +381,81 @@ def test_async_graph_uses_configured_fallback_after_primary_failure(monkeypatch)
     assert end_outputs[-1] == "fallback"
 
 
+def test_async_graph_exhausts_primary_retries_before_fallback(monkeypatch):
+    primary = _AlwaysFailBeforeChunkModel()
+    fallback = _FallbackStreamingModel()
+    activations = []
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                model="primary-model",
+                custom_llm=primary,
+                stream_max_retries=2,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+                fallback_activation_callback=lambda payload: activations.append(payload)
+                or {
+                    "hold_seconds": 7200,
+                    "expires_at": "2026-05-22T12:00:00+00:00",
+                },
+                fallbacks=[
+                    LLMFallbackConfig(
+                        provider="custom",
+                        model="fallback-model",
+                    )
+                ],
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    def fake_create_llm_with_tools(config, tools):
+        return fallback
+
+    monkeypatch.setattr(
+        nodes_module,
+        "create_llm_with_tools",
+        fake_create_llm_with_tools,
+    )
+
+    async def collect():
+        custom_events = []
+        async for event in graph.astream_events(
+            {"messages": [HumanMessage(content="hi")]},
+            config={"configurable": {"thread_id": "fallback-after-retries-test"}},
+            version="v2",
+        ):
+            if event.get("event") == "on_custom_event":
+                custom_events.append((event.get("name"), event.get("data")))
+        return custom_events
+
+    custom_events = asyncio.run(collect())
+    retry_events = [data for name, data in custom_events if name == "provider_retry"]
+    fallback_events = [
+        data for name, data in custom_events if name == "provider_fallback"
+    ]
+
+    assert primary.calls == 3
+    assert fallback.calls == 1
+    assert [event["attempt"] for event in retry_events] == [1, 2]
+    assert retry_events[0]["provider"] == "custom"
+    assert retry_events[0]["model"] == "primary-model"
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["to_model"] == "fallback-model"
+    assert fallback_events[0]["hold_seconds"] == 7200
+    assert activations[0]["from_model"] == "primary-model"
+    assert activations[0]["to_model"] == "fallback-model"
+
+    custom_events = asyncio.run(collect())
+    assert primary.calls == 3
+    assert fallback.calls == 2
+    assert [name for name, _data in custom_events if name == "provider_retry"] == []
+    assert [name for name, _data in custom_events if name == "provider_fallback"] == []
+
+
 def test_async_graph_invokes_async_only_tools():
     async_tool = StructuredTool.from_function(
         coroutine=_async_only_tool,

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.agent import NymeriaAgent
-from nymeria.core.thread_config import ThreadConfig, ThreadLLMConfig
+from nymeria.core.thread_config import ActiveLLMFallback, ThreadConfig, ThreadLLMConfig
+from nymeria.core.time_utils import utc_now
 
 
 _NO_THREAD_CONFIG = object()
@@ -31,6 +33,7 @@ class _Settings:
     llm_stream_max_retries = 2
     llm_stream_retry_initial_delay = 1.0
     llm_stream_retry_max_delay = 8.0
+    llm_fallback_hold_seconds = 7200
     anthropic_api_key = "anthropic-proxy-key"
     anthropic_direct_api_key = "anthropic-direct-key"
     openai_api_key = "openai-key"
@@ -233,3 +236,56 @@ def test_local_ollama_context_probe_caps_detected_num_ctx_to_override():
     assert config.provider == "ollama"
     assert config.context_length == 16_000
     assert config.ollama_num_ctx == 16_000
+
+
+def test_active_fallback_temporarily_overrides_thread_llm_config():
+    active = ActiveLLMFallback(
+        provider="openai",
+        model="gpt-5.5",
+        source_provider="anthropic",
+        source_model="claude-sonnet-4-6",
+        expires_at=utc_now() + timedelta(hours=1),
+        provider_route="openai_compat",
+        openai_api_mode="chat_completions",
+    )
+    agent = _make_agent(
+        ThreadLLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
+    )
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="thread-1",
+        llm_config=ThreadLLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
+        active_llm_fallback=active,
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.provider == "openai"
+    assert config.model == "gpt-5.5"
+    assert config.provider_route == "native"
+    assert config.openai_api_mode == "chat_completions"
+    assert config.api_key == "openai-key"
+    assert config.fallback_hold_seconds == 7200
+
+
+def test_expired_fallback_is_cleared_when_thread_idle():
+    active = ActiveLLMFallback(
+        provider="openai",
+        model="gpt-5.5",
+        source_provider="anthropic",
+        source_model="claude-sonnet-4-6",
+        expires_at=utc_now() - timedelta(seconds=1),
+    )
+    agent = _make_agent(
+        ThreadLLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
+    )
+    tc = ThreadConfig(thread_id="thread-1", active_llm_fallback=active)
+    agent.thread_config_manager.get_config.return_value = tc
+    agent.thread_config_manager.delete_config.return_value = True
+    agent.invalidate_thread_config_cache = MagicMock()
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.provider == "anthropic"
+    assert config.model == "claude-sonnet-4-6"
+    agent.thread_config_manager.delete_config.assert_called_once_with("thread-1")
+    agent.invalidate_thread_config_cache.assert_called_once_with("thread-1")

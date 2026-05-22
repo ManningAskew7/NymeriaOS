@@ -614,6 +614,32 @@ export function createChatStore() {
       }
     },
 
+    addProviderStatusStep(
+      data: Omit<MessageStep, 'type'> & { providerStatus: 'retry' | 'fallback' }
+    ) {
+      this._forceFlush();
+      if (!isLastAssistantStreaming()) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role !== 'assistant') return;
+
+      const newStep: MessageStep = {
+        type: 'provider_status',
+        ...data
+      };
+      const updatedSteps = [...(lastMessage.steps || []), newStep];
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          steps: updatedSteps,
+          activityPhase: 'processing',
+          activityUpdatedAt: new Date()
+        }
+      ];
+    },
+
     /**
      * Update a tool call step with its result.
      */
