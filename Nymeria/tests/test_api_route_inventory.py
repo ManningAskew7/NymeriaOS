@@ -179,6 +179,7 @@ EXPECTED_ROUTES = [
     ('/threads/{thread_id}/metadata', ('PATCH',)),
     ('/threads/{thread_id}/overview', ('GET',)),
     ('/threads/{thread_id}/prune', ('POST',)),
+    ('/threads/{thread_id}/rewind', ('POST',)),
     ('/threads/{thread_id}/skills', ('GET',)),
     ('/threads/{thread_id}/status', ('GET',)),
     ('/threads/{thread_id}/stop', ('POST',)),

@@ -902,6 +902,43 @@ tool-call IDs so existing assistant/tool linkage remains valid.
 
 ---
 
+### Rewind Thread
+
+```http
+POST /threads/{thread_id}/rewind
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "steps": 1 }
+```
+
+Removes the last N user+assistant exchanges from the thread's message state.
+An exchange starts at a `HumanMessage` and includes every following
+`AIMessage` and `ToolMessage` up to the next `HumanMessage`. Backs the
+`/undo` and `/retry` slash commands in the CLI. Uses LangGraph's
+`RemoveMessage` + `update_state` (the same mechanism as context trimming),
+so the message IDs and reducer history remain consistent.
+
+`steps` is optional (defaults to `1`) and must be between `1` and `100`. If
+the thread has fewer than `steps` exchanges, all available cycles are
+removed.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "thread_id": "abc123",
+  "steps": 1,
+  "removed": 2
+}
+```
+
+`removed` is the number of underlying messages actually deleted, which is
+usually larger than `steps` because each exchange contains a human turn plus
+one or more assistant/tool messages.
+
+---
+
 ### List Tools
 
 ```http

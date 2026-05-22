@@ -232,6 +232,78 @@ def trim_context_window(
         return 0
 
 
+def rewind_thread_exchanges(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    steps: int = 1,
+) -> int:
+    """
+    Remove the last N user+assistant exchanges from a thread's message state.
+
+    An exchange starts at a ``HumanMessage`` and includes every following
+    ``AIMessage`` / ``ToolMessage`` up to the next ``HumanMessage`` (or the end
+    of the list). Removing the last N exchanges therefore deletes everything
+    from the Nth-from-last ``HumanMessage`` onward, which is what ``/undo``
+    (steps=1) and ``/retry`` (steps=1, then re-send) need.
+
+    Uses LangGraph's ``RemoveMessage`` + ``update_state`` via the
+    ``add_messages`` reducer, the same mechanism as ``trim_context_window``.
+    If the thread has fewer than ``steps`` exchanges, all available cycles
+    are removed.
+
+    Args:
+        agent: NymeriaAgent instance.
+        thread_id: Conversation thread ID.
+        steps: Number of trailing exchanges to remove (default 1).
+
+    Returns:
+        Number of messages actually removed (0 if nothing to remove).
+    """
+    if steps <= 0:
+        return 0
+
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        state = agent._default_graph.get_state(config)
+        messages = state.values.get("messages", [])
+
+        if not messages:
+            return 0
+
+        cycle_starts = [
+            i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage)
+        ]
+        if not cycle_starts:
+            return 0
+
+        cycles_to_remove = min(steps, len(cycle_starts))
+        remove_from_index = cycle_starts[-cycles_to_remove]
+        messages_to_remove = messages[remove_from_index:]
+
+        remove_commands = [
+            RemoveMessage(id=msg.id)
+            for msg in messages_to_remove
+            if getattr(msg, "id", None)
+        ]
+        if not remove_commands:
+            return 0
+
+        agent._default_graph.update_state(
+            config,
+            {"messages": remove_commands},
+        )
+
+        logger.info(
+            f"Thread {thread_id}: Rewound {cycles_to_remove} exchange(s) "
+            f"({len(remove_commands)} messages)"
+        )
+        return len(remove_commands)
+
+    except Exception as e:
+        logger.error(f"Error rewinding thread {thread_id}: {e}")
+        return 0
+
+
 def flush_memories_before_trim(
     agent: "NymeriaAgent",
     user_id: str,

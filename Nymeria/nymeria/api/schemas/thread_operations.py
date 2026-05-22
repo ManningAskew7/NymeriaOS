@@ -50,3 +50,23 @@ class AttachmentLimitsResponse(BaseModel):
     effective_provider: str
     effective_model: str
     limits: AttachmentLimits
+
+
+class ThreadRewindRequest(BaseModel):
+    """Request model for rewinding the last N user+assistant exchanges."""
+
+    steps: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description="Number of trailing exchanges to remove from thread state.",
+    )
+
+
+class ThreadRewindResponse(BaseModel):
+    """Response model for the rewind endpoint."""
+
+    status: str
+    thread_id: str
+    steps: int
+    removed: int

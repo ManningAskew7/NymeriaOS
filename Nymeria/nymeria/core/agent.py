@@ -2627,6 +2627,14 @@ class NymeriaAgent:
         from .agent_context import trim_context_window
         return trim_context_window(self, thread_id, max_cycles=max_cycles, user_id=user_id)
 
+    def rewind_thread_exchanges(
+        self,
+        thread_id: str,
+        steps: int = 1,
+    ) -> int:
+        from .agent_context import rewind_thread_exchanges
+        return rewind_thread_exchanges(self, thread_id, steps=steps)
+
     def _flush_memories_before_trim(
         self,
         user_id: str,

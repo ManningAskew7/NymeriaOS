@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
@@ -17,6 +18,8 @@ from ..schemas.thread_operations import (
     AttachmentLimitsResponse,
     AttachmentValidationRequest,
     AttachmentValidationResponse,
+    ThreadRewindRequest,
+    ThreadRewindResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -350,6 +353,49 @@ def create_thread_operations_router(
         agent = get_agent_fn()
         result = await agent.prune_now(thread_id, user.id)
         return result
+
+    @router.post(
+        "/threads/{thread_id}/rewind",
+        response_model=ThreadRewindResponse,
+    )
+    async def rewind_thread(
+        http_request: Request,
+        thread_id: str,
+        request: ThreadRewindRequest | None = None,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Remove the last N user+assistant exchanges from a thread.
+
+        Backs the CLI /undo and /retry commands. An exchange starts at a
+        HumanMessage and includes every following AIMessage/ToolMessage up to
+        the next HumanMessage. Uses LangGraph's RemoveMessage + update_state,
+        the same mechanism as context trimming.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        steps = request.steps if request is not None else 1
+
+        removed = await run_in_threadpool(
+            agent.rewind_thread_exchanges, thread_id, steps
+        )
+
+        client_id = http_request.headers.get("x-nymeria-client-id", "")
+        publish_sync_event_fn(
+            event_type="thread_rewound",
+            thread_id=thread_id,
+            user_id=user_id,
+            data={"steps": steps, "removed": removed},
+            origin_client_id=client_id,
+        )
+
+        return ThreadRewindResponse(
+            status="ok",
+            thread_id=thread_id,
+            steps=steps,
+            removed=removed,
+        )
 
     @router.post("/threads/{thread_id}/stop")
     async def stop_thread(
