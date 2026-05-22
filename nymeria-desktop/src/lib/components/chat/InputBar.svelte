@@ -238,6 +238,22 @@
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
       handleSubmit();
+      return;
+    }
+
+    // Plain Tab inserts a tab character at the cursor instead of moving focus
+    // away from the message bar.
+    if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      const ta = event.target as HTMLTextAreaElement;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      inputValue = inputValue.slice(0, start) + '\t' + inputValue.slice(end);
+      // Restore caret to right after the inserted tab (after the bind has
+      // committed the new value to the DOM).
+      queueMicrotask(() => {
+        ta.selectionStart = ta.selectionEnd = start + 1;
+      });
     }
   }
 
@@ -492,7 +508,7 @@
 </div>
 
 <p class="hint">
-  Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send
+  Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send
   {#if filesEnabled}
     &middot; Paste or drag files to attach
   {/if}
