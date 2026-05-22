@@ -215,8 +215,9 @@
     justify-content: flex-end;
     gap: 0.65rem;
     padding: 0.75rem 1.25rem;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-base);
+    /* No border / background — buttons float against whatever sits behind
+       the panel so the bar doesn't read as a separate dark strip. */
+    background: transparent;
   }
 
   .btn {

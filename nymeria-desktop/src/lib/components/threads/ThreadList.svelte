@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -34,6 +35,15 @@
   // Multi-select state
   let selectedIds = $state<Set<string>>(new Set());
   let lastClickedId = $state<string | null>(null);
+
+  // Ctrl-hover multi-select. After a chat is selected/active, the user can
+  // hold Ctrl (Cmd on Mac) and move the cursor across other chat rows — every
+  // row the cursor passes over gets added to the selection range anchored on
+  // the active chat. Release Ctrl to commit. No clicking required during the
+  // gesture.
+  let ctrlHoverActive = false;
+  let ctrlHoverAnchorId: string | null = null;
+  let ctrlHoverInitialSelection: Set<string> | null = null;
 
   // Sort dropdown
   let showSortDropdown = $state(false);
@@ -240,11 +250,86 @@
     await switchToThread(nextId, { ensureTitle: title });
   }
 
+  /** Resolve which thread-row sits under a mouse point. */
+  function threadIdAtPoint(x: number, y: number): string | null {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    const row = (el as Element).closest('[data-thread-id]') as HTMLElement | null;
+    return row?.dataset.threadId ?? null;
+  }
+
+  function handleCtrlKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Control' && e.key !== 'Meta') return;
+    if (ctrlHoverActive) return; // already active (key auto-repeat)
+    // Need an anchor — the currently-active chat, or whatever was last clicked.
+    const anchor = threadsStore.currentThreadId ?? lastClickedId;
+    if (!anchor) return;
+    // Arm the gesture, but DON'T touch the selection yet — that way a Ctrl
+    // press for an unrelated shortcut (Ctrl+S, Ctrl+C, …) leaves the
+    // selection alone. The anchor only joins the selection once the cursor
+    // actually moves over a thread row in handleCtrlHoverMove below.
+    ctrlHoverActive = true;
+    ctrlHoverAnchorId = anchor;
+    ctrlHoverInitialSelection = new Set(selectedIds);
+  }
+
+  function handleCtrlKeyUp(e: KeyboardEvent) {
+    if (e.key !== 'Control' && e.key !== 'Meta') return;
+    ctrlHoverActive = false;
+    ctrlHoverAnchorId = null;
+    ctrlHoverInitialSelection = null;
+  }
+
+  function handleCtrlHoverMove(e: MouseEvent) {
+    if (!ctrlHoverActive || !ctrlHoverAnchorId) return;
+    // Browsers don't repaint modifier state on mousemove without the key
+    // event firing first, but if the user releases Ctrl elsewhere (alt-tab,
+    // dropped focus), e.ctrlKey/e.metaKey will be false here — guard so we
+    // don't keep extending the range after Ctrl is gone.
+    if (!(e.ctrlKey || e.metaKey)) {
+      handleCtrlKeyUp({ key: 'Control' } as KeyboardEvent);
+      return;
+    }
+
+    const overId = threadIdAtPoint(e.clientX, e.clientY);
+    if (!overId) return;
+
+    const visible = getVisibleThreadIds();
+    const startIdx = visible.indexOf(ctrlHoverAnchorId);
+    const endIdx = visible.indexOf(overId);
+    if (startIdx === -1 || endIdx === -1) return;
+
+    const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+    const next = new Set(ctrlHoverInitialSelection ?? []);
+    for (let i = lo; i <= hi; i++) next.add(visible[i]);
+    selectedIds = next;
+    lastClickedId = overId;
+  }
+
+  // Reset hover-select if the window loses focus (e.g. alt-tab) so the user
+  // doesn't return to find a stale anchor still extending the selection.
+  function handleWindowBlur() {
+    if (!ctrlHoverActive) return;
+    ctrlHoverActive = false;
+    ctrlHoverAnchorId = null;
+    ctrlHoverInitialSelection = null;
+  }
+
   onMount(() => {
     // capture: true so we see the originally-focused element via e.target
     // before any default behavior moves focus.
     window.addEventListener('keydown', handleArrowNav, true);
-    return () => window.removeEventListener('keydown', handleArrowNav, true);
+    window.addEventListener('keydown', handleCtrlKeyDown);
+    window.addEventListener('keyup', handleCtrlKeyUp);
+    window.addEventListener('mousemove', handleCtrlHoverMove);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', handleArrowNav, true);
+      window.removeEventListener('keydown', handleCtrlKeyDown);
+      window.removeEventListener('keyup', handleCtrlKeyUp);
+      window.removeEventListener('mousemove', handleCtrlHoverMove);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
   });
 
   function handleThreadClick(threadId: string, event: MouseEvent) {
@@ -669,7 +754,17 @@
         <p>No conversations yet</p>
         <p class="hint">Start a new chat to begin</p>
       </div>
-    {:else if threadsStore.organizationMode === 'teams'}
+    {:else}
+    <!-- Tab content (folders <-> teams) crossfades via {#key} + transition:fade,
+         matching the right sidebar's tab-switch effect. The wrapping .tab-content
+         is a single-cell grid so the outgoing and incoming keyed panes occupy
+         the same slot during the fade — they overlap instead of stacking
+         vertically, which is what would otherwise cause the threads-container
+         scrollbar to flicker. -->
+    <div class="tab-content">
+    {#key threadsStore.organizationMode}
+    <div class="tab-pane" in:fade={{ duration: 120 }} out:fade={{ duration: 120 }}>
+    {#if threadsStore.organizationMode === 'teams'}
       {#each threadsStore.threadTeams as team (team.id)}
         <FolderItem
           kind="team"
@@ -851,6 +946,10 @@
         </div>
       {/if}
     {/if}
+    </div>
+    {/key}
+    </div>
+    {/if}
   {/if}
 
   <!-- Bulk action bar -->
@@ -1001,6 +1100,18 @@
   .thread-list {
     padding: var(--spacing-sm);
     position: relative;
+  }
+
+  /* Single-cell grid: both keyed .tab-pane copies stack into the same cell
+     during the fade, so the outgoing/incoming panes overlap instead of
+     pushing each other vertically. Matches RightPanel's tab-switch effect. */
+  .tab-content {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .tab-pane {
+    grid-area: 1 / 1;
+    min-width: 0;
   }
 
   .empty-state {

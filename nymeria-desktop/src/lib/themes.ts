@@ -93,8 +93,12 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bubbleUser: '#1e3a5f',
       bubbleAi: '#1a1d21',
       bubbleTool: '#1a1f2e',
-      borderSubtle: '#2a2e33',
-      borderDefault: '#3a3f45',
+      // Bumped from #2a2e33 (matched bgHover, swallowed by elevated bg) to
+      // a clearly distinguishable steel-gray. The right panel's effective
+      // bg over bg-base lands around rgb(25, 28, 32); these border values
+      // sit a solid ~25-35pt above that, so the framing reads cleanly.
+      borderSubtle: '#4a5058',
+      borderDefault: '#5a6068',
     },
   },
 

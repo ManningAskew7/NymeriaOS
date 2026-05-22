@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { Collapsible } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
@@ -14,6 +15,22 @@
 
   let activeTab = $state<'thread' | 'global'>('thread');
   let currentThreadId = $derived(threadsStore.currentThreadId);
+
+  // True for the brief window when switching INTO the 'thread' tab. Hides
+  // scrollbars on the whole panel during that window so they don't flash /
+  // shorten / overlap during the fade.
+  let suppressScrollbar = $state(false);
+  let suppressTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    void activeTab;
+    if (activeTab === 'thread') {
+      suppressScrollbar = true;
+      if (suppressTimer) clearTimeout(suppressTimer);
+      // Slightly longer than the 120ms fade to be safe.
+      suppressTimer = setTimeout(() => (suppressScrollbar = false), 180);
+    }
+  });
 
   // Auto-switch to Global tab when no thread is selected
   $effect(() => {
@@ -97,9 +114,13 @@
     </div>
   </div>
 
-  <div class="panel-body">
+  <div class="panel-body" class:suppress-scrollbar={suppressScrollbar}>
     {#key activeTab}
-    <div class="dashboard-sections tab-fade">
+    <div
+      class="dashboard-sections"
+      in:fade={{ duration: 120 }}
+      out:fade={{ duration: 120 }}
+    >
       <!-- Tasks Section -->
       <Collapsible title="Tasks" defaultOpen={true}>
         {#snippet header()}
@@ -204,26 +225,47 @@
     box-shadow: none;
   }
 
-  .tab-fade {
-    animation: tabFade 180ms ease-out;
-  }
-
-  @keyframes tabFade {
-    from { opacity: 0; transform: translateY(2px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
   .panel-body {
+    /* Position context for the absolutely-positioned .dashboard-sections so
+       both instances of the keyed wrapper overlap in the same physical space
+       during the tab fade (instead of stacking vertically, which made the
+       scrollbar flicker as the panel briefly doubled in height). The
+       dashboard-sections itself handles scrolling now. */
     flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-sm);
+    position: relative;
+    overflow: hidden;
   }
 
   .dashboard-sections {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    padding: var(--spacing-sm);
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
-    height: 100%;
+  }
+
+  /* When switching INTO the 'thread' tab, hide every scrollbar inside the
+     panel-body for the duration of the fade. No transition — they just
+     vanish for ~180ms and come back once the new tab is settled. */
+  .panel-body.suppress-scrollbar .dashboard-sections {
+    scrollbar-width: none;
+  }
+  .panel-body.suppress-scrollbar .dashboard-sections::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Nudge the chevron inside Tasks/Triggers headers down by 1px for better
+     vertical centering. Scoped to Collapsibles so Activity (which is not
+     collapsible) is unaffected. The open state combines the nudge with the
+     90deg rotation — using a single `transform` for both means we have to
+     respecify the full value here (otherwise the rotate would be lost). */
+  :global(.dashboard-sections .collapsible > .header .chevron) {
+    transform: translateY(1px);
+  }
+  :global(.dashboard-sections .collapsible.open > .header .chevron) {
+    transform: translateY(1px) rotate(90deg);
   }
 
   .section-title {

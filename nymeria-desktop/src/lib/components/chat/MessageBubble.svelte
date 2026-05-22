@@ -885,6 +885,19 @@
 
   .markdown-content {
     color: var(--text-primary);
+    /* Allow the browser to break unbreakable strings (long hashes, Draft IDs,
+       URLs without separators, etc.) wherever needed so they wrap inside the
+       message bubble instead of overflowing horizontally. min-width: 0 is
+       required when the bubble lives inside a flex parent — without it, the
+       child refuses to shrink below its intrinsic content width. */
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .markdown-content :global(code) {
+    overflow-wrap: anywhere;
+    word-break: break-all;
   }
 
   .markdown-content :global(p) {

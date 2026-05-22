@@ -392,6 +392,11 @@
     flex: 0 1 auto;
     min-width: 0;
     max-width: 45%;
+    /* Optical centering nudge — flex align-items:center centers the line box,
+       but the bold font's ink sits slightly above the line-box center, so the
+       text reads as too high. 1px down matches the offset already applied to
+       the .meta row beside it. */
+    transform: translateY(1px);
   }
 
   .meta-toggle {
@@ -420,6 +425,9 @@
     display: block;
     flex-shrink: 0;
     transition: opacity var(--transition-fast);
+    /* Match the 1px optical-centering nudge applied to .title and .meta so
+       the dot lines up with the text beside it. */
+    transform: translateY(1px);
   }
 
   .meta-toggle:not(.open) .health-dot {
@@ -459,6 +467,9 @@
     overflow: hidden;
     white-space: nowrap;
     flex: 1 1 auto;
+    /* 2px left padding gives the first meta-part's dot room to render its 1px
+       outer ring without being clipped by overflow:hidden. */
+    padding-left: 2px;
     transform: translate(1px, 1px);
   }
 
