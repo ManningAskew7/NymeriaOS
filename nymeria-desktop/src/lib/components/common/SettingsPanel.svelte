@@ -511,116 +511,159 @@
 </script>
 
 <div class="settings-panel">
-  <!-- Tabs -->
-  <div class="tabs">
-    <button
-      class="tab"
-      class:active={activeTab === 'connection'}
-      onclick={() => (activeTab = 'connection')}
-    >
-      Connection
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'appearance'}
-      onclick={() => (activeTab = 'appearance')}
-    >
-      Appearance
-    </button>
-    {#if isAdmin}
-      <button
-        class="tab"
-        class:active={activeTab === 'llm'}
-        onclick={() => (activeTab = 'llm')}
-        disabled={!serverSettings}
-      >
-        Provider
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'agent'}
-        onclick={() => (activeTab = 'agent')}
-        disabled={!serverSettings}
-      >
-        Agent
-      </button>
-    {/if}
-    <button
-      class="tab"
-      class:active={activeTab === 'tools'}
-      onclick={() => (activeTab = 'tools')}
-      disabled={!serverSettings}
-    >
-      Tools
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'mcp'}
-      onclick={() => (activeTab = 'mcp')}
-      disabled={!serverSettings}
-    >
-      MCP
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'credentials'}
-      onclick={() => (activeTab = 'credentials')}
-      disabled={!serverSettings}
-    >
-      Connections
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'skills'}
-      onclick={() => (activeTab = 'skills')}
-      disabled={!serverSettings}
-    >
-      Skills
-    </button>
-    <button
-      class="tab"
-      class:active={activeTab === 'notifications'}
-      onclick={() => (activeTab = 'notifications')}
-      disabled={!serverSettings}
-    >
-      Notifications
-    </button>
-    {#if isAdmin}
-      <button
-        class="tab"
-        class:active={activeTab === 'voice'}
-        onclick={() => (activeTab = 'voice')}
-        disabled={!serverSettings}
-      >
-        Voice
-      </button>
-    {/if}
-    {#if isAdmin && backendProcessStore.isManagedBackend}
-      <button
-        class="tab"
-        class:active={activeTab === 'proxy'}
-        onclick={() => (activeTab = 'proxy')}
-      >
-        Proxy
-      </button>
-    {/if}
-    <button
-      class="tab"
-      class:active={activeTab === 'account'}
-      onclick={() => (activeTab = 'account')}
-    >
-      Account
-    </button>
-    {#if isAdmin}
-      <button
-        class="tab"
-        class:active={activeTab === 'users'}
-        onclick={() => (activeTab = 'users')}
-      >
-        Users
-      </button>
-    {/if}
-  </div>
+  <div class="settings-layout">
+    <!-- Left-side navigation, Claude/Perplexity style: grouped sections with a
+         label per group and a single column of nav items underneath. -->
+    <aside class="settings-sidebar">
+      <div class="nav-group">
+        <span class="nav-group-label">Account</span>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'account'}
+          onclick={() => (activeTab = 'account')}
+          type="button"
+        >
+          <Icon name="user" size={14} />
+          <span>Account</span>
+        </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'connection'}
+          onclick={() => (activeTab = 'connection')}
+          type="button"
+        >
+          <Icon name="server" size={14} />
+          <span>Backend</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <span class="nav-group-label">Preferences</span>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'appearance'}
+          onclick={() => (activeTab = 'appearance')}
+          type="button"
+        >
+          <Icon name="settings" size={14} />
+          <span>Appearance</span>
+        </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'notifications'}
+          onclick={() => (activeTab = 'notifications')}
+          disabled={!serverSettings}
+          type="button"
+        >
+          <Icon name="bell" size={14} />
+          <span>Notifications</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <span class="nav-group-label">Capabilities</span>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'tools'}
+          onclick={() => (activeTab = 'tools')}
+          disabled={!serverSettings}
+          type="button"
+        >
+          <Icon name="tool" size={14} />
+          <span>Tools</span>
+        </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'mcp'}
+          onclick={() => (activeTab = 'mcp')}
+          disabled={!serverSettings}
+          type="button"
+        >
+          <Icon name="folder" size={14} />
+          <span>MCP Servers</span>
+        </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'skills'}
+          onclick={() => (activeTab = 'skills')}
+          disabled={!serverSettings}
+          type="button"
+        >
+          <Icon name="bolt" size={14} />
+          <span>Skills</span>
+        </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'credentials'}
+          onclick={() => (activeTab = 'credentials')}
+          disabled={!serverSettings}
+          type="button"
+        >
+          <Icon name="cog" size={14} />
+          <span>Integrations</span>
+        </button>
+      </div>
+
+      {#if isAdmin}
+        <div class="nav-group">
+          <span class="nav-group-label">Server</span>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'llm'}
+            onclick={() => (activeTab = 'llm')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="terminal" size={14} />
+            <span>Model</span>
+          </button>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'agent'}
+            onclick={() => (activeTab = 'agent')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="cog" size={14} />
+            <span>Agent</span>
+          </button>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'voice'}
+            onclick={() => (activeTab = 'voice')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="chat" size={14} />
+            <span>Voice</span>
+          </button>
+          {#if backendProcessStore.isManagedBackend}
+            <button
+              class="nav-item"
+              class:active={activeTab === 'proxy'}
+              onclick={() => (activeTab = 'proxy')}
+              type="button"
+            >
+              <Icon name="server" size={14} />
+              <span>CLI Proxy</span>
+            </button>
+          {/if}
+          <button
+            class="nav-item"
+            class:active={activeTab === 'users'}
+            onclick={() => (activeTab = 'users')}
+            type="button"
+          >
+            <Icon name="users" size={14} />
+            <span>Users</span>
+          </button>
+        </div>
+      {/if}
+    </aside>
+
+    <main class="settings-content">
+      {#key activeTab}
+      <div class="tab-fade">
 
   <!-- Connection Tab -->
   {#if activeTab === 'connection'}
@@ -1619,6 +1662,11 @@
     </div>
   {/if}
 
+      </div>
+      {/key}
+    </main>
+  </div>
+
   <ProviderSetupWizard
     isOpen={showProviderSetupWizard}
     currentSettings={serverSettings}
@@ -1631,70 +1679,140 @@
   .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-md);
-    min-width: 400px;
+    /* Fixed dimensions so tabs never resize the modal. 920×620 fits a 220px
+       sidebar + ~660px content column comfortably and stays inside Modal's
+       90vw/90vh ceiling on typical desktop windows. */
+    width: 920px;
+    height: 620px;
+    max-width: 90vw;
+    max-height: 90vh;
+    /* Pull flush against the parent Modal's content padding so the sidebar
+       can run edge-to-edge with the modal frame. */
+    margin: calc(-1 * var(--spacing-lg));
   }
 
-  .tabs {
+  .settings-layout {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-xs);
-    border-bottom: 1px solid var(--border-subtle);
-    padding-bottom: var(--spacing-sm);
+    flex: 1;
+    min-height: 0;
+    gap: 0;
   }
 
-  .tab {
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: none;
+  /* --- Left sidebar --- */
+  .settings-sidebar {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+    padding: var(--spacing-md) var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
+    border-right: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+    overflow-y: auto;
+  }
+
+  .nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nav-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 0 var(--spacing-sm) 4px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    background: transparent;
     border: none;
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    border-radius: var(--radius-md);
     color: var(--text-secondary);
-    cursor: pointer;
     font-size: var(--font-size-sm);
     font-weight: 500;
-    transition: all 0.15s ease;
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--transition-fast), color var(--transition-fast);
   }
 
-  .tab:hover:not(:disabled) {
+  .nav-item :global(svg) {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: color var(--transition-fast);
+  }
+
+  .nav-item:hover:not(:disabled) {
+    background: var(--bg-hover);
     color: var(--text-primary);
+  }
+  .nav-item:hover:not(:disabled) :global(svg) {
+    color: var(--text-secondary);
+  }
+
+  .nav-item.active {
     background: var(--bg-elevated-2);
+    color: var(--text-primary);
   }
-
-  .tab.active {
+  .nav-item.active :global(svg) {
     color: var(--accent-primary);
-    border-bottom: 2px solid var(--accent-primary);
   }
 
-  .tab:disabled {
-    opacity: 0.5;
+  .nav-item:disabled {
+    opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  /* --- Right content area --- */
+  .settings-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-lg) var(--spacing-lg);
+  }
+
+  /* Wrapper around all tab content. `{#key activeTab}` re-mounts this on
+     every tab change, which fires the animation below — giving a subtle
+     fade + slight upward slide so the swap feels smooth rather than
+     snapping. Matches the right-panel tab swap pattern. */
+  .tab-fade {
+    animation: tabFade 160ms cubic-bezier(0.4, 0, 0.2, 1);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  @keyframes tabFade {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   .tab-content {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
+    /* Fill the content area so each tab uses identical space and the panel
+       can't resize when switching between tabs. */
+    height: 100%;
+    min-height: 0;
   }
 
+  /* Previously these two modifiers imposed their own heights / min-widths
+     which made the modal grow on certain tabs. Now they just fill the
+     fixed content frame so layout stays identical across every tab. */
   .tab-content-full {
-    min-height: 400px;
-    max-height: 60vh;
-    overflow-y: auto;
+    min-height: 0;
   }
 
-  /* Tools tab — pins its own footer + lets scrollbar sit flush with the Modal's right border */
   .tab-tools-flex {
     min-height: 0;
-    max-height: 60vh;
-    height: 60vh;
-    /* Keep a stable width so collapsing the Core/Available cards doesn't
-       cascade into the parent Modal auto-sizing down (Modal only has a
-       400px floor, so narrow content otherwise shrinks the whole dialog). */
-    min-width: 640px;
-    display: flex;
-    flex-direction: column;
-    /* Pull flush-right by defeating the parent Modal's right padding */
-    margin-right: calc(-1 * var(--spacing-lg));
+    flex: 1;
   }
 
   .field {

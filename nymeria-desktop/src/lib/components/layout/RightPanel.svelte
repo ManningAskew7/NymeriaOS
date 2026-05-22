@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Collapsible } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
@@ -19,6 +20,45 @@
     if (activeTab === 'thread' && !currentThreadId) {
       activeTab = 'global';
     }
+  });
+
+  // Tab key toggles between "This Thread" and "Global" panes.
+  // Guarded so it never hijacks typing, modifier-Tab shortcuts, or focus
+  // movement inside a modal.
+  function handleTabKey(e: KeyboardEvent) {
+    if (e.key !== 'Tab') return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (isCollapsed) return;
+
+    // Use e.target — by the time the bubble-phase listener runs, the
+    // browser may have already moved focus to the next element, so
+    // document.activeElement no longer points at the originally-focused
+    // textarea/input.
+    const target = e.target as HTMLElement | null;
+    if (target) {
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      if (target.isContentEditable) return;
+      // Walk up for an editable ancestor (some rich editors put the
+      // contenteditable on a wrapper above the actual event target).
+      if (target.closest('[contenteditable="true"], [contenteditable=""]')) return;
+      // Inside an open modal / dialog, leave Tab alone so it cycles focus
+      // within the dialog the way users expect.
+      if (target.closest('[role="dialog"]')) return;
+    }
+
+    e.preventDefault();
+    if (activeTab === 'thread' && currentThreadId) {
+      activeTab = 'global';
+    } else if (activeTab === 'global' && currentThreadId) {
+      activeTab = 'thread';
+    }
+  }
+
+  onMount(() => {
+    // capture: true so we observe the keydown before the browser's default
+    // focus-change kicks in and we still see the originally-focused element.
+    window.addEventListener('keydown', handleTabKey, true);
+    return () => window.removeEventListener('keydown', handleTabKey, true);
   });
 
   // Build thread title lookup for global view
@@ -58,7 +98,8 @@
   </div>
 
   <div class="panel-body">
-    <div class="dashboard-sections">
+    {#key activeTab}
+    <div class="dashboard-sections tab-fade">
       <!-- Tasks Section -->
       <Collapsible title="Tasks" defaultOpen={true}>
         {#snippet header()}
@@ -102,6 +143,7 @@
         {/if}
       </div>
     </div>
+    {/key}
   </div>
   <ConnectionStatus />
 </div>
@@ -160,6 +202,15 @@
     border-color: var(--border-default);
     background: var(--bg-elevated-2);
     box-shadow: none;
+  }
+
+  .tab-fade {
+    animation: tabFade 180ms ease-out;
+  }
+
+  @keyframes tabFade {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   .panel-body {

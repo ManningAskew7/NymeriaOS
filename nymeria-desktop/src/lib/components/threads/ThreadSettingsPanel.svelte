@@ -27,11 +27,13 @@
     type ThreadDisplayProvider,
   } from '$lib/utils/providerMapping';
   import { detectThreadPlatform, isNativeDisplayPlatform } from '$lib/utils/platform';
+  import { fade } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import ModelConfigTab from './ModelConfigTab.svelte';
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import ChatAppConfigTab from './ChatAppConfigTab.svelte';
 
-  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
+  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
@@ -858,17 +860,6 @@
       </button>
       <button
         class="tab"
-        class:active={activeTab === 'triggers'}
-        onclick={() => (activeTab = 'triggers')}
-        type="button"
-      >
-        Triggers
-        {#if triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length > 0}
-          <span class="tab-badge">{triggersStore.triggers.filter(t => t.enabled && t.thread_id === thread.id).length}</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
         class:active={activeTab === 'chatapp'}
         onclick={() => (activeTab = 'chatapp')}
         type="button"
@@ -881,6 +872,8 @@
     </div>
 
     <div class="tab-content">
+      {#key activeTab}
+      <div class="tab-fade">
       {#if activeTab === 'instructions'}
         <div class="tab-panel">
           <label class="field-label" for="thread-instructions">
@@ -1189,14 +1182,6 @@
           bind:threadDisabledSkills
         />
 
-      {:else if activeTab === 'triggers'}
-        <div class="tab-panel">
-          <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
-            <p style="margin: 0; font-size: var(--font-size-sm);">Triggers have moved to the Dashboard panel.</p>
-            <p style="margin: 0.5rem 0 0; font-size: var(--font-size-xs);">Use the "Triggers" section in the right panel to manage automations.</p>
-          </div>
-        </div>
-
       {:else if activeTab === 'chatapp'}
         <ChatAppConfigTab
           {thread}
@@ -1206,6 +1191,8 @@
         />
 
       {/if}
+      </div>
+      {/key}
     </div>
 
     {#if error}
@@ -1268,22 +1255,28 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
-    width: fit-content;
-    min-width: min(560px, 100%);
-    max-width: min(920px, 100%);
-    max-height: 80vh;
+    /* Fixed dimensions so the modal can't resize when switching between
+       tabs — the inner tab area scrolls when content overflows. */
+    width: 760px;
+    height: 620px;
+    max-width: 90vw;
+    max-height: 90vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
     box-sizing: border-box;
+    overflow: hidden;
   }
 
+  /* Header — title + thread name on one tight row, close button far right.
+     Distinct from the main Settings modal because of the inline subtitle and
+     the integrated top-tab layout below. */
   .modal-header {
     display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-md) var(--spacing-lg);
-    border-bottom: 1px solid var(--border-default);
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px var(--spacing-lg) 12px;
+    flex-shrink: 0;
   }
 
   .modal-header h2 {
@@ -1291,6 +1284,7 @@
     font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--text-primary);
+    letter-spacing: -0.005em;
   }
 
   .modal-subtitle {
@@ -1300,6 +1294,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
+    min-width: 0;
   }
 
   .close-btn {
@@ -1312,6 +1307,8 @@
     color: var(--text-muted);
     flex-shrink: 0;
     margin-left: auto;
+    align-self: center;
+    transition: color var(--transition-fast), background var(--transition-fast);
   }
 
   .close-btn:hover {
@@ -1319,57 +1316,107 @@
     background: var(--bg-hover);
   }
 
+  /* Top-tab strip — sleeker than the underline-only version: the active tab
+     gets a subtle bg pill *and* a thicker accent underline so it reads
+     clearly without shouting. */
   .tabs {
     display: flex;
     flex-wrap: nowrap;
     flex-shrink: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    border-bottom: 1px solid var(--border-default);
-    padding: 0 var(--spacing-lg);
+    gap: 2px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0 12px;
     scrollbar-width: thin;
   }
 
   .tab {
-    display: flex;
+    position: relative;
+    display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 4px;
-    padding: var(--spacing-sm) var(--spacing-md);
+    gap: 6px;
+    padding: 10px 12px;
     font-size: var(--font-size-sm);
+    font-weight: 500;
     color: var(--text-muted);
-    border-bottom: 2px solid transparent;
-    transition: all var(--transition-fast);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    cursor: pointer;
     white-space: nowrap;
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .tab::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -1px;
+    height: 2px;
+    background: transparent;
+    border-radius: 1px 1px 0 0;
+    transition: background var(--transition-fast);
   }
 
   .tab:hover {
     color: var(--text-primary);
+    background: var(--bg-hover);
   }
 
   .tab.active {
-    color: var(--accent-primary);
-    border-bottom-color: var(--accent-primary);
+    color: var(--text-primary);
+    background: var(--bg-elevated-2);
   }
 
+  .tab.active::after {
+    background: var(--accent-primary);
+  }
+
+  /* Tab count badge — quiet circle that doesn't compete with the active tab
+     indicator. */
   .tab-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     min-width: 16px;
     height: 16px;
-    padding: 0 4px;
+    padding: 0 5px;
     font-size: 10px;
     font-weight: 600;
-    background: var(--accent-primary);
-    color: var(--bg-base);
+    background: var(--bg-elevated-2);
+    color: var(--text-secondary);
     border-radius: var(--radius-full);
+  }
+
+  .tab.active .tab-badge {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
   }
 
   .tab-content {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
+    /* Hide the scrollbar but keep scroll functionality so long tabs
+       (Tools, Skills) still scroll without the visual chrome. */
+    scrollbar-width: none;
+  }
+  .tab-content::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Fade wrapper — `{#key activeTab}` re-mounts this so the keyframe runs on
+     every tab switch, giving a smooth fade/slide instead of a snap. */
+  .tab-fade {
+    animation: threadTabFade 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  @keyframes threadTabFade {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   .tab-panel {
@@ -1381,17 +1428,22 @@
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
-    margin-bottom: 4px;
+    line-height: 1.4;
+    margin-bottom: 6px;
   }
 
+  /* Hints sit just under a label or a toggle and explain the field.
+     Comfortable line-height + a touch more bottom margin so multi-line
+     hints don't visually merge with the next control. */
   .field-hint {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    margin: 0 0 var(--spacing-sm) 0;
+    line-height: 1.5;
+    margin: 0 0 var(--spacing-md) 0;
   }
 
   .field-group {
-    margin-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
   }
 
   .field-input {
@@ -1448,29 +1500,41 @@
 
   .visibility-section {
     margin-top: var(--spacing-lg);
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-default);
+    padding-top: var(--spacing-lg);
+    border-top: 1px solid var(--border-subtle);
   }
 
   .agent-config-section {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-sm);
+    gap: var(--spacing-md);
   }
 
+  /* Section headers sit above grouped controls — give them clear breathing
+     room below so toggles/inputs don't crowd the title. */
   .section-title {
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
-    margin: 0 0 var(--spacing-xs) 0;
+    line-height: 1.35;
+    margin: 0 0 var(--spacing-sm) 0;
   }
 
+  /* Toggle + its hint form a pair. Keep the toggle tight to its label
+     and let the hint underneath have a comfortable margin to the *next*
+     control so adjacent toggle groups don't visually merge. */
   .toggle-row {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
-    margin: var(--spacing-sm) 0;
+    margin: 0 0 6px 0;
     cursor: pointer;
+  }
+
+  /* When a hint follows a toggle-row, it's describing that toggle — leave
+     a slightly larger margin before the next toggle starts. */
+  .toggle-row + .field-hint {
+    margin: 0 0 var(--spacing-md) 28px;
   }
 
   .toggle-row input[type="checkbox"] {
@@ -1482,6 +1546,7 @@
 
   .toggle-label {
     font-size: var(--font-size-sm);
+    line-height: 1.4;
     color: var(--text-primary);
   }
 
@@ -1490,7 +1555,7 @@
     text-align: right;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    margin-top: 4px;
+    margin-top: 6px;
   }
 
   /* Tools tab */

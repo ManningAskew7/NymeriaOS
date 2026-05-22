@@ -20,9 +20,10 @@
     onOpenAgentConfig?: () => void;
     onTogglePin?: () => void;
     onExport?: () => void;
+    onToggleSelect?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport }: Props = $props();
+  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport, onToggleSelect }: Props = $props();
 
   let showActions = $state(false);
   let isEditing = $state(false);
@@ -97,6 +98,11 @@
 
   function dismissContextMenu() {
     contextMenu = null;
+  }
+
+  function handleContextSelect() {
+    contextMenu = null;
+    onToggleSelect?.();
   }
 
   function handleContextPin() {
@@ -315,6 +321,12 @@
   <div class="context-backdrop" onclick={dismissContextMenu} onkeydown={(e) => e.key === 'Escape' && dismissContextMenu()} role="presentation" tabindex="-1">
   </div>
   <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+    {#if onToggleSelect}
+      <button class="context-item" onclick={handleContextSelect} type="button">
+        <Icon name="check" size={14} />
+        <span>{isSelected ? 'Deselect' : 'Select'}</span>
+      </button>
+    {/if}
     {#if onTogglePin}
       <button class="context-item" onclick={handleContextPin} type="button">
         <Icon name="pin" size={14} />

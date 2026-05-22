@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Thread, ThreadConfig } from '$lib/types';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -8,6 +10,7 @@
   import { api } from '$lib/services/api.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
+  import { healthStore } from '$lib/stores/health.svelte';
   import { computeEffectiveToolCounts } from '$lib/utils/toolCounts';
 
   interface Props {
@@ -18,7 +21,23 @@
 
   let { thread, threadConfig, onOpenSettings }: Props = $props();
 
-  let showMeta = $state(false);
+  let showMeta = $state(true);
+
+  const healthDotClass = $derived(
+    healthStore.checking && !healthStore.connected
+      ? 'checking'
+      : healthStore.connected
+        ? 'connected'
+        : 'disconnected'
+  );
+
+  const healthTooltip = $derived(
+    healthStore.checking && !healthStore.connected
+      ? 'Checking API...'
+      : healthStore.connected
+        ? 'API connected'
+        : 'API disconnected'
+  );
 
   const isCallable = $derived(threadConfig?.callable ?? false);
 
@@ -290,15 +309,15 @@
       class:open={showMeta}
       type="button"
       onclick={() => (showMeta = !showMeta)}
-      title={showMeta ? 'Hide thread details' : 'Show thread details'}
+      data-tooltip={`${healthTooltip} — click to ${showMeta ? 'hide' : 'show'} details`}
       aria-label="Toggle thread details"
       aria-expanded={showMeta}
     >
-      <Icon name="chevronDown" size={14} />
+      <span class="health-dot {healthDotClass}"></span>
     </button>
 
     {#if showMeta}
-      <div class="meta">
+      <div class="meta" transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
         {#each metaParts as part (part.id)}
           <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{part.text}</span>
         {/each}
@@ -390,22 +409,42 @@
     transition: color var(--transition-fast), background var(--transition-fast);
   }
 
-  .meta-toggle :global(svg) {
-    display: block;
-    transition: transform var(--transition-fast);
-  }
-
   .meta-toggle:hover {
-    color: var(--text-primary);
     background: var(--bg-hover);
   }
 
-  .meta-toggle.open :global(svg) {
-    transform: rotate(-90deg);
+  .meta-toggle .health-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: block;
+    flex-shrink: 0;
+    transition: opacity var(--transition-fast);
   }
 
-  .meta-toggle.open {
-    color: var(--text-secondary);
+  .meta-toggle:not(.open) .health-dot {
+    opacity: 0.55;
+  }
+
+  .meta-toggle .health-dot.connected {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+    animation: meta-dot-pulse 2s ease-in-out infinite;
+  }
+
+  .meta-toggle .health-dot.disconnected {
+    background: var(--error);
+    box-shadow: 0 0 6px var(--error);
+  }
+
+  .meta-toggle .health-dot.checking {
+    background: var(--warning);
+    box-shadow: 0 0 6px var(--warning);
+  }
+
+  @keyframes meta-dot-pulse {
+    0%, 100% { box-shadow: 0 0 6px var(--success); }
+    50% { box-shadow: 0 0 10px var(--success); }
   }
 
   .meta {
@@ -420,6 +459,7 @@
     overflow: hidden;
     white-space: nowrap;
     flex: 1 1 auto;
+    transform: translate(1px, 1px);
   }
 
   .meta-part {
