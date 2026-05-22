@@ -2473,6 +2473,7 @@ Updates thread config. Key fields for callable threads:
 | `llm_config.provider_route` | string | Per-thread adapter route override: `native` or `openai_compat`. Only applies to providers whose catalog row advertises multiple `supported_routes`. |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
+| `memory_char_limit` | int | Optional per-thread notepad character limit. Omit or clear to inherit the global `MEMORY_CHAR_LIMIT` default. |
 | `llm_temperature` | float | Override temperature |
 | `llm_config.openai_api_mode` | string | OpenAI-compatible API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 
@@ -2650,7 +2651,10 @@ Authorization: Bearer <token>
 ```
 
 Creates or updates the memory and syncs a memory chunk into the user's RAG
-index when RAG is available.
+index when RAG is available. The saved profile memory set must fit within
+`MEMORY_CHAR_LIMIT` characters when rendered as `key: value` rows; over-limit
+growth returns `400` with a memory-full error so the caller can consolidate or
+delete older memories.
 
 ### Delete Memory
 

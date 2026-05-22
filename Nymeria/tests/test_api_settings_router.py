@@ -60,6 +60,7 @@ class FakeSettings:
     compact_model: str | None = None
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
+    memory_char_limit: int = 8000
     log_level: str = "INFO"
     watchdog_enabled: bool = True
     watchdog_interval_minutes: int = 5
@@ -200,6 +201,10 @@ class FakeSettingsProvider:
             perplexity_api_key=os.environ.get(
                 "PERPLEXITY_API_KEY",
                 self.settings.perplexity_api_key,
+            ),
+            memory_char_limit=env_int(
+                "MEMORY_CHAR_LIMIT",
+                self.settings.memory_char_limit,
             ),
         )
 
@@ -656,6 +661,29 @@ def test_patch_settings_hot_reloads_compact_token_threshold(
     assert agent.settings.compact_threshold_mode == "tokens"
     assert agent.settings.compact_threshold_tokens == 250000
     assert agent.settings.compact_threshold == 0.5
+    assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_hot_reloads_memory_char_limit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("MEMORY_CHAR_LIMIT=8000\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"memory_char_limit": 12000},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["memory_char_limit"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MEMORY_CHAR_LIMIT=12000" in env_text
+    assert os.environ["MEMORY_CHAR_LIMIT"] == "12000"
+    assert provider.cache_clear_count == 1
+    assert agent.settings.memory_char_limit == 12000
     assert agent.graph_rebuilds == []
 
 

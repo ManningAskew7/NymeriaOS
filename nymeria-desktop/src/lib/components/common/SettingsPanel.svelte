@@ -96,6 +96,7 @@
   let compactThresholdMode = $state<'percentage' | 'tokens'>('percentage');
   let compactThresholdTokens = $state(100000);
   let slidingWindowCycles = $state(5);
+  let memoryCharLimit = $state(8000);
   let logLevel = $state<LogLevel>('INFO');
   let watchdogEnabled = $state(true);
   let watchdogIntervalMinutes = $state(5);
@@ -325,6 +326,7 @@
         modelsStore.loadModels();
       }
       slidingWindowCycles = serverSettings.sliding_window_cycles;
+      memoryCharLimit = serverSettings.memory_char_limit ?? 8000;
       logLevel = serverSettings.log_level;
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
@@ -514,6 +516,7 @@
         compact_threshold_mode: compactThresholdMode,
         compact_threshold_tokens: compactThresholdTokens,
         sliding_window_cycles: slidingWindowCycles,
+        memory_char_limit: memoryCharLimit,
         log_level: logLevel,
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
@@ -1434,6 +1437,19 @@
             <p class="hint">Number of conversation cycles to keep in context</p>
           </div>
         {/if}
+
+        <div class="field">
+          <label for="memory-char-limit">Memory Character Limit</label>
+          <input
+            id="memory-char-limit"
+            type="number"
+            min="1"
+            max="2000000"
+            step="500"
+            bind:value={memoryCharLimit}
+          />
+          <p class="hint">Maximum saved characters for global memories and thread notepads before the agent must consolidate.</p>
+        </div>
 
         <div class="field">
           <label for="log-level">Log Level</label>

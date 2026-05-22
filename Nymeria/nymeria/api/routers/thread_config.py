@@ -41,6 +41,7 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
         "telegram_autonomous_delivery": "full",
         "in_app_notification_level": "notify_only",
         "notification_profile": None,
+        "memory_char_limit": None,
         "created_at": None,
         "updated_at": None,
         "has_customizations": False,
@@ -305,6 +306,10 @@ def create_thread_config_router(
             tc.notification_profile = None
         elif request.notification_profile is not None:
             tc.notification_profile = request.notification_profile or None
+        if request.clear_memory_char_limit:
+            tc.memory_char_limit = None
+        elif request.memory_char_limit is not None:
+            tc.memory_char_limit = request.memory_char_limit
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")

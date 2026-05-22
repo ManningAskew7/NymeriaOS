@@ -26,6 +26,8 @@ class FakeCommandApi:
     def __init__(self) -> None:
         self.closed = False
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.memories = [{"key": "a", "value": "12345"}]
+        self.thread_config = {"enabled_tools": [], "disabled_tools": [], "memory_char_limit": None}
 
     async def close(self) -> None:
         self.closed = True
@@ -54,7 +56,7 @@ class FakeCommandApi:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(("get_thread_config", (thread_id,), {"user_id": user_id}))
-        return {"enabled_tools": [], "disabled_tools": []}
+        return dict(self.thread_config)
 
     async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
         self.calls.append(("get_settings", (), {"user_id": user_id}))
@@ -66,6 +68,7 @@ class FakeCommandApi:
             "llm_reasoning_effort": None,
             "context_management": "auto_compact",
             "compact_threshold": 0.8,
+            "memory_char_limit": 8000,
         }
 
     async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
@@ -99,6 +102,27 @@ class FakeCommandApi:
     ) -> dict[str, Any]:
         self.calls.append(("get_env_var", (key,), {"user_id": user_id}))
         return {"name": key, "value": "secret-value"}
+
+    async def list_memories(self, user_id: str) -> list[dict[str, Any]]:
+        self.calls.append(("list_memories", (user_id,), {}))
+        return list(self.memories)
+
+    async def update_settings(self, *, user_id: str | None = None, **kwargs) -> dict[str, Any]:
+        self.calls.append(("update_settings", (), {"user_id": user_id, **kwargs}))
+        return {"updated": list(kwargs), "restart_required": False}
+
+    async def update_thread_config(
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        self.calls.append(("update_thread_config", (thread_id,), {"user_id": user_id, **kwargs}))
+        self.thread_config.update(kwargs)
+        if kwargs.get("clear_memory_char_limit"):
+            self.thread_config["memory_char_limit"] = None
+        return dict(self.thread_config)
 
 
 class _FakeAccountsRepo:
@@ -313,6 +337,36 @@ def test_context_degrades_when_parallel_fetch_returns_base_exception() -> None:
     assert "### Context Breakdown" in result.markdown
     assert "gpt-test | openai" in result.markdown
     assert "0 / 0 tokens" in result.markdown
+
+
+def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    shown = run(service.execute(ctx, "/memory limit", api=api))
+    global_set = run(service.execute(ctx, "/memory limit global 12000", api=api))
+    thread_set = run(service.execute(ctx, "/memory limit thread 6000", api=api))
+    thread_clear = run(service.execute(ctx, "/memory limit thread inherit", api=api))
+
+    assert shown.success is True
+    assert "global: 8 / 8000 chars" in shown.markdown
+    assert global_set.success is True
+    assert ("update_settings", (), {"user_id": "alice", "memory_char_limit": 12000}) in api.calls
+    assert thread_set.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "memory_char_limit": 6000},
+    ) in api.calls
+    assert thread_clear.success is True
+    assert api.thread_config["memory_char_limit"] is None
 
 
 def test_default_execution_uses_current_agent_backend_without_http(

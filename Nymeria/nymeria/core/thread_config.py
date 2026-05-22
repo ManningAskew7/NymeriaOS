@@ -164,6 +164,9 @@ class ThreadConfig(BaseModel):
     # overrides the user's default_notification_profile preference for this
     # thread. None means "use the user-level default".
     notification_profile: Optional[str] = Field(default=None, max_length=120)
+    # Optional per-thread notepad character limit. None inherits the global
+    # MEMORY_CHAR_LIMIT setting.
+    memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -231,6 +234,8 @@ class ThreadConfig(BaseModel):
         if self.in_app_notification_level != "notify_only":
             return True
         if self.notification_profile:
+            return True
+        if self.memory_char_limit is not None:
             return True
         return False
 

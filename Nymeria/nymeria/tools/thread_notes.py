@@ -14,9 +14,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from ..core.memory_limits import (
+    get_effective_thread_memory_char_limit,
+    validate_text_memory_write,
+)
+
 logger = logging.getLogger(__name__)
 
-# 50 KB max notepad size
+# Legacy compatibility constant. Current writes use MEMORY_CHAR_LIMIT plus any
+# per-thread override, both measured in characters.
 MAX_NOTEPAD_SIZE = 50 * 1024
 
 # Lazily resolved data directory
@@ -60,7 +66,13 @@ def delete_notepad(thread_id: str) -> bool:
     return False
 
 
-def write_notepad(thread_id: str, content: str, mode: str = "append") -> str:
+def write_notepad(
+    thread_id: str,
+    content: str,
+    mode: str = "append",
+    *,
+    char_limit: int | None = None,
+) -> str:
     """Write to a thread's notepad.
 
     Args:
@@ -75,9 +87,9 @@ def write_notepad(thread_id: str, content: str, mode: str = "append") -> str:
         return "[Error]: mode must be 'append' or 'replace'."
 
     path = _notepad_path(thread_id)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
 
     if mode == "append":
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
         new_content = (existing.rstrip() + "\n\n" + content) if existing else content
     else:
         new_content = content
@@ -87,18 +99,31 @@ def write_notepad(thread_id: str, content: str, mode: str = "append") -> str:
         logger.info(f"Notepad cleared by empty write for thread {thread_id}")
         return "[Saved]: Notepad is empty." if deleted else "[Info]: Notepad was already empty."
 
-    if len(new_content.encode("utf-8")) > MAX_NOTEPAD_SIZE:
-        return f"[Error]: Notepad would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit. Use mode='replace' to overwrite, or trim content."
+    limit = char_limit or get_effective_thread_memory_char_limit(thread_id)
+    limit_error = validate_text_memory_write(
+        label="Thread memory",
+        current_text=existing,
+        proposed_text=new_content,
+        limit=limit,
+    )
+    if limit_error:
+        return limit_error
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(new_content, encoding="utf-8")
 
-    size = len(new_content.encode("utf-8"))
-    logger.info(f"Notepad written for thread {thread_id}: {size} bytes ({mode})")
-    return f"[Saved]: Notepad updated ({size} bytes). This content will persist through compaction."
+    size = len(new_content)
+    logger.info(f"Notepad written for thread {thread_id}: {size} chars ({mode})")
+    return f"[Saved]: Notepad updated ({size} chars). This content will persist through compaction."
 
 
-def edit_notepad(thread_id: str, old_text: str, new_text: str = "") -> str:
+def edit_notepad(
+    thread_id: str,
+    old_text: str,
+    new_text: str = "",
+    *,
+    char_limit: int | None = None,
+) -> str:
     """Find/replace within a thread's notepad. Empty new_text deletes the matched text.
 
     If the notepad becomes empty as a result, the underlying file is deleted.
@@ -127,13 +152,20 @@ def edit_notepad(thread_id: str, old_text: str, new_text: str = "") -> str:
 
     updated = updated + "\n"
 
-    if len(updated.encode("utf-8")) > MAX_NOTEPAD_SIZE:
-        return f"[Error]: Edit would exceed {MAX_NOTEPAD_SIZE // 1024}KB limit."
+    limit = char_limit or get_effective_thread_memory_char_limit(thread_id)
+    limit_error = validate_text_memory_write(
+        label="Thread memory",
+        current_text=content,
+        proposed_text=updated,
+        limit=limit,
+    )
+    if limit_error:
+        return limit_error
 
     path.write_text(updated, encoding="utf-8")
-    size = len(updated.encode("utf-8"))
+    size = len(updated)
 
     action = "replaced" if new_text else "removed"
     extra = f" ({count} occurrences found, first one {action})" if count > 1 else ""
-    logger.info(f"Notepad edited for thread {thread_id}: {action} text, {size} bytes")
-    return f"[Saved]: Text {action}{extra}. Notepad is now {size} bytes."
+    logger.info(f"Notepad edited for thread {thread_id}: {action} text, {size} chars")
+    return f"[Saved]: Text {action}{extra}. Notepad is now {size} chars."

@@ -1342,6 +1342,12 @@ class Settings(BaseSettings):
         le=2000000,
         description="Maximum characters stored for a single tool result; oversized results keep head and tail with a truncation marker"
     )
+    memory_char_limit: int = Field(
+        default=8000,
+        ge=1,
+        le=2000000,
+        description="Maximum persisted characters for global memories and per-thread notepads"
+    )
 
     # Watchdog/TODO Configuration
     watchdog_enabled: bool = Field(

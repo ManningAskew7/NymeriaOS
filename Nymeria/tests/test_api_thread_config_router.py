@@ -66,6 +66,7 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
             "enabled_skills": ["skill-a"],
             "disabled_skills": ["skill-b"],
             "inject_todos_in_prompt": True,
+            "memory_char_limit": 6000,
         },
     )
 
@@ -84,6 +85,7 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert body["enabled_skills"] == ["skill-a"]
     assert body["disabled_skills"] == ["skill-b"]
     assert body["inject_todos_in_prompt"] is True
+    assert body["memory_char_limit"] == 6000
     assert body["has_customizations"] is True
 
     saved = agent.thread_config_manager.get_config(thread_id)
@@ -91,6 +93,7 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert saved.llm_config is not None
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.model == "gpt-5.5"
+    assert saved.memory_char_limit == 6000
     assert agent.thread_metadata_manager.get_thread("owner", thread_id).title == "OpsHelper"
     assert agent.invalidated == [thread_id]
     assert agent.synced_tools == 1
@@ -106,6 +109,16 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert saved.llm_config is not None
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.model is None
+
+    clear_memory_limit = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_memory_char_limit": True},
+    )
+
+    assert clear_memory_limit.status_code == 200
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved.memory_char_limit is None
 
 
 def test_thread_config_rejects_invalid_core_and_duplicate_callable_names(
