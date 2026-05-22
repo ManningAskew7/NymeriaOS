@@ -3,6 +3,8 @@
   import { Icon } from '$lib/components/common';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { onMount, onDestroy } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
 
   interface Props {
     todo: TodoItemType;
@@ -219,9 +221,9 @@
       </div>
     {/if}
 
-    <!-- Expandable details -->
+    <!-- Expandable details — slide-down to match the trigger card animation -->
     {#if expanded}
-      <div class="todo-details">
+      <div class="todo-details" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
         {#if todo.notes}
           <div class="detail-row notes">
             <Icon name="fileText" size={12} />
@@ -419,6 +421,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
 
   /* Quiet secondary metadata row — the key to the professional look */
   .todo-meta {

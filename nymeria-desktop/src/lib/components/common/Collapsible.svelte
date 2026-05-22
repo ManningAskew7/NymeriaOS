@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -34,7 +36,7 @@
   </button>
 
   {#if isOpen}
-    <div class="content">
+    <div class="content" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
       {@render children()}
     </div>
   {/if}
@@ -94,23 +96,5 @@
     border: 1px solid var(--border-subtle);
     border-top: none;
     border-radius: 0 0 var(--radius-md) var(--radius-md);
-    animation: slideDown var(--transition-fast);
-    /* Brighten inherited text colors so muted/secondary text remains readable
-       against the slightly lighter bubble background. */
-    --text-muted: #a5abb3;
-    --text-secondary: #c4c9d0;
-    --border-subtle: #353a40;
-    --border-default: #4a5058;
-  }
-
-  @keyframes slideDown {
-    from {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 </style>
