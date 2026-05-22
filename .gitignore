@@ -7,6 +7,7 @@
 !.env.docker.example
 firebase-service-account.json
 google_credentials.json
+**/google_credentials.json.*
 _prv_a-google-service-account.json
 **/google_credentials.json
 **/_prv_a-google-service-account.json
@@ -20,10 +21,8 @@ CLIProxyAPI-main/.env
 
 # --- git-crypt encrypted exceptions ---
 # On a fresh clone: install git-crypt, then `git-crypt unlock <keyfile>`
-!Nymeria/.env.docker
 !Nymeria/.env
 !Nymeria/firebase-service-account.json
-!Nymeria/google_credentials.json
 
 # === Databases & User Data ===
 *.db
