@@ -216,7 +216,7 @@
     background: var(--bg-base);
     padding: 1px 4px;
     border-radius: var(--radius-sm);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     font-size: 0.9em;
   }
 
@@ -246,7 +246,7 @@
     background: var(--bg-base);
     padding: 1px 4px;
     border-radius: var(--radius-sm);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
   }
 
   .status {
@@ -321,14 +321,14 @@
   .skill-name {
     font-weight: 600;
     color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
   }
 
   .chip {
     font-size: var(--font-size-xs);
     padding: 1px 6px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);

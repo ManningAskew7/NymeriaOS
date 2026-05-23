@@ -144,7 +144,7 @@
 
   .resume-text {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     line-height: 1.5;
     color: var(--text-secondary);
     white-space: pre-wrap;

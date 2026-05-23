@@ -769,7 +769,7 @@
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     cursor: default;
     transition: all var(--transition-fast);
     border-radius: var(--radius-sm);
@@ -801,7 +801,7 @@
     height: 18px;
     border-radius: 50%;
     background: var(--bg-elevated-2);
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
   }
 
@@ -847,7 +847,7 @@
   }
 
   .optional-badge {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 400;
     color: var(--text-muted);
     background: var(--bg-elevated-2);
@@ -888,12 +888,12 @@
 
   .cat-tab {
     padding: 2px 10px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     color: var(--text-muted);
     background: transparent;
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     cursor: pointer;
     text-transform: capitalize;
     transition: all var(--transition-fast);
@@ -968,7 +968,7 @@
   }
 
   .source-card-desc {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -976,7 +976,8 @@
   }
 
   .auth-badge {
-    font-size: 9px;
+    display: inline-block;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     color: var(--warning);
@@ -984,6 +985,7 @@
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     letter-spacing: 0.03em;
+    text-indent: 0.03em;
   }
 
   /* Config form */
@@ -1013,7 +1015,7 @@
 
   .group-title {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -1054,7 +1056,7 @@
   }
 
   .field-hint {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
   }
 
@@ -1197,7 +1199,7 @@
 
   .at-desc {
     flex: 1;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
   }
 
@@ -1215,7 +1217,7 @@
     border-radius: var(--radius-md);
     color: var(--text-primary);
     font-size: var(--font-size-sm);
-    font-family: monospace;
+    font-family: var(--font-mono);
     resize: vertical;
     outline: none;
     line-height: 1.5;
@@ -1234,17 +1236,17 @@
   }
 
   .hints-label {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
   }
 
   .var-hint {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     padding: 1px 5px;
     background: var(--bg-elevated-2);
     border-radius: var(--radius-sm);
     color: var(--accent-secondary, var(--accent-primary));
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   /* Review step */

@@ -314,7 +314,7 @@
     justify-content: center;
     min-width: 18px;
     padding: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     color: var(--text-muted);
   }

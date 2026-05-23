@@ -297,7 +297,7 @@
     font-weight: 600;
     color: var(--text-primary);
     font-size: var(--font-size-sm);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
   }
 
   .result-source {
@@ -309,7 +309,7 @@
   .badge {
     font-size: var(--font-size-xs);
     padding: 1px 6px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
     color: var(--text-muted);
   }

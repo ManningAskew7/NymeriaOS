@@ -168,7 +168,7 @@
   .skills-thread-panel .skill-name {
     font-weight: 600;
     color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
   }
 
@@ -176,7 +176,7 @@
   .skills-thread-panel .skill-chip {
     font-size: var(--font-size-xs);
     padding: 1px 6px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);

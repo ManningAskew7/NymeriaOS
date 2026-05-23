@@ -112,9 +112,7 @@
 <style>
   .tool-call-card {
     position: relative;
-    background: var(--glass-bg);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: var(--bg-elevated);
     border-radius: var(--radius-md);
     border: 1px solid var(--glass-border);
     overflow: hidden;

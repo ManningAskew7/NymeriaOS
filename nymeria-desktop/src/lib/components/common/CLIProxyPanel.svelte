@@ -231,7 +231,7 @@
   }
 
   .hint {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin: 0.25rem 0 0 0;
     line-height: 1.45;
@@ -240,7 +240,7 @@
   .hint code,
   .route-facts code {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     overflow-wrap: anywhere;
   }
 
@@ -271,7 +271,7 @@
   }
 
   .status-text {
-    font-size: 0.875rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
   }
 
@@ -315,13 +315,13 @@
   }
 
   .route-title {
-    font-size: 0.875rem;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
   }
 
   .route-subtitle {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
   }
 
@@ -346,7 +346,7 @@
   .route-facts span {
     display: block;
     color: var(--text-muted);
-    font-size: 0.6875rem;
+    font-size: var(--font-size-2xs);
     margin-bottom: 0.125rem;
   }
 
@@ -383,7 +383,7 @@
 
   .session-email {
     min-width: 0;
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     overflow-wrap: anywhere;
   }

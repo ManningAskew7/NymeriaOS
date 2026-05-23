@@ -650,7 +650,7 @@
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     background: var(--accent-primary);
     color: var(--bg-base);

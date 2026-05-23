@@ -208,7 +208,7 @@
     gap: 3px;
     padding: 2px 6px;
     border-radius: var(--radius-sm, 4px);
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     line-height: 1;
     background: var(--bg-elevated);
     color: var(--text-muted);
