@@ -105,6 +105,17 @@ def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
             )
     except Exception as e:
         logger.warning(f"Failed to clear pending prompts on abort for {thread_id}: {e}")
+    try:
+        from .browser_command_coordinator import get_browser_command_coordinator
+        aborted = get_browser_command_coordinator().abort_thread(thread_id)
+        if aborted:
+            logger.info(
+                f"Abort on thread {thread_id} aborted {aborted} pending browser command(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to abort pending browser commands on abort for {thread_id}: {e}"
+        )
     with agent._invocations_lock:
         children = set(agent._active_callable_invocations.get(thread_id, ()))
     for child_id in children:

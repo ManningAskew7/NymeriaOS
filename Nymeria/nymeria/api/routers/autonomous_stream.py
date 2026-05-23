@@ -14,6 +14,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from ...config import Settings
+from ...core.chrome_subscribers import (
+    add_chrome_subscriber,
+    is_chrome_client_id,
+    remove_chrome_subscriber,
+)
 from ...core.event_bus import (
     AutonomousEvent,
     EventBus,
@@ -200,6 +205,7 @@ async def _generate_autonomous_sse_events(
 
     finally:
         event_bus.unsubscribe(subscriber_id)
+        remove_chrome_subscriber(subscriber_id)
         logger.info(
             "[AUTONOMOUS SSE] subscriber_cleanup subscriber=%s user=%s "
             "received=%s yielded=%s filtered_user=%s filtered_origin=%s",
@@ -257,14 +263,17 @@ def create_autonomous_stream_router(
         subscriber_id = str(uuid.uuid4())
         event_bus = get_event_bus()
         queue = event_bus.subscribe(subscriber_id)
+        if is_chrome_client_id(client_id) and not firehose:
+            add_chrome_subscriber(user_id=stream_user_id, subscriber_id=subscriber_id)
         logger.info(
             "[AUTONOMOUS SSE] subscriber_connect subscriber=%s user=%s firehose=%s "
-            "client_id=%s local_subscribers=%d",
+            "client_id=%s local_subscribers=%d chrome=%s",
             subscriber_id[:8],
             stream_user_id,
             firehose,
             client_id[:8] if client_id else "none",
             event_bus.get_subscriber_count(),
+            is_chrome_client_id(client_id),
         )
 
         return StreamingResponse(
