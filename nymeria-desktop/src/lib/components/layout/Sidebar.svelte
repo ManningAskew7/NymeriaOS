@@ -246,7 +246,7 @@
 
   .new-thread-wrap :global(.btn) {
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     gap: 5px;
     /* Nudge the whole pill (background, + icon, and label) 1px down for
        optical alignment with neighbouring sidebar elements. */
@@ -355,7 +355,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 3px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     color: white;
     background: var(--accent-primary);

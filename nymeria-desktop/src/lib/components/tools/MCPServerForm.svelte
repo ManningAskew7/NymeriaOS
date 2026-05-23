@@ -275,7 +275,7 @@
 
   .preset-btn {
     padding: 0.2rem 0.6rem;
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     border: 1px solid var(--border-default, #3a3a3a);
     border-radius: var(--radius-sm, 4px);
     background: var(--bg-base, #1a1a1a);
@@ -381,7 +381,7 @@
     background: var(--bg-base, #1a1a1a);
     color: var(--text-primary, #e0e0e0);
     font-size: 0.85rem;
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   .arg-row input:focus {

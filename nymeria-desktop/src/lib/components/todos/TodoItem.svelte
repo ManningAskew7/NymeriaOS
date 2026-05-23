@@ -253,7 +253,7 @@
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-sm);
-    padding: 12px var(--spacing-md) 12px 14px;
+    padding: var(--spacing-sm-plus) var(--spacing-md);
     border-radius: var(--radius-md);
     transition: background var(--transition-fast), border-color var(--transition-fast);
     width: 100%;
@@ -311,13 +311,15 @@
     background: rgba(var(--accent-primary-rgb), 0.12);
   }
 
-  /* Scheduled accent — a thin inside rail rather than a chunky border */
+  /* Scheduled accent — a thin inside rail rather than a chunky border.
+     Rail insets match the trigger-card health rail so both feeds read as
+     the same family of component. */
   .todo-item.scheduled::before {
     content: '';
     position: absolute;
     left: 0;
-    top: 10px;
-    bottom: 10px;
+    top: var(--spacing-sm-plus);
+    bottom: var(--spacing-sm-plus);
     width: 2px;
     background: var(--accent-primary);
     border-radius: 0 1px 1px 0;
@@ -429,7 +431,7 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     line-height: 1.5;
   }

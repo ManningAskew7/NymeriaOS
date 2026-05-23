@@ -97,7 +97,7 @@
   }
 
   .startup-subtitle {
-    font-size: 0.875rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary, #8888a0);
     margin: 0;
   }
@@ -114,7 +114,7 @@
   }
 
   .error-details code {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary, #8888a0);
     white-space: pre-wrap;
     word-break: break-all;
@@ -122,7 +122,7 @@
 
   .startup-hint {
     margin-top: 1rem;
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-tertiary, #5a5a70);
   }
 </style>

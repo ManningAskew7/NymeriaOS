@@ -538,7 +538,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     padding: 4px 8px;
     border: 1px solid var(--border-subtle);
@@ -661,7 +661,7 @@
   .server-id {
     font-size: 0.72rem;
     color: var(--text-muted, #777);
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   .tool-badge {

@@ -226,7 +226,7 @@
   }
 
   .field label {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
@@ -254,17 +254,17 @@
 
   .hint {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     line-height: 1.4;
   }
 
   .hint code {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     background: var(--bg-base);
     padding: 1px 5px;
     border-radius: 3px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
   }
 
   .actions {
@@ -334,7 +334,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
   }
 
@@ -342,7 +342,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     letter-spacing: 0.02em;
   }

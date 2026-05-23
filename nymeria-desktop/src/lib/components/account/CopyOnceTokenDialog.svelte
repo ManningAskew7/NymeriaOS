@@ -162,7 +162,7 @@
   }
 
   .token-text {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 13px;
     color: var(--text-primary);
     user-select: all;
@@ -181,7 +181,7 @@
   .account-action-error,
   .copy-error {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
   }
 
   .account-action-message {

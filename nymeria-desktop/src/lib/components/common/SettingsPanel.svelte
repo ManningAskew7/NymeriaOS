@@ -2069,7 +2069,7 @@
   }
 
   .nav-group-label {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -2545,7 +2545,7 @@
   }
 
   .font-desc {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
   }
 
@@ -2555,7 +2555,7 @@
   }
 
   .logo-sample {
-    font-size: 20px;
+    font-size: var(--font-size-xl);
     color: var(--logo-color, var(--accent-primary));
     line-height: 1.1;
     letter-spacing: -0.02em;
@@ -2586,7 +2586,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -2637,7 +2637,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
-    font-size: 16px;
+    font-size: var(--font-size-base);
     line-height: 1;
     cursor: pointer;
     transition: all 0.12s ease;
@@ -2667,7 +2667,7 @@
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -2698,7 +2698,7 @@
     border: none;
     border-right: 1px solid var(--border-subtle);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     line-height: 1.4;
     cursor: pointer;
     transition: background 0.12s ease, color 0.12s ease;
@@ -2770,7 +2770,7 @@
   }
 
   .preview-text {
-    font-size: 18px;
+    font-size: var(--font-size-lg);
     font-weight: 600;
     opacity: 0.8;
   }
@@ -2822,7 +2822,7 @@
   }
 
   .toggle-icon {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 
@@ -2855,7 +2855,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     transition: all 0.15s ease;
   }

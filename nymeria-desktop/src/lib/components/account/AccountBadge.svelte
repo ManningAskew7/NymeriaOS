@@ -196,7 +196,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
     letter-spacing: 0.01em;
     line-height: 1.2;

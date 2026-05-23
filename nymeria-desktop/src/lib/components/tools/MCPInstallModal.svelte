@@ -985,7 +985,7 @@ https://github.com/example/mcp-server`}
 
   .plan-item span,
   .stat-label {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-muted);
@@ -1062,7 +1062,7 @@ https://github.com/example/mcp-server`}
 
   .config-field small {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     line-height: 1.3;
   }
 
@@ -1144,7 +1144,7 @@ https://github.com/example/mcp-server`}
 
   .tool-chip {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     padding: 4px var(--spacing-sm);
     background: var(--bg-elevated);
     color: var(--text-primary);
@@ -1174,7 +1174,7 @@ https://github.com/example/mcp-server`}
     overflow: auto;
     border-top: 1px solid var(--border-subtle);
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     line-height: 1.4;
     white-space: pre-wrap;
   }

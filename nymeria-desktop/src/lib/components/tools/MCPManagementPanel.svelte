@@ -181,7 +181,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
     border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);

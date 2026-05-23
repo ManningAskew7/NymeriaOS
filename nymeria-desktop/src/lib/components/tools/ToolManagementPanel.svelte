@@ -999,12 +999,14 @@
   }
 
   .mode-badge {
-    font-size: 10px;
+    display: inline-block;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     padding: 1px 6px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    text-indent: 0.5px;
   }
 
   .mode-badge.custom {
@@ -1238,7 +1240,8 @@
   }
 
   .optional-badge {
-    font-size: 9px;
+    display: inline-block;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     padding: 0 4px;
     border-radius: var(--radius-sm);
@@ -1246,10 +1249,12 @@
     color: var(--accent-secondary, #818cf8);
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    text-indent: 0.3px;
   }
 
   .admin-only-badge {
-    font-size: 9px;
+    display: inline-block;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     padding: 0 5px;
     border-radius: var(--radius-sm);
@@ -1258,6 +1263,7 @@
     border: 1px solid rgba(251, 191, 36, 0.4);
     text-transform: uppercase;
     letter-spacing: 0.6px;
+    text-indent: 0.6px;
     margin-left: 4px;
   }
 
@@ -1778,7 +1784,7 @@
   }
 
   code.meta-value {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
   }
 
   .docstring-readonly {
