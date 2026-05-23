@@ -36,6 +36,7 @@ from .runtime_admin import (
 )
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
+from .chrome_browser import CHROME_BROWSER_TOOLS
 from .calendar import CALENDAR_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
@@ -142,6 +143,7 @@ from .search_mcp import (
 from .activity_feed import activity_feed, ACTIVITY_FEED_TOOLS
 from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdog_todo_overview, WATCHDOG_DISPATCH_TOOLS
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
+from .dream_tools import thread_instructions_set, DREAM_TOOLS
 from .goal_tools import GOAL_TOOLS
 from .image_generation import image_generate, IMAGE_GENERATION_TOOLS
 from .utility_integrations import (
@@ -1346,6 +1348,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
     + BROWSER_TOOLS
+    + CHROME_BROWSER_TOOLS
     + CALENDAR_TOOLS
     + SELF_AGENT_TOOLS
     + RUNTIME_ADMIN_TOOLS
@@ -1364,6 +1367,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SKILL_CONFIG_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
+    + DREAM_TOOLS
     + GOAL_TOOLS
     + IMAGE_GENERATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
@@ -2651,6 +2655,7 @@ __all__ = [
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
     "BROWSER_TOOLS",
+    "CHROME_BROWSER_TOOLS",
     "CALENDAR_TOOLS",
     "SELF_AGENT_TOOLS",
     "OPTIONAL_TOOLS",
@@ -2759,4 +2764,6 @@ __all__ = [
     "WATCHDOG_TOOLS",
     "spawn_thread",
     "SPAWN_THREAD_TOOLS",
+    "thread_instructions_set",
+    "DREAM_TOOLS",
 ]
