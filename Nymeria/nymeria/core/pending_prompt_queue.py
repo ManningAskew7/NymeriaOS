@@ -396,6 +396,7 @@ _SOURCE_LABELS = {
     "callable": "Callable Thread",
     "mcp": "MCP Client",
     "watchdog": "Watchdog",
+    "background_bash": "Background Bash",
 }
 
 
