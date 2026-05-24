@@ -141,7 +141,30 @@ Not loaded by default. Enable per-thread to let the agent create new conversatio
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
-| 1 | `spawn_thread` | Subagent | MODERATE | Create or delete a sidebar thread with custom instructions, tool selection, and LLM overrides. New threads are callable (globally invocable) by default. Create mode optionally dispatches an initial message and blocks until the child responds; delete mode cleans up a previously-spawned thread. |
+| 1 | `spawn_thread` | Subagent | MODERATE | Create or delete a sidebar thread with custom instructions, tool selection, optional TTL, and LLM overrides. New threads are callable (globally invocable) by default. Create mode optionally dispatches an initial message and blocks until the child responds; delete mode cleans up a previously-spawned thread. |
+
+#### `spawn_thread` ergonomic params
+
+Four knobs sit on top of the raw thread config to make spawning fast and intentful:
+
+- `tool_queries: List[str]`: free-text intents (e.g. `["research", "browser automation"]`) resolved via the semantic tool search index. The top matches for each query are merged into the child's enabled tools. Faster than enumerating exact tool names; mix freely with `optional_tools` and `tool_categories`.
+- `tool_query_top_k: int = 8`: max matches kept per query before deduping across queries.
+- `include_core_tools: bool = True`: when `False`, the child skips `ALL_TOOLS` and gets only the explicitly resolved/selected set. Useful for focused sub-agents that should not have memory writes, sub-spawning, file IO, or other broad capabilities.
+- `ttl_hours: Optional[int] = None`: single TTL knob. `None` is a permanent thread; any positive integer marks the thread temporary so the worker ticker auto-deletes it after that many hours without activity. Activity is refreshed on each turn and each callable invocation.
+
+`instructions` (system-prompt text appended to soul.md) and `prompt` (initial message dispatched to the child and blocked on) are unchanged. The return preamble includes a `[Resolved tools]: name (score <- "query"), ...` line when `tool_queries` was used so the parent can verify what was actually attached.
+
+Example: spin a short-lived focused researcher and have it return a single answer.
+
+```python
+spawn_thread(
+    title="Web researcher",
+    tool_queries=["web search", "browser navigation"],
+    ttl_hours=4,
+    include_core_tools=False,
+    prompt="Find the latest pricing for Anthropic API tiers.",
+)
+```
 
 ### Callable Thread Tools (Dynamic)
 
@@ -169,7 +192,7 @@ The frontend header count uses `GET /threads/{thread_id}/callable-tools`, which 
 Execute shell commands in the backend environment. In Docker deployments, the container is the primary sandbox boundary.
 
 ```python
-bash_execute(command: str, working_directory: Optional[str] = None, timeout_seconds: int = 120)
+bash_execute(command: str, working_directory: Optional[str] = None, timeout_seconds: int = 120, run_in_background: bool = False)
 ```
 
 At runtime, Nymeria detects the backend platform, available shells, container status, process cwd, and default tool cwd. The agent sees those facts in the `bash_execute` description before it formats commands. When `working_directory` is omitted, commands run from `settings.project_root`. Relative `working_directory` values resolve from that same default cwd. Directory state is not preserved across calls.
@@ -178,8 +201,11 @@ At runtime, Nymeria detects the backend platform, available shells, container st
 - `command` (`str`): Shell command to execute
 - `working_directory` (`Optional[str]`, default `None`): Directory to run the command in. Relative paths resolve from the detected default tool cwd.
 - `timeout_seconds` (`int`, default `120`): Maximum execution time in seconds
+- `run_in_background` (`bool`, default `False`): Launch as a detached background process and return immediately.
 
 **Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
+
+When `run_in_background=True` is called from an agent thread, stdout and stderr are captured to secure temp files and the return value includes `job_id`, `pid`, and both file paths. When the process exits, Nymeria submits a completion prompt to the same thread with the exit code and the last 4KB of stdout/stderr. If that thread is busy, the prompt is queued and absorbed at the next sub-turn boundary. If the thread is idle, the prompt runs as an autonomous turn and streams through the normal autonomous event path. Temp files persist until manually removed. The watcher is process-local; if the backend restarts before the process exits, no completion notification is sent. Calls without agent thread/user context keep the legacy PID-only fire-and-forget behavior.
 
 **Security:** MODERATE  -  runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
 
