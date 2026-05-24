@@ -48,16 +48,17 @@
   let descriptionInput = $state('');
   let configInputs = $state<Record<string, unknown>>({});
 
-  // Collapsible state for Core / Available sections
+  // Collapsible state for Core / Available sections. Honour the user's
+  // collapse choice unconditionally — searching does not force-open either
+  // section, so the user can collapse one and watch the other update as
+  // they type. The section header still shows the live match-count badge
+  // when collapsed, so it's clear results landed in there.
   let coreOpen = $state(true);
   let availableOpen = $state(false);
 
-  // While a search is active, force both sections open so matches are
-  // visible regardless of the user's manual collapse state. When the
-  // search clears, their original preferences take effect again.
   const isSearching = $derived(searchQuery.trim().length > 0);
-  const effectiveCoreOpen = $derived(coreOpen || isSearching);
-  const effectiveAvailableOpen = $derived(availableOpen || isSearching);
+  const effectiveCoreOpen = $derived(coreOpen);
+  const effectiveAvailableOpen = $derived(availableOpen);
 
   // Force-refresh default tools on every mount so newly-installed MCP
   // servers (whose tools get registered in metadata) show up in the picker
