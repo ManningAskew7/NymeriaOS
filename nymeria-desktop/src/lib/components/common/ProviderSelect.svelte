@@ -378,7 +378,7 @@
   .trigger-caret {
     flex-shrink: 0;
     color: var(--text-muted, rgba(255, 255, 255, 0.5));
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     transition: transform 120ms;
   }
 
@@ -409,7 +409,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 8px 12px 4px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -454,13 +454,13 @@
   }
 
   .option-description {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, rgba(255, 255, 255, 0.55));
     line-height: 1.35;
   }
 
   .option-warning {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--warning, #fbbf24);
     line-height: 1.35;
   }
@@ -469,7 +469,7 @@
     display: inline-flex;
     align-items: center;
     padding: 2px 7px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -480,7 +480,7 @@
 
   .chip-sm {
     padding: 1px 5px;
-    font-size: 9px;
+    font-size: var(--font-size-3xs);
   }
 
   .chip-native {

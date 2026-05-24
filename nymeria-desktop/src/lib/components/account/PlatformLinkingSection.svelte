@@ -265,7 +265,7 @@
     border: 1px solid currentColor;
     border-radius: var(--radius-sm);
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
   }
 
@@ -303,7 +303,7 @@
 
   .provider-badge {
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -317,8 +317,8 @@
   .provider-id {
     flex: 1;
     min-width: 0;
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -376,7 +376,7 @@
   .provider-input {
     flex: 1;
     min-width: 0;
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
   }
 
   .provider-input:focus,
@@ -391,12 +391,12 @@
     align-items: center;
     gap: 6px;
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
   }
 
   .form-hint {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     line-height: 1.5;
   }

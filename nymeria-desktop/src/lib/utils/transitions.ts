@@ -34,3 +34,17 @@ export const DROPDOWN_TRANSITION = {
   easing: cubicOut,
   axis: 'y' as const,
 };
+
+/**
+ * Longer slide for surfaces that reveal a large amount of content at once —
+ * e.g. tool-call result panels inside a message bubble. The shorter
+ * DROPDOWN_TRANSITION feels rapid when the body is many lines tall AND
+ * triggers a visible reflow of the surrounding message bubble. This pace
+ * keeps the bubble's height change smooth without dragging.
+ */
+export const TALL_DROPDOWN_TRANSITION = {
+  duration: 260,
+  easing: cubicOut,
+  axis: 'y' as const,
+};
+

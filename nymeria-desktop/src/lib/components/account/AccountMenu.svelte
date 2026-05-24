@@ -145,7 +145,10 @@
     background: var(--bg-elevated-2, var(--bg-elevated));
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    /* Floating menu → --shadow-md per the canonical elevation scale in
+       app.css (was a bespoke 0 12px 32px). Keeps dropdown shadows in sync
+       across the app. */
+    box-shadow: var(--shadow-md);
     z-index: 999;
     min-width: 240px;
     padding: var(--spacing-xs);
@@ -165,13 +168,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--spacing-2xs);
   }
 
   .header-name-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--spacing-sm);
     min-width: 0;
   }
 
@@ -190,7 +193,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-secondary);
   }
 
@@ -198,7 +201,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
     letter-spacing: 0.02em;
   }
@@ -206,7 +209,7 @@
   .menu-divider {
     height: 1px;
     background: var(--glass-border);
-    margin: 2px var(--spacing-xs);
+    margin: var(--spacing-2xs) var(--spacing-xs);
   }
 
   .menu-item {
@@ -214,7 +217,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    padding: 8px var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-sm);
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     text-align: left;
@@ -241,15 +244,19 @@
   }
 
   .menu-item-badge {
+    display: inline-block;
     flex: 0 !important;
-    font-size: 9px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    text-indent: 0.06em;
     color: var(--warning, #fbbf24);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.4);
-    padding: 1px 5px;
-    border-radius: 4px;
+    /* Matches RoleChip.size-xs for visual consistency between the
+       inline "admin" badge here and the role chip in menu-header. */
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
   }
 </style>

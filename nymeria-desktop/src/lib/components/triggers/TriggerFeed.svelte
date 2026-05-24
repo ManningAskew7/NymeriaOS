@@ -196,8 +196,12 @@
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
-    border: 1px solid var(--border-subtle);
+    /* Dashed border signals "placeholder, not interactive" — distinguishes
+       these containers from the New Trigger button (solid border) sitting
+       directly above them in the panel. */
+    border: 1px dashed var(--border-subtle);
     border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
   }
 
   .empty-state p {
@@ -242,7 +246,7 @@
   .trigger-group {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    gap: var(--spacing-sm);
   }
 
   .group-label {
@@ -264,7 +268,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 500;
     background: var(--bg-hover);
     color: var(--text-secondary);
@@ -279,6 +283,9 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    /* Matches TodoFeed.group-items — both lists of cards in the right
+       panel share the same between-card breathing so they read as the
+       same family of feed. */
+    gap: var(--spacing-sm);
   }
 </style>

@@ -372,7 +372,11 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-md);
-    padding: 4px 6px 4px var(--spacing-md);
+    /* Slim chrome strip: less vertical breathing than a panel header so it
+       reads as a title bar, not a section banner. Left padding matches panel
+       gutters so the title aligns with content below. Right padding is
+       tighter because the cog button has its own internal padding. */
+    padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs) var(--spacing-md);
     background: var(--bg-elevated);
     border-bottom: 1px solid var(--border-default);
     flex-shrink: 0;
@@ -381,7 +385,7 @@
 
   .title {
     margin: 0;
-    font-size: 14px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.005em;
@@ -459,7 +463,7 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     line-height: 1.25;
     letter-spacing: 0.005em;

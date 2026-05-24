@@ -623,9 +623,9 @@
     display: inline-flex;
     align-items: center;
     padding: 1px 5px;
-    font-size: 9px;
+    font-size: var(--font-size-3xs);
     font-weight: 500;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     white-space: nowrap;
   }
 
@@ -826,12 +826,12 @@
   }
 
   .hint-var {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     padding: 1px 4px;
     background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
     color: var(--accent-primary);
     border-radius: 3px;
-    font-family: monospace;
+    font-family: var(--font-mono);
   }
 
   .form-error {

@@ -333,6 +333,7 @@
         {#if !expanded}
           <span
             class="source-chip"
+            data-source={trigger.source_type}
             in:receive={{ key: `chip-${trigger.id}` }}
             out:send={{ key: `chip-${trigger.id}` }}
           >{sourceLabel}</span>
@@ -397,6 +398,7 @@
       {/if}
       <span
         class="source-chip in-action-row"
+        data-source={trigger.source_type}
         in:receive={{ key: `chip-${trigger.id}` }}
         out:send={{ key: `chip-${trigger.id}` }}
       >{sourceLabel}</span>
@@ -564,8 +566,10 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 9px;
-    padding: 7px 14px 7px 9px;
+    gap: var(--spacing-sm);
+    /* Matches .todo-item — both feeds use the same list-item tier so a
+       trigger card and a todo card read as the same family. */
+    padding: var(--spacing-sm-plus) var(--spacing-md);
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle, var(--border-default));
     border-radius: var(--radius-md);
@@ -599,15 +603,16 @@
   .trigger-card.expanded {
     background: var(--bg-hover);
     /* Extra bottom padding to breathe around the revealed details */
-    padding-bottom: 12px;
+    padding-bottom: var(--spacing-sm-plus);
   }
 
-  /* Health rail — a thin accent rail on the left that reflects status */
+  /* Health rail — a thin accent rail on the left that reflects status.
+     Insets match the todo-item scheduled rail so the two feeds align. */
   .health-rail {
     position: absolute;
     left: 0;
-    top: 10px;
-    bottom: 10px;
+    top: var(--spacing-sm-plus);
+    bottom: var(--spacing-sm-plus);
     width: 2px;
     border-radius: 0 1px 1px 0;
     opacity: 0.8;
@@ -622,7 +627,7 @@
   .card-header {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: var(--spacing-sm);
     min-width: 0;
   }
 
@@ -659,13 +664,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--spacing-sm);
   }
 
   .title-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--spacing-sm);
     min-width: 0;
   }
 
@@ -725,8 +730,15 @@
   }
 
   .source-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* Gap matches horizontal padding (--spacing-sm = 8px) so the dot has
+       equal breathing on both sides: 8px from chip-left to dot, 8px from
+       dot to text, 8px from text to chip-right. Symmetric rhythm. */
+    gap: var(--spacing-sm);
     flex-shrink: 0;
-    padding: 2px 8px;
+    padding: var(--spacing-2xs) var(--spacing-sm);
     font-size: 9.5px;
     font-weight: 600;
     text-transform: uppercase;
@@ -734,16 +746,36 @@
     color: var(--text-secondary);
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     line-height: 1.45;
   }
+
+  /* Per-source dot — leading colored circle differentiates trigger sources
+     at a glance so a feed of mixed sources scans more easily than a row of
+     identical pills. Falls back to muted text for any custom source not in
+     the known list. */
+  .source-chip::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: var(--chip-dot-color, var(--text-muted));
+    flex-shrink: 0;
+  }
+
+  .source-chip[data-source="webhook"] { --chip-dot-color: var(--warning, #fbbf24); }
+  .source-chip[data-source="outlook_email"] { --chip-dot-color: var(--info, #818cf8); }
+  .source-chip[data-source="rss"] { --chip-dot-color: #fb923c; }
+  .source-chip[data-source="slack"] { --chip-dot-color: var(--success, #34d399); }
+  .source-chip[data-source="teams"] { --chip-dot-color: #a78bfa; }
+  .source-chip[data-source="http_poll"] { --chip-dot-color: var(--accent-primary); }
 
   .thread-action-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--spacing-sm);
     min-width: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     flex-wrap: wrap;
   }
@@ -751,7 +783,7 @@
   .action-kind {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: var(--spacing-xs);
     flex-shrink: 0;
     font-weight: 600;
     color: var(--text-secondary);
@@ -772,7 +804,7 @@
   .expanded-wrap {
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: var(--spacing-sm);
     min-width: 0;
   }
 
@@ -808,7 +840,7 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--spacing-sm);
     margin-top: 1px;
   }
 
@@ -849,15 +881,15 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 8px 3px 7px;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-2xs) var(--spacing-sm);
     max-width: 100%;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     color: var(--text-secondary);
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     cursor: default;
     transition: all var(--transition-fast);
   }
@@ -884,8 +916,8 @@
   .source-summary {
     display: flex;
     align-items: baseline;
-    gap: 6px;
-    font-size: 11px;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-2xs);
     min-width: 0;
   }
 
@@ -900,12 +932,7 @@
 
   .summary-value {
     color: var(--text-secondary);
-    font-family:
-      ui-monospace,
-      'JetBrains Mono',
-      'SF Mono',
-      Menlo,
-      monospace;
+    font-family: var(--font-mono);
     font-size: 10.5px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -919,9 +946,9 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    row-gap: 6px;
-    column-gap: 7px;
-    font-size: 11px;
+    row-gap: var(--spacing-xs);
+    column-gap: var(--spacing-sm);
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     line-height: 1.4;
   }
@@ -929,7 +956,7 @@
   .meta-item {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--spacing-2xs);
     flex-shrink: 0;
     font-variant-numeric: tabular-nums;
   }
@@ -971,9 +998,9 @@
   .test-banner {
     display: flex;
     align-items: flex-start;
-    gap: 5px;
-    padding: 6px 8px;
-    font-size: 11px;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-sm);
+    font-size: var(--font-size-2xs);
     line-height: 1.35;
     border-radius: var(--radius-sm);
     border: 1px solid;
@@ -1015,9 +1042,9 @@
   .details {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    margin-top: 2px;
-    padding-top: 10px;
+    gap: var(--spacing-sm-plus);
+    margin-top: var(--spacing-2xs);
+    padding-top: var(--spacing-sm-plus);
     border-top: 1px dashed var(--border-subtle, var(--border-default));
     cursor: default;
     animation: detailsIn 0.22s ease-out both;
@@ -1031,14 +1058,14 @@
   .detail-block {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--spacing-xs);
     min-width: 0;
   }
 
   .detail-label {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: var(--spacing-xs);
     font-size: 9.5px;
     font-weight: 700;
     text-transform: uppercase;
@@ -1048,17 +1075,12 @@
 
   .template-body {
     margin: 0;
-    padding: 8px 10px;
+    padding: var(--spacing-sm) var(--spacing-sm-plus);
     background: var(--bg-base);
     border: 1px solid var(--border-subtle, var(--border-default));
     border-radius: var(--radius-sm);
-    font-family:
-      ui-monospace,
-      'JetBrains Mono',
-      'SF Mono',
-      Menlo,
-      monospace;
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
     line-height: 1.5;
     color: var(--text-secondary);
     white-space: pre-wrap;
@@ -1070,9 +1092,9 @@
   .config-grid {
     display: grid;
     grid-template-columns: minmax(70px, max-content) 1fr;
-    gap: 4px 10px;
+    gap: var(--spacing-xs) var(--spacing-sm-plus);
     margin: 0;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
   }
 
   .config-grid dt {
@@ -1084,12 +1106,7 @@
   .config-grid dd {
     margin: 0;
     color: var(--text-secondary);
-    font-family:
-      ui-monospace,
-      'JetBrains Mono',
-      'SF Mono',
-      Menlo,
-      monospace;
+    font-family: var(--font-mono);
     font-size: 10.5px;
     overflow-wrap: anywhere;
     min-width: 0;
@@ -1101,27 +1118,22 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--spacing-xs);
   }
 
   .conditions-list li {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
+    gap: var(--spacing-xs);
+    font-size: var(--font-size-2xs);
     line-height: 1.3;
   }
 
   .cond-field,
   .cond-value {
-    padding: 1px 5px;
-    font-family:
-      ui-monospace,
-      'JetBrains Mono',
-      'SF Mono',
-      Menlo,
-      monospace;
+    padding: var(--spacing-2xs) var(--spacing-xs);
+    font-family: var(--font-mono);
     font-size: 10.5px;
     background: var(--bg-base);
     border: 1px solid var(--border-subtle, var(--border-default));
@@ -1138,8 +1150,8 @@
   .action-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding-top: 6px;
+    gap: var(--spacing-xs);
+    padding-top: var(--spacing-sm);
     border-top: 1px dashed var(--border-subtle, var(--border-default));
   }
 
@@ -1150,9 +1162,9 @@
   .ghost-btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    font-size: 11px;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     color: var(--text-secondary);
     background: transparent;
@@ -1194,7 +1206,7 @@
   }
 
   .confirm-label {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--error);
     margin-right: 2px;
   }

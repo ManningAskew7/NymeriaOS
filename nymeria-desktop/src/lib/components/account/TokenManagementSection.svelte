@@ -425,7 +425,7 @@
     border: 1px solid currentColor;
     border-radius: var(--radius-sm);
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
   }
 
@@ -484,8 +484,8 @@
   }
 
   .prefix {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     background: var(--bg-base);
     padding: 1px 6px;
@@ -499,10 +499,12 @@
   }
 
   .status-chip {
-    font-size: 9px;
+    display: inline-block;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    text-indent: 0.06em;
     padding: 1px 6px;
     border-radius: 4px;
   }
@@ -517,7 +519,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     flex-wrap: wrap;
   }
@@ -569,7 +571,7 @@
   }
 
   .field label {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);

@@ -219,10 +219,9 @@
   }
 
   .tab-btn.active {
-    color: var(--text-primary);
-    border-color: var(--border-default);
-    background: var(--bg-elevated-2);
-    box-shadow: none;
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
   }
 
   .panel-body {
@@ -281,7 +280,7 @@
     min-width: 20px;
     height: 20px;
     padding: 0 6px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     background: transparent;
     color: var(--text-muted);
