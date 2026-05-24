@@ -201,7 +201,7 @@ def create_tools_router(
             tools_out.append({
                 "name": t.name,
                 "description": t.description,
-                "category": meta.category.value if meta else "core",
+                "category": meta.category.value if meta else "general",
                 "security_level": meta.security_level.value if meta else "moderate",
                 "is_optional": False,
                 "is_default": t.name in default_set,

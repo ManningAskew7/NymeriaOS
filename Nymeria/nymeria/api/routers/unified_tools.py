@@ -82,7 +82,7 @@ def create_unified_tools_router(
             tool_info = {
                 "name": tool.name,
                 "description": tool.description,
-                "category": meta.category.value if meta else "core",
+                "category": meta.category.value if meta else "general",
                 "security_level": meta.security_level.value if meta else "safe",
                 "enabled": enabled,
                 "enabled_reason": "default_thread_tools",
