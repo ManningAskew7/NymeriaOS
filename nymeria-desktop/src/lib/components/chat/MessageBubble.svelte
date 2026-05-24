@@ -338,9 +338,6 @@
 
 {#if message.kind === 'command_result'}
 <div class="command-result">
-  <div class="command-icon">
-    <Icon name="terminal" size={18} />
-  </div>
   <div class="command-body">
     {#if message.commandInput}
       <div class="command-input"><code>{message.commandInput}</code></div>
@@ -618,18 +615,6 @@
     background: var(--bg-elevated);
     color: var(--text-primary);
     animation: slideUp var(--transition-normal);
-  }
-
-  .command-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-sm);
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
-    flex-shrink: 0;
   }
 
   .command-body {
