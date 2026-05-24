@@ -174,6 +174,34 @@ class TestSummaryHelpers:
     def test_extract_summary_returns_none_for_empty_list(self):
         assert CompactionManager._extract_summary_from_result([]) is None
 
+    def test_extract_summary_joins_content_block_list(self):
+        """Anthropic-style content blocks must be joined to text, not repr'd."""
+        msg = AIMessage(content=[
+            {"type": "text", "text": "## Active Goal\nFirst block."},
+            {"type": "text", "text": "## Progress\nSecond block."},
+        ])
+        result = CompactionManager.extract_summary(msg)
+        assert result == "## Active Goal\nFirst block.\n## Progress\nSecond block."
+        assert "[{" not in result
+
+    def test_extract_summary_handles_block_without_type_key(self):
+        msg = AIMessage(content=[{"text": "raw markdown summary"}])
+        result = CompactionManager.extract_summary(msg)
+        assert result == "raw markdown summary"
+
+    def test_extract_summary_skips_non_text_blocks(self):
+        msg = AIMessage(content=[
+            {"type": "thinking", "thinking": "internal reasoning"},
+            {"type": "text", "text": "visible summary"},
+        ])
+        result = CompactionManager.extract_summary(msg)
+        assert result == "visible summary"
+        assert "internal reasoning" not in result
+
+    def test_extract_summary_passes_string_content_through(self):
+        msg = AIMessage(content="plain string summary")
+        assert CompactionManager.extract_summary(msg) == "plain string summary"
+
 
 # ---------------------------------------------------------------------------
 # Static regression: _apatch_dangling_tool_calls must stay deleted

@@ -279,3 +279,45 @@ def test_format_conversation_history_uses_message_type_dispatch_table():
         {"id": "thread-a-2", "role": "user", "content": "Hello"},
         {"id": "thread-a-3", "role": "assistant", "content": "Hi"},
     ]
+
+
+def test_compaction_marker_with_legacy_repr_summary_is_normalized():
+    """Pre-fix compactions stored `str(content)` of an Anthropic content-block
+    list; the history projection must parse those back to plain markdown."""
+    legacy_summary = str([
+        {"type": "text", "text": "## Active Goal\nFirst block."},
+        {"type": "text", "text": "## Progress\nSecond block."},
+    ])
+    assert legacy_summary.startswith("[{")
+
+    marker = HumanMessage(content="Context compacted", id="m1")
+    marker.additional_kwargs = {
+        "internal_type": "compaction_marker",
+        "summary": legacy_summary,
+        "messages_removed": 12,
+        "auto_resumed": False,
+        "timestamp": "2026-05-24T08:37:00+00:00",
+    }
+
+    history = format_conversation_history([marker], thread_id="thread-a")
+
+    assert len(history) == 1
+    entry = history[0]
+    assert entry["kind"] == "compaction_notice"
+    assert "[{" not in entry["context_summary"]
+    assert "## Active Goal\nFirst block." in entry["context_summary"]
+    assert "## Progress\nSecond block." in entry["context_summary"]
+
+
+def test_compaction_marker_with_plain_string_summary_is_passed_through():
+    marker = HumanMessage(content="Context compacted", id="m1")
+    marker.additional_kwargs = {
+        "internal_type": "compaction_marker",
+        "summary": "## Active Goal\nPlain markdown summary.",
+        "messages_removed": 5,
+        "auto_resumed": True,
+    }
+
+    history = format_conversation_history([marker], thread_id="thread-b")
+
+    assert history[0]["context_summary"] == "## Active Goal\nPlain markdown summary."

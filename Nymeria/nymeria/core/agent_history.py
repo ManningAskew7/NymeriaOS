@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -12,6 +13,38 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_legacy_compaction_summary(summary: Any) -> str:
+    """Render summaries that were stored as Python repr of content-block lists.
+
+    Pre-fix compactions stored `str(content)` where `content` was a list of
+    Anthropic content blocks like `[{'type': 'text', 'text': '...'}]`. Parse
+    those back into the joined text so historical compaction notices render
+    as markdown instead of raw repr.
+    """
+    if not isinstance(summary, str):
+        return str(summary) if summary is not None else ""
+    stripped = summary.lstrip()
+    if not (stripped.startswith("[{") and stripped.rstrip().endswith("}]")):
+        return summary
+    try:
+        parsed = ast.literal_eval(stripped)
+    except (ValueError, SyntaxError):
+        return summary
+    if not isinstance(parsed, list):
+        return summary
+    parts: List[str] = []
+    for block in parsed:
+        if isinstance(block, dict):
+            block_type = block.get("type")
+            if block_type in (None, "text", "output_text"):
+                text = block.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        elif isinstance(block, str) and block:
+            parts.append(block)
+    return "\n".join(parts) if parts else summary
 
 
 # Regex to strip injected time context from user messages in history.
@@ -565,7 +598,9 @@ def _handle_human_history_message(
             "role": "system",
             "kind": "compaction_notice",
             "content": "Context compacted",
-            "context_summary": marker_kwargs.get("summary") or "",
+            "context_summary": _normalize_legacy_compaction_summary(
+                marker_kwargs.get("summary") or ""
+            ),
             "messages_removed": marker_kwargs.get("messages_removed", 0),
             "auto_resumed": bool(marker_kwargs.get("auto_resumed", False)),
         }
