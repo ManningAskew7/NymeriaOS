@@ -2510,14 +2510,49 @@ Updates thread config. Key fields for callable threads:
 | `llm_config.provider_route` | string | Per-thread adapter route override: `native` or `openai_compat`. Only applies to providers whose catalog row advertises multiple `supported_routes`. |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
-| `memory_char_limit` | int | Optional per-thread notepad character limit. Omit or clear to inherit the global `MEMORY_CHAR_LIMIT` default. |
 | `llm_temperature` | float | Override temperature |
 | `llm_config.openai_api_mode` | string | OpenAI-compatible API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
+| `memory_char_limit` | int | Optional per-thread notepad character limit. Omit or clear to inherit the global `MEMORY_CHAR_LIMIT` default. |
+| `dreaming.enabled` | bool | Opt in to background self-reflection for this thread. Default `false`. |
+| `dreaming.min_interval_hours` | int | Minimum hours between scheduled dream runs. Default `6`. |
+| `dreaming.min_idle_minutes` | int | Minimum idle time before a scheduled dream can start. Default `30`. |
+| `dreaming.min_turns_since_last` | int | Minimum parent-thread turn count before the next scheduled dream. Default `10`. |
+| `dreaming.model` | string | Optional model override for dream turns. |
 
 **Callable thread naming:** A callable thread's sidebar title is derived from
 `callable_name`. Rename the callable tool binding by updating `callable_name`
 through `PATCH /threads/{thread_id}/config`; `PATCH /threads/{thread_id}/metadata`
 only updates display metadata for non-callable threads.
+
+```http
+POST /threads/{thread_id}/dream
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Manually starts one dream cycle for a configured parent thread. The endpoint
+creates a temporary shadow thread, binds the strict dream tool allowlist, runs
+the dream turn in the background, and returns the shadow thread id immediately.
+It respects `dreaming.enabled`; pass `{"force": true}` only for admin/debug
+one-off runs.
+
+Request fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | string | Optional one-run model override. Defaults to `dreaming.model`, then the normal active model. |
+| `force` | bool | Bypass the `dreaming.enabled` opt-in check. Default `false`. |
+
+Response fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `shadow_thread_id` | string | Temporary dream thread id. |
+| `parent_thread_id` | string | Parent thread that the dream is reflecting on. |
+| `started_at` | string | UTC timestamp for the run setup. |
+| `model` | string | Model selected for the dream turn. |
+| `enabled_optional_tools` | array | Optional dream-policy tools enabled on the shadow thread. |
+| `disabled_core_tools` | array | Core tools explicitly blocked by dream policy context. |
 
 ```http
 DELETE /threads/{thread_id}/config
@@ -3042,7 +3077,7 @@ config object clears existing config.
       "name": "bash_execute",
       "description": "Execute shell commands...",
       "tool_type": "builtin",
-      "category": "core",
+      "category": "general",
       "enabled": true,
       "parameters": null
     },
@@ -3209,7 +3244,7 @@ Returns available tool categories.
 ```json
 {
   "categories": {
-    "core": ["bash_execute", "file_read", "file_write", "web_search", "consult", "notify"],
+    "general": ["bash_execute", "file_read", "file_write", "web_search", "consult", "notify"],
     "profile": ["memory_add", "memory_edit", "memory_read", "personality_set", "rag_search"],
     "todo": ["nym_todo", "nym_todo_delete", "nym_todo_list"],
     "skills": ["skill_manage", "list_installed_skills", "search_skills", "install_skill"],

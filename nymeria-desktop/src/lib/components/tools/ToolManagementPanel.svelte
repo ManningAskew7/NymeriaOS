@@ -139,6 +139,12 @@
     Object.values(availableToolsByCategory).reduce((n, arr) => n + arr.length, 0)
   );
 
+  // Flat score-ranked lists used when a search query is active. filteredTools
+  // is already sorted by rankToolSearch (score desc), so .filter preserves
+  // that order and we present pure relevance with no category grouping.
+  const flatCoreFiltered = $derived(filteredTools.filter((t) => selectedTools.has(t.name)));
+  const flatAvailableFiltered = $derived(filteredTools.filter((t) => !selectedTools.has(t.name)));
+
   // Backend semantic-search fallback. Surfaces tools the local ranker missed
   // (e.g. because the frontend pool was stale or the query fell under the
   // Dice-bigram cutoff). MCP-prefixed results are stripped; native search
@@ -513,94 +519,126 @@
               </div>
             </div>
           {/if}
-          {#each CATEGORY_ORDER as category}
-            {#if coreToolsByCategory[category]?.length}
-              {@const info = getCategoryInfo(category)}
-              {@const categoryTools = coreToolsByCategory[category]}
-              <div class="category-group">
-                <div class="category-label">
-                  <span class="category-name">{info.name}</span>
-                  <span class="category-count">{categoryTools.length}</span>
+          {#if isSearching}
+            {#each flatCoreFiltered as tool (tool.name)}
+              <div class="tool-row selected">
+                <div class="tool-info">
+                  <span class="tool-name">
+                    {tool.name}
+                    {#if isAdminOnlyTool(tool.name)}
+                      <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                    {/if}
+                  </span>
+                  <span class="tool-desc">{tool.description}</span>
                 </div>
-                <div class="category-tools">
-                  {#each categoryTools as tool (tool.name)}
-                    <div class="tool-row selected">
-                      <div class="tool-info">
-                        <span class="tool-name">
-                          {tool.name}
-                          {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                          {/if}
-                        </span>
-                        <span class="tool-desc">{tool.description}</span>
-                      </div>
-                      <div class="tool-row-actions">
-                        <button
-                          class="row-edit-btn"
-                          onclick={() => openBuiltinEditor(tool.name)}
-                          type="button"
-                          title="Edit tool"
-                        >
-                          <Icon name="edit" size={14} />
-                        </button>
-                        <ToggleSwitch
-                          checked={true}
-                          onclick={() => toggleTool(tool.name)}
-                          title="Remove from core"
-                          ariaLabel={`Remove ${tool.name} from core tools`}
-                        />
-                      </div>
-                    </div>
-                  {/each}
+                <div class="tool-row-actions">
+                  <button
+                    class="row-edit-btn"
+                    onclick={() => openBuiltinEditor(tool.name)}
+                    type="button"
+                    title="Edit tool"
+                  >
+                    <Icon name="edit" size={14} />
+                  </button>
+                  <ToggleSwitch
+                    checked={true}
+                    onclick={() => toggleTool(tool.name)}
+                    title="Remove from core"
+                    ariaLabel={`Remove ${tool.name} from core tools`}
+                  />
                 </div>
               </div>
-            {/if}
-          {/each}
+            {/each}
+          {:else}
+            {#each CATEGORY_ORDER as category}
+              {#if coreToolsByCategory[category]?.length}
+                {@const info = getCategoryInfo(category)}
+                {@const categoryTools = coreToolsByCategory[category]}
+                <div class="category-group">
+                  <div class="category-label">
+                    <span class="category-name">{info.name}</span>
+                    <span class="category-count">{categoryTools.length}</span>
+                  </div>
+                  <div class="category-tools">
+                    {#each categoryTools as tool (tool.name)}
+                      <div class="tool-row selected">
+                        <div class="tool-info">
+                          <span class="tool-name">
+                            {tool.name}
+                            {#if isAdminOnlyTool(tool.name)}
+                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                            {/if}
+                          </span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <div class="tool-row-actions">
+                          <button
+                            class="row-edit-btn"
+                            onclick={() => openBuiltinEditor(tool.name)}
+                            type="button"
+                            title="Edit tool"
+                          >
+                            <Icon name="edit" size={14} />
+                          </button>
+                          <ToggleSwitch
+                            checked={true}
+                            onclick={() => toggleTool(tool.name)}
+                            title="Remove from core"
+                            ariaLabel={`Remove ${tool.name} from core tools`}
+                          />
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+            {/each}
 
-          <!-- Categories not in CATEGORY_ORDER -->
-          {#each Object.keys(coreToolsByCategory) as category}
-            {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory[category]?.length}
-              {@const info = getCategoryInfo(category)}
-              {@const categoryTools = coreToolsByCategory[category]}
-              <div class="category-group">
-                <div class="category-label">
-                  <span class="category-name">{info.name}</span>
-                  <span class="category-count">{categoryTools.length}</span>
-                </div>
-                <div class="category-tools">
-                  {#each categoryTools as tool (tool.name)}
-                    <div class="tool-row selected">
-                      <div class="tool-info">
-                        <span class="tool-name">
-                          {tool.name}
-                          {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                          {/if}
-                        </span>
-                        <span class="tool-desc">{tool.description}</span>
+            <!-- Categories not in CATEGORY_ORDER -->
+            {#each Object.keys(coreToolsByCategory) as category}
+              {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory[category]?.length}
+                {@const info = getCategoryInfo(category)}
+                {@const categoryTools = coreToolsByCategory[category]}
+                <div class="category-group">
+                  <div class="category-label">
+                    <span class="category-name">{info.name}</span>
+                    <span class="category-count">{categoryTools.length}</span>
+                  </div>
+                  <div class="category-tools">
+                    {#each categoryTools as tool (tool.name)}
+                      <div class="tool-row selected">
+                        <div class="tool-info">
+                          <span class="tool-name">
+                            {tool.name}
+                            {#if isAdminOnlyTool(tool.name)}
+                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                            {/if}
+                          </span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <div class="tool-row-actions">
+                          <button
+                            class="row-edit-btn"
+                            onclick={() => openBuiltinEditor(tool.name)}
+                            type="button"
+                            title="Edit tool"
+                          >
+                            <Icon name="edit" size={14} />
+                          </button>
+                          <ToggleSwitch
+                            checked={true}
+                            onclick={() => toggleTool(tool.name)}
+                            title="Remove from core"
+                            ariaLabel={`Remove ${tool.name} from core tools`}
+                          />
+                        </div>
                       </div>
-                      <div class="tool-row-actions">
-                        <button
-                          class="row-edit-btn"
-                          onclick={() => openBuiltinEditor(tool.name)}
-                          type="button"
-                          title="Edit tool"
-                        >
-                          <Icon name="edit" size={14} />
-                        </button>
-                        <ToggleSwitch
-                          checked={true}
-                          onclick={() => toggleTool(tool.name)}
-                          title="Remove from core"
-                          ariaLabel={`Remove ${tool.name} from core tools`}
-                        />
-                      </div>
-                    </div>
-                  {/each}
+                    {/each}
+                  </div>
                 </div>
-              </div>
-            {/if}
-          {/each}
+              {/if}
+            {/each}
+          {/if}
         </div>
         {/if}
       </div>
@@ -666,92 +704,127 @@
               </div>
             </div>
           {/if}
-          {#each CATEGORY_ORDER as category}
-            {#if availableToolsByCategory[category]?.length}
-              {@const info = getCategoryInfo(category)}
-              {@const categoryTools = availableToolsByCategory[category]}
-              <div class="category-group">
-                <div class="category-label">
-                  <span class="category-name">{info.name}</span>
-                  <span class="category-count">{categoryTools.length}</span>
+          {#if isSearching}
+            {#each flatAvailableFiltered as tool (tool.name)}
+              <div class="tool-row" class:optional={tool.is_optional}>
+                <div class="tool-info">
+                  <span class="tool-name">
+                    {tool.name}
+                    {#if tool.is_optional}
+                      <span class="optional-badge">optional</span>
+                    {/if}
+                    {#if isAdminOnlyTool(tool.name)}
+                      <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                    {/if}
+                  </span>
+                  <span class="tool-desc">{tool.description}</span>
                 </div>
-                <div class="category-tools">
-                  {#each categoryTools as tool (tool.name)}
-                    <div class="tool-row" class:optional={tool.is_optional}>
-                      <div class="tool-info">
-                        <span class="tool-name">
-                          {tool.name}
-                          {#if tool.is_optional}
-                            <span class="optional-badge">optional</span>
-                          {/if}
-                          {#if isAdminOnlyTool(tool.name)}
-                            <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                          {/if}
-                        </span>
-                        <span class="tool-desc">{tool.description}</span>
-                      </div>
-                      <div class="tool-row-actions">
-                        <button
-                          class="row-edit-btn"
-                          onclick={() => openBuiltinEditor(tool.name)}
-                          type="button"
-                          title="Edit tool"
-                        >
-                          <Icon name="edit" size={14} />
-                        </button>
-                        <ToggleSwitch
-                          checked={false}
-                          onclick={() => toggleTool(tool.name)}
-                          title="Add to core"
-                          ariaLabel={`Add ${tool.name} to core tools`}
-                        />
-                      </div>
-                    </div>
-                  {/each}
+                <div class="tool-row-actions">
+                  <button
+                    class="row-edit-btn"
+                    onclick={() => openBuiltinEditor(tool.name)}
+                    type="button"
+                    title="Edit tool"
+                  >
+                    <Icon name="edit" size={14} />
+                  </button>
+                  <ToggleSwitch
+                    checked={false}
+                    onclick={() => toggleTool(tool.name)}
+                    title="Add to core"
+                    ariaLabel={`Add ${tool.name} to core tools`}
+                  />
                 </div>
               </div>
-            {/if}
-          {/each}
+            {/each}
+          {:else}
+            {#each CATEGORY_ORDER as category}
+              {#if availableToolsByCategory[category]?.length}
+                {@const info = getCategoryInfo(category)}
+                {@const categoryTools = availableToolsByCategory[category]}
+                <div class="category-group">
+                  <div class="category-label">
+                    <span class="category-name">{info.name}</span>
+                    <span class="category-count">{categoryTools.length}</span>
+                  </div>
+                  <div class="category-tools">
+                    {#each categoryTools as tool (tool.name)}
+                      <div class="tool-row" class:optional={tool.is_optional}>
+                        <div class="tool-info">
+                          <span class="tool-name">
+                            {tool.name}
+                            {#if tool.is_optional}
+                              <span class="optional-badge">optional</span>
+                            {/if}
+                            {#if isAdminOnlyTool(tool.name)}
+                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                            {/if}
+                          </span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <div class="tool-row-actions">
+                          <button
+                            class="row-edit-btn"
+                            onclick={() => openBuiltinEditor(tool.name)}
+                            type="button"
+                            title="Edit tool"
+                          >
+                            <Icon name="edit" size={14} />
+                          </button>
+                          <ToggleSwitch
+                            checked={false}
+                            onclick={() => toggleTool(tool.name)}
+                            title="Add to core"
+                            ariaLabel={`Add ${tool.name} to core tools`}
+                          />
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+            {/each}
 
-          <!-- Categories not in CATEGORY_ORDER -->
-          {#each Object.keys(availableToolsByCategory) as category}
-            {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory[category]?.length}
-              {@const info = getCategoryInfo(category)}
-              {@const categoryTools = availableToolsByCategory[category]}
-              <div class="category-group">
-                <div class="category-label">
-                  <span class="category-name">{info.name}</span>
-                  <span class="category-count">{categoryTools.length}</span>
-                </div>
-                <div class="category-tools">
-                  {#each categoryTools as tool (tool.name)}
-                    <div class="tool-row">
-                      <div class="tool-info">
-                        <span class="tool-name">{tool.name}</span>
-                        <span class="tool-desc">{tool.description}</span>
+            <!-- Categories not in CATEGORY_ORDER -->
+            {#each Object.keys(availableToolsByCategory) as category}
+              {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory[category]?.length}
+                {@const info = getCategoryInfo(category)}
+                {@const categoryTools = availableToolsByCategory[category]}
+                <div class="category-group">
+                  <div class="category-label">
+                    <span class="category-name">{info.name}</span>
+                    <span class="category-count">{categoryTools.length}</span>
+                  </div>
+                  <div class="category-tools">
+                    {#each categoryTools as tool (tool.name)}
+                      <div class="tool-row">
+                        <div class="tool-info">
+                          <span class="tool-name">{tool.name}</span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <div class="tool-row-actions">
+                          <button
+                            class="row-edit-btn"
+                            onclick={() => openBuiltinEditor(tool.name)}
+                            type="button"
+                            title="Edit tool"
+                          >
+                            <Icon name="edit" size={14} />
+                          </button>
+                          <ToggleSwitch
+                            checked={false}
+                            onclick={() => toggleTool(tool.name)}
+                            title="Add to core"
+                            ariaLabel={`Add ${tool.name} to core tools`}
+                          />
+                        </div>
                       </div>
-                      <div class="tool-row-actions">
-                        <button
-                          class="row-edit-btn"
-                          onclick={() => openBuiltinEditor(tool.name)}
-                          type="button"
-                          title="Edit tool"
-                        >
-                          <Icon name="edit" size={14} />
-                        </button>
-                        <ToggleSwitch
-                          checked={false}
-                          onclick={() => toggleTool(tool.name)}
-                          title="Add to core"
-                          ariaLabel={`Add ${tool.name} to core tools`}
-                        />
-                      </div>
-                    </div>
-                  {/each}
+                    {/each}
+                  </div>
                 </div>
-              </div>
-            {/if}
-          {/each}
+              {/if}
+            {/each}
+          {/if}
         </div>
         {/if}
       </div>

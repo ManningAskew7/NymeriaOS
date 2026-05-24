@@ -5,10 +5,10 @@ export interface ToolCategoryInfo {
 }
 
 export const CATEGORY_INFO: Record<string, ToolCategoryInfo> = {
-  core: {
-    name: 'Core',
+  general: {
+    name: 'General',
     icon: 'terminal',
-    description: 'Essential system tools like bash, file operations, and web search',
+    description: 'General-purpose tools like bash, file operations, and web search',
   },
   profile: {
     name: 'Profile',
@@ -88,7 +88,7 @@ export const CATEGORY_INFO: Record<string, ToolCategoryInfo> = {
 };
 
 export const CATEGORY_ORDER = [
-  'core',
+  'general',
   'profile',
   'notepad',
   'todo',
