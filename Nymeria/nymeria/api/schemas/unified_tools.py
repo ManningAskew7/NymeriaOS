@@ -89,7 +89,7 @@ def builtin_tool_to_unified(
         description=effective_desc,
         default_description=default_desc,
         custom_description=custom_desc,
-        category=tool_info.get("category", "core"),
+        category=tool_info.get("category", "general"),
         security_level=tool_info.get("security_level", "safe"),
         enabled=tool_info.get("enabled", True),
         enabled_reason=tool_info.get("enabled_reason", "default"),
