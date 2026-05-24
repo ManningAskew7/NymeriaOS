@@ -449,10 +449,6 @@
       backendSearchResults = [];
       return;
     }
-    if (filteredTools.length + filteredOptionalTools.length >= 5) {
-      backendSearchResults = [];
-      return;
-    }
     const myGen = ++searchGeneration;
     searchDebounceHandle = setTimeout(async () => {
       try {

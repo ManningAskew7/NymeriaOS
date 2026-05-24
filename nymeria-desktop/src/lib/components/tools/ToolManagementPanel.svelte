@@ -153,10 +153,6 @@
       backendSearchResults = [];
       return;
     }
-    if (coreMatchCount + availableMatchCount >= 5) {
-      backendSearchResults = [];
-      return;
-    }
     const myGen = ++searchGeneration;
     searchDebounceHandle = setTimeout(async () => {
       try {
