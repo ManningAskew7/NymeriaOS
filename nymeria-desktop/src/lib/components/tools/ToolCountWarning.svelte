@@ -91,7 +91,7 @@
     border-radius: var(--radius-full);
     background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent);
     color: var(--warning, #f59e0b);
-    font-size: 20px;
+    font-size: var(--font-size-xl);
     font-weight: 700;
     margin-bottom: var(--spacing-sm);
   }

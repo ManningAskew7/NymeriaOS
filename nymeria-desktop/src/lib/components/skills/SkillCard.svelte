@@ -27,7 +27,7 @@
 </script>
 
 <div class="skill-card" class:running={toolCall.status === 'running'} class:error={isError}>
-  <Collapsible title="Skill" chevronIcon="bolt" chevronSize={18}>
+  <Collapsible title="Skill" chevronIcon="bolt" chevronSize={16}>
     {#snippet header()}
       <div class="skill-header">
         <span class="skill-label">Skill activated</span>
@@ -55,9 +55,7 @@
 <style>
   .skill-card {
     position: relative;
-    background: color-mix(in srgb, var(--accent-primary) 6%, var(--glass-bg));
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-elevated));
     border-radius: var(--radius-md);
     border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, var(--glass-border));
     margin: var(--spacing-sm) 0;
@@ -88,12 +86,12 @@
   }
 
   .skill-pill {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     background: var(--bg-base);
     color: var(--text-primary);
     padding: 2px 8px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
   }
 
@@ -132,5 +130,16 @@
     border-radius: var(--radius-sm);
     padding: var(--spacing-sm);
     overflow-x: auto;
+  }
+
+  /* Override the Collapsible's chevron behavior for the skill bolt:
+     - Nudge down 1px for optical centering against the SKILL ACTIVATED label.
+     - Never rotate — the bolt is a static "activated" indicator, not a
+       collapse-state arrow, so rotating it on open reads as wrong.
+     The same transform value is set on both the resting and .open states so
+     the .open .chevron rotation override never kicks in. */
+  .skill-card :global(.collapsible > .header > .chevron),
+  .skill-card :global(.collapsible.open > .header > .chevron) {
+    transform: translateY(1px);
   }
 </style>

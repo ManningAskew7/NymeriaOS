@@ -1740,7 +1740,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     background: var(--bg-elevated-2);
     color: var(--text-secondary);

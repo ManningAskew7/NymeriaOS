@@ -159,7 +159,7 @@
 
   .recipe-source {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted);
     background: var(--bg-base);
     padding: 4px var(--spacing-sm);
@@ -179,7 +179,7 @@
 
   .kind-tag {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--accent-secondary);

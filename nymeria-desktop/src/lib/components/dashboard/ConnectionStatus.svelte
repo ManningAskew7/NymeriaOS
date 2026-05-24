@@ -125,7 +125,7 @@
   }
 
   .status-text {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 500;
     color: var(--text-secondary);
   }
@@ -137,12 +137,12 @@
   }
 
   .latency-badge {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     color: var(--text-muted);
     background: var(--bg-elevated);
     padding: 2px 6px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
   }
 

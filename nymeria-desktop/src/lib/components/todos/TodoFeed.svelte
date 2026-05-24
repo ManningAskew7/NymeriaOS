@@ -187,8 +187,12 @@
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
-    border: 1px solid var(--border-subtle);
+    /* Dashed border signals "placeholder, not interactive" — distinguishes
+       these containers from the Add Task button (solid border) sitting
+       directly above them in the panel. */
+    border: 1px dashed var(--border-subtle);
     border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
   }
 
   .empty-state p {
@@ -233,7 +237,7 @@
   .todo-group {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    gap: var(--spacing-sm);
   }
 
   .group-label {
@@ -255,7 +259,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 500;
     background: var(--bg-hover);
     color: var(--text-secondary);
@@ -270,7 +274,11 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    /* Gap between cards uses --spacing-sm so the breathing matches
+       TriggerFeed exactly. The 12px internal card padding (todo-item)
+       feels grouped within a card, the 8px between cards reads as
+       separation — Gestalt proximity working in our favour. */
+    gap: var(--spacing-sm);
   }
 
   .group-items.highlighted {

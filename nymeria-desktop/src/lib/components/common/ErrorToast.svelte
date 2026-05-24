@@ -185,7 +185,7 @@
     border: 1px solid var(--accent-primary);
     border-radius: var(--radius-sm);
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
   }
 

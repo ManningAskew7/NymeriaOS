@@ -269,7 +269,7 @@
   }
 
   .switcher-title {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -306,7 +306,7 @@
 
   .empty-hint {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
   }
 
   .row {
@@ -375,7 +375,7 @@
     gap: 8px;
     min-width: 0;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
   }
 
   .row-host {
@@ -417,7 +417,7 @@
     justify-content: center;
     width: 28px;
     color: var(--text-muted);
-    font-size: 16px;
+    font-size: var(--font-size-base);
     line-height: 1;
     border-radius: var(--radius-sm);
     background: transparent;

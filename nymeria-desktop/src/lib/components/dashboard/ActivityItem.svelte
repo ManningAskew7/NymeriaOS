@@ -183,7 +183,7 @@
     display: inline-block;
     max-width: 120px;
     padding: 1px 6px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 500;
     color: var(--accent-primary);
     background: rgba(var(--accent-primary-rgb), 0.1);
@@ -194,7 +194,7 @@
   }
 
   .activity-time {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 </style>

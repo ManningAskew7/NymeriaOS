@@ -225,7 +225,7 @@
   }
 
   .trigger-name-badge {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     padding: 1px 8px;
     background: rgba(var(--accent-primary-rgb), 0.1);
     color: var(--accent-primary);
@@ -336,13 +336,13 @@
   }
 
   .exec-status {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
     text-transform: capitalize;
   }
 
   .exec-time {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 
@@ -352,7 +352,7 @@
     gap: var(--spacing-xs);
     justify-content: flex-end;
     align-items: center;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 
@@ -377,7 +377,7 @@
 
   .detail-label {
     display: block;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -396,7 +396,7 @@
     word-break: break-word;
     max-height: 120px;
     overflow-y: auto;
-    font-family: monospace;
+    font-family: var(--font-mono);
     line-height: 1.4;
   }
 
@@ -411,7 +411,7 @@
   .detail-footer {
     display: flex;
     justify-content: space-between;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
     padding-top: var(--spacing-xs);
     border-top: 1px solid var(--glass-border);

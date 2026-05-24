@@ -918,6 +918,12 @@
      positions inside the (now relocated) bar. */
   .input-section :global(.context-status-bar) {
     transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+    /* Promote above the input-area (both default to z-index:1 from the
+       global `.input-section > *` rule, and source order would put
+       input-area on top — swallowing dot clicks once the sidebar-closed
+       translateY(16px) below pushes the bar's footprint over the prompt
+       input). Bumping to 2 keeps the dot reachable in every state. */
+    z-index: 2;
   }
   .input-section:not(.both-open) :global(.context-status-bar) {
     transform: translateY(16px);
@@ -979,6 +985,18 @@
     transform: translateY(0);
     opacity: 1;
     clip-path: inset(0 100% 0 0);
+  }
+
+  /* When sidebars are collapsed, the bar sits without its elevated bg
+     behind it — the text reads slightly low against the transparent chat
+     area. Nudge the inner .details container up 2px so it optically
+     centers on the bar's vertical mid-line in this state. */
+  .input-section:not(.both-open) :global(.context-status-bar .details) {
+    transform: translateY(-2px);
+    transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
+  }
+  .input-section :global(.context-status-bar .details) {
+    transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
   }
 
 

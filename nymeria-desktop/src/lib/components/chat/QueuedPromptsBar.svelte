@@ -70,9 +70,7 @@
   .queued-prompts-bar {
     margin-bottom: var(--spacing-xs);
     padding: var(--spacing-sm);
-    background: var(--glass-bg-strong);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: var(--bg-elevated);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     max-height: 200px;

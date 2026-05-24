@@ -1,6 +1,7 @@
 <script lang="ts">
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
+  import { profilePics } from '$lib/stores/profilePics.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
@@ -18,6 +19,59 @@
   let saving = $state(false);
   let nameError = $state<string | null>(null);
   let nameSaved = $state(false);
+
+  // Profile picture upload
+  let pictureInputRef = $state<HTMLInputElement | null>(null);
+  let pictureError = $state<string | null>(null);
+  let hasPicture = $derived(!!profilePics.get(identity?.id));
+  const MAX_PICTURE_BYTES = 1_500_000; // ~1.5MB raw — keeps base64 under ~2MB
+
+  function openPicturePicker() {
+    pictureError = null;
+    pictureInputRef?.click();
+  }
+
+  async function handlePictureChange(e: Event) {
+    pictureError = null;
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file || !identity) return;
+
+    if (!file.type.startsWith('image/')) {
+      pictureError = 'Please pick an image file.';
+      input.value = '';
+      return;
+    }
+    if (file.size > MAX_PICTURE_BYTES) {
+      pictureError = 'Image is too large. Pick one under 1.5MB.';
+      input.value = '';
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      profilePics.set(identity.id, dataUrl);
+    } catch (err) {
+      pictureError = err instanceof Error ? err.message : 'Could not load image.';
+    } finally {
+      input.value = ''; // allow re-selecting the same file
+    }
+  }
+
+  function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read image.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function removePicture() {
+    if (!identity) return;
+    pictureError = null;
+    profilePics.clear(identity.id);
+  }
 
   function startEdit() {
     nameDraft = identity?.display_name ?? '';
@@ -77,7 +131,39 @@
       </div>
 
       <div class="identity-card">
-        <Avatar {identity} size={56} state="connected" />
+        <div class="avatar-block">
+          <button
+            type="button"
+            class="avatar-button"
+            onclick={openPicturePicker}
+            title="Click to change profile picture"
+          >
+            <Avatar {identity} size={72} state="connected" />
+            <span class="avatar-overlay">
+              <Icon name="edit" size={16} />
+            </span>
+          </button>
+          <div class="avatar-actions">
+            <button type="button" class="avatar-link" onclick={openPicturePicker}>
+              {hasPicture ? 'Change' : 'Upload'}
+            </button>
+            {#if hasPicture}
+              <button type="button" class="avatar-link danger" onclick={removePicture}>
+                Remove
+              </button>
+            {/if}
+          </div>
+          {#if pictureError}
+            <div class="field-error">{pictureError}</div>
+          {/if}
+          <input
+            bind:this={pictureInputRef}
+            type="file"
+            accept="image/*"
+            onchange={handlePictureChange}
+            class="hidden-file-input"
+          />
+        </div>
         <div class="identity-fields">
           <div class="field">
             <span class="field-label">Email</span>
@@ -245,6 +331,71 @@
     border-radius: var(--radius-md);
   }
 
+  .avatar-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* The avatar itself is the upload affordance — clicking opens the file
+     picker. A subtle pencil overlay appears on hover so the action is
+     discoverable without crowding the avatar in its resting state. */
+  .avatar-button {
+    position: relative;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    line-height: 0;
+  }
+  .avatar-button:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+  .avatar-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 120ms ease;
+    pointer-events: none;
+  }
+  .avatar-button:hover .avatar-overlay,
+  .avatar-button:focus-visible .avatar-overlay {
+    opacity: 1;
+  }
+
+  .avatar-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+  }
+  .avatar-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent-primary);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .avatar-link:hover {
+    text-decoration: underline;
+  }
+  .avatar-link.danger {
+    color: var(--error);
+  }
+
+  .hidden-file-input {
+    display: none;
+  }
+
   .identity-fields {
     flex: 1;
     min-width: 0;
@@ -260,7 +411,7 @@
   }
 
   .field-label {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
@@ -278,8 +429,8 @@
   }
 
   .field-value.mono {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
   }
 
   .field-edit-row {
@@ -305,7 +456,7 @@
   }
 
   .field-error {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--error);
   }
 
@@ -313,7 +464,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--success, #22c55e);
     font-weight: 500;
   }
