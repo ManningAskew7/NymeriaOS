@@ -172,7 +172,7 @@
 {#if visible}
   <div class="ruler-root">
     {#if measureMode}
-      <div class="capture-layer" onpointerdown={startMeasure}></div>
+      <div class="capture-layer" onpointerdown={startMeasure} role="presentation"></div>
     {/if}
 
     {#if showCrosshair}
@@ -222,7 +222,7 @@
     {/if}
 
     <div class="ruler-panel" style:left="{panelX}px" style:top="{panelY}px">
-      <div class="panel-header" onpointerdown={startPanelDrag}>
+      <div class="panel-header" onpointerdown={startPanelDrag} role="presentation">
         <span class="panel-title">Ruler</span>
         <button class="close-btn" onclick={() => (visible = false)} aria-label="Close ruler" data-tooltip="Close (Esc)">×</button>
       </div>
