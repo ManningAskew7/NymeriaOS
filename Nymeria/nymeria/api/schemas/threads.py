@@ -74,3 +74,27 @@ class ThreadClaimRequest(BaseModel):
 
 class ThreadMetadataMigrateRequest(BaseModel):
     threads: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreadDreamRequest(BaseModel):
+    """Manually trigger a dream (self-reflection) cycle for a thread.
+
+    Bypasses the scheduler's gating fields. The configured ``dreaming.enabled``
+    flag is still respected — if the thread has not opted in, the endpoint
+    returns 409. Use ``force=True`` to override the opt-in check for one-off
+    runs (admin/debug).
+    """
+
+    model: str | None = Field(default=None, max_length=120)
+    force: bool = False
+
+
+class ThreadDreamResponse(BaseModel):
+    """Response from POST /threads/{id}/dream."""
+
+    shadow_thread_id: str
+    parent_thread_id: str
+    started_at: str
+    model: str
+    enabled_optional_tools: list[str] = Field(default_factory=list)
+    disabled_core_tools: list[str] = Field(default_factory=list)

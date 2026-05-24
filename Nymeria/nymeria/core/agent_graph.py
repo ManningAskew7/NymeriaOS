@@ -192,6 +192,101 @@ def build_skill_meta_tool(
     )
 
 
+def _apply_execution_environment_descriptions(
+    agent: "NymeriaAgent",
+    tools: List[BaseTool],
+) -> None:
+    try:
+        from ..tools.execution_environment import configure_environment_aware_tool_descriptions
+
+        configure_environment_aware_tool_descriptions(
+            tools,
+            getattr(agent, "execution_environment", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Execution-aware tool description update failed: %s", exc)
+
+
+def _select_dream_tools_for_graph(
+    agent: "NymeriaAgent",
+    user_id: str,
+    thread_id: str,
+    tc,
+) -> List[BaseTool]:
+    """Return the strict tool allowlist for a dream shadow thread."""
+    from .dreaming import (
+        DEFAULT_DREAM_ENABLED_CORE_TOOLS,
+        DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS,
+    )
+    from ..tools import (
+        ALL_TOOLS,
+        OPTIONAL_TOOLS,
+        filter_admin_only_tools,
+        filter_developer_only_tools,
+    )
+
+    all_tools_dict = {t.name: t for t in ALL_TOOLS}
+    all_tools_dict.update(OPTIONAL_TOOLS)
+
+    disabled = set(tc.disabled_tools or [])
+    requested_extras = set(tc.enabled_tools or []) - disabled
+    policy_extras = set(DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS)
+    extra_names = {
+        name
+        for name in requested_extras
+        if name in OPTIONAL_TOOLS and name in policy_extras
+    }
+    ignored_outside_policy = requested_extras - extra_names
+    if ignored_outside_policy:
+        logger.warning(
+            "Dream graph build for thread=%s: ignored enabled tool(s) "
+            "outside dream policy: %s",
+            thread_id,
+            sorted(ignored_outside_policy),
+        )
+
+    owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+    owner_role = owner.role if owner else "user"
+    allowed_extras, blocked_admin_extras = filter_admin_only_tools(
+        extra_names,
+        owner_role,
+    )
+    allowed_extras, blocked_dev_extras = filter_developer_only_tools(
+        allowed_extras,
+        owner_role,
+    )
+    blocked_extras = blocked_admin_extras | blocked_dev_extras
+    if blocked_extras:
+        logger.warning(
+            "Dream graph build for thread=%s user=%s: stripped role-gated "
+            "tools %s from enabled_tools",
+            thread_id,
+            user_id,
+            sorted(blocked_extras),
+        )
+
+    ordered_names: list[str] = [
+        name
+        for name in DEFAULT_DREAM_ENABLED_CORE_TOOLS
+        if name not in disabled
+    ]
+    ordered_names.extend(
+        name for name in sorted(allowed_extras) if name not in ordered_names
+    )
+
+    missing = [name for name in ordered_names if name not in all_tools_dict]
+    if missing:
+        logger.warning(
+            "Dream graph build for thread=%s: configured tool(s) not found: %s",
+            thread_id,
+            missing,
+        )
+
+    tools = [all_tools_dict[name] for name in ordered_names if name in all_tools_dict]
+    _apply_execution_environment_descriptions(agent, tools)
+    return tools
+
+
 def skills_fingerprint(agent: "NymeriaAgent", user_id: str, thread_id: str) -> str:
     """Hash inputs that affect the Skill meta-tool's description.
 
@@ -236,6 +331,8 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         (tools, tc) where tc is the thread config (or None).
     """
     tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
+    if tc and tc.shadow_parent_id:
+        return _select_dream_tools_for_graph(agent, user_id, thread_id, tc), tc
 
     if tc and tc.callable and tc.callable_name:
         tools = agent._get_callable_thread_tools(tc)
@@ -356,15 +453,7 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
     if skill_tool is not None:
         tools.append(skill_tool)
 
-    try:
-        from ..tools.execution_environment import configure_environment_aware_tool_descriptions
-
-        configure_environment_aware_tool_descriptions(
-            tools,
-            getattr(agent, "execution_environment", None),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Execution-aware tool description update failed: %s", exc)
+    _apply_execution_environment_descriptions(agent, tools)
 
     return tools, tc
 
@@ -442,6 +531,11 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
     list (from select_tools_for_graph) handles visibility. The
     superset is purely for execution dispatch.
     """
+    tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
+    if tc and tc.shadow_parent_id:
+        tools = _select_dream_tools_for_graph(agent, user_id, thread_id, tc)
+        return tools, {tool.name for tool in tools}
+
     from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
 
     merged: Dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
@@ -482,7 +576,6 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
     # calling build_skill_meta_tool with the merged superset so its
     # description sees every potentially-callable tool name.
     try:
-        tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
         skill_tool = agent._build_skill_meta_tool(user_id, tc, list(merged.values()))
         if skill_tool is not None and skill_tool.name not in merged:
             merged[skill_tool.name] = skill_tool

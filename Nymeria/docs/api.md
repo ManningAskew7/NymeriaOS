@@ -1801,6 +1801,46 @@ processing.
 
 ---
 
+### Trigger Thread Dream
+
+```http
+POST /threads/{thread_id}/dream
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Starts a manual dream cycle for an owned thread. The API creates a temporary
+shadow thread with the dream system prompt, a strict memory/TODO/instructions
+tool policy, and `shadow_parent_id` pointing at the parent. The dream turn runs
+in the background and streams through the autonomous event feed under the
+returned `shadow_thread_id`.
+
+The parent thread must have `dreaming.enabled=true` in its thread config unless
+`force=true` is supplied. The endpoint returns `409` if the parent is actively
+processing and `400` if called on a shadow thread.
+
+**Request Body:** (optional)
+```json
+{
+  "model": "claude-haiku-4-5-20251001",
+  "force": false
+}
+```
+
+**Response:**
+```json
+{
+  "shadow_thread_id": "dream-parent-20260524T120000-a1b2c3",
+  "parent_thread_id": "parent",
+  "started_at": "2026-05-24T12:00:00+00:00",
+  "model": "claude-haiku-4-5-20251001",
+  "enabled_optional_tools": ["thread_instructions_set"],
+  "disabled_core_tools": ["bash_execute", "file_read"]
+}
+```
+
+---
+
 ### Stop Thread
 
 ```http

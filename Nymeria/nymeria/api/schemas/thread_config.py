@@ -26,6 +26,19 @@ class ThreadLLMConfigRequest(BaseModel):
     compact_threshold_tokens: int | None = Field(default=None, ge=1_000, le=2_000_000)
 
 
+class DreamingConfigRequest(BaseModel):
+    """Partial dreaming-config update. Bookkeeping fields (last_dream_at,
+    last_dream_thread_id) are intentionally excluded — only the scheduler
+    writes them.
+    """
+
+    enabled: bool | None = None
+    min_interval_hours: int | None = Field(default=None, ge=1, le=168)
+    min_idle_minutes: int | None = Field(default=None, ge=5, le=10080)
+    min_turns_since_last: int | None = Field(default=None, ge=1, le=10000)
+    model: str | None = None
+
+
 class ThreadConfigUpdateRequest(BaseModel):
     """Partial thread-configuration update."""
 
@@ -49,6 +62,7 @@ class ThreadConfigUpdateRequest(BaseModel):
     in_app_notification_level: Literal["notify_only", "all_autonomous", "off"] | None = None
     notification_profile: str | None = Field(default=None, max_length=120)
     memory_char_limit: int | None = Field(default=None, ge=1, le=2_000_000)
+    dreaming: DreamingConfigRequest | None = None
     clear_instructions: bool = False
     clear_disabled_tools: bool = False
     clear_enabled_tools: bool = False
@@ -58,6 +72,7 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_system_prompt: bool = False
     clear_notification_profile: bool = False
     clear_memory_char_limit: bool = False
+    clear_dreaming: bool = False
 
 
 class ThreadTeamCreateRequest(BaseModel):

@@ -30,7 +30,7 @@ from ..core.todo_constants import (
     validate_recurrence,
 )
 from ..core.todo_manager import TodoManager, TodoStatus
-from .utils import get_user_id, get_thread_id
+from .utils import get_effective_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def nym_todo(
         if recurring). Errors: "[Error]: <reason>".
     """
     user_id = get_user_id(config)
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     if not thread_id:
         thread_id = f"todo-{str(_uuid.uuid4())[:8]}"
     manager = _get_todo_manager()
@@ -470,7 +470,7 @@ def nym_todo_delete(
     logger.info(f"nym_todo_delete called: id={todo_id}")
 
     user_id = get_user_id(config)
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     manager = _get_todo_manager()
     schedule_db = _get_schedule_db()
 
@@ -520,7 +520,7 @@ def nym_todo_list(
     logger.info(f"nym_todo_list called: filter={filter_status}")
 
     user_id = get_user_id(config)
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     manager = _get_todo_manager()
     todo_list_obj = manager.get_todos(user_id)
     thread_items = [i for i in todo_list_obj.items if i.thread_id == thread_id]

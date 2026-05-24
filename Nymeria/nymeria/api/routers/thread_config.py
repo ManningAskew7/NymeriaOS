@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.accounts import AuthenticatedUser
-from ...core.thread_config import ThreadConfig, ThreadLLMConfig
+from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
 from ..schemas.thread_config import (
     ThreadConfigUpdateRequest,
     ThreadTeamCreateRequest,
@@ -42,6 +42,8 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
         "in_app_notification_level": "notify_only",
         "notification_profile": None,
         "memory_char_limit": None,
+        "dreaming": None,
+        "shadow_parent_id": None,
         "created_at": None,
         "updated_at": None,
         "has_customizations": False,
@@ -310,6 +312,17 @@ def create_thread_config_router(
             tc.memory_char_limit = None
         elif request.memory_char_limit is not None:
             tc.memory_char_limit = request.memory_char_limit
+        if request.clear_dreaming:
+            tc.dreaming = None
+        elif request.dreaming is not None:
+            dream_data = request.dreaming.model_dump(exclude_unset=True)
+            if tc.dreaming is None:
+                tc.dreaming = DreamingConfig(
+                    **{k: v for k, v in dream_data.items() if v is not None}
+                )
+            else:
+                for key, value in dream_data.items():
+                    setattr(tc.dreaming, key, value)
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")

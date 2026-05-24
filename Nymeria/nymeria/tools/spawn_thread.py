@@ -11,7 +11,15 @@ can re-invoke them later. Supports two actions:
       checkpoints, notepad, and callable-tool registration). Only the thread
       that originally spawned it can delete it.
 
-The tool only exposes the *append* path for system prompts
+The tool exposes three ergonomic knobs over the raw thread config:
+  * tool_queries: free-text intents resolved via the semantic tool search
+    index (e.g. ["research"] selects web/RAG/wiki tools).
+  * ttl_hours: single optional TTL (None = permanent, int = temporary with
+    that many idle hours before the ticker sweeps it).
+  * include_core_tools: when False, the child skips ALL_TOOLS and gets only
+    the explicitly resolved/selected set.
+
+It only exposes the *append* path for system prompts
 (ThreadConfig.instructions); it cannot replace soul.md.
 """
 
@@ -20,7 +28,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Set, Tuple
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -241,12 +249,54 @@ def refresh_thread_activity(agent, user_id: str, thread_id: str) -> None:
         )
 
 
+def _delete_temporary_thread(agent, target_thread_id: str, user_id: str) -> bool:
+    """Delete any temporary-lifetime thread, including spawned and dream threads."""
+    from ..config.settings import get_settings
+    from ..core.event_bus import publish_sync_event
+    from ..core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
+
+    try:
+        cascade_delete_thread(
+            agent,
+            get_settings(),
+            user_id,
+            target_thread_id,
+            lock_timeout_seconds=1.0,
+        )
+    except ThreadDeletionBusy:
+        logger.info(
+            "Temporary thread %s is busy; idle cleanup will retry later",
+            target_thread_id,
+        )
+        return False
+    except Exception:
+        logger.warning(
+            "Temporary thread cleanup failed for %s",
+            target_thread_id,
+            exc_info=True,
+        )
+        return False
+
+    try:
+        publish_sync_event(
+            event_type="thread_deleted",
+            thread_id=target_thread_id,
+            user_id=user_id,
+            data={},
+        )
+    except Exception as e:
+        logger.warning("temporary thread_deleted publish failed: %s", e)
+
+    logger.info("Deleted temporary thread %s", target_thread_id)
+    return True
+
+
 def sweep_idle_spawned_threads(agent) -> int:
-    """Delete temporary-lifetime spawned threads whose idle window has elapsed.
+    """Delete temporary-lifetime threads whose idle window has elapsed.
 
     Iterates every user's thread metadata store, identifies threads flagged
     ``lifetime=temporary`` whose ``last_active_at`` is older than their
-    ``idle_timeout_hours``, and deletes them via the standard ``_delete_spawned``
+    ``idle_timeout_hours``, and deletes them via the standard cascade cleanup
     path (config, metadata, checkpoints, notepad, callable registration).
 
     Returns the number of threads deleted. Intended to be called periodically
@@ -309,30 +359,87 @@ def sweep_idle_spawned_threads(agent) -> int:
             if elapsed_hours < idle_hours:
                 continue
 
-            try:
-                _delete_spawned(
-                    agent=agent,
-                    target_thread_id=thread_id,
-                    user_id=user_id,
-                    caller_thread_id=None,
-                )
+            if _delete_temporary_thread(agent, thread_id, user_id):
                 deleted += 1
-            except Exception:
-                logger.warning(
-                    f"sweep_idle_spawned_threads: delete failed for {thread_id}",
-                    exc_info=True,
-                )
 
     return deleted
+
+
+def _resolve_semantic_tools(
+    queries: List[str],
+    top_k: int,
+    *,
+    agent,
+    user_id: str,
+    user_role: str,
+    parent_thread_id: Optional[str],
+) -> Tuple[Set[str], List[dict]]:
+    """Resolve free-text intents to optional tool names via the search index.
+
+    Returns (set_of_optional_tool_names, sorted_resolution_records). Each
+    record is {"name": str, "score": float, "query": str}, deduped by name
+    keeping the highest score across queries. Core tools (in ALL_TOOLS) are
+    excluded since they're inherited by default; unknown names and names not
+    accepted as optional/registry tools are skipped. Admin/dev-only tools are
+    filtered by the search index when user_role is passed.
+    """
+    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from ..core.tool_search_index import search_tools
+
+    core_names = {t.name for t in ALL_TOOLS}
+    best: Dict[str, dict] = {}
+    for raw_query in queries:
+        query = (raw_query or "").strip()
+        if not query:
+            continue
+        try:
+            response = search_tools(
+                query,
+                user_id=user_id or "default",
+                user_role=user_role or "user",
+                agent=agent,
+                thread_id=parent_thread_id,
+                top_k=max(1, int(top_k)),
+                include_status=False,
+            )
+        except Exception:
+            logger.warning(
+                "spawn_thread: semantic search failed for query %r",
+                query,
+                exc_info=True,
+            )
+            continue
+
+        for result in getattr(response, "results", []) or []:
+            name = getattr(result, "name", None)
+            if not name or name in core_names:
+                continue
+            is_optional = name in OPTIONAL_TOOLS
+            is_registry = bool(
+                getattr(agent, "tool_registry", None)
+                and agent.tool_registry.get_tool(name)
+            )
+            if not (is_optional or is_registry):
+                continue
+            score = float(getattr(result, "score", 0.0) or 0.0)
+            current = best.get(name)
+            if current is None or score > current["score"]:
+                best[name] = {"name": name, "score": score, "query": query}
+
+    records = sorted(best.values(), key=lambda r: r["score"], reverse=True)
+    return set(best.keys()), records
 
 
 @tool
 def spawn_thread(
     title: Optional[str] = None,
     instructions: Optional[str] = None,
+    tool_queries: Optional[List[str]] = None,
+    tool_query_top_k: int = 8,
     optional_tools: Optional[List[str]] = None,
     tool_categories: Optional[List[str]] = None,
     disabled_tools: Optional[List[str]] = None,
+    include_core_tools: bool = True,
     make_callable: bool = True,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
@@ -344,7 +451,8 @@ def spawn_thread(
     action: str = "create",
     delete_thread_id: Optional[str] = None,
     mode: str = "fresh",
-    lifetime: str = "permanent",
+    ttl_hours: Optional[int] = None,
+    lifetime: Optional[str] = None,
     idle_timeout_hours: Optional[int] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -371,16 +479,32 @@ def spawn_thread(
             default personality (soul.md). Max 5000 chars. Cannot replace
             the base personality. Also used as the callable tool's
             description if provided.
-        optional_tools: List of OPTIONAL tool names to enable on the new
-            thread (e.g. ["memory_clear_all", "browser_navigate"]). Core tools
-            are inherited automatically; only list EXTRAS. Use
-            Skill(name="self-improve") then tool_search(query="...") to
-            discover names.
-        tool_categories: List of category names (e.g. ["email", "browser"])
-            to bulk-enable every optional tool in that category. Merged
-            with optional_tools.
-        disabled_tools: List of CORE tool names to EXCLUDE (e.g.
+        tool_queries: Free-text intents (e.g. ["research", "browser
+            automation"]). Each query is resolved via the semantic tool
+            search index and the top matches are merged into enabled_tools.
+            Faster than enumerating exact tool names. Mix freely with
+            optional_tools/tool_categories. Returns 0 results silently if
+            the search index is unavailable; check the [Resolved tools]
+            line in the response to see what landed.
+        tool_query_top_k: Max matches kept per query before deduping across
+            queries. Default 8. Increase for broader nets, decrease for
+            tighter focus.
+        optional_tools: Lower-level escape hatch when a specific tool name
+            is known (e.g. ["memory_clear_all", "browser_navigate"]). Use
+            tool_queries first; this only when semantic search misses or
+            you want surgical control. Names can be discovered with
+            Skill(name="self-improve") + tool_search(query="...").
+        tool_categories: Category names (e.g. ["email", "browser"]) to
+            bulk-enable every optional tool in that category. Merged with
+            optional_tools and tool_queries results.
+        disabled_tools: CORE tool names to EXCLUDE for this child (e.g.
             ["bash_execute"] for a sandboxed child).
+        include_core_tools: If True (default), the child inherits all core
+            tools (ALL_TOOLS). Set False to give the child only the tools
+            resolved by tool_queries/optional_tools/tool_categories (plus
+            its callable invoker if make_callable). Useful for tight,
+            focused sub-agents that should not have memory writes,
+            sub-spawning, file IO, etc.
         make_callable: If True (default), the new thread becomes a globally
             callable tool. The tool's name is auto-derived from the title
             with a random suffix (e.g. 'spawned_research_a3f21c9d') and
@@ -394,15 +518,18 @@ def spawn_thread(
             child's response becomes part of this tool's output.
         mode: 'fresh' (default) creates an empty thread. 'branched' forks
             the calling thread's checkpoint history and configuration via
-            branch_thread() — the new thread starts with the parent's full
+            branch_thread(); the new thread starts with the parent's full
             conversation context, then your overrides are layered on top.
-        lifetime: 'permanent' (default) is normal long-lived behaviour.
-            'temporary' marks the thread for automatic idle cleanup; the
-            worker ticker deletes it after `idle_timeout_hours` of inactivity
-            (i.e. no callable invocations and no own turns).
-        idle_timeout_hours: Only meaningful when lifetime='temporary'.
-            Defaults to 24 hours. Activity is recorded each time the thread
-            is invoked or runs a turn.
+        ttl_hours: Optional thread lifetime. None (default) = permanent.
+            Any positive integer marks the thread temporary; the worker
+            ticker deletes it after that many hours without activity
+            (no callable invocations and no own turns). Activity is
+            refreshed automatically on each turn and each callable invoke.
+        lifetime: Deprecated compatibility alias. Use ttl_hours instead.
+            If set to "temporary" and ttl_hours is omitted, uses
+            idle_timeout_hours or the default 24-hour idle TTL.
+        idle_timeout_hours: Deprecated compatibility alias for ttl_hours
+            when lifetime="temporary".
 
     Args (delete mode):
         delete_thread_id: Required for delete. The spawned thread's ID
@@ -411,8 +538,9 @@ def spawn_thread(
 
     Returns (create):
         Preamble with the new thread_id, the callable tool name (if
-        make_callable=True), and, if prompt was provided,
-        the child thread's response text.
+        make_callable=True), the [Resolved tools] line when tool_queries
+        was used, and, if prompt was provided, the child thread's
+        response text.
 
     Returns (delete):
         "[Deleted]: thread_id=spawned-..." on success.
@@ -421,6 +549,7 @@ def spawn_thread(
         - Spawn depth capped at 3 by default (NYMERIA_MAX_SPAWN_DEPTH env).
         - 10 spawns per parent per hour (NYMERIA_MAX_SPAWNS_PER_HOUR).
         - instructions max 5000 chars; title truncated to 80 chars.
+        - ttl_hours must be >= 1 when set.
     """
     from . import ALL_TOOLS, OPTIONAL_TOOLS
     from ..core.agent import get_current_agent
@@ -460,22 +589,44 @@ def spawn_thread(
     if mode_norm not in VALID_MODES:
         return f"[Error]: Unknown mode '{mode}'. Use {' or '.join(repr(m) for m in VALID_MODES)}."
 
-    lifetime_norm = (lifetime or "permanent").strip().lower()
-    if lifetime_norm not in VALID_LIFETIMES:
-        return f"[Error]: Unknown lifetime '{lifetime}'. Use {' or '.join(repr(value) for value in VALID_LIFETIMES)}."
-
     pre_warnings: List[str] = []
-    if lifetime_norm == "temporary":
-        if idle_timeout_hours is None:
-            idle_timeout_hours_resolved: Optional[int] = DEFAULT_IDLE_TIMEOUT_HOURS
-        elif idle_timeout_hours < 1:
-            return "[Error]: idle_timeout_hours must be >= 1."
-        else:
-            idle_timeout_hours_resolved = int(idle_timeout_hours)
+    if lifetime is not None:
+        lifetime_norm = (lifetime or "permanent").strip().lower()
+        if lifetime_norm not in VALID_LIFETIMES:
+            return (
+                f"[Error]: Unknown lifetime '{lifetime}'. Use "
+                f"{' or '.join(repr(value) for value in VALID_LIFETIMES)}."
+            )
+        if ttl_hours is not None:
+            pre_warnings.append(
+                "legacy lifetime/idle_timeout_hours ignored because ttl_hours is set"
+            )
+        elif lifetime_norm == "temporary":
+            ttl_hours = (
+                DEFAULT_IDLE_TIMEOUT_HOURS
+                if idle_timeout_hours is None
+                else idle_timeout_hours
+            )
+        elif idle_timeout_hours is not None:
+            pre_warnings.append(
+                "idle_timeout_hours ignored when lifetime='permanent'; use ttl_hours for temporary cleanup"
+            )
+    elif idle_timeout_hours is not None and ttl_hours is None:
+        pre_warnings.append(
+            "idle_timeout_hours ignored without lifetime='temporary'; use ttl_hours for temporary cleanup"
+        )
+
+    ttl_hours_resolved: Optional[int]
+    if ttl_hours is None:
+        ttl_hours_resolved = None
     else:
-        idle_timeout_hours_resolved = None
-        if idle_timeout_hours is not None:
-            pre_warnings.append("idle_timeout_hours ignored when lifetime='permanent'")
+        try:
+            ttl_hours_int = int(ttl_hours)
+        except (TypeError, ValueError):
+            return f"[Error]: ttl_hours must be an integer; got {ttl_hours!r}."
+        if ttl_hours_int < 1:
+            return "[Error]: ttl_hours must be >= 1 (or None for a permanent thread)."
+        ttl_hours_resolved = ttl_hours_int
 
     if mode_norm == "branched" and not parent_thread_id:
         return "[Error]: mode='branched' requires a parent thread; call this from inside a thread."
@@ -499,6 +650,32 @@ def spawn_thread(
 
     warnings: List[str] = list(pre_warnings)
     enabled_set: set = set()
+    tool_resolution_records: List[dict] = []
+
+    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+    user_role = user.role if user else "user"
+
+    if tool_queries:
+        resolved_names, tool_resolution_records = _resolve_semantic_tools(
+            tool_queries,
+            tool_query_top_k,
+            agent=agent,
+            user_id=user_id,
+            user_role=user_role,
+            parent_thread_id=parent_thread_id,
+        )
+        enabled_set |= resolved_names
+        unmatched_queries = [
+            q.strip()
+            for q in tool_queries
+            if q
+            and q.strip()
+            and not any(r["query"] == q.strip() for r in tool_resolution_records)
+        ]
+        if unmatched_queries:
+            warnings.append(
+                f"tool_queries with no matches: {', '.join(unmatched_queries)}"
+            )
 
     if tool_categories:
         cat_summary = get_category_tools_summary()
@@ -531,12 +708,10 @@ def spawn_thread(
             warnings.append(f"unknown tool(s): {', '.join(unknown_tools)}")
 
     # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config and
-    # the tool_search gate — without this, a non-admin could spawn a child
+    # the tool_search gate; without this, a non-admin could spawn a child
     # thread seeded with reload_all/claude_code/self_modify and escalate via
     # the child. Block category-expansion AND named optional_tools.
     from . import filter_admin_only_tools, filter_developer_only_tools
-    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-    user_role = user.role if user else "user"
     _, blocked = filter_admin_only_tools(enabled_set, user_role)
     if blocked:
         return (
@@ -566,6 +741,11 @@ def spawn_thread(
             warnings.append(
                 f"unknown core tool(s) to disable: {', '.join(unknown_disabled)}"
             )
+
+    if not include_core_tools:
+        # Funnel every core tool name into disabled_list so the graph builder
+        # filters them out. Dedupe in case the caller also named some explicitly.
+        disabled_list = sorted({*(disabled_list), *(t.name for t in ALL_TOOLS)})
 
     llm_config = None
     if any(
@@ -674,13 +854,11 @@ def spawn_thread(
     platform_meta: Dict[str, str] = {"spawn_depth": str(new_depth)}
     if parent_thread_id:
         platform_meta["spawn_parent"] = parent_thread_id
-    if lifetime_norm == "temporary":
+    if ttl_hours_resolved is not None:
         from ..core.time_utils import utc_now as _utc_now
 
         platform_meta[PLATFORM_META_LIFETIME] = "temporary"
-        platform_meta[PLATFORM_META_IDLE_TIMEOUT] = str(
-            idle_timeout_hours_resolved
-        )
+        platform_meta[PLATFORM_META_IDLE_TIMEOUT] = str(ttl_hours_resolved)
         platform_meta[PLATFORM_META_LAST_ACTIVE] = _utc_now().isoformat()
 
     try:
@@ -701,7 +879,7 @@ def spawn_thread(
 
     # Claim ownership for the spawning user. Without this, callable spawns
     # land in the "legacy unowned" bucket and the per-user graph filter drops
-    # them — the parent thread's LLM gets told the new tool exists but can't
+    # them, so the parent thread's LLM gets told the new tool exists but can't
     # actually invoke it. The runtime gate in tool_factory.py checks this row.
     try:
         agent.accounts_repo.claim_thread(new_thread_id, user_id)
@@ -738,20 +916,33 @@ def spawn_thread(
         preamble_lines.append(
             f"Mode: branched from {parent_thread_id} (inherits checkpoint history)."
         )
-    if lifetime_norm == "temporary":
+    if ttl_hours_resolved is not None:
         preamble_lines.append(
             f"Lifetime: temporary (auto-deletes after "
-            f"{idle_timeout_hours_resolved}h of inactivity)."
+            f"{ttl_hours_resolved}h of inactivity)."
         )
     if make_callable and callable_name:
         preamble_lines.append(
             f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
         )
+    if tool_resolution_records:
+        head = tool_resolution_records[:6]
+        rendered = ", ".join(
+            f'{r["name"]} ({r["score"]:.2f} <- "{r["query"]}")' for r in head
+        )
+        if len(tool_resolution_records) > len(head):
+            rendered += f", +{len(tool_resolution_records) - len(head)} more"
+        preamble_lines.append(f"[Resolved tools]: {rendered}")
+    if not include_core_tools:
+        preamble_lines.append(
+            "Core tools: disabled (include_core_tools=False; child gets only "
+            "the explicitly resolved/selected tools)."
+        )
     if tc.enabled_tools:
         preamble_lines.append(
             f"Enabled optional tools: {', '.join(tc.enabled_tools)}"
         )
-    if tc.disabled_tools:
+    if tc.disabled_tools and include_core_tools:
         preamble_lines.append(
             f"Disabled core tools: {', '.join(tc.disabled_tools)}"
         )

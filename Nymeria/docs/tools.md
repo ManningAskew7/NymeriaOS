@@ -1982,9 +1982,12 @@ Create or delete a conversation thread with scoped configuration. Two modes via 
 spawn_thread(
     title: Optional[str] = None,
     instructions: Optional[str] = None,
+    tool_queries: Optional[List[str]] = None,
+    tool_query_top_k: int = 8,
     optional_tools: Optional[List[str]] = None,
     tool_categories: Optional[List[str]] = None,
     disabled_tools: Optional[List[str]] = None,
+    include_core_tools: bool = True,
     make_callable: bool = True,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
@@ -1996,7 +1999,8 @@ spawn_thread(
     action: str = "create",
     delete_thread_id: Optional[str] = None,
     mode: str = "fresh",
-    lifetime: str = "permanent",
+    ttl_hours: Optional[int] = None,
+    lifetime: Optional[str] = None,
     idle_timeout_hours: Optional[int] = None,
 )
 ```
@@ -2005,19 +2009,23 @@ spawn_thread(
 
 - `title` (required for create): User-visible thread title. Truncated to 80 chars.
 - `instructions`: Extra system-prompt instructions **APPENDED** to `soul.md` (max 5000 chars). Cannot replace the base personality. Also used as the callable tool's description if provided.
-- `optional_tools`: List of optional tool names to enable (e.g. `["memory_clear_all", "browser_navigate"]`). Core tools are inherited automatically  -  only list extras.
-- `tool_categories`: List of categories (e.g. `["email", "browser"]`) to bulk-enable every optional tool in that category. Merged with `optional_tools`.
+- `tool_queries`: Free-text intents (e.g. `["research", "browser automation"]`) resolved through semantic tool search. Merged with `optional_tools` and `tool_categories`.
+- `tool_query_top_k`: Max matches kept per query before deduping. Default `8`.
+- `optional_tools`: Exact optional tool names to enable (e.g. `["memory_clear_all", "browser_navigate"]`). Use this when semantic search misses or surgical control is needed.
+- `tool_categories`: List of categories (e.g. `["email", "browser"]`) to bulk-enable every optional tool in that category. Merged with `optional_tools` and `tool_queries`.
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
+- `include_core_tools` (default `True`): If `False`, disables every core tool so the child gets only explicitly resolved or selected tools.
 - `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot  -  the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
 - `llm_*`: Optional LLM overrides. Omit to inherit global settings.
 - `prompt`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
 - `mode` (default `"fresh"`): `"fresh"` builds an empty thread. `"branched"` forks the calling thread's full checkpoint history and configuration via `branch_thread()`; the new thread starts with the parent's conversation context, then the spawn-thread overrides are layered on top. Requires a parent thread.
-- `lifetime` (default `"permanent"`): `"permanent"` is normal long-lived behaviour. `"temporary"` flags the thread for automatic idle cleanup; the worker ticker deletes it after `idle_timeout_hours` of inactivity (no callable invocations, no own turns).
-- `idle_timeout_hours`: Only meaningful when `lifetime="temporary"`. Defaults to 24 hours. Activity is recorded each time the thread is invoked.
+- `ttl_hours`: Optional lifetime. `None` is permanent. Any positive integer marks the thread temporary and auto-deletes it after that many idle hours.
+- `lifetime` / `idle_timeout_hours`: Deprecated aliases kept for old prompts. `lifetime="temporary"` maps to `ttl_hours=idle_timeout_hours or 24`.
 
 **Create returns:**
 - Preamble with the new `thread_id` (`spawned-{slug}-{rand8}`).
 - If `make_callable=True`: the generated callable tool name (e.g. `spawned_research_a3f21c9d`) the parent can invoke later.
+- If `tool_queries` resolved anything: a `[Resolved tools]: ...` line with the selected tool names and scores.
 - If `prompt` provided: the child's response text appended.
 - A reminder of the `action="delete"` call needed to remove the thread.
 

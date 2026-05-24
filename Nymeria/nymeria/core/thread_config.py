@@ -6,6 +6,7 @@ Each thread can override:
 - LLM settings (provider, model, temperature, etc.)
 - Full system prompt (replaces soul.md entirely)
 - Callable status (makes the thread invocable by Nymeria as a tool)
+- Dreaming (background self-reflection cycles in a shadow thread)
 """
 
 import json
@@ -89,6 +90,33 @@ class TemporaryToolEntry(BaseModel):
         return ensure_aware_utc(value)
 
 
+class DreamingConfig(BaseModel):
+    """Per-thread settings for the background self-reflection ("dreaming") cycle.
+
+    When ``enabled`` is True the scheduler may spawn a shadow thread that reads
+    this thread's memory, notepad, and instructions, then writes back focused
+    changes (memory prune, instruction tweaks, scheduled TODOs, skill suggestions).
+    Gating fields are layered cheapest-first; all of them must pass for a dream
+    to fire. ``last_dream_at`` and ``last_dream_thread_id`` are bookkeeping
+    fields the scheduler writes after a successful run.
+    """
+
+    enabled: bool = False
+    min_interval_hours: int = Field(default=6, ge=1, le=168)
+    min_idle_minutes: int = Field(default=30, ge=5, le=10080)
+    min_turns_since_last: int = Field(default=10, ge=1, le=10000)
+    model: Optional[str] = None
+    last_dream_at: Optional[datetime] = None
+    last_dream_thread_id: Optional[str] = None
+
+    @field_validator("last_dream_at")
+    @classmethod
+    def _last_dream_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        return ensure_aware_utc(value)
+
+
 class ThreadConfig(BaseModel):
     """Configuration for a specific thread."""
 
@@ -167,6 +195,15 @@ class ThreadConfig(BaseModel):
     # Optional per-thread notepad character limit. None inherits the global
     # MEMORY_CHAR_LIMIT setting.
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
+    # Per-thread dreaming (self-reflection) settings. None means "feature off
+    # for this thread"; a populated DreamingConfig with enabled=False is the
+    # same in practice but lets the UI render previously-chosen gate values.
+    dreaming: Optional[DreamingConfig] = None
+    # Shadow-thread linkage. Set on the shadow thread itself (not the parent).
+    # Tools that need to act on the parent's surfaces (e.g. thread_instructions_set,
+    # memory_*, nym_todo_add) read this field to find their target. None on
+    # normal user-facing threads.
+    shadow_parent_id: Optional[str] = Field(default=None, max_length=200)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -236,6 +273,14 @@ class ThreadConfig(BaseModel):
         if self.notification_profile:
             return True
         if self.memory_char_limit is not None:
+            return True
+        if self.dreaming is not None and (
+            self.dreaming.enabled
+            or self.dreaming.model is not None
+            or self.dreaming.last_dream_at is not None
+        ):
+            return True
+        if self.shadow_parent_id:
             return True
         return False
 

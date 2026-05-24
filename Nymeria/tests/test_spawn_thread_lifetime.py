@@ -96,7 +96,7 @@ class TestRefreshThreadActivity:
 
 
 class TestSweepIdleSpawnedThreads:
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_deletes_expired_temporary(self, mock_delete, tmp_path):
         agent = _make_agent(tmp_path)
         _seed_thread(
@@ -110,13 +110,13 @@ class TestSweepIdleSpawnedThreads:
         deleted = sweep_idle_spawned_threads(agent)
         assert deleted == 1
         mock_delete.assert_called_once()
-        # Verify the call was for the expired thread.
-        kwargs = mock_delete.call_args.kwargs
-        assert kwargs["target_thread_id"] == "spawned-expired-aaa111"
-        assert kwargs["user_id"] == "u1"
-        assert kwargs["caller_thread_id"] is None
+        # The sweep calls _delete_temporary_thread(agent, thread_id, user_id)
+        # positionally for both spawned and dream temporary threads.
+        args = mock_delete.call_args.args
+        assert args[1] == "spawned-expired-aaa111"
+        assert args[2] == "u1"
 
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_skips_active_temporary(self, mock_delete, tmp_path):
         agent = _make_agent(tmp_path)
         _seed_thread(
@@ -131,7 +131,7 @@ class TestSweepIdleSpawnedThreads:
         assert deleted == 0
         mock_delete.assert_not_called()
 
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_skips_permanent(self, mock_delete, tmp_path):
         agent = _make_agent(tmp_path)
         # Permanent thread, no lifetime field set.
@@ -140,7 +140,7 @@ class TestSweepIdleSpawnedThreads:
         assert deleted == 0
         mock_delete.assert_not_called()
 
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_skips_when_idle_timeout_missing_or_invalid(self, mock_delete, tmp_path):
         agent = _make_agent(tmp_path)
         # Temporary but missing idle_timeout_hours: defensive skip.
@@ -156,7 +156,7 @@ class TestSweepIdleSpawnedThreads:
         assert deleted == 0
         mock_delete.assert_not_called()
 
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_falls_back_to_created_at_when_last_active_missing(
         self, mock_delete, tmp_path
     ):
@@ -175,7 +175,7 @@ class TestSweepIdleSpawnedThreads:
         assert deleted == 0
         mock_delete.assert_not_called()
 
-    @patch("nymeria.tools.spawn_thread._delete_spawned")
+    @patch("nymeria.tools.spawn_thread._delete_temporary_thread", return_value=True)
     def test_handles_empty_metadata_dir(self, mock_delete, tmp_path):
         agent = _make_agent(tmp_path)
         deleted = sweep_idle_spawned_threads(agent)

@@ -32,7 +32,7 @@ from ..core.memory_limits import (
     validate_profile_memory_write,
 )
 from . import thread_notes
-from .utils import get_thread_id, get_user_id
+from .utils import get_effective_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ def memory_add(
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
 
     # scope == "thread"
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     return thread_notes.write_notepad(thread_id, content, mode="replace")
 
 
@@ -263,7 +263,7 @@ def memory_edit(
             return f"[Saved]: Updated '{key}'."
 
     # scope == "thread"
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     return thread_notes.edit_notepad(thread_id, find, replace)
 
 
@@ -335,7 +335,7 @@ def memory_read(
         return "\n".join(lines)
 
     # scope == "thread"
-    thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     content = thread_notes.read_notepad(thread_id)
     if not content:
         return "[empty]"
