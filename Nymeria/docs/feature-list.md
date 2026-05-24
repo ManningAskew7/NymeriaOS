@@ -1,6 +1,6 @@
 # Nymeria  -  Complete Feature List
 
-Comprehensive feature inventory for comparison with other AI agent platforms. Last updated: 2026-04-23.
+Comprehensive feature inventory for comparison with other AI agent platforms. Last updated: 2026-05-24.
 
 ---
 
@@ -21,6 +21,7 @@ The core differentiating feature. Any conversation thread can be made "callable"
 - **LLM model**: Different threads can use different models and providers (e.g., Opus for reasoning, Haiku for fast tasks)
 - **Extended thinking**: Per-thread reasoning effort (off, on, low, medium, high)
 - **Skills**: Per-thread skill enablement/disablement
+- **Dreaming**: Per-thread opt-in self-reflection that runs in a temporary shadow thread with a strict memory/TODO/instructions/skills tool policy
 - **Turn safety**: 500 main-agent tool calls, 300 default callable tool calls, configurable callables up to 1000, plus repeated tool/result loop detection
 - **Profile injection**: Toggle whether user memories and TODOs appear in this thread's prompt
 
@@ -375,7 +376,7 @@ The code-owned source of truth is `nymeria/tools/__init__.py`: 17 core tools in
 
 ### Thread Management
 - Unlimited threads with folders, pinning, search/filter
-- Per-thread configuration panel: instructions, system prompt, Agent/callable settings, tools, MCP, LLM, and skills
+- Per-thread configuration panel: instructions, system prompt, Agent/callable settings, dreams, tools, MCP, LLM, and skills
 - Desktop thread sharing via `.nymeria-thread.json`: exports portable config only and imports into a new empty thread
 
 ### Tool Management

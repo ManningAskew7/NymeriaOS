@@ -1514,6 +1514,11 @@ class Settings(BaseSettings):
         return PACKAGE_ROOT / "config" / "soul.md"
 
     @property
+    def dream_prompt_path(self) -> Path:
+        """Get the path to the dream cycle system prompt."""
+        return PACKAGE_ROOT / "config" / "dream_prompt.md"
+
+    @property
     def logs_dir(self) -> Path:
         """Get the logs directory."""
         return self.data_dir / "logs"
@@ -1570,6 +1575,16 @@ class Settings(BaseSettings):
         if self.soul_path.exists():
             return self.soul_path.read_text(encoding="utf-8")
         return "You are Nymeria, a helpful AI assistant."
+
+    def load_dream_prompt(self) -> str:
+        """Load the dream-cycle system prompt. Returns a minimal fallback if absent."""
+        if self.dream_prompt_path.exists():
+            return self.dream_prompt_path.read_text(encoding="utf-8")
+        return (
+            "You are in a dream cycle. Read the parent thread's memory and "
+            "instructions, prune what's stale, tweak instructions if patterns "
+            "have emerged, and schedule TODOs only when justified."
+        )
 
     def validate_runtime(self) -> Tuple[List[str], List[str]]:
         """

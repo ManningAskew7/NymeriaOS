@@ -4,7 +4,7 @@ Every @tool that needs the caller's user_id or thread_id should import from
 here rather than hand-parsing ``config.get("configurable", {})``.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
@@ -40,3 +40,28 @@ def get_thread_id_or_none(config: Optional[RunnableConfig]) -> Optional[str]:
     if config is None:
         return None
     return config.get("configurable", {}).get("thread_id") or None
+
+
+def get_effective_thread_id(
+    config: Optional[RunnableConfig],
+    agent: Optional[Any] = None,
+) -> str:
+    """Return the target thread for thread-scoped tool operations.
+
+    Normal turns target their current ``thread_id``. Dream shadow turns store
+    their parent in ``ThreadConfig.shadow_parent_id``; thread-scoped memory and
+    TODO tools should act on that parent, not the shadow transcript.
+    """
+    thread_id = get_thread_id(config)
+    try:
+        if agent is None:
+            from ..core.agent import get_current_agent
+
+            agent = get_current_agent()
+        if agent is None:
+            return thread_id
+        tc = agent.thread_config_manager.get_config(thread_id)
+        parent_id = getattr(tc, "shadow_parent_id", None) if tc else None
+        return parent_id or thread_id
+    except Exception:
+        return thread_id

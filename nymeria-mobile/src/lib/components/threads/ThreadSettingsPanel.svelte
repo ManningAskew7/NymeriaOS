@@ -13,7 +13,6 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
-  import Button from '$lib/components/common/Button.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
@@ -41,9 +40,12 @@
 
   let { threadId, open, onClose }: Props = $props();
 
-  type Tab = 'instructions' | 'system' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
+  type Tab = 'instructions' | 'system' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
+  const DREAM_DEFAULT_MIN_INTERVAL_HOURS = 6;
+  const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
+  const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
   // Tier-grouped picker options sourced from the live provider catalog. See
   // utils/providerGroups.ts.
   let activeTab = $state<Tab>('instructions');
@@ -59,6 +61,13 @@
   let showPromptMetadata = $state(false);
   let telegramAutonomousDelivery = $state<TelegramAutonomousDelivery>('full');
   let inAppNotificationLevel = $state<InAppNotificationLevel>('notify_only');
+  let dreamEnabled = $state(false);
+  let dreamMinIntervalHours = $state(String(DREAM_DEFAULT_MIN_INTERVAL_HOURS));
+  let dreamMinIdleMinutes = $state(String(DREAM_DEFAULT_MIN_IDLE_MINUTES));
+  let dreamMinTurnsSinceLast = $state(String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST));
+  let dreamModel = $state('');
+  let dreamRunning = $state(false);
+  let dreamStatus = $state('');
 
   // Form state — System Prompt & Agent
   let systemPrompt = $state('');
@@ -428,6 +437,12 @@
     showPromptMetadata = cfg?.showPromptMetadata ?? false;
     telegramAutonomousDelivery = cfg?.telegramAutonomousDelivery ?? 'full';
     inAppNotificationLevel = cfg?.inAppNotificationLevel ?? 'notify_only';
+    dreamEnabled = cfg?.dreaming?.enabled ?? false;
+    dreamMinIntervalHours = String(cfg?.dreaming?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+    dreamMinIdleMinutes = String(cfg?.dreaming?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
+    dreamMinTurnsSinceLast = String(cfg?.dreaming?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    dreamModel = cfg?.dreaming?.model ?? '';
+    dreamStatus = '';
     systemPrompt = cfg?.systemPrompt ?? '';
     isCallable = cfg?.callable ?? false;
     callableName = cfg?.callableName ?? '';
@@ -479,6 +494,23 @@
     enabledTools = next;
   }
 
+  function boundedInt(value: string | number, fallback: number, min: number, max: number): number {
+    const parsed = parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  }
+
+  function dreamConfigNeedsSaving(): boolean {
+    return Boolean(
+      threadConfig?.dreaming ||
+      dreamEnabled ||
+      dreamModel.trim() ||
+      boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168) !== DREAM_DEFAULT_MIN_INTERVAL_HOURS ||
+      boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080) !== DREAM_DEFAULT_MIN_IDLE_MINUTES ||
+      boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000) !== DREAM_DEFAULT_MIN_TURNS_SINCE_LAST
+    );
+  }
+
   function hasChanges(): boolean {
     const orig = threadConfig;
     const origInstructions = orig?.instructions ?? '';
@@ -515,6 +547,12 @@
     const origShowMeta = orig?.showPromptMetadata ?? false;
     const origTelegramDelivery = orig?.telegramAutonomousDelivery ?? 'full';
     const origNotificationLevel = orig?.inAppNotificationLevel ?? 'notify_only';
+    const origDream = orig?.dreaming ?? null;
+    const origDreamEnabled = origDream?.enabled ?? false;
+    const origDreamMinIntervalHours = String(origDream?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+    const origDreamMinIdleMinutes = String(origDream?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
+    const origDreamMinTurnsSinceLast = String(origDream?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    const origDreamModel = origDream?.model ?? '';
 
     if (instructions !== origInstructions) return true;
     if (injectTodosInPrompt !== origInjectTodos) return true;
@@ -522,6 +560,11 @@
     if (showPromptMetadata !== origShowMeta) return true;
     if (telegramAutonomousDelivery !== origTelegramDelivery) return true;
     if (inAppNotificationLevel !== origNotificationLevel) return true;
+    if (dreamEnabled !== origDreamEnabled) return true;
+    if (String(dreamMinIntervalHours ?? '').trim() !== origDreamMinIntervalHours) return true;
+    if (String(dreamMinIdleMinutes ?? '').trim() !== origDreamMinIdleMinutes) return true;
+    if (String(dreamMinTurnsSinceLast ?? '').trim() !== origDreamMinTurnsSinceLast) return true;
+    if (dreamModel !== origDreamModel) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
@@ -671,6 +714,17 @@
       updates.show_prompt_metadata = showPromptMetadata;
       updates.telegram_autonomous_delivery = telegramAutonomousDelivery;
       updates.in_app_notification_level = inAppNotificationLevel;
+      if (dreamConfigNeedsSaving()) {
+        updates.dreaming = {
+          enabled: dreamEnabled,
+          min_interval_hours: boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168),
+          min_idle_minutes: boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080),
+          min_turns_since_last: boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000),
+          model: dreamModel.trim() || null,
+        };
+      } else {
+        updates.clear_dreaming = true;
+      }
 
       const result = await threadConfigStore.updateConfig(threadId, updates);
 
@@ -697,6 +751,23 @@
       error = e instanceof Error ? e.message : 'Failed to save';
     } finally {
       saving = false;
+    }
+  }
+
+  async function handleRunDream() {
+    dreamRunning = true;
+    dreamStatus = '';
+    error = '';
+    try {
+      const result = await api.triggerThreadDream(threadId, {
+        model: dreamModel.trim() || null,
+      });
+      dreamStatus = `Started ${result.shadow_thread_id}`;
+      await threadsStore.syncFromBackend();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to start dream';
+    } finally {
+      dreamRunning = false;
     }
   }
 
@@ -748,6 +819,10 @@
       <button class="tab-btn" class:active={activeTab === 'agent'} onclick={() => (activeTab = 'agent')}>
         Agent
         {#if isCallable}<span class="tab-badge">1</span>{/if}
+      </button>
+      <button class="tab-btn" class:active={activeTab === 'dream'} onclick={() => (activeTab = 'dream')}>
+        Dream
+        {#if dreamEnabled}<span class="tab-badge">1</span>{/if}
       </button>
       <button class="tab-btn" class:active={activeTab === 'model'} onclick={() => (activeTab = 'model')}>
         Model
@@ -871,6 +946,88 @@
             <span class="char-count">{callableDescription.length} / 500</span>
           </div>
         {/if}
+
+      {:else if activeTab === 'dream'}
+        <div class="section-divider">
+          <span class="section-title">Dreaming</span>
+          <p class="hint">
+            Background self-reflection for this thread. Dream turns run in a shadow thread and write only through the dream tool policy.
+          </p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-toggle">
+            <input type="checkbox" bind:checked={dreamEnabled} />
+            <span>Enable Dreaming</span>
+          </label>
+        </div>
+        <div class="dream-grid">
+          <div class="setting-group">
+            <label class="setting-label" for="mobile-dream-min-interval">Min Interval Hours</label>
+            <input
+              id="mobile-dream-min-interval"
+              type="number"
+              class="setting-input"
+              min="1"
+              max="168"
+              step="1"
+              bind:value={dreamMinIntervalHours}
+            />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="mobile-dream-min-idle">Min Idle Minutes</label>
+            <input
+              id="mobile-dream-min-idle"
+              type="number"
+              class="setting-input"
+              min="5"
+              max="10080"
+              step="5"
+              bind:value={dreamMinIdleMinutes}
+            />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="mobile-dream-min-turns">Min Turns Since Last</label>
+            <input
+              id="mobile-dream-min-turns"
+              type="number"
+              class="setting-input"
+              min="1"
+              max="10000"
+              step="1"
+              bind:value={dreamMinTurnsSinceLast}
+            />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="mobile-dream-model">Dream Model</label>
+            <input
+              id="mobile-dream-model"
+              type="text"
+              class="setting-input"
+              bind:value={dreamModel}
+              placeholder="Default model"
+              maxlength={120}
+            />
+          </div>
+        </div>
+
+        {#if threadConfig?.dreaming?.lastDreamAt}
+          <p class="hint">Last dream: {new Date(threadConfig.dreaming.lastDreamAt).toLocaleString()}</p>
+        {/if}
+
+        <div class="dream-actions">
+          <button
+            class="action-btn"
+            type="button"
+            onclick={handleRunDream}
+            disabled={saving || dreamRunning || !dreamEnabled || hasChanges()}
+            title={hasChanges() ? 'Save changes before running a dream' : 'Run dream now'}
+          >
+            {dreamRunning ? 'Starting...' : 'Run Dream'}
+          </button>
+          {#if dreamStatus}
+            <span class="dream-status">{dreamStatus}</span>
+          {/if}
+        </div>
 
       {:else if activeTab === 'model'}
         <div class="setting-group">
@@ -1562,6 +1719,28 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+  }
+
+  .dream-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--spacing-md);
+  }
+
+  .dream-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+  }
+
+  .dream-actions .action-btn:disabled {
+    opacity: 0.45;
+  }
+
+  .dream-status {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
   .setting-label {

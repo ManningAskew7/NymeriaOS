@@ -41,6 +41,17 @@ export class ThreadConfigApi extends MCPApi {
       showPromptMetadata: data.show_prompt_metadata ?? false,
       telegramAutonomousDelivery: data.telegram_autonomous_delivery ?? 'full',
       inAppNotificationLevel: data.in_app_notification_level ?? 'notify_only',
+      notificationProfile: data.notification_profile ?? null,
+      dreaming: data.dreaming ? {
+        enabled: data.dreaming.enabled ?? false,
+        minIntervalHours: data.dreaming.min_interval_hours ?? 6,
+        minIdleMinutes: data.dreaming.min_idle_minutes ?? 30,
+        minTurnsSinceLast: data.dreaming.min_turns_since_last ?? 10,
+        model: data.dreaming.model ?? null,
+        lastDreamAt: data.dreaming.last_dream_at ?? null,
+        lastDreamThreadId: data.dreaming.last_dream_thread_id ?? null,
+      } : null,
+      shadowParentId: data.shadow_parent_id ?? null,
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,
@@ -77,6 +88,24 @@ export class ThreadConfigApi extends MCPApi {
 
     const data = await response.json();
     return this._normalizeThreadConfig(data);
+  }
+
+  async triggerThreadDream(
+    threadId: string,
+    request: import('$lib/types').ThreadDreamRequest = {}
+  ): Promise<import('$lib/types').ThreadDreamResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/dream`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    return response.json();
   }
 
   async getAgentTemplates(): Promise<import('$lib/types').AgentTemplate[]> {

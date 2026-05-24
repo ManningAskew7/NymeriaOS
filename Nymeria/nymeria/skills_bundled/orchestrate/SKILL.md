@@ -68,7 +68,7 @@ For each task, spawn a forked worker:
 spawn_thread(
   title="<short task title>",
   mode="branched",          # forks your context to the worker
-  lifetime="temporary",     # auto-cleans up after the goal
+  ttl_hours=24,             # auto-cleans up after the goal
   make_callable=True,       # default  -  required so you can re-invoke
   optional_tools=[ ... ],   # only tools the worker needs for this task
   prompt="<task description + done criterion>"
@@ -132,5 +132,5 @@ exactly what it needs. Don't bloat the worker with tools it doesn't use.
   and its criterion; nothing more. Workers focus better with narrow scope.
 - **Don't forget `mode="branched"`.** A fresh worker won't inherit your
   context and will produce worse results.
-- **Don't leave workers permanent.** `lifetime="temporary"` ensures
-  cleanup  -  trust it. The default 24h idle timeout is plenty for most goals.
+- **Don't leave workers permanent.** `ttl_hours=24` ensures cleanup. The
+  24h idle timeout is plenty for most goals.

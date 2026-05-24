@@ -710,7 +710,8 @@ who-does-what:
 - Required tools bound on activation: `spawn_thread`, `nym_todo`,
   `nym_todo_list`, `tool_search`.
 - Workers are spawned via `spawn_thread(mode="branched",
-  lifetime="temporary")` so they inherit X's context up to the spawn point.
+  ttl_hours=24)` so they inherit X's context up to the spawn point and
+  idle-delete after the goal.
 - No framework enforcement  -  the orchestrator persona in the kit body tells
   the agent how to decompose, delegate, and judge. Extensible to a swarm
   (multiple parallel workers) for free, since `spawn_thread` doesn't cap it.
@@ -738,7 +739,7 @@ Lifecycle (`pending_approval` → `active` → `done` / `paused` / `cleared` /
 2. The worker decomposes the objective into tasks via `propose_task`
    (each task has a `description` and a verifiable `criterion`).
 3. User runs `/goal approve`. A fresh supervisor thread S is spawned
-   (`mode="fresh"`, `lifetime="temporary"`, `make_callable=True`) with the
+   (`mode="fresh"`, `ttl_hours=48`, `make_callable=True`) with the
    `goal-supervisor` kit activated. The Goal transitions to `active` and
    records `helper_thread_id=S`.
 4. Worker executes tasks one at a time. When it believes a task is done,
@@ -753,7 +754,7 @@ Lifecycle (`pending_approval` → `active` → `done` / `paused` / `cleared` /
    `token_budget` (optional, excludes cached tokens) → `budget_limited`,
    `consecutive_rejections` ≥ 3 → auto-`paused` for user intervention.
 7. Terminal lifecycle: `/goal clear` aborts and deletes S;
-   `lifetime="temporary"` cleanup deletes S 48h after last invocation;
+   `ttl_hours=48` cleanup deletes S 48h after last invocation;
    all tasks done → Goal auto-transitions to `done`.
 
 ### Slash-command-activates-skill

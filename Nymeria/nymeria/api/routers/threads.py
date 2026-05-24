@@ -24,6 +24,8 @@ from ..schemas.threads import (
     ThreadBranchRequest,
     ThreadBranchResponse,
     ThreadClaimRequest,
+    ThreadDreamRequest,
+    ThreadDreamResponse,
     ThreadHistoryResponse,
     ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
@@ -840,6 +842,91 @@ def create_threads_router(
             user_id, request.threads
         )
         return {"migrated_threads": count}
+
+    @router.post(
+        "/threads/{thread_id}/dream",
+        response_model=ThreadDreamResponse,
+    )
+    async def dream_thread(
+        thread_id: str,
+        request: ThreadDreamRequest | None = None,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Manually trigger a dream (self-reflection) cycle for this thread.
+
+        Spawns a shadow sibling thread with the dream system prompt and a
+        tool whitelist scoped to memory, TODOs, instructions, and skills.
+        The shadow thread runs in the background; this endpoint returns
+        immediately with its ID. Frontends observe progress via the
+        autonomous SSE event stream keyed on ``shadow_thread_id``.
+
+        Respects the parent's ``dreaming.enabled`` opt-in unless ``force``
+        is True. The scheduler's interval/idle/turn gates are bypassed for
+        manual triggers — that's the whole point of a manual run.
+        """
+        require_thread_access_fn(user, thread_id)
+        agent = get_agent_fn()
+        req = request or ThreadDreamRequest()
+
+        if _is_thread_processing(agent, thread_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot dream while the thread is processing a turn",
+            )
+
+        tc = agent.thread_config_manager.get_config(thread_id)
+        if not req.force:
+            if tc is None or tc.dreaming is None or not tc.dreaming.enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Dreaming is not enabled for this thread. "
+                        "Enable it via PATCH /threads/{id}/config with "
+                        "dreaming.enabled=true, or retry with force=true."
+                    ),
+                )
+
+        if tc and tc.shadow_parent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Refusing to dream from a shadow thread.",
+            )
+
+        from ...core.dreaming import DreamInvocationError, invoke_dream
+
+        model_override = req.model
+        if not model_override and tc and tc.dreaming and tc.dreaming.model:
+            model_override = tc.dreaming.model
+
+        try:
+            shadow_thread_id, summary = await run_in_threadpool(
+                invoke_dream,
+                agent=agent,
+                parent_thread_id=thread_id,
+                user_id=user_id,
+                model_override=model_override,
+            )
+        except DreamInvocationError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            logger.error(
+                "dream_thread: invoke_dream failed for %s: %s",
+                thread_id,
+                e,
+                exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        return ThreadDreamResponse(
+            shadow_thread_id=shadow_thread_id,
+            parent_thread_id=thread_id,
+            started_at=summary["started_at"],
+            model=summary["model"],
+            enabled_optional_tools=summary["enabled_optional_tools"],
+            disabled_core_tools=summary["disabled_core_tools"],
+        )
 
     @router.post("/threads/{thread_id}/claim")
     async def claim_thread_endpoint(
