@@ -1798,7 +1798,7 @@ class NymeriaAgent:
         # docstring for the fanout protocol.
         observes_stream = source in {
             "user", "callable", "mcp",
-            "trigger", "ticker", "watchdog",
+            "trigger", "ticker", "watchdog", "background_bash",
         }
 
         backend = get_pending_queue()
