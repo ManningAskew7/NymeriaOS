@@ -194,7 +194,22 @@ class CompactionManager:
 
     @staticmethod
     def extract_summary(summary_message: AIMessage) -> str:
-        return summary_message.content if isinstance(summary_message.content, str) else str(summary_message.content)
+        content = summary_message.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = block.get("type")
+                    if block_type in (None, "text", "output_text"):
+                        text = block.get("text")
+                        if isinstance(text, str) and text:
+                            parts.append(text)
+                elif isinstance(block, str) and block:
+                    parts.append(block)
+            return "\n".join(parts)
+        return str(content)
 
     @staticmethod
     def format_auto_resume(summary: str) -> str:
