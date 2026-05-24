@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, ProviderRoute } from '$lib/types';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, ProviderRoute, ToolSearchResult } from '$lib/types';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -33,9 +33,13 @@
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import ChatAppConfigTab from './ChatAppConfigTab.svelte';
 
-  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
+  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
+
+  const DREAM_DEFAULT_MIN_INTERVAL_HOURS = 6;
+  const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
+  const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
 
   interface Props {
     thread: Thread;
@@ -306,6 +310,26 @@
     return threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
   }
 
+  function getInitialDreamEnabled(): boolean {
+    return threadConfig?.dreaming?.enabled ?? false;
+  }
+
+  function getInitialDreamMinIntervalHours(): string {
+    return String(threadConfig?.dreaming?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+  }
+
+  function getInitialDreamMinIdleMinutes(): string {
+    return String(threadConfig?.dreaming?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
+  }
+
+  function getInitialDreamMinTurnsSinceLast(): string {
+    return String(threadConfig?.dreaming?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+  }
+
+  function getInitialDreamModel(): string {
+    return threadConfig?.dreaming?.model ?? '';
+  }
+
   let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
   let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
   let showPromptMetadata = $state(getInitialShowPromptMetadata());
@@ -313,9 +337,19 @@
   let inAppNotificationLevel = $state<InAppNotificationLevel>(getInitialInAppNotificationLevel());
   let notificationProfile = $state<string | null>(getInitialNotificationProfile());
   let memoryCharLimit = $state<string | number>(getInitialMemoryCharLimit());
+  let dreamEnabled = $state(getInitialDreamEnabled());
+  let dreamMinIntervalHours = $state<string>(getInitialDreamMinIntervalHours());
+  let dreamMinIdleMinutes = $state<string>(getInitialDreamMinIdleMinutes());
+  let dreamMinTurnsSinceLast = $state<string>(getInitialDreamMinTurnsSinceLast());
+  let dreamModel = $state(getInitialDreamModel());
+  let dreamRunning = $state(false);
+  let dreamStatus = $state('');
 
   // Search
   let toolSearch = $state('');
+  let backendSearchResults = $state<ToolSearchResult[]>([]);
+  let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null;
+  let searchGeneration = 0;
   let saving = $state(false);
   let error = $state('');
   let showToolWarning = $state(false);
@@ -402,6 +436,86 @@
     }))
   );
 
+  // Backend semantic-search fallback. Fires when the local result set is sparse
+  // so exact / fuzzy / semantic matches the client-side ranker missed still
+  // surface in the picker.
+  $effect(() => {
+    const q = toolSearch.trim();
+    if (searchDebounceHandle) {
+      clearTimeout(searchDebounceHandle);
+      searchDebounceHandle = null;
+    }
+    if (q.length < 2) {
+      backendSearchResults = [];
+      return;
+    }
+    if (filteredTools.length + filteredOptionalTools.length >= 5) {
+      backendSearchResults = [];
+      return;
+    }
+    const myGen = ++searchGeneration;
+    searchDebounceHandle = setTimeout(async () => {
+      try {
+        const resp = await api.searchTools({
+          query: q,
+          threadId: thread.id,
+          topK: 20,
+          includeStatus: false,
+        });
+        if (myGen !== searchGeneration) return;
+        backendSearchResults = resp.results.filter(
+          (r) => r.toolType !== 'mcp_server' && !r.name.startsWith('mcp__')
+        );
+      } catch {
+        if (myGen === searchGeneration) backendSearchResults = [];
+      }
+    }, 200);
+  });
+
+  // Backend extras for the Core section: only include backend hits that belong
+  // to the core pool AND aren't already in the local filtered list AND have a
+  // matching UnifiedTool we can render.
+  const backendExtrasCore = $derived.by(() => {
+    if (backendSearchResults.length === 0) return [] as UnifiedTool[];
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const localNames = new Set(filteredTools.map((t) => t.name));
+    const out: UnifiedTool[] = [];
+    for (const r of backendSearchResults) {
+      if (!coreSet.has(r.name)) continue;
+      if (localNames.has(r.name)) continue;
+      const match = unifiedToolsStore.tools.find((t) => t.name === r.name);
+      if (match) out.push(match);
+    }
+    return out;
+  });
+
+  // Backend extras for the Optional section. If the tool isn't in the local
+  // optional pool (stale frontend store), synthesize a row from the backend
+  // result so the user can enable it anyway — toggleOptionalTool only needs
+  // the tool name.
+  const backendExtrasOptional = $derived.by(() => {
+    if (backendSearchResults.length === 0) return [] as typeof optionalTools;
+    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const localOptionalNames = new Set(filteredOptionalTools.map((t) => t.name));
+    const out: typeof optionalTools = [];
+    for (const r of backendSearchResults) {
+      if (coreSet.has(r.name)) continue;
+      if (localOptionalNames.has(r.name)) continue;
+      const match = optionalTools.find((t) => t.name === r.name);
+      if (match) {
+        out.push(match);
+      } else {
+        out.push({
+          name: r.name,
+          description: r.description,
+          category: r.category,
+          securityLevel: r.securityLevel,
+        });
+      }
+    }
+    return out;
+  });
+
   const currentToolCounts = $derived.by(() =>
     computeEffectiveToolCounts({
       defaultToolNames: defaultToolsStore.defaultToolNames,
@@ -449,6 +563,23 @@
       next.add(toolName);
     }
     disabledTools = next;
+  }
+
+  function boundedInt(value: string | number, fallback: number, min: number, max: number): number {
+    const parsed = parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  }
+
+  function dreamConfigNeedsSaving(): boolean {
+    return Boolean(
+      threadConfig?.dreaming ||
+      dreamEnabled ||
+      dreamModel.trim() ||
+      boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168) !== DREAM_DEFAULT_MIN_INTERVAL_HOURS ||
+      boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080) !== DREAM_DEFAULT_MIN_IDLE_MINUTES ||
+      boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000) !== DREAM_DEFAULT_MIN_TURNS_SINCE_LAST
+    );
   }
 
   function hasChanges(): boolean {
@@ -540,6 +671,18 @@
 
     const origMemoryCharLimit = threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
     if (String(memoryCharLimit ?? '').trim() !== origMemoryCharLimit) return true;
+
+    const origDream = threadConfig?.dreaming ?? null;
+    const origDreamEnabled = origDream?.enabled ?? false;
+    const origDreamMinIntervalHours = String(origDream?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+    const origDreamMinIdleMinutes = String(origDream?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
+    const origDreamMinTurnsSinceLast = String(origDream?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    const origDreamModel = origDream?.model ?? '';
+    if (dreamEnabled !== origDreamEnabled) return true;
+    if (String(dreamMinIntervalHours ?? '').trim() !== origDreamMinIntervalHours) return true;
+    if (String(dreamMinIdleMinutes ?? '').trim() !== origDreamMinIdleMinutes) return true;
+    if (String(dreamMinTurnsSinceLast ?? '').trim() !== origDreamMinTurnsSinceLast) return true;
+    if (dreamModel !== origDreamModel) return true;
 
     return false;
   }
@@ -680,6 +823,17 @@
       } else {
         updates.clear_memory_char_limit = true;
       }
+      if (dreamConfigNeedsSaving()) {
+        updates.dreaming = {
+          enabled: dreamEnabled,
+          min_interval_hours: boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168),
+          min_idle_minutes: boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080),
+          min_turns_since_last: boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000),
+          model: dreamModel.trim() || null,
+        };
+      } else {
+        updates.clear_dreaming = true;
+      }
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
@@ -742,6 +896,12 @@
       inAppNotificationLevel = 'notify_only';
       notificationProfile = null;
       memoryCharLimit = '';
+      dreamEnabled = false;
+      dreamMinIntervalHours = String(DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+      dreamMinIdleMinutes = String(DREAM_DEFAULT_MIN_IDLE_MINUTES);
+      dreamMinTurnsSinceLast = String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+      dreamModel = '';
+      dreamStatus = '';
       threadsStore.updateThread(thread.id, {
         callable: false,
         platform: platformAfterCallableChange(thread, false),
@@ -784,6 +944,23 @@
       error = e instanceof Error ? e.message : 'Failed to reset';
     } finally {
       saving = false;
+    }
+  }
+
+  async function handleRunDream() {
+    dreamRunning = true;
+    dreamStatus = '';
+    error = '';
+    try {
+      const result = await api.triggerThreadDream(thread.id, {
+        model: dreamModel.trim() || null,
+      });
+      dreamStatus = `Started ${result.shadow_thread_id}`;
+      await threadsStore.syncFromBackend();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to start dream';
+    } finally {
+      dreamRunning = false;
     }
   }
 
@@ -839,6 +1016,17 @@
       >
         Agent
         {#if isCallable}
+          <span class="tab-badge">1</span>
+        {/if}
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'dream'}
+        onclick={() => (activeTab = 'dream')}
+        type="button"
+      >
+        Dream
+        {#if dreamEnabled}
           <span class="tab-badge">1</span>
         {/if}
       </button>
@@ -1036,6 +1224,92 @@
           </div>
         </div>
 
+      {:else if activeTab === 'dream'}
+        <div class="tab-panel">
+          <div class="agent-config-section">
+            <h3 class="section-title">Dreaming</h3>
+            <p class="field-hint">
+              Background self-reflection for this thread. Dream turns run in a shadow thread and write only through the dream tool policy.
+            </p>
+
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={dreamEnabled} />
+              <span class="toggle-label">Enable Dreaming</span>
+            </label>
+
+            <div class="dream-grid">
+              <div class="field-group">
+                <label class="field-label" for="dream-min-interval">Min Interval Hours</label>
+                <input
+                  id="dream-min-interval"
+                  class="field-input"
+                  type="number"
+                  min="1"
+                  max="168"
+                  step="1"
+                  bind:value={dreamMinIntervalHours}
+                />
+              </div>
+              <div class="field-group">
+                <label class="field-label" for="dream-min-idle">Min Idle Minutes</label>
+                <input
+                  id="dream-min-idle"
+                  class="field-input"
+                  type="number"
+                  min="5"
+                  max="10080"
+                  step="5"
+                  bind:value={dreamMinIdleMinutes}
+                />
+              </div>
+              <div class="field-group">
+                <label class="field-label" for="dream-min-turns">Min Turns Since Last</label>
+                <input
+                  id="dream-min-turns"
+                  class="field-input"
+                  type="number"
+                  min="1"
+                  max="10000"
+                  step="1"
+                  bind:value={dreamMinTurnsSinceLast}
+                />
+              </div>
+              <div class="field-group">
+                <label class="field-label" for="dream-model">Dream Model</label>
+                <input
+                  id="dream-model"
+                  class="field-input"
+                  type="text"
+                  bind:value={dreamModel}
+                  placeholder="Default model"
+                  maxlength={120}
+                />
+              </div>
+            </div>
+
+            {#if threadConfig?.dreaming?.lastDreamAt}
+              <p class="field-hint">
+                Last dream: {new Date(threadConfig.dreaming.lastDreamAt).toLocaleString()}
+              </p>
+            {/if}
+
+            <div class="dream-actions">
+              <button
+                class="btn btn-primary"
+                type="button"
+                onclick={handleRunDream}
+                disabled={saving || dreamRunning || !dreamEnabled || hasChanges()}
+                title={hasChanges() ? 'Save changes before running a dream' : 'Run dream now'}
+              >
+                {dreamRunning ? 'Starting...' : 'Run Dream'}
+              </button>
+              {#if dreamStatus}
+                <span class="dream-status">{dreamStatus}</span>
+              {/if}
+            </div>
+          </div>
+        </div>
+
       {:else if activeTab === 'model'}
         <ModelConfigTab
           bind:threadDisplayProvider
@@ -1074,7 +1348,27 @@
             <div class="tools-loading">Loading tools...</div>
           {:else}
             <div class="tools-list">
-              {#if filteredTools.length === 0}
+              {#if backendExtrasCore.length > 0}
+                <div class="search-extras-label">More from search</div>
+                {#each backendExtrasCore as tool (tool.id)}
+                  <div
+                    class="tool-row"
+                    class:disabled={disabledTools.has(tool.name)}
+                  >
+                    <div class="tool-info">
+                      <span class="tool-name">{tool.name}</span>
+                      <span class="tool-desc">{tool.description}</span>
+                    </div>
+                    <ToggleSwitch
+                      checked={!disabledTools.has(tool.name)}
+                      onclick={() => toggleTool(tool.name)}
+                      title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
+                      ariaLabel={`${disabledTools.has(tool.name) ? 'Enable' : 'Disable'} ${tool.name}`}
+                    />
+                  </div>
+                {/each}
+              {/if}
+              {#if filteredTools.length === 0 && backendExtrasCore.length === 0}
                 <div class="tools-loading">
                   {toolSearch.trim() ? 'No core tools match your search.' : 'No core tools enabled by default.'}
                 </div>
@@ -1111,7 +1405,27 @@
                   These tools are not in your core set. Enable them for this thread only.
                 </p>
                 <div class="tools-list">
-                  {#if filteredOptionalTools.length === 0}
+                  {#if backendExtrasOptional.length > 0}
+                    <div class="search-extras-label">More from search</div>
+                    {#each backendExtrasOptional as tool (tool.name)}
+                      <div
+                        class="tool-row"
+                        class:optional-enabled={enabledTools.has(tool.name)}
+                      >
+                        <div class="tool-info">
+                          <span class="tool-name">{tool.name}</span>
+                          <span class="tool-desc">{tool.description}</span>
+                        </div>
+                        <ToggleSwitch
+                          checked={enabledTools.has(tool.name)}
+                          onclick={() => toggleOptionalTool(tool.name)}
+                          title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
+                          ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
+                        />
+                      </div>
+                    {/each}
+                  {/if}
+                  {#if filteredOptionalTools.length === 0 && backendExtrasOptional.length === 0}
                     <div class="tools-loading">
                       {toolSearch.trim() ? 'No optional tools match your search.' : 'No optional tools available.'}
                     </div>
@@ -1556,6 +1870,28 @@
     gap: var(--spacing-md);
   }
 
+  .dream-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--spacing-md);
+  }
+
+  .dream-grid .field-group {
+    margin-bottom: 0;
+  }
+
+  .dream-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+  }
+
+  .dream-status {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
   /* Section headers sit above grouped controls — give them clear breathing
      room below so toggles/inputs don't crowd the title. */
   .section-title {
@@ -1686,6 +2022,17 @@
 
   .tool-row.optional-enabled {
     background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
+  }
+
+  .search-extras-label {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+    border-bottom: 1px solid var(--border-default);
   }
 
   /* Footer */
