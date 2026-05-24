@@ -5,7 +5,8 @@
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { trapFocus } from '$lib/actions/focus';
-  import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo } from '$lib/types';
+  import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo, ToolSearchResult } from '$lib/types';
+  import { api } from '$lib/services/api.svelte';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import ToggleSwitch from '../common/ToggleSwitch.svelte';
@@ -19,6 +20,9 @@
   let selectedTools = $state<Set<string>>(new Set());
   let initialized = $state(false);
   let searchQuery = $state('');
+  let backendSearchResults = $state<ToolSearchResult[]>([]);
+  let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null;
+  let searchGeneration = 0;
   let showWarning = $state(false);
   let saveMessage = $state('');
   let saveStatus = $state<'idle' | 'success' | 'error'>('idle');
@@ -134,6 +138,88 @@
   const availableMatchCount = $derived(
     Object.values(availableToolsByCategory).reduce((n, arr) => n + arr.length, 0)
   );
+
+  // Backend semantic-search fallback. Surfaces tools the local ranker missed
+  // (e.g. because the frontend pool was stale or the query fell under the
+  // Dice-bigram cutoff). MCP-prefixed results are stripped; native search
+  // only.
+  $effect(() => {
+    const q = searchQuery.trim();
+    if (searchDebounceHandle) {
+      clearTimeout(searchDebounceHandle);
+      searchDebounceHandle = null;
+    }
+    if (q.length < 2) {
+      backendSearchResults = [];
+      return;
+    }
+    if (coreMatchCount + availableMatchCount >= 5) {
+      backendSearchResults = [];
+      return;
+    }
+    const myGen = ++searchGeneration;
+    searchDebounceHandle = setTimeout(async () => {
+      try {
+        const resp = await api.searchTools({
+          query: q,
+          topK: 20,
+          includeStatus: false,
+        });
+        if (myGen !== searchGeneration) return;
+        backendSearchResults = resp.results.filter(
+          (r) => r.toolType !== 'mcp_server' && !r.name.startsWith('mcp__')
+        );
+      } catch {
+        if (myGen === searchGeneration) backendSearchResults = [];
+      }
+    }, 200);
+  });
+
+  function synthesizeDefaultToolInfo(r: ToolSearchResult, optional: boolean): DefaultToolInfo {
+    return {
+      name: r.name,
+      description: r.description,
+      category: r.category,
+      security_level: r.securityLevel,
+      is_optional: optional,
+      is_default: r.isDefault,
+    };
+  }
+
+  // Backend results that belong in the Core section (currently selected
+  // tools) but weren't surfaced locally.
+  const backendExtrasCoreList = $derived.by(() => {
+    if (backendSearchResults.length === 0) return [] as DefaultToolInfo[];
+    const localNames = new Set<string>();
+    for (const arr of Object.values(coreToolsByCategory)) {
+      for (const t of arr) localNames.add(t.name);
+    }
+    const out: DefaultToolInfo[] = [];
+    for (const r of backendSearchResults) {
+      if (!selectedTools.has(r.name)) continue;
+      if (localNames.has(r.name)) continue;
+      const match = defaultToolsStore.tools.find((t) => t.name === r.name);
+      out.push(match ?? synthesizeDefaultToolInfo(r, false));
+    }
+    return out;
+  });
+
+  // Backend results that belong in the Available section.
+  const backendExtrasAvailableList = $derived.by(() => {
+    if (backendSearchResults.length === 0) return [] as DefaultToolInfo[];
+    const localNames = new Set<string>();
+    for (const arr of Object.values(availableToolsByCategory)) {
+      for (const t of arr) localNames.add(t.name);
+    }
+    const out: DefaultToolInfo[] = [];
+    for (const r of backendSearchResults) {
+      if (selectedTools.has(r.name)) continue;
+      if (localNames.has(r.name)) continue;
+      const match = defaultToolsStore.tools.find((t) => t.name === r.name);
+      out.push(match ?? synthesizeDefaultToolInfo(r, true));
+    }
+    return out;
+  });
 
   const hasChanges = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
@@ -391,10 +477,46 @@
         </button>
         {#if effectiveCoreOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
-        {#if isSearching && coreMatchCount === 0}
+        {#if isSearching && coreMatchCount === 0 && backendExtrasCoreList.length === 0}
           <div class="section-empty">No core tools match "{searchQuery}".</div>
         {/if}
         <div class="tools-list">
+          {#if backendExtrasCoreList.length > 0}
+            <div class="category-group search-extras-group">
+              <div class="search-extras-label">More from search</div>
+              <div class="category-tools">
+                {#each backendExtrasCoreList as tool (tool.name)}
+                  <div class="tool-row selected">
+                    <div class="tool-info">
+                      <span class="tool-name">
+                        {tool.name}
+                        {#if isAdminOnlyTool(tool.name)}
+                          <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                        {/if}
+                      </span>
+                      <span class="tool-desc">{tool.description}</span>
+                    </div>
+                    <div class="tool-row-actions">
+                      <button
+                        class="row-edit-btn"
+                        onclick={() => openBuiltinEditor(tool.name)}
+                        type="button"
+                        title="Edit tool"
+                      >
+                        <Icon name="edit" size={14} />
+                      </button>
+                      <ToggleSwitch
+                        checked={true}
+                        onclick={() => toggleTool(tool.name)}
+                        title="Remove from core"
+                        ariaLabel={`Remove ${tool.name} from core tools`}
+                      />
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
           {#each CATEGORY_ORDER as category}
             {#if coreToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
@@ -505,10 +627,49 @@
         </button>
         {#if effectiveAvailableOpen}
         <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
-        {#if isSearching && availableMatchCount === 0}
+        {#if isSearching && availableMatchCount === 0 && backendExtrasAvailableList.length === 0}
           <div class="section-empty">No available tools match "{searchQuery}".</div>
         {/if}
         <div class="tools-list">
+          {#if backendExtrasAvailableList.length > 0}
+            <div class="category-group search-extras-group">
+              <div class="search-extras-label">More from search</div>
+              <div class="category-tools">
+                {#each backendExtrasAvailableList as tool (tool.name)}
+                  <div class="tool-row" class:optional={tool.is_optional}>
+                    <div class="tool-info">
+                      <span class="tool-name">
+                        {tool.name}
+                        {#if tool.is_optional}
+                          <span class="optional-badge">optional</span>
+                        {/if}
+                        {#if isAdminOnlyTool(tool.name)}
+                          <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+                        {/if}
+                      </span>
+                      <span class="tool-desc">{tool.description}</span>
+                    </div>
+                    <div class="tool-row-actions">
+                      <button
+                        class="row-edit-btn"
+                        onclick={() => openBuiltinEditor(tool.name)}
+                        type="button"
+                        title="Edit tool"
+                      >
+                        <Icon name="edit" size={14} />
+                      </button>
+                      <ToggleSwitch
+                        checked={false}
+                        onclick={() => toggleTool(tool.name)}
+                        title="Add to core"
+                        ariaLabel={`Add ${tool.name} to core tools`}
+                      />
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
           {#each CATEGORY_ORDER as category}
             {#if availableToolsByCategory[category]?.length}
               {@const info = getCategoryInfo(category)}
@@ -1198,6 +1359,21 @@
   .category-label .category-count {
     color: var(--text-muted);
     font-size: var(--font-size-xs);
+  }
+
+  .search-extras-group {
+    background: color-mix(in srgb, var(--accent-primary) 3%, transparent);
+  }
+
+  .search-extras-label {
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: color-mix(in srgb, var(--accent-primary) 6%, transparent);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-default);
   }
 
   .tool-row {
