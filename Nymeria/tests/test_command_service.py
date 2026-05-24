@@ -40,7 +40,7 @@ class FakeCommandApi:
                 {
                     "name": "bash_execute",
                     "description": "Execute shell commands\nwith safeguards",
-                    "category": "core",
+                    "category": "general",
                 },
                 {
                     "name": "browser",
@@ -85,7 +85,7 @@ class FakeCommandApi:
 
     async def get_tool_categories(self) -> dict[str, Any]:
         self.calls.append(("get_tool_categories", (), {}))
-        return {"categories": {"core": ["bash_execute"], "web": ["browser"]}}
+        return {"categories": {"general": ["bash_execute"], "web": ["browser"]}}
 
     async def list_todos(self, user_id: str) -> list[dict[str, Any]]:
         self.calls.append(("list_todos", (user_id,), {}))

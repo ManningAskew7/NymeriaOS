@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 class ToolCategory(str, Enum):
     """Categories for grouping related tools."""
 
-    CORE = "core"
+    GENERAL = "general"
     PROFILE = "profile"
     NOTEPAD = "notepad"
     SELF_MODIFY = "self_modify"
@@ -194,7 +194,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
 )
 
 
-_CORE_MODERATE_TOOL_NAMES = frozenset(
+_GENERAL_MODERATE_TOOL_NAMES = frozenset(
     {
         "bash_execute",
         "file_write",
@@ -1045,8 +1045,8 @@ def _infer_security_level(
         return SecurityLevel.SENSITIVE
     if category in {ToolCategory.PROFILE, ToolCategory.TODO, ToolCategory._PRV_A}:
         return SecurityLevel.SAFE
-    if category == ToolCategory.CORE:
-        if tool_name in _CORE_MODERATE_TOOL_NAMES:
+    if category == ToolCategory.GENERAL:
+        if tool_name in _GENERAL_MODERATE_TOOL_NAMES:
             return SecurityLevel.MODERATE
         return SecurityLevel.SAFE
     if category == ToolCategory.TRIGGER:
@@ -1091,7 +1091,7 @@ def _generate_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
     for name, tool_obj in sorted(registered_tools.items()):
         category = _EXPLICIT_CATEGORY_BY_TOOL_NAME.get(
             name,
-            categories.get(name, ToolCategory.CORE),
+            categories.get(name, ToolCategory.GENERAL),
         )
         security_level = _infer_security_level(name, category)
         generated[name] = ToolMetadata(

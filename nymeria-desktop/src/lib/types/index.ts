@@ -234,6 +234,24 @@ export interface ThreadLLMConfig {
   compact_threshold_tokens?: number | null;
 }
 
+export interface DreamingConfig {
+  enabled: boolean;
+  minIntervalHours: number;
+  minIdleMinutes: number;
+  minTurnsSinceLast: number;
+  model?: string | null;
+  lastDreamAt?: string | null;
+  lastDreamThreadId?: string | null;
+}
+
+export interface DreamingConfigUpdateRequest {
+  enabled?: boolean | null;
+  min_interval_hours?: number | null;
+  min_idle_minutes?: number | null;
+  min_turns_since_last?: number | null;
+  model?: string | null;
+}
+
 export interface ThreadConfig {
   threadId: string;
   instructions?: string | null;
@@ -260,8 +278,10 @@ export interface ThreadConfig {
    * Per-thread override for which notification profile the `notify` tool
    * routes through on this thread. `null` falls back to the user-level
    * default profile preference.
-   */
+  */
   notificationProfile?: string | null;
+  dreaming?: DreamingConfig | null;
+  shadowParentId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -302,6 +322,7 @@ export interface ThreadConfigUpdateRequest {
   telegram_autonomous_delivery?: 'full' | 'notify_only' | 'off';
   in_app_notification_level?: 'notify_only' | 'all_autonomous' | 'off';
   notification_profile?: string | null;
+  dreaming?: DreamingConfigUpdateRequest | null;
   clear_instructions?: boolean;
   clear_disabled_tools?: boolean;
   clear_enabled_tools?: boolean;
@@ -311,6 +332,21 @@ export interface ThreadConfigUpdateRequest {
   clear_system_prompt?: boolean;
   clear_notification_profile?: boolean;
   clear_memory_char_limit?: boolean;
+  clear_dreaming?: boolean;
+}
+
+export interface ThreadDreamRequest {
+  model?: string | null;
+  force?: boolean;
+}
+
+export interface ThreadDreamResponse {
+  shadow_thread_id: string;
+  parent_thread_id: string;
+  started_at: string;
+  model: string;
+  enabled_optional_tools: string[];
+  disabled_core_tools: string[];
 }
 
 export interface ThreadShareDocument {
@@ -1601,7 +1637,7 @@ export interface CustomToolTestResponse {
 // Built-in Tool Types
 
 export type ToolSecurityLevel = 'safe' | 'moderate' | 'sensitive';
-export type ToolCategory = 'core' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'integrations' | 'custom' | 'mcp_server';
+export type ToolCategory = 'general' | 'memory' | 'profile' | 'notepad' | 'self_modify' | 'todo' | 'trigger' | 'email' | 'browser' | 'image' | 'calendar' | 'google_docs' | 'integrations' | 'custom' | 'mcp_server';
 export type ToolType = 'builtin' | 'custom' | 'mcp_server' | 'callable_thread';
 
 export interface ToolSearchResult {
