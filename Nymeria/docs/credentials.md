@@ -73,6 +73,12 @@ done-callback can cancel any device-code poller, apply a valid `bind_target`,
 restart an MCP connection when needed, and log the result. The user drives the
 next step by saying something like "done" or "try again".
 
+For OAuth prompts, ordinary chat messages such as "done" do not resolve or
+cancel the prompt. Authorization-code callbacks and device-code pollers are the
+only success paths. This keeps the backend listening after the user grants
+provider permissions and prevents a premature chat reply from cancelling the
+device-code poller.
+
 The agent should write a short acknowledgement after dispatching the prompt,
 ask the user to finish the prompt, and ask them to ping the agent when done or
 paste any inline error back into chat.
@@ -251,6 +257,12 @@ The vault record written by both flows uses these conventions:
 - `allowed_targets`: default `["native_tool:*"]`, so any native Google or
   Outlook tool can read the token. Bind to a specific tool name to scope.
 
+When a reconnect completes for the same provider account, Nymeria promotes the
+new prompt credential to active, carries over allowed targets and bindings from
+older duplicate rows, and disables stale same-account OAuth rows plus abandoned
+pending OAuth placeholders for that provider. Legacy token-cache rows for the
+same account are disabled once an active vault OAuth token replaces them.
+
 Tools that consume OAuth tokens (`google_docs.get_credentials`,
 `calendar.py`, `outlook_email.py`, etc.) call
 `auth_cache_utils.resolve_oauth_cache(user_id, provider)`, which merges
@@ -292,10 +304,13 @@ actions:
 
 | Action | What it does |
 |--------|-------------|
-| `list` | List the current user's credentials plus system credential metadata |
+| `list` | List the current user's credentials plus system credential metadata, with optional provider/kind/status/account/prompt filters |
 | `status` | Show metadata and bindings for one credential |
+| `oauth_accounts` | Group OAuth and legacy token-cache credentials by provider account so the agent can see duplicates and pending rows |
+| `cleanup_stale_oauth` | Dry-run by default. Finds stale pending OAuth prompts, duplicate active OAuth tokens, and legacy token caches replaced by active vault OAuth credentials; pass `dry_run=false` to disable the candidates |
+| `disable_matching` | Dry-run by default. Disable credentials matching metadata filters such as provider, kind, status, account ID, or prompt ID |
 | `request_setup` | Create a pending setup record for the user to complete in the UI |
-| `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) |
+| `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
 | `unbind` | Remove a binding by binding ID |
 | `test` | Run a vault health check (confirms secret fields exist, no plaintext) |
 | `disable` | Disable a credential |
@@ -317,6 +332,7 @@ The agent cannot manage system credentials or retrieve plaintext secrets.
 | `/credential-bindings/{binding_id}` | DELETE | Remove a binding |
 | `/credential-setup-sessions` | POST | Create a setup session (agent workflow) |
 | `/credential-prompts/{prompt_id}/test` | POST | Test fields for an active desktop prompt |
+| `/credential-prompts/{prompt_id}/status` | GET | Check whether an active or recently resolved desktop prompt is pending, active, invalid, disabled, or missing |
 | `/credential-prompts/{prompt_id}/submit` | POST | Save fields for an active desktop prompt |
 | `/credential-prompts/{prompt_id}/exit` | POST | Close a desktop prompt with an optional note |
 | `/credential-prompts/{prompt_id}/cancel` | POST | Cancel a desktop prompt with an optional note |

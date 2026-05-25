@@ -366,14 +366,18 @@ def create_chat_router(
 
                 async def auth_prompt_interlock_response():
                     status = prompt_resolution.get("status")
-                    content = (
-                        "Credential setup was cancelled."
-                        if status == "cancelled"
-                        else (
+                    if status == "cancelled":
+                        content = "Credential setup was cancelled."
+                    elif status == "oauth_pending":
+                        content = (
+                            prompt_resolution.get("message")
+                            or "OAuth sign-in is still pending. Keep the credential prompt open until it reports success."
+                        )
+                    else:
+                        content = (
                             "I sent that to the active credential setup prompt. "
                             "The running turn will continue from there."
                         )
-                    )
                     stream_thread_id = (
                         original_thread_id
                         if dispatched_target is not None

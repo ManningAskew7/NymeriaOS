@@ -720,11 +720,32 @@ function createAutonomousStore() {
         break;
       }
 
-      case 'auth_prompt_resolved':
-      case 'auth_prompt_cancelled': {
+      case 'auth_prompt_resolved': {
         const promptId = event.prompt_id as string | undefined;
         if (promptId) {
+          authPromptStore.resolveById(promptId, {
+            ok: true,
+            status: (event.status as string | undefined) || 'active',
+            message: (event.message as string | null | undefined) ?? null,
+            credentialId: (event.credential_id as string | null | undefined) ?? null,
+          });
+        }
+        break;
+      }
+
+      case 'auth_prompt_cancelled': {
+        const promptId = event.prompt_id as string | undefined;
+        if (!promptId) break;
+        const reason = (event.reason as string | undefined) || 'cancelled';
+        if (reason === 'cancelled' || reason === 'user_exited' || reason === 'user_message') {
           authPromptStore.clearById(promptId);
+        } else {
+          authPromptStore.resolveById(promptId, {
+            ok: false,
+            status: reason,
+            message: (event.message as string | null | undefined) ?? null,
+            credentialId: null,
+          });
         }
         break;
       }

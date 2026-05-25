@@ -77,6 +77,15 @@ class CredentialPromptAck(BaseModel):
     status: str
 
 
+class CredentialPromptStatusResponse(BaseModel):
+    ok: bool
+    status: str
+    prompt_id: str
+    credential_id: Optional[str] = None
+    message: str
+    credential: Optional[CredentialResponse] = None
+
+
 class CredentialPromptMetadataResponse(BaseModel):
     prompt_id: str
     credential_id: str
@@ -229,6 +238,71 @@ def _publish_resolved(prompt: PendingPrompt, prompt_id: str, credential_id: str,
         task_id="",
         data={"prompt_id": prompt_id, "credential_id": credential_id, "status": status},
     )
+
+
+def _prompt_status_response(
+    *,
+    prompt_id: str,
+    record: Any | None,
+    pending_message: str = "Credential setup is still pending.",
+) -> CredentialPromptStatusResponse:
+    if record is None:
+        return CredentialPromptStatusResponse(
+            ok=False,
+            status="missing",
+            prompt_id=prompt_id,
+            message="Credential record was not found.",
+        )
+    if record.status == "active":
+        metadata = record.metadata or {}
+        email = metadata.get("email") or record.account_label
+        message = (
+            f"Connected as {email}."
+            if email
+            else "Credential is connected."
+        )
+        return CredentialPromptStatusResponse(
+            ok=True,
+            status="active",
+            prompt_id=prompt_id,
+            credential_id=record.id,
+            message=message,
+            credential=credential_to_response(record),
+        )
+    if record.status == "disabled":
+        message = "This setup prompt was superseded by a newer credential."
+    elif record.status == "invalid":
+        message = "Credential setup completed, but the credential is marked invalid."
+    else:
+        message = pending_message
+    return CredentialPromptStatusResponse(
+        ok=False,
+        status=record.status,
+        prompt_id=prompt_id,
+        credential_id=record.id,
+        message=message,
+        credential=credential_to_response(record),
+    )
+
+
+def _find_credential_by_prompt_id(
+    *,
+    repo: CredentialVaultRepo,
+    prompt_id: str,
+    user: AuthenticatedUser,
+) -> Any | None:
+    records = repo.list_credentials(
+        owner_user_id=None if user.role == "admin" else user.id,
+        include_disabled=True,
+    )
+    for record in records:
+        metadata = record.metadata or {}
+        if metadata.get("prompt_id") != prompt_id:
+            continue
+        if record.owner_user_id != user.id and user.role != "admin":
+            continue
+        return record
+    return None
 
 
 async def _submit_prompt_impl(
@@ -699,6 +773,36 @@ def create_credential_prompts_router(
         )
         return _response_from_test(result=result, attempts=attempts)
 
+    @router.get(
+        "/credential-prompts/{prompt_id}/status",
+        response_model=CredentialPromptStatusResponse,
+    )
+    async def prompt_status(
+        prompt_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ) -> CredentialPromptStatusResponse:
+        repo = _repo(get_agent_fn)
+        prompt = get_auth_prompt_coordinator().get(prompt_id)
+        if prompt is not None:
+            if prompt.user_id != user.id and user.role != "admin":
+                raise HTTPException(status_code=404, detail="Prompt not found or already resolved")
+            record = repo.get_credential(prompt.credential_id)
+            pending_message = (
+                "Still waiting for the OAuth sign-in to complete."
+                if _is_oauth_prompt(prompt)
+                else "Credential setup is still pending."
+            )
+            return _prompt_status_response(
+                prompt_id=prompt_id,
+                record=record,
+                pending_message=pending_message,
+            )
+
+        record = _find_credential_by_prompt_id(repo=repo, prompt_id=prompt_id, user=user)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Prompt not found or already resolved")
+        return _prompt_status_response(prompt_id=prompt_id, record=record)
+
     @router.post(
         "/credential-prompts/{prompt_id}/submit",
         response_model=CredentialPromptSubmitResponse,
@@ -804,6 +908,17 @@ def resolve_pending_prompt_from_chat(
         )
         _publish_cancelled(prompt, prompt.prompt_id, "cancelled")
         return {"prompt_id": prompt.prompt_id, "status": "cancelled", "resolved": resolved}
+
+    if _is_oauth_prompt(prompt):
+        return {
+            "prompt_id": prompt.prompt_id,
+            "status": "oauth_pending",
+            "resolved": False,
+            "message": (
+                "OAuth sign-in is still pending. Keep the credential prompt open "
+                "until it reports that the account is connected."
+            ),
+        }
 
     resolved = coordinator.resolve(
         prompt.prompt_id,

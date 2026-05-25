@@ -1666,6 +1666,10 @@ export interface AuthPromptEvent {
   verification_uri_complete?: string | null;
   expires_in?: number;
   interval?: number;
+  resolution_ok?: boolean | null;
+  resolution_status?: string | null;
+  resolution_message?: string | null;
+  resolved_credential_id?: string | null;
 }
 
 export interface AuthPromptSubmitRequest {
@@ -1684,6 +1688,15 @@ export interface AuthPromptSubmitResponse {
   tested?: boolean;
   testStatus?: string | null;
   testError?: string | null;
+  credential?: Credential | null;
+}
+
+export interface AuthPromptStatusResponse {
+  ok: boolean;
+  status: string;
+  prompt_id: string;
+  credential_id?: string | null;
+  message: string;
   credential?: Credential | null;
 }
 

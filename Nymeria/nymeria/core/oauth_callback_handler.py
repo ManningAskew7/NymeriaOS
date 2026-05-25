@@ -110,6 +110,103 @@ def _now_plus_seconds_iso(seconds: int) -> tuple[float, str]:
     return wall_seconds, iso
 
 
+def _matching_oauth_credentials(
+    *,
+    repo: CredentialVaultRepo,
+    current: Any,
+    account_id: str,
+) -> list[Any]:
+    """Find active/pending same-account OAuth rows that this reconnect replaces."""
+    owner_user_id = getattr(current, "owner_user_id", None)
+    if not owner_user_id:
+        return []
+    try:
+        records = repo.list_credentials(owner_user_id=owner_user_id, include_disabled=False)
+    except Exception:
+        logger.debug("Failed to list credentials while checking OAuth duplicates", exc_info=True)
+        return []
+    matches: list[Any] = []
+    for record in records:
+        if record.id == current.id:
+            continue
+        metadata = record.metadata or {}
+        if record.kind == "legacy_token_cache":
+            provider_matches = record.provider == current.provider or (
+                current.provider == "outlook" and record.provider == "microsoft"
+            )
+            legacy_account_ids = {
+                str(account.get("account_id"))
+                for account in metadata.get("accounts") or []
+                if isinstance(account, dict) and account.get("account_id")
+            }
+            if provider_matches and account_id in legacy_account_ids:
+                matches.append(record)
+            continue
+        if record.provider != current.provider or record.kind != "oauth_token":
+            continue
+        record_account_id = str(metadata.get("account_id") or "")
+        if record_account_id == account_id:
+            matches.append(record)
+            continue
+        if record.status == "pending_setup" and metadata.get("oauth_pending") is True:
+            matches.append(record)
+    return matches
+
+
+def _merged_allowed_targets(current: Any, replacements: list[Any]) -> list[str]:
+    merged: list[str] = []
+    for record in [current, *replacements]:
+        for target in record.allowed_targets or []:
+            if target not in merged:
+                merged.append(target)
+    return merged or ["native_tool:*"]
+
+
+def _copy_replacement_bindings(
+    *,
+    repo: CredentialVaultRepo,
+    replacements: list[Any],
+    target_credential_id: str,
+    actor_user_id: Optional[str],
+) -> None:
+    for replacement in replacements:
+        try:
+            bindings = repo.list_bindings(replacement.id)
+        except Exception:
+            logger.debug("Failed to list bindings for replaced credential %s", replacement.id, exc_info=True)
+            continue
+        for binding in bindings:
+            try:
+                repo.bind_credential(
+                    target_credential_id,
+                    target_type=str(binding.get("target_type") or ""),
+                    target_id=str(binding.get("target_id") or ""),
+                    binding_name=binding.get("binding_name"),
+                    actor_user_id=actor_user_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to copy binding %s from %s to %s",
+                    binding.get("id"),
+                    replacement.id,
+                    target_credential_id,
+                    exc_info=True,
+                )
+
+
+def _disable_replaced_credentials(
+    *,
+    repo: CredentialVaultRepo,
+    replacements: list[Any],
+    actor_user_id: Optional[str],
+) -> None:
+    for replacement in replacements:
+        try:
+            repo.disable_credential(replacement.id, actor_user_id=actor_user_id)
+        except Exception:
+            logger.debug("Failed to disable replaced OAuth credential %s", replacement.id, exc_info=True)
+
+
 def finalize_oauth_credential(
     *,
     prompt: PendingPrompt,
@@ -183,6 +280,13 @@ def finalize_oauth_credential(
             message=message,
         )
 
+    replacements = _matching_oauth_credentials(
+        repo=repo,
+        current=current,
+        account_id=account_id,
+    )
+    replacement_ids = [record.id for record in replacements]
+
     metadata = dict(current.metadata or {})
     oauth_state = metadata.get("_oauth_state") or {}
     client_id_from_state = oauth_state.get("client_id") if isinstance(oauth_state, dict) else None
@@ -199,6 +303,8 @@ def finalize_oauth_credential(
             "userinfo_sub": sub,
         }
     )
+    if replacement_ids:
+        metadata["replaced_credential_ids"] = replacement_ids
     if client_id_from_state and not metadata.get("client_id"):
         # Stash the client_id at the top level so refresh paths in
         # auth_cache_utils can find it without re-reading _oauth_state
@@ -223,7 +329,7 @@ def finalize_oauth_credential(
             account_label=email if email and email != "unknown" else current.account_label,
             metadata=metadata,
             scopes=granted_scopes,
-            allowed_targets=current.allowed_targets or ["native_tool:*"],
+            allowed_targets=_merged_allowed_targets(current, replacements),
             expires_at=expires_at_iso,
             status="active",
             secret_fields=secret_fields,
@@ -275,6 +381,19 @@ def finalize_oauth_credential(
             message=message,
         )
 
+    if replacements:
+        _copy_replacement_bindings(
+            repo=repo,
+            replacements=replacements,
+            target_credential_id=updated.id,
+            actor_user_id=current.owner_user_id,
+        )
+        _disable_replaced_credentials(
+            repo=repo,
+            replacements=replacements,
+            actor_user_id=current.owner_user_id,
+        )
+
     hook_message: Optional[str] = None
     if descriptor.post_save_hook is not None and current.owner_user_id:
         try:
@@ -313,7 +432,18 @@ def finalize_oauth_credential(
         thread_id=prompt.thread_id,
         user_id=prompt.user_id,
         task_id="",
-        data={"prompt_id": prompt.prompt_id, "credential_id": updated.id, "status": "active"},
+        data={
+            "prompt_id": prompt.prompt_id,
+            "credential_id": updated.id,
+            "status": "active",
+            "message": (
+                f"Connected {descriptor.display_name} as {email}."
+                if email and email != "unknown"
+                else f"Connected {descriptor.display_name}."
+            ),
+            "email": email,
+            "name": name,
+        },
     )
 
     return OAuthFinalizeResult(
@@ -356,7 +486,7 @@ def fail_oauth_prompt(
         thread_id=prompt.thread_id,
         user_id=prompt.user_id,
         task_id="",
-        data={"prompt_id": prompt.prompt_id, "reason": status},
+        data={"prompt_id": prompt.prompt_id, "reason": status, "message": message},
     )
 
 

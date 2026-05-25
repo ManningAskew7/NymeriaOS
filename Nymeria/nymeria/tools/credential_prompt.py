@@ -173,11 +173,10 @@ async def request_credential(
     ``kind="oauth_token"``. The agent never sees the access or refresh token.
 
     Fire-and-forget contract: this tool returns IMMEDIATELY with
-    ``status="dispatched"``. When the user finishes (or cancels), a fresh
-    agent turn fires automatically with a one-line summary. The agent
-    should write a short user-facing acknowledgement after dispatching
-    (e.g. "Opening the sign-in prompt now, I'll pick it up when you're
-    done") rather than going silent.
+    ``status="dispatched"``. When the user finishes (or cancels), no fresh
+    agent turn fires automatically. The agent should write a short
+    user-facing acknowledgement after dispatching and ask the user to
+    reply when they want the original task retried.
 
     Args:
         provider: Service identifier. For OAuth, must be in the registry
@@ -530,11 +529,12 @@ def _make_resolution_callback(
 
             result = fut.result() or {}
             status = str(result.get("status") or ("active" if result.get("ok") else "error"))
+            effective_credential_id = str(result.get("credential_id") or credential_id)
 
             bind_outcome: Optional[str] = None
             if bind_target and status == "active":
                 bind_outcome = _apply_bind_target(
-                    credential_id=credential_id,
+                    credential_id=effective_credential_id,
                     bind_target=bind_target,
                     actor_user_id=user_id,
                 )

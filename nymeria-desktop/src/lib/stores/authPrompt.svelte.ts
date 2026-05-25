@@ -36,6 +36,27 @@ export const authPromptStore = {
     }
   },
 
+  resolveById(promptId: string, result: {
+    ok: boolean;
+    status: string;
+    message?: string | null;
+    credentialId?: string | null;
+  }): void {
+    if (state.active?.prompt_id === promptId) {
+      if (state.active.mode !== 'oauth' && state.active.mode !== 'oauth_device') {
+        state.active = null;
+        return;
+      }
+      state.active = {
+        ...state.active,
+        resolution_ok: result.ok,
+        resolution_status: result.status,
+        resolution_message: result.message ?? null,
+        resolved_credential_id: result.credentialId ?? null,
+      };
+    }
+  },
+
   /** Unconditional clear — used by the modal when the user dismisses. */
   clear(): void {
     state.active = null;

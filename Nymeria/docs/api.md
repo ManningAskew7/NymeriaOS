@@ -193,6 +193,7 @@ POST /credentials/{credential_id}/bindings
 DELETE /credential-bindings/{binding_id}
 POST /credential-setup-sessions
 POST /credential-prompts/{prompt_id}/test
+GET /credential-prompts/{prompt_id}/status
 POST /credential-prompts/{prompt_id}/submit
 POST /credential-prompts/{prompt_id}/exit
 POST /credential-prompts/{prompt_id}/cancel
@@ -1011,7 +1012,9 @@ Returns the callable thread tools actually available from that caller thread aft
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `provider_retry` | Retryable provider/model failure before any output; backend is sleeping before retry | `provider`, `model`, `attempt`, `max_retries`, `delay_seconds`, `reason`, optional `http_status` |
 | `provider_fallback` | Primary retries were exhausted; backend switched to a configured fallback provider/model | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, `reason`, optional `http_status` |
-| `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error` |
+| `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error`, optional OAuth fields such as `flow`, `auth_url`, `user_code`, `verification_uri`, `scopes` |
+| `auth_prompt_resolved` | Credential prompt completed. Desktop keeps OAuth prompts open long enough to show success; non-OAuth prompts normally close from the submit action | `prompt_id`, `credential_id`, `status`, optional `message`, `email`, `name` |
+| `auth_prompt_cancelled` | Credential prompt ended without an active credential, including user cancel, OAuth denial, expiry, or provider error | `prompt_id`, `reason`, optional `message` |
 | `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
