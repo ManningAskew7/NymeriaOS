@@ -1247,11 +1247,11 @@
 
   .inline-warning {
     padding: var(--spacing-sm) var(--spacing-md);
-    background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
-    color: var(--warning, #f59e0b);
+    color: var(--warning);
   }
 
   /* Search */
@@ -1273,7 +1273,7 @@
 
   .search-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .search-input::placeholder {
@@ -1491,8 +1491,8 @@
     font-weight: 600;
     padding: 0 4px;
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent-secondary, #818cf8) 15%, transparent);
-    color: var(--accent-secondary, #818cf8);
+    background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
+    color: var(--accent-secondary);
     text-transform: uppercase;
     letter-spacing: 0.3px;
     text-indent: 0.3px;
@@ -1504,9 +1504,9 @@
     font-weight: 700;
     padding: 0 5px;
     border-radius: var(--radius-sm);
-    background: rgba(251, 191, 36, 0.12);
-    color: var(--warning, #fbbf24);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
     text-transform: uppercase;
     letter-spacing: 0.6px;
     text-indent: 0.6px;
@@ -1593,7 +1593,7 @@
   }
 
   .btn-primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
   }
@@ -1610,12 +1610,12 @@
   }
 
   .save-message.success {
-    background: rgba(52, 211, 153, 0.15);
+    background: color-mix(in srgb, var(--success) 15%, transparent);
     color: var(--success);
   }
 
   .save-message.error {
-    background: rgba(248, 113, 113, 0.15);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
   }
 
@@ -1662,7 +1662,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    background: rgba(248, 113, 113, 0.15);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
@@ -1816,7 +1816,7 @@
   }
 
   .action-btn.delete:hover {
-    background: rgba(248, 113, 113, 0.15);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
     border-color: var(--error);
   }
@@ -1982,8 +1982,8 @@
     align-items: flex-start;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    background: color-mix(in srgb, var(--info) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--info) 20%, transparent);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     font-size: var(--font-size-sm);

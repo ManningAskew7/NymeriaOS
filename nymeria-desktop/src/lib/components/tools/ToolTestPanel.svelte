@@ -302,7 +302,7 @@
 
   .result-section.error {
     border-color: var(--error);
-    background: rgba(248, 113, 113, 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 
   .result-header {
@@ -321,12 +321,12 @@
   .status {
     padding: 2px 8px;
     border-radius: var(--radius-sm);
-    background: rgba(248, 113, 113, 0.15);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
   }
 
   .status.success {
-    background: rgba(74, 222, 128, 0.15);
+    background: color-mix(in srgb, var(--success) 15%, transparent);
     color: var(--success);
   }
 
@@ -337,7 +337,7 @@
   .result-error {
     margin-bottom: var(--spacing-sm);
     padding: var(--spacing-sm);
-    background: rgba(248, 113, 113, 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     border-radius: var(--radius-sm);
     color: var(--error);
     font-size: var(--font-size-sm);

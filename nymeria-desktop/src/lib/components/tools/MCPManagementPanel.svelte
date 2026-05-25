@@ -192,10 +192,10 @@
   .inline-warning {
     margin-top: 0.75rem;
     padding: 0.65rem 0.8rem;
-    border: 1px solid rgba(245, 158, 11, 0.35);
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
     border-radius: var(--radius-md);
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.08);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
     font-size: 0.83rem;
   }
 
@@ -260,12 +260,12 @@
   }
 
   .save-message.success {
-    color: #22c55e;
-    border-color: rgba(34, 197, 94, 0.35);
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 35%, transparent);
   }
 
   .save-message.error {
-    color: #ef4444;
-    border-color: rgba(239, 68, 68, 0.35);
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 35%, transparent);
   }
 </style>
