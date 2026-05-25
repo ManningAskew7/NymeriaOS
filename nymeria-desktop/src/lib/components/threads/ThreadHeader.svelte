@@ -305,7 +305,7 @@
 
   {#if metaParts.length > 0}
     <button
-      class="meta-toggle"
+      class="meta-toggle {healthDotClass}"
       class:open={showMeta}
       type="button"
       onclick={() => (showMeta = !showMeta)}
@@ -313,7 +313,7 @@
       aria-label="Toggle thread details"
       aria-expanded={showMeta}
     >
-      <span class="health-dot {healthDotClass}"></span>
+      <Icon name="chevronRight" size={14} />
     </button>
 
     {#if showMeta}
@@ -415,48 +415,40 @@
     color: var(--text-muted);
     cursor: pointer;
     flex-shrink: 0;
+    /* Cancel most of the header's flex gap so the toggle sits close to the
+       title. The chevron is centered in this 22px button, so a small positive
+       residual keeps a tight, constant title-to-toggle gap regardless of title
+       length without the hover background overlapping the title. */
+    margin-left: calc(var(--spacing-md) * -1 + 4px);
     transition: color var(--transition-fast), background var(--transition-fast);
   }
 
   .meta-toggle:hover {
+    color: var(--accent-primary);
     background: var(--bg-hover);
   }
 
-  .meta-toggle .health-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
+  /* The meta row expands horizontally to the right, so the chevron tracks that
+     axis: it points right when collapsed ("expand outward") and rotates to
+     point left when the row is open ("collapse it back"). */
+  .meta-toggle :global(svg) {
     display: block;
-    flex-shrink: 0;
-    transition: opacity var(--transition-fast);
-    /* Match the 1px optical-centering nudge applied to .title and .meta so
-       the dot lines up with the text beside it. */
-    transform: translateY(1px);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
-  .meta-toggle:not(.open) .health-dot {
-    opacity: 0.55;
+  .meta-toggle.open :global(svg) {
+    transform: rotate(180deg);
   }
 
-  .meta-toggle .health-dot.connected {
-    background: var(--success);
-    box-shadow: 0 0 6px var(--success);
-    animation: meta-dot-pulse 2s ease-in-out infinite;
+  /* The connected state stays neutral so this reads as a plain toggle; only a
+     degraded API surfaces a colored cue (the bottom-bar status carries the
+     full health detail, and the tooltip still reports it here). */
+  .meta-toggle.disconnected {
+    color: var(--error);
   }
 
-  .meta-toggle .health-dot.disconnected {
-    background: var(--error);
-    box-shadow: 0 0 6px var(--error);
-  }
-
-  .meta-toggle .health-dot.checking {
-    background: var(--warning);
-    box-shadow: 0 0 6px var(--warning);
-  }
-
-  @keyframes meta-dot-pulse {
-    0%, 100% { box-shadow: 0 0 6px var(--success); }
-    50% { box-shadow: 0 0 10px var(--success); }
+  .meta-toggle.checking {
+    color: var(--warning);
   }
 
   .meta {
