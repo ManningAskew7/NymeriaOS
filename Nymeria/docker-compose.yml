@@ -221,6 +221,7 @@ services:
       # so existing .env.docker values don't break compose validation.
       NYMERIA_API_KEY: ${NYMERIA_API_KEY:-}
       NYMERIA_SERVICE_TOKEN: ${NYMERIA_SERVICE_TOKEN:-}
+      NYMERIA_SECRETS_KEY: ${NYMERIA_SECRETS_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
