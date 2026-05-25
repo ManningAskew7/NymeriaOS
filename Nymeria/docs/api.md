@@ -1069,12 +1069,10 @@ rejected with `error.code=cross_user_queue_unsupported` and should be
 retried after the current turn finishes; this avoids running one user's
 prompt through another user's memory/tool-credential context.
 
-If the running turn is blocked inside `request_credential`, a second
-same-user/same-thread `/chat` message does not enter the normal busy-thread
-queue. It resolves the pending credential prompt with `status=user_message`
-and a bounded `user_message`, waking the tool so the agent can respond to the
-new input. Cancel text such as `/cancel`, `cancel`, or `never mind` resolves
-the prompt with `status=cancelled`.
+`request_credential` is fire-and-forget. It publishes an auth-prompt event and
+returns immediately; prompt resolution happens through credential prompt
+endpoints, OAuth callbacks, or the device-code poller. Chat messages are never
+routed into an active credential prompt and never resolve/cancel that prompt.
 
 **v1 scope is process-local.** The pending-prompt queue and auth-prompt
 coordinator live in memory inside the API process. Docker worker/watchdog/bot

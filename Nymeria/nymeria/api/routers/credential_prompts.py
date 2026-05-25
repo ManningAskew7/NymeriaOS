@@ -26,17 +26,6 @@ from ..schemas.credentials import CredentialResponse, credential_to_response
 logger = logging.getLogger(__name__)
 
 _MAX_USER_MESSAGE_CHARS = 2000
-_CANCEL_TEXTS = {
-    "/cancel",
-    "cancel",
-    "cancel setup",
-    "cancel credential",
-    "cancel credentials",
-    "nevermind",
-    "never mind",
-    "stop",
-}
-
 
 class CredentialPromptSubmitRequest(BaseModel):
     secret_fields: dict[str, str] = Field(default_factory=dict)
@@ -159,10 +148,6 @@ def _reject_if_oauth(prompt: PendingPrompt) -> None:
                 "(or on the device-login page), not via this endpoint."
             ),
         )
-
-
-def is_credential_prompt_cancel_text(message: str) -> bool:
-    return message.strip().lower() in _CANCEL_TEXTS
 
 
 def _test_status(result: CredentialTestResult) -> str:
@@ -885,56 +870,6 @@ def _resolve_cancel(
     return CredentialPromptAck(ok=resolved, status="cancelled")
 
 
-def resolve_pending_prompt_from_chat(
-    *,
-    user_id: str,
-    thread_id: str,
-    message: str,
-) -> dict[str, Any] | None:
-    """Resolve an active credential prompt with a same-thread chat message."""
-    coordinator = get_auth_prompt_coordinator()
-    prompt = coordinator.get_for_user_thread(user_id=user_id, thread_id=thread_id)
-    if prompt is None:
-        return None
-
-    if is_credential_prompt_cancel_text(message):
-        resolved = coordinator.resolve(
-            prompt.prompt_id,
-            {
-                "ok": False,
-                "status": "cancelled",
-                "user_message": _bounded_message(message),
-            },
-        )
-        _publish_cancelled(prompt, prompt.prompt_id, "cancelled")
-        return {"prompt_id": prompt.prompt_id, "status": "cancelled", "resolved": resolved}
-
-    if _is_oauth_prompt(prompt):
-        return {
-            "prompt_id": prompt.prompt_id,
-            "status": "oauth_pending",
-            "resolved": False,
-            "message": (
-                "OAuth sign-in is still pending. Keep the credential prompt open "
-                "until it reports that the account is connected."
-            ),
-        }
-
-    resolved = coordinator.resolve(
-        prompt.prompt_id,
-        {
-            "ok": False,
-            "status": "user_message",
-            "user_message": _bounded_message(message),
-            "message": "User responded in chat instead of completing the credential prompt.",
-        },
-    )
-    _publish_cancelled(prompt, prompt.prompt_id, "user_message")
-    return {"prompt_id": prompt.prompt_id, "status": "user_message", "resolved": resolved}
-
-
 __all__ = [
     "create_credential_prompts_router",
-    "is_credential_prompt_cancel_text",
-    "resolve_pending_prompt_from_chat",
 ]
