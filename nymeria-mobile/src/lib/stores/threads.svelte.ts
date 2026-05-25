@@ -15,6 +15,24 @@ const CURRENT_THREAD_KEY = () => scopedKey(CURRENT_THREAD_KEY_BASE);
 const FOLDERS_KEY = () => scopedKey(FOLDERS_KEY_BASE);
 const SORT_MODE_KEY = () => scopedKey(SORT_MODE_KEY_BASE);
 
+// Legacy one-time migration that POSTs locally-cached thread metadata (titles,
+// pins) up to the connected backend. DISABLED by default: with multiple saved
+// connections this can push one backend's cached threads onto a *different*
+// backend and create empty "ghost" threads there — backends that share an
+// identity id also share this localStorage cache, so the cache is not a safe
+// source of truth to migrate from. A future Connections setting can opt back in
+// by writing 'true' to this key; until then the push never fires and the
+// backend is always treated as authoritative.
+const THREAD_METADATA_MIGRATION_KEY = 'nymeria-thread-metadata-migration';
+function isThreadMetadataMigrationEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(THREAD_METADATA_MIGRATION_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 // Guard against concurrent sync calls (e.g. Vite dev mode double-mount)
 let syncInProgress = false;
 
@@ -526,7 +544,17 @@ function createThreadsStore() {
           (t) => t.title !== 'New Chat'
         );
 
-        if (!hasBackendTitles && hasLocalTitles && threads.length > 0) {
+        const migrationCandidate =
+          !hasBackendTitles && hasLocalTitles && threads.length > 0;
+
+        if (migrationCandidate && !isThreadMetadataMigrationEnabled()) {
+          console.log(
+            '[Threads] Skipping legacy metadata push migration (disabled). ' +
+              'Treating backend as authoritative to avoid cross-backend ghost threads.'
+          );
+        }
+
+        if (migrationCandidate && isThreadMetadataMigrationEnabled()) {
           // One-time migration: push local data to backend
           console.log('[Threads] Migrating local metadata to backend...');
           try {
