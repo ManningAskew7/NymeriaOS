@@ -317,6 +317,11 @@ skill's body (not frontmatter) propagate immediately without a cache flush.
 - **Thread Settings → Skills**  -  per-thread enable/disable of any installed
   skill, showing which are already active via the global default and which
   tools a Skill Kit will bind on activation.
+- Skills panels force-refresh installed, global, and thread skill state on
+  open. Agent-authored changes from `skill_write`, `skill_edit`,
+  `skill_manage`, `install_skill`, and Skill Kit reload events also refresh
+  the desktop stores, so a newly written Skill Kit appears without a full app
+  reload.
 - **Chat rendering**  -  when the agent fires `Skill(name=...)` the invocation
   renders as a distinguishable `SkillCard` (colored border, markdown-rendered
   body) rather than a generic `ToolCallCard`.

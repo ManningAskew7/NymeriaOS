@@ -13,17 +13,19 @@ import type {
   MarketplaceSkillEntry,
 } from '$lib/types';
 
-function createSkillsStore() {
+export function createSkillsStore() {
   // Installed skills (all scopes)
   let installed = $state<SkillMetadata[]>([]);
   let installedLoaded = $state(false);
   let installedLoading = $state(false);
   let installedError = $state<string | null>(null);
+  let installedRefreshQueued = false;
 
   // User's enabled_global_skills (applied to every new thread)
   let enabledGlobal = $state<string[]>([]);
   let enabledGlobalLoaded = $state(false);
   let enabledGlobalLoading = $state(false);
+  let enabledGlobalRefreshQueued = false;
 
   // Marketplace search results (last query)
   let marketplaceResults = $state<MarketplaceSkillEntry[]>([]);
@@ -44,9 +46,11 @@ function createSkillsStore() {
     installedLoaded = false;
     installedLoading = false;
     installedError = null;
+    installedRefreshQueued = false;
     enabledGlobal = [];
     enabledGlobalLoaded = false;
     enabledGlobalLoading = false;
+    enabledGlobalRefreshQueued = false;
     marketplaceResults = [];
     marketplaceSearching = false;
     marketplaceError = null;
@@ -55,7 +59,10 @@ function createSkillsStore() {
   });
 
   async function loadInstalled(force = false): Promise<void> {
-    if (installedLoading) return;
+    if (installedLoading) {
+      if (force) installedRefreshQueued = true;
+      return;
+    }
     if (installedLoaded && !force) return;
     const requestGeneration = identityGeneration;
     installedLoading = true;
@@ -74,12 +81,19 @@ function createSkillsStore() {
     } finally {
       if (requestGeneration === identityGeneration) {
         installedLoading = false;
+        if (installedRefreshQueued) {
+          installedRefreshQueued = false;
+          void loadInstalled(true);
+        }
       }
     }
   }
 
   async function loadGlobal(force = false): Promise<void> {
-    if (enabledGlobalLoading) return;
+    if (enabledGlobalLoading) {
+      if (force) enabledGlobalRefreshQueued = true;
+      return;
+    }
     if (enabledGlobalLoaded && !force) return;
     const requestGeneration = identityGeneration;
     enabledGlobalLoading = true;
@@ -96,8 +110,20 @@ function createSkillsStore() {
     } finally {
       if (requestGeneration === identityGeneration) {
         enabledGlobalLoading = false;
+        if (enabledGlobalRefreshQueued) {
+          enabledGlobalRefreshQueued = false;
+          void loadGlobal(true);
+        }
       }
     }
+  }
+
+  async function refreshInstalled(): Promise<void> {
+    await loadInstalled(true);
+  }
+
+  async function refreshGlobal(): Promise<void> {
+    await loadGlobal(true);
   }
 
   async function setGlobalEnabled(names: string[]): Promise<void> {
@@ -218,6 +244,8 @@ function createSkillsStore() {
     // Actions
     loadInstalled,
     loadGlobal,
+    refreshInstalled,
+    refreshGlobal,
     setGlobalEnabled,
     toggleGlobal,
     searchMarketplace,
