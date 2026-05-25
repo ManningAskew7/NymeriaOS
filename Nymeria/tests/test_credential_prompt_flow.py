@@ -370,55 +370,12 @@ def test_cancel_returns_cancelled(env):
     assert get_auth_prompt_coordinator().get(pid) is None
 
 
-def test_chat_message_resolves_pending_auth_prompt(env):
-    client, _, token = env
-    loop = asyncio.new_event_loop()
-    ready = threading.Event()
+def test_pending_auth_prompt_requires_explicit_resolution(env):
+    """Credential prompts are fire-and-forget relative to chat.
 
-    def run_loop() -> None:
-        asyncio.set_event_loop(loop)
-        ready.set()
-        loop.run_forever()
-
-    thread = threading.Thread(target=run_loop, daemon=True)
-    thread.start()
-    ready.wait()
-
-    async def register_prompt():
-        return get_auth_prompt_coordinator().register(
-            prompt_id="prompt_chat",
-            credential_id="cred_chat",
-            user_id="default",
-            thread_id="interlock-thread",
-            provider="chat",
-        )
-
-    async def await_prompt(future: asyncio.Future):
-        return await future
-
-    try:
-        future = asyncio.run_coroutine_threadsafe(register_prompt(), loop).result(2)
-        resp = client.post(
-            "/chat",
-            headers=_auth(token),
-            json={
-                "thread_id": "interlock-thread",
-                "message": "I need to ask a question first",
-            },
-        )
-        assert resp.status_code == 200, resp.text
-        assert '"auth_prompt_status": "user_message"' in resp.text
-        result = asyncio.run_coroutine_threadsafe(await_prompt(future), loop).result(2)
-        assert result["ok"] is False
-        assert result["status"] == "user_message"
-        assert result["user_message"] == "I need to ask a question first"
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=2)
-
-
-def test_chat_message_does_not_resolve_pending_oauth_prompt(env):
-    client, _, token = env
+    Prompt futures remain pending until a prompt endpoint, OAuth callback, or
+    device-code poller resolves them.
+    """
     loop = asyncio.new_event_loop()
     ready = threading.Event()
 
@@ -433,30 +390,20 @@ def test_chat_message_does_not_resolve_pending_oauth_prompt(env):
 
     async def register_prompt():
         future = get_auth_prompt_coordinator().register(
-            prompt_id="prompt_oauth_chat",
-            credential_id="cred_oauth_chat",
+            prompt_id="prompt_chat",
+            credential_id="cred_chat",
             user_id="default",
             thread_id="interlock-thread",
-            provider="outlook",
+            provider="chat",
         )
-        prompt = get_auth_prompt_coordinator().get("prompt_oauth_chat")
-        assert prompt is not None
-        prompt.metadata = {"mode": "oauth_device", "oauth_pending": True}
         return future
 
     try:
         future = asyncio.run_coroutine_threadsafe(register_prompt(), loop).result(2)
-        resp = client.post(
-            "/chat",
-            headers=_auth(token),
-            json={"thread_id": "interlock-thread", "message": "done"},
-        )
-        assert resp.status_code == 200, resp.text
-        assert '"auth_prompt_status": "oauth_pending"' in resp.text
         assert future.done() is False
-        assert get_auth_prompt_coordinator().get("prompt_oauth_chat") is not None
+        assert get_auth_prompt_coordinator().get("prompt_chat") is not None
         get_auth_prompt_coordinator().resolve(
-            "prompt_oauth_chat",
+            "prompt_chat",
             {"ok": False, "status": "cancelled"},
         )
     finally:

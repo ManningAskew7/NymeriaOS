@@ -442,10 +442,9 @@ async def request_credential(
         event_payload.get("mode") or kind_norm,
     )
 
-    # Attach a done-callback so the future's resolution starts a fresh
-    # turn rather than waking a blocked tool call. The tool returns
-    # IMMEDIATELY; the agent's next action depends on whatever it decides
-    # to do after seeing status="dispatched".
+    # Attach a done-callback for local side effects only. The tool returns
+    # immediately, and prompt resolution never injects a message or queued
+    # continuation into the chat thread.
     future.add_done_callback(
         _make_resolution_callback(
             prompt_id=prompt_id,
@@ -459,10 +458,9 @@ async def request_credential(
 
     dispatched_message = (
         f"Sent the user an in-chat prompt to connect {label_display}. "
-        "Tell the user a prompt is on screen and ask them to ping you "
-        "(e.g. 'done' or 'try again') once they have finished or paste "
-        "any error back into chat. No automatic turn will fire when they "
-        "save, the user drives the next step."
+        "Tell the user a prompt is on screen. Credential prompt resolution "
+        "is fire-and-forget: no prompt reply is routed into chat, and no "
+        "automatic turn fires when they save."
     )
     return _json(
         {
@@ -673,7 +671,7 @@ def _default_message(status: str, last_error: Optional[str]) -> str:
     if status == "test_failed":
         return f"Connection test failed: {last_error or 'unknown error'}"
     if status == "user_message":
-        return "User responded in chat instead of completing the credential prompt."
+        return "Legacy chat-side prompt resolution is no longer supported."
     if status == "swept":
         return "Prompt expired before resolution."
     if status == "denied":
