@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
 from .agent_history import (
     CONTEXT_PREFIX_PATTERN,
@@ -65,7 +65,7 @@ def get_conversation_history(
         target_ids = {msg.id for msg in messages if msg.id}
         timestamp_map = build_message_timestamp_map(agent._default_graph, thread_id, target_ids)
 
-        return format_conversation_history(
+        formatted = format_conversation_history(
             messages,
             thread_id=thread_id,
             timestamp_map=timestamp_map,
@@ -76,9 +76,53 @@ def get_conversation_history(
             extract_workspace_artifacts=agent._extract_workspace_artifacts,
         )
 
+        _mark_in_flight_tail(agent, thread_id, messages, formatted)
+        return formatted
+
     except Exception as e:
         logger.error(f"Error getting history: {e}")
         return []
+
+
+def _thread_is_processing(agent: "NymeriaAgent", thread_id: str) -> bool:
+    """True when a turn currently holds the thread lock (mirrors the threads router)."""
+    thread_locks = getattr(agent, "_thread_locks", None)
+    if thread_locks is None:
+        return False
+    try:
+        return thread_locks.get_lock_info(thread_id) is not None
+    except Exception as e:
+        logger.warning("Failed to inspect processing state for %s: %s", thread_id, e)
+        return False
+
+
+def _mark_in_flight_tail(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    raw_messages: List[Any],
+    formatted: List[Dict[str, Any]],
+) -> None:
+    """Flag the tail assistant turn as still in-flight so the frontend continues
+    its streaming bubble across a thread switch instead of splitting it.
+
+    The frontend cannot tell a mid-turn switch (the displayed tail *is* the turn
+    being generated -> continue the bubble) from a back-to-back handoff (the
+    displayed tail is a prior reply and a new turn is starting -> fresh bubble),
+    because autonomous wake-up inputs are filtered out of history. The backend
+    can: mark the tail only when the thread is processing AND the raw checkpoint
+    tail is assistant/tool output. A handoff that has queued a new turn but not
+    yet produced assistant output leaves a HumanMessage/SystemMessage at the raw
+    tail, so it is correctly left unmarked.
+    """
+    if not formatted or not raw_messages:
+        return
+    if formatted[-1].get("role") != "assistant":
+        return
+    if not isinstance(raw_messages[-1], (AIMessage, ToolMessage)):
+        return
+    if not _thread_is_processing(agent, thread_id):
+        return
+    formatted[-1]["processing"] = True
 
 
 def should_reset_context(

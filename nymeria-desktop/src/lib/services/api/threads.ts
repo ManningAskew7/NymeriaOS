@@ -176,7 +176,14 @@ export class ThreadsApi extends ChatApi {
           : undefined,
         intermediateContent: m.intermediate_content as string | undefined,
         timestamp: new Date((m.timestamp as string) || Date.now()),
-        status: 'complete' as const,
+        // The backend flags the tail assistant turn as `processing` when it is
+        // still being generated. Hydrating it as 'streaming' (not 'complete')
+        // lets switchToThread's recovery continue that bubble instead of
+        // splitting the turn into a fresh one. See navigation.svelte.ts.
+        status: (m.processing === true ? 'streaming' : 'complete') as 'streaming' | 'complete',
+        ...(m.processing === true
+          ? { activityPhase: 'processing' as const, activityUpdatedAt: new Date() }
+          : {}),
         toolCalls: Array.isArray(m.tool_calls)
           ? m.tool_calls
               .map((toolCall) => this.normalizeToolCall(toolCall))

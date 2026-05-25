@@ -691,6 +691,8 @@ Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `s
 
 Assistant `steps` are optional. They appear when a turn has reasoning/thinking, tool calls, or interleaved response chunks. Anthropic typed thinking blocks, OpenAI-compatible `reasoning_content` metadata, and OpenAI Responses `reasoning` summary blocks are returned as `{"type": "thinking"}` steps so desktop and mobile can re-render the same thinking dropdown after history sync. Visible assistant commentary before a tool call is not thinking; it is stored and served as a `{"type": "response"}` step before the `tool_call` step.
 
+The final assistant message carries `"processing": true` when the thread is mid-turn (has an active agent lock) and the latest checkpoint message is assistant/tool output, i.e. that displayed turn is the one currently being generated. Clients use this to keep rendering the in-flight turn as a single streaming bubble when a thread is opened mid-stream, instead of finishing it and starting a new one. The flag is omitted when a new turn has only queued its (filtered) wake-up input, so the displayed tail is a prior completed reply and must not be reused.
+
 **Performance note:** latency scales with the checkpoint count for the thread. Compaction prunes pre-compact rows so healthy threads stay under ~100 ms. If you see multi-second latency, check the thread's checkpoint count and the troubleshooting section in [compaction-and-checkpoints.md](./compaction-and-checkpoints.md).
 
 ---

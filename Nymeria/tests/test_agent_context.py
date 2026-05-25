@@ -3,9 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from nymeria.core.agent_context import (
+    _mark_in_flight_tail,
     rewind_thread_exchanges,
     trim_context_window,
 )
@@ -136,3 +137,81 @@ def test_rewind_noop_when_no_human_messages() -> None:
 
     assert rewind_thread_exchanges(cast(Any, agent), "thread-1") == 0
     assert agent._default_graph.update_calls == []
+
+
+class _FakeLocks:
+    def __init__(self, locked: bool) -> None:
+        self._locked = locked
+
+    def get_lock_info(self, _thread_id: str):
+        return object() if self._locked else None
+
+
+class _ProcessingAgent:
+    def __init__(self, locked: bool) -> None:
+        self._thread_locks = _FakeLocks(locked)
+
+
+def _formatted(role: str = "assistant") -> list[dict]:
+    return [
+        {"role": "user", "content": "hi"},
+        {"role": role, "content": "partial reply"},
+    ]
+
+
+def test_mark_in_flight_tail_marks_processing_assistant_tail() -> None:
+    # Mid-turn switch: thread is processing and the raw tail is the in-flight
+    # turn's assistant output -> the displayed tail must continue streaming.
+    formatted = _formatted()
+    raw = [HumanMessage(content="hi", id="h1"), AIMessage(content="partial", id="a1")]
+
+    _mark_in_flight_tail(cast(Any, _ProcessingAgent(True)), "t1", raw, formatted)
+
+    assert formatted[-1]["processing"] is True
+
+
+def test_mark_in_flight_tail_marks_when_raw_tail_is_tool_message() -> None:
+    # A tool just returned and the model is about to continue the same turn.
+    formatted = _formatted()
+    raw = [
+        AIMessage(content="", id="a1"),
+        ToolMessage(content="result", tool_call_id="tc1", id="t-msg"),
+    ]
+
+    _mark_in_flight_tail(cast(Any, _ProcessingAgent(True)), "t1", raw, formatted)
+
+    assert formatted[-1]["processing"] is True
+
+
+def test_mark_in_flight_tail_skips_handoff_with_queued_human_input() -> None:
+    # Back-to-back handoff: a new turn is queued (raw tail is a wake-up
+    # HumanMessage) but has not produced assistant output yet. The displayed
+    # tail is the *prior* reply and must NOT be reused, or the new turn would
+    # graft onto it (the regression fixed in 08f92b87).
+    formatted = _formatted()
+    raw = [
+        AIMessage(content="prior reply", id="a1"),
+        HumanMessage(content="autonomous wake-up", id="h2"),
+    ]
+
+    _mark_in_flight_tail(cast(Any, _ProcessingAgent(True)), "t1", raw, formatted)
+
+    assert "processing" not in formatted[-1]
+
+
+def test_mark_in_flight_tail_skips_when_not_processing() -> None:
+    formatted = _formatted()
+    raw = [HumanMessage(content="hi", id="h1"), AIMessage(content="done", id="a1")]
+
+    _mark_in_flight_tail(cast(Any, _ProcessingAgent(False)), "t1", raw, formatted)
+
+    assert "processing" not in formatted[-1]
+
+
+def test_mark_in_flight_tail_skips_when_displayed_tail_not_assistant() -> None:
+    formatted = _formatted(role="user")
+    raw = [AIMessage(content="x", id="a1")]
+
+    _mark_in_flight_tail(cast(Any, _ProcessingAgent(True)), "t1", raw, formatted)
+
+    assert "processing" not in formatted[-1]
