@@ -17,6 +17,8 @@
   --accent-primary: #5fb8cc;
   --accent-secondary: #5b8bbf;
   --accent-hover: #4ba3b8;
+  /* Dark ink for text/icons placed on the light cyan accent fill (Midnight). */
+  --text-on-accent: #0b1416;
 
   /* Semantic */
   --success: #34d399;
@@ -29,10 +31,11 @@
   --bubble-ai: #1a1d21;
   --bubble-tool: #1a1f2e;
 
-  /* Borders — match midnight theme's runtime values so static fallback
-     stays in sync with the live theme applied via themes.ts. */
-  --border-subtle: #4a5058;
-  --border-default: #5a6068;
+  /* Borders — hairline (Radix steps 6/7), matching midnight's runtime values
+     so the static fallback stays in sync with the live theme from themes.ts.
+     Surface separation leans on the elevation ladder, not heavy lines. */
+  --border-subtle: #24282d;
+  --border-default: #343a40;
   --border-focus: var(--accent-primary);
 
   /* Shadows */

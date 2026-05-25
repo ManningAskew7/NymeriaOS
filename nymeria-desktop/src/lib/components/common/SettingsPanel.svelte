@@ -952,6 +952,8 @@
                       >
                         {connectionsStore.switching ? '...' : 'Connect'}
                       </Button>
+                    {:else}
+                      <span class="conn-active-label">Connected</span>
                     {/if}
                     <button class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit">
                       <Icon name="edit" size={14} />
@@ -1009,13 +1011,6 @@
       {/if}
 
       {#if showConnectionAdvanced}
-        {#if connectionsStore.activeConnection}
-          <div class="active-connection-notice">
-            <Icon name="server" size={14} />
-            <span>Connected to: <strong>{connectionsStore.activeConnection.name ?? 'Unknown'}</strong></span>
-          </div>
-        {/if}
-
         <div class="field">
           <label for="api-url">API URL</label>
           <input
@@ -2220,7 +2215,7 @@
   select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   /* Custom range slider — replaces the browser's chunky default with a thin
@@ -2527,7 +2522,7 @@
 
   .font-card.selected {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .font-sample {
@@ -2747,7 +2742,7 @@
 
   .theme-card.selected {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .theme-preview {
@@ -2879,7 +2874,7 @@
   input[type='number']:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   input[type='number']::placeholder {
@@ -2986,7 +2981,7 @@
 
   .connection-row.active {
     border-color: var(--accent-primary);
-    background: rgba(34, 211, 238, 0.05);
+    background: rgba(var(--accent-primary-rgb), 0.05);
   }
 
   .connection-row:hover {
@@ -3086,16 +3081,12 @@
     font-size: var(--font-size-sm);
   }
 
-  .active-connection-notice {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    margin-bottom: var(--spacing-md);
-    border-radius: var(--radius-md);
-    background: rgba(34, 211, 238, 0.08);
-    border: 1px solid rgba(34, 211, 238, 0.2);
-    color: var(--accent-primary);
-    font-size: var(--font-size-sm);
+  .conn-active-label {
+    font-size: var(--font-size-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    white-space: nowrap;
   }
 </style>
