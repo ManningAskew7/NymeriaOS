@@ -1,0 +1,61 @@
+# Nymeria SINGLE-CONTAINER SLIM stack.
+#
+# One container running `python run.py slim` (API + in-process ticker +
+# watchdog + embedded MCP) on SQLite. No Postgres, no Redis, no worker. This is
+# the containerized equivalent of bare-metal `python3 run.py slim`.
+#
+# Usage:
+#   docker compose -f docker-compose.single.yml up -d --build
+#   docker compose -f docker-compose.single.yml logs -f
+#   docker compose -f docker-compose.single.yml down
+#
+# Data (SQLite DBs, accounts, bootstrap/service tokens) lives in the
+# nymeria_single_data volume, kept separate from the main stack's nymeria_data
+# volume so this test never touches a production deployment's state.
+
+services:
+  nymeria-single:
+    image: nymeria-single:local
+    build:
+      context: .
+      dockerfile: Dockerfile.single
+    container_name: nymeria-single
+    restart: unless-stopped
+    # PID 1 reaper so any MCP subprocess grandchildren don't zombify.
+    init: true
+    # run.py auto-loads .env.docker; slim then forces sqlite + redis-off.
+    env_file:
+      - .env.docker
+    environment:
+      NYMERIA_DATA_DIR: /data
+      NYMERIA_WORKSPACE_DIR: /workspace
+    # Lets the in-process agent reach CLIProxy (and any other host service) via
+    # http://host.docker.internal:<port> from inside the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Published on loopback only. The Cloudflare tunnel (cloudflared runs on the
+    # host) reaches it at localhost:8000; nothing is exposed to the LAN.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - nymeria_single_data:/data
+      - nymeria_single_workspace:/workspace
+      # Live code sync for iterating without a rebuild (matches main compose).
+      - ./nymeria:/app/nymeria:ro
+      - ./run.py:/app/run.py:ro
+      # Web UI / Outlook add-in frontend. Uncomment once nymeria-desktop/build
+      # exists (npm run build in ../nymeria-desktop). Without it the API still
+      # serves fine; it just won't serve a browser UI at /.
+      # - ../nymeria-desktop/build:/app/frontend:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  nymeria_single_data:
+    driver: local
+  nymeria_single_workspace:
+    driver: local
