@@ -433,7 +433,7 @@ just as they do for local Docker.
 
 ## Security Considerations
 
-1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add`. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, watchdog, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
+1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, watchdog, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` are git-crypt encrypted. See `docs/git-crypt.md` for policy, rotation, and history-rewriting decisions.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)

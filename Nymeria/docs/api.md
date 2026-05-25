@@ -22,7 +22,10 @@ Most endpoints require Bearer token authentication:
 Authorization: Bearer <token>
 ```
 
-Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer. Created via `python3 run.py users add`  -  see `docs/accounts.md`. Resolve to the user they were issued to.
+Per-user account tokens (`nym_<32-url-safe>`) are the only accepted bearer.
+Create a first token with `python3 run.py users add`, or issue another token
+for an existing user with `python3 run.py users issue-token` - see
+`docs/accounts.md`. Tokens resolve to the user they were issued to.
 
 `X-Nymeria-Act-As: <user_id>` is honored only for admin-role callers and rewrites the effective user to the target (403 for non-admin, 404 for unknown/disabled target).
 

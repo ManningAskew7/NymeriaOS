@@ -340,7 +340,14 @@ For beta install diagnostics, provider/key failures, database locks, and
 
 ### "Invalid API key" / 401 from the desktop app
 
-The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written automatically on the first API boot) for the bootstrap admin token. To mint another user's token: `python3 run.py users add <email> --role user --id <slug>`. Both flows are documented in `docs/accounts.md`.
+The legacy `NYMERIA_API_KEY` shared key was retired. Authentication now uses
+per-user account tokens. Read `<data_dir>/BOOTSTRAP_TOKEN.txt` (written
+automatically on the first API boot) for the bootstrap admin token. To create a
+new user and first token:
+`python3 run.py users add <email> --role user --id <slug>`. To issue another
+token for an existing user without revoking old tokens:
+`python3 run.py users issue-token <id-or-email> --label <device>`. Both flows
+are documented in `docs/accounts.md`.
 
 ### "No API key for LLM provider"
 

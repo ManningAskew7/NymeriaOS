@@ -14,6 +14,7 @@ from typing import List
 from nymeria.config import get_settings
 from nymeria.core.accounts import (
     AccountsRepo,
+    TokenLimitExceeded,
     UserAlreadyExists,
     UserNotFound,
 )
@@ -48,6 +49,14 @@ def _resolve_user_id_by_email(repo: AccountsRepo, email: str) -> str:
     user = repo.get_user_by_email(email)
     if user is None:
         print(f"[error] No user with email: {email}", file=sys.stderr)
+        sys.exit(2)
+    return user.id
+
+
+def _resolve_user_id_by_ref(repo: AccountsRepo, user_ref: str) -> str:
+    user = repo.get_user_by_id(user_ref) or repo.get_user_by_email(user_ref)
+    if user is None:
+        print(f"[error] No user with id or email: {user_ref}", file=sys.stderr)
         sys.exit(2)
     return user.id
 
@@ -146,11 +155,33 @@ def _cmd_rotate_token(args: argparse.Namespace) -> int:
     user_id = _resolve_user_id_by_email(repo, args.email)
     revoked = repo.revoke_all_tokens(user_id)
     token = repo.issue_token(user_id, label=args.label)
-    print(f"Revoked {revoked} existing token(s) for {user_id}.")
+    print(f"Revoked {revoked} existing active token(s) for {user_id}.")
     print()
     print(f"  New token: {token}")
     print()
-    print("Save this token now — it will not be shown again.")
+    print("Save this token now; it will not be shown again.")
+    print(
+        "Use issue-token when you need an additional token without revoking old ones."
+    )
+    return 0
+
+
+def _cmd_issue_token(args: argparse.Namespace) -> int:
+    repo = _repo()
+    user_id = _resolve_user_id_by_ref(repo, args.user)
+    try:
+        token = repo.issue_token(user_id, label=args.label)
+    except UserNotFound:
+        print(f"[error] User not found: {args.user}", file=sys.stderr)
+        return 2
+    except TokenLimitExceeded as e:
+        print(f"[error] {e}", file=sys.stderr)
+        return 2
+    print(f"Issued new token for {user_id}. Existing tokens were not revoked.")
+    print()
+    print(f"  Token: {token}")
+    print()
+    print("Save this token now; it will not be shown again.")
     return 0
 
 
@@ -222,7 +253,20 @@ def build_parser(subparsers: argparse._SubParsersAction) -> None:
     p_enable = actions.add_parser("enable", help="Re-enable a disabled user")
     p_enable.add_argument("email")
 
-    p_rotate = actions.add_parser("rotate-token", help="Revoke all tokens, mint a fresh one")
+    p_issue = actions.add_parser(
+        "issue-token",
+        help="Issue an additional token without revoking existing tokens",
+    )
+    p_issue.add_argument(
+        "user",
+        help="User id or email, for example default or owner@localhost",
+    )
+    p_issue.add_argument("--label", default=None)
+
+    p_rotate = actions.add_parser(
+        "rotate-token",
+        help="Revoke all active tokens, then mint a replacement",
+    )
     p_rotate.add_argument("email")
     p_rotate.add_argument("--label", default=None)
 
@@ -252,6 +296,7 @@ def dispatch(args: argparse.Namespace) -> int:
         "list": _cmd_list,
         "disable": _cmd_disable,
         "enable": _cmd_enable,
+        "issue-token": _cmd_issue_token,
         "rotate-token": _cmd_rotate_token,
         "link-platform": _cmd_link_platform,
         "unlink-platform": _cmd_unlink_platform,

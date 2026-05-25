@@ -390,16 +390,17 @@ Using the Todoist tool as an example:
 ## Planned: Password Guard for Token Operations
 
 The credential vault itself is properly gated - all API endpoints require a
-valid bearer token. However, the CLI (`python3 run.py users rotate-token`)
-bypasses the API and writes directly to SQLite with no authentication. On
-shared or bare-metal production installs, this means any local user could
-mint an admin token and access all vault credentials.
+valid bearer token. However, the CLI (`python3 run.py users issue-token` and
+`rotate-token`) bypasses the API and writes directly to SQLite with no
+authentication. On shared or bare-metal production installs, this means any
+local user could mint an admin token and access all vault credentials.
 
 The mitigation is an optional account password (the `password_hash` column
 already exists in the `users` table). When set, token-issuing operations
-(CLI `rotate-token`, API `POST /me/tokens`) require the password. An email
-reset flow covers the lockout scenario. A `REQUIRE_ACCOUNT_PASSWORD` setting
-lets production admins enforce this while solo installs stay frictionless.
+(CLI issue/rotate commands, API `POST /me/tokens`) require the password. An
+email reset flow covers the lockout scenario. A `REQUIRE_ACCOUNT_PASSWORD`
+setting lets production admins enforce this while solo installs stay
+frictionless.
 
 Full details in [`accounts.md`](accounts.md).
 
