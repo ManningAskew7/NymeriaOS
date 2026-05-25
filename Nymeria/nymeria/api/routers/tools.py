@@ -112,7 +112,7 @@ def create_tools_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Return callable threads actually available to a caller thread."""
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         from ...tools import ALL_TOOLS, OPTIONAL_TOOLS
 
         agent = get_agent_fn()

@@ -496,14 +496,16 @@ function createThreadsStore() {
       saveCurrentThreadId(currentThreadId);
       saveThreads(threads);
 
-      // Eagerly register ownership on the backend so chat-app routing
-      // (Telegram/Discord) can't TOFU-claim this UUID for someone else
-      // before the user sends a message. Fire-and-forget — the user's
-      // toast layer is fed by api.claimThread on failure; this .catch
-      // just suppresses the unhandled-rejection warning.
-      api.claimThread(thread.id).catch((e) => {
-        console.warn('[threads] claim failed:', e);
-      });
+      // NOTE: ownership is claimed lazily, on first real interaction — not
+      // here. The backend auto-claims a personal thread on first touch via
+      // require_thread_access (POST /chat, command execution, and
+      // PATCH /threads/{id}/metadata all run through it). Eagerly claiming
+      // at tab-open time used to register every "New Chat" in thread_owners
+      // immediately, so abandoned tabs became permanent empty backend threads
+      // that reappear after a sync (and, with multiple connections, leaked
+      // across backends). The TOFU window the old eager claim guarded is not
+      // reachable for a freshly generated client UUID: nothing can route a
+      // message into it before the user sends the first one.
 
       return thread;
     },

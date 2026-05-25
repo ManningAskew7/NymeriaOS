@@ -290,6 +290,64 @@ def test_thread_status_enforces_thread_access(
     assert other.status_code == 404
 
 
+def test_read_only_get_does_not_claim_ownerless_thread(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    """Read-only thread GETs must not TOFU-claim an ownerless thread.
+
+    Opening a new "New Chat" tab fires read-only GETs (skills, callable-tools,
+    config, context, ...). If those claim ownership on first touch, an unused
+    tab becomes a permanent empty owner row that reappears in the sidebar
+    after a sync. Ownership must instead be established by the first write.
+    """
+    monkeypatch.setattr(api_module, "publish_sync_event", lambda **kwargs: None)
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    thread_id = "fresh-tab"
+
+    # Precondition: nobody owns the freshly generated thread id.
+    assert agent.accounts_repo.get_thread_owner(thread_id) is None
+
+    # A read-only GET succeeds but must leave the thread ownerless.
+    read = client.get(
+        f"/threads/{thread_id}/context",
+        headers=api_client_builder.auth(token),
+    )
+    assert read.status_code == 200
+    assert agent.accounts_repo.get_thread_owner(thread_id) is None
+
+    # The first write (rename) claims it on first touch.
+    write = client.patch(
+        f"/threads/{thread_id}/metadata",
+        headers=api_client_builder.auth(token),
+        json={"title": "Renamed"},
+    )
+    assert write.status_code == 200
+    assert agent.accounts_repo.get_thread_owner(thread_id) == "owner"
+
+
+def test_read_only_get_still_hides_thread_owned_by_other_user(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The non-claiming read branch preserves cross-user isolation: a thread
+    owned by someone else is still 404, and ownership is never reassigned."""
+    client, agent = _client(tmp_path, api_client_builder)
+    other_token = _create_user(agent, "intruder")
+    _create_user(agent, "owner")
+    thread_id = "owned-elsewhere"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    resp = client.get(
+        f"/threads/{thread_id}/context",
+        headers=api_client_builder.auth(other_token),
+    )
+    assert resp.status_code == 404
+    assert agent.accounts_repo.get_thread_owner(thread_id) == "owner"
+
+
 def test_thread_status_falls_back_to_graph_state_for_memory_backend(
     tmp_path: Path,
     api_client_builder,

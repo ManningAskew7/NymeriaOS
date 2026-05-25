@@ -163,7 +163,7 @@ def create_thread_config_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get per-thread configuration (returns defaults if none saved)."""
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
         tc = agent.thread_config_manager.get_config(thread_id)
         if tc:

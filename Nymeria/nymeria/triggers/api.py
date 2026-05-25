@@ -472,16 +472,33 @@ def _require_same_user_or_admin(user: AuthenticatedUser, path_user_id: str) -> N
         raise HTTPException(status_code=404, detail="Not found")
 
 
-def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
+def _require_thread_access(
+    user: AuthenticatedUser, thread_id: str, *, claim: bool = True
+) -> None:
     """
     Enforce that ``user`` owns ``thread_id`` (or is admin).
 
+    ``claim`` controls first-touch ownership. With ``claim=True`` (the
+    default, used by write/mutating endpoints) a personal thread is claimed
+    on first touch. With ``claim=False`` (read-only GET endpoints) an
+    ownerless personal thread is NOT claimed: access is allowed without
+    inserting a ``thread_owners`` row, and ownership is established later by
+    the first write (POST /chat, command execution, PATCH metadata, explicit
+    POST /claim). This stops merely opening a new thread tab — which fires
+    read-only ``/skills`` and ``/callable-tools`` GETs — from registering a
+    permanent empty "ghost" thread that reappears in the sidebar after a
+    sync. A thread owned by a *different* user still resolves to 404 in both
+    modes, so the read-only branch does not weaken cross-user isolation; it
+    only drops the TOFU claim for an otherwise-ownerless thread.
+
     Admins bypass ownership for already-owned threads but DO claim on first
     touch for personal threads (UUIDs, ``discord_dm_*``, positive
-    ``telegram_<id>``). Without this, a thread an admin opened but never
-    sent a message in stayed ownerless — the first non-admin user (or
-    bot-routed act-as caller) to touch it would TOFU-claim, silently
-    transferring ownership away from the creator.
+    ``telegram_<id>``) when ``claim=True``. Without this, a thread an admin
+    opened but never sent a message in stayed ownerless — the first non-admin
+    user (or bot-routed act-as caller) to touch it would TOFU-claim, silently
+    transferring ownership away from the creator. (With ``claim=False`` an
+    admin merely reading a thread no longer locks it; the admin's first write
+    still does.)
 
     Shared-channel threads (Discord guild channels, Telegram groups,
     Twitch chats) are NEVER claimed by admin — those are inherently
@@ -512,7 +529,8 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
         # Personal thread: claim on first touch so the admin owns what they
         # created. claim_thread is INSERT OR IGNORE — already-owned threads
         # are not disturbed; admin still bypasses the ownership check.
-        agent.accounts_repo.claim_thread(thread_id, user.id)
+        if claim:
+            agent.accounts_repo.claim_thread(thread_id, user.id)
         return
     if _is_shared_channel_thread(thread_id):
         # Shared-channel threads (Discord guild channels, Telegram groups,
@@ -525,8 +543,16 @@ def _require_thread_access(user: AuthenticatedUser, thread_id: str) -> None:
         if user.via_act_as:
             return
         raise HTTPException(status_code=404, detail="Not found")
-    owner = agent.accounts_repo.claim_thread(thread_id, user.id)
-    if owner != user.id:
+    if claim:
+        owner = agent.accounts_repo.claim_thread(thread_id, user.id)
+        if owner != user.id:
+            raise HTTPException(status_code=404, detail="Not found")
+        return
+    # Read-only access: do not TOFU-claim an ownerless thread. Allow the read
+    # when the thread is ownerless or owned by the caller; reject only when it
+    # is owned by someone else (same 404 the claiming branch would raise).
+    owner = agent.accounts_repo.get_thread_owner(thread_id)
+    if owner is not None and owner != user.id:
         raise HTTPException(status_code=404, detail="Not found")
 
 
