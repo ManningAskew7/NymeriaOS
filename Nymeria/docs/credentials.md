@@ -3,6 +3,9 @@
 Nymeria stores reusable tool credentials in an encrypted server-side vault
 backed by `data/accounts.db`. Secret fields are Fernet-encrypted using the
 `NYMERIA_SECRETS_KEY` environment variable via `nymeria/core/secrets.py`.
+Docker deployments must pass that variable into the API/worker/MCP containers,
+not just define it in `.env.docker`, because OAuth/device-code completion saves
+tokens inside the API process.
 
 This document covers the full surface of the credential vault: data model,
 how secrets enter the vault, how tools automatically receive their
