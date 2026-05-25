@@ -42,6 +42,19 @@ authentication with that token.
 
 Token redaction is applied at the logging layer (`config/logging_config.py::_TokenRedactingFilter`), so accidentally logged tokens come out as `nym_<redacted>`.
 
+### Token and key quick reference
+
+| Value | Used for | Prefix / location |
+|---|---|---|
+| Nymeria account token | Logging into the web UI/API as a user | `nym_...` |
+| Bootstrap token | First login for the auto-created `default` admin | `data/BOOTSTRAP_TOKEN.txt` |
+| Internal service token | Worker, watchdog, bots, MCP, and service act-as calls | `NYMERIA_SERVICE_TOKEN`, or `data/SLIM_SERVICE_TOKEN.txt` in slim mode |
+| LLM provider key | Talking to Anthropic, OpenAI, OpenRouter, or another model provider | Provider-specific, usually `sk-...`, `sk-ant-...`, or `sk-or-...` |
+
+Do not paste provider keys into the web UI account-token field. If you need
+another login token for an existing user, issue a new account token. Rotate only
+when the old tokens should stop working.
+
 ## Bootstrap
 
 On first run with an empty `users` table, the agent auto-creates a default admin:
@@ -89,11 +102,15 @@ python3 run.py users add bob@example.com --role user --id bob --display-name "Bo
 # List users
 python3 run.py users list
 
+# Issue an additional token for an existing user without revoking old tokens
+python3 run.py users issue-token owner@localhost --label desktop
+python3 run.py users issue-token default --label desktop
+
 # Temporarily disable / re-enable
 python3 run.py users disable bob@example.com
 python3 run.py users enable bob@example.com
 
-# Revoke every token, mint a fresh one
+# Revoke every active token, then mint a replacement
 python3 run.py users rotate-token bob@example.com
 
 # Link a chat-platform identity to a user (enables bot routing)
@@ -102,7 +119,13 @@ python3 run.py users platforms bob@example.com
 python3 run.py users unlink-platform discord 123456789
 ```
 
-Inside Docker: `docker exec nymeria-api python3 run.py users <action>`.
+Inside Docker, run the command in the API container so it uses the live
+`/data/accounts.db` database from the Docker volume:
+
+```bash
+docker exec nymeria-api python3 run.py users list
+docker exec nymeria-api python3 run.py users issue-token default --label desktop
+```
 
 ## HTTP Admin API
 
@@ -233,6 +256,11 @@ where `<resolved_user_id>` is the Nymeria account the platform user maps to via 
 - **Local:** `Nymeria/data/accounts.db` (override with `NYMERIA_DATA_DIR`)
 - **Docker:** `nymeria_data:/data/accounts.db` (the `nymeria_data` named volume)
 
+For a Docker stack, `python3 run.py users ...` on the host may point at
+`Nymeria/data/accounts.db`, which is not necessarily the database the running
+API container is using. Prefer `docker exec nymeria-api python3 run.py users ...`
+when administering the live stack.
+
 Back this file up alongside `nymeria.db` - losing it locks every user out.
 
 ## Per-user OAuth token caches
@@ -327,16 +355,17 @@ Shared-channel threads are inherently multi-user - per-user ownership rows would
 
 ## Planned: Optional Account Passwords and Email Reset
 
-The CLI (`python3 run.py users rotate-token`) operates directly on SQLite with
-no authentication. On a single-operator VPS this is fine - CLI access implies
-SSH access. On shared or bare-metal production installs (e.g. a Windows
-service), any local user could run the CLI to mint themselves an admin token.
+The CLI (`python3 run.py users issue-token` and `rotate-token`) operates
+directly on SQLite with no authentication. On a single-operator VPS this is
+fine - CLI access implies SSH access. On shared or bare-metal production
+installs (e.g. a Windows service), any local user could run the CLI to mint
+themselves an admin token.
 
 The `password_hash` column already exists in the `users` table but is not
 wired up. The plan:
 
 1. **Optional per-user password.** If a user sets a password (via UI or API),
-   the CLI `rotate-token` and API `POST /me/tokens` require it. If unset,
+   CLI token-issuing commands and API `POST /me/tokens` require it. If unset,
    current token-only behavior is unchanged.
 2. **Email reset flow.** A "forgot password" path sends a time-limited reset
    link to the user's email, covering the lockout scenario without needing
