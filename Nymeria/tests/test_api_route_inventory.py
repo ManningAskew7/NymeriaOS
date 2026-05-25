@@ -157,7 +157,6 @@ EXPECTED_ROUTES = [
     ('/thread-teams/{team_id}', ('PATCH',)),
     ('/threads', ('GET',)),
     ('/threads/import', ('POST',)),
-    ('/threads/metadata/migrate', ('POST',)),
     ('/threads/{thread_id}', ('DELETE',)),
     ('/threads/{thread_id}/attachment_limits', ('GET',)),
     ('/threads/{thread_id}/attachments/validate', ('POST',)),

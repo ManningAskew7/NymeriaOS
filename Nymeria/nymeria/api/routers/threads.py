@@ -27,7 +27,6 @@ from ..schemas.threads import (
     ThreadDreamRequest,
     ThreadDreamResponse,
     ThreadHistoryResponse,
-    ThreadMetadataMigrateRequest,
     ThreadMetadataUpdateRequest,
     ThreadOverviewResponse,
     ThreadStatusResponse,
@@ -824,24 +823,6 @@ def create_threads_router(
         )
 
         return result
-
-    @router.post("/threads/metadata/migrate")
-    async def migrate_thread_metadata(
-        request: ThreadMetadataMigrateRequest,
-        user_id: str = Depends(authed_user_id),
-        user: AuthenticatedUser = Depends(verify_api_key),
-    ):
-        """
-        One-time migration: import thread metadata from frontend localStorage.
-
-        Accepts the frontend's Thread[] format and imports into the backend
-        metadata store. Only imports threads that don't already have metadata.
-        """
-        agent = get_agent_fn()
-        count = agent.thread_metadata_manager.migrate_from_frontend(
-            user_id, request.threads
-        )
-        return {"migrated_threads": count}
 
     @router.post(
         "/threads/{thread_id}/dream",
