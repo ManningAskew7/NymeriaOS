@@ -248,25 +248,53 @@
   }
 </script>
 
-{#if !backendProcessStore.isReady && backendProcessStore.isTauri}
-  <StartupOverlay />
-{:else if configStore.needsSetup}
-  <SetupWizard />
-{:else}
-  <AppShell>
-    {#snippet sidebar()}
-      <Sidebar />
-    {/snippet}
+<!-- Render boundary around the whole app view. Inert unless a descendant
+     throws during render or an effect (the failure mode that otherwise blanks
+     the screen, e.g. a transient reactive read against half-torn-down state
+     during a backend/account switch). On a caught error it shows a recoverable
+     fallback instead of a white screen and logs the stack for diagnosis. The
+     global toast/auth layers below stay outside so they survive a main-view
+     crash. -->
+<svelte:boundary onerror={(error) => console.error('[App] Render boundary caught a fatal error:', error)}>
+  {#if !backendProcessStore.isReady && backendProcessStore.isTauri}
+    <StartupOverlay />
+  {:else if configStore.needsSetup}
+    <SetupWizard />
+  {:else}
+    <AppShell>
+      {#snippet sidebar()}
+        <Sidebar />
+      {/snippet}
 
-    {#snippet main()}
-      <MainPanel />
-    {/snippet}
+      {#snippet main()}
+        <MainPanel />
+      {/snippet}
 
-    {#snippet rightPanel()}
-      <RightPanel />
-    {/snippet}
-  </AppShell>
-{/if}
+      {#snippet rightPanel()}
+        <RightPanel />
+      {/snippet}
+    </AppShell>
+  {/if}
+
+  {#snippet failed(error, reset)}
+    <div class="app-crash" role="alert">
+      <div class="app-crash-card">
+        <h1>Something went wrong</h1>
+        <p>
+          The interface hit an unexpected error. Your data and connections are
+          safe; this is a display problem, not lost work.
+        </p>
+        <div class="app-crash-actions">
+          <button class="app-crash-btn primary" type="button" onclick={reset}>Try again</button>
+          <button class="app-crash-btn" type="button" onclick={() => location.reload()}>Reload app</button>
+        </div>
+        {#if error instanceof Error && error.message}
+          <code class="app-crash-detail">{error.message}</code>
+        {/if}
+      </div>
+    </div>
+  {/snippet}
+</svelte:boundary>
 
 <!-- Global toast layer — sits above every other surface so 401/403/409
      responses from the account/admin endpoints stay visible regardless of
@@ -285,3 +313,81 @@
      a fixed-position layer with the max possible z-index so it can never be
      clipped by an ancestor's overflow or covered by another stacking context. -->
 <TooltipPortal />
+
+<style>
+  /* Fallback shown by the render boundary above when the main view throws.
+     Styled with theme tokens so it stays legible across Midnight/Light/Platinum. */
+  .app-crash {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-lg);
+    background: var(--bg-base);
+    z-index: 9999;
+  }
+
+  .app-crash-card {
+    max-width: 420px;
+    text-align: center;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-xl);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .app-crash-card h1 {
+    margin: 0 0 var(--spacing-sm);
+    font-size: var(--font-size-lg);
+    color: var(--text-primary);
+  }
+
+  .app-crash-card p {
+    margin: 0 0 var(--spacing-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .app-crash-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    justify-content: center;
+  }
+
+  .app-crash-btn {
+    padding: 8px 16px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated-2);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .app-crash-btn:hover {
+    background: var(--bg-hover);
+  }
+
+  .app-crash-btn.primary {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: var(--text-on-accent);
+  }
+
+  .app-crash-btn.primary:hover {
+    background: var(--accent-hover);
+  }
+
+  .app-crash-detail {
+    display: block;
+    margin-top: var(--spacing-md);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    color: var(--text-muted);
+    word-break: break-word;
+  }
+</style>
