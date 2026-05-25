@@ -1,0 +1,74 @@
+# Nymeria Single-Process Dockerfile - `run.py slim` in one container
+#
+# Hosts the single-process slim launcher (API + in-process ticker + watchdog +
+# embedded MCP, all backed by SQLite under /data). This is the containerized
+# equivalent of `python3 run.py slim` on bare metal: no Postgres, no Redis, no
+# separate worker.
+#
+# NOTE ON NAMING: this is deliberately NOT `Dockerfile.slim`. That file is the
+# *thin-client* image (CMD `run.py watchdog`) that docker-compose.yml builds as
+# `nymeria-slim:local` for the watchdog / bots / mcp containers - services that
+# call the API over HTTP and never run an agent. This image is the opposite:
+# it runs the full NymeriaAgent in-process. Keep the names distinct.
+#
+# Base is plain Debian (python:3.11-slim-bookworm), not Kali. The ~1250 optional
+# tools are in-process Python and work here. Tools that shell out to system
+# binaries are NOT installed: browser automation (Chromium/Playwright), Kali
+# security tools, the Claude Code CLI tool (Node), and npx/uvx-spawned MCP
+# servers. Layer those in later if a specific test needs them.
+#
+# Build: docker build -f Dockerfile.single -t nymeria-single .
+# Run:   see docker-compose.single.yml
+
+FROM python:3.11-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Minimal runtime utilities + toolchain for building any wheels without
+# prebuilt manylinux artifacts (sqlite-vec, cryptography, etc.). The compiler
+# toolchain is purged after the pip install to keep the image lean.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gcc \
+    g++ \
+    make \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Non-root user pinned to uid/gid 999 so the shared /data named volume lines up
+# with the other Nymeria image variants (Dockerfile.full / Dockerfile.slim).
+RUN groupadd -r -g 999 nymeria \
+    && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria \
+    && mkdir -p /data /workspace \
+    && chown -R nymeria:nymeria /app /data /workspace
+
+# requirements.txt already includes requirements-sqlite.txt (sqlite-vec,
+# aiosqlite, langgraph-checkpoint-sqlite), which is everything slim needs.
+# Postgres/Redis/Firebase deps from requirements-docker.txt are intentionally
+# omitted - slim forces DATABASE_BACKEND=sqlite and REDIS_ENABLED=false.
+COPY requirements*.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc g++ make \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --chown=nymeria:nymeria . .
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV NYMERIA_DATA_DIR=/data
+ENV NYMERIA_WORKSPACE_DIR=/workspace
+ENV PATH="/usr/local/bin:$PATH"
+
+USER nymeria
+
+# REST API + embedded MCP at /mcp (single process).
+EXPOSE 8000
+
+# Bind to 0.0.0.0 inside the container; the host publishes this on loopback
+# only (see docker-compose.single.yml). `run.py slim` force-sets
+# DATABASE_BACKEND=sqlite and REDIS_ENABLED=false before settings are cached.
+CMD ["python", "run.py", "slim", "--host", "0.0.0.0", "--port", "8000"]
