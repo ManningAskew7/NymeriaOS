@@ -13,10 +13,14 @@
   --text-secondary: #9aa0a6;
   --text-muted: #6b7280;
 
-  /* Accent (Blue/Cyan) */
-  --accent-primary: #22d3ee;
-  --accent-secondary: #3b82f6;
-  --accent-hover: #06b6d4;
+  /* Accent (calm cyan — bright reserved for primary actions only).
+     Aligned to the Midnight theme so the pre-hydration first paint matches
+     the live theme applied via themes.ts. */
+  --accent-primary: #5fb8cc;
+  --accent-secondary: #5b8bbf;
+  --accent-hover: #4ba3b8;
+  /* Dark ink for text/icons placed on the light cyan accent fill (Midnight). */
+  --text-on-accent: #0b1416;
 
   /* Semantic */
   --success: #34d399;
@@ -29,9 +33,10 @@
   --bubble-ai: #1a1d21;
   --bubble-tool: #1a1f2e;
 
-  /* Borders */
-  --border-subtle: #2a2e33;
-  --border-default: #3a3f45;
+  /* Borders — hairline (Radix steps 6/7), matching the Midnight runtime
+     values from themes.ts. Separation leans on the elevation ladder. */
+  --border-subtle: #24282d;
+  --border-default: #343a40;
   --border-focus: var(--accent-primary);
 
   /* Shadows */
@@ -85,11 +90,11 @@
   --glass-blur-strong: blur(20px);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 
-  /* Accent derived */
-  --accent-primary-rgb: 34, 211, 238;
-  --accent-primary-alpha: rgba(34, 211, 238, 0.15);
-  --accent-glow-sm: 0 0 12px rgba(34, 211, 238, 0.15);
-  --accent-glow-md: 0 0 20px rgba(34, 211, 238, 0.2);
+  /* Accent derived — Midnight cyan (#5fb8cc) */
+  --accent-primary-rgb: 95, 184, 204;
+  --accent-primary-alpha: rgba(95, 184, 204, 0.15);
+  --accent-glow-sm: 0 0 12px rgba(95, 184, 204, 0.15);
+  --accent-glow-md: 0 0 20px rgba(95, 184, 204, 0.2);
 }
 
 /* Reset */

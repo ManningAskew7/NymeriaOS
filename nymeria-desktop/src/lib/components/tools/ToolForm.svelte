@@ -532,7 +532,7 @@
   textarea:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   textarea {
@@ -592,7 +592,7 @@
 
   .type-btn.active {
     border-color: var(--accent-primary);
-    background: rgba(34, 211, 238, 0.1);
+    background: rgba(var(--accent-primary-rgb), 0.1);
   }
 
   .type-btn strong {

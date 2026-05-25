@@ -434,7 +434,7 @@
 
   .thread-item.active {
     background: var(--bg-active);
-    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(var(--accent-primary-rgb), 0.08);
   }
 
   .thread-item.selected {
@@ -452,7 +452,7 @@
     align-items: center;
     justify-content: center;
     background: var(--accent-primary);
-    color: var(--bg-base);
+    color: var(--text-on-accent);
     border-radius: var(--radius-sm);
     z-index: 1;
   }
@@ -653,7 +653,7 @@
     font-size: var(--font-size-3xs);
     font-weight: 600;
     background: var(--accent-primary);
-    color: var(--bg-base);
+    color: var(--text-on-accent);
     border-radius: var(--radius-full);
   }
 

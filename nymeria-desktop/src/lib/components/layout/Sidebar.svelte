@@ -215,7 +215,7 @@
     height: 2.5em;
     object-fit: contain;
     flex-shrink: 0;
-    filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.25));
+    filter: drop-shadow(0 0 6px rgba(var(--accent-primary-rgb), 0.25));
   }
 
   :global(html[data-theme='light']) .brand-mark {
@@ -357,7 +357,7 @@
     padding: 0 3px;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border-radius: 8px;
     display: flex;

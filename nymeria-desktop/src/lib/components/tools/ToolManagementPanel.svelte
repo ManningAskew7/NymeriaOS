@@ -1761,7 +1761,7 @@
   }
 
   .tool-type.http {
-    background: rgba(34, 211, 238, 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
     color: var(--accent-primary);
   }
 

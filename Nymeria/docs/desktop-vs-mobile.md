@@ -497,16 +497,28 @@ or thinking buffer before switching the activity phase to `Formulating...`, so
 pre-tool preamble text is visible before the phase label is shown. Mobile has
 not been replicated yet.
 
+### Themes
+
+The app ships three themes: **Midnight** (default dark), **Light** (warm
+paper), and **Platinum** (monochrome dark). `themes.ts` is byte-identical
+across desktop and mobile (enforced as `EXACT_MATCH` by
+`scripts/check_cross_app_drift.py`).
+
+`ThemeColors` is the semantic color layer. Each token maps to a fixed role on
+the Radix Colors 12-step scale (documented in `themes.ts`): backgrounds 1-5,
+borders 6-7, focus ring 8, accent solid 9-10, text 11-12. `textOnAccent` is the
+paired role for legible text on a solid accent fill.
+
 ### Adding a new theme
 
-1. Add it to `themes.ts` in both apps
-2. Update `SettingsPanel.svelte` in both apps independently
+1. Add it to `themes.ts` (author once, copy byte-identical to both apps)
+2. The Appearance picker auto-enumerates via `getThemeList()`; no UI edit needed
 
 ### Adding a new theme color token
 
 1. Add the token to `ThemeColors`
 2. Add the matching CSS custom property to `themeColorCssVariables`
-3. Add a value for every theme in desktop and mobile
+3. Add a value for every theme (the `satisfies` constraint forces this)
 4. Run `npm run check` in both apps
 
 ### Adding a new settings field

@@ -3,27 +3,56 @@
  *
  * Each theme defines all the CSS custom properties used throughout the app.
  * Themes are applied instantly by updating CSS variables on the document root.
+ *
+ * COLOR TOKEN MODEL
+ * -----------------
+ * `ThemeColors` is the app's semantic color layer. Values are hand-picked per
+ * theme, but each token maps to a fixed role on the Radix Colors 12-step scale,
+ * so the same token does the same job in every theme. Author new values by step
+ * role, not by eye:
+ *
+ *   step 1  -> bgBase        app background
+ *   step 2  -> bgElevated    subtle surface (sidebar, panels)
+ *   step 3  -> bgElevated2   UI component background, rest
+ *   step 4  -> bgHover       UI component background, hover
+ *   step 5  -> bgActive      UI component background, active / selected
+ *   step 6  -> borderSubtle  non-interactive hairline (cards, dividers)
+ *   step 7  -> borderDefault interactive UI border (inputs, buttons)
+ *   step 8  -> (--border-focus, derived = accentPrimary) focus ring
+ *   step 9  -> accentPrimary solid accent fill (primary actions)
+ *   step 10 -> accentHover   solid accent fill, hover
+ *   step 11 -> textSecondary low-contrast text (meta, labels)
+ *   step 12 -> textPrimary   highest-contrast text (body, headings)
+ *
+ * `textOnAccent` is the paired-role token (Material 3 convention): the legible
+ * text/icon color to place ON a solid `accentPrimary` fill. Pick it for contrast
+ * against the accent, not against the background.
+ *
+ * House rule: accents stay calm (~47% HSL saturation); bright color is reserved
+ * for primary actions. Platinum is the documented exception that runs a brighter
+ * (near-white silver) accent.
  */
 
-export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast' | 'platinum';
+export type ThemeName = 'midnight' | 'light' | 'platinum';
 
 export interface ThemeColors {
-  // Backgrounds
+  // Backgrounds — Radix steps 1-5 (app bg -> active component bg)
   bgBase: string;
   bgElevated: string;
   bgElevated2: string;
   bgHover: string;
   bgActive: string;
 
-  // Text
+  // Text — Radix steps 11-12 (+ a muted tier below 11)
   textPrimary: string;
   textSecondary: string;
   textMuted: string;
 
-  // Accents
+  // Accents — solid fill at steps 9-10, plus the on-accent paired role
   accentPrimary: string;
   accentSecondary: string;
   accentHover: string;
+  textOnAccent: string;
 
   // Semantic
   success: string;
@@ -36,7 +65,7 @@ export interface ThemeColors {
   bubbleAi: string;
   bubbleTool: string;
 
-  // Borders
+  // Borders — Radix steps 6 (subtle hairline) and 7 (interactive UI border)
   borderSubtle: string;
   borderDefault: string;
 }
@@ -59,6 +88,7 @@ const themeColorCssVariables = {
   accentPrimary: '--accent-primary',
   accentSecondary: '--accent-secondary',
   accentHover: '--accent-hover',
+  textOnAccent: '--text-on-accent',
   success: '--success',
   warning: '--warning',
   error: '--error',
@@ -86,6 +116,8 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       accentPrimary: '#5fb8cc',
       accentSecondary: '#5b8bbf',
       accentHover: '#4ba3b8',
+      // Dark ink for text/icons placed on the light cyan accent fill.
+      textOnAccent: '#0b1416',
       success: '#34d399',
       warning: '#fbbf24',
       error: '#f87171',
@@ -93,70 +125,11 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bubbleUser: '#1e3a5f',
       bubbleAi: '#1a1d21',
       bubbleTool: '#1a1f2e',
-      // Bumped from #2a2e33 (matched bgHover, swallowed by elevated bg) to
-      // a clearly distinguishable steel-gray. The right panel's effective
-      // bg over bg-base lands around rgb(25, 28, 32); these border values
-      // sit a solid ~25-35pt above that, so the framing reads cleanly.
-      borderSubtle: '#4a5058',
-      borderDefault: '#5a6068',
-    },
-  },
-
-  monokai: {
-    name: 'Monokai',
-    description: 'Classic editor theme with calm hot-pink accents',
-    colors: {
-      bgBase: '#272822',
-      bgElevated: '#2f3028',
-      bgElevated2: '#3a3b31',
-      bgHover: '#45463c',
-      bgActive: '#52534a',
-      textPrimary: '#f8f8f2',
-      textSecondary: '#d9d9c6',
-      textMuted: '#8e8a6f',
-      // Muted to ~47% HSL saturation to match the calmer-accent design.
-      // Original was '#f92672' / '#fd971f' / '#ff5b95'.
-      accentPrimary: '#cc5478',
-      accentSecondary: '#cc8746',
-      accentHover: '#d97aa3',
-      success: '#a6e22e',
-      warning: '#fd971f',
-      error: '#ff6e6e',
-      info: '#66d9ef',
-      bubbleUser: '#5c1e3d',
-      bubbleAi: '#2f3028',
-      bubbleTool: '#3d3424',
-      borderSubtle: '#35362d',
-      borderDefault: '#49483e',
-    },
-  },
-
-  dracula: {
-    name: 'Dracula',
-    description: 'Velvet dark theme with calm purple and pink accents',
-    colors: {
-      bgBase: '#282a36',
-      bgElevated: '#2e3140',
-      bgElevated2: '#353849',
-      bgHover: '#3f4254',
-      bgActive: '#4a4d63',
-      textPrimary: '#f8f8f2',
-      textSecondary: '#d6d6c8',
-      textMuted: '#7d85b3',
-      // Muted to ~47% HSL saturation to match the calmer-accent design.
-      // Original was '#bd93f9' / '#ff79c6' / '#d5b5fc'.
-      accentPrimary: '#a796cc',
-      accentSecondary: '#c98ab1',
-      accentHover: '#bdadd9',
-      success: '#50fa7b',
-      warning: '#f1fa8c',
-      error: '#ff5555',
-      info: '#8be9fd',
-      bubbleUser: '#4a3a7a',
-      bubbleAi: '#2e3140',
-      bubbleTool: '#3d3449',
-      borderSubtle: '#34374a',
-      borderDefault: '#44475a',
+      // Hairline borders (steps 6/7). Surface separation comes from the
+      // elevation ladder above, not from heavy lines — these sit just enough
+      // above the panel bg (~rgb(25,28,32)) to frame cleanly without shouting.
+      borderSubtle: '#24282d',
+      borderDefault: '#343a40',
     },
   },
 
@@ -183,6 +156,8 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       accentPrimary: '#2d7d75',
       accentSecondary: '#b07a3a',
       accentHover: '#3a988e',
+      // Off-white for text/icons on the teal/amber solid fills.
+      textOnAccent: '#fdfbf2',
       success: '#16a34a',
       warning: '#ca8a04',
       error: '#dc2626',
@@ -199,57 +174,36 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
     },
   },
 
-  'high-contrast': {
-    name: 'High Contrast',
-    description: 'Pure black background with amber accents for accessibility',
-    colors: {
-      bgBase: '#000000',
-      bgElevated: '#0f0f10',
-      bgElevated2: '#1a1a1c',
-      bgHover: '#26262a',
-      bgActive: '#34343a',
-      textPrimary: '#ffffff',
-      textSecondary: '#e5e5e5',
-      textMuted: '#a3a3a3',
-      accentPrimary: '#fbbf24',
-      accentSecondary: '#22d3ee',
-      accentHover: '#fcd34d',
-      success: '#4ade80',
-      warning: '#fb923c',
-      error: '#f87171',
-      info: '#60a5fa',
-      bubbleUser: '#78350f',
-      bubbleAi: '#0f0f10',
-      bubbleTool: '#292524',
-      borderSubtle: '#2a2a2a',
-      borderDefault: '#525252',
-    },
-  },
-
   platinum: {
     name: 'Platinum',
     description: 'Premium monochrome with platinum silver accents',
     colors: {
-      bgBase: '#0a0a0c',
-      bgElevated: '#141418',
-      bgElevated2: '#1e1e23',
-      bgHover: '#2a2a30',
-      bgActive: '#36363d',
+      // Lifted off near-black to a desaturated cool-dark surface (still darker
+      // than Midnight) with a faint blue cast, then a genuine elevation ladder
+      // so depth reads instead of flat black.
+      bgBase: '#0d0e12',
+      bgElevated: '#15171c',
+      bgElevated2: '#1d2026',
+      bgHover: '#282c33',
+      bgActive: '#333841',
       textPrimary: '#f0f0f2',
       textSecondary: '#a8a8b0',
       textMuted: '#6e6e75',
+      // Documented exception: Platinum runs a brighter near-white silver accent.
       accentPrimary: '#e0f0ff',
       accentSecondary: '#8291a8',
       accentHover: '#f0f8ff',
+      // Dark ink for text/icons on the near-white accent fill.
+      textOnAccent: '#0c0e12',
       success: '#86efac',
       warning: '#fcd34d',
       error: '#f87171',
       info: '#a5b4fc',
       bubbleUser: '#2a2d36',
-      bubbleAi: '#141418',
-      bubbleTool: '#1c1e24',
-      borderSubtle: '#1e1e23',
-      borderDefault: '#3a3a40',
+      bubbleAi: '#15171c',
+      bubbleTool: '#1c2027',
+      borderSubtle: '#232831',
+      borderDefault: '#333a44',
     },
   },
 };

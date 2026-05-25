@@ -812,7 +812,7 @@ export interface DoneEvent {
 }
 
 // Theme type
-export type ThemeName = 'midnight' | 'monokai' | 'dracula' | 'light' | 'high-contrast' | 'platinum';
+export type ThemeName = 'midnight' | 'light' | 'platinum';
 
 // Identity of the currently connected Nymeria account, returned by GET /me.
 // Drives per-user namespacing of localStorage keys.

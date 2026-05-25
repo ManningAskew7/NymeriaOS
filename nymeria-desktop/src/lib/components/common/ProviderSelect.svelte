@@ -296,19 +296,19 @@
               commit(row.option);
             }}
           >
-            <div class="option-main">
+            <div class="option-text">
               <span class="option-label">{row.option.label}</span>
-              {#if row.option.tier}
-                <span class="chip chip-{row.option.tier} chip-sm">
-                  {tierChipLabel(row.option.tier)}
-                </span>
+              {#if row.option.description}
+                <div class="option-description">{row.option.description}</div>
+              {/if}
+              {#if row.option.notesForUser}
+                <div class="option-warning">{row.option.notesForUser}</div>
               {/if}
             </div>
-            {#if row.option.description}
-              <div class="option-description">{row.option.description}</div>
-            {/if}
-            {#if row.option.notesForUser}
-              <div class="option-warning">{row.option.notesForUser}</div>
+            {#if row.option.tier}
+              <span class="chip chip-{row.option.tier} chip-sm">
+                {tierChipLabel(row.option.tier)}
+              </span>
             {/if}
           </li>
         {/if}
@@ -340,11 +340,11 @@
   }
 
   .trigger:hover:not(:disabled) {
-    border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
+    border-color: var(--border-default, rgba(255, 255, 255, 0.24));
   }
 
   .trigger:focus-visible {
-    outline: 2px solid var(--accent, #6366f1);
+    outline: 2px solid var(--accent-primary, #6366f1);
     outline-offset: -1px;
   }
 
@@ -354,7 +354,7 @@
   }
 
   .open .trigger {
-    border-color: var(--accent, #6366f1);
+    border-color: var(--accent-primary, #6366f1);
   }
 
   .trigger-content {
@@ -395,12 +395,12 @@
     overflow-y: auto;
     margin: 0;
     padding: 4px 0;
-    background: var(--bg-overlay, #1f1f2a);
-    border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.18));
+    background: var(--bg-elevated-2, #1f1f2a);
+    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.18));
     border-radius: 6px;
     list-style: none;
     z-index: 50;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
   }
 
   .group-header {
@@ -424,8 +424,10 @@
 
   .option {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     padding: 6px 12px;
     cursor: pointer;
     color: var(--text-primary, #e4e4e7);
@@ -436,17 +438,18 @@
   }
 
   .option.selected {
-    background: var(--bg-selected, rgba(99, 102, 241, 0.18));
+    background: var(--bg-active, rgba(99, 102, 241, 0.18));
   }
 
-  .option-main {
+  .option-text {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
   }
 
   .option-label {
-    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -461,44 +464,33 @@
 
   .option-warning {
     font-size: var(--font-size-2xs);
-    color: var(--warning, #fbbf24);
+    color: var(--error, #f87171);
     line-height: 1.35;
   }
 
   .chip {
     display: inline-flex;
     align-items: center;
-    padding: 2px 7px;
     font-size: var(--font-size-3xs);
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    border-radius: 4px;
     line-height: 1.4;
     flex-shrink: 0;
+    color: var(--text-primary, #e4e4e7);
   }
 
   .chip-sm {
-    padding: 1px 5px;
     font-size: var(--font-size-3xs);
   }
 
-  .chip-native {
-    color: var(--success, #4ade80);
-    background: rgba(74, 222, 128, 0.12);
-    border: 1px solid rgba(74, 222, 128, 0.4);
-  }
-
+  .chip-native,
   .chip-gateway {
-    color: var(--info, #60a5fa);
-    background: rgba(96, 165, 250, 0.12);
-    border: 1px solid rgba(96, 165, 250, 0.4);
+    color: var(--text-primary, #e4e4e7);
   }
 
   .chip-unverified {
-    color: var(--warning, #fbbf24);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: var(--error, #f87171);
   }
 
   /* Touch devices (mobile, tablets): enlarge tap targets to at least 44px so

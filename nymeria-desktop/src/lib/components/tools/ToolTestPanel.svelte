@@ -196,7 +196,7 @@
   }
 
   .tool-type.http {
-    background: rgba(34, 211, 238, 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
     color: var(--accent-primary);
   }
 
@@ -271,7 +271,7 @@
   .param-field select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .param-hint {

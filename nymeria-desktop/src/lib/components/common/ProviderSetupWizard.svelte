@@ -588,8 +588,8 @@
 
   .step.active {
     color: var(--accent-primary);
-    border-color: rgba(34, 211, 238, 0.35);
-    background: rgba(34, 211, 238, 0.08);
+    border-color: rgba(var(--accent-primary-rgb), 0.35);
+    background: rgba(var(--accent-primary-rgb), 0.08);
   }
 
   .step.complete span {
@@ -639,7 +639,7 @@
   select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .model-input {
@@ -674,9 +674,9 @@
 
   .method-option.selected {
     border-color: var(--accent-primary);
-    background: rgba(34, 211, 238, 0.08);
+    background: rgba(var(--accent-primary-rgb), 0.08);
     color: var(--text-primary);
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.12);
   }
 
   .method-option span {
