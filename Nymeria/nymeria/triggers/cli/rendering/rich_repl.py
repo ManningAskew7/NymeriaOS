@@ -27,7 +27,13 @@ from ..state import (
 )
 from ..theme import CLITheme, DEFAULT_CLI_THEME, rich_style
 from .markdown import (
+    BLOCKQUOTE_RE,
+    BULLET_RE,
     collapse_inline,
+    FENCE_RE,
+    HEADING_RE,
+    HR_RE,
+    NUMBERED_RE,
     render_inline_rich,
     render_markdown_lines,
     truncate_cell_width,
@@ -51,6 +57,7 @@ THINKING_PREVIEW_MIN_CELLS = 12
 _DENSE_MARKDOWN_BLOCK_KINDS = {"table", "code", "list", "blockquote", "hr"}
 _RICH_NATIVE_LEADING_BLANK_KINDS = {"table", "list", "blockquote"}
 _RICH_NATIVE_TRAILING_BLANK_KINDS = {"hr"}
+_INLINE_MARKDOWN_MARKERS = ("**", "__", "~~", "](", "`")
 
 
 class RichReplRenderer:
@@ -283,7 +290,11 @@ class RichReplRenderer:
 
         if not self._ascii_only():
             if self._stream_rich_response_lines:
-                self._flush_stream_line(force=True)
+                block_kind = "final" if self._turn_seen_tool else "preamble"
+                self._flush_rich_scroll_region_stream(
+                    block_kind=block_kind,
+                    force=True,
+                )
                 return
             block_kind = "final" if self._turn_seen_tool else "preamble"
             self._flush_rich_markdown_blocks(block_kind=block_kind, force=True)
@@ -581,8 +592,8 @@ class RichReplRenderer:
                 self._begin_assistant_block(block_kind)
                 self._stream_line_buffer += text
                 self._response_stream_active = True
-                self._flush_complete_stream_lines(block_kind)
-                self._flush_stream_line_if_ready(block_kind)
+                self._flush_complete_rich_scroll_region_lines(block_kind)
+                self._flush_rich_scroll_region_tail_if_ready(block_kind)
                 return
             blocks = self._markdown_stream.append(text)
             self._response_stream_active = self._markdown_stream.has_pending
@@ -609,6 +620,65 @@ class RichReplRenderer:
         self._response_stream_active = False
         if blocks:
             self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+
+    def _flush_complete_rich_scroll_region_lines(self, block_kind: str) -> None:
+        while "\n" in self._stream_line_buffer:
+            line, self._stream_line_buffer = self._stream_line_buffer.split("\n", 1)
+            self._print_rich_scroll_region_line(line, block_kind)
+        self._response_stream_active = (
+            bool(self._stream_line_buffer) or self._markdown_stream.has_pending
+        )
+
+    def _flush_rich_scroll_region_tail_if_ready(self, block_kind: str) -> None:
+        if not self._stream_line_buffer:
+            self._response_stream_active = self._markdown_stream.has_pending
+            return
+        if self._markdown_stream.has_pending or _line_prefers_rich_markdown(
+            self._stream_line_buffer
+        ):
+            blocks = self._markdown_stream.append(self._stream_line_buffer)
+            self._stream_line_buffer = ""
+            self._response_stream_active = self._markdown_stream.has_pending
+            if blocks:
+                self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+            return
+        self._flush_stream_line_if_ready(block_kind)
+
+    def _flush_rich_scroll_region_stream(
+        self,
+        *,
+        block_kind: str,
+        force: bool,
+    ) -> None:
+        if not force:
+            self._response_stream_active = (
+                bool(self._stream_line_buffer) or self._markdown_stream.has_pending
+            )
+            return
+        if self._stream_line_buffer:
+            if self._markdown_stream.has_pending or _line_prefers_rich_markdown(
+                self._stream_line_buffer
+            ):
+                blocks = self._markdown_stream.append(self._stream_line_buffer)
+                self._stream_line_buffer = ""
+                if blocks:
+                    self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+            else:
+                self._flush_stream_line(force=True, block_kind=block_kind)
+        if self._markdown_stream.has_pending:
+            blocks = self._markdown_stream.flush()
+            if blocks:
+                self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+        self._response_stream_active = False
+
+    def _print_rich_scroll_region_line(self, line: str, block_kind: str) -> None:
+        if self._markdown_stream.has_pending or _line_prefers_rich_markdown(line):
+            blocks = self._markdown_stream.append(f"{line}\n")
+            self._response_stream_active = self._markdown_stream.has_pending
+            if blocks:
+                self._print_rich_markdown_blocks(blocks, block_kind=block_kind)
+            return
+        self._print_stream_line(line, block_kind)
 
     def _print_rich_markdown_blocks(
         self,
@@ -826,10 +896,17 @@ class RichReplRenderer:
                 )
                 self._response_stream_active = False
         if self._stream_line_buffer and self._last_rendered_block != block_kind:
-            self._flush_stream_line(
-                force=True,
-                block_kind=self._last_rendered_block or block_kind,
-            )
+            previous_block = self._last_rendered_block or block_kind
+            if self._stream_rich_response_lines and not self._ascii_only():
+                self._flush_rich_scroll_region_stream(
+                    block_kind=previous_block,
+                    force=True,
+                )
+            else:
+                self._flush_stream_line(
+                    force=True,
+                    block_kind=previous_block,
+                )
         if (
             self._last_rendered_block is not None
             and self._last_rendered_block != block_kind
@@ -1189,6 +1266,36 @@ def _positive_width(width: int | None) -> int:
 
 def _stream_flush_width(width: int | None) -> int:
     return max(32, min(72, _positive_width(width) - 8))
+
+
+def _line_prefers_rich_markdown(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    if (
+        FENCE_RE.match(line)
+        or HEADING_RE.match(line)
+        or HR_RE.match(line)
+        or BLOCKQUOTE_RE.match(line)
+        or BULLET_RE.match(line)
+        or NUMBERED_RE.match(line)
+    ):
+        return True
+    if _looks_like_pipe_table_row(stripped):
+        return True
+    return any(marker in stripped for marker in _INLINE_MARKDOWN_MARKERS)
+
+
+def _looks_like_pipe_table_row(line: str) -> bool:
+    text = str(line or "").strip()
+    if "|" not in text:
+        return False
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    cells = [cell.strip() for cell in text.split("|")]
+    return len(cells) >= 2 and any(cells)
 
 
 def _coerce_markdown_block(block: MarkdownBlock | str) -> MarkdownBlock:

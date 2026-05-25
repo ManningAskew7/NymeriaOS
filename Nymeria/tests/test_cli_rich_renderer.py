@@ -1480,6 +1480,36 @@ def test_rich_renderer_scroll_region_mode_streams_sentence_before_done() -> None
     assert "Streaming now." in output.stdout_text
 
 
+def test_rich_renderer_scroll_region_mode_uses_rich_markdown_for_blocks() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+        stream_rich_response_lines=True,
+    )
+    renderer.start_turn("markdown", thread_id="thread-1", now=0.0)
+
+    renderer.render_events(
+        [
+            {"type": "response", "content": "## Heading\n\nName | Value\n"},
+            {"type": "response", "content": "--- | ---:\n"},
+            {"type": "response", "content": "**alpha** | 42\n\n```python\n"},
+            {"type": "response", "content": "print('hi')\n```\n"},
+            {"type": "done", "tool_call_count": 0},
+        ],
+        now=1.0,
+    )
+
+    assert "Heading" in output.stdout_text
+    assert "## Heading" not in output.stdout_text
+    assert "alpha" in output.stdout_text
+    assert "--- | ---" not in output.stdout_text
+    assert "print" in output.stdout_text
+    assert "```python" not in output.stdout_text
+
+
 def test_rich_renderer_streams_response_lines_without_cutting_text() -> None:
     output = CapturedRenderOutput()
     renderer = RichReplRenderer(
