@@ -346,7 +346,7 @@
   }
 
   .binding-chat {
-    font-family: var(--font-family-mono);
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
   }
 

@@ -222,8 +222,8 @@
     background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   }
   .skills-thread-panel .skill-btn-danger {
-    color: var(--danger, #ef4444);
-    border-color: color-mix(in srgb, var(--danger, #ef4444) 40%, transparent);
-    background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 40%, transparent);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
   }
 </style>

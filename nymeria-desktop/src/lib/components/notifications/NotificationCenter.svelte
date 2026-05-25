@@ -104,7 +104,7 @@
     margin-bottom: var(--spacing-sm);
     width: max(100%, 280px);
     max-width: calc(100vw - 24px);
-    background: var(--bg-primary);
+    background: var(--bg-base);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);

@@ -592,7 +592,7 @@
   }
 
   .server-card.expanded {
-    border-color: var(--border-hover, #555);
+    border-color: var(--border-default);
   }
 
   .server-card.disabled-server {
