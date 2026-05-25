@@ -280,7 +280,7 @@ Google (Calendar/Docs/Drive/Sheets/Gmail) and Microsoft (Outlook/Graph) OAuth to
 
 Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the agent sets `configurable.user_id` on every graph invocation). No tool can be tricked into loading a different user's token cache.
 
-If an OAuth token becomes stale, revoked, or attached to the wrong account, the user removes the credential from Settings > Connections or the agent calls `auth_manager(action="disable", credential_id=...)`. For `google_gmail` specifically, the descriptor's `post_clear_hook` also removes the exported MCP credentials file. For Private B the cleanup tool remains `_prv_b_auth(action="clear")`.
+If an OAuth token becomes stale, revoked, or attached to the wrong account, the user removes the credential from Settings > Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`. For `google_gmail` specifically, the descriptor's `post_clear_hook` also removes the exported MCP credentials file. For Private B the cleanup tool remains `_prv_b_auth(action="clear")`.
 
 Tokens land in the encrypted credential vault as `kind=oauth_token` when `NYMERIA_SECRETS_KEY` is configured. Token reads do a vault-first lookup with a read-only fallback to the legacy file caches; production installs should use the vault path. File fallback storage creates `data/auth_tokens/<user_id>/` with `0700` permissions and cache files with `0600` permissions.
 

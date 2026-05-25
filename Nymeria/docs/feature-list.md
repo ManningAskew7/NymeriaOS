@@ -176,11 +176,11 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
-| **Credentials** | `auth_manager`, `request_credential` |
+| **Credentials** | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` |
 | **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when needed |
 
-The code-owned source of truth is `nymeria/tools/__init__.py`: 17 core tools in
-`ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-22.
+The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
+`ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-25.
 
 ### Optional Tool Categories
 

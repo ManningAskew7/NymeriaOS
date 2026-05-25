@@ -575,7 +575,7 @@ def _apply_bind_target(
        credentials row so vault read-side (``_target_allowed``) lets the
        target read the secret.
     2. ``bind_credential``: writes the bookkeeping row in
-       ``credential_bindings`` (used by ``auth_manager``'s list/bind UI).
+       ``credential_bindings`` (used by the credential inspection/binding tools).
     3. ``mcp_manager.shutdown_server`` if the target is an MCP server:
        force the next tool call to respawn the connection so the new
        vault value resolves into its env. Env-var resolution runs once

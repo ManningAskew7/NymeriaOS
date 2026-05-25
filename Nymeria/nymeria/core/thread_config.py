@@ -147,8 +147,8 @@ class ThreadConfig(BaseModel):
         if isinstance(v, dict):
             out = {}
             for name, entry in v.items():
-                migrated = migrate_tool_names([str(name)])[0]
-                out.setdefault(migrated, entry)
+                for migrated in migrate_tool_names([str(name)]):
+                    out.setdefault(migrated, entry)
             return out
         return v
     # Agent Skills (SKILL.md progressive-disclosure bundles).

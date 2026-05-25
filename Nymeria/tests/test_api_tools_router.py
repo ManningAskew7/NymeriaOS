@@ -251,6 +251,35 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     assert agent.default_graph_rebuilds == 1
 
 
+def test_default_tools_accepts_split_auth_manager_legacy_name(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+
+    response = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": ["auth_manager", "auth_manage"]},
+    )
+
+    expected = ["auth_bindings", "auth_cleanup", "auth_inspect"]
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "default_tools": expected,
+        "count": 3,
+    }
+    assert agent.profile_manager.get_profile(
+        "owner"
+    ).tool_preferences.default_thread_tools == [
+        "auth_inspect",
+        "auth_cleanup",
+        "auth_bindings",
+    ]
+
+
 def test_user_tool_search_endpoint_returns_ranked_hints(
     tmp_path: Path,
     api_client_builder,

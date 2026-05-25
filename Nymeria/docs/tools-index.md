@@ -70,7 +70,9 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `asana_search_tasks` | `nymeria/tools/work_tracking_service_integrations.py` | Search Asana tasks in a workspace. |
 | `asana_update_project` | `nymeria/tools/work_tracking_service_integrations.py` | Update an Asana project. |
 | `asana_update_task` | `nymeria/tools/work_tracking_service_integrations.py` | Update an Asana task. |
-| `auth_manager` | `nymeria/tools/auth_manager.py` | Manage Nymeria credentials without exposing secret values. |
+| `auth_bindings` | `nymeria/tools/auth_manager.py` | Manage credential-to-target bindings without exposing secret values. |
+| `auth_cleanup` | `nymeria/tools/auth_manager.py` | Disable stale or unwanted user-owned credentials without exposing secrets. |
+| `auth_inspect` | `nymeria/tools/auth_manager.py` | Inspect Nymeria credential metadata without exposing secret values. |
 | `autopilot_add_contact_to_journey` | `nymeria/tools/marketing_contact_service_integrations.py` | Add an Autopilot contact to a journey trigger. |
 | `autopilot_create_list` | `nymeria/tools/marketing_contact_service_integrations.py` | Create an Autopilot list. |
 | `autopilot_delete_contact` | `nymeria/tools/marketing_contact_service_integrations.py` | Delete an Autopilot contact. |
