@@ -671,6 +671,56 @@ class CredentialVaultRepo:
             conn.commit()
         return True
 
+    def remove_allowed_target(
+        self,
+        credential_id: str,
+        *,
+        target: str,
+        actor_user_id: Optional[str] = None,
+        actor_is_admin: bool = False,
+    ) -> bool:
+        """Remove ``target`` from a credential's runtime allowed targets.
+
+        Idempotent: returns False if the target was not present, True if it was
+        removed. Raises CredentialNotFound if the credential does not exist.
+        """
+        target = target.strip()
+        if not target:
+            raise ValueError("target must be a non-empty 'type:id' string")
+        now = _now()
+        with self._lock, self._connect() as conn:
+            record = self._record_locked(conn, credential_id)
+            if record is None:
+                raise CredentialNotFound(credential_id)
+            self._require_actor_can_access(
+                record,
+                actor_user_id=actor_user_id,
+                actor_is_admin=actor_is_admin,
+            )
+            existing = list(record.allowed_targets or [])
+            if target not in existing:
+                return False
+            updated = [item for item in existing if item != target]
+            conn.execute(
+                """
+                UPDATE credentials
+                SET allowed_targets_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (_json_dumps(updated), now, credential_id),
+            )
+            self._audit_locked(
+                conn,
+                credential_id=credential_id,
+                actor_user_id=actor_user_id,
+                event_type="allowed_target_removed",
+                target_type=target.split(":", 1)[0] if ":" in target else None,
+                target_id=target.split(":", 1)[1] if ":" in target else None,
+                details={"target": target},
+            )
+            conn.commit()
+        return True
+
     def bind_credential(
         self,
         credential_id: str,
