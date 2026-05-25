@@ -627,7 +627,7 @@ def create_chat_apps_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List chat-app bindings for this thread."""
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         repo = get_agent_fn().chat_bindings_repo
         return [
             _thread_binding_response(binding)

@@ -98,7 +98,7 @@ def create_thread_operations_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Export a portable, shareable thread configuration document."""
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         from ...core.thread_share import build_thread_share_document
 
         agent = get_agent_fn()
@@ -265,7 +265,7 @@ def create_thread_operations_router(
         Effective model is resolved against thread-level overrides so a thread
         routed to a different provider gets the correct numbers.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         from ...config.model_capabilities import get_attachment_limits
 
         agent = get_agent_fn()
@@ -296,7 +296,7 @@ def create_thread_operations_router(
         record by id via ``attachment_sandbox.find_attachment_by_id`` and
         streams the file from the per-thread sandbox.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         from ...core.attachment_sandbox import find_attachment_by_id
 
         record = find_attachment_by_id(thread_id, attachment_id)

@@ -343,7 +343,7 @@ def create_threads_router(
         surfacing effective settings, counts, and subsystem status in one
         read-only call.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
         settings = get_settings_fn()
         return await run_in_threadpool(
@@ -370,7 +370,7 @@ def create_threads_router(
         current in-process state. SQL checkpoint backends query only checkpoint
         metadata; the graph-state fallback is reserved for non-SQL backends.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
         settings = get_settings_fn()
 
@@ -423,7 +423,7 @@ def create_threads_router(
         Pass show_autonomous_prompts to override the per-thread filter without
         mutating thread config.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
 
         show_autonomous = False
@@ -456,7 +456,7 @@ def create_threads_router(
 
         Returns token usage, context limit, and compaction history.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
         stats = await run_in_threadpool(agent.get_context_stats, thread_id)
         if isinstance(stats, dict):
@@ -475,7 +475,7 @@ def create_threads_router(
         telegram, slack, matrix, whatsapp, messenger, instagram, webex, mattermost, zulip, rocketchat,
         teams, googlechat, line, signal) and returns relevant metadata.
         """
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         if thread_id.startswith("discord_dm_"):
             return {
                 "platform": "discord",

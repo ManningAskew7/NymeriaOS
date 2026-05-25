@@ -209,7 +209,7 @@ def create_skills_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Resolved set of skills active on this thread (after scope + overrides)."""
-        require_thread_access_fn(user, thread_id)
+        require_thread_access_fn(user, thread_id, claim=False)
         agent = get_agent_fn()
         if agent.skill_manager is None:
             return {"skills": []}
