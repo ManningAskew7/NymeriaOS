@@ -65,8 +65,8 @@
     border-color: var(--accent-primary);
   }
   .skill-card.error {
-    border-color: var(--danger, #ef4444);
-    background: color-mix(in srgb, var(--danger, #ef4444) 5%, var(--glass-bg));
+    border-color: var(--error);
+    background: color-mix(in srgb, var(--error) 5%, var(--glass-bg));
   }
 
   .skill-header {

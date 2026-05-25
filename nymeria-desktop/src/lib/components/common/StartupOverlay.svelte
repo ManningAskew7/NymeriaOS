@@ -49,7 +49,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-primary, #0a0a0f);
+    background: var(--bg-base);
     z-index: 9999;
   }
 
@@ -69,7 +69,7 @@
     width: 48px;
     height: 48px;
     border-radius: 50%;
-    border: 3px solid var(--border-primary, #2a2a3a);
+    border: 3px solid var(--border-default);
     border-top-color: var(--accent-primary, #7c6cf0);
     animation: spin 1s linear infinite;
   }
@@ -105,7 +105,7 @@
   .error-details {
     margin-top: 1rem;
     padding: 0.75rem 1rem;
-    background: var(--bg-secondary, #12121a);
+    background: var(--bg-elevated);
     border-radius: 8px;
     border: 1px solid var(--error, #ef4444);
     text-align: left;
@@ -123,6 +123,6 @@
   .startup-hint {
     margin-top: 1rem;
     font-size: var(--font-size-xs);
-    color: var(--text-tertiary, #5a5a70);
+    color: var(--text-muted);
   }
 </style>

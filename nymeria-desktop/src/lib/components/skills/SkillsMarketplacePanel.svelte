@@ -237,7 +237,7 @@
 
   .control select,
   .control input {
-    background: var(--bg-input, var(--bg-base));
+    background: var(--bg-base);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -250,8 +250,8 @@
     font-size: var(--font-size-sm);
   }
   .banner-error {
-    background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
-    color: var(--danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    color: var(--error);
   }
 
   .marketplace-results {

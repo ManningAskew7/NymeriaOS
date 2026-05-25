@@ -90,7 +90,7 @@
     position: relative;
     max-width: 90vw;
     max-height: 90vh;
-    background: var(--bg-elevated-1);
+    background: var(--bg-elevated);
     border-radius: var(--radius-lg);
     overflow: hidden;
     display: flex;
@@ -140,7 +140,7 @@
   }
 
   .close-button:hover {
-    background: var(--bg-elevated-1);
+    background: var(--bg-elevated);
     color: var(--text-primary);
   }
 

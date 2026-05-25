@@ -335,7 +335,7 @@
     align-items: center;
     gap: var(--spacing-xs);
     padding: var(--spacing-sm);
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     border: 1px solid var(--error);
     border-radius: var(--radius-md);
     color: var(--error);

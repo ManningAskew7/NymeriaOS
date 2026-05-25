@@ -354,7 +354,7 @@
   .card {
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    background: var(--bg-primary);
+    background: var(--bg-base);
     overflow: hidden;
   }
 
@@ -442,7 +442,7 @@
   .entity-type {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    background: var(--bg-primary);
+    background: var(--bg-base);
     padding: 1px 6px;
     border-radius: 4px;
   }
@@ -451,7 +451,7 @@
     font-size: var(--font-size-xs);
     padding: 1px 6px;
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-base);
   }
 
   .status-pill.off {

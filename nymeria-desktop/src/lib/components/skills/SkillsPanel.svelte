@@ -226,8 +226,8 @@
     font-size: var(--font-size-sm);
   }
   .banner-error {
-    background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
-    color: var(--danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    color: var(--error);
   }
 
   .empty {
@@ -342,9 +342,9 @@
     background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-elevated));
   }
   .chip-default {
-    color: var(--status-success, var(--accent-primary));
-    border-color: color-mix(in srgb, var(--status-success, var(--accent-primary)) 55%, var(--border-subtle));
-    background: color-mix(in srgb, var(--status-success, var(--accent-primary)) 8%, var(--bg-elevated));
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 55%, var(--border-subtle));
+    background: color-mix(in srgb, var(--success) 8%, var(--bg-elevated));
   }
   .chip-required {
     color: var(--text-secondary);
@@ -422,11 +422,11 @@
   }
 
   .btn-danger-ghost {
-    color: var(--danger, #ef4444);
+    color: var(--error);
     background: transparent;
-    border-color: color-mix(in srgb, var(--danger, #ef4444) 30%, transparent);
+    border-color: color-mix(in srgb, var(--error) 30%, transparent);
   }
   .btn-danger-ghost:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
   }
 </style>

@@ -251,7 +251,7 @@
   }
 
   .error {
-    color: var(--color-error, #d33);
+    color: var(--error);
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
@@ -275,7 +275,7 @@
   }
 
   .code-pill {
-    font-family: var(--font-family-mono);
+    font-family: var(--font-mono);
     font-size: var(--font-size-lg);
     font-weight: 600;
     letter-spacing: 0.1em;
@@ -289,8 +289,8 @@
     display: inline-block;
     align-self: flex-start;
     padding: 0.5rem 0.9rem;
-    background: var(--accent-bg, var(--bg-elevated));
-    color: var(--accent-fg, var(--text-primary));
+    background: var(--bg-elevated);
+    color: var(--text-primary);
     border-radius: var(--radius-sm);
     text-decoration: none;
     font-weight: 500;

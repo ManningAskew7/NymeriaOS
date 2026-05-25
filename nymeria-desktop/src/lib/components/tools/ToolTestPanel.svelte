@@ -188,7 +188,7 @@
 
   .tool-type {
     padding: 2px 6px;
-    background: var(--bg-elevated-3);
+    background: var(--bg-elevated-2);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
@@ -357,7 +357,7 @@
   .result-section.error pre {
     margin: 0;
     padding: var(--spacing-sm);
-    background: var(--bg-elevated-3);
+    background: var(--bg-elevated-2);
     border-radius: var(--radius-sm);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);

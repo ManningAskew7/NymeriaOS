@@ -82,7 +82,7 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     cursor: pointer;
-    background: var(--bg-elevated-1);
+    background: var(--bg-elevated);
     transition: border-color var(--transition-fast);
   }
 

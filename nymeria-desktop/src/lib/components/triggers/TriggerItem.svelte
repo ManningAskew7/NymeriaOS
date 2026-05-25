@@ -868,7 +868,7 @@
   }
 
   .expand-btn:hover {
-    background: var(--bg-elevated-3);
+    background: var(--bg-elevated-2);
     color: var(--text-primary);
   }
 

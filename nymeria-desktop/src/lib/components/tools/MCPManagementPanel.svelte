@@ -182,9 +182,9 @@
     align-items: center;
     gap: 0.3rem;
     font-size: var(--font-size-xs);
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent);
     border-radius: var(--radius-sm);
     padding: 0.2rem 0.45rem;
   }
@@ -243,9 +243,9 @@
   }
 
   .btn-primary {
-    color: var(--button-primary-text, #fff);
-    background: var(--accent);
-    border-color: var(--accent);
+    color: var(--text-on-accent);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   .save-message {

@@ -1547,7 +1547,7 @@
   .row-edit-btn:hover {
     color: var(--text-primary);
     border-color: var(--border-subtle);
-    background: var(--bg-secondary);
+    background: var(--bg-elevated);
   }
 
   /* Footer */
@@ -1753,7 +1753,7 @@
 
   .tool-type {
     padding: 2px 6px;
-    background: var(--bg-elevated-3);
+    background: var(--bg-elevated-2);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
@@ -1797,7 +1797,7 @@
     justify-content: center;
     width: 32px;
     height: 32px;
-    background: var(--bg-elevated-3);
+    background: var(--bg-elevated-2);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
@@ -2001,7 +2001,7 @@
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-secondary);
+    background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     margin-bottom: var(--spacing-md);
@@ -2035,7 +2035,7 @@
 
   .docstring-readonly {
     padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-secondary);
+    background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
