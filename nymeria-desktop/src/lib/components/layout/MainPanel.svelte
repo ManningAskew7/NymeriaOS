@@ -21,6 +21,11 @@
   import { debugLog } from '$lib/utils/debug';
   import { isTodoTool } from '$lib/utils/todoTools';
   import { refreshThreadSyncBaseline } from '$lib/stores/syncPoll.svelte';
+  import {
+    isSkillMutationReloadSource,
+    isSkillMutationToolName,
+    refreshSkillStateAfterMutation
+  } from '$lib/utils/skillRefresh';
   import { untrack } from 'svelte';
   import type {
     SSEEvent,
@@ -396,6 +401,9 @@
           todosStore.fetch();
           activityStore.fetch();
         }
+        if (isSkillMutationToolName(data.name)) {
+          refreshSkillStateAfterMutation(event.threadId);
+        }
         break;
       }
 
@@ -600,6 +608,9 @@
           reason?: string | null;
         };
         chatStore.handleToolReload(data.tools, data.ttl, data.ttlSeconds, data.source, data.skillName, data.reason);
+        if (isSkillMutationReloadSource(data.source)) {
+          refreshSkillStateAfterMutation(event.threadId);
+        }
         break;
       }
 

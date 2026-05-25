@@ -17,6 +17,11 @@ import { authPromptStore } from './authPrompt.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
 import { isTodoTool } from '$lib/utils/todoTools';
+import {
+  isSkillMutationReloadSource,
+  isSkillMutationToolName,
+  refreshSkillStateAfterMutation
+} from '$lib/utils/skillRefresh';
 
 interface AutonomousEvent {
   type: string;
@@ -633,6 +638,9 @@ function createAutonomousStore() {
           todosStore.fetch();
           activityStore.fetch();
         }
+        if (isSkillMutationToolName(event.name as string | undefined)) {
+          refreshSkillStateAfterMutation(event.thread_id);
+        }
         break;
 
       case 'tool_reload': {
@@ -648,6 +656,9 @@ function createAutonomousStore() {
           );
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
+        }
+        if (isSkillMutationReloadSource(event.source as string | undefined)) {
+          refreshSkillStateAfterMutation(event.thread_id);
         }
         break;
       }

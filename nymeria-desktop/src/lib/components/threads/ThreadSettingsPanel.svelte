@@ -77,8 +77,46 @@
     return new Set(threadConfig?.disabledSkills ?? []);
   }
 
+  function skillNamesKey(names: Iterable<string> | null | undefined): string {
+    return Array.from(names ?? []).sort().join('\x1f');
+  }
+
+  function threadSkillStateKey(
+    enabled: Iterable<string> | null | undefined,
+    disabled: Iterable<string> | null | undefined,
+  ): string {
+    return `${skillNamesKey(enabled)}\x1e${skillNamesKey(disabled)}`;
+  }
+
+  function threadSkillConfigKey(config: ThreadConfig | null): string {
+    return threadSkillStateKey(config?.enabledSkills ?? [], config?.disabledSkills ?? []);
+  }
+
   let threadEnabledSkills = $state<Set<string>>(getInitialThreadEnabledSkills());
   let threadDisabledSkills = $state<Set<string>>(getInitialThreadDisabledSkills());
+  let appliedThreadSkillThreadId = $state('');
+  let appliedThreadSkillConfigKey = $state('');
+
+  $effect(() => {
+    const nextKey = threadSkillConfigKey(threadConfig);
+    const localKey = threadSkillStateKey(threadEnabledSkills, threadDisabledSkills);
+
+    if (thread.id !== appliedThreadSkillThreadId) {
+      threadEnabledSkills = getInitialThreadEnabledSkills();
+      threadDisabledSkills = getInitialThreadDisabledSkills();
+      appliedThreadSkillThreadId = thread.id;
+      appliedThreadSkillConfigKey = nextKey;
+      return;
+    }
+
+    if (nextKey === appliedThreadSkillConfigKey) return;
+
+    if (localKey === appliedThreadSkillConfigKey || localKey === nextKey) {
+      threadEnabledSkills = getInitialThreadEnabledSkills();
+      threadDisabledSkills = getInitialThreadDisabledSkills();
+      appliedThreadSkillConfigKey = nextKey;
+    }
+  });
 
   // Form state — initialized from threadConfig
   function getInitialInstructions(): string {
@@ -392,6 +430,11 @@
     mcpServersStore.refresh();
     defaultToolsStore.resetLoaded();
     void defaultToolsStore.load();
+    void skillsStore.refreshInstalled();
+    void skillsStore.refreshGlobal();
+    void threadConfigStore.loadConfig(thread.id).catch((err) => {
+      console.warn('[ThreadSettingsPanel] Failed to refresh thread config:', err);
+    });
   });
 
   // Per-thread skill resolution: (global ∪ enabled) − disabled

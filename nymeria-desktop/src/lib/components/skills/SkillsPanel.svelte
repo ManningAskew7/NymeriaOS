@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import type { SkillMetadata, SkillScope } from '$lib/types';
   import SkillsMarketplacePanel from './SkillsMarketplacePanel.svelte';
@@ -6,9 +7,9 @@
   let showMarketplace = $state(false);
   let expanded = $state<Record<string, boolean>>({});
 
-  $effect(() => {
-    skillsStore.loadInstalled();
-    skillsStore.loadGlobal();
+  onMount(() => {
+    void skillsStore.refreshInstalled();
+    void skillsStore.refreshGlobal();
   });
 
   const scopeOrder: SkillScope[] = ['user', 'global', 'bundled'];
