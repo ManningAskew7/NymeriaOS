@@ -898,7 +898,7 @@
     align-items: center;
     justify-content: center;
     border-radius: var(--radius-md);
-    background: rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.15);
+    background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
     color: var(--accent-secondary, var(--accent-primary));
   }
 
@@ -930,7 +930,7 @@
     font-weight: 600;
     text-transform: uppercase;
     color: var(--warning);
-    background: rgba(var(--warning-rgb, 245, 158, 11), 0.15);
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     letter-spacing: 0.03em;
@@ -1084,7 +1084,7 @@
 
   .condition-remove:hover {
     color: var(--error);
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 
   .add-condition-btn {
@@ -1234,7 +1234,7 @@
   .save-error {
     margin-top: var(--spacing-sm);
     padding: var(--spacing-xs) var(--spacing-sm);
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     border: 1px solid var(--error);
     border-radius: var(--radius-md);
     color: var(--error);

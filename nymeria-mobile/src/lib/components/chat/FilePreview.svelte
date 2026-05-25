@@ -82,7 +82,7 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     cursor: pointer;
-    background: var(--bg-elevated-1);
+    background: var(--bg-elevated);
     transition: border-color var(--transition-fast);
   }
 
@@ -141,8 +141,8 @@
   }
 
   .remove-button:hover {
-    background: var(--accent-danger);
-    border-color: var(--accent-danger);
+    background: var(--error);
+    border-color: var(--error);
     color: white;
   }
 </style>

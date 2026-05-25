@@ -386,7 +386,7 @@
   .add-btn {
     background: none;
     border: none;
-    color: var(--accent);
+    color: var(--accent-primary);
     padding: 0.3rem;
     cursor: pointer;
   }
@@ -399,7 +399,7 @@
   }
 
   .server-item {
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     margin-bottom: 0.4rem;
     overflow: hidden;
@@ -415,7 +415,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem;
-    background: var(--surface-secondary);
+    background: var(--bg-elevated);
     border: none;
     color: var(--text-primary);
     cursor: pointer;
@@ -451,7 +451,7 @@
   .count {
     font-size: 0.75rem;
     color: var(--text-secondary);
-    background: var(--surface-primary);
+    background: var(--bg-base);
     padding: 0.1rem 0.4rem;
     border-radius: 10px;
     white-space: nowrap;
@@ -495,8 +495,8 @@
     position: relative;
     width: 32px;
     height: 18px;
-    background: var(--surface-primary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
     border-radius: 9px;
     transition: all 0.15s;
   }
@@ -513,8 +513,8 @@
   }
 
   .toggle-label input:checked + .toggle-track {
-    background: var(--accent);
-    border-color: var(--accent);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   .toggle-label input:checked + .toggle-track .toggle-thumb {
@@ -562,12 +562,12 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.3rem 0.4rem;
-    background: var(--surface-secondary);
+    background: var(--bg-elevated);
     border-radius: 4px;
   }
 
   .tool-row.tool-enabled {
-    border-left: 2px solid var(--accent);
+    border-left: 2px solid var(--accent-primary);
   }
 
   .tool-info {
@@ -577,7 +577,7 @@
 
   .tool-name {
     display: block;
-    color: var(--accent);
+    color: var(--accent-primary);
     font-family: monospace;
     font-size: 0.75rem;
   }
@@ -597,13 +597,13 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     padding-top: 0.3rem;
-    border-top: 1px solid var(--border-color);
+    border-top: 1px solid var(--border-default);
   }
 
   .action-btn {
     padding: 0.3rem 0.6rem;
     border: none;
-    background: var(--surface-secondary);
+    background: var(--bg-elevated);
     color: var(--text-primary);
     font-size: 0.8rem;
     border-radius: 4px;

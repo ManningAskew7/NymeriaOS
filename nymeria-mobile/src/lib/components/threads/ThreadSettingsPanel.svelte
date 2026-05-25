@@ -2143,7 +2143,7 @@
 
   /* MCP Servers in tools tab */
   .mcp-server-group {
-    border: 1px solid var(--border-subtle, var(--border-color));
+    border: 1px solid var(--border-subtle);
     border-radius: 6px;
     margin-bottom: 0.3rem;
     overflow: hidden;
@@ -2152,7 +2152,7 @@
   .mcp-server-header-row {
     display: flex;
     align-items: center;
-    background: var(--bg-elevated, var(--surface-secondary));
+    background: var(--bg-elevated);
   }
 
   .mcp-server-header {
@@ -2181,7 +2181,7 @@
 
   .mcp-bulk-btn {
     font-size: 0.75rem;
-    color: var(--accent-primary, var(--accent));
+    color: var(--accent-primary);
     background: none;
     border: none;
     padding: 0.3rem 0.5rem;
@@ -2189,7 +2189,7 @@
   }
 
   .mcp-tool-list {
-    border-top: 1px solid var(--border-subtle, var(--border-color));
+    border-top: 1px solid var(--border-subtle);
   }
 
   .mcp-add-btn {
@@ -2199,7 +2199,7 @@
     gap: 0.3rem;
     padding: 0.5rem;
     margin-top: 0.4rem;
-    border: 1px dashed var(--border-color);
+    border: 1px dashed var(--border-default);
     border-radius: 6px;
     background: none;
     color: var(--text-secondary);
@@ -2242,8 +2242,8 @@
   }
 
   .action-btn.danger {
-    color: var(--color-error, #d33);
-    border-color: var(--color-error, #d33);
+    color: var(--error);
+    border-color: var(--error);
   }
 
   .binding-list {
@@ -2280,7 +2280,7 @@
   }
 
   .binding-chat {
-    font-family: var(--font-family-mono);
+    font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     overflow: hidden;
     text-overflow: ellipsis;

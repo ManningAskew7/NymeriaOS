@@ -206,7 +206,7 @@
     flex-direction: column;
     gap: 0.6rem;
     padding: 0.75rem;
-    background: var(--surface-secondary);
+    background: var(--bg-elevated);
     border-radius: 8px;
   }
 
@@ -225,10 +225,10 @@
   .preset-btn {
     padding: 0.25rem 0.6rem;
     font-size: 0.75rem;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     border-radius: 4px;
-    background: var(--surface-primary);
-    color: var(--accent);
+    background: var(--bg-base);
+    color: var(--accent-primary);
     cursor: pointer;
   }
 
@@ -250,7 +250,7 @@
     font-size: 0.65rem;
     padding: 0 0.3rem;
     border-radius: 3px;
-    background: var(--accent);
+    background: var(--accent-primary);
     color: white;
     font-weight: 600;
   }
@@ -258,9 +258,9 @@
   .form-field input,
   .form-field textarea {
     padding: 0.5rem;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     border-radius: 4px;
-    background: var(--surface-primary);
+    background: var(--bg-base);
     color: var(--text-primary);
     font-size: 16px;
     font-family: inherit;
@@ -296,9 +296,9 @@
   .arg-row input {
     flex: 1;
     padding: 0.5rem;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     border-radius: 4px;
-    background: var(--surface-primary);
+    background: var(--bg-base);
     color: var(--text-primary);
     font-size: 16px;
     font-family: monospace;
@@ -318,7 +318,7 @@
     align-items: center;
     gap: 0.3rem;
     padding: 0.4rem 0.5rem;
-    border: 1px dashed var(--border-color);
+    border: 1px dashed var(--border-default);
     border-radius: 4px;
     background: none;
     color: var(--text-secondary);
@@ -354,7 +354,7 @@
     padding: 0.4rem 0.8rem;
     border: none;
     border-radius: 4px;
-    background: var(--accent);
+    background: var(--accent-primary);
     color: white;
     font-size: 0.85rem;
     min-height: var(--touch-target-min);

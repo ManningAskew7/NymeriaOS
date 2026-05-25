@@ -289,7 +289,7 @@
     border: 1px dashed var(--border-default);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
-    background: color-mix(in srgb, var(--bg-elevated-1) 75%, transparent);
+    background: color-mix(in srgb, var(--bg-elevated) 75%, transparent);
     text-align: center;
     padding: var(--spacing-lg);
   }
