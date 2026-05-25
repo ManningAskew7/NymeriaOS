@@ -87,7 +87,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_CONTEXT_LENGTH` | auto | 1,000 - 2,000,000 | Manual context-window override for local endpoints or proxies that do not report context metadata. Also available per thread as `context_length`. |
 | `LLM_OLLAMA_NUM_CTX` | auto | 1,000 - 2,000,000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests. Also available per thread as `ollama_num_ctx`. |
 | `OPENAI_API_MODE` | `responses` | responses/chat_completions | API mode for OpenAI-compatible providers. `responses` is used only for providers that advertise Responses support in the registry; unsupported providers fall back to Chat Completions. |
-| `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. Streaming retries only happen before any model chunk is emitted. |
+| `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. If a streaming call fails after partial output, Nymeria rewinds to the latest checkpoint and retries from that stable point. |
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
 | `LLM_FALLBACK_HOLD_SECONDS` | `7200` | 0 - 604800 | Seconds to keep a fallback provider/model active for a thread after primary retries are exhausted. `0` disables the timed hold. |
@@ -99,9 +99,12 @@ These settings give power users fine-grained control over LLM behavior. All are 
 `LLM_FALLBACK_MODELS` is backend-owned, so it applies to every chat surface:
 desktop, mobile, CLI, bots, triggers, scheduled TODOs, and callable-thread
 invocations. Nymeria retries the active provider/model first for retryable
-failures such as 429s, 5xx responses, timeouts, or transport errors before the
-model has emitted any response chunks. Live frontends receive `provider_retry`
-events with the backoff delay. If retries are exhausted, Nymeria emits
+failures such as 429s, 5xx responses, timeouts, or transport errors. If a
+streaming failure happens after partial output, Nymeria discards the uncommitted
+model output, re-enters the graph from the latest checkpoint, and retries from
+that stable boundary. Live frontends receive `provider_retry` events with the
+backoff delay and a `rewound` flag when replay was needed. If retries are
+exhausted, Nymeria emits
 `provider_fallback`, switches to the next configured fallback, and keeps that
 fallback active for the thread for `LLM_FALLBACK_HOLD_SECONDS` seconds
 (default: 2 hours). Expiry is lazy: if the hold expires during an active turn,
@@ -1683,7 +1686,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Advanced LLM Settings (all optional)
 # LLM_BASE_URL=                       # Override API endpoint (e.g., local proxy)
 # OPENAI_API_MODE=responses           # OpenAI-compatible mode: responses or chat_completions
-# LLM_STREAM_MAX_RETRIES=2            # Retry transient failures before chunks stream
+# LLM_STREAM_MAX_RETRIES=2            # Retry transient failures, rewinding to checkpoints after partial streams
 # LLM_STREAM_RETRY_INITIAL_DELAY=1.0
 # LLM_STREAM_RETRY_MAX_DELAY=8.0
 # LLM_MAX_TOKENS=4096

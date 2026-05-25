@@ -306,6 +306,36 @@ function createChatStore() {
       activeToolCalls = new Map();
     },
 
+    rewindLastAssistantToStablePoint() {
+      this._forceFlush();
+      if (!isLastAssistantStreaming()) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role !== 'assistant') return;
+
+      const steps = [...(lastMessage.steps || [])];
+      while (steps.length > 0) {
+        const lastStep = steps[steps.length - 1];
+        if (lastStep.type !== 'response' && lastStep.type !== 'thinking') break;
+        steps.pop();
+      }
+
+      const responseContent = steps
+        .filter((s) => s.type === 'response')
+        .map((s) => s.content || '')
+        .join('');
+
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: responseContent,
+          steps
+        }
+      ];
+    },
+
     setStreaming(streaming: boolean) {
       if (!streaming) this._forceFlush();
       isStreaming = streaming;

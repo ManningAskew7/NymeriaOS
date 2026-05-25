@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from nymeria.vendor.react_agent.config import LLMConfig, LLMFallbackConfig
 from nymeria.core.agent_streaming import (
     GraphStreamProcessor,
     ReasoningChunkDeduper,
@@ -28,6 +29,26 @@ class _FakeGraph:
             yield event
 
 
+class _FlakyGraph:
+    def __init__(self, first_events, second_events, exc):
+        self.first_events = first_events
+        self.second_events = second_events
+        self.exc = exc
+        self.calls = []
+
+    async def astream_events(self, input_state, config=None, version=None):
+        self.calls.append((input_state, config, version))
+        events = self.first_events if len(self.calls) == 1 else self.second_events
+        for event in events:
+            yield event
+        if len(self.calls) == 1:
+            raise self.exc
+
+
+class _RetryableStreamError(RuntimeError):
+    status_code = 500
+
+
 def _collect_processor_events(events, *, abort_event=None, response_parts=None, extra_events=None):
     response_parts = response_parts if response_parts is not None else []
     abort_event = abort_event or threading.Event()
@@ -40,6 +61,13 @@ def _collect_processor_events(events, *, abort_event=None, response_parts=None, 
         response_parts=response_parts,
         clean_tool_result=lambda result: f"display:{result}",
         tool_result_extra_events=extra_events or (lambda *args: []),
+        llm_config=LLMConfig(
+            provider="custom",
+            model="primary",
+            stream_max_retries=1,
+            stream_retry_initial_delay=0.0,
+            stream_retry_max_delay=0.0,
+        ),
     )
     graph = _FakeGraph(events)
 
@@ -231,6 +259,190 @@ def test_graph_stream_processor_streams_reasoning_tool_delta_and_response_text()
         {"type": "response", "content": "Answer"},
     ]
     assert response_parts == ["Answer"]
+
+
+def test_graph_stream_processor_recovers_midstream_provider_failure_from_checkpoint():
+    response_parts = []
+    exc = _RetryableStreamError("server_error after partial stream")
+    exc.nymeria_stream_chunks_before_error = 1
+    graph = _FlakyGraph(
+        first_events=[
+            {"event": "on_chat_model_start", "run_id": "model-1"},
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "model-1",
+                "data": {
+                    "chunk": SimpleNamespace(
+                        tool_call_chunks=[],
+                        content="partial",
+                        additional_kwargs={},
+                    )
+                },
+            },
+        ],
+        second_events=[
+            {"event": "on_chat_model_start", "run_id": "model-2"},
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "model-2",
+                "data": {
+                    "chunk": SimpleNamespace(
+                        tool_call_chunks=[],
+                        content="recovered",
+                        additional_kwargs={},
+                    )
+                },
+            },
+            {
+                "event": "on_chat_model_end",
+                "run_id": "model-2",
+                "data": {"output": AIMessage(content="recovered")},
+            },
+        ],
+        exc=exc,
+    )
+    processor = GraphStreamProcessor(
+        thread_id="thread-a",
+        config={"configurable": {"thread_id": "thread-a"}},
+        abort_event=threading.Event(),
+        is_self_invoke=False,
+        response_parts=response_parts,
+        clean_tool_result=lambda result: result,
+        tool_result_extra_events=lambda *args: [],
+        llm_config=LLMConfig(
+            provider="custom",
+            model="primary",
+            stream_max_retries=1,
+            stream_retry_initial_delay=0.0,
+            stream_retry_max_delay=0.0,
+        ),
+    )
+
+    async def collect():
+        chunks = []
+        async for chunk in processor.drive(graph, {"messages": ["input"]}):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+
+    assert chunks == [
+        {"type": "response", "content": "partial"},
+        {
+            "type": "provider_retry",
+            "provider": "custom",
+            "model": "primary",
+            "provider_route": None,
+            "openai_api_mode": "responses",
+            "attempt": 1,
+            "max_retries": 1,
+            "delay_seconds": 0.0,
+            "reason": "provider_server_error",
+            "http_status": 500,
+            "rewound": True,
+            "stream_chunks": 1,
+        },
+        {"type": "response", "content": "recovered"},
+    ]
+    assert response_parts == ["recovered"]
+    assert graph.calls == [
+        ({"messages": ["input"]}, {"configurable": {"thread_id": "thread-a"}}, "v2"),
+        ({"messages": []}, {"configurable": {"thread_id": "thread-a"}}, "v2"),
+    ]
+
+
+def test_graph_stream_processor_switches_fallback_after_midstream_retry_budget():
+    response_parts = []
+    exc = _RetryableStreamError("server_error after partial stream")
+    exc.nymeria_stream_chunks_before_error = 1
+    graph = _FlakyGraph(
+        first_events=[
+            {"event": "on_chat_model_start", "run_id": "model-1"},
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "model-1",
+                "data": {
+                    "chunk": SimpleNamespace(
+                        tool_call_chunks=[],
+                        content="partial",
+                        additional_kwargs={},
+                    )
+                },
+            },
+        ],
+        second_events=[
+            {"event": "on_chat_model_start", "run_id": "model-2"},
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "model-2",
+                "data": {
+                    "chunk": SimpleNamespace(
+                        tool_call_chunks=[],
+                        content="fallback",
+                        additional_kwargs={},
+                    )
+                },
+            },
+            {
+                "event": "on_chat_model_end",
+                "run_id": "model-2",
+                "data": {"output": AIMessage(content="fallback")},
+            },
+        ],
+        exc=exc,
+    )
+    llm_config = LLMConfig(
+        provider="custom",
+        model="primary",
+        stream_max_retries=0,
+        stream_retry_initial_delay=0.0,
+        stream_retry_max_delay=0.0,
+        fallbacks=[LLMFallbackConfig(provider="backup", model="secondary")],
+    )
+    processor = GraphStreamProcessor(
+        thread_id="thread-a",
+        config={"configurable": {"thread_id": "thread-a"}},
+        abort_event=threading.Event(),
+        is_self_invoke=False,
+        response_parts=response_parts,
+        clean_tool_result=lambda result: result,
+        tool_result_extra_events=lambda *args: [],
+        llm_config=llm_config,
+    )
+
+    async def collect():
+        chunks = []
+        async for chunk in processor.drive(graph, {"messages": ["input"]}):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+
+    assert chunks == [
+        {"type": "response", "content": "partial"},
+        {
+            "type": "provider_fallback",
+            "from_provider": "custom",
+            "from_model": "primary",
+            "from_provider_route": None,
+            "from_openai_api_mode": "responses",
+            "to_provider": "backup",
+            "to_model": "secondary",
+            "to_provider_route": None,
+            "to_openai_api_mode": "responses",
+            "reason": "provider_server_error",
+            "http_status": 500,
+            "rewound": True,
+            "stream_chunks": 1,
+        },
+        {"type": "response", "content": "fallback"},
+    ]
+    assert response_parts == ["fallback"]
+    assert llm_config.active_fallback_candidate_index == 1
+    assert graph.calls == [
+        ({"messages": ["input"]}, {"configurable": {"thread_id": "thread-a"}}, "v2"),
+        ({"messages": []}, {"configurable": {"thread_id": "thread-a"}}, "v2"),
+    ]
 
 
 def test_graph_stream_processor_does_not_replay_reasoning_on_model_end():

@@ -551,6 +551,7 @@ function createAutonomousStore() {
 
       case 'provider_retry':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
+          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
           chatStore.addProviderStatusStep({
             providerStatus: 'retry',
             provider: event.provider as string | undefined,
@@ -560,6 +561,8 @@ function createAutonomousStore() {
             delaySeconds: event.delay_seconds as number | undefined,
             reason: event.reason as string | undefined,
             httpStatus: event.http_status as number | null | undefined,
+            rewound: event.rewound as boolean | undefined,
+            streamChunks: event.stream_chunks as number | undefined,
           });
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
@@ -568,6 +571,7 @@ function createAutonomousStore() {
 
       case 'provider_fallback':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
+          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
           chatStore.addProviderStatusStep({
             providerStatus: 'fallback',
             fromProvider: event.from_provider as string | undefined,
@@ -578,6 +582,8 @@ function createAutonomousStore() {
             expiresAt: event.expires_at as string | null | undefined,
             reason: event.reason as string | undefined,
             httpStatus: event.http_status as number | null | undefined,
+            rewound: event.rewound as boolean | undefined,
+            streamChunks: event.stream_chunks as number | undefined,
           });
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);

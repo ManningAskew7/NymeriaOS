@@ -71,6 +71,8 @@ export interface MessageStep {
   expiresAt?: string | null;
   reason?: string;
   httpStatus?: number | null;
+  rewound?: boolean;
+  streamChunks?: number;
   // For tool_call:
   id?: string;
   name?: string;

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional
 
+from ..vendor.react_agent.nodes import (
+    is_retryable_llm_error,
+    llm_activate_next_fallback,
+    llm_max_retries,
+    llm_retry_delay,
+    llm_retry_payload_for_active_candidate,
+)
 from .agent_history import (
     InlineThinkingTextStripper,
     extract_reasoning_text_from_block,
@@ -96,6 +104,7 @@ class GraphStreamProcessor:
         clean_tool_result: Callable[[str], str],
         tool_result_extra_events: Callable[[str, str, Any], Iterable[dict[str, Any]]],
         stream_logger: Optional[logging.Logger] = None,
+        llm_config: Any = None,
     ) -> None:
         self.thread_id = thread_id
         self.config = config
@@ -105,6 +114,7 @@ class GraphStreamProcessor:
         self.clean_tool_result = clean_tool_result
         self.tool_result_extra_events = tool_result_extra_events
         self.logger = stream_logger or logger
+        self.llm_config = llm_config
 
         self._reset_graph_state()
 
@@ -115,28 +125,88 @@ class GraphStreamProcessor:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Drive one graph invocation and yield converted SSE events."""
         self._reset_graph_state()
+        attempt_input_state = input_state
+        recovery_attempt = 0
+        max_retries = llm_max_retries(self.llm_config)
 
-        async for event in graph_obj.astream_events(
-            input_state,
-            config=self.config,
-            version="v2",
-        ):
-            if self.abort_event.is_set():
-                self.logger.info(
-                    "[ASTREAM] Thread %s: Aborted by cancel signal",
-                    self.thread_id,
-                )
-                yield {
-                    "type": "error",
-                    "content": "Operation was cancelled.",
-                    "code": "cancelled",
-                }
+        while True:
+            try:
+                async for event in graph_obj.astream_events(
+                    attempt_input_state,
+                    config=self.config,
+                    version="v2",
+                ):
+                    if self.abort_event.is_set():
+                        self.logger.info(
+                            "[ASTREAM] Thread %s: Aborted by cancel signal",
+                            self.thread_id,
+                        )
+                        yield {
+                            "type": "error",
+                            "content": "Operation was cancelled.",
+                            "code": "cancelled",
+                        }
+                        return
+
+                    async for converted in self._handle_event(event):
+                        yield converted
+
+                self._log_graph_done()
                 return
+            except Exception as exc:
+                stream_chunks = int(getattr(exc, "nymeria_stream_chunks_before_error", 0) or 0)
+                if stream_chunks <= 0 or not is_retryable_llm_error(exc):
+                    raise
 
-            async for converted in self._handle_event(event):
-                yield converted
+                if recovery_attempt < max_retries:
+                    recovery_attempt += 1
+                    delay = llm_retry_delay(self.llm_config, recovery_attempt)
+                    self._rollback_current_model_output()
+                    payload = llm_retry_payload_for_active_candidate(
+                        self.llm_config,
+                        attempt=recovery_attempt,
+                        max_retries=max_retries,
+                        delay=delay,
+                        exc=exc,
+                    )
+                    payload["rewound"] = True
+                    payload["stream_chunks"] = stream_chunks
+                    self.logger.warning(
+                        "[LLM RECOVERY] thread=%s stream failed after %d chunk(s); "
+                        "rewound to latest checkpoint and retrying graph %d/%d in %.2fs: %s",
+                        self.thread_id,
+                        stream_chunks,
+                        recovery_attempt,
+                        max_retries,
+                        delay,
+                        exc,
+                    )
+                    yield {**payload, "type": "provider_retry"}
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                else:
+                    payload = llm_activate_next_fallback(self.llm_config, exc=exc)
+                    if payload is None:
+                        raise
+                    self._rollback_current_model_output()
+                    payload["rewound"] = True
+                    payload["stream_chunks"] = stream_chunks
+                    self.logger.warning(
+                        "[LLM RECOVERY] thread=%s stream failed after %d chunk(s); "
+                        "rewound to latest checkpoint and switching fallback to %s/%s: %s",
+                        self.thread_id,
+                        stream_chunks,
+                        payload.get("to_provider"),
+                        payload.get("to_model"),
+                        exc,
+                    )
+                    yield {**payload, "type": "provider_fallback"}
+                    recovery_attempt = 0
 
-        self._log_graph_done()
+                # Re-enter the graph from the latest checkpoint without
+                # appending the original HumanMessage again.
+                attempt_input_state = {"messages": []}
+                self._reset_graph_state()
 
     def _reset_graph_state(self) -> None:
         self._emitted_tool_starts: set[Any] = set()
@@ -152,6 +222,7 @@ class GraphStreamProcessor:
         self._model_end_fallback_count = 0
         self._current_model_stream_events = 0
         self._current_model_started_at: Optional[float] = None
+        self._current_model_response_parts_start = len(self.response_parts)
         self._graph_stream_started_at = time.monotonic()
         self._inline_hold_log_count = 0
         self._inline_release_log_count = 0
@@ -199,6 +270,7 @@ class GraphStreamProcessor:
         self._emitted_tool_call_delta = False
         self._reasoning_deduper.reset()
         self._inline_text_stripper.reset()
+        self._current_model_response_parts_start = len(self.response_parts)
         self._log_stream_diagnostic(
             "[ASTREAM DIAG] llm_start thread=%s autonomous=%s run_id=%s",
             self.thread_id,
@@ -460,6 +532,9 @@ class GraphStreamProcessor:
     def _response_event(self, text: str) -> dict[str, Any]:
         self.response_parts.append(text)
         return {"type": "response", "content": text}
+
+    def _rollback_current_model_output(self) -> None:
+        del self.response_parts[self._current_model_response_parts_start:]
 
     def _should_emit_reasoning(self, text: Any) -> bool:
         return self._reasoning_deduper.should_emit(text)
