@@ -187,6 +187,16 @@ Key points the wizard generator must preserve:
   links and OAuth redirects.
 - `CORS_ORIGINS` must include the public origin in addition to the local desktop
   and tauri origins, or the browser UI fails CORS when loaded through the tunnel.
+- `NYMERIA_SECRETS_KEY` (a Fernet key) is required for credential-vault writes:
+  OAuth tokens, BYO bot tokens, and per-user integration secrets. Without it the
+  first encrypt or decrypt raises `SecretsKeyMissing` and credential saves fail.
+  A concrete symptom: the Outlook device-code login completes with Microsoft but
+  fails at Nymeria's save step, leaving the prompt stuck. Generate with
+  `Fernet.generate_key()`. Treat it as permanent: rotation means re-encrypting
+  every stored secret. Because the slim compose uses `env_file`, the whole file
+  is passed in, so there is no per-service passthrough to forget. The full
+  `docker-compose.yml` instead enumerates env vars per service and must list this
+  key explicitly (a real bug, fixed in commit b903e16).
 - `NYMERIA_API_DOCS=true` is handy for a local test (enables Swagger).
 
 ### Build, run, verify
@@ -421,10 +431,10 @@ Suggested steps:
    the pasted callback URL and deliver it in-container.
 5. Generate artifacts for the chosen target:
    - Containerized slim: `Dockerfile.single`, `docker-compose.single.yml`,
-     `.env.docker`. Build and bring up.
+     `.env.docker` (mint `NYMERIA_SECRETS_KEY` here). Build and bring up.
    - Full Docker: generate `.env.docker` from the example, mint
-     `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `NYMERIA_SERVICE_TOKEN`, then
-     `docker compose up -d --build`.
+     `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `NYMERIA_SERVICE_TOKEN`, and
+     `NYMERIA_SECRETS_KEY`, then `docker compose up -d --build`.
 6. Wait for health, then surface the bootstrap token (and optionally mint a
    device token via `users rotate-token`).
 7. Offer external access guidance: detect cloudflared, test the public URL, set
@@ -459,6 +469,12 @@ GUI-specific notes:
   Prefer containerized slim.
 - Port 8000 already in use (warn and offer an alternate port via the slim
   `--port` flag and the published port mapping).
+- Missing `NYMERIA_SECRETS_KEY`: credential-vault writes raise `SecretsKeyMissing`
+  and OAuth or credential saves fail (the Outlook device-code login completes with
+  Microsoft, then fails at Nymeria's save step). The slim `env_file` shape passes
+  the whole file, so the key only needs to be present; the full
+  `docker-compose.yml` must also list it under each service's `environment:`
+  (fixed in commit b903e16). The wizard must mint and set it.
 
 ## Reference paths
 
