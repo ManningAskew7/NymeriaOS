@@ -1,4 +1,5 @@
 import type {
+  AuthPromptStatusResponse,
   AuthPromptSubmitRequest,
   AuthPromptSubmitResponse,
   Credential,
@@ -208,6 +209,27 @@ export class CredentialsApi extends AccountsApi {
       tested: data.tested === true,
       testStatus: (data.test_status as string | null | undefined) ?? null,
       testError: (data.test_error as string | null | undefined) ?? null,
+      credential: data.credential ? this.credentialFromResponse(data.credential as Record<string, unknown>) : null,
+    };
+  }
+
+  async getCredentialPromptStatus(promptId: string): Promise<AuthPromptStatusResponse> {
+    const response = await fetch(`${this.getBaseUrl()}/credential-prompts/${encodeURIComponent(promptId)}/status`, {
+      headers: this.getHeaders(),
+    });
+    if (response.status === 404) {
+      throw new Error('This prompt has already been resolved or expired.');
+    }
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to check credential status'));
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    return {
+      ok: data.ok === true,
+      status: (data.status as string) || 'unknown',
+      prompt_id: (data.prompt_id as string) || promptId,
+      credential_id: (data.credential_id as string | null | undefined) ?? null,
+      message: (data.message as string | null | undefined) || '',
       credential: data.credential ? this.credentialFromResponse(data.credential as Record<string, unknown>) : null,
     };
   }

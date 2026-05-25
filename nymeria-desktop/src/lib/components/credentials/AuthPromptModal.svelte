@@ -25,11 +25,16 @@
   let labelDraft = $state('');
   let submitting = $state(false);
   let testing = $state(false);
+  let checkingOAuth = $state(false);
   let lastError = $state<string | null>(null);
   let lastInfo = $state<string | null>(null);
   let attempts = $state(0);
   let isOpen = $derived(prompt !== null);
   let isOAuth = $derived(prompt?.mode === 'oauth' || prompt?.mode === 'oauth_device');
+  let oauthResolved = $derived(prompt?.resolution_status === 'active');
+  let oauthFailed = $derived(
+    !!prompt?.resolution_status && prompt.resolution_status !== 'active'
+  );
   let oauthLaunched = $state(false);
   let copiedCode = $state(false);
   let copiedError = $state(false);
@@ -67,8 +72,13 @@
       labelDraft = prompt.account_label || '';
       submitting = false;
       testing = false;
+      checkingOAuth = false;
       lastError = null;
-      lastInfo = null;
+      lastInfo = prompt.resolution_message || null;
+      if (prompt.resolution_ok === false) {
+        lastError = prompt.resolution_message || `OAuth setup ended with status: ${prompt.resolution_status || 'failed'}`;
+        lastInfo = null;
+      }
       attempts = 0;
       oauthLaunched = false;
       copiedCode = false;
@@ -168,7 +178,7 @@
       close();
       return;
     }
-    if (submitting || testing) return;
+    if (submitting || testing || checkingOAuth) return;
     // Dismiss: report the last error so server-side audit + recent-prompts
     // history captures it. We no longer send a user_message — the user
     // drives follow-up in chat, not via this panel.
@@ -177,7 +187,7 @@
   }
 
   async function handleCancel() {
-    if (!prompt || submitting || testing) return;
+    if (!prompt || submitting || testing || checkingOAuth) return;
     await api.cancelCredentialPrompt(prompt.prompt_id, null);
     close();
   }
@@ -208,6 +218,28 @@
       lastError = err instanceof Error ? err.message : String(err);
     } finally {
       testing = false;
+    }
+  }
+
+  async function handleCheckOAuthStatus() {
+    if (!prompt || !isOAuth || checkingOAuth) return;
+    checkingOAuth = true;
+    lastError = null;
+    try {
+      const result = await api.getCredentialPromptStatus(prompt.prompt_id);
+      if (result.ok || result.status === 'active') {
+        lastInfo = result.message || 'Connection completed.';
+        return;
+      }
+      if (result.status === 'pending_setup') {
+        lastInfo = result.message || 'Still waiting for sign-in to complete.';
+        return;
+      }
+      lastError = result.message || `Credential setup is ${result.status}.`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    } finally {
+      checkingOAuth = false;
     }
   }
 
@@ -397,10 +429,20 @@
             Sign in with {prompt.display_name} to authorise Nymeria. The page
             opens in your browser. Return here when finished.
           </p>
-          <Button type="button" onclick={handleOAuthSignIn} disabled={!prompt.auth_url}>
+          <Button type="button" onclick={handleOAuthSignIn} disabled={!prompt.auth_url || oauthResolved}>
             Sign in with {prompt.display_name}
           </Button>
-          {#if oauthLaunched}
+          {#if oauthResolved}
+            <div class="status-row success">
+              <span class="icon-wrap" aria-hidden="true"><Icon name="success" size={14} /></span>
+              <span>{prompt.resolution_message || lastInfo || 'Connection completed.'}</span>
+            </div>
+          {:else if oauthFailed}
+            <div class="status-row error">
+              <span class="icon-wrap" aria-hidden="true"><Icon name="warning" size={14} /></span>
+              <span>{lastError || prompt.resolution_message || 'Sign-in did not complete.'}</span>
+            </div>
+          {:else if oauthLaunched}
             <div class="status-row">
               <span class="icon-wrap" aria-hidden="true"><Icon name="info" size={14} /></span>
               <span>Waiting for sign-in to complete…</span>
@@ -425,7 +467,7 @@
           {#if prompt.verification_uri || prompt.verification_uri_complete}
             <div class="device-link">
               <code>{prompt.verification_uri_complete || prompt.verification_uri}</code>
-              <Button type="button" onclick={handleOpenVerification}>
+              <Button type="button" onclick={handleOpenVerification} disabled={oauthResolved}>
                 {prompt.verification_uri_complete ? 'Open with code pre-filled' : 'Open in browser'}
               </Button>
             </div>
@@ -435,7 +477,17 @@
               Code expires in {formatCountdown(deviceSecondsLeft)}
             </div>
           {/if}
-          {#if oauthLaunched}
+          {#if oauthResolved}
+            <div class="status-row success">
+              <span class="icon-wrap" aria-hidden="true"><Icon name="success" size={14} /></span>
+              <span>{prompt.resolution_message || lastInfo || 'Connection completed.'}</span>
+            </div>
+          {:else if oauthFailed}
+            <div class="status-row error">
+              <span class="icon-wrap" aria-hidden="true"><Icon name="warning" size={14} /></span>
+              <span>{lastError || prompt.resolution_message || 'Sign-in did not complete.'}</span>
+            </div>
+          {:else if oauthLaunched}
             <div class="status-row">
               <span class="icon-wrap" aria-hidden="true"><Icon name="info" size={14} /></span>
               <span>Waiting for sign-in to complete…</span>
@@ -534,8 +586,44 @@
       {/if}
 
       {#if isOAuth}
+        {#if lastInfo && !oauthResolved}
+          <div class="alert info" role="status">
+            <span class="alert-icon" aria-hidden="true"><Icon name="success" size={16} /></span>
+            <div class="alert-body"><div class="alert-text">{lastInfo}</div></div>
+          </div>
+        {/if}
+
+        {#if lastError && !oauthFailed}
+          <div class="alert error" role="alert">
+            <span class="alert-icon" aria-hidden="true"><Icon name="warning" size={16} /></span>
+            <div class="alert-body">
+              <div class="alert-title">Connection status</div>
+              <div class="alert-text">{lastError}</div>
+            </div>
+            <button
+              type="button"
+              class="alert-copy"
+              aria-label={copiedError ? 'Copied status to clipboard' : 'Copy status to clipboard'}
+              title={copiedError ? 'Copied' : 'Copy to clipboard'}
+              onclick={handleCopyError}
+            >
+              {#if copiedError}
+                <span class="icon-wrap"><Icon name="check" size={14} /></span>
+              {:else}
+                <span class="icon-wrap"><Icon name="copy" size={14} /></span>
+              {/if}
+            </button>
+          </div>
+        {/if}
+
         <div class="actions">
-          <Button variant="ghost" type="button" onclick={handleCancel}>Cancel</Button>
+          <Button variant="ghost" type="button" onclick={handleCancel} disabled={oauthResolved}>Cancel</Button>
+          <Button variant="secondary" type="button" onclick={handleCheckOAuthStatus} disabled={checkingOAuth}>
+            {checkingOAuth ? 'Checking…' : 'Check status'}
+          </Button>
+          {#if oauthResolved}
+            <Button type="button" onclick={close}>Done</Button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -945,10 +1033,31 @@
     color: var(--accent-primary);
   }
 
+  .status-row.success {
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 32%, transparent);
+    background: color-mix(in srgb, var(--success) 12%, var(--bg-elevated));
+  }
+
+  .status-row.success .icon-wrap {
+    color: var(--success);
+  }
+
+  .status-row.error {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 32%, transparent);
+    background: color-mix(in srgb, var(--error) 12%, var(--bg-elevated));
+  }
+
+  .status-row.error .icon-wrap {
+    color: var(--error);
+  }
+
   .actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-sm);
+    flex-wrap: wrap;
   }
 
   .scopes {

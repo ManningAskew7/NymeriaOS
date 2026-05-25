@@ -314,6 +314,77 @@ def test_happy_path_promotes_vault_credential(env, monkeypatch):
     assert payload["email"] == "user@example.com"
 
 
+def test_happy_path_replaces_stale_same_account_oauth_credentials(env, monkeypatch):
+    """A reconnect should make the new prompt credential authoritative for
+    the provider account, carry over target metadata, and disable stale rows."""
+    import nymeria.core.oauth_callback_handler as handler_mod
+    monkeypatch.setattr(handler_mod.httpx, "AsyncClient", _FakeAsyncClient)
+    _stub_userinfo(monkeypatch)
+
+    async def run():
+        prompt, _, state = await _register_pending_prompt()
+        _settings, repo = env
+        stale = repo.create_credential(
+            owner_type="user",
+            owner_user_id="default",
+            name="Old Google Calendar",
+            provider="google_calendar",
+            kind="oauth_token",
+            account_label="user@example.com",
+            status="active",
+            metadata={
+                "account_id": "user_at_example_com",
+                "email": "user@example.com",
+                "name": "User One",
+                "expires_at": "2026-01-01T00:00:00+00:00",
+            },
+            scopes=list(OAUTH_PROVIDERS["google_calendar"].scopes),
+            allowed_targets=["native_tool:calendar_read"],
+            secret_fields={"access_token": "old-access", "refresh_token": "old-refresh"},
+            created_by_user_id="default",
+        )
+        repo.bind_credential(
+            stale.id,
+            target_type="native_tool",
+            target_id="calendar_read",
+            actor_user_id="default",
+        )
+        legacy = repo.upsert_legacy_cache(
+            "default",
+            "google_calendar.json",
+            {
+                "accounts": {
+                    "user_at_example_com": {
+                        "email": "user@example.com",
+                        "access_token": "legacy-access",
+                        "refresh_token": "legacy-refresh",
+                        "expires_at": 0,
+                    }
+                }
+            },
+        )
+        return prompt, stale, legacy, await handle_auth_code_callback(code="auth-code-123", state=state)
+
+    prompt, stale, legacy, result = asyncio.run(run())
+    assert result.ok is True
+
+    _settings, repo = env
+    active = repo.get_credential(prompt.credential_id)
+    old = repo.get_credential(stale.id)
+    legacy_record = repo.get_credential(legacy.id)
+    assert active is not None
+    assert old is not None
+    assert legacy_record is not None
+    assert active.status == "active"
+    assert old.status == "disabled"
+    assert legacy_record.status == "disabled"
+    assert "native_tool:calendar_read" in active.allowed_targets
+    assert stale.id in (active.metadata or {}).get("replaced_credential_ids", [])
+    assert legacy.id in (active.metadata or {}).get("replaced_credential_ids", [])
+    copied = repo.list_bindings(active.id)
+    assert any(row["target_type"] == "native_tool" and row["target_id"] == "calendar_read" for row in copied)
+
+
 def test_token_exchange_http_error_marks_prompt_failed(env, monkeypatch):
     """If the provider's token endpoint returns 4xx/5xx, the prompt resolves
     as ``error`` and the vault record stays in pending_setup."""
