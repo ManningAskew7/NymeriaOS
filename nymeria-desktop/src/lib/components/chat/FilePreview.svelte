@@ -141,8 +141,8 @@
   }
 
   .remove-button:hover {
-    background: var(--accent-danger);
-    border-color: var(--accent-danger);
+    background: var(--error);
+    border-color: var(--error);
     color: white;
   }
 </style>

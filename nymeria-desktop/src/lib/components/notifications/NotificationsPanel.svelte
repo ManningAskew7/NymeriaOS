@@ -347,8 +347,8 @@
   }
 
   .error {
-    background: color-mix(in srgb, var(--accent-danger, #ef4444) 12%, transparent);
-    color: var(--accent-danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
   }
 
   .card {
@@ -455,7 +455,7 @@
   }
 
   .status-pill.off {
-    color: var(--accent-danger, #ef4444);
+    color: var(--error);
   }
 
   .status-pill.default {
