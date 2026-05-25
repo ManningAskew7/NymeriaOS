@@ -401,8 +401,8 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
   }
 
   .primary {
-    background: var(--accent);
-    color: var(--button-primary-text, white);
+    background: var(--accent-primary);
+    color: var(--text-on-accent);
   }
 
   .secondary {
@@ -419,7 +419,7 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
     width: 32px;
     height: 32px;
     border: 3px solid var(--border-subtle);
-    border-top-color: var(--accent);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 800ms linear infinite;
   }

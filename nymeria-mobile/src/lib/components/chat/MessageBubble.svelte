@@ -728,7 +728,7 @@
 
   .user-document:active:not(:disabled) {
     border-color: var(--accent-primary);
-    background: var(--bg-elevated-3, var(--bg-elevated-2));
+    background: var(--bg-elevated-2);
   }
 
   .user-document:disabled {

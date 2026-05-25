@@ -276,7 +276,7 @@
   }
 
   .group-items.highlighted {
-    background: rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.08);
-    border: 1px solid rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.2);
+    background: color-mix(in srgb, var(--accent-secondary) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-secondary) 20%, transparent);
   }
 </style>

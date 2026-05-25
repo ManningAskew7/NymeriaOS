@@ -206,7 +206,7 @@
     align-items: center;
     justify-content: center;
     border-radius: var(--radius-md);
-    background: rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.15);
+    background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
     color: var(--accent-secondary, var(--accent-primary));
   }
 
@@ -374,6 +374,6 @@
 
   .confirm-delete {
     color: var(--error);
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 </style>

@@ -275,7 +275,7 @@
   }
 
   .error {
-    color: var(--color-error, #d33);
+    color: var(--error);
   }
 
   .field {
@@ -290,7 +290,7 @@
   }
 
   .token-input {
-    font-family: var(--font-family-mono);
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     padding: 12px;
     min-height: var(--touch-target-min);
@@ -324,7 +324,7 @@
   }
 
   .code-pill {
-    font-family: var(--font-family-mono);
+    font-family: var(--font-mono);
     font-size: var(--font-size-lg);
     font-weight: 600;
     letter-spacing: 0.1em;
@@ -339,8 +339,8 @@
     text-align: center;
     padding: 12px 16px;
     min-height: var(--touch-target-min);
-    background: var(--accent-bg, var(--bg-elevated));
-    color: var(--accent-fg, var(--text-primary));
+    background: var(--bg-elevated);
+    color: var(--text-primary);
     border-radius: var(--radius-md);
     text-decoration: none;
     font-weight: 500;
@@ -374,9 +374,9 @@
   }
 
   .action-btn.primary {
-    background: var(--accent-bg, var(--bg-elevated));
-    color: var(--accent-fg, var(--text-primary));
-    border-color: var(--accent-bg, var(--border-subtle));
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
   }
 
   .action-btn:active:not(:disabled) {

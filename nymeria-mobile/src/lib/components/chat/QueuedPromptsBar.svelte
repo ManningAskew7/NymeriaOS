@@ -106,7 +106,7 @@
   }
 
   .queued-item.error {
-    border-color: var(--accent-danger, #ef4444);
+    border-color: var(--error);
   }
 
   .queued-row {
@@ -125,7 +125,7 @@
   }
   .queued-status.queued { color: var(--accent-primary); }
   .queued-status.sending { color: var(--text-secondary); }
-  .queued-status.errored { color: var(--accent-danger, #ef4444); }
+  .queued-status.errored { color: var(--error); }
 
   .queued-content {
     margin-top: 4px;
