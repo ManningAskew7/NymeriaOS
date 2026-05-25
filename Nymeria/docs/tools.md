@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 17 core tools in `ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-22; use `tools-index.md` for the generated exhaustive inventory.
+Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 19 core tools in `ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-25; use `tools-index.md` for the generated exhaustive inventory.
 
 ## Summary Table
 
@@ -23,8 +23,10 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
 | 14 | `notify` | Core | MODERATE | On | Send in-app and external notifications |
 | 15 | `slash_command` | Self | MODERATE | On | Run registered Nymeria slash commands on the current thread. Destructive commands are blocked for the agent. |
-| 16 | `auth_manager` | Credentials | MODERATE | On | Manage native OAuth/API-key connections through the credential vault |
-| 17 | `request_credential` | Credentials | SAFE | On | Ask the user to provide a missing credential through a frontend prompt |
+| 16 | `auth_inspect` | Credentials | SAFE | On | Inspect credential metadata and OAuth account state without exposing secrets |
+| 17 | `auth_cleanup` | Credentials | MODERATE | On | Disable stale or unwanted user-owned credentials, dry-run by default for bulk cleanup |
+| 18 | `auth_bindings` | Credentials | MODERATE | On | Bind or unbind credentials to runtime targets |
+| 19 | `request_credential` | Credentials | SAFE | On | Ask the user to provide a missing credential through a frontend prompt |
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
@@ -1824,33 +1826,54 @@ validation defaults to `60` seconds and can be overridden with
 
 **Audit and deferred production safety:** HTTP tool calls append redacted HTTP events to the audit log when `AUDIT_LOG_ENABLED=true`. Raw bearer/API-key-like values are best-effort redacted and custom HTTP `${env:VAR}` usage records the variable names, not the values. Credential-vault usage records credential IDs, not plaintext values. Future hardening still needs stronger per-user rate-limit budgets per task, pagination helpers, and policy hooks for actions that send messages, delete data, spend money, modify production systems, post publicly, or change infrastructure.
 
-### auth_manager
+### auth_inspect / auth_cleanup / auth_bindings
 
-Agent-safe credential management facade. Default-enabled on every new thread so the agent can always introspect and disable stored credentials without the user pre-enabling it.
+Agent-safe credential management tools. They are default-enabled on every new
+thread so the agent can inspect, clean up, and bind stored credentials without
+the user pre-enabling them.
 
 ```python
-auth_manager(
-    action: str,
+auth_inspect(
+    view: Literal["list", "status", "oauth_accounts"] = "list",
     credential_id: str = "",
     provider: str = "",
-    kind: str = "api_key",
-    name: str = "",
+    kind: str = "",
+    status: str = "",
+    account_id: str = "",
+    prompt_id: str = "",
+    include_disabled: bool = False,
+    limit: int = 100,
+)
+
+auth_cleanup(
+    operation: Literal["stale_oauth", "disable_matching", "disable"] = "stale_oauth",
+    credential_id: str = "",
+    provider: str = "",
+    kind: str = "",
+    status: str = "",
+    account_id: str = "",
+    prompt_id: str = "",
+    dry_run: bool = True,
+    limit: int = 100,
+)
+
+auth_bindings(
+    operation: Literal["bind", "unbind"] = "bind",
+    credential_id: str = "",
     target_type: str = "",
     target_id: str = "",
     binding_name: str = "",
     binding_id: str = "",
-    metadata: Optional[dict] = None,
-    required_fields: Optional[list[str]] = None,
 )
 ```
 
-Actions: `list`, `status`, `request_setup`, `bind`, `unbind`, `test`, `disable`.
-The tool returns credential metadata only. It can manage user-owned credentials
-but cannot alter system credentials. It never returns plaintext secrets,
-ciphertext, or partial key material. Native built-in integrations use target
-type `native_tool`; for example, request setup for NASA with
-`target_type="native_tool"`, `target_id="nasa_apod"`, and
-`required_fields=["api_key"]`.
+`auth_inspect` returns metadata only. `auth_cleanup` can disable user-owned
+credentials and keeps bulk operations dry-run by default. `auth_bindings`
+binds a credential to a runtime target such as `mcp_server:<id>`,
+`custom_tool:<id>`, or `native_tool:<name>`, and updates allowed targets for
+runtime secret resolution. These tools cannot alter system credentials and
+never return plaintext secrets, ciphertext, or partial key material. User
+prompting for new secrets belongs to `request_credential`.
 
 ### skill_write
 
@@ -2114,7 +2137,7 @@ Microsoft tokens land in the credential vault as `kind=oauth_token` via the unif
 
 **Authentication:**
 
-The agent connects Outlook by calling `request_credential(provider="outlook", kind="oauth")`. Outlook supports both `auth_code` (browser redirect, default when `NYMERIA_PUBLIC_URL` is set) and `device_code` (RFC 8628 short code, used automatically when `NYMERIA_PUBLIC_URL` is unset). To disconnect an Outlook account the user removes the credential from Settings → Connections or the agent calls `auth_manager(action="disable", credential_id=...)`.
+The agent connects Outlook by calling `request_credential(provider="outlook", kind="oauth")`. Outlook supports both `auth_code` (browser redirect, default when `NYMERIA_PUBLIC_URL` is set) and `device_code` (RFC 8628 short code, used automatically when `NYMERIA_PUBLIC_URL` is unset). To disconnect an Outlook account the user removes the credential from Settings → Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`.
 
 **Email tools:**
 

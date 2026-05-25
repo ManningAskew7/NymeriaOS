@@ -51,7 +51,9 @@ DEFAULT_DREAM_DISABLED_CORE_TOOLS: tuple[str, ...] = (
     "request_credential",
     "slash_command",
     "consult",
-    "auth_manager",
+    "auth_inspect",
+    "auth_cleanup",
+    "auth_bindings",
 )
 
 # Core tools dreams are allowed to bind. This is a positive allowlist used by

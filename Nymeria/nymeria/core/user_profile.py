@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Legacy tool renames. Historical profiles may contain the old names; values
 # from disk or inbound API requests are transparently migrated to the current
 # names so the backend accepts them and the UI stops showing ghost entries.
-LEGACY_TOOL_RENAMES: Dict[str, str] = {
+LEGACY_TOOL_RENAMES: Dict[str, Union[str, List[str]]] = {
     "todo": "nym_todo",
     "todo_delete": "nym_todo_delete",
     "todo_list": "nym_todo_list",
@@ -44,6 +44,11 @@ LEGACY_TOOL_RENAMES: Dict[str, str] = {
     "mcp_search": "search_mcp",
     "mcp_install": "install_mcp_server",
     "mcp_manage": "manage_mcp",
+    # 2026-05-25: the credential manager facade was split into focused tools.
+    # ``auth_manage`` is accepted as a defensive alias because some clients
+    # reported the stale name without the trailing "r".
+    "auth_manager": ["auth_inspect", "auth_cleanup", "auth_bindings"],
+    "auth_manage": ["auth_inspect", "auth_cleanup", "auth_bindings"],
 }
 
 DEFAULT_GLOBAL_SKILLS: List[str] = ["self-improve"]
@@ -55,9 +60,11 @@ def migrate_tool_names(names: List[str]) -> List[str]:
     out: List[str] = []
     for name in names:
         migrated = LEGACY_TOOL_RENAMES.get(name, name)
-        if migrated not in seen:
-            seen.add(migrated)
-            out.append(migrated)
+        migrated_names = [migrated] if isinstance(migrated, str) else migrated
+        for migrated_name in migrated_names:
+            if migrated_name not in seen:
+                seen.add(migrated_name)
+                out.append(migrated_name)
     return out
 
 # Thread-safe locks for profile operations (keyed by user_id)

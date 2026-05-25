@@ -659,6 +659,8 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
         "mcp_search",
         "mcp_install",
         "mcp_manage",
+        "auth_manager",
+        "auth_manage",
     ]) == [
         "nym_todo",
         "nym_todo_delete",
@@ -668,6 +670,9 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
         "search_mcp",
         "install_mcp_server",
         "manage_mcp",
+        "auth_inspect",
+        "auth_cleanup",
+        "auth_bindings",
     ]
 
     prefs = ToolPreferences(default_thread_tools=[
@@ -677,6 +682,7 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
         "mcp_search",
         "mcp_install",
         "mcp_manage",
+        "auth_manager",
     ])
     assert prefs.default_thread_tools == [
         "trigger_config",
@@ -684,6 +690,9 @@ def test_legacy_tool_names_migrate_to_consolidated_tools():
         "search_mcp",
         "install_mcp_server",
         "manage_mcp",
+        "auth_inspect",
+        "auth_cleanup",
+        "auth_bindings",
     ]
 
     now = datetime.now(timezone.utc)

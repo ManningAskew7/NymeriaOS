@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -243,54 +243,41 @@ def _cleanup_stale_oauth_candidates(records: list[Any]) -> list[dict[str, Any]]:
     return sorted(candidates.values(), key=lambda row: (row["provider"], row["reason"], row["credential_id"]))
 
 
+def _max_rows(limit: int) -> int:
+    return max(1, min(500, int(limit or 100)))
+
+
 @tool
-def auth_manager(
-    action: str,
+def auth_inspect(
+    view: Literal["list", "status", "oauth_accounts"] = "list",
     credential_id: str = "",
     provider: str = "",
     kind: str = "",
-    name: str = "",
-    target_type: str = "",
-    target_id: str = "",
-    binding_name: str = "",
-    binding_id: str = "",
     status: str = "",
     account_id: str = "",
     prompt_id: str = "",
     include_disabled: bool = False,
-    dry_run: bool = True,
     limit: int = 100,
-    metadata: Optional[dict[str, Any]] = None,
-    required_fields: Optional[list[str]] = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
-    """Manage Nymeria credentials without exposing secret values.
+    """Inspect Nymeria credential metadata without exposing secret values.
 
-    Actions:
-    - list: list the current user's credentials plus system credential metadata.
-    - status: show metadata and bindings for one credential.
-    - oauth_accounts: summarize OAuth accounts and duplicate/stale state.
-    - cleanup_stale_oauth: disable stale pending/duplicate OAuth rows (dry_run by default).
-    - disable_matching: disable credentials matching metadata filters (dry_run by default).
-    - request_setup: create a pending secure setup record for the UI/user.
-    - bind: bind a credential to a target such as mcp_server:<id> or custom_tool:<id>.
-    - unbind: remove a binding by binding_id.
-    - test: perform a generic vault health check without revealing values.
-    - disable: disable a credential.
+    Views:
+    - list: list credentials visible to the current user, with optional filters.
+    - status: show one credential's metadata and bindings; requires credential_id.
+    - oauth_accounts: group OAuth and legacy token-cache rows by provider account.
 
-    This tool never returns plaintext secrets, ciphertext, or partial keys.
-    Users must enter secret material through the Settings/Connections UI or
-    authenticated REST API, not through chat.
+    Secret values, ciphertext, and partial keys are never returned.
     """
     user_id = get_user_id(config)
     repo = get_credential_vault_repo()
-    normalized = (action or "").strip().lower()
+    normalized = (view or "list").strip().lower()
     provider_norm = (provider or "").strip().lower()
     kind_norm = (kind or "").strip().lower()
     status_norm = (status or "").strip().lower()
     account_id_norm = (account_id or "").strip()
     prompt_id_norm = (prompt_id or "").strip()
-    max_rows = max(1, min(500, int(limit or 100)))
+    max_rows = _max_rows(limit)
 
     if normalized == "list":
         records = _filtered_records(
@@ -323,7 +310,56 @@ def auth_manager(
         ]
         return _json({"ok": True, "accounts": _oauth_account_summary(oauthish), "total_credentials": len(oauthish)})
 
-    if normalized == "cleanup_stale_oauth":
+    if normalized == "status":
+        if not credential_id:
+            return _json({"ok": False, "error": "credential_id is required"})
+        record = repo.get_credential(credential_id)
+        if not record or (record.owner_type == "user" and record.owner_user_id != user_id):
+            return _json({"ok": False, "error": "credential not found"})
+        return _json(
+            {
+                "ok": True,
+                "credential": _public(record),
+                "bindings": repo.list_bindings(credential_id),
+            }
+        )
+
+    return _json({"ok": False, "error": "unknown view", "views": ["list", "status", "oauth_accounts"]})
+
+
+@tool
+def auth_cleanup(
+    operation: Literal["stale_oauth", "disable_matching", "disable"] = "stale_oauth",
+    credential_id: str = "",
+    provider: str = "",
+    kind: str = "",
+    status: str = "",
+    account_id: str = "",
+    prompt_id: str = "",
+    dry_run: bool = True,
+    limit: int = 100,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Disable stale or unwanted user-owned credentials without exposing secrets.
+
+    Operations:
+    - stale_oauth: find stale pending/duplicate OAuth and replaced legacy cache rows.
+      Dry-run by default; pass dry_run=false to disable candidates.
+    - disable_matching: disable credentials matching filters. Requires at least one
+      filter and is dry-run by default.
+    - disable: disable exactly one credential_id immediately.
+    """
+    user_id = get_user_id(config)
+    repo = get_credential_vault_repo()
+    normalized = (operation or "stale_oauth").strip().lower()
+    provider_norm = (provider or "").strip().lower()
+    kind_norm = (kind or "").strip().lower()
+    status_norm = (status or "").strip().lower()
+    account_id_norm = (account_id or "").strip()
+    prompt_id_norm = (prompt_id or "").strip()
+    max_rows = _max_rows(limit)
+
+    if normalized == "stale_oauth":
         records = _filtered_records(
             repo,
             user_id,
@@ -392,68 +428,37 @@ def auth_manager(
             }
         )
 
-    if normalized == "status":
+    if normalized == "disable":
         if not credential_id:
             return _json({"ok": False, "error": "credential_id is required"})
         record = repo.get_credential(credential_id)
-        if not record or (record.owner_type == "user" and record.owner_user_id != user_id):
+        if not record or not _can_manage(user_id, record):
             return _json({"ok": False, "error": "credential not found"})
-        return _json(
-            {
-                "ok": True,
-                "credential": _public(record),
-                "bindings": repo.list_bindings(credential_id),
-            }
-        )
+        return _json({"ok": True, "disabled": repo.disable_credential(credential_id, actor_user_id=user_id)})
 
-    if normalized == "request_setup":
-        if not provider or not name:
-            return _json({"ok": False, "error": "provider and name are required"})
-        safe_required = required_fields or ["value"]
-        if metadata:
-            forbidden = {"secret", "secrets", "token", "api_key", "password", "secret_fields"}
-            if forbidden.intersection({str(k).lower() for k in metadata.keys()}):
-                return _json(
-                    {
-                        "ok": False,
-                        "error": "metadata must not contain secret values; use the secure UI prompt",
-                    }
-                )
-        allowed_targets = []
-        if target_type and target_id:
-            allowed_targets.append(f"{target_type}:{target_id}")
-        record = repo.create_credential(
-            owner_type="user",
-            owner_user_id=user_id,
-            name=name,
-            provider=provider,
-            kind=kind or "api_key",
-            status="pending_setup",
-            metadata={
-                **(metadata or {}),
-                "setup_session": True,
-                "required_fields": safe_required,
-                "target_type": target_type or None,
-                "target_id": target_id or None,
-            },
-            allowed_targets=allowed_targets,
-            created_by_user_id=user_id,
-        )
-        if target_type and target_id:
-            repo.bind_credential(
-                record.id,
-                target_type=target_type,
-                target_id=target_id,
-                binding_name=binding_name or "setup_request",
-                actor_user_id=user_id,
-            )
-        return _json(
-            {
-                "ok": True,
-                "credential": _public(record),
-                "message": "Secure setup record created. Ask the user to finish it in Settings > Connections.",
-            }
-        )
+    return _json({"ok": False, "error": "unknown operation", "operations": ["stale_oauth", "disable_matching", "disable"]})
+
+
+@tool
+def auth_bindings(
+    operation: Literal["bind", "unbind"] = "bind",
+    credential_id: str = "",
+    target_type: str = "",
+    target_id: str = "",
+    binding_name: str = "",
+    binding_id: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Manage credential-to-target bindings without exposing secret values.
+
+    Operations:
+    - bind: bind a user-owned credential to target_type:target_id and add that
+      allowed target for runtime secret resolution.
+    - unbind: remove a binding by binding_id.
+    """
+    user_id = get_user_id(config)
+    repo = get_credential_vault_repo()
+    normalized = (operation or "bind").strip().lower()
 
     if normalized == "bind":
         if not credential_id or not target_type or not target_id:
@@ -486,47 +491,7 @@ def auth_manager(
             return _json({"ok": False, "error": "binding not found"})
         return _json({"ok": True, "deleted": repo.delete_binding(binding_id, actor_user_id=user_id)})
 
-    if normalized == "test":
-        if not credential_id:
-            return _json({"ok": False, "error": "credential_id is required"})
-        record = repo.get_credential(credential_id)
-        if not record or not _can_manage(user_id, record):
-            return _json({"ok": False, "error": "credential not found"})
-        status = "active" if record.secret_fields else "pending_setup"
-        repo.mark_tested(
-            credential_id,
-            status=status,
-            actor_user_id=user_id,
-            details={"generic_test": True, "has_secret": bool(record.secret_fields)},
-        )
-        return _json({"ok": True, "status": status})
-
-    if normalized == "disable":
-        if not credential_id:
-            return _json({"ok": False, "error": "credential_id is required"})
-        record = repo.get_credential(credential_id)
-        if not record or not _can_manage(user_id, record):
-            return _json({"ok": False, "error": "credential not found"})
-        return _json({"ok": True, "disabled": repo.disable_credential(credential_id, actor_user_id=user_id)})
-
-    return _json(
-        {
-            "ok": False,
-            "error": "unknown action",
-            "actions": [
-                "list",
-                "status",
-                "oauth_accounts",
-                "cleanup_stale_oauth",
-                "disable_matching",
-                "request_setup",
-                "bind",
-                "unbind",
-                "test",
-                "disable",
-            ],
-        }
-    )
+    return _json({"ok": False, "error": "unknown operation", "operations": ["bind", "unbind"]})
 
 
-AUTH_MANAGER_TOOLS = [auth_manager]
+AUTH_MANAGER_TOOLS = [auth_inspect, auth_cleanup, auth_bindings]

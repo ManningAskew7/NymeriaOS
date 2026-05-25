@@ -294,29 +294,27 @@ call to the correct store.
   priority).
 - **Status**: `active`, `pending_setup`, `invalid`, `disabled`. Runtime
   resolution functions use active credentials only.
-- **Agent safety**: The `auth_manager` tool that the agent uses never returns
-  plaintext secrets, ciphertext, or partial keys. It can list metadata, create
-  placeholders, bind credentials, and disable them - but actual secret entry
-  must happen through the UI or authenticated API.
+- **Agent safety**: The `auth_inspect`, `auth_cleanup`, and `auth_bindings`
+  tools that the agent uses never return plaintext secrets, ciphertext, or
+  partial keys. They can list metadata, clean up stale user credentials, bind
+  credentials, and disable them - but actual secret entry must happen through
+  the UI, `request_credential`, or authenticated API.
 
-## Agent Access - `auth_manager` Tool
+## Agent Access - Credential Tools
 
-The `auth_manager` tool (default-enabled on every new thread) provides
-metadata-only credential management from within chat. It supports these
-actions:
+The credential-management tools are default-enabled on every new thread and
+provide metadata-only credential management from within chat.
 
-| Action | What it does |
-|--------|-------------|
-| `list` | List the current user's credentials plus system credential metadata, with optional provider/kind/status/account/prompt filters |
-| `status` | Show metadata and bindings for one credential |
-| `oauth_accounts` | Group OAuth and legacy token-cache credentials by provider account so the agent can see duplicates and pending rows |
-| `cleanup_stale_oauth` | Dry-run by default. Finds stale pending OAuth prompts, duplicate active OAuth tokens, and legacy token caches replaced by active vault OAuth credentials; pass `dry_run=false` to disable the candidates |
-| `disable_matching` | Dry-run by default. Disable credentials matching metadata filters such as provider, kind, status, account ID, or prompt ID |
-| `request_setup` | Create a pending setup record for the user to complete in the UI |
-| `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
-| `unbind` | Remove a binding by binding ID |
-| `test` | Run a vault health check (confirms secret fields exist, no plaintext) |
-| `disable` | Disable a credential |
+| Tool | Operation/View | What it does |
+|------|----------------|--------------|
+| `auth_inspect` | `list` | List the current user's credentials plus system credential metadata, with optional provider/kind/status/account/prompt filters |
+| `auth_inspect` | `status` | Show metadata and bindings for one credential |
+| `auth_inspect` | `oauth_accounts` | Group OAuth and legacy token-cache credentials by provider account so the agent can see duplicates and pending rows |
+| `auth_cleanup` | `stale_oauth` | Dry-run by default. Finds stale pending OAuth prompts, duplicate active OAuth tokens, and legacy token caches replaced by active vault OAuth credentials; pass `dry_run=false` to disable the candidates |
+| `auth_cleanup` | `disable_matching` | Dry-run by default. Disable credentials matching metadata filters such as provider, kind, status, account ID, or prompt ID |
+| `auth_cleanup` | `disable` | Disable one credential by ID |
+| `auth_bindings` | `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
+| `auth_bindings` | `unbind` | Remove a binding by binding ID |
 
 The agent cannot manage system credentials or retrieve plaintext secrets.
 

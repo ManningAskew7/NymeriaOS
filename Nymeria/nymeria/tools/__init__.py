@@ -119,7 +119,7 @@ from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
-from .auth_manager import auth_manager, AUTH_MANAGER_TOOLS
+from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
 from ._prv_b import _PRV_TOOLS_B
 from .skill_config import (
@@ -1508,7 +1508,9 @@ ALL_TOOLS = [
     slash_command,
     # Credential management — default so the agent can always prompt the user
     # for API keys and OAuth tokens without requiring the tool to be pre-enabled.
-    auth_manager,
+    auth_inspect,
+    auth_cleanup,
+    auth_bindings,
     request_credential,
 ]
 
@@ -2738,7 +2740,9 @@ __all__ = [
     "HTTP_API_TOOLS",
     "tool_create",
     "TOOL_CREATE_TOOLS",
-    "auth_manager",
+    "auth_inspect",
+    "auth_cleanup",
+    "auth_bindings",
     "AUTH_MANAGER_TOOLS",
     "request_credential",
     "REQUEST_CREDENTIAL_TOOLS",
