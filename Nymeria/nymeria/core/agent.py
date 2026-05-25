@@ -2098,6 +2098,7 @@ class NymeriaAgent:
                 clean_tool_result=self._clean_tool_result_for_display,
                 tool_result_extra_events=self._tool_result_extra_events,
                 stream_logger=logger,
+                llm_config=self._get_llm_config_for_thread(thread_id),
             )
 
             try:

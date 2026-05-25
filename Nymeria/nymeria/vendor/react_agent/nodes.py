@@ -156,6 +156,21 @@ def _safe_error_text(value: Any, *, max_chars: int = 4000) -> str:
     return text[:max_chars]
 
 
+def _safe_response_error_parts(response: Any) -> List[str]:
+    parts: List[str] = []
+    for attr in ("status_code", "reason_phrase"):
+        try:
+            parts.append(_safe_error_text(getattr(response, attr, None)))
+        except Exception:
+            continue
+    for attr in ("text", "content"):
+        try:
+            parts.append(_safe_error_text(getattr(response, attr, None)))
+        except Exception:
+            continue
+    return parts
+
+
 def _iter_exception_chain(exc: BaseException) -> List[BaseException]:
     seen: set[int] = set()
     stack: List[BaseException] = [exc]
@@ -206,8 +221,7 @@ def _llm_exception_text(exc: BaseException) -> str:
             parts.append(_safe_error_text(getattr(current, attr, None)))
         response = getattr(current, "response", None)
         if response is not None:
-            parts.append(_safe_error_text(getattr(response, "text", None)))
-            parts.append(_safe_error_text(getattr(response, "content", None)))
+            parts.extend(_safe_response_error_parts(response))
     return " ".join(part for part in parts if part).lower()
 
 
@@ -229,6 +243,10 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _RETRYABLE_ERROR_MARKERS)
 
 
+def is_retryable_llm_error(exc: BaseException) -> bool:
+    return _is_retryable_llm_error(exc)
+
+
 def is_context_overflow_error(exc: BaseException) -> bool:
     """Return True when a provider error means the request exceeded context."""
     text = _llm_exception_text(exc)
@@ -245,6 +263,14 @@ def _llm_retry_delay(llm_config: Optional[LLMConfig], retry_index: int) -> float
 
 def _llm_max_retries(llm_config: Optional[LLMConfig]) -> int:
     return max(0, int(getattr(llm_config, "stream_max_retries", 2) or 0))
+
+
+def llm_max_retries(llm_config: Optional[LLMConfig]) -> int:
+    return _llm_max_retries(llm_config)
+
+
+def llm_retry_delay(llm_config: Optional[LLMConfig], retry_index: int) -> float:
+    return _llm_retry_delay(llm_config, retry_index)
 
 
 def _llm_fallbacks(llm_config: Optional[LLMConfig]) -> list[Any]:
@@ -390,6 +416,44 @@ def _llm_retry_payload(
         "reason": _llm_retry_reason(exc),
         "http_status": _extract_status_code(exc),
     }
+
+
+def llm_retry_payload_for_active_candidate(
+    llm_config: Optional[LLMConfig],
+    *,
+    attempt: int,
+    max_retries: int,
+    delay: float,
+    exc: BaseException,
+) -> dict[str, Any]:
+    return _llm_retry_payload(
+        llm_config,
+        _llm_initial_candidate_index(llm_config),
+        attempt=attempt,
+        max_retries=max_retries,
+        delay=delay,
+        exc=exc,
+    )
+
+
+def llm_activate_next_fallback(
+    llm_config: Optional[LLMConfig],
+    *,
+    exc: BaseException,
+) -> Optional[dict[str, Any]]:
+    from_index = _llm_initial_candidate_index(llm_config)
+    to_index = from_index + 1
+    if to_index >= _llm_candidate_count(llm_config):
+        return None
+    payload = _llm_fallback_payload(
+        llm_config,
+        from_index,
+        to_index,
+        exc=exc,
+    )
+    payload = _activate_llm_fallback(llm_config, payload)
+    _mark_llm_fallback_active(llm_config, to_index)
+    return payload
 
 
 def _llm_fallback_payload(
@@ -1204,6 +1268,12 @@ def create_agent_node(
                 break
             except Exception as exc:
                 if chunks_this_attempt > 0:
+                    try:
+                        setattr(exc, "nymeria_stream_chunks_before_error", chunks_this_attempt)
+                        setattr(exc, "nymeria_stream_candidate_index", candidate_index)
+                        setattr(exc, "nymeria_stream_candidate_label", _llm_candidate_label(llm_config, candidate_index))
+                    except Exception:
+                        pass
                     logger.warning(
                         "[LLM RETRY] stream failed after %d chunk(s) on %s; "
                         "not retrying to avoid duplicated output: %s",

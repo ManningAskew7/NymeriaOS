@@ -206,11 +206,13 @@
       const delay = step.delaySeconds && step.delaySeconds > 0
         ? ` in ${formatProviderDuration(step.delaySeconds)}`
         : ' now';
-      return `Provider error. Retrying ${retryLabel}${delay}${attempt}.`;
+      const rewind = step.rewound ? ' Rewound to the last stable step.' : '';
+      return `Provider error. Retrying ${retryLabel}${delay}${attempt}.${rewind}`;
     }
     const fallbackLabel = providerLabel(step.toProvider, step.toModel);
     const duration = formatProviderDuration(step.holdSeconds);
-    return `Using fallback ${fallbackLabel} for ${duration}.`;
+    const rewind = step.rewound ? ' Rewound to the last stable step.' : '';
+    return `Using fallback ${fallbackLabel} for ${duration}.${rewind}`;
   }
 
   async function downloadAttachment(file: FileAttachment) {

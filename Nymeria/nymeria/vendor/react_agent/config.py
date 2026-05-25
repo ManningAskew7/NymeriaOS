@@ -57,8 +57,8 @@ class LLMConfig:
     # SubAgentExecutor sets 120s explicitly for sub-agent LLM calls.
     request_timeout: Optional[int] = None
 
-    # Retry transient provider/transport failures. Streaming retries are only
-    # used before any model chunks are emitted to avoid duplicated output.
+    # Retry transient provider/transport failures. Post-stream failures are
+    # replayed by Nymeria's graph stream processor from the latest checkpoint.
     stream_max_retries: int = 2
     stream_retry_initial_delay: float = 1.0
     stream_retry_max_delay: float = 8.0

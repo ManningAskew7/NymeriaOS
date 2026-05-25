@@ -330,7 +330,10 @@
           delaySeconds?: number;
           reason?: string;
           httpStatus?: number | null;
+          rewound?: boolean;
+          streamChunks?: number;
         };
+        if (data.rewound) chatStore.rewindLastAssistantToStablePoint();
         chatStore.addProviderStatusStep({
           providerStatus: 'retry',
           provider: data.provider,
@@ -340,6 +343,8 @@
           delaySeconds: data.delaySeconds,
           reason: data.reason,
           httpStatus: data.httpStatus,
+          rewound: data.rewound,
+          streamChunks: data.streamChunks,
         });
         break;
       }
@@ -354,7 +359,10 @@
           expiresAt?: string | null;
           reason?: string;
           httpStatus?: number | null;
+          rewound?: boolean;
+          streamChunks?: number;
         };
+        if (data.rewound) chatStore.rewindLastAssistantToStablePoint();
         chatStore.addProviderStatusStep({
           providerStatus: 'fallback',
           fromProvider: data.fromProvider,
@@ -365,6 +373,8 @@
           expiresAt: data.expiresAt,
           reason: data.reason,
           httpStatus: data.httpStatus,
+          rewound: data.rewound,
+          streamChunks: data.streamChunks,
         });
         break;
       }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, TypedDict
 
+import httpx
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -44,6 +45,12 @@ class _StreamingFakeModel(BaseChatModel):
 
 class _TransientStreamError(RuntimeError):
     status_code = 500
+
+
+class _ResponseBackedStreamError(RuntimeError):
+    def __init__(self, message: str, response: httpx.Response):
+        super().__init__(message)
+        self.response = response
 
 
 class _RetryableBeforeChunkModel(BaseChatModel):
@@ -317,6 +324,17 @@ def test_async_graph_does_not_retry_non_retryable_stream_error():
     asyncio.run(collect_until_error())
 
     assert model.calls == 1
+
+
+def test_llm_error_classification_ignores_unread_stream_response_body():
+    response = httpx.Response(
+        500,
+        stream=httpx.ByteStream(b"context_length_exceeded"),
+    )
+    exc = _ResponseBackedStreamError("Internal Server Error", response)
+
+    assert nodes_module.is_context_overflow_error(exc) is False
+    assert nodes_module._is_retryable_llm_error(exc) is True
 
 
 def test_async_graph_uses_configured_fallback_after_primary_failure(monkeypatch):

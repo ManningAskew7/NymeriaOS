@@ -407,6 +407,8 @@ export class ChatApi extends CredentialsApi {
               delaySeconds: data.delay_seconds as number | undefined,
               reason: data.reason as string | undefined,
               httpStatus: data.http_status as number | null | undefined,
+              rewound: data.rewound as boolean | undefined,
+              streamChunks: data.stream_chunks as number | undefined,
             },
             timestamp: new Date(),
             threadId
@@ -426,6 +428,8 @@ export class ChatApi extends CredentialsApi {
               expiresAt: data.expires_at as string | null | undefined,
               reason: data.reason as string | undefined,
               httpStatus: data.http_status as number | null | undefined,
+              rewound: data.rewound as boolean | undefined,
+              streamChunks: data.stream_chunks as number | undefined,
             },
             timestamp: new Date(),
             threadId
