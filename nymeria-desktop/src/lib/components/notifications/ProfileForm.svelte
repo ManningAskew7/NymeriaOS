@@ -185,15 +185,15 @@
 
   .dest-disabled {
     font-size: var(--font-size-xs);
-    color: var(--accent-danger, #ef4444);
+    color: var(--error);
     margin-left: auto;
   }
 
   .error {
     padding: var(--spacing-sm);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent-danger, #ef4444) 12%, transparent);
-    color: var(--accent-danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
     font-size: var(--font-size-sm);
   }
 

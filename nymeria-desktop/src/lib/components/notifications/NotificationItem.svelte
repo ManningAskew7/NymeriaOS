@@ -143,7 +143,7 @@
   }
 
   .notification-item.has-errors {
-    border-left: 2px solid var(--accent-danger, #ef4444);
+    border-left: 2px solid var(--error);
   }
 
   .notification-content {
@@ -220,8 +220,8 @@
   }
 
   .delivery-badge.err {
-    background: color-mix(in srgb, var(--accent-danger, #ef4444) 14%, transparent);
-    color: var(--accent-danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+    color: var(--error);
   }
 
   .row-actions {
@@ -250,6 +250,6 @@
   }
 
   .row-action.delete:hover {
-    color: var(--accent-danger, #ef4444);
+    color: var(--error);
   }
 </style>

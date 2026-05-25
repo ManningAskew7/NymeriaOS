@@ -264,7 +264,7 @@
   }
 
   .required {
-    color: var(--accent-danger, #ef4444);
+    color: var(--error);
     margin-left: 2px;
   }
 
@@ -309,14 +309,14 @@
   }
 
   .link-btn.danger {
-    color: var(--accent-danger, #ef4444);
+    color: var(--error);
   }
 
   .error {
     padding: var(--spacing-sm);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent-danger, #ef4444) 12%, transparent);
-    color: var(--accent-danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
     font-size: var(--font-size-sm);
   }
 
@@ -332,8 +332,8 @@
   }
 
   .test-result.err {
-    background: color-mix(in srgb, var(--accent-danger, #ef4444) 12%, transparent);
-    color: var(--accent-danger, #ef4444);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
   }
 
   .actions {

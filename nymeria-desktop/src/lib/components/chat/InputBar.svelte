@@ -583,7 +583,7 @@
     height: 30px;
     padding: 0;
     background: var(--accent-primary);
-    color: #0a1417;
+    color: var(--text-on-accent);
     border: 1px solid transparent;
     border-radius: 50%;
     cursor: pointer;
@@ -593,7 +593,7 @@
 
   .send-btn:hover:not(:disabled) {
     background: var(--accent-hover);
-    box-shadow: 0 0 12px rgba(95, 184, 204, 0.3);
+    box-shadow: 0 0 12px rgba(var(--accent-primary-rgb), 0.3);
   }
 
   .send-btn:active:not(:disabled) {
@@ -731,7 +731,7 @@
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-sm);
     background: rgba(239, 68, 68, 0.1);
-    color: var(--accent-danger);
+    color: var(--error);
     font-size: var(--font-size-sm);
     border-radius: var(--radius-md) var(--radius-md) 0 0;
     animation: slideDown var(--transition-fast);
