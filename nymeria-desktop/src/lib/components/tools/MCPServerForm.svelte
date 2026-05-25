@@ -427,7 +427,7 @@
   .form-error {
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm, 4px);
-    background: rgba(244, 67, 54, 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error, #ff6b6b);
     font-size: 0.8rem;
   }

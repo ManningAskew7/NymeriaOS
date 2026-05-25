@@ -73,7 +73,7 @@
   .warning-panel {
     position: relative;
     background: var(--bg-elevated);
-    border: 1px solid var(--warning, #f59e0b);
+    border: 1px solid var(--warning);
     border-radius: var(--radius-lg);
     padding: var(--spacing-lg) var(--spacing-xl, 24px);
     max-width: 420px;
@@ -89,8 +89,8 @@
     width: 40px;
     height: 40px;
     border-radius: var(--radius-full);
-    background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent);
-    color: var(--warning, #f59e0b);
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
+    color: var(--warning);
     font-size: var(--font-size-xl);
     font-weight: 700;
     margin-bottom: var(--spacing-sm);
@@ -106,7 +106,7 @@
   .warning-count {
     margin: 0 0 var(--spacing-sm);
     font-size: var(--font-size-sm);
-    color: var(--warning, #f59e0b);
+    color: var(--warning);
   }
 
   .warning-message {
@@ -143,7 +143,7 @@
   }
 
   .btn-primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
   }

@@ -741,15 +741,15 @@ https://github.com/example/mcp-server`}
   }
 
   .error-banner {
-    background: rgba(244, 67, 54, 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error, #f44336);
-    border: 1px solid rgba(244, 67, 54, 0.3);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
   }
 
   .warning-banner {
-    background: rgba(245, 158, 11, 0.1);
-    color: #f59e0b;
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
   }
 
   .warning-banner p {
@@ -803,7 +803,7 @@ https://github.com/example/mcp-server`}
 
   .option-check input:checked + .check-track .check-thumb {
     left: 16px;
-    background: white;
+    background: var(--text-on-accent);
   }
 
   .option-text {
@@ -943,21 +943,21 @@ https://github.com/example/mcp-server`}
   }
 
   .risk-low {
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.12);
-    border-color: rgba(34, 197, 94, 0.3);
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border-color: color-mix(in srgb, var(--success) 30%, transparent);
   }
 
   .risk-medium {
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.12);
-    border-color: rgba(245, 158, 11, 0.3);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
   }
 
   .risk-high {
-    color: #f44336;
-    background: rgba(244, 67, 54, 0.12);
-    border-color: rgba(244, 67, 54, 0.3);
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    border-color: color-mix(in srgb, var(--error) 30%, transparent);
   }
 
   .plan-grid,
@@ -1091,8 +1091,8 @@ https://github.com/example/mcp-server`}
   }
 
   .draft-result .success-icon {
-    background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
+    color: var(--warning);
   }
 
   .success-icon {
@@ -1102,8 +1102,8 @@ https://github.com/example/mcp-server`}
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: rgba(34, 197, 94, 0.15);
-    color: #22c55e;
+    background: color-mix(in srgb, var(--success) 15%, transparent);
+    color: var(--success);
     flex-shrink: 0;
   }
 

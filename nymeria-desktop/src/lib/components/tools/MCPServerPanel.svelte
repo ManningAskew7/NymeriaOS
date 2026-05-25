@@ -71,12 +71,12 @@
   }
 
   function getStatusColor(server: MCPServer): string {
-    if (server.installStatus === 'failed') return '#f44336';
-    if (server.installStatus === 'draft' || server.installStatus === 'needs_config') return '#f59e0b';
-    if (server.installStatus === 'disabled') return 'var(--text-muted, #555)';
-    if (!server.enabled) return 'var(--text-muted, #555)';
-    if (server.discoveredTools.length === 0) return '#f59e0b';
-    return '#22c55e';
+    if (server.installStatus === 'failed') return 'var(--error)';
+    if (server.installStatus === 'draft' || server.installStatus === 'needs_config') return 'var(--warning)';
+    if (server.installStatus === 'disabled') return 'var(--text-muted)';
+    if (!server.enabled) return 'var(--text-muted)';
+    if (server.discoveredTools.length === 0) return 'var(--warning)';
+    return 'var(--success)';
   }
 
   function getStatusLabel(server: MCPServer): string {
@@ -684,21 +684,21 @@
   }
 
   .status-ready {
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.12);
-    border-color: rgba(34, 197, 94, 0.25);
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border-color: color-mix(in srgb, var(--success) 25%, transparent);
   }
 
   .status-draft {
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.12);
-    border-color: rgba(245, 158, 11, 0.25);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 25%, transparent);
   }
 
   .status-failed {
-    color: #f44336;
-    background: rgba(244, 67, 54, 0.12);
-    border-color: rgba(244, 67, 54, 0.25);
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    border-color: color-mix(in srgb, var(--error) 25%, transparent);
   }
 
   .status-disabled {
@@ -760,13 +760,13 @@
   }
 
   .test-ok {
-    background: rgba(34, 197, 94, 0.12);
-    color: #22c55e;
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    color: var(--success);
   }
 
   .test-fail {
-    background: rgba(244, 67, 54, 0.12);
-    color: #f44336;
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
   }
 
   .missing-config {
@@ -775,8 +775,8 @@
     gap: 0.4rem;
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm, 4px);
-    background: rgba(245, 158, 11, 0.12);
-    color: #f59e0b;
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
     font-size: 0.8rem;
   }
 
