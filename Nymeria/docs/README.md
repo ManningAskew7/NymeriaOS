@@ -71,6 +71,7 @@ and implementation disagree.
 | Frontend account UX | [frontend-accounts.md](./frontend-accounts.md) |
 | UI behavior reference | [ui-knowledgebase.md](./ui-knowledgebase.md) |
 | Open tool-call formulation streaming follow-up | [tool-call-formulation-streaming.md](./tool-call-formulation-streaming.md) |
+| Per-thread backend connections (design) | [per-thread-backend-connections.md](./per-thread-backend-connections.md) |
 | Outlook add-in | [outlook-addin.md](./outlook-addin.md) |
 | Manual Chrome MCP frontend testing | [chrome-mcp-testing.md](./chrome-mcp-testing.md) |
 
