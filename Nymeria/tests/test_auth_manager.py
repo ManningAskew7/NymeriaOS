@@ -152,6 +152,18 @@ def test_auth_bindings_bind_updates_allowed_targets(tmp_path, monkeypatch):
         }
     )
     assert body["ok"] is True
+    binding_id = body["binding_id"]
     updated = repo.get_credential(record.id)
     assert updated is not None
     assert "native_tool:example_tool" in updated.allowed_targets
+    assert repo.list_bindings(record.id)
+
+    unbound = _bindings({"operation": "unbind", "binding_id": binding_id})
+    assert unbound["ok"] is True
+    assert unbound["deleted"] is True
+    assert unbound["allowed_target"] == "native_tool:example_tool"
+    assert unbound["allowed_target_removed"] is True
+    updated = repo.get_credential(record.id)
+    assert updated is not None
+    assert "native_tool:example_tool" not in updated.allowed_targets
+    assert repo.list_bindings(record.id) == []

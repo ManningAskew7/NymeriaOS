@@ -1871,9 +1871,11 @@ auth_bindings(
 credentials and keeps bulk operations dry-run by default. `auth_bindings`
 binds a credential to a runtime target such as `mcp_server:<id>`,
 `custom_tool:<id>`, or `native_tool:<name>`, and updates allowed targets for
-runtime secret resolution. These tools cannot alter system credentials and
-never return plaintext secrets, ciphertext, or partial key material. User
-prompting for new secrets belongs to `request_credential`.
+runtime secret resolution. Unbinding removes the binding row and revokes the
+matching allowed target when no same-target binding remains. These tools cannot
+alter system credentials and never return plaintext secrets, ciphertext, or
+partial key material. User prompting for new secrets belongs to
+`request_credential`.
 
 ### skill_write
 

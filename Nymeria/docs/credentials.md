@@ -314,7 +314,7 @@ provide metadata-only credential management from within chat.
 | `auth_cleanup` | `disable_matching` | Dry-run by default. Disable credentials matching metadata filters such as provider, kind, status, account ID, or prompt ID |
 | `auth_cleanup` | `disable` | Disable one credential by ID |
 | `auth_bindings` | `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
-| `auth_bindings` | `unbind` | Remove a binding by binding ID |
+| `auth_bindings` | `unbind` | Remove a binding by binding ID and revoke that runtime allowed target when no same-target binding remains |
 
 The agent cannot manage system credentials or retrieve plaintext secrets.
 

@@ -454,7 +454,8 @@ def auth_bindings(
     Operations:
     - bind: bind a user-owned credential to target_type:target_id and add that
       allowed target for runtime secret resolution.
-    - unbind: remove a binding by binding_id.
+    - unbind: remove a binding by binding_id and revoke that allowed target
+      when no same-target binding remains.
     """
     user_id = get_user_id(config)
     repo = get_credential_vault_repo()
@@ -489,7 +490,30 @@ def auth_bindings(
         record = repo.get_credential(row["credential_id"])
         if not record or not _can_manage(user_id, record):
             return _json({"ok": False, "error": "binding not found"})
-        return _json({"ok": True, "deleted": repo.delete_binding(binding_id, actor_user_id=user_id)})
+        target = f"{row['target_type']}:{row['target_id']}"
+        deleted = repo.delete_binding(binding_id, actor_user_id=user_id)
+        allowed_target_removed = False
+        if deleted:
+            remaining_same_target = [
+                binding
+                for binding in repo.list_bindings(record.id)
+                if binding["target_type"] == row["target_type"]
+                and binding["target_id"] == row["target_id"]
+            ]
+            if not remaining_same_target:
+                allowed_target_removed = repo.remove_allowed_target(
+                    record.id,
+                    target=target,
+                    actor_user_id=user_id,
+                )
+        return _json(
+            {
+                "ok": True,
+                "deleted": deleted,
+                "allowed_target": target,
+                "allowed_target_removed": allowed_target_removed,
+            }
+        )
 
     return _json({"ok": False, "error": "unknown operation", "operations": ["bind", "unbind"]})
 
