@@ -19,6 +19,7 @@
   import { startSyncPoll, stopSyncPoll } from '$lib/stores/syncPoll.svelte';
   import { api } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
+  import { createInitGate } from '$lib/utils/appInit';
 
   debugLog('[Page] Script executing - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
 
@@ -166,6 +167,19 @@
     });
   }
 
+  // Run the post-config init sequence exactly once, the first time the client
+  // is configured. Reacting to configStore.isConfigured (rather than a one-shot
+  // onMount) covers all three arrival points: credentials cached at mount,
+  // supplied by Tauri/build-time auto-config, or entered in the Setup Wizard.
+  // Without this, completing the wizard never triggered syncFromBackend(), so
+  // the sidebar stayed stuck on its first-sync gate ("Loading threads…").
+  const initGate = createInitGate();
+  $effect(() => {
+    if (initGate.shouldInitialize(configStore.isConfigured)) {
+      void initializeApp();
+    }
+  });
+
   // Connect to autonomous event stream on mount
   onMount(() => {
     debugLog('[Page] onMount - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
@@ -173,10 +187,12 @@
     // Initialize Outlook bridge (no-ops if not in Outlook)
     outlookStore.initialize();
 
-    // Try auto-config from Tauri, then initialize
-    autoConfigFromTauri().then(() => {
-      initializeApp();
-    });
+    // Pull any auto-config (Tauri source-checkout dev or build-time defaults)
+    // into the config store. This may flip isConfigured to true, which the
+    // init effect below picks up. initializeApp() is driven by that effect, not
+    // chained here, so it also fires when credentials arrive later via the
+    // Setup Wizard rather than only when present at mount.
+    void autoConfigFromTauri();
 
     // When the window regains focus, re-verify the token — if it was rotated
     // or revoked server-side, we want to route back to SetupWizard before any

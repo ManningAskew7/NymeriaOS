@@ -71,7 +71,7 @@ function saveActiveId(id: string | null): void {
   }
 }
 
-function createConnectionsStore() {
+export function createConnectionsStore() {
   let connections = $state<SavedConnection[]>(loadConnections());
   let activeConnectionId = $state<string | null>(loadActiveId());
   let switching = $state(false);
@@ -161,6 +161,55 @@ function createConnectionsStore() {
     return conn;
   }
 
+  /**
+   * Apply an arbitrary backend (url + token) as the live connection: tear down
+   * the current session, repoint configStore, re-resolve identity, and clear +
+   * re-sync threads against the new backend. This is the single source of truth
+   * for switching backends — every UI path that commits a backend change (the
+   * "Connect" button via switchTo, plus the Backend settings form's Save/edit
+   * handlers) must route through here. The thread cache is scoped only by
+   * user_id, so when two backends share an identity (e.g. both `default`) the
+   * stale cache is overwritten only by this explicit reset + resync.
+   */
+  async function applyConnection(apiUrl: string, apiKey: string): Promise<void> {
+    // 1. Disconnect SSE and polling
+    autonomousStore.disconnect();
+    stopSyncPoll();
+    notificationStore.stopPolling();
+
+    // 2. Clear current chat state
+    chatStore.clearMessages();
+
+    // 3. Update config (triggers reactive updates in the api service)
+    configStore.apiUrl = apiUrl;
+    configStore.apiKey = apiKey;
+
+    // 4. Reconcile the active saved connection: pin a matching saved entry if
+    //    one exists, otherwise no saved entry owns this backend.
+    const matchIndex = findCredentialIndex(apiUrl, apiKey);
+    if (matchIndex >= 0) {
+      activeConnectionId = connections[matchIndex].id;
+      saveActiveId(activeConnectionId);
+    } else {
+      activeConnectionId = null;
+      saveActiveId(null);
+    }
+
+    // 5. Refresh identity FIRST so scoped-localStorage keys resolve to the new
+    //    user's namespace before threads I/O. .catch keeps the switch going on a
+    //    network/401 failure — better to land in the new backend with a stale
+    //    namespace than to abort mid-switch.
+    await configStore.refreshIdentity().catch(() => {});
+
+    // 6. Reset and reload threads from the new backend
+    threadsStore.reset();
+    await threadsStore.syncFromBackend();
+
+    // 7. Reconnect services
+    autonomousStore.connect();
+    notificationStore.startPolling();
+  }
+
   return {
     get connections() {
       return connections;
@@ -238,6 +287,8 @@ function createConnectionsStore() {
       });
     },
 
+    applyConnection,
+
     async switchTo(id: string) {
       const conn = connections.find((c) => c.id === id);
       if (!conn) return;
@@ -258,37 +309,12 @@ function createConnectionsStore() {
           });
         }
 
-        // 1. Disconnect SSE and polling
-        autonomousStore.disconnect();
-        stopSyncPoll();
-        notificationStore.stopPolling();
+        await applyConnection(conn.apiUrl, conn.apiKey);
 
-        // 2. Clear current state
-        chatStore.clearMessages();
-
-        // 3. Update config (triggers reactive updates in api service)
-        configStore.apiUrl = conn.apiUrl;
-        configStore.apiKey = conn.apiKey;
-
-        // 4. Track active connection
+        // An id-based switch always pins that entry, even if findCredentialIndex
+        // matched a different saved entry sharing the same url + token.
         activeConnectionId = id;
         saveActiveId(id);
-
-        // 5. Refresh identity FIRST so scoped-localStorage keys resolve
-        // to the new user's namespace before threads I/O. Without this,
-        // currentIdentityId stays stale and reset/sync read & write the
-        // previous user's `nymeria-*-<old-id>` keys. .catch keeps the
-        // switch going on a network/401 failure — better to land in the
-        // new backend with a stale namespace than to abort mid-switch.
-        await configStore.refreshIdentity().catch(() => {});
-
-        // 6. Reset and reload threads from new backend
-        threadsStore.reset();
-        await threadsStore.syncFromBackend();
-
-        // 6. Reconnect services
-        autonomousStore.connect();
-        notificationStore.startPolling();
       } catch (e) {
         console.error('[Connections] Switch failed:', e);
       } finally {

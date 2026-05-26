@@ -72,10 +72,6 @@ class ThreadClaimRequest(BaseModel):
     platform: str | None = Field(default=None, max_length=32)
 
 
-class ThreadMetadataMigrateRequest(BaseModel):
-    threads: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class ThreadDreamRequest(BaseModel):
     """Manually trigger a dream (self-reflection) cycle for a thread.
 

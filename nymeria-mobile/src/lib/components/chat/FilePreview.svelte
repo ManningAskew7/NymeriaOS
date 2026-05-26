@@ -112,7 +112,7 @@
   }
 
   .file-ext {
-    font-size: 9px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     color: var(--text-muted);

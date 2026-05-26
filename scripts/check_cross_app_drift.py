@@ -53,6 +53,7 @@ EXACT_MATCH: set[str] = {
     "lib/utils/providerRoutes.ts",
     "lib/utils/todoTools.ts",
     "lib/utils/toolSearch.ts",
+    "lib/utils/transitions.ts",
 }
 
 # ── Files with documented platform-specific differences ──────────────
