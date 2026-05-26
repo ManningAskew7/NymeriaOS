@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import nymeria.core.agent as agent_module
 from nymeria.core.command_service import CommandContext, CommandService
 
 
@@ -83,6 +84,25 @@ class _FakeTriggerManager:
                 e for e in all_executions if e.get("trigger_id") == trigger_id
             ]
         return list(reversed(all_executions[-limit:]))
+
+
+class _FakeAccountsRepo:
+    def get_user_by_id(self, user_id: str):
+        return SimpleNamespace(
+            id=user_id,
+            email=f"{user_id}@example.test",
+            display_name=user_id,
+            role="admin",
+        )
+
+
+@pytest.fixture(autouse=True)
+def patched_agent(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_FakeAccountsRepo()),
+    )
 
 
 @pytest.fixture

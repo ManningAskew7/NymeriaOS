@@ -245,6 +245,7 @@ def test_astream_reload_resume_streams_post_reload_tool_events():
     agent._extract_tokens_from_response = lambda messages: (0, 0)
     agent._max_iterations_for_thread = lambda thread_id: 20
     agent._analyze_turn_safety = lambda messages, max_iterations: SimpleNamespace(should_stop=False)
+    agent._get_llm_config_for_thread = lambda thread_id: None
 
     async def initial_events():
         yield {

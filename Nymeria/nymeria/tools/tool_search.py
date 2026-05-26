@@ -976,7 +976,7 @@ def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
         names, _ = filter_admin_only_tools(names, role)
         names, _ = filter_developer_only_tools(names, role)
     except Exception:
-        pass
+        logger.debug("Failed to filter default tools for user role", exc_info=True)
     return set(names)
 
 

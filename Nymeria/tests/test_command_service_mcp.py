@@ -85,9 +85,19 @@ class _FakeMCPRegistry:
         return dict(self.test_result)
 
 
+class _FakeAccountsRepo:
+    def get_user_by_id(self, user_id: str):
+        return SimpleNamespace(
+            id=user_id,
+            email=f"{user_id}@example.test",
+            display_name=user_id,
+            role="admin",
+        )
+
+
 class _FakeAgentWithMCPReload(SimpleNamespace):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(accounts_repo=_FakeAccountsRepo())
         self.reloads = 0
 
     def reload_mcp_server_tools(self) -> None:
@@ -108,7 +118,7 @@ def patched_registry(monkeypatch: pytest.MonkeyPatch):
     return install
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def patched_agent(monkeypatch: pytest.MonkeyPatch):
     """Patch ``get_current_agent`` so handlers can reload tools cleanly."""
 
@@ -116,6 +126,7 @@ def patched_agent(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(agent_module, "get_current_agent", lambda: agent)
         return agent
 
+    install(_FakeAgentWithMCPReload())
     return install
 
 
