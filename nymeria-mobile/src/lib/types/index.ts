@@ -70,6 +70,7 @@ export interface MessageStep {
   id?: string;
   name?: string;
   arguments?: Record<string, unknown>;
+  description?: string;           // Display-only short label routed from backend
   result?: string;
   artifacts?: WorkspaceArtifact[];
   status?: ToolCallStatus;
@@ -146,6 +147,7 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  description?: string;           // Display-only short label routed from backend
   result?: string;
   artifacts?: WorkspaceArtifact[];
   status: ToolCallStatus;
@@ -773,6 +775,7 @@ export interface AppConfig {
   theme?: ThemeName;
   suppressAttachmentWarnings?: boolean;
   showAutonomousPrompts?: boolean;
+  describeToolCalls?: boolean;
   identity?: AccountIdentity | null;
 }
 

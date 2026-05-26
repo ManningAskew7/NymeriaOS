@@ -1232,6 +1232,21 @@
           this on for a specific thread from its Thread Settings.
         </p>
       </div>
+
+      <div class="field checkbox-field">
+        <input
+          id="global-describe-tool-calls"
+          type="checkbox"
+          checked={configStore.describeToolCalls}
+          onchange={(e) => (configStore.describeToolCalls = e.currentTarget.checked)}
+        />
+        <label for="global-describe-tool-calls">Describe tool calls</label>
+        <p class="hint">
+          Show a short plain-English summary next to each tool name on the
+          collapsed tool cards, so you can follow what the agent is doing
+          without expanding them.
+        </p>
+      </div>
     </div>
   {/if}
 

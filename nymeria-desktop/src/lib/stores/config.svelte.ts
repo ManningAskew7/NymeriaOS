@@ -135,6 +135,7 @@ function loadConfig(): AppConfig {
       theme: 'midnight',
       suppressAttachmentWarnings: false,
       showAutonomousPrompts: true,
+      describeToolCalls: true,
       identity: null,
     };
   }
@@ -152,6 +153,9 @@ function loadConfig(): AppConfig {
       if (config.showAutonomousPrompts === undefined) {
         config.showAutonomousPrompts = true;
       }
+      if (config.describeToolCalls === undefined) {
+        config.describeToolCalls = true;
+      }
       if (config.identity === undefined) {
         config.identity = null;
       }
@@ -167,6 +171,7 @@ function loadConfig(): AppConfig {
     theme: 'midnight',
     suppressAttachmentWarnings: false,
     showAutonomousPrompts: true,
+    describeToolCalls: true,
     identity: null,
   };
 }
@@ -189,6 +194,7 @@ function createConfigStore() {
   let theme = $state<ThemeName>(initial.theme ?? 'midnight');
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
   let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
+  let describeToolCalls = $state(initial.describeToolCalls ?? true);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
   // Seed the module-level scope cache with whatever identity is persisted so
@@ -210,6 +216,7 @@ function createConfigStore() {
       theme,
       suppressAttachmentWarnings,
       showAutonomousPrompts,
+      describeToolCalls,
       identity,
     });
   }
@@ -402,6 +409,13 @@ function createConfigStore() {
       showAutonomousPrompts = value;
       saveCurrentConfig();
     },
+    get describeToolCalls() {
+      return describeToolCalls;
+    },
+    set describeToolCalls(value: boolean) {
+      describeToolCalls = value;
+      saveCurrentConfig();
+    },
     get identity(): AccountIdentity | null {
       return identity;
     },
@@ -417,6 +431,7 @@ function createConfigStore() {
       theme = 'midnight';
       suppressAttachmentWarnings = false;
       showAutonomousPrompts = true;
+      describeToolCalls = true;
       identity = null;
       currentIdentityId = null;
       applyTheme('midnight');

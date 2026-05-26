@@ -1026,11 +1026,15 @@ def _tool_call_step(
     clean_tool_result: ToolResultCleaner,
     extract_workspace_artifacts: WorkspaceArtifactExtractor,
 ) -> Dict[str, Any]:
+    # Display-only label, re-derived from the tool name on read. Not stored in
+    # the checkpoint; lazy import avoids a core -> tools -> core cycle.
+    from ..tools.metadata import get_tool_short_description
     step = {
         "type": "tool_call",
         "id": tool_call_id,
         "name": name,
         "arguments": arguments,
+        "description": get_tool_short_description(name),
         "status": "success",
     }
     if tool_call_id in tool_results:

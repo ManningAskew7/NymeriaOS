@@ -132,6 +132,36 @@ def test_reasoning_chunk_deduper_resets_between_model_calls():
     assert deduper.should_emit("thought") is True
 
 
+def test_tool_call_event_carries_short_description(monkeypatch):
+    import nymeria.tools.metadata as metadata
+
+    monkeypatch.setattr(
+        metadata,
+        "get_tool_short_description",
+        lambda name: "Search the web." if name == "web_search" else None,
+    )
+
+    chunks, _response_parts, _graph = _collect_processor_events([
+        {
+            "event": "on_tool_start",
+            "run_id": "call-1",
+            "name": "web_search",
+            "data": {"input": {"query": "tea"}},
+        },
+    ])
+
+    tool_calls = [c for c in chunks if c.get("type") == "tool_call"]
+    assert tool_calls == [
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "web_search",
+            "args": {"query": "tea"},
+            "description": "Search the web.",
+        }
+    ]
+
+
 def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
     response_parts = []
 
@@ -191,6 +221,7 @@ def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
             "id": "call-1",
             "name": "lookup",
             "args": {"q": "nymeria"},
+            "description": None,
         },
         {
             "type": "tool_result",

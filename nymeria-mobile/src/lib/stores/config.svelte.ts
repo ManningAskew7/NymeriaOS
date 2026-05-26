@@ -71,6 +71,7 @@ function loadConfig(): AppConfig {
       theme: 'midnight',
       suppressAttachmentWarnings: false,
       showAutonomousPrompts: true,
+      describeToolCalls: true,
       identity: null,
     };
   }
@@ -82,6 +83,7 @@ function loadConfig(): AppConfig {
       if (!config.theme) config.theme = 'midnight';
       if (config.suppressAttachmentWarnings === undefined) config.suppressAttachmentWarnings = false;
       if (config.showAutonomousPrompts === undefined) config.showAutonomousPrompts = true;
+      if (config.describeToolCalls === undefined) config.describeToolCalls = true;
       if (config.identity === undefined) config.identity = null;
       return config;
     }
@@ -96,6 +98,7 @@ function loadConfig(): AppConfig {
     theme: 'midnight',
     suppressAttachmentWarnings: false,
     showAutonomousPrompts: true,
+    describeToolCalls: true,
     identity: null,
   };
 }
@@ -118,6 +121,7 @@ function createConfigStore() {
   let theme = $state<ThemeName>(initial.theme ?? 'midnight');
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
   let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
+  let describeToolCalls = $state(initial.describeToolCalls ?? true);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
   if (identity) {
@@ -137,6 +141,7 @@ function createConfigStore() {
       theme,
       suppressAttachmentWarnings,
       showAutonomousPrompts,
+      describeToolCalls,
       identity,
     });
   }
@@ -148,6 +153,7 @@ function createConfigStore() {
     theme = config.theme ?? 'midnight';
     suppressAttachmentWarnings = config.suppressAttachmentWarnings ?? false;
     showAutonomousPrompts = config.showAutonomousPrompts ?? true;
+    describeToolCalls = config.describeToolCalls ?? true;
     identity = config.identity ?? null;
     currentIdentityId = identity?.id ?? null;
     applyTheme(theme);
@@ -330,6 +336,13 @@ function createConfigStore() {
       showAutonomousPrompts = value;
       saveCurrentConfig();
     },
+    get describeToolCalls() {
+      return describeToolCalls;
+    },
+    set describeToolCalls(value: boolean) {
+      describeToolCalls = value;
+      saveCurrentConfig();
+    },
     get identity(): AccountIdentity | null {
       return identity;
     },
@@ -345,6 +358,7 @@ function createConfigStore() {
       theme = 'midnight';
       suppressAttachmentWarnings = false;
       showAutonomousPrompts = true;
+      describeToolCalls = true;
       identity = null;
       currentIdentityId = null;
       applyTheme('midnight');

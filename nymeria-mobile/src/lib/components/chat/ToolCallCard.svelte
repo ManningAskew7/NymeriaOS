@@ -2,6 +2,8 @@
   import type { ToolCall, WorkspaceArtifact } from '$lib/types';
   import { Collapsible, Icon } from '$lib/components/common';
   import { formatFileSize } from '$lib/utils/fileProcessing';
+  import { getToolSummary } from '$lib/utils/toolSummary';
+  import { configStore } from '$lib/stores/config.svelte';
   import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
 
   interface Props {
@@ -10,6 +12,12 @@
 
   let { toolCall }: Props = $props();
   let modalArtifact = $state<WorkspaceArtifact | null>(null);
+
+  let summary = $derived(
+    configStore.describeToolCalls
+      ? getToolSummary(toolCall.name, toolCall.arguments, toolCall.description)
+      : null
+  );
 
   let duration = $derived.by(() => {
     if (!toolCall.startTime || !toolCall.endTime) return null;
@@ -47,6 +55,9 @@
     {#snippet header()}
       <div class="tool-header">
         <span class="tool-name">{toolCall.name}</span>
+        {#if summary}
+          <span class="tool-summary">{summary}</span>
+        {/if}
         {#if duration}
           <span class="duration-badge">{duration}</span>
         {:else if toolCall.status === 'cancelled'}
@@ -164,6 +175,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     flex: 1;
+    min-width: 0;
   }
 
   /* Reduce header height ~15% by tightening vertical padding */
@@ -181,6 +193,19 @@
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
+    flex-shrink: 0;
+  }
+
+  /* Plain-English label next to the tool name. Takes the middle space and
+     ellipsis-truncates so the card header stays a single tidy line. */
+  .tool-summary {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
   }
 
   .duration-badge {
