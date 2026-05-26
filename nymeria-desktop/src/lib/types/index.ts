@@ -254,11 +254,24 @@ export interface DreamingConfigUpdateRequest {
   model?: string | null;
 }
 
+/**
+ * A TTL'd tool binding (e.g. a Skill Kit's required_tools). These are active
+ * on the thread exactly like `enabledTools` until they expire, but live in a
+ * separate map so they can be evicted automatically. They must be counted as
+ * active tools wherever the effective tool set is shown.
+ */
+export interface TemporaryToolEntry {
+  enabledAt: string | null;
+  expiresAt: string | null;
+}
+
 export interface ThreadConfig {
   threadId: string;
   instructions?: string | null;
   disabledTools: string[];
   enabledTools: string[];
+  /** name -> {enabledAt, expiresAt}. TTL'd bindings (Skill Kit tools, etc.). */
+  temporaryTools: Record<string, TemporaryToolEntry>;
   llmConfig?: ThreadLLMConfig | null;
   activeLlmFallback?: ActiveLLMFallback | null;
   memoryCharLimit?: number | null;

@@ -2,6 +2,39 @@ export interface EffectiveToolCountsInput {
   defaultToolNames: readonly string[];
   enabledTools?: readonly string[] | null;
   disabledTools?: readonly string[] | null;
+  /**
+   * Live (non-expired) TTL'd tool names — e.g. Skill Kit required_tools bound
+   * with a TTL. These live in ThreadConfig.temporaryTools, NOT enabledTools,
+   * but are active on the thread exactly like enabled tools, so they must be
+   * counted. Use {@link liveTemporaryToolNames} to derive this from the raw map.
+   */
+  temporaryTools?: readonly string[] | null;
+}
+
+/**
+ * Extract the names of TTL'd tools that have not yet expired, mirroring the
+ * backend's graph-build liveness check (expires_at in the future). Entries
+ * with a missing/unparseable expiry are treated as live (fail-open), matching
+ * the backend which keeps anything it cannot positively expire.
+ */
+export function liveTemporaryToolNames(
+  temporaryTools?: Record<string, { expiresAt?: string | null }> | null,
+  nowMs: number = Date.now()
+): string[] {
+  if (!temporaryTools) return [];
+  const live: string[] = [];
+  for (const [name, entry] of Object.entries(temporaryTools)) {
+    const expires = entry?.expiresAt;
+    if (!expires) {
+      live.push(name);
+      continue;
+    }
+    const ts = Date.parse(expires);
+    if (Number.isNaN(ts) || ts > nowMs) {
+      live.push(name);
+    }
+  }
+  return live;
 }
 
 export interface EffectiveToolCounts {
@@ -23,9 +56,14 @@ export function computeEffectiveToolCounts({
   defaultToolNames,
   enabledTools = [],
   disabledTools = [],
+  temporaryTools = [],
 }: EffectiveToolCountsInput): EffectiveToolCounts {
   const defaultSet = new Set(defaultToolNames.filter(Boolean));
-  const enabledSet = new Set((enabledTools ?? []).filter(Boolean));
+  // TTL'd tools are active extras just like enabledTools — merge them so they
+  // count toward the active set and the "optional enabled" breakdown.
+  const enabledSet = new Set(
+    [...(enabledTools ?? []), ...(temporaryTools ?? [])].filter(Boolean)
+  );
   const disabledSet = new Set((disabledTools ?? []).filter(Boolean));
 
   const activeNames = new Set<string>(defaultSet);

@@ -12,7 +12,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
   import { healthStore } from '$lib/stores/health.svelte';
-  import { computeEffectiveToolCounts } from '$lib/utils/toolCounts';
+  import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
 
   interface Props {
     thread: Thread;
@@ -178,6 +178,7 @@
       defaultToolNames: defaultToolsStore.defaultToolNames,
       enabledTools: threadConfig?.enabledTools ?? [],
       disabledTools: threadConfig?.disabledTools ?? [],
+      temporaryTools: liveTemporaryToolNames(threadConfig?.temporaryTools),
     });
   });
 
