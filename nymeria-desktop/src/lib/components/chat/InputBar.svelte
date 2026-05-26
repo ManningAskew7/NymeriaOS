@@ -6,6 +6,7 @@
   import type { AttachmentLimits, FileAttachment, SlashCommandInfo } from '$lib/types';
   import FilePreview from './FilePreview.svelte';
   import ImageModal from './ImageModal.svelte';
+  import InputHintTips from './InputHintTips.svelte';
   import {
     processFile,
     getFilesFromClipboard,
@@ -507,12 +508,15 @@
   {/if}
 </div>
 
-<p class="hint">
-  Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send
-  {#if filesEnabled}
-    &middot; Paste or drag files to attach
-  {/if}
-</p>
+<div class="hint">
+  <InputHintTips paused={inputValue.trim().length > 0} />
+  <p class="hint-keys">
+    Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send
+    {#if filesEnabled}
+      &middot; Paste or drag files to attach
+    {/if}
+  </p>
+</div>
 
 <ImageModal image={modalFile} onClose={closeModal} />
 
@@ -748,11 +752,25 @@
     }
   }
 
+  /* The hint row keeps the same class/contract MainPanel relies on: it owns
+     the gap below the input bar (margin-top, overridden to --prompt-stack-gap)
+     and the sidebar-collapse animation, both keyed on :global(.hint). It now
+     lays out the rotating tip (left) and the key hint (right) on one line. */
   .hint {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
     margin: 18px 0 0 0;
+  }
+
+  .hint-keys {
+    flex: 0 0 auto;
+    margin: 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     text-align: right;
+    white-space: nowrap;
     opacity: 0.75;
   }
 
