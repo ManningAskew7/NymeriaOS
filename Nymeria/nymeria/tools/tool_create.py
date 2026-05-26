@@ -435,7 +435,7 @@ def _publish_draft(
 
     if draft.last_test_ok is not True:
         if draft.implementation_type == "python" and sample_params is not None:
-            draft.last_test_params = publish_params
+            draft.last_test_params = sample_params
         else:
             return _json_result(
                 ok=False,
@@ -445,7 +445,7 @@ def _publish_draft(
                 },
             )
     elif sample_params is not None:
-        draft.last_test_params = publish_params
+        draft.last_test_params = sample_params
 
     if draft.implementation_type == "python" and publish_params is None:
         return _json_result(

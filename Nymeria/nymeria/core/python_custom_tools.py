@@ -66,8 +66,9 @@ def validate_python_tool_static(
 
     entrypoint_node: ast.FunctionDef | ast.AsyncFunctionDef | None = None
     for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant):
-            if isinstance(node.value.value, str):
+        if isinstance(node, ast.Expr):
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 continue
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == config.entrypoint:

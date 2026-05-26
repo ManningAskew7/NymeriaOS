@@ -390,6 +390,7 @@ class NymeriaAgent:
 
         # Detect shell/path runtime facts once at startup and expose them in
         # shell/file tool descriptions before any graph is built.
+        self.execution_environment: Any = None
         try:
             from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
             from ..tools.execution_environment import (
