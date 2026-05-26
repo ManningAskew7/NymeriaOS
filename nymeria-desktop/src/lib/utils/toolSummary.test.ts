@@ -23,24 +23,56 @@ describe('getToolSummary', () => {
     expect(getToolSummary('web_search', { queries: ['a', 'b', 'c', 'd'] })).toBe('a, b, c');
   });
 
-  it('uses discriminator arguments for multipurpose tools', () => {
-    expect(getToolSummary('servicenow_list_records', { table: 'incident' })).toBe('incident');
-    expect(getToolSummary('trigger_config', { action: 'create', name: 'x' })).toBe('create');
+  it('prefixes a named target with the verb', () => {
+    expect(getToolSummary('trigger_config', { action: 'create', name: 'daily digest' })).toBe(
+      'create daily digest',
+    );
   });
 
-  it('prefers a self-describing argument over the description fallback', () => {
+  it('uses a named target without a verb', () => {
+    expect(getToolSummary('memory_read', { scope: 'global', key: 'coffee_pref' })).toBe(
+      'coffee_pref',
+    );
+  });
+
+  it('combines a verb with an explicit entity type', () => {
+    expect(getToolSummary('servicenow_manage', { action: 'create', table: 'incident' })).toBe(
+      'create incident',
+    );
+  });
+
+  it('derives the entity type from an entity id argument, ignoring plumbing ids', () => {
     expect(
-      getToolSummary('web_search', { query: 'tea' }, 'Search the web for current information.'),
-    ).toBe('tea');
+      getToolSummary('crm_update', { action: 'update', contact_id: 'x1', account_id: 'acc9' }),
+    ).toBe('update contact');
   });
 
-  it('falls back to the description when no argument is descriptive', () => {
+  it('uses an entity type alone when there is no verb', () => {
+    expect(getToolSummary('servicenow_list_records', { table: 'incident' })).toBe('incident');
+  });
+
+  it('combines a bare verb with the noun implied by the tool name', () => {
+    expect(getToolSummary('trigger_info', { action: 'list' })).toBe('list trigger');
+  });
+
+  it('uses a standalone qualifier facet', () => {
+    expect(getToolSummary('memory_read', { scope: 'global' })).toBe('global');
+    expect(getToolSummary('nym_todo_list', { filter_status: 'done' })).toBe('done');
+  });
+
+  it('suppresses a label that only restates the tool name', () => {
+    // verb "list" + name noun "triggers" == the tool name itself.
+    expect(getToolSummary('list_triggers', { action: 'list' })).toBeNull();
+  });
+
+  it('no longer uses the static description and returns null without specifics', () => {
+    expect(getToolSummary('memory_read', {}, 'Read memory. Get a specific entry.')).toBeNull();
     expect(
       getToolSummary('some_tool', { fields_json: '{"a":1}', limit: 5 }, 'Create a record.'),
-    ).toBe('Create a record.');
+    ).toBeNull();
   });
 
-  it('returns null when nothing is descriptive and no description is given', () => {
+  it('returns null when nothing is descriptive', () => {
     expect(getToolSummary('some_tool', { fields_json: '{}' })).toBeNull();
     expect(getToolSummary('some_tool', {})).toBeNull();
   });
@@ -53,12 +85,19 @@ describe('getToolSummary', () => {
     expect(getToolSummary('web_search', undefined)).toBeNull();
   });
 
-  it('collapses whitespace and truncates long values', () => {
-    const long = 'a '.repeat(200).trim();
-    const result = getToolSummary('bash_execute', { command: `echo\n\n${long}` });
+  it('keeps a long command at length, bounded only by the content safety cap', () => {
+    const long = 'echo ' + 'word '.repeat(200).trim();
+    const result = getToolSummary('bash_execute', { command: `${long}` });
     expect(result).not.toBeNull();
-    // Matches the MAX_LEN cap in toolSummary.ts.
-    expect(result!.length).toBeLessThanOrEqual(120);
+    // Content args are not word-capped; they keep length up to MAX_CONTENT_LEN.
+    expect(result!.length).toBeGreaterThan(80);
+    expect(result!.length).toBeLessThanOrEqual(160);
     expect(result!.endsWith('…')).toBe(true);
+  });
+
+  it('does not word-cap a multi-word command', () => {
+    expect(
+      getToolSummary('bash_execute', { command: 'docker logs nymeria-api --tail 50 | grep error' }),
+    ).toBe('docker logs nymeria-api --tail 50 | grep error');
   });
 });
