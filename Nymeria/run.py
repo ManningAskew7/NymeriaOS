@@ -418,6 +418,8 @@ def _apply_slim_runtime_env(
     host: str,
     port: int,
     data_dir: Optional[str] = None,
+    missed_work_policy: Optional[str] = None,
+    active_execution_stale_minutes: Optional[int] = None,
 ) -> str:
     """Set env overrides for slim mode and return the loopback base URL.
 
@@ -441,6 +443,12 @@ def _apply_slim_runtime_env(
     os.environ["NYMERIA_API_URL"] = base_url
     if data_dir:
         os.environ["NYMERIA_DATA_DIR"] = data_dir
+    if missed_work_policy:
+        os.environ["SCHEDULER_MISSED_WORK_POLICY"] = missed_work_policy
+    if active_execution_stale_minutes is not None:
+        os.environ["SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES"] = str(
+            active_execution_stale_minutes
+        )
 
     # If settings were loaded earlier (e.g. by `_load_environment()` callers
     # or argparse imports), reset the cache so the slim overrides take effect.
@@ -459,10 +467,20 @@ def run_slim(args: argparse.Namespace) -> None:
     host = getattr(args, "host", None) or "127.0.0.1"
     port = int(getattr(args, "port", None) or 8000)
     data_dir = getattr(args, "data_dir", None)
+    missed_work_policy = getattr(args, "missed_work_policy", None)
+    active_execution_stale_minutes = getattr(
+        args, "active_execution_stale_minutes", None
+    )
     enable_mcp = not getattr(args, "no_mcp", False)
     enable_watchdog = not getattr(args, "no_watchdog", False)
 
-    base_url = _apply_slim_runtime_env(host, port, data_dir=data_dir)
+    base_url = _apply_slim_runtime_env(
+        host,
+        port,
+        data_dir=data_dir,
+        missed_work_policy=missed_work_policy,
+        active_execution_stale_minutes=active_execution_stale_minutes,
+    )
 
     from nymeria.triggers.api import run_api as start_api
     from nymeria.config import get_settings
@@ -473,6 +491,11 @@ def run_slim(args: argparse.Namespace) -> None:
     print("  - Mode: SQLite + in-process ticker + embedded MCP")
     print(f"  - Internal API URL: {base_url}")
     print(f"  - Data directory: {settings.data_dir}")
+    print(f"  - Missed work policy: {settings.scheduler_missed_work_policy}")
+    print(
+        "  - Active execution stale window: "
+        f"{settings.scheduler_active_execution_stale_minutes}m"
+    )
     if enable_mcp:
         print(f"  - MCP endpoint: {base_url}/mcp")
     else:
@@ -631,10 +654,11 @@ def run_worker(args: argparse.Namespace) -> None:
 
     # Rebuild schedule index and recover missed schedules on startup,
     # matching what NymeriaAgent.__init__ does in slim mode.
-    indexed = ticker.rebuild_schedule_index()
+    startup_status = ticker.prepare_startup_recovery()
+    indexed = int(startup_status.get("indexed_schedule_count") or 0)
     if indexed > 0:
         print(f"  - Indexed {indexed} scheduled TODO(s)")
-    recovered = ticker.recover_missed_schedules()
+    recovered = int(startup_status.get("startup_missed_count") or 0)
     if recovered > 0:
         print(f"  - Found {recovered} missed scheduled TODO(s)")
 
@@ -1565,6 +1589,24 @@ Examples:
         help="Runtime data directory (writes NYMERIA_DATA_DIR before settings load)",
     )
     slim_parser.add_argument(
+        "--missed-work-policy",
+        choices=("run", "ask"),
+        default=None,
+        help=(
+            "Startup handling for scheduled TODOs missed while offline: "
+            "run immediately, or ask by holding them until released"
+        ),
+    )
+    slim_parser.add_argument(
+        "--active-execution-stale-minutes",
+        type=int,
+        default=None,
+        help=(
+            "Minutes before a crashed scheduled-TODO execution marker is "
+            "considered stale"
+        ),
+    )
+    slim_parser.add_argument(
         "--no-mcp",
         action="store_true",
         help="Skip mounting the embedded MCP server at /mcp",
@@ -1881,6 +1923,10 @@ def main() -> None:
             host=getattr(args, "host", None) or "127.0.0.1",
             port=int(getattr(args, "port", None) or 8000),
             data_dir=getattr(args, "data_dir", None),
+            missed_work_policy=getattr(args, "missed_work_policy", None),
+            active_execution_stale_minutes=getattr(
+                args, "active_execution_stale_minutes", None
+            ),
         )
 
     # Setup logging (except for service commands and STDIO MCP, which must keep

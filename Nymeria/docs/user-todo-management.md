@@ -144,6 +144,29 @@ point is the `TurnExecutor` passed to `Ticker.__init__`  -  `LocalAgentExecutor`
 in slim, `APIClientExecutor` in the Docker worker. See
 `nymeria/core/turn_executor.py`.
 
+### Startup missed-work handling
+
+The ticker rebuilds `todo_schedule.db` from TODO JSON files before its poll
+thread starts. This makes scheduled TODO recovery independent of whether the
+SQLite schedule index was current at shutdown.
+
+By default, missed scheduled TODOs run automatically on startup. Local
+desktop-managed slim launches can set `--missed-work-policy ask` so TODOs
+that were already overdue at startup are held in `data/scheduler_state.json`
+until an admin calls `POST /scheduler/missed-work/run`. While ask-mode missed
+work is pending, the first poll-based trigger catch-up pass is also paused.
+Future TODOs that become due after startup continue to run normally.
+
+`GET /scheduler/status` reports the missed-work policy, pending missed TODOs,
+trigger catch-up pause, last startup and clean-shutdown timestamps, and active
+scheduled-TODO execution marker count.
+
+If the process stops while a scheduled TODO is executing, the
+`active_todo_executions` marker prevents duplicate execution until it is
+considered stale. The default stale window is 24 hours for server safety;
+desktop-managed local launches can pass `--active-execution-stale-minutes`
+with a shorter value.
+
 When a scheduled TODO is executed:
 
 1. If `recurrence` is set, calculate next execution time

@@ -165,6 +165,42 @@ class TodoScheduleDB:
             )
         return deleted
 
+    def clear_stale_executions(
+        self,
+        *,
+        stale_after_seconds: int = ACTIVE_EXECUTION_STALE_SECONDS,
+    ) -> int:
+        """Clear execution markers left behind by interrupted scheduler runs."""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                deleted = self._delete_stale_executions(
+                    conn,
+                    now=time.time(),
+                    stale_after_seconds=stale_after_seconds,
+                )
+                conn.commit()
+                return deleted
+            except Exception as e:
+                logger.error(f"Failed to clear stale active TODO executions: {e}")
+                conn.rollback()
+                return 0
+            finally:
+                conn.close()
+
+    def count_active_executions(self) -> int:
+        """Return the number of active scheduled TODO execution markers."""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) AS count FROM active_todo_executions"
+                )
+                row = cursor.fetchone()
+                return int(row["count"]) if row else 0
+            finally:
+                conn.close()
+
     def mark_execution_started(
         self,
         todo_id: str,

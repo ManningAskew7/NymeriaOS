@@ -38,11 +38,15 @@ def test_apply_slim_runtime_env_forces_sqlite_and_redis_off(
     monkeypatch.setenv("DATABASE_BACKEND", "postgres")
     monkeypatch.setenv("REDIS_ENABLED", "true")
     monkeypatch.setenv("REDIS_URL", "redis://stale:6379")
+    monkeypatch.delenv("SCHEDULER_MISSED_WORK_POLICY", raising=False)
+    monkeypatch.delenv("SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES", raising=False)
 
     base_url = slim_run._apply_slim_runtime_env(
         host="127.0.0.1",
         port=8000,
         data_dir=str(tmp_path),
+        missed_work_policy="ask",
+        active_execution_stale_minutes=10,
     )
 
     import os
@@ -55,6 +59,8 @@ def test_apply_slim_runtime_env_forces_sqlite_and_redis_off(
     assert base_url == "http://127.0.0.1:8000"
     assert os.environ["NYMERIA_API_URL"] == "http://127.0.0.1:8000"
     assert os.environ["NYMERIA_DATA_DIR"] == str(tmp_path)
+    assert os.environ["SCHEDULER_MISSED_WORK_POLICY"] == "ask"
+    assert os.environ["SCHEDULER_ACTIVE_EXECUTION_STALE_MINUTES"] == "10"
 
     from nymeria.config import get_settings
 
@@ -62,6 +68,8 @@ def test_apply_slim_runtime_env_forces_sqlite_and_redis_off(
     assert settings.database_backend == "sqlite"
     assert settings.redis_enabled is False
     assert settings.api_port == 8000
+    assert settings.scheduler_missed_work_policy == "ask"
+    assert settings.scheduler_active_execution_stale_minutes == 10
 
 
 def test_apply_slim_runtime_env_custom_port_updates_url(
@@ -105,6 +113,10 @@ def test_slim_parser_accepts_flags(slim_run) -> None:
             "7777",
             "--no-mcp",
             "--no-watchdog",
+            "--missed-work-policy",
+            "ask",
+            "--active-execution-stale-minutes",
+            "10",
         ]
     )
     assert args.command == "slim"
@@ -112,3 +124,5 @@ def test_slim_parser_accepts_flags(slim_run) -> None:
     assert args.port == 7777
     assert args.no_mcp is True
     assert args.no_watchdog is True
+    assert args.missed_work_policy == "ask"
+    assert args.active_execution_stale_minutes == 10

@@ -486,17 +486,17 @@ class NymeriaAgent:
                 busy_agent=self,
                 spawn_sweeper=_local_spawn_sweeper,
             )
-            self._ticker.start()
-            set_ticker(self._ticker)
 
-            # Rebuild schedule index and recover missed schedules
-            indexed = self._ticker.rebuild_schedule_index()
+            startup_status = self._ticker.prepare_startup_recovery()
+            indexed = int(startup_status.get("indexed_schedule_count") or 0)
+            recovered = int(startup_status.get("startup_missed_count") or 0)
             if indexed > 0:
                 logger.info(f"Indexed {indexed} scheduled TODO(s)")
-
-            recovered = self._ticker.recover_missed_schedules()
             if recovered > 0:
                 logger.info(f"Found {recovered} missed scheduled TODO(s)")
+
+            self._ticker.start()
+            set_ticker(self._ticker)
 
             # Migrate unscoped TODOs to "legacy" thread_id (idempotent)
             self._migrate_unscoped_todos()

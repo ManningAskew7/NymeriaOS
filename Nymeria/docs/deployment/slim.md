@@ -75,13 +75,46 @@ Then it constructs the FastAPI app with `slim_mode=True`, which:
 | `--host`, `-H` | `127.0.0.1` | Bind host |
 | `--port`, `-p` | `8000` | Bind port |
 | `--data-dir` | unset | Runtime data directory (writes `NYMERIA_DATA_DIR`) |
+| `--missed-work-policy` | `run` | Startup policy for scheduled TODOs missed while offline: `run` executes them automatically, `ask` holds them until released |
+| `--active-execution-stale-minutes` | `1440` | Minutes before an interrupted scheduled-TODO execution marker is considered stale |
 | `--no-mcp` | off | Skip mounting `/mcp` (debug only) |
 | `--no-watchdog` | off | Skip the in-process watchdog task (debug only) |
+
+## On/off local operation
+
+The default slim behavior is still server-like: if a scheduled TODO became
+due while slim was stopped, startup rebuilds `todo_schedule.db` from TODO
+files and the ticker runs the missed TODO on the next poll.
+
+Desktop-managed or laptop-local installs can opt into ask mode:
+
+```bash
+python3 run.py slim --missed-work-policy ask --active-execution-stale-minutes 10
+```
+
+In ask mode, TODOs that were already overdue at startup are held in
+`data/scheduler_state.json` and do not execute until an admin calls:
+
+```bash
+curl -X POST http://127.0.0.1:8000/scheduler/missed-work/run \
+  -H "Authorization: Bearer nym_<admin-token>"
+```
+
+Use `GET /scheduler/status` with an admin token to show the pending missed
+TODOs, trigger catch-up pause, last clean shutdown, and active execution
+marker count. Future TODOs that become due after startup still run normally.
+
+The active-execution stale window exists for interrupted local runs. If a
+laptop sleeps or the process is killed while a scheduled TODO is in progress,
+the marker prevents duplicate execution until it ages out. Keep the default
+24-hour window for always-on servers; use a shorter value only for explicitly
+desktop-managed local backends.
 
 ## Verifying the launch
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/scheduler/status -H "Authorization: Bearer nym_<admin-token>"
 python3 run.py users list      # 'default' (admin), 'bot-service' (admin)
 ls data/SLIM_SERVICE_TOKEN.txt # exists, mode 0600
 ls data/BOOTSTRAP_TOKEN.txt    # only on first boot
