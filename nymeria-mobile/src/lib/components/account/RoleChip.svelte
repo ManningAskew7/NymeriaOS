@@ -24,20 +24,31 @@
   .role-chip {
     display: inline-flex;
     align-items: center;
-    padding: 2px 7px;
-    font-size: 10px;
+    /* Canonical chip padding — every status/role badge in Nymeria should
+       use this pair (--spacing-2xs / --spacing-sm) so chips read as the
+       same family across AccountMenu, UsersTab, TriggerItem, etc. */
+    padding: var(--spacing-2xs) var(--spacing-sm);
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.08em;
+    /* Compensates for trailing letter-spacing on uppercase text — the
+       0.08em added after the last letter would otherwise make the chip
+       look left-weighted. Matching text-indent restores visual centering. */
+    text-indent: 0.08em;
     text-transform: uppercase;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     line-height: 1.4;
     flex-shrink: 0;
   }
 
   .role-chip.size-xs {
-    padding: 1px 5px;
-    font-size: 9px;
+    /* Tighter than the canonical chip — used inline beside small text. The
+       horizontal 6px is sub-token (under --spacing-sm 8px) because the
+       letterforms at 9px already feel compact. */
+    padding: 1px 6px;
+    font-size: var(--font-size-3xs);
     letter-spacing: 0.06em;
+    text-indent: 0.06em;
   }
 
   .role-admin {

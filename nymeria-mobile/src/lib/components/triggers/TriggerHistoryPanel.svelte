@@ -114,7 +114,9 @@
                   <span class="duration">{exec.duration_seconds.toFixed(1)}s</span>
                   <span class="action-type">{exec.action_type.replace('_', ' ')}</span>
                 </div>
-                <Icon name={expandedId === exec.id ? 'chevronDown' : 'chevronRight'} size={12} />
+                <span class="expand-chevron" class:rotated={expandedId === exec.id}>
+                  <Icon name="chevronRight" size={12} />
+                </span>
               </button>
 
               {#if expandedId === exec.id}
@@ -223,7 +225,7 @@
   }
 
   .trigger-name-badge {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     padding: 1px 8px;
     background: rgba(var(--accent-primary-rgb), 0.1);
     color: var(--accent-primary);
@@ -334,13 +336,13 @@
   }
 
   .exec-status {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     font-weight: 600;
     text-transform: capitalize;
   }
 
   .exec-time {
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 
@@ -350,7 +352,7 @@
     gap: var(--spacing-xs);
     justify-content: flex-end;
     align-items: center;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
   }
 
@@ -375,7 +377,7 @@
 
   .detail-label {
     display: block;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -394,7 +396,7 @@
     word-break: break-word;
     max-height: 120px;
     overflow-y: auto;
-    font-family: monospace;
+    font-family: var(--font-mono);
     line-height: 1.4;
   }
 
@@ -409,9 +411,22 @@
   .detail-footer {
     display: flex;
     justify-content: space-between;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
     padding-top: var(--spacing-xs);
     border-top: 1px solid var(--glass-border);
+  }
+
+  .expand-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  .expand-chevron.rotated {
+    transform: rotate(90deg);
   }
 </style>
