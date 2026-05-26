@@ -1,12 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  # Manual only. GitHub-hosted Actions currently consume paid minutes for this account.
   workflow_dispatch:
 
 permissions:

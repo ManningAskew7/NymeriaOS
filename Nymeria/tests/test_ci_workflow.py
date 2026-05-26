@@ -21,6 +21,13 @@ def _run_commands(job: dict) -> list[str]:
     return commands
 
 
+def test_ci_workflow_is_manual_only() -> None:
+    workflow = _load_ci_workflow()
+    triggers = workflow.get("on", workflow.get(True))
+
+    assert triggers == {"workflow_dispatch": None}
+
+
 def test_ci_validates_docker_compose_and_dockerfile() -> None:
     jobs = _load_ci_workflow()["jobs"]
 
