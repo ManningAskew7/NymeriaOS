@@ -84,6 +84,10 @@ def _normalize_ttl(tool_ttl: str) -> str:
         raise ValueError(f"tool_ttl is invalid. {exc}") from exc
 
 
+def _normalize_optional_ttl(value: Any) -> str:
+    return _normalize_ttl(str(value or DEFAULT_SKILL_KIT_TOOL_TTL))
+
+
 def _coerce_scope(scope: str) -> SkillScope:
     scope_key = (scope or "user").strip().lower()
     if scope_key not in ("user", "global"):
@@ -173,23 +177,24 @@ def _set_required_tools_metadata(
     tool_ttl: Optional[str],
 ) -> dict[str, Any]:
     data = dict(frontmatter_data)
-    metadata = data.get("metadata")
-    if not isinstance(metadata, dict):
+    raw_metadata = data.get("metadata")
+    metadata: dict[str, Any]
+    if not isinstance(raw_metadata, dict):
         metadata = {}
     else:
-        metadata = dict(metadata)
+        metadata = dict(raw_metadata)
 
     if required_tools is not None:
         if required_tools:
-            nymeria = metadata.get("nymeria")
-            nymeria = dict(nymeria) if isinstance(nymeria, dict) else {}
+            raw_nymeria = metadata.get("nymeria")
+            nymeria: dict[str, Any] = dict(raw_nymeria) if isinstance(raw_nymeria, dict) else {}
             nymeria["required_tools"] = required_tools
-            nymeria["tool_ttl"] = _normalize_ttl(tool_ttl or nymeria.get("tool_ttl") or DEFAULT_SKILL_KIT_TOOL_TTL)
+            nymeria["tool_ttl"] = _normalize_optional_ttl(tool_ttl or nymeria.get("tool_ttl"))
             metadata["nymeria"] = nymeria
         else:
-            nymeria = metadata.get("nymeria")
-            if isinstance(nymeria, dict):
-                nymeria = dict(nymeria)
+            raw_nymeria = metadata.get("nymeria")
+            if isinstance(raw_nymeria, dict):
+                nymeria = dict(raw_nymeria)
                 nymeria.pop("required_tools", None)
                 nymeria.pop("tool_ttl", None)
                 if nymeria:
@@ -198,8 +203,8 @@ def _set_required_tools_metadata(
                     metadata.pop("nymeria", None)
 
     if tool_ttl is not None:
-        nymeria = metadata.get("nymeria")
-        nymeria = dict(nymeria) if isinstance(nymeria, dict) else {}
+        raw_nymeria = metadata.get("nymeria")
+        nymeria: dict[str, Any] = dict(raw_nymeria) if isinstance(raw_nymeria, dict) else {}
         if required_tools is None:
             existing = nymeria.get("required_tools") or []
             if existing:
@@ -551,7 +556,8 @@ def _write_skill_package(
     from ..core.agent import get_current_agent
 
     agent = get_current_agent()
-    if agent is None or getattr(agent, "skill_manager", None) is None:
+    skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
+    if agent is None or skill_manager is None:
         return _json_result(ok=False, error={"type": "unavailable", "message": "skills subsystem not initialized"})
 
     _ensure_global_scope_allowed(agent, scope, user_id)
@@ -559,7 +565,6 @@ def _write_skill_package(
     required_tools = _required_tools_from_frontmatter(frontmatter_data)
     _validate_required_tools(required_tools, user_id)
 
-    skill_manager = agent.skill_manager
     target_parent = skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
     target_dir = target_parent / frontmatter.name
     _assert_skill_write_allowed(
@@ -651,7 +656,8 @@ def _write_skill_package(
         if backup_dir is not None and backup_dir.exists():
             if target_dir.exists() and not target_existed_before_write and target_dir != backup_dir:
                 shutil.rmtree(target_dir, ignore_errors=True)
-            backup_dir.rename(old_dir)
+            if old_dir is not None:
+                backup_dir.rename(old_dir)
         raise
 
     will_reload = bool(
@@ -773,10 +779,11 @@ def skill_edit(
         current_name = _normalize_skill_name(name)
         edit_scope = _coerce_scope(scope)
         agent = get_current_agent()
-        if agent is None or getattr(agent, "skill_manager", None) is None:
+        skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
+        if agent is None or skill_manager is None:
             return _json_result(ok=False, error={"type": "unavailable", "message": "skills subsystem not initialized"})
         _ensure_global_scope_allowed(agent, edit_scope, user_id)
-        target_parent = agent.skill_manager.target_dir(
+        target_parent = skill_manager.target_dir(
             edit_scope,
             user_id=user_id if edit_scope == "user" else None,
         )

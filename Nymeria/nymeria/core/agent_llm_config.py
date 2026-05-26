@@ -125,7 +125,9 @@ def clear_expired_llm_fallback_if_idle(
     if not thread_id:
         return False
     tc = agent.thread_config_manager.get_config(thread_id)
-    active = getattr(tc, "active_llm_fallback", None) if tc else None
+    if tc is None:
+        return False
+    active = tc.active_llm_fallback
     if active is None or not _active_fallback_is_expired(active):
         return False
     if _thread_is_busy(agent, thread_id):

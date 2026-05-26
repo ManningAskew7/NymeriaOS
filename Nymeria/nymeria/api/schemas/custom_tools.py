@@ -33,7 +33,7 @@ class ToolParameterModel(BaseModel):
 class HTTPToolConfigModel(BaseModel):
     """API model for HTTP tool configuration."""
 
-    method: HTTPMethod = Field(default="GET", description="HTTP method")
+    method: HTTPMethod = Field(default="GET", description="HTTP method")  # type: ignore[assignment]
     url: str = Field(
         ...,
         description=(
