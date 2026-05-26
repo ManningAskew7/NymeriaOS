@@ -532,6 +532,16 @@
         // Clear queued state
         chatStore.setQueued(false);
         // Note: Thread ID syncing is handled by syncThreadIdFromEvent() called at top of handleSSEEvent
+
+        // A completed turn may have changed this thread's tool bindings — e.g.
+        // a Skill Kit activation binds its required_tools into temporary_tools.
+        // In dynamic-binding mode no `tool_reload` SSE event fires for that, so
+        // refresh the thread config here to keep the effective tool count (and
+        // anything else derived from the config) current without a manual reload.
+        const completedThreadId = data.dispatchedTo?.threadId || data.threadId;
+        if (completedThreadId) {
+          void threadConfigStore.loadConfig(completedThreadId).catch(() => {});
+        }
         break;
       }
 

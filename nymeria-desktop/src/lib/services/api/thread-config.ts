@@ -1,5 +1,23 @@
-import type { ThreadShareDocument, ThreadShareImportResult } from '$lib/types';
+import type { ThreadShareDocument, ThreadShareImportResult, TemporaryToolEntry } from '$lib/types';
 import { MCPApi } from './mcp';
+
+/**
+ * Normalize the backend `temporary_tools` map ({name: {enabled_at, expires_at}})
+ * into the camelCase client shape. These are TTL'd bindings (e.g. Skill Kit
+ * required_tools) that are active on the thread until they expire.
+ */
+function normalizeTemporaryTools(raw: unknown): Record<string, TemporaryToolEntry> {
+  const out: Record<string, TemporaryToolEntry> = {};
+  if (raw && typeof raw === 'object') {
+    for (const [name, entry] of Object.entries(raw as Record<string, any>)) {
+      out[name] = {
+        enabledAt: entry?.enabled_at ?? null,
+        expiresAt: entry?.expires_at ?? null,
+      };
+    }
+  }
+  return out;
+}
 
 export class ThreadConfigApi extends MCPApi {
   // =========================================================================
@@ -12,6 +30,7 @@ export class ThreadConfigApi extends MCPApi {
       instructions: data.instructions ?? null,
       disabledTools: data.disabled_tools ?? [],
       enabledTools: data.enabled_tools ?? [],
+      temporaryTools: normalizeTemporaryTools(data.temporary_tools),
       llmConfig: data.llm_config ?? null,
       activeLlmFallback: data.active_llm_fallback ? {
         provider: data.active_llm_fallback.provider,
