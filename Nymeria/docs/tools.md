@@ -2389,8 +2389,11 @@ Managed server definitions track install phases: `previewed`, `approved`,
 Logs and last errors are saved with secret redaction so failed installs can be
 inspected and retried.
 
-Discovered MCP tools are dynamic registry tools named
+Discovered MCP tools are dynamic registry tools internally named
 `mcp__<server_id>__<tool_name>`. They are not entries in `OPTIONAL_TOOLS`.
+Management surfaces should show readable labels like `<server name> / <tool>`
+or the raw MCP tool name, and reserve the internal `mcp__...` identifier for
+saved tool bindings, registry metadata, and troubleshooting.
 Metadata remains available for installed servers with live/enabled flags so
 the UI can distinguish known-but-unavailable tools from callable tools.
 Reload, disable, delete, and failed rediscovery unregister stale live tools and

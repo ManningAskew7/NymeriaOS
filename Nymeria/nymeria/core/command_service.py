@@ -3365,6 +3365,15 @@ class _CommandExecutor:
                 lines.append("")
                 lines.append("Recent logs:")
                 lines.extend(f"  {line}" for line in recent_logs)
+            tool_names = [
+                str(getattr(tool, "name", "") or "")
+                for tool in server.discovered_tools or []
+                if str(getattr(tool, "name", "") or "")
+            ]
+            if tool_names:
+                lines.append("")
+                lines.append("Discovered tools:")
+                lines.extend(f"  - {name}" for name in tool_names)
             return "[Info]: " + "\n".join(lines)
 
         servers = registry.get_all_servers()
@@ -3430,7 +3439,16 @@ class _CommandExecutor:
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
         count = len(discovered)
-        return f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} for `{server_id}`."
+        names = [
+            str(getattr(tool, "name", "") or "")
+            for tool in discovered
+            if str(getattr(tool, "name", "") or "")
+        ]
+        suffix = f": {', '.join(names)}" if names else "."
+        return (
+            f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} "
+            f"for `{server_id}`{suffix}"
+        )
 
     async def _cmd_mcp_test(self, args: list[str], rest: str) -> str:
         if not args:
@@ -3504,10 +3522,16 @@ class _CommandExecutor:
         agent = self._agent()
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
+        names = [
+            str(getattr(tool, "name", "") or "")
+            for tool in discovered
+            if str(getattr(tool, "name", "") or "")
+        ]
+        suffix = f": {', '.join(names)}" if names else "."
         return (
             f"[Success]: Retried `{server_id}` "
             f"(runtime: {plan.runtime_type}); "
-            f"discovered {len(discovered)} tool(s)."
+            f"discovered {len(discovered)} tool(s){suffix}"
         )
 
     # ── Event triggers ────────────────────────────────────────────────────

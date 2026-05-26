@@ -77,6 +77,10 @@
     (!activePlan.confirmation_required || confirmed)
   );
 
+  function visibleToolNames(response: MCPInstallResponse): string[] {
+    return response.toolDisplayNames.length > 0 ? response.toolDisplayNames : response.toolNames;
+  }
+
   function resetState() {
     stage = 'input';
     source = '';
@@ -528,7 +532,7 @@ https://github.com/example/mcp-server`}
 
         <div class="stat-row">
           <div class="stat">
-            <span class="stat-label">Server ID</span>
+            <span class="stat-label">Runtime ID</span>
             <code>{result.server.id}</code>
           </div>
           <div class="stat">
@@ -541,15 +545,15 @@ https://github.com/example/mcp-server`}
           </div>
         </div>
 
-        {#if result.toolNames.length > 0}
+        {#if visibleToolNames(result).length > 0}
           <div class="tools-section">
             <div class="tools-head">
               <span class="tools-title">Tools available to the agent</span>
-              <span class="tools-count">{result.toolNames.length}</span>
+              <span class="tools-count">{visibleToolNames(result).length}</span>
             </div>
             <div class="tool-chips">
-              {#each result.toolNames as tn}
-                <code class="tool-chip">{tn}</code>
+              {#each visibleToolNames(result) as tn, index}
+                <code class="tool-chip" title={result.toolNames[index] ?? tn}>{tn}</code>
               {/each}
             </div>
           </div>

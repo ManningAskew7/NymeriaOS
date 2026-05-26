@@ -248,6 +248,7 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
     """
     try:
         from .mcp_servers import get_mcp_server_registry
+        from .mcp_tool_names import format_mcp_tool_name
         from ..tools.metadata import (
             clear_mcp_server_tool_metadata,
             register_mcp_server_tool_metadata,
@@ -267,7 +268,7 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
         clear_mcp_server_tool_metadata()
         for defn in registry.get_all_servers():
             for dt in defn.discovered_tools:
-                tool_name = f"mcp__{defn.id}__{dt.name}"
+                tool_name = format_mcp_tool_name(defn.id, dt.name)
                 register_mcp_server_tool_metadata(
                     tool_name,
                     dt.description,
@@ -296,6 +297,7 @@ def reload_mcp_server_tools(agent: "NymeriaAgent") -> List[str]:
     """
     try:
         from .mcp_servers import reload_mcp_server_registry
+        from .mcp_tool_names import format_mcp_tool_name
         from ..tools.metadata import (
             clear_mcp_server_tool_metadata,
             register_mcp_server_tool_metadata,
@@ -313,7 +315,7 @@ def reload_mcp_server_tools(agent: "NymeriaAgent") -> List[str]:
         clear_mcp_server_tool_metadata()
         for defn in registry.get_all_servers():
             for dt in defn.discovered_tools:
-                tool_name = f"mcp__{defn.id}__{dt.name}"
+                tool_name = format_mcp_tool_name(defn.id, dt.name)
                 register_mcp_server_tool_metadata(
                     tool_name,
                     dt.description,

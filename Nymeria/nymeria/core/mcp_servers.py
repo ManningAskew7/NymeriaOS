@@ -19,6 +19,7 @@ from ..tools.definitions.mcp_schema import (
     MCPToolConfig,
 )
 from .mcp_manager import get_mcp_manager
+from .mcp_tool_names import format_mcp_tool_name, registered_mcp_tool_names
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class MCPServerRegistry:
         defn = self._definitions.get(server_id)
         if defn:
             for dt in defn.discovered_tools:
-                tool_name = f"mcp__{server_id}__{dt.name}"
+                tool_name = format_mcp_tool_name(server_id, dt.name)
                 self._tools.pop(tool_name, None)
 
         file_path.unlink()
@@ -141,9 +142,7 @@ class MCPServerRegistry:
 
         # Update definition and save
         defn.discovered_tools = discovered
-        defn.registered_tool_names = [
-            f"mcp__{defn.id}__{tool_def.name}" for tool_def in discovered
-        ]
+        defn.registered_tool_names = registered_mcp_tool_names(defn, discovered)
         defn.updated_at = utc_now()
         self.save_server(defn)
 
@@ -185,7 +184,7 @@ class MCPServerRegistry:
             if not defn.enabled or defn.install_status not in {"ready", "discovering"}:
                 continue
             for dt in defn.discovered_tools:
-                tool_name = f"mcp__{defn.id}__{dt.name}"
+                tool_name = format_mcp_tool_name(defn.id, dt.name)
                 try:
                     tool = self._wrap_tool(defn, dt, tool_name)
                     self._tools[tool_name] = tool

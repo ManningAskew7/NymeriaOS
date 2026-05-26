@@ -147,7 +147,10 @@ def test_mcp_server_create_act_as_attaches_discovered_tools_to_target_thread(
     )
 
     assert response.status_code == 200
-    assert response.json()["thread_id"] == "thread-1"
+    body = response.json()
+    assert body["thread_id"] == "thread-1"
+    assert body["tool_names"] == ["mcp__example__search"]
+    assert body["tool_display_names"] == ["Example MCP / search"]
     assert registry.discover_calls == ["example"]
     assert agent.mcp_reload_count == 1
     assert agent.invalidated_thread_ids == ["thread-1"]
