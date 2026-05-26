@@ -879,13 +879,13 @@ def test_hello_test_is_developer_only_in_tool_discovery():
 
     user_results = _search("hello", "", "thread-a", user_role="user")
     admin_results = _search("hello", "", "thread-a", user_role="admin")
-    user_core_results = _search("", "core", "thread-a", user_role="user")
-    admin_core_results = _search("", "core", "thread-a", user_role="admin")
+    user_general_results = _search("hello", "general", "thread-a", user_role="user")
+    admin_general_results = _search("hello", "general", "thread-a", user_role="admin")
 
     assert "hello_test" not in user_results
     assert "hello_test" in admin_results
-    assert "hello_test" not in user_core_results
-    assert "hello_test" in admin_core_results
+    assert "hello_test" not in user_general_results
+    assert "hello_test" in admin_general_results
 
     allowed, blocked = filter_developer_only_tools(
         ["hello_test", "memory_clear_all"],

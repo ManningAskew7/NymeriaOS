@@ -27,6 +27,10 @@ def get_global_memory_char_limit(settings: Any | None = None) -> int:
         from ..config import get_settings
 
         settings = get_settings()
+    if isinstance(settings, Mapping):
+        return normalize_memory_char_limit(
+            settings.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT)
+        )
     return normalize_memory_char_limit(
         getattr(settings, "memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT)
     )

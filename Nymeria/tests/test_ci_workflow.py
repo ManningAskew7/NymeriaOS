@@ -39,9 +39,10 @@ def test_ci_validates_docker_compose_and_dockerfile() -> None:
         "config --quiet"
     ) in commands
     assert (
-        "docker compose --profile discord --profile telegram --profile twitch "
-        "--profile voice --env-file .env.docker.example -f docker-compose.yml "
-        "config --quiet"
+        "docker compose --profile discord --profile telegram --profile slack "
+        "--profile matrix --profile mattermost --profile zulip --profile "
+        "rocketchat --profile signal --profile voice --env-file "
+        ".env.docker.example -f docker-compose.yml config --quiet"
     ) in commands
     assert "docker buildx build --check -f Dockerfile.full ." in commands
     assert "docker buildx build --check -f Dockerfile.slim ." in commands

@@ -4532,7 +4532,12 @@ class _CommandExecutor:
         agent = self._agent()
         settings = getattr(agent, "settings", None) if agent is not None else None
         if settings is None:
-            settings = get_settings()
+            try:
+                settings = await self.api.get_settings(user_id=self.user_id)
+            except TypeError:
+                settings = await self.api.get_settings()
+            except Exception:  # noqa: BLE001
+                settings = get_settings()
 
         if not args:
             memories = await self.api.list_memories(self.user_id)

@@ -1273,7 +1273,7 @@ def create_agent_node(
                         setattr(exc, "nymeria_stream_candidate_index", candidate_index)
                         setattr(exc, "nymeria_stream_candidate_label", _llm_candidate_label(llm_config, candidate_index))
                     except Exception:
-                        pass
+                        logger.debug("Failed to annotate streaming exception", exc_info=True)
                     logger.warning(
                         "[LLM RETRY] stream failed after %d chunk(s) on %s; "
                         "not retrying to avoid duplicated output: %s",
