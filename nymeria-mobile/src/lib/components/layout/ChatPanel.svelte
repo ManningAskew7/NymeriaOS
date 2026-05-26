@@ -302,8 +302,8 @@
         break;
 
       case 'tool_call': {
-        const tc = event.data as { id: string; name: string; arguments: Record<string, unknown>; description?: string };
-        chatStore.addToolCallStep(tc.id, tc.name, tc.arguments, tc.description);
+        const tc = event.data as { id: string; name: string; arguments: Record<string, unknown> };
+        chatStore.addToolCallStep(tc.id, tc.name, tc.arguments);
         break;
       }
 

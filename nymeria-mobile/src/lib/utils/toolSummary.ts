@@ -25,11 +25,6 @@
  * Returns null when none of these add anything beyond the tool name; the card
  * then renders the raw tool name only.
  *
- * The `description` parameter (the tool's static short description) is no longer
- * used to derive labels: being identical for every call, it can only paraphrase
- * the tool's purpose, never describe a specific invocation. It is kept in the
- * signature so existing call sites and the backend plumbing need not change.
- *
  * NOTE: this file is kept byte-identical between nymeria-desktop and
  * nymeria-mobile and is registered in scripts/check_cross_app_drift.py.
  */
@@ -238,9 +233,7 @@ function firstPresent(
 export function getToolSummary(
   name: string,
   args: Record<string, unknown> | undefined,
-  description?: string,
 ): string | null {
-  void description; // intentionally unused; see file header.
   const safeArgs = args ?? {};
 
   const verb = firstPresent(safeArgs, VERB_ARGS)?.toLowerCase() ?? null;

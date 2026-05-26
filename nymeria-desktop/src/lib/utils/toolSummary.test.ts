@@ -65,11 +65,9 @@ describe('getToolSummary', () => {
     expect(getToolSummary('list_triggers', { action: 'list' })).toBeNull();
   });
 
-  it('no longer uses the static description and returns null without specifics', () => {
-    expect(getToolSummary('memory_read', {}, 'Read memory. Get a specific entry.')).toBeNull();
-    expect(
-      getToolSummary('some_tool', { fields_json: '{"a":1}', limit: 5 }, 'Create a record.'),
-    ).toBeNull();
+  it('returns null when the args carry nothing specific beyond the tool name', () => {
+    expect(getToolSummary('memory_read', {})).toBeNull();
+    expect(getToolSummary('some_tool', { fields_json: '{"a":1}', limit: 5 })).toBeNull();
   });
 
   it('returns null when nothing is descriptive', () => {

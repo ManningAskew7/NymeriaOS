@@ -424,8 +424,7 @@ function createChatStore() {
     addToolCallStep(
       id: string,
       name: string,
-      args: Record<string, unknown>,
-      description?: string
+      args: Record<string, unknown>
     ) {
       this._forceFlush();
       if (!isLastAssistantStreaming()) return;
@@ -438,7 +437,6 @@ function createChatStore() {
           id,
           name,
           arguments: args,
-          description,
           status: 'running',
           startTime: new Date()
         };
@@ -452,7 +450,6 @@ function createChatStore() {
           id,
           name,
           arguments: args,
-          description,
           status: 'running',
           startTime: new Date()
         };
