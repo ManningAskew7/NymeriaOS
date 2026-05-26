@@ -56,7 +56,11 @@
       <div class="tool-header">
         <span class="tool-name">{toolCall.name}</span>
         {#if summary}
-          <span class="tool-summary">{summary}</span>
+          <span class="tool-summary" title={summary}>
+            <span class="tool-summary-paren">(</span>
+            <span class="tool-summary-text">{summary}</span>
+            <span class="tool-summary-paren">)</span>
+          </span>
         {/if}
         {#if duration}
           <span class="duration-badge">{duration}</span>
@@ -199,11 +203,37 @@
   .tool-summary {
     flex: 1;
     min-width: 0;
+    display: flex;
+    align-items: center;
+    /* Roomy line-height so descenders (g, y, p, q) are not clipped by the
+       overflow:hidden text below. */
+    line-height: 1.6;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    /* Soft italic aside so the label reads as a description, clearly distinct
+       from the upright bold monospace tool name beside it. */
+    font-style: italic;
+    font-weight: 400;
+  }
+
+  /* Light theme: secondary and muted are both dark browns close in value, so
+     the label reads heavier here than on the dark themes. Soften it by blending
+     toward the card background for a lower-contrast aside. Light theme only. */
+  :global(html[data-theme='light']) .tool-summary {
+    color: color-mix(in srgb, var(--text-secondary) 60%, var(--bg-elevated));
+  }
+
+  /* Parentheses sit outside the truncating text so the closing ")" survives
+     when the value is ellipsized at the card edge. */
+  .tool-summary-paren {
+    flex-shrink: 0;
+  }
+
+  .tool-summary-text {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
   }
 
   .duration-badge {
