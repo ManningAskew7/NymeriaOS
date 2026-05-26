@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Thread, ThreadConfig } from '$lib/types';
+  import { tick } from 'svelte';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { Icon } from '$lib/components/common';
@@ -217,6 +218,11 @@
   type MetaPart = {
     id: string;
     text: string;
+    /* Shown instead of `text` when the row is too crowded for full labels. The
+       dot color already encodes the category, so we keep only the count and
+       drop the unit word. Word-only metrics use '' so just their dot remains.
+       Omit to keep the full text in compact mode (used for the model name). */
+    compactText?: string;
     tooltip?: string;
     variant?: 'default' | 'reduced' | 'accent';
   };
@@ -236,6 +242,7 @@
       parts.push({
         id: 'tools',
         text: `${activeToolCount} tools`,
+        compactText: `${activeToolCount}`,
         tooltip: toolsTooltip,
         variant: disabledNonMcpCount > 0 ? 'reduced' : 'default',
       });
@@ -244,6 +251,7 @@
       parts.push({
         id: 'mcp',
         text: `${activeMcpToolCount} MCP`,
+        compactText: `${activeMcpToolCount}`,
         tooltip: mcpTooltip,
         variant: disabledMcpCount > 0 ? 'reduced' : 'default',
       });
@@ -252,6 +260,7 @@
       parts.push({
         id: 'callables',
         text: `${callableCount} callable`,
+        compactText: `${callableCount}`,
         tooltip: callableTooltip,
         variant: 'default',
       });
@@ -260,6 +269,7 @@
       parts.push({
         id: 'skills',
         text: `${activeSkillCount} skill${activeSkillCount !== 1 ? 's' : ''}`,
+        compactText: `${activeSkillCount}`,
         tooltip: activeSkillTooltip,
         variant: 'default',
       });
@@ -268,6 +278,7 @@
       parts.push({
         id: 'kits',
         text: `${activeKitCount} kit${activeKitCount !== 1 ? 's' : ''}`,
+        compactText: `${activeKitCount}`,
         tooltip: activeKitTooltip,
         variant: 'default',
       });
@@ -276,6 +287,7 @@
       parts.push({
         id: 'triggers',
         text: `${triggerCount} trigger${triggerCount !== 1 ? 's' : ''}`,
+        compactText: `${triggerCount}`,
         tooltip: `${triggerCount} active trigger${triggerCount !== 1 ? 's' : ''}`,
         variant: 'default',
       });
@@ -284,6 +296,7 @@
       parts.push({
         id: 'instructions',
         text: 'instructions',
+        compactText: '',
         tooltip: instructionsTooltip,
         variant: 'default',
       });
@@ -292,16 +305,109 @@
       parts.push({
         id: 'callable',
         text: 'callable',
+        compactText: '',
         tooltip: 'This thread can be called by other threads',
         variant: 'accent',
       });
     }
     return parts;
   });
+
+  // The metrics row keeps as many full labels as the width allows and collapses
+  // the rest, right to left, to counts/dots (see MetaPart.compactText) so it
+  // always shows the most information that fits. The title yields space first
+  // (it shrinks before the meta), so the meta keeps expanding until even a
+  // fully-truncated title can't free more room. This needs real widths, so we
+  // measure each item in both forms.
+  let headerEl = $state<HTMLElement>();
+  let titleEl = $state<HTMLHeadingElement>();
+  let metaEl = $state<HTMLDivElement>();
+  let actionsEl = $state<HTMLDivElement>();
+  // How many leading items render with full labels; the rest render compact.
+  // Defaults to "all full" until the first measurement runs.
+  let fullCount = $state(Number.MAX_SAFE_INTEGER);
+  // While set, forces every item to one form so we can read its width.
+  let measuring = $state<'full' | 'compact' | null>(null);
+  // Cached per-item widths and the inter-item gap, so resize re-checks reuse
+  // them instead of re-rendering (which would flicker during a drag).
+  let fullWidths: number[] = [];
+  let compactWidths: number[] = [];
+  let metaGap = 14;
+
+  function compactOf(part: MetaPart): string {
+    return part.compactText ?? part.text;
+  }
+
+  // The horizontal space the meta can occupy if the title shrinks all the way to
+  // its min-width. `metaLeft - titleWidth` is constant no matter how truncated
+  // the title currently is, so this depends only on the header width, never on
+  // the current mode -- which is what stops it from latching.
+  function availableMetaWidth(): number {
+    if (!metaEl || !titleEl || !actionsEl) return 0;
+    const header = headerEl ?? metaEl.parentElement;
+    const headerGap = header ? parseFloat(getComputedStyle(header).columnGap) || 0 : 0;
+    const titleMin = parseFloat(getComputedStyle(titleEl).minWidth) || 0;
+    const metaLeft = metaEl.getBoundingClientRect().left;
+    const titleWidth = titleEl.getBoundingClientRect().width;
+    const actionsLeft = actionsEl.getBoundingClientRect().left;
+    const titleHeadroom = Math.max(0, titleWidth - titleMin);
+    return actionsLeft - headerGap - metaLeft + titleHeadroom;
+  }
+
+  function recomputeFullCount() {
+    const n = fullWidths.length;
+    if (!n || compactWidths.length !== n) return;
+    const available = availableMetaWidth() - 4; // hair of breathing room
+    const gaps = metaGap * Math.max(0, n - 1);
+    // Largest number of leading full-label items whose total still fits; the
+    // remaining items stay compact. Monotonic in k, so a linear scan suffices.
+    let k = n;
+    for (; k >= 0; k -= 1) {
+      let total = gaps;
+      for (let i = 0; i < n; i += 1) total += i < k ? fullWidths[i] : compactWidths[i];
+      if (total <= available) break;
+    }
+    fullCount = Math.max(0, k);
+  }
+
+  // Re-measure both forms whenever the metric set changes, then choose how many
+  // to expand. The two passes force every item to one form so we can read both
+  // its widths; this only runs when the metrics themselves change.
+  $effect(() => {
+    const contentKey = metaParts.map((p) => `${p.id}:${p.text}`).join('|');
+    void contentKey;
+    if (!metaEl) return;
+    let cancelled = false;
+    void (async () => {
+      measuring = 'full';
+      await tick();
+      if (cancelled || !metaEl) return;
+      metaGap = parseFloat(getComputedStyle(metaEl).columnGap) || metaGap;
+      fullWidths = (Array.from(metaEl.children) as HTMLElement[]).map((el) => el.offsetWidth);
+      measuring = 'compact';
+      await tick();
+      if (cancelled || !metaEl) return;
+      compactWidths = (Array.from(metaEl.children) as HTMLElement[]).map((el) => el.offsetWidth);
+      measuring = null;
+      recomputeFullCount();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // Re-decide on width changes (window resize, panel toggles) from cached widths
+  // alone, so resizing never forces a re-measure or flicker.
+  $effect(() => {
+    if (!headerEl) return;
+    const observer = new ResizeObserver(() => recomputeFullCount());
+    observer.observe(headerEl);
+    return () => observer.disconnect();
+  });
 </script>
 
-<header class="thread-header">
-  <h2 class="title" title={thread.title}>{thread.title}</h2>
+<header class="thread-header" bind:this={headerEl}>
+  <h2 class="title" title={thread.title} bind:this={titleEl}>{thread.title}</h2>
 
   {#if metaParts.length > 0}
     <button
@@ -317,15 +423,16 @@
     </button>
 
     {#if showMeta}
-      <div class="meta" transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
-        {#each metaParts as part (part.id)}
-          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{part.text}</span>
+      <div class="meta" bind:this={metaEl} transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
+        {#each metaParts as part, i (part.id)}
+          {@const showFull = measuring === 'full' || (measuring !== 'compact' && i < fullCount)}
+          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{showFull ? part.text : compactOf(part)}</span>
         {/each}
       </div>
     {/if}
   {/if}
 
-  <div class="actions">
+  <div class="actions" bind:this={actionsEl}>
     {#if outlookStore.isOutlookMode}
       <button
         class="icon-btn"
@@ -393,9 +500,15 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    /* The title yields width to the meta row, not the other way around. A very
+       high shrink factor means that when title + meta can't both fit, almost
+       all the shrinkage lands on the title (its ellipsis appears) while the
+       meta keeps its full labels. The title still shows as much as fits, and
+       only shrinks under genuine pressure (no fixed cap). min-width keeps a
+       readable sliver and is the floor the compact-mode measurement uses. */
     flex: 0 1 auto;
-    min-width: 0;
-    max-width: 45%;
+    flex-shrink: 1000;
+    min-width: 4rem;
     /* Optical centering nudge — flex align-items:center centers the line box,
        but the bold font's ink sits slightly above the line-box center, so the
        text reads as too high. 1px down matches the offset already applied to
@@ -462,7 +575,11 @@
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
-    flex: 1 1 auto;
+    /* Content-sized: the row is exactly as wide as its labels and yields to the
+       title only after the title has shrunk to its minimum (see flex-shrink
+       values). measure() decides when the labels no longer fit and collapses
+       them to counts; the cog stays pinned right via .actions margin-left. */
+    flex: 0 1 auto;
     /* 2px left padding gives the first meta-part's dot room to render its 1px
        outer ring without being clipped by overflow:hidden. */
     padding-left: 2px;
