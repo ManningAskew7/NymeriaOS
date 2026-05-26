@@ -1298,21 +1298,3 @@ def get_all_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
     if tool_name in MCP_SERVER_TOOL_METADATA:
         return MCP_SERVER_TOOL_METADATA[tool_name]
     return CUSTOM_TOOL_METADATA.get(tool_name)
-
-
-def get_tool_short_description(tool_name: str) -> Optional[str]:
-    """Return a tool's short one-line description, or None if unavailable.
-
-    For display-only labels such as the frontend tool-call cards. Reads from the
-    cached metadata registry (O(1) after first build) where descriptions are
-    already trimmed to a one-line summary. Never raises; returns None on any
-    miss or error so callers can attach it best-effort.
-    """
-    try:
-        meta = get_all_tool_metadata(tool_name)
-    except Exception:
-        return None
-    if meta is None:
-        return None
-    desc = (meta.description or "").strip()
-    return desc or None

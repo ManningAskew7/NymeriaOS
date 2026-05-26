@@ -610,8 +610,7 @@ function createAutonomousStore() {
           chatStore.addToolCallStep(
             toolId,
             event.name as string,
-            (event.args as Record<string, unknown>) || {},
-            event.description as string | undefined
+            (event.args as Record<string, unknown>) || {}
           );
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);

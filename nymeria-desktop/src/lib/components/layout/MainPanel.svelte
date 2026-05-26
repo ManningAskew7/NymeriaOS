@@ -364,9 +364,8 @@
           id: string;
           name: string;
           arguments: Record<string, unknown>;
-          description?: string;
         };
-        chatStore.addToolCallStep(data.id, data.name, data.arguments, data.description);
+        chatStore.addToolCallStep(data.id, data.name, data.arguments);
 
         // Refresh scheduled todos when self_invoke is called (legacy)
         if (data.name === 'self_invoke') {

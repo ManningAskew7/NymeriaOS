@@ -406,7 +406,6 @@
                 id: step.id || '',
                 name: step.name || '',
                 arguments: step.arguments || {},
-                description: step.description,
                 result: step.result,
                 artifacts: step.artifacts,
                 status: step.status || 'pending',

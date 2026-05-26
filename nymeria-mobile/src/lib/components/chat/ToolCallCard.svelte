@@ -15,7 +15,7 @@
 
   let summary = $derived(
     configStore.describeToolCalls
-      ? getToolSummary(toolCall.name, toolCall.arguments, toolCall.description)
+      ? getToolSummary(toolCall.name, toolCall.arguments)
       : null
   );
 
