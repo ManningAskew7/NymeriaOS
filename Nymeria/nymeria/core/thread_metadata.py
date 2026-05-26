@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
-from .time_utils import ensure_aware_utc, utc_now
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -303,63 +303,3 @@ class ThreadMetadataManager:
             meta.updated_at = utc_now()
             return True
 
-    # -- migration --
-
-    def migrate_from_frontend(
-        self,
-        user_id: str,
-        threads_data: List[dict],
-    ) -> int:
-        """Import thread metadata from frontend localStorage format.
-
-        Only imports threads that don't already have metadata (won't overwrite).
-
-        Args:
-            threads_data: List of frontend Thread objects with fields:
-                id, title, pinned, platform, createdAt, updatedAt
-
-        Returns:
-            Number of threads imported.
-        """
-        imported = 0
-        with self.atomic_update(user_id) as store:
-            for t in threads_data:
-                tid = t.get("id", "")
-                if not tid or tid in store.threads:
-                    continue
-
-                title = t.get("title", "New Chat")
-                # Determine title_source from the title value
-                title_source = "default" if title == "New Chat" else "user"
-
-                store.threads[tid] = ThreadMetadata(
-                    thread_id=tid,
-                    title=title,
-                    pinned=t.get("pinned", False),
-                    platform=t.get("platform", classify_platform(tid)),
-                    platform_meta=t.get("platformMeta"),
-                    title_source=title_source,
-                    created_at=_parse_dt(t.get("createdAt")),
-                    updated_at=_parse_dt(t.get("updatedAt")),
-                )
-                imported += 1
-
-        if imported:
-            logger.info(
-                f"Migrated {imported} thread(s) from frontend for user {user_id}"
-            )
-        return imported
-
-
-def _parse_dt(value) -> datetime:
-    """Parse a datetime from various formats (ISO string, timestamp, etc.)."""
-    if value is None:
-        return utc_now()
-    if isinstance(value, datetime):
-        return ensure_aware_utc(value)
-    try:
-        return ensure_aware_utc(
-            datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        )
-    except (ValueError, TypeError):
-        return utc_now()

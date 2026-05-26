@@ -1,7 +1,7 @@
 <script lang="ts">
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { api, probeConnection } from '$lib/services/api.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import type {
     ServerSettings,
@@ -563,9 +563,16 @@
     return provider !== 'google' && provider !== 'ollama';
   }
 
-  function handleSaveConnection() {
-    configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
+  async function handleSaveConnection() {
+    // Saving the form is a backend commit: route through applyConnection so the
+    // sidebar is cleared and re-synced against the new backend (a bare config
+    // write left the previous backend's cached threads in place).
+    await connectionsStore.applyConnection(apiUrl, apiKey);
+    // Reflect the applied connection back into the form + server settings.
+    apiUrl = configStore.apiUrl;
+    apiKey = configStore.apiKey;
+    serverSettings = null;
+    await loadServerSettings();
     testStatus = 'idle';
     testMessage = 'Connection settings saved!';
     setTimeout(() => {
@@ -588,17 +595,22 @@
     apiKey = conn.apiKey;
   }
 
-  function handleUpdateConnection() {
+  async function handleUpdateConnection() {
     if (!editingConnectionId) return;
+    const wasActive = connectionsStore.activeConnectionId === editingConnectionId;
     connectionsStore.update(editingConnectionId, {
       name: editingName.trim() || undefined,
       apiUrl,
       apiKey,
     });
-    // Also apply to configStore if this is the active connection
-    if (connectionsStore.activeConnectionId === editingConnectionId) {
-      configStore.apiUrl = apiUrl;
-      configStore.apiKey = apiKey;
+    // If editing the active connection and its backend creds actually changed,
+    // re-apply so threads clear + resync against the (possibly different)
+    // backend instead of leaving the old backend's cached list in the sidebar.
+    const norm = (u: string) => u.trim().replace(/\/+$/, '');
+    const credsChanged =
+      norm(configStore.apiUrl) !== norm(apiUrl) || configStore.apiKey.trim() !== apiKey.trim();
+    if (wasActive && credsChanged) {
+      await connectionsStore.applyConnection(apiUrl, apiKey);
     }
     editingConnectionId = null;
     editingName = '';
@@ -628,39 +640,18 @@
   }
 
   async function handleTestConnection() {
-    configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
-
     testStatus = 'testing';
     testMessage = '';
 
-    try {
-      const isHealthy = await api.healthCheck();
-      if (!isHealthy) {
-        testStatus = 'error';
-        testMessage = 'Cannot connect to server. Is the backend running?';
-        return;
-      }
-
-      const authResponse = await api.verifyAuth();
-      if (authResponse.status === 401 || authResponse.status === 403) {
-        testStatus = 'error';
-        testMessage = 'Invalid account token. Check that it matches a token issued by the backend.';
-        return;
-      }
-      if (!authResponse.ok) {
-        testStatus = 'error';
-        testMessage = `Auth check failed: ${authResponse.status}`;
-        return;
-      }
-
+    // Stateless probe of the entered URL + token. Does NOT touch configStore,
+    // so testing never repoints the live app (committing happens on Save).
+    const result = await probeConnection(apiUrl, apiKey);
+    if (result.ok) {
       testStatus = 'success';
       testMessage = 'Connection successful!';
-      // Load server settings after successful connection
-      await loadServerSettings();
-    } catch (e) {
+    } else {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Connection failed';
+      testMessage = result.message;
     }
   }
 

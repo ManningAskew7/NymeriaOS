@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import type { ProviderTier } from '$lib/types';
 
   export type ProviderSelectOption = {
@@ -269,6 +271,7 @@
       aria-activedescendant={activeIndex >= 0 ? `provider-row-${activeIndex}` : undefined}
       tabindex="-1"
       onkeydown={handleKeydown}
+      transition:slide={DROPDOWN_TRANSITION}
     >
       {#each flatRows as row, i (i)}
         {#if row.kind === 'group-header'}
@@ -375,7 +378,7 @@
   .trigger-caret {
     flex-shrink: 0;
     color: var(--text-muted, rgba(255, 255, 255, 0.5));
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     transition: transform 120ms;
   }
 
@@ -406,7 +409,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 8px 12px 4px;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -454,13 +457,13 @@
   }
 
   .option-description {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, rgba(255, 255, 255, 0.55));
     line-height: 1.35;
   }
 
   .option-warning {
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     color: var(--error, #f87171);
     line-height: 1.35;
   }
@@ -468,7 +471,7 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    font-size: 10px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -478,7 +481,7 @@
   }
 
   .chip-sm {
-    font-size: 9px;
+    font-size: var(--font-size-3xs);
   }
 
   .chip-native,

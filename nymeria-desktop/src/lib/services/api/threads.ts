@@ -77,28 +77,6 @@ export class ThreadsApi extends ChatApi {
     }
   }
 
-  /**
-   * One-time migration: send frontend localStorage thread data to backend.
-   */
-  async migrateThreadMetadata(
-    threads: Array<{ id: string; title: string; pinned?: boolean; platform?: string; createdAt: Date; updatedAt: Date }>
-  ): Promise<{ migrated_threads: number }> {
-    const response = await fetch(
-      `${this.getBaseUrl()}/threads/metadata/migrate`,
-      {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify({ threads }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
   async deleteThread(threadId: string): Promise<void> {
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}`,
