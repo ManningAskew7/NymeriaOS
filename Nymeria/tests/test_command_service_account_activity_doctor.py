@@ -75,12 +75,13 @@ def _ctx(thread_id: str | None = "thread-1") -> CommandContext:
     )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def patched_agent(monkeypatch: pytest.MonkeyPatch):
     def install(agent) -> Any:
         monkeypatch.setattr(agent_module, "get_current_agent", lambda: agent)
         return agent
 
+    install(SimpleNamespace(accounts_repo=_FakeAccountsRepo()))
     return install
 
 

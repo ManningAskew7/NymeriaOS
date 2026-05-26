@@ -39,9 +39,10 @@ def test_ci_validates_docker_compose_and_dockerfile() -> None:
         "config --quiet"
     ) in commands
     assert (
-        "docker compose --profile discord --profile telegram --profile twitch "
-        "--profile voice --env-file .env.docker.example -f docker-compose.yml "
-        "config --quiet"
+        "docker compose --profile discord --profile telegram --profile slack "
+        "--profile matrix --profile mattermost --profile zulip --profile "
+        "rocketchat --profile signal --profile voice --env-file "
+        ".env.docker.example -f docker-compose.yml config --quiet"
     ) in commands
     assert "docker buildx build --check -f Dockerfile.full ." in commands
     assert "docker buildx build --check -f Dockerfile.slim ." in commands
@@ -53,6 +54,17 @@ def test_ci_installs_dev_requirements_for_backend_tests() -> None:
     backend_job = jobs["backend-tests"]
     commands = _run_commands(backend_job)
 
+    assert any("Nymeria/requirements-dev.txt" in command for command in commands)
+
+
+def test_ci_installs_runtime_requirements_for_pyrefly() -> None:
+    jobs = _load_ci_workflow()["jobs"]
+
+    type_check_job = jobs["type-check"]
+    commands = _run_commands(type_check_job)
+
+    assert any("Nymeria/requirements.txt" in command for command in commands)
+    assert any("Nymeria/requirements-docker.txt" in command for command in commands)
     assert any("Nymeria/requirements-dev.txt" in command for command in commands)
 
 
