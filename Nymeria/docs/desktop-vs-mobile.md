@@ -101,6 +101,7 @@ Both apps now use the same modular API service layout:
 | `services/api/*.ts` domain modules | KNOWN_DRIFT | Same module names and inheritance order, but the desktop API surface is still a superset in a few administrative areas. |
 | `stores/credentials.svelte.ts` | EXACT_MATCH | Shared credential-vault state and actions. |
 | `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
+| `utils/transitions.ts` | EXACT_MATCH | Shared dropdown and collapsible slide timing constants. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 | `components/notifications/index.ts` | KNOWN_DRIFT | Desktop exports notification profile/destination editors and the full panel; mobile only exports its notification center/item subset. |
 

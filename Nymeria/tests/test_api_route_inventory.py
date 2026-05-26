@@ -65,6 +65,7 @@ EXPECTED_ROUTES = [
     ('/credential-bindings/{binding_id}', ('DELETE',)),
     ('/credential-prompts/{prompt_id}/cancel', ('POST',)),
     ('/credential-prompts/{prompt_id}/exit', ('POST',)),
+    ('/credential-prompts/{prompt_id}/status', ('GET',)),
     ('/credential-prompts/{prompt_id}/submit', ('POST',)),
     ('/credential-prompts/{prompt_id}/test', ('POST',)),
     ('/credential-setup-sessions', ('POST',)),
