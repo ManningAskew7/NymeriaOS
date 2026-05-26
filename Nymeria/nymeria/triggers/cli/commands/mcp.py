@@ -150,10 +150,12 @@ async def _handle_mcp_discover(
     if count is None:
         discovered = mapping_get(result, "discovered_tools", [])
         count = len(discovered) if isinstance(discovered, Sequence) else 0
+    names = _discovered_tool_names(mapping_get(result, "discovered_tools", []))
+    suffix = f": {', '.join(names)}" if names else "."
     await context.dispatch({"type": "mcp_updated"})
     return CommandResult.completed(
         CommandMessage(
-            f"Discovered {count} MCP tool{'s' if count != 1 else ''} for {server_id}.",
+            f"Discovered {count} MCP tool{'s' if count != 1 else ''} for {server_id}{suffix}",
             level="success",
         ),
         payload={"server_id": server_id, "count": count},
@@ -328,6 +330,10 @@ def _format_mcp_server_status(server: Mapping[str, Any]) -> str:
     lines = ["MCP Server"]
     for label, value in rows:
         lines.append(f"  {label:<{width}}  {value}")
+    tool_names = _discovered_tool_names(server.get("discovered_tools"))
+    if tool_names:
+        lines.append("\nDiscovered tools:")
+        lines.extend(f"  {one_line(name, limit=120)}" for name in tool_names)
     logs = _string_list(server.get("install_logs"))
     if logs:
         lines.append("\nRecent logs:")
@@ -363,6 +369,12 @@ def _format_mcp_install_result(result: Any, *, command: str) -> CommandResult:
     message = f"MCP server ready: {server_id or 'unknown'}"
     if discovered != "":
         message += f" ({discovered} tools)"
+    tool_names = _string_list(mapping_get(result, "tool_display_names", []))
+    if tool_names:
+        shown = ", ".join(tool_names[:8])
+        if len(tool_names) > 8:
+            shown += f", +{len(tool_names) - 8} more"
+        message += f"\n  Tools: {shown}"
     return CommandResult.completed(
         CommandMessage(message, level="success"),
         payload={"server_id": server_id, "status": status, "discovered_tools": discovered},
@@ -400,6 +412,20 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
     return [str(item) for item in value if str(item)]
+
+
+def _discovered_tool_names(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    names: list[str] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            name = item.get("name") or item.get("display_name")
+        else:
+            name = item
+        if str(name or ""):
+            names.append(str(name))
+    return names
 
 
 def _consume_option(
