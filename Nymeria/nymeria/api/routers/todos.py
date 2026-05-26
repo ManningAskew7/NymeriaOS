@@ -74,10 +74,20 @@ def _get_todo_schedule_db(settings: Settings) -> TodoScheduleDB:
 
 
 def _raise_if_todo_executing(
-    schedule_db: TodoScheduleDB, todo_id: str, user_id: str
+    schedule_db: TodoScheduleDB,
+    todo_id: str,
+    user_id: str,
+    settings: Settings,
 ) -> None:
     """Reject user-facing TODO writes while a scheduled run owns the TODO."""
-    if schedule_db.is_execution_active(todo_id, user_id):
+    stale_after_seconds = int(
+        getattr(settings, "scheduler_active_execution_stale_minutes", 1440)
+    ) * 60
+    if schedule_db.is_execution_active(
+        todo_id,
+        user_id,
+        stale_after_seconds=stale_after_seconds,
+    ):
         raise HTTPException(
             status_code=409,
             detail=f"TODO '{todo_id}' is currently executing; try again after the run finishes.",
@@ -273,7 +283,7 @@ def create_todos_router(
                 status_code=404,
                 detail=f"TODO '{todo_id}' not found",
             )
-        _raise_if_todo_executing(schedule_db, todo_id, user_id)
+        _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
@@ -283,7 +293,7 @@ def create_todos_router(
                     detail=f"TODO '{todo_id}' not found",
                 )
 
-            _raise_if_todo_executing(schedule_db, todo_id, user_id)
+            _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
             success = todo_list.update_item(
                 todo_id=todo_id,
@@ -356,7 +366,7 @@ def create_todos_router(
                 status_code=404,
                 detail=f"TODO '{todo_id}' not found",
             )
-        _raise_if_todo_executing(schedule_db, todo_id, user_id)
+        _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
@@ -366,7 +376,7 @@ def create_todos_router(
                     detail=f"TODO '{todo_id}' not found",
                 )
 
-            _raise_if_todo_executing(schedule_db, todo_id, user_id)
+            _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
             deleted = todo_list.delete_item(todo_id)
             if not deleted:
@@ -397,7 +407,7 @@ def create_todos_router(
                 status_code=404,
                 detail=f"TODO '{todo_id}' not found",
             )
-        _raise_if_todo_executing(schedule_db, todo_id, user_id)
+        _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.get_item(todo_id)
@@ -407,7 +417,7 @@ def create_todos_router(
                     detail=f"TODO '{todo_id}' not found",
                 )
 
-            _raise_if_todo_executing(schedule_db, todo_id, user_id)
+            _raise_if_todo_executing(schedule_db, todo_id, user_id, settings)
 
             has_recurrence = item.recurrence
             success = todo_list.complete_item(todo_id)

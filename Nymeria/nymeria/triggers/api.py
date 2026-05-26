@@ -673,7 +673,17 @@ def create_api_app(
 
         await close_provider_async_http_pools_for_loop()
 
+    async def _stop_agent_ticker() -> None:
+        ticker = getattr(_agent, "_ticker", None)
+        if ticker is None:
+            return
+        try:
+            ticker.stop()
+        except Exception:
+            logger.exception("Failed to stop agent ticker during API shutdown")
+
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
+    app.router.add_event_handler("shutdown", _stop_agent_ticker)
 
     @app.middleware("http")
     async def _request_id_context(request: Request, call_next):

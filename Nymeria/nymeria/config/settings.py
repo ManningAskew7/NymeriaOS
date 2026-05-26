@@ -1284,6 +1284,23 @@ class Settings(BaseSettings):
         ge=0,
         description="Max concurrent autonomous tasks (0 = unlimited)"
     )
+    scheduler_missed_work_policy: Literal["run", "ask"] = Field(
+        default="run",
+        description=(
+            "Startup policy for scheduled TODOs that became due while the "
+            "scheduler was offline: run immediately, or ask by holding them "
+            "until an admin releases missed work."
+        ),
+    )
+    scheduler_active_execution_stale_minutes: int = Field(
+        default=1440,
+        ge=1,
+        le=10080,
+        description=(
+            "Minutes before an active scheduled TODO execution marker is "
+            "considered stale after an interrupted scheduler process."
+        ),
+    )
     # Context Management Settings
     context_management: Literal["auto_compact", "sliding_window", "none"] = Field(
         default="auto_compact",

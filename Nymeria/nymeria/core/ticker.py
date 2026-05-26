@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -23,6 +23,7 @@ from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
 from .memory_index import MemoryIndex
 from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
+from .scheduler_state import SchedulerStateManager
 from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
@@ -315,11 +316,92 @@ class Ticker:
         self._spawn_sweep_interval = 1800  # 30 minutes
         self._last_spawn_sweep_check: float = 0.0
 
+        self._recovery_lock = threading.Lock()
+        self._startup_recovery_prepared = False
+        self._missed_work_policy = getattr(
+            settings,
+            "scheduler_missed_work_policy",
+            "run",
+        )
+        self._active_execution_stale_seconds = int(
+            getattr(settings, "scheduler_active_execution_stale_minutes", 1440)
+        ) * 60
+        self._scheduler_state = SchedulerStateManager(settings.data_dir)
+        persisted_state = self._scheduler_state.load()
+        self._pending_startup_missed_ids: set[str] = set(
+            persisted_state.get("pending_missed_todo_ids") or []
+        )
+        self._trigger_catchup_paused = bool(
+            persisted_state.get("trigger_catchup_paused")
+        )
+
+    def prepare_startup_recovery(self) -> dict[str, Any]:
+        """Synchronize scheduler state before the polling thread starts."""
+        with self._recovery_lock:
+            if self._startup_recovery_prepared:
+                return self.get_scheduler_status()
+
+            self._scheduler_state.record_start()
+            stale_deleted = self.schedule_db.clear_stale_executions(
+                stale_after_seconds=self._active_execution_stale_seconds
+            )
+            indexed = self.rebuild_schedule_index()
+            missed_entries = self.schedule_db.get_due(before=time.time())
+            missed_ids = [entry.todo_id for entry in missed_entries]
+
+            if self._missed_work_policy == "ask" and missed_ids:
+                self._pending_startup_missed_ids = set(missed_ids)
+                self._trigger_catchup_paused = True
+                self._scheduler_state.set_pending_missed(
+                    missed_ids,
+                    trigger_catchup_paused=True,
+                )
+                self._print_recovery_notice(
+                    len(missed_ids),
+                    "awaiting release from /scheduler/missed-work/run",
+                )
+            else:
+                self._pending_startup_missed_ids.clear()
+                self._trigger_catchup_paused = False
+                self._scheduler_state.clear_pending_missed()
+                if missed_ids:
+                    self._print_recovery_notice(len(missed_ids), "executing now")
+
+            self._startup_recovery_prepared = True
+            status = self.get_scheduler_status()
+            status.update(
+                {
+                    "indexed_schedule_count": indexed,
+                    "startup_missed_count": len(missed_ids),
+                    "stale_execution_markers_cleared": stale_deleted,
+                }
+            )
+            return status
+
+    @staticmethod
+    def _print_recovery_notice(count: int, detail: str) -> None:
+        try:
+            _console.print()
+            _console.print(
+                Panel(
+                    f"[yellow]Found {count} scheduled TODO(s) from before shutdown; "
+                    f"{detail}.[/yellow]",
+                    title="[bold]Scheduler Recovery[/bold]",
+                    border_style="yellow",
+                )
+            )
+            _console.print()
+        except Exception:
+            logger.debug("Console render failed for scheduler recovery notice")
+
     def start(self) -> None:
         """Start the ticker thread."""
         if self._running:
             logger.warning("Ticker already running")
             return
+
+        if not self._startup_recovery_prepared:
+            self.prepare_startup_recovery()
 
         self._running = True
 
@@ -362,6 +444,7 @@ class Ticker:
         if self._executor:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+        self._scheduler_state.record_clean_shutdown()
         logger.info("Ticker stopped")
 
     def _get_trigger_manager(self) -> TriggerManager:
@@ -418,6 +501,8 @@ class Ticker:
 
     def _maybe_submit_trigger_poll(self, now: float) -> bool:
         """Submit trigger source polling if due and no previous poll is active."""
+        if self._trigger_catchup_paused:
+            return False
         if now - self._last_trigger_check < self.trigger_poll_interval:
             return False
 
@@ -549,6 +634,24 @@ class Ticker:
         # Get entries from DB (this will also log what's in the DB)
         due_entries = self.schedule_db.get_due(before=now)
 
+        if self._pending_startup_missed_ids and due_entries:
+            held_entries = [
+                entry
+                for entry in due_entries
+                if entry.todo_id in self._pending_startup_missed_ids
+            ]
+            if held_entries:
+                due_entries = [
+                    entry
+                    for entry in due_entries
+                    if entry.todo_id not in self._pending_startup_missed_ids
+                ]
+                logger.info(
+                    "[TICKER POLL] Holding %s startup-missed TODO(s) "
+                    "pending explicit release",
+                    len(held_entries),
+                )
+
         if due_entries:
             logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - Found {len(due_entries)} due TODO(s)!")
             for entry in due_entries:
@@ -603,7 +706,12 @@ class Ticker:
         continuation on iteration limit), and finalization.  Delegates
         streaming, success, and error paths to focused helpers.
         """
-        if not self.schedule_db.mark_execution_started(entry.todo_id, entry.user_id, entry.thread_id):
+        if not self.schedule_db.mark_execution_started(
+            entry.todo_id,
+            entry.user_id,
+            entry.thread_id,
+            stale_after_seconds=self._active_execution_stale_seconds,
+        ):
             logger.info(f"Scheduled TODO {entry.todo_id} is already executing, skipping duplicate run")
             return
 
@@ -1155,6 +1263,61 @@ class Ticker:
 
         except Exception as e:
             logger.warning(f"Failed to index TODO completion: {e}")
+
+    def release_missed_work(self) -> dict[str, Any]:
+        """Release startup-missed TODOs and paused trigger catch-up."""
+        with self._recovery_lock:
+            released_ids = sorted(self._pending_startup_missed_ids)
+            self._pending_startup_missed_ids.clear()
+            self._trigger_catchup_paused = False
+            self._scheduler_state.clear_pending_missed()
+            logger.info(
+                "Released %s startup-missed TODO(s) for scheduler execution",
+                len(released_ids),
+            )
+            status = self.get_scheduler_status()
+            status["released_todo_ids"] = released_ids
+            return status
+
+    def get_scheduler_status(self) -> dict[str, Any]:
+        """Return scheduler state for API/UI lifecycle controls."""
+        state = self._scheduler_state.load()
+        pending_ids = sorted(self._pending_startup_missed_ids)
+        pending_entries = []
+        for todo_id in pending_ids:
+            entry = self.schedule_db.get_entry(todo_id)
+            if entry is None:
+                continue
+            scheduled_at = datetime.fromtimestamp(
+                entry.scheduled_for,
+                timezone.utc,
+            ).isoformat()
+            pending_entries.append(
+                {
+                    "todo_id": entry.todo_id,
+                    "user_id": entry.user_id,
+                    "thread_id": entry.thread_id,
+                    "scheduled_for": scheduled_at,
+                    "task_preview": entry.task_preview,
+                }
+            )
+
+        return {
+            "status": "ok",
+            "ticker_running": self.is_running(),
+            "missed_work_policy": self._missed_work_policy,
+            "pending_missed_todo_count": len(pending_ids),
+            "pending_missed_todo_ids": pending_ids,
+            "pending_missed_todos": pending_entries,
+            "trigger_catchup_paused": self._trigger_catchup_paused,
+            "last_started_at": state.get("last_started_at"),
+            "last_clean_shutdown_at": state.get("last_clean_shutdown_at"),
+            "last_missed_detection_at": state.get("last_missed_detection_at"),
+            "active_execution_count": self.schedule_db.count_active_executions(),
+            "active_execution_stale_minutes": int(
+                self._active_execution_stale_seconds / 60
+            ),
+        }
 
     def recover_missed_schedules(self) -> int:
         """

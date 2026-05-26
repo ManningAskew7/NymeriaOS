@@ -105,6 +105,24 @@ def _add_todo(agent: FakeAgent, user_id: str = "owner"):
         )
 
 
+def _add_scheduled_todo(
+    agent: FakeAgent,
+    *,
+    task: str,
+    scheduled_for: datetime,
+    user_id: str = "owner",
+):
+    with agent.todo_manager.atomic_update(user_id) as todo_list:
+        item = todo_list.add_item(
+            task,
+            scheduled_for=scheduled_for,
+            thread_id="thread-1",
+            created_by="user",
+        )
+        assert item is not None
+        return item
+
+
 def test_schedule_db_active_execution_lifecycle(tmp_path: Path):
     db = TodoScheduleDB(tmp_path / "todo_schedule.db")
 
@@ -130,6 +148,187 @@ def test_schedule_db_clears_stale_active_execution_markers(tmp_path: Path):
 
     assert not db.is_execution_active("todo-1", "owner", stale_after_seconds=10)
     assert db.mark_execution_started("todo-1", "owner", "thread-1")
+
+
+def test_ticker_ask_policy_holds_only_startup_missed_todos(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_missed_work_policy="ask",
+    )
+    agent = FakeAgent(settings)
+    past = _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    future = _add_scheduled_todo(
+        agent,
+        task="Due after startup",
+        scheduled_for=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    ticker = _make_ticker(agent)
+
+    status = ticker.prepare_startup_recovery()
+
+    assert status["pending_missed_todo_ids"] == [past.id]
+    assert status["trigger_catchup_paused"] is True
+
+    with sqlite3.connect(agent._schedule_db.db_path) as conn:
+        conn.execute(
+            "UPDATE scheduled_todos SET scheduled_for = ? WHERE todo_id = ?",
+            (time.time() - 1, future.id),
+        )
+        conn.commit()
+
+    executed: list[str] = []
+
+    def capture_execute(entry):
+        executed.append(entry.todo_id)
+        agent._schedule_db.remove_scheduled(entry.todo_id)
+
+    monkeypatch.setattr(ticker, "_execute_scheduled_todo", capture_execute)
+    ticker._executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        ticker._check_and_execute()
+        ticker._executor.shutdown(wait=True)
+        assert executed == [future.id]
+
+        ticker._executor = ThreadPoolExecutor(max_workers=1)
+        release = ticker.release_missed_work()
+        assert release["released_todo_ids"] == [past.id]
+        assert release["trigger_catchup_paused"] is False
+
+        ticker._check_and_execute()
+        ticker._executor.shutdown(wait=True)
+        assert executed == [future.id, past.id]
+    finally:
+        if ticker._executor:
+            ticker._executor.shutdown(wait=False, cancel_futures=True)
+            ticker._executor = None
+
+
+def test_ticker_ask_policy_pauses_trigger_catchup_until_release(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_missed_work_policy="ask",
+    )
+    agent = FakeAgent(settings)
+    _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    ticker = _make_ticker(agent, poll_interval=1)
+    ticker.prepare_startup_recovery()
+
+    called = False
+
+    def capture_trigger_check():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(ticker, "_check_triggers", capture_trigger_check)
+    ticker._housekeeping_executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        assert ticker._maybe_submit_trigger_poll(time.time() + 60) is False
+        assert called is False
+
+        ticker.release_missed_work()
+        assert ticker._maybe_submit_trigger_poll(time.time() + 60) is True
+        ticker._housekeeping_executor.shutdown(wait=True)
+        assert called is True
+    finally:
+        if ticker._housekeeping_executor:
+            ticker._housekeeping_executor.shutdown(wait=False, cancel_futures=True)
+            ticker._housekeeping_executor = None
+
+
+def test_ticker_prepare_clears_configured_stale_execution_markers(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_active_execution_stale_minutes=1,
+    )
+    agent = FakeAgent(settings)
+    assert agent._schedule_db.mark_execution_started("todo-1", "owner", "thread-1")
+
+    with sqlite3.connect(agent._schedule_db.db_path) as conn:
+        conn.execute(
+            "UPDATE active_todo_executions SET started_at = ? WHERE todo_id = ?",
+            (time.time() - 120, "todo-1"),
+        )
+        conn.commit()
+
+    ticker = _make_ticker(agent)
+    status = ticker.prepare_startup_recovery()
+
+    assert status["stale_execution_markers_cleared"] == 1
+    assert agent._schedule_db.count_active_executions() == 0
+
+
+def test_scheduler_status_and_release_endpoints_require_admin_and_release_missed_work(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_missed_work_policy="ask",
+    )
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Missed while offline",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    ticker = _make_ticker(agent)
+    ticker.prepare_startup_recovery()
+    agent._ticker = ticker
+
+    client, admin_token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="admin",
+        role="admin",
+    )
+    user = agent.accounts_repo.create_user(
+        "regular",
+        "regular@example.com",
+        "Regular",
+        role="user",
+    )
+    assert user is not None
+    user_token = agent.accounts_repo.issue_token("regular")
+
+    forbidden = client.get("/scheduler/status", headers=_headers(user_token))
+    assert forbidden.status_code == 403
+
+    status = client.get("/scheduler/status", headers=_headers(admin_token))
+    assert status.status_code == 200
+    body = status.json()
+    assert body["missed_work_policy"] == "ask"
+    assert body["pending_missed_todo_ids"] == [todo.id]
+    assert body["trigger_catchup_paused"] is True
+
+    released = client.post(
+        "/scheduler/missed-work/run",
+        headers=_headers(admin_token),
+    )
+    assert released.status_code == 200
+    release_body = released.json()
+    assert release_body["released_todo_ids"] == [todo.id]
+    assert release_body["pending_missed_todo_ids"] == []
+    assert release_body["trigger_catchup_paused"] is False
 
 
 def test_legacy_tasks_endpoint_and_rate_limit_setting_are_removed(tmp_path: Path, api_client_builder):
@@ -196,6 +395,41 @@ def test_todo_write_endpoints_succeed_after_execution_marker_clears(
     if json_body is not None:
         kwargs["json"] = json_body
     response = request(f"/todos/{todo.id}{path_suffix}", **kwargs)
+
+    assert response.status_code == 200
+
+
+def test_todo_write_endpoint_allows_configured_stale_execution_marker(
+    tmp_path: Path,
+    api_client_builder,
+):
+    settings = api_client_builder.settings(
+        tmp_path,
+        scheduler_active_execution_stale_minutes=1,
+    )
+    api_client_builder.create_checkpoint_table(settings)
+    agent = FakeAgent(settings)
+    client, token = api_client_builder.authenticated_client(
+        agent,
+        settings,
+        user_id="owner",
+        email="owner@example.com",
+        display_name="Owner",
+    )
+    todo = _add_todo(agent)
+    assert agent._schedule_db.mark_execution_started(todo.id, "owner", todo.thread_id)
+    with sqlite3.connect(agent._schedule_db.db_path) as conn:
+        conn.execute(
+            "UPDATE active_todo_executions SET started_at = ? WHERE todo_id = ?",
+            (time.time() - 120, todo.id),
+        )
+        conn.commit()
+
+    response = client.patch(
+        f"/todos/{todo.id}",
+        headers=_headers(token),
+        json={"task": "Updated after stale marker"},
+    )
 
     assert response.status_code == 200
 

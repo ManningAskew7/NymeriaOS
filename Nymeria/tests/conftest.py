@@ -25,6 +25,8 @@ class ApiTestSettings:
     sliding_window_cycles: int = 20
     memory_char_limit: int = 8000
     todo_auto_archive_days: int = 7
+    scheduler_missed_work_policy: str = "run"
+    scheduler_active_execution_stale_minutes: int = 1440
     nymeria_debug: bool = False
     api_docs_enabled: bool = False
     whatsapp_access_token: str | None = None
