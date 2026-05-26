@@ -1153,7 +1153,7 @@ class CommandBackendClient:
         if not existing:
             _raise_http_status(404, f"TODO '{todo_id}' not found")
         try:
-            _raise_if_todo_executing(schedule_db, todo_id, target_user_id)
+            _raise_if_todo_executing(schedule_db, todo_id, target_user_id, settings)
         except Exception as exc:  # noqa: BLE001
             _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
         with todo_manager.atomic_update(target_user_id) as todo_list:
@@ -1199,7 +1199,7 @@ class CommandBackendClient:
         if not existing:
             _raise_http_status(404, f"TODO '{todo_id}' not found")
         try:
-            _raise_if_todo_executing(schedule_db, todo_id, target_user_id)
+            _raise_if_todo_executing(schedule_db, todo_id, target_user_id, settings)
         except Exception as exc:  # noqa: BLE001
             _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
         with todo_manager.atomic_update(target_user_id) as todo_list:

@@ -137,6 +137,8 @@ EXPECTED_ROUTES = [
     ('/ready', ('GET',)),
     ('/report', ('POST',)),
     ('/restart', ('POST',)),
+    ('/scheduler/missed-work/run', ('POST',)),
+    ('/scheduler/status', ('GET',)),
     ('/settings', ('GET',)),
     ('/settings', ('PATCH',)),
     ('/settings/env', ('GET',)),
