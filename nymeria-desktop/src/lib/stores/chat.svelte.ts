@@ -600,7 +600,12 @@ export function createChatStore() {
      * Add a tool call step to the last assistant message.
      * Tool call steps are ordered with thinking for proper interleaving.
      */
-    addToolCallStep(id: string, name: string, args: Record<string, unknown>) {
+    addToolCallStep(
+      id: string,
+      name: string,
+      args: Record<string, unknown>,
+      description?: string
+    ) {
       this._forceFlush();
       if (!isLastAssistantStreaming()) return;
 
@@ -613,6 +618,7 @@ export function createChatStore() {
           id,
           name,
           arguments: args,
+          description,
           status: 'running',
           startTime: new Date()
         };
@@ -626,6 +632,7 @@ export function createChatStore() {
           id,
           name,
           arguments: args,
+          description,
           status: 'running',
           startTime: new Date()
         };
@@ -906,6 +913,7 @@ export function createChatStore() {
           id: s.id || '',
           name: s.name || '',
           arguments: s.arguments || {},
+          description: s.description,
           result: s.result,
           artifacts: s.artifacts,
           status: s.status || 'pending',

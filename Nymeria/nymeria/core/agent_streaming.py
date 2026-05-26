@@ -294,11 +294,17 @@ class GraphStreamProcessor:
             tool_input,
             data_keys,
         )
+        # Display-only label for frontend tool cards. Derived from the tool
+        # name via the cached metadata registry; never persisted to the
+        # checkpoint and never seen by the model. Lazy import avoids a
+        # core -> tools -> core cycle (same convention as core/agent.py).
+        from ..tools.metadata import get_tool_short_description
         return [{
             "type": "tool_call",
             "id": run_id,
             "name": tool_name,
             "args": tool_input,
+            "description": get_tool_short_description(tool_name),
         }]
 
     def _handle_tool_end(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:

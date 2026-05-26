@@ -121,6 +121,7 @@ def test_format_conversation_history_attaches_tool_results_and_artifacts():
             "id": "call-1",
             "name": "workspace_lookup",
             "arguments": {"path": "report.txt"},
+            "description": None,
             "status": "success",
             "result": "Found report",
             "artifacts": [{

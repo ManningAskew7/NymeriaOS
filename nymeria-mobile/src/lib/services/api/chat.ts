@@ -353,13 +353,14 @@ export class ChatApi extends CredentialsApi {
           };
 
         case 'tool_call':
-          // Nymeria sends: { type, id, name, args }
+          // Nymeria sends: { type, id, name, args, description }
           return {
             type: 'tool_call',
             data: {
               id: (data.id as string) || `${data.name}-${Date.now()}`,
               name: data.name as string,
-              arguments: (data.args as Record<string, unknown>) || {}
+              arguments: (data.args as Record<string, unknown>) || {},
+              description: data.description as string | undefined
             },
             timestamp: new Date(),
             threadId

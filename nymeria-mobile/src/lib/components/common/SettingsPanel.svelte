@@ -455,6 +455,22 @@
           </p>
         </div>
 
+        <div class="setting-group">
+          <label class="setting-toggle">
+            <input
+              type="checkbox"
+              checked={configStore.describeToolCalls}
+              onchange={(e) => (configStore.describeToolCalls = e.currentTarget.checked)}
+            />
+            <span>Describe tool calls</span>
+          </label>
+          <p class="hint">
+            Show a short plain-English summary next to each tool name on the
+            collapsed tool cards, so you can follow what the agent is doing
+            without expanding them.
+          </p>
+        </div>
+
       <!-- Provider Tab -->
       {:else if activeTab === 'llm' && isAdmin}
         {#if loadingSettings}
