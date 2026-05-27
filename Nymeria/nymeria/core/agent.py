@@ -154,6 +154,11 @@ class NymeriaAgent:
     # use → discover another → enable → use" flow happen within one turn.
     MAX_TOOL_RELOADS_PER_TURN = 3
 
+    # Cap on sub-turn auto-compactions within a single turn. Once reached,
+    # route_after_tools stops flagging and the continuation runs to completion,
+    # so a pathological loop can't compact-and-resume forever.
+    MAX_COMPACTIONS_PER_TURN = 3
+
     def __init__(
         self,
         settings: Optional[Settings] = None,
@@ -445,6 +450,13 @@ class NymeriaAgent:
         # Belt-and-suspenders against a racing get_state momentarily returning
         # empty; the authoritative guard is the checkpoint emptiness check.
         self._memory_seeded_threads: set[str] = set()
+
+        # Sub-turn auto-compaction signalling. route_after_tools sets the flag
+        # when the running context crosses the trigger mid-loop; astream/chat
+        # consume it to compact + re-drive. _compactions_this_turn enforces the
+        # per-turn cap. Both are cleared at turn end.
+        self._subturn_compact_requested: set[str] = set()
+        self._compactions_this_turn: Dict[str, int] = {}
 
         # Dynamic tool binding mode is read live from self.settings on each
         # graph build / reload check (not cached as an instance attribute) —
@@ -1119,6 +1131,29 @@ class NymeriaAgent:
         from .agent_callable_lifecycle import patch_dangling_tool_calls
         return patch_dangling_tool_calls(self, graph, config)
 
+    def should_halt_for_subturn_compaction(self, thread_id: str, messages: list) -> bool:
+        """route_after_tools hook: flag + halt when the running context crosses
+        the auto-compact trigger mid-loop.
+
+        Returning True halts the graph at this sub-turn boundary (a real
+        mid-task point: the agent has a pending LLM call to process the tool
+        results, so it is never "done" here). astream()/chat() then compact and
+        re-drive. Capped per turn so a runaway loop can't compact endlessly;
+        once the cap is hit the continuation runs to completion.
+        """
+        try:
+            if self.settings.context_management != "auto_compact":
+                return False
+            if self._compactions_this_turn.get(thread_id, 0) >= self.MAX_COMPACTIONS_PER_TURN:
+                return False
+            if not self._compaction.should_subturn_compact(thread_id, messages):
+                return False
+            self._subturn_compact_requested.add(thread_id)
+            return True
+        except Exception as e:
+            logger.debug(f"[ROUTE] Thread {thread_id}: sub-turn compaction check failed: {e}")
+            return False
+
     async def _seed_memory_init_if_empty(
         self, graph, config: dict, thread_id: str, user_id: str
     ) -> bool:
@@ -1542,6 +1577,27 @@ class NymeriaAgent:
                     graph = reload_graph
                 self._pending_tool_reload.pop(thread_id, None)
 
+                # Sub-turn auto-compaction halt (sync mirror). route_after_tools
+                # flagged that the running context crossed the trigger mid-loop;
+                # compact and re-invoke {"messages": []} to continue. Capped per
+                # turn by should_halt_for_subturn_compaction.
+                while thread_id in self._subturn_compact_requested:
+                    self._subturn_compact_requested.discard(thread_id)
+                    compact_result = self._compaction._do_compact_sync(thread_id, user_id)
+                    if not (compact_result and compact_result.get("success")):
+                        logger.warning(
+                            f"[CHAT] Thread {thread_id}: sub-turn compaction "
+                            f"skipped/failed: "
+                            f"{compact_result.get('reason') if compact_result else 'none'}"
+                        )
+                        break
+                    self._compactions_this_turn[thread_id] = (
+                        self._compactions_this_turn.get(thread_id, 0) + 1
+                    )
+                    result = graph.invoke({"messages": []}, config=config)
+                    messages = result.get("messages", [])
+                self._subturn_compact_requested.discard(thread_id)
+
                 # Sync drain loop. If a prompt was queued mid-turn,
                 # route_after_tools halted the graph; drain, inject as
                 # HumanMessages, and re-invoke until the queue empties.
@@ -1772,6 +1828,8 @@ class NymeriaAgent:
                     )
             self._turn_reload_count.pop(thread_id, None)
             self._pending_tool_reload.pop(thread_id, None)
+            self._compactions_this_turn.pop(thread_id, None)
+            self._subturn_compact_requested.discard(thread_id)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)
@@ -2236,6 +2294,48 @@ class NymeriaAgent:
                 self._pending_tool_reload.pop(thread_id, None)
 
                 # ---------------------------------------------------------
+                # Sub-turn auto-compaction halt.
+                # route_after_tools flagged that the running context crossed
+                # the auto-compact trigger mid-loop (the agent had a pending
+                # LLM call -- it was NOT done). Compact, then re-drive with
+                # {"messages": []} so the agent continues from the reloaded
+                # memory. The continuation may cross the trigger again; the
+                # loop repeats until it doesn't, capped by
+                # should_halt_for_subturn_compaction (MAX_COMPACTIONS_PER_TURN).
+                # ---------------------------------------------------------
+                while (
+                    thread_id in self._subturn_compact_requested
+                    and not abort_event.is_set()
+                ):
+                    self._subturn_compact_requested.discard(thread_id)
+                    yield {"type": "compacting", "message": COMPACTING_MESSAGE}
+                    compact_result = await self._do_auto_compact(thread_id, user_id)
+                    if not (compact_result and compact_result.get("success")):
+                        logger.warning(
+                            f"[ASTREAM] Thread {thread_id}: sub-turn compaction "
+                            f"skipped/failed: "
+                            f"{compact_result.get('reason') if compact_result else 'none'}"
+                        )
+                        break
+                    self._compactions_this_turn[thread_id] = (
+                        self._compactions_this_turn.get(thread_id, 0) + 1
+                    )
+                    yield {
+                        "type": "compacted",
+                        "messages_removed": compact_result.get("messages_removed", 0),
+                        "auto_resumed": True,
+                        "summary": compact_result.get("summary"),
+                        "subturn": True,
+                    }
+                    resume_graph = self._get_async_graph_for_user(
+                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                    )
+                    async for evt in stream_processor.drive(resume_graph, {"messages": []}):
+                        yield evt
+                    graph = resume_graph
+                self._subturn_compact_requested.discard(thread_id)
+
+                # ---------------------------------------------------------
                 # Sub-turn prompt-queue drain loop.
                 # If route_after_tools observed a non-empty queue and
                 # ended the graph early, this is where we (a) report
@@ -2647,6 +2747,8 @@ class NymeriaAgent:
                     )
             self._turn_reload_count.pop(thread_id, None)
             self._pending_tool_reload.pop(thread_id, None)
+            self._compactions_this_turn.pop(thread_id, None)
+            self._subturn_compact_requested.discard(thread_id)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)

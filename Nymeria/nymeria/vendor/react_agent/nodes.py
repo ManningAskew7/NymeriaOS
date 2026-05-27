@@ -1969,6 +1969,18 @@ def route_after_tools(state: AgentState, config=None) -> str:
                 backend.mark_halt_observed(thread_id, pending)
                 return "end"
 
+            # Sub-turn auto-compaction: if the running context crossed the
+            # auto-compact trigger, halt here so astream()/chat() can compact
+            # and re-drive. This is a genuine mid-task boundary -- the agent has
+            # a pending LLM call to process these tool results, so it is never
+            # "done" here (a final no-tool-call response routes via END instead).
+            from ...core.agent import get_current_agent
+            agent = get_current_agent()
+            if agent is not None and agent.should_halt_for_subturn_compaction(
+                thread_id, state["messages"]
+            ):
+                return "end"
+
     return "agent"
 
 
