@@ -43,56 +43,32 @@ def _make_manager() -> CompactionManager:
 # _build_clear_payload
 # ---------------------------------------------------------------------------
 
-class TestBuildClearPayload:
-    def test_returns_remove_commands_and_marker(self):
-        m1 = HumanMessage(content="hello", id="m1")
-        m2 = AIMessage(content="hi", id="m2")
-        payload = CompactionManager._build_clear_payload(
-            [m1, m2], msg_count_before=5, summary="test summary", auto_resumed=False,
-        )
-        msgs = payload["messages"]
-        assert len(msgs) == 3
-        assert msgs[0].id == "m1"
-        assert msgs[1].id == "m2"
-        marker = msgs[2]
-        assert marker.additional_kwargs["summary"] == "test summary"
-        assert marker.additional_kwargs["messages_removed"] == 5
-        assert marker.additional_kwargs["auto_resumed"] is False
+class TestVerifyRetained:
+    def test_accepts_expected_tail_ending_on_tool_message(self):
+        from langchain_core.messages import ToolMessage
+        tail = [
+            HumanMessage(content="resume opener"),
+            AIMessage(content="", tool_calls=[
+                {"id": "g", "name": "memory_read", "args": {"scope": "global"}, "type": "tool_call"},
+            ]),
+            ToolMessage(content="G", tool_call_id="g", name="memory_read"),
+        ]
+        state = SimpleNamespace(values={"messages": tail})
+        assert CompactionManager._verify_retained("t1", state, len(tail)) is True
 
-    def test_auto_resumed_flag(self):
-        m = HumanMessage(content="x", id="a")
-        payload = CompactionManager._build_clear_payload(
-            [m], msg_count_before=1, summary="s", auto_resumed=True,
-        )
-        marker = payload["messages"][-1]
-        assert marker.additional_kwargs["auto_resumed"] is True
+    def test_rejects_wrong_length(self):
+        state = SimpleNamespace(values={"messages": [HumanMessage(content="a")]})
+        assert CompactionManager._verify_retained("t1", state, 3) is False
 
-    def test_marker_gets_unique_id(self):
-        m = HumanMessage(content="x", id="a")
-        p1 = CompactionManager._build_clear_payload([m], 1, "", False)
-        p2 = CompactionManager._build_clear_payload([m], 1, "", False)
-        assert p1["messages"][-1].id != p2["messages"][-1].id
-
-
-# ---------------------------------------------------------------------------
-# _verify_clear
-# ---------------------------------------------------------------------------
-
-class TestVerifyClear:
-    def test_accepts_single_message(self):
-        state = SimpleNamespace(values={"messages": [HumanMessage(content="marker")]})
-        assert CompactionManager._verify_clear("t1", state) is True
-
-    def test_rejects_zero_messages(self):
-        state = SimpleNamespace(values={"messages": []})
-        assert CompactionManager._verify_clear("t1", state) is False
-
-    def test_rejects_multiple_messages(self):
-        state = SimpleNamespace(values={"messages": [
+    def test_rejects_tail_ending_on_open_tool_calls(self):
+        msgs = [
             HumanMessage(content="a"),
-            AIMessage(content="b"),
-        ]})
-        assert CompactionManager._verify_clear("t1", state) is False
+            AIMessage(content="", tool_calls=[
+                {"id": "x", "name": "memory_read", "args": {}, "type": "tool_call"},
+            ]),
+        ]
+        state = SimpleNamespace(values={"messages": msgs})
+        assert CompactionManager._verify_retained("t1", state, len(msgs)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -223,25 +199,22 @@ class TestDeadCodeRemoval:
     def test_shared_helpers_exist_on_compaction_manager(self):
         """Verify the extracted shared helpers are present."""
         for name in (
-            "_build_clear_payload",
-            "_verify_clear",
             "_prune_old_checkpoints",
             "_summary_input",
             "_extract_summary_from_result",
+            "_run_compact_turn_and_prune",
+            "_run_compact_turn_and_prune_sync",
+            "_verify_retained",
         ):
             assert hasattr(CompactionManager, name), f"Missing helper: {name}"
 
-    def test_sync_async_clear_and_reset_both_use_build_clear_payload(self):
-        """Both clear_and_reset methods must delegate to _build_clear_payload."""
-        src = inspect.getsource(CompactionManager)
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in ("_clear_and_reset", "_clear_and_reset_sync"):
-                    body_src = ast.get_source_segment(src, node)
-                    assert "_build_clear_payload" in body_src, (
-                        f"{node.name} must call _build_clear_payload"
-                    )
+    def test_retained_turn_clear_helpers_are_gone(self):
+        """The old wipe-and-marker helpers were replaced by the retained tail."""
+        for name in ("_build_clear_payload", "_verify_clear", "_clear_and_reset",
+                     "_clear_and_reset_sync", "get_pending_summary"):
+            assert not hasattr(CompactionManager, name), (
+                f"{name} should have been removed by the retained-turn redesign"
+            )
 
     def test_sync_async_generate_summary_both_use_summary_input(self):
         """Both summary methods must delegate to _summary_input."""

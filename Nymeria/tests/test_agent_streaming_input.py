@@ -14,22 +14,13 @@ from nymeria.core.attachment_sandbox import AttachmentRecord
 
 def _fake_agent(
     *,
-    pending_summary: str | None = None,
-    pending_notepad: str | None = None,
     provider: str = "openai",
     model: str = "gpt-4o",
 ) -> Any:
     """Build a minimal agent stub exposing only the surface the function reads."""
-    compaction = SimpleNamespace(
-        format_user_resume=lambda msg, summ: f"[RESUME:{summ}]\n{msg}",
-        pop_pending_notepad=lambda _tid: pending_notepad,
-    )
     settings = SimpleNamespace(llm_provider=provider, llm_model=model)
     llm_cfg = SimpleNamespace(provider=None, model=None)
     return SimpleNamespace(
-        get_pending_summary=lambda _tid: pending_summary,
-        _compaction=compaction,
-        _format_notepad_section=lambda np: f"\n\n[NOTEPAD:{np}]",
         _get_llm_config_for_thread=lambda _tid: llm_cfg,
         settings=settings,
     )
@@ -111,8 +102,10 @@ def test_no_attachments_self_invoke_marks_internal():
     }
 
 
-def test_pending_summary_prepends_resume():
-    agent = _fake_agent(pending_summary="prior context")
+def test_no_compaction_resume_attachment():
+    """prepare_astream_input no longer glues a pending summary/notepad onto the
+    user message; carried context lives in the retained resume-tail in state."""
+    agent = _fake_agent()
     state, summary, _error = prepare_astream_input(
         cast(Any, agent),
         message_with_context="continuing",
@@ -122,26 +115,10 @@ def test_pending_summary_prepends_resume():
         force_unsupported_attachments=False,
         is_self_invoke=False,
     )
-    assert summary == "prior context"
+    assert summary is None
     assert state is not None
     [msg] = state["messages"]
-    assert msg.content == "[RESUME:prior context]\ncontinuing"
-
-
-def test_pending_notepad_extends_message():
-    agent = _fake_agent(pending_notepad="todo: ship")
-    state, _summary, _error = prepare_astream_input(
-        cast(Any, agent),
-        message_with_context="check",
-        thread_id="t1",
-        image_attachments=None,
-        sandbox_records=None,
-        force_unsupported_attachments=False,
-        is_self_invoke=False,
-    )
-    assert state is not None
-    [msg] = state["messages"]
-    assert msg.content == "check\n\n[NOTEPAD:todo: ship]"
+    assert msg.content == "continuing"
 
 
 def test_sandbox_only_preserves_text_content(monkeypatch: pytest.MonkeyPatch):

@@ -585,7 +585,7 @@ def _handle_human_history_message(
     ctx: _HistoryFormatContext,
     msg: HumanMessage,
 ) -> None:
-    if msg.additional_kwargs.get("internal_type") == "compaction_marker":
+    if msg.additional_kwargs.get("internal_type") in ("compaction_marker", "memory_seed_marker"):
         ctx.flush_current_turn()
 
         marker_kwargs = msg.additional_kwargs or {}
@@ -781,6 +781,13 @@ def _filter_internal_messages(
                 if internal_type == "compaction_marker":
                     skip_until_next_human = False
                     filtered_messages.append(msg)
+                    continue
+                if internal_type == "memory_seed_marker":
+                    # Keep the resume opener (rendered as a compaction notice),
+                    # but suppress the read-back AI/Tool messages that follow it
+                    # from the user-facing view. They remain in LLM context.
+                    filtered_messages.append(msg)
+                    skip_until_next_human = True
                     continue
                 if internal_type == "auto_resume":
                     skip_until_next_human = False

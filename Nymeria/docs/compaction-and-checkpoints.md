@@ -29,33 +29,44 @@ Per-thread `ThreadLLMConfig` may override `compact_threshold_mode`, `compact_thr
 
 Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
 
+Compaction is a **retained-turn rebuild** (`_run_compact_turn_and_prune` / `_run_compact_turn_and_prune_sync`): it runs the real compaction turn, then discards that turn's messages and rebuilds the thread to a small resume tail. The agent's memory writes (side effects on the profile/notepad files) and its summary text are what survive; the read-back is injected deterministically by the framework, so it never depends on the agent choosing to call `memory_read`.
+
 ```
 1. compact_now()  (or _do_auto_compact() / _do_compact_sync())
-2.   _pre_trim_memory_flush()      -  full pre-compact message list is indexed into
+2.   _flush_memories_before_trim()  -  full pre-compact message list is indexed into
                                     the per-user RAG store (sqlite-vec + FTS5 at
                                     data/users/{uid}/memory.db). Defensive backup
                                     of the per-turn indexer; failures are logged
                                     and never block compaction.
-3.   _generate_summary()           -  LLM produces a structured summary of the
-                                    untouched conversation, including 3-5 quoted
-                                    RAG search queries for the resuming agent.
-                                    Summary generation is capped at 15 minutes;
-                                    timeout returns a failed compaction result
-                                    without clearing messages.
-4.   _clear_and_reset()            -  RemoveMessage commands wipe all messages from state,
-                                    then one HumanMessage with internal_type='compaction_marker'
-                                    is written as a single-message placeholder with
-                                    summary/messages_removed/auto_resumed/timestamp metadata
-5.   prune_checkpoints_before()    -  raw SQL DELETEs all pre-compact rows
-6.   Manual/sync/pre-flight compact: _pending_summaries[thread_id] = summary
-     Post-turn async auto-compact: stream compacted, then stream the resume turn immediately
-7.   Restart recovery: if _pending_summaries is lost (process restart between
-     steps 6 and the next user message), get_pending_summary() reads the
-     compaction_marker from the checkpoint and recovers the summary from
-     additional_kwargs["summary"]. Notepad is re-read from disk.
+3.   _generate_summary()           -  runs the real compaction turn: the agent
+                                    persists durable facts -> global memory and
+                                    working state (+ key file paths) -> the thread
+                                    notepad, then emits the structured summary.
+                                    Capped at 15 minutes; a timeout or an empty
+                                    summary aborts WITHOUT pruning (the injected
+                                    prompt + partial turn delta is removed).
+4.   build_resume_compaction_tail() -  reads the POST-edit memory and builds the
+                                    retained tail (agent_memory_seed.py):
+                                      [0] HumanMessage internal_type='memory_seed_marker'
+                                          -> "[Session resume] ... <summary> ..."
+                                             (summary inline; also stamped into
+                                             additional_kwargs for the UI notice)
+                                      [1] AIMessage tool_calls=[memory_read global, thread]
+                                      [2] ToolMessage  (authentic global memory)
+                                      [3] ToolMessage  (authentic thread notepad)
+                                    No trailing assistant message.
+5.   aupdate_state(RemoveMessage(all) + tail)  -  the whole pre-rebuild state is
+                                    removed and replaced by the 4-message tail.
+6.   prune_checkpoints_before()    -  raw SQL DELETEs all pre-compact rows.
+7.   reset_after_compact(retained_tail_tokens)  -  token tracking reseeded to the
+                                    retained tail size, not 0.
 ```
 
-The compaction_marker exists because LangGraph's router accesses `messages[-1]`  -  an empty list would `IndexError`. It is also projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary. It also serves as the durable recovery source for pending summaries lost to process restart (see step 7).
+There is no pending-summary stash and no restart-recovery step: the carried context is the retained tail itself, persisted in the checkpoint, so it survives process restarts natively.
+
+**Resume ("hit play"):** because the tail ends on the `memory_read` ToolMessages (no trailing assistant message), re-invoking the graph with `{"messages": []}` re-enters the agent node and continues the task from the reloaded memory. The resume opener (a HumanMessage) is the turn boundary, so `max_iterations` resets cleanly across the seam. This resume is used by the sub-turn trigger and overflow recovery (mid-task). It is **not** used after a normal post-turn auto-compact: the turn already ended (the agent produced a final response = done), so the next user/autonomous turn simply continues from the retained tail. Manual `/compact` likewise does not re-drive.
+
+The `memory_seed_marker` opener is projected by `/history` as a visible `system` message with `kind="compaction_notice"` so desktop/mobile can show "Context compacted" with a collapsible summary. (Legacy threads compacted before this redesign may still carry a single `compaction_marker` HumanMessage; the history projection handles both.)
 
 The pre-compact RAG flush (step 2) means the conversation remains queryable via `rag_search` even after the in-context messages are cleared. See `tools.md` → `rag_search` for the full list of indexing hooks.
 
@@ -63,11 +74,10 @@ The summary prompt requires these exact sections:
 
 - `## Active Goal`
 - `## Progress`
-- `## Pending Work`
+- `## Pending Work` (records what the agent was mid-task on + the exact next step)
 - `## Key Context`
-- `## Files & Resources`
+- `## Files & Resources` (exact paths to re-read after compaction)
 - `## RAG Search Queries`
-- `## Persistent Memory`
 
 The `RAG Search Queries` section should contain 3-5 quoted search strings that target important decisions, findings, file paths, and task state from the compacted thread. These are hints for the next agent turn to retrieve the full preserved conversation from RAG when the summary alone is not enough.
 
@@ -85,11 +95,11 @@ If a provider rejects a turn because the request is already over the context win
 6. If no suitable checkpoint exists, RemoveMessage trims the oldest prefix until the state is below a conservative target, then compacts.
 ```
 
-For async `/chat` streaming, the client receives `compacting` after recovery reaches the compaction step, then `compacted` on success. For sync `chat()` callers, recovery stores the compacted summary as pending and returns a short instruction to send the message again; the next prompt resumes from the compacted state.
+For async `/chat` streaming, the client receives `compacting` after recovery reaches the compaction step, then `compacted` on success. After overflow recovery the thread holds the retained resume tail; the next user message continues from it.
 
 ### Checkpoint pruning and deletion
 
-LangGraph has no public checkpoint-delete API, so `core/checkpoint_cleanup.py` centralizes raw SQL cleanup behind a small `CheckpointCleaner` interface. Compaction calls `prune_checkpoints_before()` from that module, and thread deletion calls `delete_thread_checkpoints()` so SQLite and Postgres deletion logic lives in one backend-specific implementation. Pruning runs *inside* `_clear_and_reset`, *after* `verify_state` confirms exactly 1 message remains, so a prune failure never blocks the compaction itself.
+LangGraph has no public checkpoint-delete API, so `core/checkpoint_cleanup.py` centralizes raw SQL cleanup behind a small `CheckpointCleaner` interface. Compaction calls `prune_checkpoints_before()` from that module, and thread deletion calls `delete_thread_checkpoints()` so SQLite and Postgres deletion logic lives in one backend-specific implementation. Pruning runs *inside* `_run_compact_turn_and_prune`, *after* `_verify_retained` confirms the retained tail is present and ends cleanly, so a prune failure never blocks the compaction itself.
 
 Three deletes, each try/except-wrapped:
 
@@ -138,11 +148,13 @@ Frontend calls `/history` on: thread switch, sync-poll every 5 s while a thread 
 | `internal_type`       | Origin                                 | Display behavior (default)                                                                 |
 | --------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `autonomous_wakeup`   | Ticker / watchdog / trigger wake-up    | Hide the prompt, **show the AI response** (user wants to see task output). `show_autonomous_prompts=True` reveals the prompt. |
-| `compact_prompt`      | Pre-flight compact ("summarise this…") | Hide prompt **and** AI response (internal housekeeping).                                   |
-| `auto_resume`         | Auto-compact follow-up prompt          | Hide the prompt, **show the resumed assistant output**.                                     |
-| `compaction_marker`   | Single placeholder after `_clear_and_reset` | Show as a `system` `compaction_notice` with summary metadata, **don't suppress anything after**. |
+| `compact_prompt`      | The compaction turn's injected prompt  | Hide prompt **and** AI response (internal housekeeping; also pruned from state after the rebuild). |
+| `memory_init`         | Fresh-thread memory seed opener        | Hide the opener **and** the following `memory_read` AI/Tool read-back (LLM still sees it from state). |
+| `memory_seed_marker`  | Post-compaction resume opener          | Show as a `system` `compaction_notice` with summary metadata; **suppress** the following `memory_read` read-back from the UI (still in LLM context). |
+| `compaction_marker`   | Legacy single placeholder (pre-redesign threads) | Show as a `system` `compaction_notice` with summary metadata. |
+| `auto_resume`         | Legacy auto-compact follow-up prompt   | Hide the prompt, **show the resumed assistant output**.                                     |
 
-**The filter uses a `skip_until_next_human` flag** that stays active until a non-internal HumanMessage arrives. The `autonomous_wakeup` hide-path now explicitly resets this flag  -  otherwise a preceding `compact_prompt` / `auto_resume` / (historically) `compaction_marker` would swallow the wakeup's response.
+**The filter uses a `skip_until_next_human` flag** that stays active until a non-internal HumanMessage arrives. `memory_init` and `memory_seed_marker` use it to suppress their read-back exchange from the UI; the `autonomous_wakeup` hide-path explicitly resets it so a preceding internal prompt can't swallow the wakeup's response.
 
 ---
 
@@ -369,10 +381,10 @@ On failure (state read or write error): `{"success": false, "reason": "..."}`.
 
 | Path | Purpose |
 |------|---------|
-| `core/agent_compaction.py` | `CompactionManager`  -  owns compaction policy, execution, and pending state |
+| `core/agent_compaction.py` | `CompactionManager`  -  owns compaction policy and execution (`_run_compact_turn_and_prune` retained-turn rebuild) |
+| `core/agent_memory_seed.py` | `build_resume_compaction_tail` / `build_memory_exchange`  -  the resume opener + authentic memory read-back (shared with the fresh-thread seed) |
 | `core/agent_prune.py` | `PruneManager`  -  owns `/prune` execution (deterministic tool-result compression) |
 | `core/checkpoint_cleanup.py` | `CheckpointCleaner`, `prune_checkpoints_before`, and `delete_thread_checkpoints`  -  raw SQL cleanup, per-backend (SQLite + Postgres) |
-| `core/agent_compaction.py` | `create_compaction_marker`  -  durable history marker |
 | `core/agent.py` | `NymeriaAgent` delegates to `self._compaction` (CompactionManager) and `self._prune` (PruneManager) |
 | `core/agent.py` | `_build_message_timestamp_map`  -  checkpoint walker for timestamps |
 | `core/agent.py` | display filter in `get_conversation_history`  -  internal_type branches |
