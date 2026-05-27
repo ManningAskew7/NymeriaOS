@@ -218,20 +218,17 @@ def test_manual_compact_start_callback_runs_when_compaction_starts():
     manager = CompactionManager(agent)
     started: list[str] = []
 
-    async def fake_generate_summary(thread_id: str, user_id: str) -> str:
-        return "summary"
+    async def fake_run_compact_turn_and_prune(thread_id, user_id, *, auto_resumed):
+        return {
+            "success": True,
+            "messages_before": 3,
+            "messages_after": 4,
+            "messages_removed": 3,
+            "auto_resumed": auto_resumed,
+            "summary": "summary",
+        }
 
-    async def fake_clear_and_reset(
-        thread_id: str,
-        msg_count_before: int,
-        summary: str = "",
-        auto_resumed: bool = False,
-    ) -> bool:
-        return True
-
-    manager._generate_summary = fake_generate_summary  # type: ignore[method-assign]
-    manager._clear_and_reset = fake_clear_and_reset  # type: ignore[method-assign]
-    manager._read_thread_notepad = lambda _thread_id: ""  # type: ignore[method-assign]
+    manager._run_compact_turn_and_prune = fake_run_compact_turn_and_prune  # type: ignore[method-assign]
 
     result = asyncio.run(
         manager.compact_now(

@@ -36,6 +36,17 @@ MEMORY_SEED_MARKER_TYPE = "memory_seed_marker"
 MEMORY_INIT_OPENER = "[Session start] Loading your persistent memory for this conversation."
 MEMORY_INIT_TRAILING = "Memory loaded."
 
+# Resume opener for the post-compaction retained tail. Carries the summary inline
+# and frames the (synthetic) memory reload, then the task continuation. The tail
+# deliberately has NO trailing assistant message so re-invoking the graph with
+# {"messages": []} resumes the agent from the read-back tool results ("hit play").
+MEMORY_RESUME_OPENER_TEMPLATE = (
+    "[Session resume] You reached your context window threshold, so the earlier "
+    "conversation was summarized:\n\n{summary}\n\nYour persistent memory is "
+    "reloaded below. Continue where you left off if there is pending work, and "
+    "re-read any key files referenced in the summary as needed."
+)
+
 # Returned when a read raises so seeding/compaction never aborts a turn.
 _MEMORY_READ_FALLBACK = "[empty]"
 
@@ -144,4 +155,27 @@ def build_init_seed_exchange(user_id: str, thread_id: str) -> List[BaseMessage]:
         global_text=read_global_memory(user_id, thread_id),
         thread_text=read_thread_memory(user_id, thread_id),
         trailing_text=MEMORY_INIT_TRAILING,
+    )
+
+
+def build_resume_compaction_tail(
+    *, user_id: str, thread_id: str, summary: str
+) -> List[BaseMessage]:
+    """Build the post-compaction retained tail (resume framing, no trailer).
+
+    Shape: ``[resume opener (Human, internal_type=memory_seed_marker), AIMessage
+    with memory_read global+thread tool_calls, ToolMessage global, ToolMessage
+    thread]``. The memory content is read fresh (post-edit) so it reflects any
+    memory the agent wrote during its compaction turn. There is intentionally no
+    trailing assistant message: re-invoking the graph with ``{"messages": []}``
+    resumes the agent from these tool results. The caller is responsible for
+    stamping the opener's ``additional_kwargs`` (summary/messages_removed/
+    auto_resumed/timestamp) for the frontend compaction notice.
+    """
+    return build_memory_exchange(
+        opener_internal_type=MEMORY_SEED_MARKER_TYPE,
+        opener_text=MEMORY_RESUME_OPENER_TEMPLATE.format(summary=summary),
+        global_text=read_global_memory(user_id, thread_id),
+        thread_text=read_thread_memory(user_id, thread_id),
+        trailing_text=None,
     )

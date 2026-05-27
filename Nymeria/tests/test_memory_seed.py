@@ -12,6 +12,7 @@ from nymeria.core.agent_memory_seed import (
     MEMORY_SEED_MARKER_TYPE,
     build_init_seed_exchange,
     build_memory_exchange,
+    build_resume_compaction_tail,
     read_global_memory,
     read_thread_memory,
 )
@@ -127,3 +128,30 @@ def test_build_init_seed_exchange_uses_real_content(monkeypatch):
     assert msgs[2].content == "G-real"
     assert msgs[3].content == "T-real"
     assert msgs[-1].content == MEMORY_INIT_TRAILING
+
+
+def test_build_resume_compaction_tail_shape(monkeypatch):
+    monkeypatch.setattr(agent_memory_seed, "read_global_memory", lambda u, t: "G-now")
+    monkeypatch.setattr(agent_memory_seed, "read_thread_memory", lambda u, t: "T-now")
+
+    tail = build_resume_compaction_tail(
+        user_id="u1", thread_id="t1", summary="## Active Goal\nship it"
+    )
+
+    # No trailing assistant message: ends on the thread ToolMessage so a
+    # {"messages": []} re-drive resumes the agent from the read-back.
+    assert len(tail) == 4
+    assert isinstance(tail[-1], ToolMessage)
+
+    opener = tail[0]
+    assert isinstance(opener, HumanMessage)
+    assert opener.additional_kwargs["internal_type"] == MEMORY_SEED_MARKER_TYPE
+    assert "[Session resume]" in opener.content
+    assert "## Active Goal\nship it" in opener.content  # summary embedded inline
+
+    # authentic post-edit memory content carried in the read-back
+    assert tail[2].content == "G-now"
+    assert tail[3].content == "T-now"
+    # matched tool-call ids (no dangling)
+    call_ids = {tc["id"] for tc in tail[1].tool_calls}
+    assert call_ids == {tail[2].tool_call_id, tail[3].tool_call_id}

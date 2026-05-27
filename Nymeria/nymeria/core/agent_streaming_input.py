@@ -2,9 +2,8 @@
 
 Extracted from ``NymeriaAgent._prepare_astream_input``. The function
 takes the agent and the per-turn parameters; reads
-``agent.get_pending_summary``, ``agent._compaction``,
-``agent._format_notepad_section``, ``agent._get_llm_config_for_thread``,
-and ``agent.settings`` -- all stable public/facade surface on the agent.
+``agent._get_llm_config_for_thread`` and ``agent.settings`` -- all stable
+public/facade surface on the agent.
 
 As of Phase B (multi-attachment + sandbox), this function only handles
 *image* attachments inline. Non-image attachments are sandboxed upfront
@@ -46,20 +45,10 @@ def prepare_astream_input(
     """
     from .agent import _create_human_message  # Lazy: avoid circular import at module load.
 
+    # Compaction no longer stashes a pending summary/notepad to glue onto the
+    # next user message: the carried context now lives in the thread as a
+    # retained resume-tail (see CompactionManager._run_compact_turn_and_prune).
     context_summary_for_ui: Optional[str] = None
-    pending_summary = agent.get_pending_summary(thread_id)
-    if pending_summary:
-        message_with_context = agent._compaction.format_user_resume(
-            message_with_context,
-            pending_summary,
-        )
-        context_summary_for_ui = pending_summary
-        logger.info(f"Thread {thread_id}: Attached pending summary to user message")
-
-    pending_notepad = agent._compaction.pop_pending_notepad(thread_id)
-    if pending_notepad:
-        message_with_context += agent._format_notepad_section(pending_notepad)
-        logger.info(f"Thread {thread_id}: Attached pending notepad to user message (astream)")
 
     image_atts = list(image_attachments or [])
     records = list(sandbox_records or [])

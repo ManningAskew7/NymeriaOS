@@ -888,11 +888,6 @@ class NymeriaAgent:
             on_started=on_started,
         )
 
-    @staticmethod
-    def _format_notepad_section(notepad: str) -> str:
-        """Format notepad content for injection into a message."""
-        return CompactionManager.format_notepad_section(notepad)
-
     async def _do_auto_compact(
         self,
         thread_id: str,
@@ -936,14 +931,6 @@ class NymeriaAgent:
     ) -> Dict[str, Any]:
         """Deterministically compress tool returns (/prune command)."""
         return await self._prune.prune_now(thread_id, user_id)
-
-    def get_pending_summary(self, thread_id: str) -> Optional[str]:
-        """Get and clear pending summary for a thread."""
-        return self._compaction.get_pending_summary(thread_id)
-
-    def has_pending_summary(self, thread_id: str) -> bool:
-        """Check if thread has a pending summary."""
-        return self._compaction.has_pending_summary(thread_id)
 
     def _rehydrate_token_usage(self, thread_id: str) -> None:
         """Estimate token usage from checkpoint messages when tracker has no data."""
@@ -2515,23 +2502,19 @@ class NymeriaAgent:
                             if not start_task.done():
                                 start_task.cancel()
                     if compact_result and compact_result.get("success"):
+                        # Post-turn compaction fires after the turn ENDED (the
+                        # agent produced a final, no-tool-call response = done),
+                        # so we do NOT re-drive here: forcing a finished agent to
+                        # continue would be wrong. The retained resume-tail is in
+                        # state; the next user/autonomous turn continues from it.
+                        # Mid-task continuation is handled by the sub-turn trigger
+                        # (Phase 2b), which halts before the agent is ever "done".
                         yield {
                             "type": "compacted",
                             "messages_removed": compact_result.get("messages_removed", 0),
                             "auto_resumed": compact_result.get("auto_resumed", False),
                             "summary": compact_result.get("summary"),
                         }
-
-                        resume_state = compact_result.get("resume_state")
-                        if resume_state:
-                            resume_graph = self._get_async_graph_for_user(
-                                user_id,
-                                is_autonomous=_is_self_invoke,
-                                thread_id=thread_id,
-                            )
-                            async for evt in stream_processor.drive(resume_graph, resume_state):
-                                yield evt
-                            graph = resume_graph
                 elif self.settings.context_management == "sliding_window":
                     # Legacy sliding window trimming
                     self.trim_context_window(thread_id, user_id=user_id)

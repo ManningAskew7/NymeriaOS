@@ -36,12 +36,18 @@ CompactionStartCallback = Callable[[], Any]
 
 COMPACT_PROMPT = """**System Request: Context Compaction**
 
-The conversation is getting long and needs to be summarized. After your
-response, older messages will be removed and only your summary will remain.
-This summary will be the ONLY context for continuing the conversation.
+The conversation is getting long and is being summarized. The older messages
+will be replaced by your summary plus your reloaded persistent memory, so write
+the summary so that you (or a fresh session) can continue seamlessly.
 
-You have full tool access. Use memory_add, file writes, or any tool needed
-to persist important information before the conversation is wiped.
+Before summarizing, persist anything important so it survives the trim:
+- Durable facts (user identity, lasting preferences, project names, technical
+  constraints) -> memory_add(scope="global", key=..., content=...)
+- Working/session state for THIS thread (current task, progress, intermediate
+  results, file paths) -> memory_add(scope="thread", content=...)
+
+You do NOT need to call memory_read here; your memory is reloaded automatically
+right after this turn.
 
 **Structure your summary using EXACTLY these sections:**
 
@@ -57,8 +63,9 @@ Concrete outcomes so far:
 - Errors encountered and how they were resolved
 
 ## Pending Work
-What remains? What was the next step when compaction triggered?
-- Immediate next action
+What remains, and what you were in the MIDDLE of when compaction triggered.
+Be explicit so you can resume without re-deriving it:
+- The exact next concrete action
 - Outstanding questions or decisions
 - Blockers or dependencies
 
@@ -70,8 +77,9 @@ Facts and state that must survive:
 - Tracked variables or temporary state
 
 ## Files & Resources
-Specific paths, URLs, or resources for continuing work:
-- Files being actively edited
+Specific paths, URLs, or resources for continuing work, so you can re-read them
+after compaction:
+- Files being actively edited (exact paths)
 - Config files referenced
 - Artifacts created during this session
 - External resources consulted
@@ -81,38 +89,11 @@ Specific paths, URLs, or resources for continuing work:
 memory store. Target key concepts, decisions, and findings from this thread.
 Format as a bulleted list of quoted strings.
 
-## Persistent Memory
-Use memory_add(scope="global", key=..., content=...) for facts that
-should persist across ALL conversations (user identity, preferences,
-project names, technical constraints).
-
-Use memory_add(scope="thread", content=...) for thread-specific context
-(current task state, intermediate results, file paths).
-
 **Rules:**
 - Be specific — exact file paths, variable names, error messages
+- If you were mid-task, record precisely where you stopped and the next step
 - Omit greetings, failed-then-corrected attempts, verbose tool outputs
-- Skip anything already in memory or notepad
 - Aim for under 1500 words total"""
-
-AUTO_RESUME_MESSAGE = """[Auto-compact: Context limit reached, conversation summarized]
-
----
-*Context Summary (auto-compact):*
-
-{summary}
-
----
-
-Continue where you left off. If you were in the middle of a task, proceed with it."""
-
-USER_RESUME_PREFIX = """---
-*This conversation is resuming from a previous session that exceeded context limits. Summary of prior context:*
-
-{summary}
-
----"""
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,29 +102,6 @@ USER_RESUME_PREFIX = """---
 def estimate_tokens(text: str) -> int:
     """Rough estimate of token count (~4 chars per token)."""
     return len(text) // 4
-
-
-def create_compaction_marker(
-    *,
-    summary: str,
-    messages_removed: int,
-    auto_resumed: bool,
-) -> HumanMessage:
-    """Create the durable marker shown in user-facing history after compaction."""
-    from .agent import _create_human_message
-
-    marker = _create_human_message(
-        "Context compacted",
-        internal=True,
-        internal_type="compaction_marker",
-    )
-    marker.additional_kwargs.update({
-        "summary": summary,
-        "messages_removed": messages_removed,
-        "auto_resumed": auto_resumed,
-        "timestamp": utc_now().isoformat(),
-    })
-    return marker
 
 
 async def _notify_compaction_started(
@@ -174,15 +132,13 @@ def _notify_compaction_started_sync(
 # ---------------------------------------------------------------------------
 
 class CompactionManager:
-    """Owns compaction policy, execution, and pending-summary state.
+    """Owns compaction policy and execution.
 
     Instantiated by NymeriaAgent and accessed as ``agent._compaction``.
     """
 
     def __init__(self, agent: "NymeriaAgent") -> None:
         self._agent = agent
-        self._pending_summaries: Dict[str, str] = {}
-        self._pending_notepads: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Formatting helpers (previously on ConversationCompactor)
@@ -210,89 +166,6 @@ class CompactionManager:
                     parts.append(block)
             return "\n".join(parts)
         return str(content)
-
-    @staticmethod
-    def format_auto_resume(summary: str) -> str:
-        return AUTO_RESUME_MESSAGE.format(summary=summary)
-
-    @staticmethod
-    def format_user_resume(user_message: str, summary: str) -> str:
-        return f"{user_message}\n\n{USER_RESUME_PREFIX.format(summary=summary)}"
-
-    @staticmethod
-    def format_notepad_section(notepad: str) -> str:
-        return f"\n\n---\n*Thread Notepad (persistent notes):*\n\n{notepad}\n\n---"
-
-    # ------------------------------------------------------------------
-    # Pending summary state
-    # ------------------------------------------------------------------
-
-    def get_pending_summary(self, thread_id: str) -> Optional[str]:
-        summary = self._pending_summaries.pop(thread_id, None)
-        if summary is not None:
-            return summary
-        return self._recover_pending_summary_from_checkpoint(thread_id)
-
-    def has_pending_summary(self, thread_id: str) -> bool:
-        return thread_id in self._pending_summaries
-
-    def pop_pending_notepad(self, thread_id: str) -> Optional[str]:
-        return self._pending_notepads.pop(thread_id, None)
-
-    def _recover_pending_summary_from_checkpoint(
-        self, thread_id: str
-    ) -> Optional[str]:
-        """Recover a lost pending summary from the compaction marker in the checkpoint.
-
-        After compaction, the checkpoint contains a single compaction_marker
-        HumanMessage with the summary stored in additional_kwargs["summary"].
-        If the process restarts before the next user message consumes the
-        in-memory _pending_summaries entry, this method recovers it by reading
-        the checkpoint directly.
-
-        Only recovers when auto_resumed=False (manual /compact or sync
-        pre-flight), since the async post-turn path (auto_resumed=True)
-        embeds the summary inline and never uses _pending_summaries.
-        """
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = self._agent._default_graph.get_state(config)
-            messages = state.values.get("messages", [])
-
-            if len(messages) != 1:
-                return None
-
-            marker = messages[0]
-            if not isinstance(marker, HumanMessage):
-                return None
-            kwargs = getattr(marker, "additional_kwargs", {}) or {}
-            if kwargs.get("internal_type") != "compaction_marker":
-                return None
-            if kwargs.get("auto_resumed", False):
-                return None
-
-            summary = kwargs.get("summary")
-            if not summary:
-                return None
-
-            logger.info(
-                "Thread %s: Recovered pending summary from compaction marker "
-                "(likely lost to process restart)",
-                thread_id,
-            )
-
-            notepad = self._read_thread_notepad(thread_id)
-            if notepad:
-                self._pending_notepads[thread_id] = notepad
-
-            return summary
-        except Exception:
-            logger.debug(
-                "Thread %s: Could not recover pending summary from checkpoint",
-                thread_id,
-                exc_info=True,
-            )
-            return None
 
     # ------------------------------------------------------------------
     # Threshold / policy
@@ -441,35 +314,14 @@ class CompactionManager:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        cleared = await self._clear_and_reset(
-            thread_id,
-            msg_count_before,
-            summary=summary,
-            auto_resumed=False,
+        # Manual /compact: build the retained tail but do NOT auto-resume; the
+        # user's next message continues naturally after it.
+        result = await self._run_compact_turn_and_prune(
+            thread_id, user_id, auto_resumed=False,
         )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        self._pending_summaries[thread_id] = summary
-
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            self._pending_notepads[thread_id] = notepad
-
-        logger.info(f"Thread {thread_id}: Manual compact complete, summary pending")
-
-        return {
-            "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": 1,
-            "messages_removed": msg_count_before,
-            "summary_pending": True,
-            "summary": summary,
-        }
+        if result.get("success"):
+            logger.info(f"Thread {thread_id}: Manual compact complete")
+        return result
 
     def _summary_input(self) -> dict:
         """Build the graph input state for summary generation."""
@@ -522,35 +374,6 @@ class CompactionManager:
             return None
 
     @staticmethod
-    def _build_clear_payload(
-        messages: List[Any],
-        msg_count_before: int,
-        summary: str,
-        auto_resumed: bool,
-    ) -> Dict[str, Any]:
-        """Build the RemoveMessage + compaction marker payload for update_state."""
-        remove_commands = [RemoveMessage(id=msg.id) for msg in messages]
-        marker = create_compaction_marker(
-            summary=summary,
-            messages_removed=msg_count_before,
-            auto_resumed=auto_resumed,
-        )
-        marker.id = str(_uuid.uuid4())
-        return {"messages": remove_commands + [marker]}
-
-    @staticmethod
-    def _verify_clear(thread_id: str, verify_state: Any) -> bool:
-        """Check that only the compaction marker remains after clearing."""
-        remaining = verify_state.values.get("messages", [])
-        if len(remaining) != 1:
-            logger.error(
-                f"Thread {thread_id}: Clear verification failed — "
-                f"{len(remaining)} messages remain (expected 1 marker)"
-            )
-            return False
-        return True
-
-    @staticmethod
     def _prune_old_checkpoints(
         thread_id: str,
         verify_state: Any,
@@ -569,65 +392,6 @@ class CompactionManager:
             f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
         )
 
-    async def _clear_and_reset(
-        self,
-        thread_id: str,
-        msg_count_before: int,
-        summary: str = "",
-        auto_resumed: bool = False,
-    ) -> bool:
-        """Clear all messages from a thread and reset token tracking.
-
-        Uses LangGraph's RemoveMessage + aupdate_state() to properly clear
-        messages through the state reducer.
-        """
-        agent = self._agent
-        config = {"configurable": {"thread_id": thread_id}}
-
-        try:
-            graph = agent._default_async_graph
-            state = await graph.aget_state(config)
-            messages = state.values.get("messages", [])
-
-            if not messages:
-                logger.info(f"Thread {thread_id}: No messages to clear")
-                return True
-
-            payload = self._build_clear_payload(
-                messages, msg_count_before, summary, auto_resumed,
-            )
-            await graph.aupdate_state(config, payload)
-
-            verify_state = await graph.aget_state(config)
-            if not self._verify_clear(thread_id, verify_state):
-                return False
-
-            logger.info(
-                f"Thread {thread_id}: Cleared {len(messages)} messages via "
-                f"RemoveMessage (1 compaction marker remains)"
-            )
-
-            try:
-                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
-                if post_cp_id:
-                    cp_tuple = await graph.checkpointer.aget_tuple({
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_id": post_cp_id,
-                        }
-                    })
-                    self._prune_old_checkpoints(thread_id, verify_state, cp_tuple)
-            except Exception as e:
-                logger.warning(f"Thread {thread_id}: Pruning call failed: {e}")
-
-        except Exception as e:
-            logger.error(f"Thread {thread_id}: Failed to clear messages: {e}", exc_info=True)
-            return False
-
-        agent._token_tracker.reset_after_compact(thread_id, 0)
-        logger.info(f"Thread {thread_id}: Clear and reset complete")
-        return True
-
     async def _do_auto_compact(
         self,
         thread_id: str,
@@ -635,15 +399,11 @@ class CompactionManager:
         *,
         on_started: Optional[CompactionStartCallback] = None,
     ) -> Dict[str, Any]:
-        """Prepare auto-compaction (astream() streams the resume afterward).
+        """Post-turn auto-compaction: build the retained tail.
 
-        1. Flush full messages to RAG
-        2. Generate summary
-        3. Clear all messages
-        4. Build an internal resume prompt with summary
+        The astream driver re-drives the graph with {"messages": []} on success
+        so the agent continues from the read-back tool results.
         """
-        from .agent import _create_human_message
-
         agent = self._agent
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
@@ -666,42 +426,12 @@ class CompactionManager:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        summary = await self._generate_summary(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        cleared = await self._clear_and_reset(
-            thread_id,
-            msg_count_before,
-            summary=summary,
-            auto_resumed=True,
+        result = await self._run_compact_turn_and_prune(
+            thread_id, user_id, auto_resumed=True,
         )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        resume_prompt = self.format_auto_resume(summary)
-
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            resume_prompt += self.format_notepad_section(notepad)
-
-        input_state = {"messages": [_create_human_message(
-            resume_prompt,
-            internal=True,
-            internal_type="auto_resume",
-        )]}
-
-        logger.info(f"Thread {thread_id}: Auto-compact prepared, resume pending")
-
-        return {
-            "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": 1,
-            "messages_removed": msg_count_before,
-            "auto_resumed": True,
-            "summary": summary,
-            "resume_state": input_state,
-        }
+        if result.get("success"):
+            logger.info(f"Thread {thread_id}: Auto-compact complete")
+        return result
 
     # ------------------------------------------------------------------
     # Sync compaction (for stream() / chat() / triggers / ticker / CLI)
@@ -716,9 +446,9 @@ class CompactionManager:
     ) -> Optional[Dict[str, Any]]:
         """Pre-flight auto-compact for the sync stream()/chat() path.
 
-        Mirrors check_and_compact() but uses sync graph calls.
-        If compaction triggers, summary is stored as pending and will be
-        picked up by the existing get_pending_summary() check.
+        Mirrors check_and_compact() but uses sync graph calls. On success the
+        thread is left with the retained resume-tail; the user's next message
+        continues from it.
         """
         agent = self._agent
         if agent.settings.context_management != "auto_compact":
@@ -767,32 +497,12 @@ class CompactionManager:
         except Exception as e:
             logger.warning(f"Pre-compact RAG flush failed for {thread_id}: {e}")
 
-        summary = self._generate_summary_sync(thread_id, user_id)
-        if not summary:
-            return {"success": False, "reason": "Failed to generate summary"}
-
-        cleared = self._clear_and_reset_sync(
-            thread_id,
-            msg_count,
-            summary=summary,
-            auto_resumed=False,
+        result = self._run_compact_turn_and_prune_sync(
+            thread_id, user_id, auto_resumed=False,
         )
-        if not cleared:
-            return {"success": False, "reason": "Failed to clear messages"}
-
-        self._pending_summaries[thread_id] = summary
-
-        notepad = self._read_thread_notepad(thread_id)
-        if notepad:
-            self._pending_notepads[thread_id] = notepad
-
-        logger.info(f"Thread {thread_id}: Sync auto-compact complete, summary pending")
-        return {
-            "success": True,
-            "messages_before": msg_count,
-            "messages_removed": msg_count,
-            "summary": summary,
-        }
+        if result.get("success"):
+            logger.info(f"Thread {thread_id}: Sync auto-compact complete")
+        return result
 
     def _generate_summary_sync(
         self,
@@ -835,58 +545,201 @@ class CompactionManager:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _clear_and_reset_sync(
-        self,
-        thread_id: str,
-        msg_count_before: int,
-        summary: str = "",
-        auto_resumed: bool = False,
-    ) -> bool:
-        """Clear all messages and reset tokens — sync version of _clear_and_reset()."""
+    # ------------------------------------------------------------------
+    # Retained-turn compaction (run the compact turn, then rebuild the
+    # thread down to a resume opener + authentic memory read-back). The
+    # agent's compaction-turn messages are discarded; its memory writes
+    # (side effects on the files) and its summary text are what survive.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _stamp_seed_marker(
+        marker: Any,
+        *,
+        summary: str,
+        messages_removed: int,
+        auto_resumed: bool,
+    ) -> None:
+        """Attach compaction-notice metadata to the resume opener for the UI."""
+        marker.additional_kwargs.update({
+            "summary": summary,
+            "messages_removed": messages_removed,
+            "auto_resumed": auto_resumed,
+            "timestamp": utc_now().isoformat(),
+        })
+
+    @staticmethod
+    def _verify_retained(thread_id: str, verify_state: Any, expected_len: int) -> bool:
+        """Confirm the retained tail is exactly what we wrote and ends cleanly."""
+        remaining = verify_state.values.get("messages", [])
+        if len(remaining) != expected_len:
+            logger.error(
+                f"Thread {thread_id}: Retained-tail verification failed — "
+                f"{len(remaining)} messages remain (expected {expected_len})"
+            )
+            return False
+        last = remaining[-1] if remaining else None
+        if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
+            logger.error(
+                f"Thread {thread_id}: Retained tail ends on an open tool-calls AIMessage"
+            )
+            return False
+        return True
+
+    async def _run_compact_turn_and_prune(
+        self, thread_id: str, user_id: str, *, auto_resumed: bool
+    ) -> Dict[str, Any]:
+        """Run the compaction turn, then rebuild the thread to the retained tail.
+
+        Retained tail (built by ``build_resume_compaction_tail``): a
+        ``memory_seed_marker`` resume opener carrying the summary inline, an
+        ``AIMessage`` with memory_read tool calls, and the two authentic
+        (post-edit) ``ToolMessage`` results — no trailing assistant message, so a
+        ``{"messages": []}`` re-drive resumes the agent. The summary is also
+        stamped onto the opener's metadata for the frontend compaction notice.
+        """
+        from .agent_memory_seed import build_resume_compaction_tail
+
         agent = self._agent
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+        graph = agent._default_async_graph
+
+        pre_ids = {m.id for m in self._state_messages(await graph.aget_state(config))}
+        msg_count_before = len(pre_ids)
+
+        summary = await self._generate_summary(thread_id, user_id)
+        if not summary:
+            await self._discard_turn_delta(graph, config, pre_ids)
+            return {"success": False, "reason": "Failed to generate summary"}
+
+        tail = build_resume_compaction_tail(
+            user_id=user_id, thread_id=thread_id, summary=summary
+        )
+        self._stamp_seed_marker(
+            tail[0], summary=summary, messages_removed=msg_count_before,
+            auto_resumed=auto_resumed,
+        )
 
         try:
-            graph = agent._default_graph
-            state = graph.get_state(config)
-            messages = state.values.get("messages", [])
+            post_messages = self._state_messages(await graph.aget_state(config))
+            remove = [RemoveMessage(id=m.id) for m in post_messages]
+            await graph.aupdate_state(config, {"messages": remove + tail})
 
-            if not messages:
-                return True
-
-            payload = self._build_clear_payload(
-                messages, msg_count_before, summary, auto_resumed,
-            )
-            graph.update_state(config, payload)
-
-            verify_state = graph.get_state(config)
-            if not self._verify_clear(thread_id, verify_state):
-                return False
-
-            logger.info(
-                f"Thread {thread_id}: Cleared {len(messages)} messages via "
-                f"RemoveMessage sync (1 compaction marker remains)"
-            )
+            verify_state = await graph.aget_state(config)
+            if not self._verify_retained(thread_id, verify_state, len(tail)):
+                return {"success": False, "reason": "Retained-tail verification failed"}
 
             try:
-                post_cp_id = verify_state.config.get("configurable", {}).get("checkpoint_id")
+                post_cp_id = self._state_checkpoint_id(verify_state)
+                if post_cp_id:
+                    cp_tuple = await graph.checkpointer.aget_tuple({
+                        "configurable": {"thread_id": thread_id, "checkpoint_id": post_cp_id}
+                    })
+                    self._prune_old_checkpoints(thread_id, verify_state, cp_tuple)
+            except Exception as e:
+                logger.warning(f"Thread {thread_id}: Pruning call failed: {e}")
+        except Exception as e:
+            logger.error(f"Thread {thread_id}: Retained-tail rebuild failed: {e}", exc_info=True)
+            return {"success": False, "reason": str(e)}
+
+        agent._token_tracker.reset_after_compact(
+            thread_id, self._estimate_messages_tokens(tail)
+        )
+        logger.info(
+            f"Thread {thread_id}: Compaction complete — removed {msg_count_before}, "
+            f"retained {len(tail)} (resume opener + memory read-back)"
+        )
+        return {
+            "success": True,
+            "messages_before": msg_count_before,
+            "messages_after": len(tail),
+            "messages_removed": msg_count_before,
+            "auto_resumed": auto_resumed,
+            "summary": summary,
+        }
+
+    async def _discard_turn_delta(self, graph, config: dict, pre_ids: set) -> None:
+        """Drop messages a failed compaction turn added (injected prompt + partial turn)."""
+        try:
+            post_messages = self._state_messages(await graph.aget_state(config))
+            delta = [RemoveMessage(id=m.id) for m in post_messages if m.id not in pre_ids]
+            if delta:
+                await graph.aupdate_state(config, {"messages": delta})
+        except Exception as e:
+            logger.warning(f"Thread {config}: Failed to discard compaction-turn delta: {e}")
+
+    def _run_compact_turn_and_prune_sync(
+        self, thread_id: str, user_id: str, *, auto_resumed: bool
+    ) -> Dict[str, Any]:
+        """Sync sibling of :meth:`_run_compact_turn_and_prune`."""
+        from .agent_memory_seed import build_resume_compaction_tail
+
+        agent = self._agent
+        config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+        graph = agent._default_graph
+
+        pre_ids = {m.id for m in self._state_messages(graph.get_state(config))}
+        msg_count_before = len(pre_ids)
+
+        summary = self._generate_summary_sync(thread_id, user_id)
+        if not summary:
+            self._discard_turn_delta_sync(graph, config, pre_ids)
+            return {"success": False, "reason": "Failed to generate summary"}
+
+        tail = build_resume_compaction_tail(
+            user_id=user_id, thread_id=thread_id, summary=summary
+        )
+        self._stamp_seed_marker(
+            tail[0], summary=summary, messages_removed=msg_count_before,
+            auto_resumed=auto_resumed,
+        )
+
+        try:
+            post_messages = self._state_messages(graph.get_state(config))
+            remove = [RemoveMessage(id=m.id) for m in post_messages]
+            graph.update_state(config, {"messages": remove + tail})
+
+            verify_state = graph.get_state(config)
+            if not self._verify_retained(thread_id, verify_state, len(tail)):
+                return {"success": False, "reason": "Retained-tail verification failed"}
+
+            try:
+                post_cp_id = self._state_checkpoint_id(verify_state)
                 if post_cp_id:
                     cp_tuple = graph.checkpointer.get_tuple({
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_id": post_cp_id,
-                        }
+                        "configurable": {"thread_id": thread_id, "checkpoint_id": post_cp_id}
                     })
                     self._prune_old_checkpoints(thread_id, verify_state, cp_tuple)
             except Exception as e:
                 logger.warning(f"Thread {thread_id}: Pruning call failed (sync): {e}")
-
         except Exception as e:
-            logger.error(f"Thread {thread_id}: Sync clear failed: {e}", exc_info=True)
-            return False
+            logger.error(f"Thread {thread_id}: Sync retained-tail rebuild failed: {e}", exc_info=True)
+            return {"success": False, "reason": str(e)}
 
-        agent._token_tracker.reset_after_compact(thread_id, 0)
-        return True
+        agent._token_tracker.reset_after_compact(
+            thread_id, self._estimate_messages_tokens(tail)
+        )
+        logger.info(
+            f"Thread {thread_id}: Sync compaction complete — removed {msg_count_before}, "
+            f"retained {len(tail)}"
+        )
+        return {
+            "success": True,
+            "messages_before": msg_count_before,
+            "messages_after": len(tail),
+            "messages_removed": msg_count_before,
+            "auto_resumed": auto_resumed,
+            "summary": summary,
+        }
+
+    def _discard_turn_delta_sync(self, graph, config: dict, pre_ids: set) -> None:
+        try:
+            post_messages = self._state_messages(graph.get_state(config))
+            delta = [RemoveMessage(id=m.id) for m in post_messages if m.id not in pre_ids]
+            if delta:
+                graph.update_state(config, {"messages": delta})
+        except Exception as e:
+            logger.warning(f"Thread {config}: Failed to discard compaction-turn delta (sync): {e}")
 
     # ------------------------------------------------------------------
     # Overflow recovery
@@ -1417,30 +1270,14 @@ class CompactionManager:
         return marker
 
     # ------------------------------------------------------------------
-    # Notepad helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _read_thread_notepad(thread_id: str) -> Optional[str]:
-        """Read per-thread notepad content for re-injection after compaction."""
-        try:
-            from ..tools.thread_notes import read_notepad
-            return read_notepad(thread_id)
-        except Exception as e:
-            logger.warning(f"Failed to read notepad for thread {thread_id}: {e}")
-            return None
-
-    # ------------------------------------------------------------------
     # Thread deletion cleanup
     # ------------------------------------------------------------------
 
     def clear_thread_state(self, thread_id: str) -> int:
-        """Remove pending compaction state for a deleted thread. Returns count of cleared items."""
-        cleared = 0
-        if thread_id in self._pending_summaries:
-            self._pending_summaries.pop(thread_id, None)
-            cleared += 1
-        if thread_id in self._pending_notepads:
-            self._pending_notepads.pop(thread_id, None)
-            cleared += 1
-        return cleared
+        """No-op since compaction no longer keeps in-memory pending state.
+
+        The retained turn lives in the checkpoint, which thread deletion drops
+        with the rest of the thread. Kept as a stable hook for
+        ``thread_deletion`` (which expects an int count of cleared items).
+        """
+        return 0

@@ -227,8 +227,6 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
         ],
     )
 
-    agent._compaction._pending_summaries[target] = "summary"
-    agent._compaction._pending_notepads[target] = "notepad"
     agent._pending_tool_reload[target] = {"new_tools": ["x"]}
     agent._turn_reload_count[target] = 1
     agent._user_graphs[("default", target)] = object()
@@ -253,7 +251,7 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
     assert result.deleted["notifications_deleted"] == 1
     assert result.deleted["fcm_filters_updated"] == 1
     assert result.deleted["rag_chunks_deleted"] == 3
-    assert result.deleted["in_memory_entries_deleted"] == 6
+    assert result.deleted["in_memory_entries_deleted"] == 4
 
     for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
         assert _count_rows(settings.db_path, table, target) == 0
@@ -289,7 +287,6 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
     assert target in agent.invalidated
     assert agent.synced_tools == 1
     assert agent.memory_index.calls == [("default", target)]
-    assert target not in agent._compaction._pending_summaries
     assert ("default", target) not in agent._user_graphs
     assert ("default", survivor) in agent._user_graphs
     assert agent._token_tracker.get_usage(target).total_tokens == 0
