@@ -54,6 +54,32 @@ So a plain Debian image gives almost the entire tool surface. The wizard should
 present base-image choice as "do you need browser, security, or CLI tools" and
 not conflate it with the slim-versus-full process question.
 
+### Three capability rungs, not two
+
+Because only that small binary subset needs anything beyond Python, the image
+choice is best presented as three rungs rather than a minimal-versus-Kali
+binary. Crucially, the Claude Code CLI tool and the browser-automation tools do
+NOT need the Kali base. Claude Code needs only Node plus
+`npm install -g @anthropic-ai/claude-code`. Browser tools need Chromium plus
+Playwright plus a set of standard shared libraries that
+`playwright install-deps chromium` installs natively on Debian. Today
+`Dockerfile.full` couples those onto Kali only as a packaging choice (it was
+built as one all-in-one "development and security research environment"), not
+out of necessity. Kali earns its weight only for the security toolchain (nmap,
+nikto, sqlmap, hydra, john, hashcat, and the curated `wordlists`/`seclists`,
+which are the bulk of the 2 to 3 GB).
+
+The rungs:
+- Minimal Debian: the roughly 1250 in-process Python tools. No browser, CLI, or
+  security tools. Smallest.
+- Standard (Debian plus Node, Chromium/Playwright, Claude Code CLI, ffmpeg):
+  full everyday capability including browser automation and the Claude Code
+  tool, without the Kali heft. This is the likely default for "I want full
+  capability" and has no dedicated image yet (a trimmed `Dockerfile.full`, call
+  it `Dockerfile.standard`, would host it).
+- Full Kali (`Dockerfile.full`): adds the pentest toolchain. Worth the size
+  only for security work.
+
 ## What already exists (build on this, do not rebuild)
 
 `run.py init` invokes `nymeria/setup_wizard.py::run_init`, a mature, roughly
@@ -355,6 +381,43 @@ LangChain Anthropic client, which is what makes v6.9.36 skip cloaking. This is
 already in the code the container runs, so no extra setup is needed. The wizard
 should not try to re-add `claude-header-defaults` to the proxy config.
 
+### LLM auth default and the subscription-OAuth decision
+
+Two layers of "make a subscription OAuth token work" exist, and they are not the
+same thing:
+
+- Identity cloak: send the OAuth token as Bearer auth, spoof
+  `User-Agent: claude-cli/<ver>`, `x-app: cli`, and the
+  `oauth-2025-04-20`/`claude-code-20250219` betas, and prepend a "You are Claude
+  Code" system block. This is enough for Anthropic to accept the token instead
+  of rejecting it as third-party. Sibling tools (OpenClaw, Hermes) do this and
+  are billed as extra usage at API pay-as-you-go rates.
+- Billing-pool fingerprint: additionally inject `CLIPROXY_BILLING_SYSTEM_BLOCK`
+  (`vendor/react_agent/cliproxy.py`), the
+  `x-anthropic-billing-header: ... cc_entrypoint=cli; ...` system block prepended
+  in `vendor/react_agent/nodes.py::_format_system_prompt`. This routes usage into
+  the subscription quota pool (much cheaper) rather than the metered bucket. The
+  sibling tools do not do this. It is a deliberate and flagrant TOS violation.
+
+Note the fingerprint is authored by Nymeria's own code, not by CLIProxy: Nymeria
+sets `UA=claude-cli` precisely so the pinned CLIProxy build skips its own
+cloaking and passes Nymeria's headers through. CLIProxy's genuinely unique
+contributions are narrower: OAuth token storage and refresh, the `cpx-`
+gatekeeper-key indirection, and Codex/OpenAI format translation. So the cheap
+billing is technically reproducible in-process; the question is not feasibility
+but posture.
+
+Recommendation for the shipped product: default LLM auth to BYO API key, which
+is fully TOS-clean. Keep subscription OAuth (and CLIProxy) an opt-in advanced
+path the operator chooses for their own machine, behind a plain-language
+disclaimer that it may violate provider terms. Do NOT make CLIProxy a hard
+dependency and do NOT bake the billing fingerprint into the default path: a
+flagrant TOS violation shipped as a default or dependency of a distributed
+product moves the risk onto the project itself, whereas opt-in keeps that choice
+with the operator who benefits from it. The lighter API-rate identity cloak is
+not worth building separately, because anyone willing to pay API rates can just
+enter an API key.
+
 ## Recipe C: external access (Cloudflare tunnel)
 
 - cloudflared runs as a host service with a token-managed named tunnel. The
@@ -369,6 +432,18 @@ should not try to re-add `claude-header-defaults` to the proxy config.
   `docs/deployment/remote-access.md`. The wizard can offer these as alternatives
   but should treat "you already have a tunnel, just confirm ingress to
   localhost:8000" as the simplest path.
+
+Recommended defaults for the wizard's remote step, by shape: for single-user
+slim, recommend Tailscale (zero public exposure, automatic HTTPS, no domain),
+and surface chat-app bots as the "option zero" that needs no inbound networking
+at all. For multi-user Docker, the bundled Caddy plus a domain is the production
+path. Offer a Cloudflare quick tunnel for ephemeral sharing. Do not add an ngrok
+path: the Cloudflare quick tunnel is the free equivalent and Cloudflare named
+tunnels cover the stable-URL case, so ngrok adds nothing. The wizard cannot
+fully automate Tailscale or Cloudflare (both need interactive browser auth, and
+Cloudflare ingress lives in a dashboard the wizard cannot write), so it should
+detect, guide, test the public URL, and set `NYMERIA_PUBLIC_URL` and
+`CORS_ORIGINS`. See `docs/deployment/remote-access.md`.
 
 ## Accounts and tokens
 
@@ -408,6 +483,31 @@ A healthy stream ends with a `response` event carrying the text and a `done`
 event carrying `context_stats` (model, token counts, context limit). Observed:
 the model replied `SLIM OK`, model `claude-opus-4-6`, context limit 1000000.
 
+## Security profiles (design, not yet enforced)
+
+A first-run security posture choice the wizard writes as a single setting
+(proposed `security_profile` in `config/settings.py`), with enforcement built
+out incrementally. Proposed tiers:
+
+- Secure: dangerous tools disabled by default; medium-risk tools require
+  approval before execution.
+- Standard: full toolset, approval prompts only for risky tools.
+- Unleashed: no approval gates; threads and agents get full autonomy and the
+  self-improving `self-improve` Skill Kit (which binds the capability-expansion
+  tools: `tool_search`, `tool_create`, `skill_config`, MCP management) is bound
+  by default. A sandboxed container is strongly recommended; the wizard should
+  refuse or require a typed acknowledgment when it cannot detect one.
+
+Important caveat: per-tool-call approval gating does NOT exist yet. The only
+gating today is role-based (the admin-only / developer-only / capability-
+expansion frozensets in `tools/__init__.py`), slash-command danger blocks (hard
+refusals, not prompts), and `/goal` plan approval. The SAFE/MODERATE ratings in
+`docs/tools.md` are documentation only, unenforced. Note also that
+`bash_execute`, `file_read`, and `file_write` are core (always loaded), so for
+core tools the profile must govern approval and sandboxing, not removal. The
+recommendation is to ship the setting now and have each of (default bound tools,
+the future approval gate, bash sandboxing) read it as it is built.
+
 ## Proposed wizard flow (CLI and GUI)
 
 Extend the existing wizard rather than writing a new one. The two existing axes
@@ -422,24 +522,32 @@ Suggested steps:
    - Containerized slim (single container, recommended for one user).
    - Full Docker stack (multi-container, recommended for multi-user or uptime).
    - Native venv or bare metal (existing).
-3. Choose image capability tier (only relevant for the container targets):
-   - Minimal Debian (default): all in-process tools, no browser, security, or CLI
-     tools.
-   - Full Kali: adds browser, security tools, Node, Claude CLI. Heavier.
-4. Choose LLM auth: direct API key (existing), or CLIProxy OAuth (Claude or
-   Codex). For CLIProxy, run the automation, and on a headless host, prompt for
-   the pasted callback URL and deliver it in-container.
-5. Generate artifacts for the chosen target:
+   This is one wizard with the shape as a branch, not two separate packages:
+   both shapes run the same code behind `TurnExecutor`.
+3. Choose image capability tier (container targets only). Three rungs (see
+   "Three capability rungs, not two"): Minimal Debian (default), Standard (adds
+   Node, Chromium/Playwright, Claude Code CLI, ffmpeg on a Debian base), or Full
+   Kali (adds the security toolchain, heaviest).
+4. Choose security profile (see "Security profiles"): Secure, Standard, or
+   Unleashed. Write the setting now; enforcement is built out later.
+5. Choose LLM auth. Default and recommended is a direct API key (TOS-clean). The
+   subscription-OAuth path via CLIProxy (Claude or Codex) is an opt-in advanced
+   branch behind a disclaimer (see "LLM auth default and the subscription-OAuth
+   decision"); it is not installed by default. For CLIProxy, run the automation,
+   and on a headless host, prompt for the pasted callback URL and deliver it
+   in-container.
+6. Generate artifacts for the chosen target:
    - Containerized slim: `Dockerfile.single`, `docker-compose.single.yml`,
      `.env.docker` (mint `NYMERIA_SECRETS_KEY` here). Build and bring up.
    - Full Docker: generate `.env.docker` from the example, mint
      `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `NYMERIA_SERVICE_TOKEN`, and
      `NYMERIA_SECRETS_KEY`, then `docker compose up -d --build`.
-6. Wait for health, then surface the bootstrap token (and optionally mint a
+7. Wait for health, then surface the bootstrap token (and optionally mint a
    device token via `users rotate-token`).
-7. Offer external access guidance: detect cloudflared, test the public URL, set
-   `NYMERIA_PUBLIC_URL` and `CORS_ORIGINS`.
-8. Run a chat smoke test and report pass or fail.
+8. Offer external access guidance (see "Recipe C" and remote-access.md): detect
+   the chosen path, test the public URL, set `NYMERIA_PUBLIC_URL` and
+   `CORS_ORIGINS`.
+9. Run a chat smoke test and report pass or fail.
 
 GUI-specific notes:
 - The desktop Setup Wizard already collects a backend URL and account token. The
