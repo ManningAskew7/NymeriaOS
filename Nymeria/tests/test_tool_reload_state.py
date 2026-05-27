@@ -229,6 +229,9 @@ class _FakeAsyncGraph:
 
 def test_astream_reload_resume_streams_post_reload_tool_events():
     agent = _bare_agent()
+    # Memory-init seeding is out of scope here; mark the thread already seeded
+    # so astream's fresh-thread seed step is a no-op for this reload test.
+    agent._memory_seeded_threads = {"thread-a"}
     agent._thread_locks = _FakeLockManager()
     agent._compaction = CompactionManager(agent)
     agent.scheduler = SimpleNamespace(cancel=lambda *args, **kwargs: None)

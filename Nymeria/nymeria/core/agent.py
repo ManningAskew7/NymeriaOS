@@ -441,6 +441,11 @@ class NymeriaAgent:
         # agent respond in-turn rather than leaving an orphan tool_result).
         self._turn_reload_count: Dict[str, int] = {}
 
+        # Threads whose first turn has been seeded with the memory-init exchange.
+        # Belt-and-suspenders against a racing get_state momentarily returning
+        # empty; the authoritative guard is the checkpoint emptiness check.
+        self._memory_seeded_threads: set[str] = set()
+
         # Dynamic tool binding mode is read live from self.settings on each
         # graph build / reload check (not cached as an instance attribute) —
         # PATCH /settings refreshes agent.settings in place, and we want the
@@ -1127,6 +1132,77 @@ class NymeriaAgent:
         from .agent_callable_lifecycle import patch_dangling_tool_calls
         return patch_dangling_tool_calls(self, graph, config)
 
+    async def _seed_memory_init_if_empty(
+        self, graph, config: dict, thread_id: str, user_id: str
+    ) -> bool:
+        """Seed a brand-new thread with an authentic memory-read exchange.
+
+        On a thread with no checkpoint messages yet, write an internal
+        memory-init exchange (memory_read global + thread, carrying the real
+        content) into state before the first user message, so the agent has
+        already loaded its persistent memory. The exchange is hidden from the
+        frontend by the internal-message display filter but is sent to the LLM
+        from raw state. Seeds exactly once per thread; re-seeding every turn
+        would bust the conversation prompt cache. Returns True if it seeded.
+        """
+        if thread_id in self._memory_seeded_threads:
+            return False
+        try:
+            state = await graph.aget_state(config)
+            if state.values.get("messages"):
+                self._memory_seeded_threads.add(thread_id)
+                return False
+        except Exception as e:
+            logger.warning(f"[ASTREAM] Thread {thread_id}: memory-init state check failed: {e}")
+            return False
+
+        try:
+            from .agent_memory_seed import build_init_seed_exchange
+            exchange = build_init_seed_exchange(user_id, thread_id)
+            await graph.aupdate_state(config, {"messages": exchange})
+            self._memory_seeded_threads.add(thread_id)
+            logger.info(
+                f"[ASTREAM] Thread {thread_id}: seeded memory-init exchange "
+                f"({len(exchange)} messages)"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[ASTREAM] Thread {thread_id}: memory-init seeding failed: {e}")
+            return False
+
+    def _seed_memory_init_if_empty_sync(
+        self, graph, config: dict, thread_id: str, user_id: str
+    ) -> bool:
+        """Sync sibling of :meth:`_seed_memory_init_if_empty` (chat() path).
+
+        Covers MCP ``nymeria_chat``, native bots, triggers, and CLI first turns,
+        which all run through the synchronous ``chat()`` entry point.
+        """
+        if thread_id in self._memory_seeded_threads:
+            return False
+        try:
+            state = graph.get_state(config)
+            if state.values.get("messages"):
+                self._memory_seeded_threads.add(thread_id)
+                return False
+        except Exception as e:
+            logger.warning(f"[CHAT] Thread {thread_id}: memory-init state check failed: {e}")
+            return False
+
+        try:
+            from .agent_memory_seed import build_init_seed_exchange
+            exchange = build_init_seed_exchange(user_id, thread_id)
+            graph.update_state(config, {"messages": exchange})
+            self._memory_seeded_threads.add(thread_id)
+            logger.info(
+                f"[CHAT] Thread {thread_id}: seeded memory-init exchange "
+                f"({len(exchange)} messages)"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[CHAT] Thread {thread_id}: memory-init seeding failed: {e}")
+            return False
+
     def _callable_timeout_scope_user_id(
         self,
         user_id: Optional[str],
@@ -1422,6 +1498,9 @@ class NymeriaAgent:
             # callbacks=[] prevents LLM events from leaking into a parent
             # astream_events() when chat() is called from inside a tool
             config = self._graph_run_config(thread_id, user_id, callbacks=[])
+
+            # Fresh-thread memory init (sync path: MCP, bots, triggers, CLI).
+            self._seed_memory_init_if_empty_sync(graph, config, thread_id, user_id)
 
             # Delegate pending-summary / notepad attachment, image-content-block
             # building, and additional_kwargs metadata to the same helper the
@@ -1976,6 +2055,11 @@ class NymeriaAgent:
                     logger.info(f"[ASTREAM] Thread {thread_id}: Pre-flight patched {patched} dangling tool call(s)")
             except Exception as e:
                 logger.warning(f"[ASTREAM] Thread {thread_id}: Pre-flight patch failed: {e}")
+
+            # Fresh-thread memory init: on an empty thread, seed an authentic
+            # memory_read exchange before the first user message so the agent
+            # starts with its persistent memory already loaded.
+            await self._seed_memory_init_if_empty(graph, config, thread_id, user_id)
 
             # Log checkpoint state before processing (DEBUG level — visible with agent/llm profiles)
             if logger.isEnabledFor(logging.DEBUG):

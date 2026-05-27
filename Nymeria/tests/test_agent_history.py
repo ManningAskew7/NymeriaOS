@@ -321,3 +321,45 @@ def test_compaction_marker_with_plain_string_summary_is_passed_through():
     history = format_conversation_history([marker], thread_id="thread-b")
 
     assert history[0]["context_summary"] == "## Active Goal\nPlain markdown summary."
+
+
+def _memory_init_exchange():
+    """The fresh-thread init seed shape (opener + read calls + results + trailing)."""
+    opener = HumanMessage(content="[Session start] Loading memory.", id="seed-0")
+    opener.additional_kwargs = {"internal": True, "internal_type": "memory_init"}
+    ai_calls = AIMessage(
+        content="",
+        id="seed-1",
+        tool_calls=[
+            {"id": "g", "name": "memory_read", "args": {"scope": "global"}, "type": "tool_call"},
+            {"id": "t", "name": "memory_read", "args": {"scope": "thread"}, "type": "tool_call"},
+        ],
+    )
+    tg = ToolMessage(content="GLOBAL", tool_call_id="g", name="memory_read", id="seed-2")
+    tt = ToolMessage(content="THREAD", tool_call_id="t", name="memory_read", id="seed-3")
+    loaded = AIMessage(content="Memory loaded.", id="seed-4")
+    return [opener, ai_calls, tg, tt, loaded]
+
+
+def test_memory_init_seed_hidden_from_display_by_default():
+    """The seeded init exchange must not surface in user-facing history; the
+    real user turn after it renders normally."""
+    messages = _memory_init_exchange() + [HumanMessage(content="Hello there", id="u1")]
+
+    history = format_conversation_history(messages, thread_id="thread-seed")
+
+    assert len(history) == 1
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "Hello there"
+
+
+def test_memory_init_seed_visible_with_include_internal():
+    """Debug view (include_internal=True) should still expose the seed."""
+    messages = _memory_init_exchange()
+
+    history = format_conversation_history(
+        messages, thread_id="thread-seed", include_internal=True
+    )
+
+    # opener (user) + a consolidated assistant turn carrying the reads
+    assert any(e["role"] == "assistant" for e in history)

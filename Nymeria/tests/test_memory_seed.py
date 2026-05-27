@@ -1,0 +1,129 @@
+"""Unit tests for the shared memory-seed builder and read helpers."""
+
+from __future__ import annotations
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from nymeria.core import agent_memory_seed
+from nymeria.core.agent_memory_seed import (
+    MEMORY_INIT_OPENER,
+    MEMORY_INIT_TRAILING,
+    MEMORY_INIT_TYPE,
+    MEMORY_SEED_MARKER_TYPE,
+    build_init_seed_exchange,
+    build_memory_exchange,
+    read_global_memory,
+    read_thread_memory,
+)
+
+
+class _FakeTool:
+    """Stand-in for the memory_read BaseTool exposing .invoke()."""
+
+    def __init__(self, *, result=None, exc=None):
+        self._result = result
+        self._exc = exc
+        self.calls = []
+
+    def invoke(self, args, config=None):
+        self.calls.append((args, config))
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+def test_build_memory_exchange_pairs_tool_calls_and_results():
+    msgs = build_memory_exchange(
+        opener_internal_type=MEMORY_INIT_TYPE,
+        opener_text="opener",
+        global_text="GLOBAL",
+        thread_text="THREAD",
+        trailing_text="done",
+    )
+
+    assert len(msgs) == 5
+    opener, ai_calls, tool_global, tool_thread, trailing = msgs
+
+    assert isinstance(opener, HumanMessage)
+    assert opener.additional_kwargs == {"internal": True, "internal_type": MEMORY_INIT_TYPE}
+
+    assert isinstance(ai_calls, AIMessage)
+    assert ai_calls.content == ""  # no thinking blocks -> safe past Anthropic sanitizer
+    call_ids = {tc["id"] for tc in ai_calls.tool_calls}
+    scopes = {tc["args"]["scope"] for tc in ai_calls.tool_calls}
+    assert scopes == {"global", "thread"}
+
+    assert isinstance(tool_global, ToolMessage)
+    assert isinstance(tool_thread, ToolMessage)
+    result_ids = {tool_global.tool_call_id, tool_thread.tool_call_id}
+    assert call_ids == result_ids  # every tool_call has a matching ToolMessage
+
+    # content maps to the right scope
+    by_id = {tc["id"]: tc["args"]["scope"] for tc in ai_calls.tool_calls}
+    contents = {by_id[tool_global.tool_call_id]: tool_global.content,
+                by_id[tool_thread.tool_call_id]: tool_thread.content}
+    assert contents == {"global": "GLOBAL", "thread": "THREAD"}
+
+    assert isinstance(trailing, AIMessage)
+    assert trailing.content == "done"
+    assert not trailing.tool_calls  # never end on an open tool-calls AIMessage
+
+
+def test_build_memory_exchange_without_trailing_ends_on_tool_messages():
+    msgs = build_memory_exchange(
+        opener_internal_type=MEMORY_SEED_MARKER_TYPE,
+        opener_text="opener",
+        global_text="G",
+        thread_text="T",
+    )
+    assert len(msgs) == 4
+    assert isinstance(msgs[-1], ToolMessage)
+
+
+def test_build_memory_exchange_unique_ids():
+    msgs = build_memory_exchange(
+        opener_internal_type=MEMORY_INIT_TYPE,
+        opener_text="o",
+        global_text="g",
+        thread_text="t",
+        trailing_text="x",
+    )
+    ids = [m.id for m in msgs]
+    assert all(ids)
+    assert len(set(ids)) == len(ids)
+
+
+def test_read_helpers_return_tool_output(monkeypatch):
+    fake = _FakeTool(result="memory listing")
+    monkeypatch.setattr("nymeria.tools.memory.memory_read", fake)
+
+    assert read_global_memory("u1", "t1") == "memory listing"
+    assert read_thread_memory("u1", "t1") == "memory listing"
+
+    # invoked with scope + config carrying user_id/thread_id
+    (args, config), _ = fake.calls[0], None
+    assert args == {"scope": "global"}
+    assert config == {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    assert fake.calls[1][0] == {"scope": "thread"}
+
+
+def test_read_helpers_fall_back_on_error(monkeypatch):
+    monkeypatch.setattr(
+        "nymeria.tools.memory.memory_read",
+        _FakeTool(exc=RuntimeError("boom")),
+    )
+    assert read_global_memory("u1", "t1") == "[empty]"
+    assert read_thread_memory("u1", "t1") == "[empty]"
+
+
+def test_build_init_seed_exchange_uses_real_content(monkeypatch):
+    monkeypatch.setattr(agent_memory_seed, "read_global_memory", lambda u, t: "G-real")
+    monkeypatch.setattr(agent_memory_seed, "read_thread_memory", lambda u, t: "T-real")
+
+    msgs = build_init_seed_exchange("u1", "t1")
+
+    assert msgs[0].content == MEMORY_INIT_OPENER
+    assert msgs[0].additional_kwargs["internal_type"] == MEMORY_INIT_TYPE
+    assert msgs[2].content == "G-real"
+    assert msgs[3].content == "T-real"
+    assert msgs[-1].content == MEMORY_INIT_TRAILING
