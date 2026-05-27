@@ -61,12 +61,13 @@ def test_should_subturn_compact_false_without_usage(monkeypatch):
 
 # --- NymeriaAgent.should_halt_for_subturn_compaction -----------------------
 
-def _agent_stub(*, decision: bool, compactions=0, context_management="auto_compact"):
+def _agent_stub(*, decision: bool, compactions=0, context_management="auto_compact", compacting=()):
     return SimpleNamespace(
         settings=SimpleNamespace(context_management=context_management),
         MAX_COMPACTIONS_PER_TURN=NymeriaAgent.MAX_COMPACTIONS_PER_TURN,
         _compactions_this_turn={"t1": compactions} if compactions else {},
         _subturn_compact_requested=set(),
+        _compacting_threads=set(compacting),
         _compaction=SimpleNamespace(should_subturn_compact=lambda tid, msgs: decision),
     )
 
@@ -95,6 +96,15 @@ def test_should_halt_respects_per_turn_cap():
 def test_should_halt_false_when_not_auto_compact():
     me = _agent_stub(decision=True, context_management="none")
     assert NymeriaAgent.should_halt_for_subturn_compaction(me, "t1", []) is False
+
+
+def test_should_halt_false_during_compaction_turn():
+    # The compaction summary turn runs on oversized context and calls tools;
+    # it must be exempt or compaction would re-enter compaction (and never
+    # produce a summary).
+    me = _agent_stub(decision=True, compacting=("t1",))
+    assert NymeriaAgent.should_halt_for_subturn_compaction(me, "t1", []) is False
+    assert "t1" not in me._subturn_compact_requested
 
 
 # --- route_after_tools integration -----------------------------------------

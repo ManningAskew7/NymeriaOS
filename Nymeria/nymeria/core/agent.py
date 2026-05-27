@@ -457,6 +457,11 @@ class NymeriaAgent:
         # per-turn cap. Both are cleared at turn end.
         self._subturn_compact_requested: set[str] = set()
         self._compactions_this_turn: Dict[str, int] = {}
+        # Threads currently running a compaction summary turn. The summary turn
+        # runs on the still-oversized context and itself calls tools, so it must
+        # be exempt from the sub-turn compaction halt or it would never produce
+        # a summary (compaction re-entering compaction).
+        self._compacting_threads: set[str] = set()
 
         # Dynamic tool binding mode is read live from self.settings on each
         # graph build / reload check (not cached as an instance attribute) —
@@ -1143,6 +1148,10 @@ class NymeriaAgent:
         """
         try:
             if self.settings.context_management != "auto_compact":
+                return False
+            # Never halt a compaction summary turn: it runs on the oversized
+            # context and calls tools, so halting it would prevent the summary.
+            if thread_id in self._compacting_threads:
                 return False
             if self._compactions_this_turn.get(thread_id, 0) >= self.MAX_COMPACTIONS_PER_TURN:
                 return False

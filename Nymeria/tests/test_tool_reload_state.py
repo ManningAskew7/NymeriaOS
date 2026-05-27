@@ -29,6 +29,7 @@ def _bare_agent() -> NymeriaAgent:
     agent._turn_reload_count = {}
     agent._subturn_compact_requested = set()
     agent._compactions_this_turn = {}
+    agent._compacting_threads = set()
     return agent
 
 
