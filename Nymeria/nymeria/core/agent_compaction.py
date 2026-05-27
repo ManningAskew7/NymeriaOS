@@ -375,6 +375,7 @@ class CompactionManager:
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._get_async_graph_for_user(user_id, thread_id=thread_id)
 
+        agent._compacting_threads.add(thread_id)
         try:
             result = await asyncio.wait_for(
                 graph.ainvoke(self._summary_input(), config=config),
@@ -394,6 +395,8 @@ class CompactionManager:
                 exc_info=True,
             )
             return None
+        finally:
+            agent._compacting_threads.discard(thread_id)
 
     @staticmethod
     def _prune_old_checkpoints(
@@ -541,6 +544,7 @@ class CompactionManager:
             thread_name_prefix="nymeria-compact-summary",
         )
         future: Optional[concurrent.futures.Future] = None
+        agent._compacting_threads.add(thread_id)
         try:
             future = executor.submit(
                 graph.invoke,
@@ -565,6 +569,7 @@ class CompactionManager:
             )
             return None
         finally:
+            agent._compacting_threads.discard(thread_id)
             executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
