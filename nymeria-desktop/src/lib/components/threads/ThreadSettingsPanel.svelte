@@ -18,7 +18,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import { filterToolSearch } from '$lib/utils/toolSearch';
-  import { computeEffectiveToolCounts, isMcpToolName } from '$lib/utils/toolCounts';
+  import { computeEffectiveToolCounts, isMcpToolName, liveTemporaryToolNames } from '$lib/utils/toolCounts';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     fromThreadDisplayProvider,
@@ -398,6 +398,7 @@
       defaultToolNames: defaultToolsStore.defaultToolNames,
       enabledTools: [...enabledTools],
       disabledTools: [...disabledTools],
+      temporaryTools: liveTemporaryToolNames(threadConfig?.temporaryTools),
     }).totalActiveCount;
   });
 
@@ -560,6 +561,7 @@
       defaultToolNames: defaultToolsStore.defaultToolNames,
       enabledTools: [...enabledTools],
       disabledTools: [...disabledTools],
+      temporaryTools: liveTemporaryToolNames(threadConfig?.temporaryTools),
     })
   );
 
@@ -950,6 +952,7 @@
         instructions: null,
         disabledTools: [],
         enabledTools: [],
+        temporaryTools: {},
         enabledSkills: [],
         disabledSkills: [],
         llmConfig: null,

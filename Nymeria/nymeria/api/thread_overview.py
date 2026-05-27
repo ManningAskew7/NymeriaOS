@@ -790,6 +790,7 @@ def _mcp_defaults() -> dict[str, Any]:
 
 
 def _mcp_section(settings: Any, effective_mcp_names: set[str]) -> dict[str, Any]:
+    from ..core.mcp_tool_names import format_mcp_tool_name
     from ..tools.definitions.mcp_schema import MCPServerDefinition
 
     servers_dir = getattr(settings, "mcp_servers_dir", None)
@@ -817,7 +818,7 @@ def _mcp_section(settings: Any, effective_mcp_names: set[str]) -> dict[str, Any]
     server_summaries = []
     for server in sorted(servers, key=lambda item: item.id):
         discovered_names = {
-            f"mcp__{server.id}__{tool.name}" for tool in server.discovered_tools
+            format_mcp_tool_name(server.id, tool.name) for tool in server.discovered_tools
         }
         active = active_by_server.get(server.id, set()) & discovered_names
         server_summaries.append(

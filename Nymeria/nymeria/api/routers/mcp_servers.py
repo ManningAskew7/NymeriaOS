@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from ...core.accounts import AuthenticatedUser
+from ...core.mcp_tool_names import (
+    display_mcp_tool_names,
+    format_mcp_tool_name,
+    registered_mcp_tool_names,
+)
 from ...core.mcp_servers import get_mcp_server_registry
 from ...tools.definitions.mcp_schema import MCPServerDefinition
 from ..schemas.mcp_servers import (
@@ -32,13 +37,14 @@ def _mcp_install_response(
     status: str = "ok",
     discovery_error: Optional[str] = None,
 ):
-    tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    tool_names = registered_mcp_tool_names(defn, discovered)
     return {
         "status": status,
         "server": registry.get_server(defn.id).model_dump(mode="json"),
         "parsed_summary": parsed_summary,
         "discovered_tools": len(discovered),
         "tool_names": tool_names,
+        "tool_display_names": display_mcp_tool_names(defn, discovered),
         "thread_id": thread_id,
         "discovery_error": discovery_error,
         "install_logs": defn.install_logs,
@@ -197,12 +203,12 @@ async def _run_mcp_install(
     defn.enabled = bool(auto_enable)
     defn.last_error = None
     defn.install_logs = logs
-    defn.registered_tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    defn.registered_tool_names = registered_mcp_tool_names(defn, discovered)
     registry.save_server(defn)
 
     agent = get_agent_fn()
     agent.reload_mcp_server_tools()
-    tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    tool_names = registered_mcp_tool_names(defn, discovered)
     if thread_id:
         _attach_mcp_tools_to_thread(
             get_agent_fn=get_agent_fn,
@@ -325,7 +331,7 @@ def create_mcp_servers_router(
             tc = agent.thread_config_manager.get_config(thread_id)
             enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
             for dt in discovered:
-                tool_name = f"mcp__{request.id}__{dt.name}"
+                tool_name = format_mcp_tool_name(request.id, dt.name)
                 if tool_name not in enabled_tools:
                     enabled_tools.append(tool_name)
             if tc is None:
@@ -341,6 +347,8 @@ def create_mcp_servers_router(
             "status": "ok",
             "server": saved_server.model_dump(mode="json"),
             "discovered_tools": len(discovered),
+            "tool_names": registered_mcp_tool_names(saved_server, discovered),
+            "tool_display_names": display_mcp_tool_names(saved_server, discovered),
         }
         if discovery_error:
             result["discovery_error"] = discovery_error
@@ -414,6 +422,8 @@ def create_mcp_servers_router(
             "status": "ok",
             "server": updated_server.model_dump(mode="json"),
             "discovered_tools": len(discovered),
+            "tool_names": registered_mcp_tool_names(updated_server, discovered),
+            "tool_display_names": display_mcp_tool_names(updated_server, discovered),
         }
         if discovery_error:
             result["discovery_error"] = discovery_error
@@ -461,11 +471,14 @@ def create_mcp_servers_router(
         # Reload agent tools
         agent = get_agent_fn()
         agent.reload_mcp_server_tools()
+        updated_server = registry.get_server(server_id) or {"id": server_id, "name": server_id}
 
         return {
             "status": "ok",
             "server_id": server_id,
             "discovered_tools": [dt.model_dump() for dt in discovered],
+            "tool_names": registered_mcp_tool_names(updated_server, discovered),
+            "tool_display_names": display_mcp_tool_names(updated_server, discovered),
             "count": len(discovered),
         }
 

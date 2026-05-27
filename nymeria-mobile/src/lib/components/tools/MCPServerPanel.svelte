@@ -74,6 +74,13 @@
     return `mcp__${serverId}__${toolName}`;
   }
 
+  function getServerSubtitle(server: MCPServer): string {
+    if (server.sourceType || server.runtimeType) {
+      return [server.sourceType || 'manual', server.runtimeType || server.transport].join(' / ');
+    }
+    return server.transport === 'http' ? 'HTTP endpoint' : 'Local stdio server';
+  }
+
   async function toggleGlobalTool(serverId: string, toolName: string) {
     const mcpName = getMcpToolName(serverId, toolName);
     const current = [...defaultToolsStore.defaultToolNames];
@@ -253,7 +260,7 @@
           <span class="status-dot" style="background: {getStatusColor(server)}"></span>
           <div class="server-meta">
             <span class="name">{server.name}</span>
-            <span class="server-id">{server.id} · {getStatusLabel(server)}</span>
+            <span class="server-subtitle">{getServerSubtitle(server)} · {getStatusLabel(server)}</span>
           </div>
           <span class="count">{server.discoveredTools.length} tools</span>
           <span class="updated">{timeAgo(server.updatedAt)}</span>
@@ -279,6 +286,11 @@
                 onCancel={() => { editingServerId = null; editError = null; }}
               />
             {:else}
+              <div class="info-row">
+                <span class="label">Runtime ID</span>
+                <code>{server.id}</code>
+              </div>
+
               <div class="info-row">
                 <span class="label">Enabled</span>
                 <label class="toggle-label">
@@ -312,7 +324,7 @@
                     {@const isEnabled = enabledToolNames.has(mcpName)}
                     <div class="tool-row" class:tool-enabled={isEnabled}>
                       <div class="tool-info">
-                        <span class="tool-name">{tool.name}</span>
+                        <span class="tool-name" title={mcpName}>{tool.name}</span>
                         {#if tool.description}
                           <span class="tool-desc">{tool.description}</span>
                         {/if}
@@ -442,10 +454,9 @@
     line-height: 1.2;
   }
 
-  .server-id {
+  .server-subtitle {
     font-size: 0.7rem;
     color: var(--text-secondary);
-    font-family: monospace;
   }
 
   .count {

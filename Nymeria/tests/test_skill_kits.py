@@ -554,11 +554,15 @@ def test_skill_meta_tool_required_tools_already_bound_returns_body(tmp_path: Pat
     assert isinstance(result, str)
     assert "Bash Kit" in result
     assert "No binding changes" in result
-    assert "Skipped already-enabled required tool(s): bash_execute" in result
+    # bash_execute is part of the thread's default-bound set, so delegating to
+    # bind_tools_for_thread classifies it as an already-bound no-op. The skip
+    # decision comes from the REAL thread config, not the thread_tool_names
+    # snapshot (which is the executor superset in dynamic mode).
+    assert "Already bound (default set, no change): bash_execute" in result
     assert agent._pending_tool_reload == {}
 
 
-def test_skill_meta_tool_reports_added_and_skipped_required_tools(tmp_path: Path):
+def test_skill_meta_tool_reports_added_and_already_bound_required_tools(tmp_path: Path):
     skill_dir = _write_skill(tmp_path, "mixed-kit", MIXED_KIT_MD)
     skill = load_skill_directory(skill_dir, scope="bundled")
     assert skill is not None
@@ -577,10 +581,45 @@ def test_skill_meta_tool_reports_added_and_skipped_required_tools(tmp_path: Path
     assert isinstance(result, Command)
     messages = result.update["messages"]
     content = messages[0].content
-    assert "Added/un-disabled required tool(s): memory_clear_all" in content
-    assert "Skipped already-enabled required tool(s): bash_execute" in content
+    # The full required set is delegated to bind_tools_for_thread, which binds
+    # the genuinely-missing tool (memory_clear_all) and reports the already
+    # default-bound one (bash_execute) as a no-op.
     assert "Newly loaded: memory_clear_all" in content
+    assert "Already bound (default set, no change): bash_execute" in content
     assert agent._pending_tool_reload["thread-a"]["new_tools"] == ["memory_clear_all"]
+
+
+def test_skill_meta_tool_binds_tool_present_only_in_superset_snapshot(tmp_path: Path):
+    """Regression: in dynamic-binding mode the meta-tool's thread_tool_names is
+    the executor superset (every registered tool), NOT the thread's bound set.
+    A required tool that is absent from the thread must still be bound even when
+    it appears in that snapshot — the snapshot must never gate binding.
+    """
+    skill_dir = _write_skill(tmp_path, "mixed-kit", MIXED_KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        # Simulate the superset: BOTH required tools appear in the snapshot,
+        # even though memory_clear_all is not actually bound on the thread.
+        skill_tool = create_skill_meta_tool(
+            [skill], thread_tool_names=["bash_execute", "memory_clear_all"]
+        )
+        result = skill_tool.func(
+            "mixed-kit",
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    # Before the fix this returned a plain "already bound" string and bound
+    # nothing. Now memory_clear_all is bound and a reload is queued.
+    assert isinstance(result, Command)
+    assert agent._pending_tool_reload["thread-a"]["new_tools"] == ["memory_clear_all"]
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert "memory_clear_all" in tc.temporary_tools
 
 
 def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):

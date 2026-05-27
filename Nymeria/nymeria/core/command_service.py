@@ -12,6 +12,7 @@ import logging
 import os
 import shlex
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, Optional
 from urllib.parse import quote
@@ -19,7 +20,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
-from .time_utils import parse_tool_ttl
+from .time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -3365,6 +3366,15 @@ class _CommandExecutor:
                 lines.append("")
                 lines.append("Recent logs:")
                 lines.extend(f"  {line}" for line in recent_logs)
+            tool_names = [
+                str(getattr(tool, "name", "") or "")
+                for tool in server.discovered_tools or []
+                if str(getattr(tool, "name", "") or "")
+            ]
+            if tool_names:
+                lines.append("")
+                lines.append("Discovered tools:")
+                lines.extend(f"  - {name}" for name in tool_names)
             return "[Info]: " + "\n".join(lines)
 
         servers = registry.get_all_servers()
@@ -3430,7 +3440,16 @@ class _CommandExecutor:
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
         count = len(discovered)
-        return f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} for `{server_id}`."
+        names = [
+            str(getattr(tool, "name", "") or "")
+            for tool in discovered
+            if str(getattr(tool, "name", "") or "")
+        ]
+        suffix = f": {', '.join(names)}" if names else "."
+        return (
+            f"[Success]: Discovered {count} tool{'s' if count != 1 else ''} "
+            f"for `{server_id}`{suffix}"
+        )
 
     async def _cmd_mcp_test(self, args: list[str], rest: str) -> str:
         if not args:
@@ -3504,10 +3523,16 @@ class _CommandExecutor:
         agent = self._agent()
         if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
             agent.reload_mcp_server_tools()
+        names = [
+            str(getattr(tool, "name", "") or "")
+            for tool in discovered
+            if str(getattr(tool, "name", "") or "")
+        ]
+        suffix = f": {', '.join(names)}" if names else "."
         return (
             f"[Success]: Retried `{server_id}` "
             f"(runtime: {plan.runtime_type}); "
-            f"discovered {len(discovered)} tool(s)."
+            f"discovered {len(discovered)} tool(s){suffix}"
         )
 
     # ── Event triggers ────────────────────────────────────────────────────
@@ -4342,7 +4367,25 @@ class _CommandExecutor:
         tc = _optional_dict_result(tc)
         thread_extras: set[str] = _string_set_result(tc.get("enabled_tools")) if tc else set()
         thread_disabled: set[str] = _string_set_result(tc.get("disabled_tools")) if tc else set()
-        all_enabled = (default_names | thread_extras) - thread_disabled
+        # Skill Kit / TTL'd tools live in temporary_tools, NOT enabled_tools.
+        # The graph folds the live (non-expired) ones into the bound tool list
+        # exactly like enabled_tools, so they must be counted here too —
+        # otherwise an active Skill Kit's tools look absent on this thread.
+        # Mirror the graph's liveness check: keep only entries still in date.
+        live_temp: set[str] = set()
+        temp_raw = tc.get("temporary_tools") if tc else None
+        if isinstance(temp_raw, dict):
+            now = utc_now()
+            for name, entry in temp_raw.items():
+                expires = entry.get("expires_at") if isinstance(entry, dict) else None
+                if not expires:
+                    continue
+                try:
+                    if ensure_aware_utc(datetime.fromisoformat(expires)) > now:
+                        live_temp.add(str(name))
+                except (TypeError, ValueError):
+                    continue
+        all_enabled = (default_names | thread_extras | live_temp) - thread_disabled
 
         lines = [f"Enabled Tools on this thread: {len(all_enabled)} active"]
         core_active: list[str] = sorted(n for n in all_enabled if n in default_names)
@@ -4364,10 +4407,13 @@ class _CommandExecutor:
             for name in optional_active:
                 t = avail_by_name.get(name, {})
                 desc = (t.get("description") or "").split("\n")[0][:60]
+                # Flag TTL'd tools (e.g. Skill Kit required_tools) so they're
+                # not mistaken for permanent enables.
+                suffix = " [temporary/TTL]" if name in live_temp else ""
                 if desc:
-                    lines.append(f"  {name}: {desc}")
+                    lines.append(f"  {name}: {desc}{suffix}")
                 else:
-                    lines.append(f"  {name}")
+                    lines.append(f"  {name}{suffix}")
         else:
             lines.append("")
             lines.append("Optional enabled: none")

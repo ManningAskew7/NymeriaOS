@@ -25,6 +25,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
+from ..core.mcp_tool_names import (
+    display_mcp_tool_names,
+    format_mcp_tool_name,
+    registered_mcp_tool_names,
+)
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .tool_search import DEFAULT_TTL, bind_tools_for_thread
 from .utils import get_user_id
@@ -117,8 +122,17 @@ def _inspect_mcp(name: str = "") -> str:
                 "last_error": server.last_error,
                 "risk_level": server.risk_level,
                 "registered_tool_names": server.registered_tool_names,
+                "tool_display_names": display_mcp_tool_names(server),
+                "discovered_tool_names": [
+                    tool_def.name for tool_def in server.discovered_tools
+                ],
                 "discovered_tools": [
-                    f"mcp__{server.id}__{tool_def.name}"
+                    {
+                        "name": tool_def.name,
+                        "display_name": f"{server.name or server.id} / {tool_def.name}",
+                        "registered_name": format_mcp_tool_name(server.id, tool_def.name),
+                        "description": tool_def.description,
+                    }
                     for tool_def in server.discovered_tools
                 ],
                 "missing_config": server.missing_config,
@@ -357,16 +371,17 @@ def _install_mcp_server_impl(
     defn = registry.get_server(defn.id) or defn
     defn.install_status = "ready"
     defn.last_error = None
-    defn.registered_tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    defn.registered_tool_names = registered_mcp_tool_names(defn, discovered)
     registry.save_server(defn)
     if preview_token:
         consume_preview(preview_token)
 
-    tool_names = [f"mcp__{defn.id}__{t.name}" for t in discovered]
+    tool_names = registered_mcp_tool_names(defn, discovered)
+    tool_display_names = display_mcp_tool_names(defn, discovered)
     install_text = (
         f"Installed MCP server id={defn.id}\n"
         f"Parsed as: {plan.parsed_summary}\n"
-        f"Discovered {len(discovered)} tool(s): {', '.join(tool_names) or '(none)'}\n"
+        f"Discovered {len(discovered)} tool(s): {', '.join(tool_display_names) or '(none)'}\n"
     )
     if not tool_names:
         return install_text + "No tools were discovered."
@@ -493,7 +508,7 @@ def _mcp_discover(server_id_or_name: str) -> str:
         server = registry.get_server(server.id) or server
         server.install_status = "ready"
         server.last_error = None
-        server.registered_tool_names = [f"mcp__{server.id}__{tool_def.name}" for tool_def in tools]
+        server.registered_tool_names = registered_mcp_tool_names(server, tools)
         registry.save_server(server)
         _reload_mcp_agent_tools()
         return _json_result(
@@ -501,6 +516,7 @@ def _mcp_discover(server_id_or_name: str) -> str:
             server_id=server.id,
             count=len(tools),
             tool_names=server.registered_tool_names,
+            tool_display_names=display_mcp_tool_names(server, tools),
         )
     except Exception as e:
         server.install_status = "failed"
@@ -570,10 +586,15 @@ def _mcp_retry(
     server = registry.get_server(server.id) or server
     server.install_status = "ready"
     server.last_error = None
-    server.registered_tool_names = [f"mcp__{server.id}__{tool_def.name}" for tool_def in tools]
+    server.registered_tool_names = registered_mcp_tool_names(server, tools)
     registry.save_server(server)
     _reload_mcp_agent_tools()
-    return _json_result(status="ok", server_id=server.id, tool_names=server.registered_tool_names)
+    return _json_result(
+        status="ok",
+        server_id=server.id,
+        tool_names=server.registered_tool_names,
+        tool_display_names=display_mcp_tool_names(server, tools),
+    )
 
 
 def _mcp_set_enabled(server_id_or_name: str, *, enabled: bool) -> str:

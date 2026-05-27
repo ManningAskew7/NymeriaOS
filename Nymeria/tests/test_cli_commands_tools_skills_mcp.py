@@ -329,7 +329,13 @@ class CapabilityFakeClient:
             "install_logs": ["ready"],
         }
         self.mcp_servers.append(server)
-        return {"status": "ok", "server": server, "discovered_tools": 1}
+        return {
+            "status": "ok",
+            "server": server,
+            "discovered_tools": 1,
+            "tool_names": ["mcp__new-fetch__fetch"],
+            "tool_display_names": ["Fetch / fetch"],
+        }
 
     async def delete_mcp_server(self, server_id: str) -> dict[str, Any]:
         self.calls.append(("delete_mcp_server", {"server_id": server_id}))
@@ -338,7 +344,12 @@ class CapabilityFakeClient:
 
     async def discover_mcp_server_tools(self, server_id: str) -> dict[str, Any]:
         self.calls.append(("discover_mcp_server_tools", {"server_id": server_id}))
-        return {"status": "ok", "server_id": server_id, "count": 2}
+        return {
+            "status": "ok",
+            "server_id": server_id,
+            "count": 2,
+            "discovered_tools": [{"name": "fetch"}, {"name": "read_url"}],
+        }
 
     async def test_mcp_server(self, server_id: str) -> dict[str, Any]:
         self.calls.append(("test_mcp_server", {"server_id": server_id}))
@@ -353,7 +364,13 @@ class CapabilityFakeClient:
             ("retry_mcp_server_install", {"server_id": server_id, "request": request})
         )
         server = {"id": server_id, "name": "Draft", "install_status": "ready"}
-        return {"status": "ok", "server": server, "discovered_tools": 1}
+        return {
+            "status": "ok",
+            "server": server,
+            "discovered_tools": 1,
+            "tool_names": ["mcp__draft__search"],
+            "tool_display_names": ["Draft / search"],
+        }
 
 
 def make_registry() -> CommandRegistry:
@@ -620,7 +637,9 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     assert run(registry.dispatch_async(unconfirmed, "/mcp status draft")).ok is True
     assert run(registry.dispatch_async(unconfirmed, "/mcp logs fetch 1")).ok is True
     assert run(registry.dispatch_async(unconfirmed, "/mcp test fetch")).ok is True
-    assert run(registry.dispatch_async(unconfirmed, "/mcp discover fetch")).ok is True
+    discover_result = run(registry.dispatch_async(unconfirmed, "/mcp discover fetch"))
+    assert discover_result.ok is True
+    assert "fetch, read_url" in discover_result.messages[0].content
     retry_result = run(registry.dispatch_async(unconfirmed, "/mcp retry draft"))
     remove_result = run(registry.dispatch_async(unconfirmed, "/mcp remove fetch"))
 
@@ -631,13 +650,17 @@ def test_mcp_commands_use_api_client_methods_and_confirm_destructive_actions() -
     assert sink.messages[-1].level == "warning"
 
     confirmed = make_context(client, output=ListCommandOutputSink(), confirm=True)
-    assert run(registry.dispatch_async(confirmed, "/mcp retry draft")).ok is True
-    assert run(
+    retry_confirmed = run(registry.dispatch_async(confirmed, "/mcp retry draft"))
+    assert retry_confirmed.ok is True
+    assert "Draft / search" in retry_confirmed.messages[0].content
+    add_result = run(
         registry.dispatch_async(
             confirmed,
             "/mcp add uvx mcp-server-fetch --name Fetch --thread current --yes",
         )
-    ).ok is True
+    )
+    assert add_result.ok is True
+    assert "Fetch / fetch" in add_result.messages[0].content
     assert run(registry.dispatch_async(confirmed, "/mcp remove fetch")).ok is True
 
     assert (
