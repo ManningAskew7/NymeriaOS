@@ -31,6 +31,7 @@ and implementation disagree.
 | Accounts and authentication | [accounts.md](./accounts.md) |
 | Credential vault | [credentials.md](./credentials.md) |
 | Context compaction and checkpoints | [compaction-and-checkpoints.md](./compaction-and-checkpoints.md) |
+| Memory and compaction design rationale (why in-context, not system prompt) | [memory-and-compaction-rationale.md](./memory-and-compaction-rationale.md) |
 | Reasoning token streaming | [reasoning-streaming.md](./reasoning-streaming.md) |
 | TODO scheduling and watchdog | [user-todo-management.md](./user-todo-management.md) |
 | Event-driven triggers | [triggers.md](./triggers.md) |
