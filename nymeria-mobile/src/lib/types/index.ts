@@ -1914,6 +1914,7 @@ export interface MCPInstallResponse {
   parsedSummary: string;
   discoveredTools: number;
   toolNames: string[];
+  toolDisplayNames: string[];
   threadId?: string;
   discoveryError?: string;
   installLogs: string[];

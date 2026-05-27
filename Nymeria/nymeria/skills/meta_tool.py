@@ -191,7 +191,10 @@ def create_skill_meta_tool(
         + "\n"
     )
 
-    thread_tools_provided = thread_tool_names is not None
+    # NOTE: in dynamic-binding mode this set is the executor SUPERSET (every
+    # registered tool), not the tools bound on this thread. It is only safe to
+    # use for the advisory allowed-tools notice below — never as a gate that
+    # decides whether to bind a Skill Kit's required_tools.
     thread_tools_set = set(thread_tool_names or [])
 
     @tool_decorator("Skill", return_direct=False)
@@ -239,66 +242,42 @@ def create_skill_meta_tool(
             from ..tools.tool_search import bind_tools_for_thread
             from ..tools.utils import get_thread_id, get_user_id
 
-            missing_required_tools = [
-                tool_name
-                for tool_name in skill.required_tools
-                if not thread_tools_provided or tool_name not in thread_tools_set
-            ]
-            already_bound_required_tools = [
-                tool_name
-                for tool_name in skill.required_tools
-                if thread_tools_provided and tool_name in thread_tools_set
-            ]
-            binding_summary_lines: list[str] = []
-            if missing_required_tools:
-                binding = bind_tools_for_thread(
-                    missing_required_tools,
-                    "",
-                    get_thread_id(config),
-                    get_user_id(config),
-                    ttl=skill.tool_ttl,
-                    strict=True,
-                    source="skill_kit",
-                    skill_name=skill.name,
-                    reason="Skill Kit required_tools activation",
+            # Delegate the whole required set to bind_tools_for_thread and let
+            # IT decide what is missing. It diffs against this thread's REAL
+            # config (default-bound ∪ enabled_tools ∪ live temporary_tools −
+            # disabled_tools), binds only the genuinely-missing tools, reports
+            # already-present ones as no-ops, and queues a reload only when a
+            # new binding was actually written.
+            #
+            # We must NOT pre-filter the required set against `thread_tools_set`
+            # here. In dynamic-binding mode the meta-tool that executes Skill()
+            # is built from the executor SUPERSET (every registered tool — see
+            # compute_tool_superset), so `thread_tools_set` is "every tool that
+            # exists," not "tools bound on this thread." A pre-gate keyed on it
+            # classified every required tool as already-bound and skipped
+            # binding entirely, so Skill Kit tools were never persisted.
+            binding = bind_tools_for_thread(
+                skill.required_tools,
+                "",
+                get_thread_id(config),
+                get_user_id(config),
+                ttl=skill.tool_ttl,
+                strict=True,
+                source="skill_kit",
+                skill_name=skill.name,
+                reason="Skill Kit required_tools activation",
+            )
+            if not binding.ok:
+                return (
+                    f"[Skill Kit activation failed: {skill.name}]\n"
+                    f"{binding.text}\n\n"
+                    "No required tools were bound. Do not follow this skill's "
+                    "instructions until the dependency problem is fixed."
                 )
-                if not binding.ok:
-                    return (
-                        f"[Skill Kit activation failed: {skill.name}]\n"
-                        f"{binding.text}\n\n"
-                        "No required tools were bound. Do not follow this skill's "
-                        "instructions until the dependency problem is fixed."
-                    )
 
-                binding_text = binding.text
-                binding_reload_queued = bool(binding.reload_tools and not binding.cap_hit)
-                binding_cap_hit = bool(binding.cap_hit)
-                binding_summary_lines.append(
-                    "Added/un-disabled required tool(s): "
-                    + (
-                        ", ".join(sorted(binding.reload_tools))
-                        if binding.reload_tools
-                        else "none"
-                    )
-                )
-            else:
-                binding_text = (
-                    "[Success]: Required tools already bound on this thread.\n"
-                    "No binding changes; nothing to reload."
-                )
-                binding_summary_lines.append("Added/un-disabled required tool(s): none")
-            if already_bound_required_tools:
-                binding_summary_lines.append(
-                    "Skipped already-enabled required tool(s): "
-                    + ", ".join(sorted(already_bound_required_tools))
-                )
-            if binding_summary_lines:
-                binding_text = (
-                    "Skill Kit dependency summary:\n"
-                    + "\n".join(f"  {line}" for line in binding_summary_lines)
-                    + "\n"
-                    + binding_text
-                )
+            binding_text = binding.text
+            binding_reload_queued = bool(binding.reload_tools and not binding.cap_hit)
+            binding_cap_hit = bool(binding.cap_hit)
             body += (
                 "\n\n---\n"
                 f"Skill Kit binding result for {skill.name}:\n"

@@ -101,6 +101,13 @@
     return `mcp__${serverId}__${toolName}`;
   }
 
+  function getServerSubtitle(server: MCPServer): string {
+    if (server.sourceType || server.runtimeType) {
+      return [server.sourceType || 'manual', server.runtimeType || server.transport].join(' / ');
+    }
+    return server.transport === 'http' ? 'HTTP endpoint' : 'Local stdio server';
+  }
+
   function toggleExpanded(serverId: string) {
     expandedServer = expandedServer === serverId ? null : serverId;
   }
@@ -342,7 +349,7 @@
               <span class="status-dot" style="background: {getStatusColor(server)}"></span>
               <div class="server-meta">
                 <span class="server-name">{server.name}</span>
-                <span class="server-id">{server.id}</span>
+                <span class="server-subtitle">{getServerSubtitle(server)}</span>
               </div>
               <span class="tool-badge">{server.discoveredTools.length} tools</span>
               <span class="install-status {getStatusClass(server)}">{getStatusLabel(server)}</span>
@@ -380,6 +387,10 @@
                 />
               {:else}
                 <div class="server-info-section">
+                  <div class="info-row">
+                    <span class="info-label">Runtime ID</span>
+                    <code>{server.id}</code>
+                  </div>
                   <div class="info-row">
                     <span class="info-label">{server.transport === 'http' ? 'URL' : 'Command'}</span>
                     <code>
@@ -447,7 +458,7 @@
                           title={!server.enabled ? 'MCP server is not running. Enable the server to make this tool available' : ''}
                         >
                           <div class="tool-info">
-                            <code class="tool-name-code">{tool.name}</code>
+                            <span class="tool-display-name" title={mcpName}>{tool.name}</span>
                             {#if tool.description}
                               <span class="tool-description">{tool.description}</span>
                             {/if}
@@ -658,10 +669,9 @@
     line-height: 1.2;
   }
 
-  .server-id {
+  .server-subtitle {
     font-size: 0.72rem;
     color: var(--text-muted, #777);
-    font-family: var(--font-mono);
   }
 
   .tool-badge {
@@ -836,9 +846,13 @@
     gap: 0.1rem;
   }
 
-  .tool-name-code {
+  .tool-display-name {
     font-size: 0.78rem;
     color: var(--accent-primary, #6c9fff);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .tool-description {

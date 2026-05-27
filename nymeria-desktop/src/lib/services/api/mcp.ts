@@ -73,6 +73,7 @@ export class MCPApi extends ToolsApi {
       parsedSummary: (data.parsed_summary as string) || '',
       discoveredTools: (data.discovered_tools as number) ?? 0,
       toolNames: (data.tool_names as string[]) || [],
+      toolDisplayNames: (data.tool_display_names as string[]) || [],
       threadId: (data.thread_id as string) ?? undefined,
       discoveryError: (data.discovery_error as string) ?? undefined,
       installLogs: (data.install_logs as string[]) || [],

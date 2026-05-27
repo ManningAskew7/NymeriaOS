@@ -34,6 +34,10 @@
   let canPreview = $derived(stage === 'input' && source.trim().length > 0);
   let canInstall = $derived(stage === 'preview' && activePlan !== null && (!activePlan.confirmation_required || confirmed));
 
+  function visibleToolNames(response: MCPInstallResponse): string[] {
+    return response.toolDisplayNames.length > 0 ? response.toolDisplayNames : response.toolNames;
+  }
+
   function resetState() {
     stage = 'input';
     source = '';
@@ -240,10 +244,10 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
         <Icon name={result.status === 'ok' ? 'success' : 'warning'} size={28} />
         <h3>{result.server.name}</h3>
         <p>{result.discoveryError || `${result.discoveredTools} tools discovered`}</p>
-        {#if result.toolNames.length > 0}
+        {#if visibleToolNames(result).length > 0}
           <div class="chips">
-            {#each result.toolNames as toolName}
-              <code>{toolName}</code>
+            {#each visibleToolNames(result) as toolName, index}
+              <code title={result.toolNames[index] ?? toolName}>{toolName}</code>
             {/each}
           </div>
         {/if}
