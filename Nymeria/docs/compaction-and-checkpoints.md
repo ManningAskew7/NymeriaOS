@@ -18,7 +18,7 @@ A thread's conversation lives in three places:
 
 ## Compaction flow
 
-Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
+Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. Auto-compaction fires at three points: **pre-flight** (before a new user turn), **sub-turn** (mid-loop, after a tool batch, see "Sub-turn trigger" below), and as a last resort on a context-overflow exception. The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
 
 - **`percentage`** (default): fires when input tokens reach `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`.
 - **`tokens`**: fires when input tokens reach the absolute count `COMPACT_THRESHOLD_TOKENS` (1,000–2,000,000), clamped at runtime to the model's context window so an oversized setting never disables compaction.
@@ -80,6 +80,14 @@ The summary prompt requires these exact sections:
 - `## RAG Search Queries`
 
 The `RAG Search Queries` section should contain 3-5 quoted search strings that target important decisions, findings, file paths, and task state from the compacted thread. These are hints for the next agent turn to retrieve the full preserved conversation from RAG when the summary alone is not enough.
+
+### Sub-turn trigger
+
+Auto-compaction can fire **mid-turn**, not just at turn boundaries. The vendored router `route_after_tools` runs after each tool batch and before the next LLM call; there it asks `agent.should_halt_for_subturn_compaction(thread_id, messages)`, which reads the most recent AIMessage's provider-reported `input_tokens` (via `token_usage.extract_last_from_messages` -- `TokenTracker` is stale mid-loop) and compares against the per-thread trigger. If crossed, it flags the thread and returns `"end"` to halt the graph at that sub-turn boundary.
+
+`astream()` / `chat()` then run the normal compaction (`_do_auto_compact` / `_do_compact_sync`) and **re-drive with `{"messages": []}`** so the agent continues from the reloaded memory. This is always a genuine mid-task boundary: the agent has a pending LLM call to process the tool results, so it is never "done" here (a final, no-tool-call response routes via `END`, where post-turn compaction handles it without a re-drive). The loop repeats if the continuation crosses the trigger again, capped by `MAX_COMPACTIONS_PER_TURN` (default 3); once the cap is hit, `should_halt_for_subturn_compaction` stops flagging so the continuation runs to completion. Per-turn state (`_subturn_compact_requested`, `_compactions_this_turn`) is cleared when the turn's lock releases.
+
+Clients see a `compacting` event, then a `compacted` event carrying `subturn: true`, then the resumed assistant output, all within the same turn.
 
 ### Overflow rewind recovery
 

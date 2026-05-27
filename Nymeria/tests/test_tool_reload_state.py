@@ -27,6 +27,8 @@ def _bare_agent() -> NymeriaAgent:
     agent = object.__new__(NymeriaAgent)
     agent._pending_tool_reload = {}
     agent._turn_reload_count = {}
+    agent._subturn_compact_requested = set()
+    agent._compactions_this_turn = {}
     return agent
 
 

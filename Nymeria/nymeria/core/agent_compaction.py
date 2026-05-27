@@ -237,6 +237,28 @@ class CompactionManager:
             return max(1, min(int(tokens), int(model_limit)))
         return max(1, int(model_limit * threshold))
 
+    def should_subturn_compact(self, thread_id: str, messages: List[Any]) -> bool:
+        """True if the running context crossed the auto-compact trigger mid-loop.
+
+        Called from ``route_after_tools`` (after a tool batch, before the next
+        LLM call), where ``TokenTracker`` is stale. Reads the most recent
+        AIMessage's provider-reported input tokens from ``messages`` instead and
+        compares against the per-thread trigger.
+        """
+        agent = self._agent
+        if agent.settings.context_management != "auto_compact":
+            return False
+        from .token_usage import extract_last_from_messages
+
+        input_tokens, _ = extract_last_from_messages(messages or [])
+        if not input_tokens:
+            return False
+        llm_config = agent._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
+        mode, pct, tokens = self._resolve_threshold_config(thread_id)
+        trigger = self.compact_trigger_tokens(model_limit, pct, mode=mode, tokens=tokens)
+        return input_tokens >= trigger
+
     # ------------------------------------------------------------------
     # Async compaction
     # ------------------------------------------------------------------
