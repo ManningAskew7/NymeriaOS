@@ -30,7 +30,6 @@ class ToolCategory(str, Enum):
     GOOGLE_DOCS = "google_docs"
     _PRV_B = "_prv_b"
     TWITCH = "twitch"
-    _PRV_A = "_prv_a"
     SKILLS = "skills"
     INTEGRATIONS = "integrations"
     CUSTOM = "custom"
@@ -135,16 +134,6 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
         ),
     ),
     (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
-    (
-        ToolCategory._PRV_A,
-        (
-            "_PRV_TOOLS_A1",
-            "_PRV_TOOLS_A2",
-            "_PRV_TOOLS_A3",
-            "_PRV_TOOLS_A4",
-            "_PRV_TOOLS_A5",
-        ),
-    ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (
@@ -212,12 +201,33 @@ _GENERAL_MODERATE_TOOL_NAMES = frozenset(
     }
 )
 
-_EXPLICIT_CATEGORY_BY_TOOL_NAME: Mapping[str, ToolCategory] = {
+_EXPLICIT_CATEGORY_BY_TOOL_NAME: Dict[str, ToolCategory] = {
     # These profile-management tools are optional, so they intentionally live
     # outside MEMORY_TOOLS while still belonging to the profile category.
     "memory_clear_all": ToolCategory.PROFILE,
     "rag_settings": ToolCategory.PROFILE,
 }
+
+# Plugin-contributed tool category overrides. Plugins call
+# ``register_plugin_tool_category`` at import time so their tool names map to
+# the right ToolCategory without metadata.py having to know about each plugin.
+_PLUGIN_TOOL_CATEGORIES: Dict[str, ToolCategory] = {}
+_PLUGIN_TOOL_SECURITY_LEVELS: Dict[str, "SecurityLevel"] = {}
+
+
+def register_plugin_tool_category(
+    tool_name: str,
+    category: ToolCategory,
+    *,
+    security_level: Optional["SecurityLevel"] = None,
+) -> None:
+    """Let a plugin contribute a category (and optionally a security level)
+    for one of its built-in tools, without metadata.py having to import the
+    plugin or know about its tool names.
+    """
+    _PLUGIN_TOOL_CATEGORIES[tool_name] = category
+    if security_level is not None:
+        _PLUGIN_TOOL_SECURITY_LEVELS[tool_name] = security_level
 
 _BROWSER_SAFE_TOOL_NAMES = frozenset(
     {
@@ -1043,7 +1053,7 @@ def _infer_security_level(
         return SecurityLevel.SENSITIVE
     if tool_name == "twitch_ban":
         return SecurityLevel.SENSITIVE
-    if category in {ToolCategory.PROFILE, ToolCategory.TODO, ToolCategory._PRV_A}:
+    if category in {ToolCategory.PROFILE, ToolCategory.TODO}:
         return SecurityLevel.SAFE
     if category == ToolCategory.GENERAL:
         if tool_name in _GENERAL_MODERATE_TOOL_NAMES:
@@ -1089,11 +1099,15 @@ def _generate_builtin_tool_metadata() -> Dict[str, ToolMetadata]:
     categories = _category_by_tool_name()
     generated: Dict[str, ToolMetadata] = {}
     for name, tool_obj in sorted(registered_tools.items()):
-        category = _EXPLICIT_CATEGORY_BY_TOOL_NAME.get(
-            name,
-            categories.get(name, ToolCategory.GENERAL),
+        category = (
+            _EXPLICIT_CATEGORY_BY_TOOL_NAME.get(name)
+            or _PLUGIN_TOOL_CATEGORIES.get(name)
+            or categories.get(name)
+            or ToolCategory.GENERAL
         )
-        security_level = _infer_security_level(name, category)
+        security_level = _PLUGIN_TOOL_SECURITY_LEVELS.get(name) or _infer_security_level(
+            name, category
+        )
         generated[name] = ToolMetadata(
             name=name,
             category=category,

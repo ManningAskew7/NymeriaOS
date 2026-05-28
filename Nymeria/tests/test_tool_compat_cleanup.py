@@ -6,12 +6,6 @@ from pathlib import Path
 def test_legacy_tool_shim_files_are_absent():
     tools_dir = Path(__file__).resolve().parents[1] / "nymeria" / "tools"
     removed = [
-        "_prv_a_products.py",
-        "_prv_a_acme.py",
-        "_prv_a_acme.py",
-        "_prv_a_supplier.py",
-        "_prv_a_utils.py",
-        "_prv_a_vendor.py",
         "subagent.py",
     ]
 

@@ -1,13 +1,14 @@
 """
 Google Sheets search tool for Nymeria.
 
-Provides a generic tool to query any Google Sheet by ID, plus an internal
-helper used by the dedicated _PRV_A wrapper tools.
+Provides a generic tool to query any Google Sheet by ID. Authentication
+defaults to per-user OAuth, but callers can pass a credential-vault ID
+to read app-level reference data through a Google service account.
 """
 
+import json
 import logging
 import time
-from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
@@ -22,11 +23,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #
 # Key format: ``f"{scope}::{spreadsheet_id}::{sheet_name}::{gid}"``. For
-# user-OAuth reads, scope is the Nymeria user_id. For _PRV_A reference-data
-# reads, scope is an app-level service-account namespace.
+# user-OAuth reads, scope is the Nymeria user_id. For service-account reads,
+# scope is ``f"service_account:{credential_id}"`` so entries from different
+# vault credentials never collide.
 
 _sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
 _CACHE_TTL = 300  # seconds
+
+# Read-only Sheets scope used by service-account reads.
+_SERVICE_ACCOUNT_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 
 def _invalidate_cache(user_id: str, spreadsheet_id: str) -> None:
@@ -57,8 +62,59 @@ def _get_sheets_service(user_id: str) -> Any:
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
-def _get__prv_a_sheets_service() -> Any:
-    """Build a read-only Sheets service for _PRV_A reference spreadsheets."""
+def _load_service_account_json(credential_id: str) -> Optional[dict]:
+    """Resolve a service-account JSON blob from the credential vault.
+
+    The vault stores the full service-account JSON as a single secret field
+    (``service_account_json``) on a credential with ``kind="service_account"``.
+    Returns the parsed dict, or None if the credential is missing/disabled.
+    """
+    try:
+        from ..core.credential_vault import (
+            CredentialAccessDenied,
+            CredentialNotFound,
+            CredentialSecretUnavailable,
+            get_credential_vault_repo,
+        )
+    except ImportError:
+        logger.error("Credential vault module unavailable for service-account lookup.")
+        return None
+
+    repo = get_credential_vault_repo()
+    try:
+        raw = repo.get_secret_field(
+            credential_id,
+            "service_account_json",
+            target_type="native_tool",
+            target_id="google_sheets",
+        )
+    except (CredentialNotFound, CredentialAccessDenied, CredentialSecretUnavailable) as exc:
+        logger.debug(
+            "Service-account credential %s unavailable: %s",
+            credential_id,
+            exc.__class__.__name__,
+        )
+        return None
+
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error(
+            "Service-account credential %s did not contain valid JSON.",
+            credential_id,
+        )
+        return None
+    if not isinstance(info, dict):
+        logger.error(
+            "Service-account credential %s JSON was not an object.",
+            credential_id,
+        )
+        return None
+    return info
+
+
+def _get_service_account_sheets_service(credential_id: str) -> Any:
+    """Build a read-only Sheets service from a vault-stored service-account JSON."""
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
@@ -69,24 +125,33 @@ def _get__prv_a_sheets_service() -> Any:
         )
         return None
 
-    from ..config import get_settings
-
-    settings = get_settings()
-    service_account_file = settings._prv_a_service_account_file
-    if not service_account_file:
+    info = _load_service_account_json(credential_id)
+    if not info:
         return None
 
-    path = Path(service_account_file).expanduser()
-    if not path.exists():
-        logger.error("_PRV_A Google service account file not found: %s", path)
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=_SERVICE_ACCOUNT_SHEETS_SCOPES,
+        )
+    except Exception as exc:
+        logger.error(
+            "Could not build service-account credentials from credential %s: %s",
+            credential_id,
+            exc,
+        )
         return None
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = service_account.Credentials.from_service_account_file(
-        str(path),
-        scopes=scopes,
-    )
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def _service_account_unavailable_message(credential_id: str) -> str:
+    return (
+        f"[Error]: Google Sheets service-account credential '{credential_id}' "
+        "is not configured. Save a Google service-account JSON in the credential "
+        "vault with provider=\"google_sheets\", kind=\"service_account\", and "
+        "secret field \"service_account_json\", then share the target "
+        "spreadsheets with the service-account email."
+    )
 
 
 def _fetch_sheet_with_service(
@@ -198,39 +263,50 @@ def _fetch_sheet(
     )
 
 
-def fetch__prv_a_reference_sheet(
+def fetch_service_account_sheet_data(
     spreadsheet_id: str,
     sheet_name: str = "",
     gid: Optional[int] = None,
+    *,
+    service_account_credential_id: str,
 ) -> Tuple[List[str], List[List[str]]]:
-    """Fetch _PRV_A reference data through the app-level service account."""
+    """Fetch sheet data through a vault-stored Google service account.
+
+    ``service_account_credential_id`` identifies a credential-vault entry
+    (provider ``google_sheets``, kind ``service_account``) whose
+    ``service_account_json`` field stores the full service-account JSON.
+    Caches per credential so reads from different service accounts cannot
+    collide.
+    """
+    cache_scope = f"service_account:{service_account_credential_id}"
     return _fetch_sheet_with_service(
-        "___prv_a_service_account__",
+        cache_scope,
         spreadsheet_id,
         sheet_name,
         gid,
-        service_factory=_get__prv_a_sheets_service,
-        unavailable_message=(
-            "[Error]: _PRV_A Google Sheets service account not configured. "
-            "Set _PRV_A_SERVICE_ACCOUNT_FILE and share the reference "
-            "spreadsheets with that service account."
+        service_factory=lambda: _get_service_account_sheets_service(
+            service_account_credential_id
         ),
+        unavailable_message=_service_account_unavailable_message(service_account_credential_id),
     )
 
 
-def fetch__prv_a_raw_values(
+def fetch_service_account_raw_values(
     spreadsheet_id: str,
     gid: int,
+    *,
+    service_account_credential_id: str,
     cache_suffix: str = "",
     range_spec_override: str = "",
 ) -> List[List[str]]:
-    """Fetch raw row values from a _PRV_A reference sheet with caching.
+    """Fetch raw row values via a service account with caching.
 
-    Unlike ``fetch__prv_a_reference_sheet``, this returns all rows without
-    header detection, for sheets that need custom header-merging logic
-    (e.g. the supplier matrix with a two-row header structure).
+    Unlike :func:`fetch_service_account_sheet_data`, this returns all rows
+    without header detection, for sheets that need custom header-merging
+    logic (e.g. multi-row header structures).
     """
-    cache_key = f"___prv_a_service_account__::{spreadsheet_id}::__raw_{cache_suffix}__::{gid}"
+    cache_scope = f"service_account:{service_account_credential_id}"
+    cache_key = f"{cache_scope}::{spreadsheet_id}::__raw_{cache_suffix}__::{gid}"
     now = time.time()
 
     if cache_key in _sheet_cache:
@@ -238,13 +314,9 @@ def fetch__prv_a_raw_values(
         if now - ts < _CACHE_TTL:
             return cached_rows
 
-    service = _get__prv_a_sheets_service()
+    service = _get_service_account_sheets_service(service_account_credential_id)
     if not service:
-        raise RuntimeError(
-            "[Error]: _PRV_A Google Sheets service account not configured. "
-            "Set _PRV_A_SERVICE_ACCOUNT_FILE and share the reference "
-            "spreadsheets with that service account."
-        )
+        raise RuntimeError(_service_account_unavailable_message(service_account_credential_id))
 
     # Resolve sheet name from gid
     sheet_name = ""
@@ -281,18 +353,24 @@ def search_sheet_data(
     column: str = "",
     max_results: int = 20,
     strip_hyphens: bool = False,
-    use__prv_a_service_account: bool = False,
+    service_account_credential_id: Optional[str] = None,
 ) -> str:
     """
     Internal search function used by both the generic tool and dedicated wrappers.
 
-    Scoped to a Nymeria user_id so each user's Google auth is used, unless
-    ``use__prv_a_service_account`` is true for _PRV_A app-level reference data.
-    Returns a formatted string with matching rows.
+    Defaults to per-user OAuth (scoped to ``user_id``). When
+    ``service_account_credential_id`` is set, the read uses a Google
+    service account whose JSON is stored in the credential vault. Returns
+    a formatted string with matching rows.
     """
     try:
-        if use__prv_a_service_account:
-            headers, rows = fetch__prv_a_reference_sheet(spreadsheet_id, sheet_name, gid)
+        if service_account_credential_id:
+            headers, rows = fetch_service_account_sheet_data(
+                spreadsheet_id,
+                sheet_name,
+                gid,
+                service_account_credential_id=service_account_credential_id,
+            )
         else:
             if not user_id:
                 return "[Error]: user_id is required for user-authenticated Google Sheets access."
