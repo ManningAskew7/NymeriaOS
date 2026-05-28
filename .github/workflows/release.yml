@@ -370,7 +370,7 @@ jobs:
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         if: env.SHOULD_PUSH == 'true'
