@@ -49,7 +49,7 @@ This feature allows users to create, edit, complete, and delete TODOs for Nymeri
 | Component | File | Purpose |
 |-----------|------|---------|
 | `TodoItem` model | `nymeria/core/todo_manager.py` | Pydantic model with `created_by`, `recurrence` fields |
-| CRUD endpoints | `nymeria/triggers/api.py` | REST API for create/update/delete/complete |
+| CRUD endpoints | `nymeria/api/routers/todos.py` | REST API for create/update/delete/complete |
 | Schedule DB | `nymeria/core/todo_schedule_db.py` | SQLite index for efficient polling |
 | Ticker | `nymeria/core/ticker.py` | Polls and executes due TODOs |
 | Frontend form | `nymeria-desktop/src/lib/components/todos/TodoForm.svelte` | Create/edit modal |
@@ -74,7 +74,7 @@ class TodoItem(BaseModel):
 
 ### REST API Endpoints
 
-**File:** `nymeria/triggers/api.py`
+**File:** `nymeria/api/routers/todos.py`
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -413,7 +413,7 @@ Scheduling behavior uses existing runtime settings such as:
 
 ### Backend
 - `nymeria/core/todo_manager.py` - Added `created_by`, `recurrence` fields
-- `nymeria/triggers/api.py` - Added CRUD endpoints, fixed sync timing
+- `nymeria/api/routers/todos.py` - Added CRUD endpoints, fixed sync timing
 - `nymeria/core/ticker.py` - Added recurrence handling, debug logging
 - `nymeria/core/todo_schedule_db.py` - Added debug logging
 

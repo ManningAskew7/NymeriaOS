@@ -132,7 +132,7 @@ Other messages are sent to Nymeria as chat turns.
 
 ## Notes
 
-- Socket Mode avoids exposing a public Slack webhook URL, which matches Nymeria's private VPS deployment model.
+- Socket Mode avoids exposing a public Slack webhook URL, which matches self-hosted deployments.
 - The bot handles both `message` and `app_mention` events because Slack workspaces can deliver mentions through either path.
 - Duplicate Slack events are deduped by channel and timestamp.
 - Slack posting is chunked below message limits and sent into Slack threads when available.

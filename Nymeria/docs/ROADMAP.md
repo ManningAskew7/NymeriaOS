@@ -25,8 +25,7 @@ not be added here.
    API-backed MCP tools.
 9. Add a persistent workspace/file browser panel for produced artifacts; current
    chat surfaces expose workspace artifact modals and downloads.
-10. Continue `/goal` and `/orchestrate` repair work tracked in
-   [BUG-goal-orchestrate-review-2026-05-18.md](./BUG-goal-orchestrate-review-2026-05-18.md).
+10. Continue `/goal` and `/orchestrate` repair work.
 
 ## Future Product Ideas
 

@@ -19,7 +19,7 @@ This page covers four paths, ordered roughly from simplest to most powerful. **Y
 
 **This is the path most people overlook.** If your goal is "talk to my AI from anywhere," you don't need any of the network setup below. You just need a bot token.
 
-Nymeria ships ready-to-use outbound bot integrations for Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, Rocket.Chat, and Twitch. Each one works by having a bot daemon make outbound connections to the chat platform's API: polling for Telegram, Socket Mode for Slack, Gateway for Discord, sync loop for Matrix, and so on. The chat platform routes messages between you and your bot.
+Nymeria ships ready-to-use outbound bot integrations for Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, and Rocket.Chat. Each one works by having a bot daemon make outbound connections to the chat platform's API: polling for Telegram, Socket Mode for Slack, Gateway for Discord, sync loop for Matrix, and so on. The chat platform routes messages between you and your bot.
 
 Nymeria also supports API-hosted webhook runtimes for WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE. Those need one of the public URL options below because the chat platform must POST webhooks to your API.
 

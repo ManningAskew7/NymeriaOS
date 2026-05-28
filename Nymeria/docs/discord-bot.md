@@ -12,7 +12,7 @@ Docker: nymeria-discord-bot (profile: discord)
 	      └─ SSE listener (autonomous task stream → channel posts)
 ```
 
-Unlike the Twitch bot (which calls `agent.chat()` directly), the Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`)  -  users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
+The Discord bot communicates exclusively via the REST API. Chat responses are streamed via SSE (`POST /chat`)  -  users see text appear progressively as the model generates it, with tool call boundaries shown as visual separators. This means:
 
 - The frontend always reflects the same state as Discord
 - Context stats, compaction, and tool changes are visible in the UI

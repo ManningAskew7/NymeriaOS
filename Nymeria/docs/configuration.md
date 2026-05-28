@@ -955,7 +955,6 @@ reachable from the backend process.
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
 | `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth installed-app credentials JSON file. Used by both the legacy `*_auth_start` tools and the new unified `request_credential(kind="oauth")` flow for Google providers. Required for any Google OAuth path; user tokens are stored in the vault as `kind=oauth_token`, but the client secret itself stays in this file (one per Nymeria install). |
-| `_PRV_A_SERVICE_ACCOUNT_FILE` | - | Path to a Google service account JSON file for _PRV_A reference Sheets |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
@@ -1833,56 +1832,11 @@ Settings > Provider > Open Wizard to point the backend at an already-running
 proxy endpoint; installed desktop builds do not start CLIProxy or perform OAuth
 login.
 
-Two runtime shapes are supported:
-
-#### Native Anthropic (Recommended)
-
-Uses `ChatAnthropic` with native `/v1/messages` format. No format translation  -  tool calling, streaming, and extended thinking work identically to direct API usage. Requires CLIProxyAPI with Claude OAuth login (`-claude-login`).
-
-```bash
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-opus-4-7             # Must match a model in proxy's Claude registry
-LLM_BASE_URL=http://localhost:8317    # No /v1 suffix  -  ChatAnthropic appends /v1/messages
-ANTHROPIC_API_KEY=cpx-...             # Proxy gatekeeper key, not a hosted Anthropic key
-```
-
-When `LLM_BASE_URL` is set for the `anthropic` provider, `ChatAnthropic` is configured with:
-- `anthropic_api_url` pointed at the proxy
-- A `User-Agent: claude-cli/2.1.113` header that tells CLIProxyAPI v6.9.36 to skip system prompt cloaking (so Nymeria's own `soul.md` is preserved)
-- Loop-local async HTTP clients so cached graph/model objects are safe when regular API chat and callable/autonomous bridge execution use different asyncio event loops
-
-#### OpenAI-Compatible / Codex OAuth
-
-Uses Nymeria's `ChatOpenAIWithReasoning` subclass pointed at the proxy's OpenAI-compatible endpoint. The base URL must include `/v1`; otherwise Responses mode posts to `/responses` and CLIProxy returns `404 page not found`.
-
-```bash
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-5.5                      # Model name from the proxy's /v1/models
-OPENAI_API_MODE=responses
-OPENAI_API_KEY=cpx-latest-local-test   # Proxy gatekeeper key, not a hosted OpenAI key
-LLM_BASE_URL=http://localhost:8317/v1  # Proxy endpoint (with /v1 suffix)
-EMBEDDING_API_KEY=sk-...               # Optional hosted/local embeddings key; do not use cpx-* here
-```
-
-For GPT-5.5 through Codex OAuth, run the pinned CLIProxy deployment documented
-in `docs/cliproxy.md`. To route individual threads, use **Thread Settings →
-Model → OpenAI (Custom base URL)** and set the thread-level Base URL/API Key
-fields; the default OpenAI API mode is `Responses API`, with `Chat Completions`
-available only as a compatibility override and not recommended if thinking is
-enabled. To route the whole deployment, use **Settings → Provider → Open
-Wizard** or **Settings → LLM → OpenAI (Custom base URL)** and keep
-`OPENAI_API_MODE=responses` in the active env file. Per-thread overrides honor
-`provider`, `base_url`, `api_key`, and `openai_api_mode`  -  the API key is the
-CLIProxy gatekeeper key (e.g. `cpx-latest-local-test`), not an upstream OpenAI
-key.
-
-OpenAI-compatible providers also receive Nymeria-managed loop-local `http_async_client` pools. This bypasses LangChain's process-global async `httpx` client cache so direct OpenAI, OpenRouter, and CLIProxy/Codex models remain safe when a cached thread graph is used from both the FastAPI event loop and the sync stream-bridge loop.
+CLIProxy and OpenAI-compatible providers configure via standard base-URL/API-key settings; see the provider-specific docs.
 
 **Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
 
 The global LLM settings are intentionally not account-scoped. Two users on the same Nymeria server cannot have different "global" providers; the last admin save wins for the deployment. To give one user's thread a different provider, configure that thread's LLM override instead.
-
-**CLIProxyAPI tool name prefixing**: CLIProxyAPI can add a `proxy_` prefix to tool names with OAuth tokens. To disable this, add top-level `"tool_prefix_disabled": true` to the Claude OAuth token file in the auth directory (e.g., `~/.cli-proxy-api/claude-<email>.json`) and restart CLIProxy. `Nymeria/tools/check_cliproxy_cloak.py --auth-dir <auth-dir>` fails loudly when an active Claude auth file is missing the flag.
 
 ---
 

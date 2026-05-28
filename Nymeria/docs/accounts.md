@@ -274,13 +274,12 @@ Google (Calendar/Docs/Drive/Sheets/Gmail) and Microsoft (Outlook/Graph) OAuth to
 | Google Gmail | `data/auth_tokens/<user_id>/google_gmail.json` |
 | Gmail MCP credential export | `data/auth_tokens/<user_id>/mcp/gmail/credentials.json` |
 | Microsoft Outlook/Graph | `data/auth_tokens/<user_id>/microsoft.json` |
-| Private B/Moodle | `data/auth_tokens/<user_id>/_prv_b.json` |
 
 **On first boot with the per-user refactor**, existing global caches (`data/auth_tokens/.microsoft_mcp_token_cache.json` etc.) are automatically migrated to `data/auth_tokens/default/*.json`. The owner's existing Google/Outlook auth survives - other users start with empty caches and connect their own accounts via the unified `request_credential(provider=..., kind="oauth")` flow (one descriptor per provider; see `nymeria/config/oauth_providers.py`).
 
 Tools resolve the current caller's `user_id` via `RunnableConfig` injection (the agent sets `configurable.user_id` on every graph invocation). No tool can be tricked into loading a different user's token cache.
 
-If an OAuth token becomes stale, revoked, or attached to the wrong account, the user removes the credential from Settings > Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`. For `google_gmail` specifically, the descriptor's `post_clear_hook` also removes the exported MCP credentials file. For Private B the cleanup tool remains `_prv_b_auth(action="clear")`.
+If an OAuth token becomes stale, revoked, or attached to the wrong account, the user removes the credential from Settings > Connections or the agent calls `auth_cleanup(operation="disable", credential_id=...)`. For `google_gmail` specifically, the descriptor's `post_clear_hook` also removes the exported MCP credentials file.
 
 Tokens land in the encrypted credential vault as `kind=oauth_token` when `NYMERIA_SECRETS_KEY` is configured. Token reads do a vault-first lookup with a read-only fallback to the legacy file caches; production installs should use the vault path. File fallback storage creates `data/auth_tokens/<user_id>/` with `0700` permissions and cache files with `0600` permissions.
 

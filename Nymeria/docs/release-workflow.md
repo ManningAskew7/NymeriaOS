@@ -44,6 +44,15 @@ The GitHub Release job downloads both artifacts and attaches the `.whl`,
 `.tar.gz`, and Windows installer `.exe` files to the tag's release. Tags
 containing `alpha`, `beta`, or `rc` are marked as prereleases.
 
+The `docker-images` job builds and (optionally) publishes three container
+images to GHCR: `nymeria-full`, `nymeria-slim`, and `nymeria-single`. The
+job only pushes when the repository variable `PUBLISH_IMAGES` is `true` AND
+the workflow ran on a `v*` tag; otherwise it builds without pushing as a
+smoke test. The image namespace defaults to
+`ghcr.io/${{ github.repository_owner }}` and can be overridden via the
+`IMAGE_NAMESPACE` repository variable. The `nymeria-single` image is what
+the clone-free `install.sh --full` track pulls.
+
 ## Private Python Index
 
 GitHub Packages does not provide a PyPI-compatible package registry. Its
@@ -62,9 +71,8 @@ set:
 | `NYMERIA_PYPI_PASSWORD` | Registry password or API token |
 
 If any of those secrets are missing, the job logs a skip message and succeeds.
-The Twine upload URL is not the same as the Simple API URL that testers pass to
-`pipx`. See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for maintainer
-setup, tester install commands, and the GitHub Release fallback.
+The Twine upload URL is not the same as the Simple API URL that installers
+pass to `pipx` or `uv tool install`.
 
 ## Release Steps
 
@@ -78,10 +86,5 @@ git push origin main v0.2.0-beta.1
 
 After the workflow finishes, confirm the GitHub Release has the wheel, source
 distribution, and Windows installer attached. If private index secrets are
-configured, also check the package appears in that index before sending
-installer instructions to beta testers.
-
-Grant tester access with
-[BETA_ACCESS_CONTROL.md](./BETA_ACCESS_CONTROL.md): invite GitHub users as
-read-only collaborators for private Release assets, issue private-index
-read/download credentials, and record revocation status outside the repository.
+configured, also check the package appears in that index. If `PUBLISH_IMAGES`
+is enabled, confirm the container images appear under the GHCR namespace.
