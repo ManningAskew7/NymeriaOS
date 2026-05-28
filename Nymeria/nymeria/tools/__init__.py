@@ -106,13 +106,22 @@ from .google_business_profile_service_integrations import (
     google_business_profile_delete_post,
     GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS,
 )
-from ..plugins._prv_a import (
-    _PRV_TOOLS_A1,
-    _PRV_TOOLS_A2,
-    _PRV_TOOLS_A3,
-    _PRV_TOOLS_A4,
-    _PRV_TOOLS_A5,
-)
+# Private plugins (_PRV_A, Private B) are tolerated as absent so the publish-prep
+# pipeline can strip the source files without breaking the import chain.
+try:
+    from ..plugins._prv_a import (
+        _PRV_TOOLS_A1,
+        _PRV_TOOLS_A2,
+        _PRV_TOOLS_A3,
+        _PRV_TOOLS_A4,
+        _PRV_TOOLS_A5,
+    )
+except ImportError:
+    _PRV_TOOLS_A1 = []
+    _PRV_TOOLS_A2 = []
+    _PRV_TOOLS_A3 = []
+    _PRV_TOOLS_A4 = []
+    _PRV_TOOLS_A5 = []
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
@@ -121,7 +130,10 @@ from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
 from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
-from ._prv_b import _PRV_TOOLS_B
+try:
+    from ._prv_b import _PRV_TOOLS_B
+except ImportError:
+    _PRV_TOOLS_B = []
 from .skill_config import (
     skill_edit,
     skill_write,
