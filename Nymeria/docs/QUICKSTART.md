@@ -16,6 +16,26 @@ Get Nymeria running in under 10 minutes.
 
 ## Step 1: Install Nymeria
 
+### One-line installer (front door)
+
+The installer lets you pick a track and runs the right commands for you:
+
+```bash
+curl -fsSL https://get.nymeriaos.com/install.sh | sh
+```
+
+It asks whether you want **Slim** (simpler, best for a few users; single process
+on SQLite via `uv`, no Docker) or **Full** (more robust, multi-user; runs in
+Docker, and the script can install Docker for you on Linux). Non-interactive use:
+`... | sh -s -- --slim` or `--full`. Cautious users can download and read it
+first (`curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh`).
+
+Note: the one-line installer requires the hosted endpoint
+(`get.nymeriaos.com`, plus the published container images for the Full track) to
+be live. Until then, use the manual commands below, which work today.
+
+### Manual install
+
 ### Beta Package Install
 
 Use this path when you have private beta package access. `uv` is the

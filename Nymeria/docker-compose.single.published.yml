@@ -1,0 +1,57 @@
+# Nymeria SINGLE-CONTAINER stack, CLONE-FREE (published image).
+#
+# Same shape as docker-compose.single.yml but pulls a PUBLISHED image instead of
+# building from a source checkout, and bakes the frontend/source into the image
+# (no live bind-mounts). This is the simplest clone-free Docker deployment: one
+# container running `python run.py slim` (API + in-process ticker + watchdog +
+# embedded MCP) on SQLite. No Postgres, no Redis, no separate worker.
+#
+# Usage (no git clone required):
+#   1. Fetch this file and the env template:
+#        curl -fsSLO https://<host>/docker-compose.single.published.yml
+#        curl -fsSL  https://<host>/.env.docker.example -o .env.docker
+#   2. Fill in .env.docker (at minimum an LLM provider key and NYMERIA_SECRETS_KEY).
+#   3. docker compose -f docker-compose.single.published.yml up -d
+#
+# Image source is overridable for testing or once the public repo/registry is
+# live:
+#   NYMERIA_IMAGE_NAMESPACE=ghcr.io/<owner>   (default below)
+#   NYMERIA_VERSION=<tag>                      (default: latest)
+
+services:
+  nymeria-single:
+    image: ${NYMERIA_IMAGE_NAMESPACE:-ghcr.io/manningaskew7}/nymeria-single:${NYMERIA_VERSION:-latest}
+    container_name: nymeria-single
+    restart: unless-stopped
+    pull_policy: always
+    # PID 1 reaper so any MCP subprocess grandchildren don't zombify.
+    init: true
+    # run.py auto-loads .env.docker; slim then forces sqlite + redis-off.
+    env_file:
+      - .env.docker
+    environment:
+      NYMERIA_DATA_DIR: /data
+      NYMERIA_WORKSPACE_DIR: /workspace
+    # Lets the in-process agent reach CLIProxy (and any other host service) via
+    # http://host.docker.internal:<port> from inside the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Published on loopback only by default; front it with a reverse proxy/tunnel
+    # for remote access rather than exposing the port to the LAN.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - nymeria_single_data:/data
+      - nymeria_single_workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  nymeria_single_data:
+    driver: local
+  nymeria_single_workspace:
+    driver: local
