@@ -43,7 +43,7 @@ python-dotenv>=1.0.0
 
 # HTTP client (for web tools)
 httpx>=0.27.1,<1.0.0
-requests>=2.32.0,<3.0.0  # agent skills marketplace (GitHub API)
+requests>=2.34.2,<3.0.0  # agent skills marketplace (GitHub API)
 urllib3>=2.2.2,<3.0.0
 python-dateutil>=2.9.0,<3.0.0  # calendar-aware TODO recurrence intervals
 wikipedia>=1.4.0  # wikipedia_search optional tool
