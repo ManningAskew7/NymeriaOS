@@ -52,6 +52,9 @@ htmlcov/
 node_modules/
 .svelte-kit/
 
+# === Sibling repos (separate git history, separate GitHub remote) ===
+nymeria-browser/
+
 # === Rust / Tauri ===
 target/
 gen/schemas
