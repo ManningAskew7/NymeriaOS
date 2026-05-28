@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Geist:wght@100..900&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@300;400;500;600;700&family=Archivo:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&family=Exo+2:wght@300;400;500;600;700&family=Geist:wght@100..900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=Unbounded:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <script>
@@ -17,6 +17,27 @@
         var f = localStorage.getItem('nymeria_font_family');
         if (f) document.documentElement.style.setProperty('--font-sans', f);
       } catch (e) {}
+      // Apply persisted logo-font choice before app loads (testing-only override)
+      try {
+        var lf = localStorage.getItem('nymeria_logo_font');
+        if (lf) document.documentElement.style.setProperty('--font-logo', lf);
+      } catch (e) {}
+      // Apply persisted logo size / weight / opacity before app loads
+      try {
+        var ls = localStorage.getItem('nymeria_logo_size');
+        if (ls) document.documentElement.style.setProperty('--logo-font-size', ls + 'px');
+        var lwn = localStorage.getItem('nymeria_logo_weight_name');
+        if (lwn) document.documentElement.style.setProperty('--logo-weight-name', lwn);
+        var lwo = localStorage.getItem('nymeria_logo_weight_os');
+        if (lwo) document.documentElement.style.setProperty('--logo-weight-os', lwo);
+        var lon = localStorage.getItem('nymeria_logo_opacity_name');
+        if (lon) document.documentElement.style.setProperty('--logo-opacity-name', (Number(lon) / 100).toString());
+        var loo = localStorage.getItem('nymeria_logo_opacity_os');
+        if (loo) document.documentElement.style.setProperty('--logo-opacity-os', (Number(loo) / 100).toString());
+        var lc = localStorage.getItem('nymeria_logo_color');
+        if (lc === 'white') document.documentElement.style.setProperty('--logo-color', '#ffffff');
+        else if (lc === 'black') document.documentElement.style.setProperty('--logo-color', '#000000');
+      } catch (e) {}
       // Apply persisted chat-bubble preference
       try {
         var b = localStorage.getItem('nymeria_chat_bubbles');
@@ -24,29 +45,29 @@
       } catch (e) {}
     </script>
     
-		<link rel="modulepreload" href="/_app/immutable/entry/start.BIwhkhGQ.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/BLHDxo8a.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/Do8qVmcM.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CRsuxV3v.js">
-		<link rel="modulepreload" href="/_app/immutable/entry/app.BFDk17PF.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CXZUB0IC.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/C17JBP3g.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CRf3b-Dw.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/HyOpPXlE.js">
+		<link rel="modulepreload" href="/_app/immutable/entry/start.BYw2rbpG.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/33xGAJyU.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/DClobYzT.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/Ca7kac_O.js">
+		<link rel="modulepreload" href="/_app/immutable/entry/app.DobkLckC.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CHamxUMz.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/DhpE1AWS.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CLIXaHlw.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/DGqO8ykO.js">
   </head>
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">
 			<script>
 				{
-					__sveltekit_1l1wsd8 = {
+					__sveltekit_1krdbmf = {
 						base: ""
 					};
 
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.BIwhkhGQ.js"),
-						import("/_app/immutable/entry/app.BFDk17PF.js")
+						import("/_app/immutable/entry/start.BYw2rbpG.js"),
+						import("/_app/immutable/entry/app.DobkLckC.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});
