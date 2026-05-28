@@ -48,14 +48,16 @@ dependencies = [
   "openai==2.37.0",
   "aiosqlite>=0.22.1,<1.0.0",
   "sqlite-vec>=0.1.9,<1.0.0",
-  "fastapi>=0.115.0",
-  "uvicorn[standard]>=0.32.0",
+  "fastapi>=0.136.1,<1.0.0",
+  "starlette>=1.0.0,<2.0.0",
+  "uvicorn[standard]>=0.32.0,<1.0.0",
   "sse-starlette>=2.1.0",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.1",
   "python-dotenv>=1.0.0",
-  "httpx>=0.27.0",
-  "requests>=2.31.0",
+  "httpx>=0.27.1,<1.0.0",
+  "requests>=2.32.0,<3.0.0",
+  "urllib3>=2.2.2,<3.0.0",
   "python-dateutil>=2.9.0,<3.0.0",
   "wikipedia>=1.4.0",
   "wolframalpha>=5.0.0",
@@ -64,12 +66,12 @@ dependencies = [
   "rich>=13.9.0",
   "markdown-it-py>=3.0.0",
   "prompt_toolkit>=3.0.0",
+  "Jinja2>=3.1.6,<4.0.0",
+  "Pillow>=10.4.0,<12.0.0",
   "mcp>=1.2.0",
-  "discord.py>=2.3.0",
-  "twitchio>=3.2.1",
-  "python-telegram-bot[rate-limiter]>=22.0",
-  "slack-bolt>=1.22.0",
-  "slack-sdk>=3.35.0",
+  # Chat-platform bot SDKs are NOT in core. They install via per-platform extras
+  # (nymeria[discord], nymeria[telegram], ...) so a default install stays lean.
+  # The full Docker image pulls them via requirements-bots.txt.
   "cryptography>=42.0.0",
   "PyJWT>=2.8.0",
   "google-api-python-client>=2.100.0",
@@ -78,6 +80,11 @@ dependencies = [
   "google-genai>=1.0.0",
   "pydub>=0.25.1",
   "openpyxl>=3.1.0",
+  # Document extraction for email/file attachments (lazy-imported in
+  # core/attachment_sandbox.py). Small pure-Python deps, kept in core so the
+  # default attachment path works on a lean install.
+  "pypdf>=4.0.0",
+  "python-docx>=1.1.0",
   "feedparser>=6.0.0",
 ]
 
@@ -100,6 +107,37 @@ browser = [
 firebase = [
   "firebase-admin>=6.0.0",
 ]
+# Chat-platform bots. Install only the platforms you use, e.g.
+# pip install "nymeria[discord]" or "nymeria[bots]" for all of them.
+discord = [
+  "discord.py>=2.3.0",
+]
+telegram = [
+  "python-telegram-bot[rate-limiter]>=22.0",
+]
+slack = [
+  "slack-bolt>=1.22.0",
+  "slack-sdk>=3.35.0",
+]
+mattermost = [
+  "websockets>=12.0",
+]
+rocketchat = [
+  "websockets>=12.0",
+]
+# matrix/zulip/signal talk to their servers over httpx (already in core), so
+# these extras carry no extra deps. They exist so install commands and docs can
+# reference nymeria[<platform>] uniformly across every chat platform.
+matrix = []
+zulip = []
+signal = []
+bots = [
+  "discord.py>=2.3.0",
+  "python-telegram-bot[rate-limiter]>=22.0",
+  "slack-bolt>=1.22.0",
+  "slack-sdk>=3.35.0",
+  "websockets>=12.0",
+]
 dev = [
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
@@ -118,6 +156,12 @@ all = [
   "playwright",
   "beautifulsoup4",
   "firebase-admin>=6.0.0",
+  # bots
+  "discord.py>=2.3.0",
+  "python-telegram-bot[rate-limiter]>=22.0",
+  "slack-bolt>=1.22.0",
+  "slack-sdk>=3.35.0",
+  "websockets>=12.0",
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
   "pytest-asyncio>=0.26.0",
@@ -149,6 +193,7 @@ include = ["nymeria", "nymeria.*"]
 nymeria = [
   "agents/*.md",
   "config/*.md",
+  "config/data/*.json",
   "frontend/**/*",
   "skills_bundled/*/SKILL.md",
   "triggers/**/*.md",
@@ -180,8 +225,18 @@ replace-imports-with-any = [
     "redis.*",
     "slack_bolt",
     "slack_bolt.*",
+    "slack_sdk",
+    "slack_sdk.*",
     "langchain_community",
     "langchain_community.*",
+    # Chat-platform bot SDKs live in optional extras and may be absent from the
+    # lint environment once core no longer pulls them.
+    "discord",
+    "discord.*",
+    "telegram",
+    "telegram.*",
+    "websockets",
+    "websockets.*",
 ]
 
 [tool.pyrefly.errors]

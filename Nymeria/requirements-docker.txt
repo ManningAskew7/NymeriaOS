@@ -7,5 +7,10 @@ redis>=5.0.0
 # PostgreSQL support for production deployments
 -r requirements-postgres.txt
 
+# Chat-platform bot SDKs. The full Docker image ships every bot, so it pulls the
+# complete bot set here. (The slim single-container image installs only
+# requirements.txt and therefore stays lean.)
+-r requirements-bots.txt
+
 # Firebase Cloud Messaging (push notifications to watch/mobile devices)
 firebase-admin>=6.0.0

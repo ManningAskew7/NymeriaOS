@@ -10,7 +10,7 @@ All entry points into Nymeria: API server, bots, CLI, and watchdog.
 
 - `api.py`  -  FastAPI application factory
 - `sse_consumer.py`  -  shared SSE event dispatcher for all surfaces
-- `discord_bot.py`, `telegram_bot.py`, `slack_bot.py`, `matrix_bot.py`, `mattermost_bot.py`, `zulip_bot.py`, `rocketchat_bot.py`, `signal_bot.py`, `twitch_bot.py`  -  bot entry points
+- `discord_bot.py`, `telegram_bot.py`, `slack_bot.py`, `matrix_bot.py`, `mattermost_bot.py`, `zulip_bot.py`, `rocketchat_bot.py`, `signal_bot.py`  -  bot entry points
 - `whatsapp_bot.py`  -  WhatsApp Cloud API webhook runtime used by the API router; not a standalone entry point
 - `messenger_bot.py`  -  Meta Messenger webhook runtime used by the API router; not a standalone entry point
 - `instagram_bot.py`  -  Meta Instagram Messaging webhook runtime used by the API router; not a standalone entry point

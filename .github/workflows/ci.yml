@@ -41,6 +41,9 @@ jobs:
       - name: Check release versions
         run: python scripts/sync_versions.py --check
 
+      - name: Check requirements/pyproject dependency sync
+        run: python scripts/check_requirements_sync.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

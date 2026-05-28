@@ -80,5 +80,5 @@ def test_late_unregister_from_old_bot_does_not_clear_new_runtime():
 
 
 def test_runtime_reports_clear_error_when_twitch_bot_is_not_registered():
-    with pytest.raises(TwitchRuntimeUnavailable, match="twitch-bot service"):
+    with pytest.raises(TwitchRuntimeUnavailable, match="pending migration"):
         get_twitch_runtime().read_chat(1)

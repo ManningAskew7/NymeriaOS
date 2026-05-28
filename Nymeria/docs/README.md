@@ -88,7 +88,6 @@ and implementation disagree.
 | Zulip | [zulip-bot.md](./zulip-bot.md) |
 | Rocket.Chat | [rocketchat-bot.md](./rocketchat-bot.md) |
 | Signal | [signal-bot.md](./signal-bot.md) |
-| Twitch | [twitch-bot.md](./twitch-bot.md) |
 | WhatsApp | [whatsapp-bot.md](./whatsapp-bot.md) |
 | Messenger | [messenger-bot.md](./messenger-bot.md) |
 | Instagram | [instagram-bot.md](./instagram-bot.md) |

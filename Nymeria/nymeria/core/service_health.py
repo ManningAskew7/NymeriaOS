@@ -33,7 +33,6 @@ HEARTBEAT_SERVICES = {
     "rocketchat-bot",
     "signal-bot",
     "telegram-bot",
-    "twitch-bot",
 }
 
 SERVICE_CHOICES = sorted({*HEARTBEAT_SERVICES, "mcp"})
@@ -245,7 +244,7 @@ def check_service(
     if service in HEARTBEAT_SERVICES:
         errors.extend(check_heartbeat(service, max_age_seconds=max_age_seconds))
 
-    if service in {"worker", "twitch-bot"}:
+    if service == "worker":
         _check_postgres(errors)
         _check_redis(errors)
 

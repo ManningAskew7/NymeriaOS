@@ -32,6 +32,9 @@ except ImportError:  # pragma: no cover - local dev may not have Slack deps.
     AsyncApp = None  # type: ignore[assignment]
     AsyncSocketModeHandler = None  # type: ignore[assignment]
 
+#: True when slack-bolt is importable. run.py checks this for a friendly error.
+SDK_AVAILABLE = AsyncApp is not None
+
 logger = logging.getLogger(__name__)
 
 SLACK_TEXT_LIMIT = 3500

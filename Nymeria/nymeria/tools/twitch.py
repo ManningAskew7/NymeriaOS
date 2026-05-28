@@ -1,9 +1,13 @@
 """Twitch tools for Nymeria: chat, moderation, stream info, and broadcaster actions.
 
-These are OPTIONAL_TOOLS, enabled per-thread via thread config.
-They require a running Twitch bot instance with Helix API access.
-The bot registers a stable runtime adapter on startup; tools resolve it at
-call time so hot-reloaded tool modules do not capture stale bot objects.
+DISABLED pending migration. These tools were built against the now-removed
+Twitch bot service: they resolve a runtime adapter (``twitch_runtime``) that the
+bot registered on startup. With the bot gone nothing registers, so every tool
+raises a clear "disabled / pending migration" error at call time, and each
+tool's description is prefixed with a disabled marker (see the bottom of this
+module). The definitions are kept on purpose: the Helix API call logic is the
+reusable part for a future rewrite that binds them to the standard optional-tool
+pattern (their own OAuth plus direct Helix calls) instead of a running bot.
 """
 
 import logging
@@ -772,3 +776,12 @@ TWITCH_TOOLS = [
     twitch_set_channel_info,
     twitch_get_subs,
 ]
+
+
+# Mark every Twitch tool disabled at the catalog level so the agent and UI see
+# the broken state from the tool description, without having to invoke it first.
+# Removing this block is part of the future rewrite (see module docstring).
+_TWITCH_DISABLED_PREFIX = "[DISABLED: pending migration off the removed Twitch bot] "
+for _twitch_tool in TWITCH_TOOLS:
+    if not _twitch_tool.description.startswith(_TWITCH_DISABLED_PREFIX):
+        _twitch_tool.description = _TWITCH_DISABLED_PREFIX + _twitch_tool.description

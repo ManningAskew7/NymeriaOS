@@ -63,18 +63,9 @@ Pillow>=10.4.0,<12.0.0
 # MCP Server support (for agent-to-agent communication)
 mcp>=1.2.0
 
-# Discord bot (two-way communication)
-discord.py>=2.3.0
-
-# Twitch bot (two-way communication)
-twitchio>=3.2.1
-
-# Telegram bot (two-way communication)
-python-telegram-bot[rate-limiter]>=22.0
-
-# Slack bot (two-way communication via Socket Mode)
-slack-bolt>=1.22.0
-slack-sdk>=3.35.0
+# Chat-platform bot SDKs are NOT core dependencies. They live in
+# requirements-bots.txt (and the nymeria[<platform>] extras) so a default/slim
+# install stays lean. The full Docker image pulls them via requirements-docker.txt.
 
 # Symmetric encryption for at-rest secrets (BYO Telegram bot tokens, etc).
 # Already a transitive dep via langchain/google-auth, but pinned explicitly

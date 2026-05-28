@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import socket
 import sqlite3
 import sys
@@ -21,7 +22,7 @@ from .vendor.react_agent.providers import create_llm
 
 Status = Literal["pass", "warn", "fail"]
 
-_REQUIRED_PYTHON = (3, 10)
+_REQUIRED_PYTHON = (3, 11)
 
 
 @dataclass(frozen=True)
@@ -389,6 +390,16 @@ def _check_voice(settings: Any) -> CheckResult:
     if failures:
         return CheckResult("Voice", "fail", "; ".join(failures))
     if configured:
+        # pydub shells out to the ffmpeg system binary for audio conversion.
+        # pip/uv cannot install it, so flag its absence when voice is in use.
+        if shutil.which("ffmpeg") is None:
+            return CheckResult(
+                "Voice",
+                "warn",
+                f"{', '.join(configured)} configured, but ffmpeg was not found on "
+                "PATH. Audio conversion needs the ffmpeg system package "
+                "(e.g. apt install ffmpeg / brew install ffmpeg).",
+            )
         return CheckResult("Voice", "pass", ", ".join(configured))
     return CheckResult("Voice", "warn", "not configured (optional)")
 
