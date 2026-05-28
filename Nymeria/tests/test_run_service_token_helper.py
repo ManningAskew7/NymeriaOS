@@ -45,7 +45,6 @@ def test_require_service_token_exits_with_provisioning_guidance(capsys):
         ("discord-bot", None, "the Discord bot"),
         ("telegram-bot", None, "the Telegram bot"),
         ("watchdog", None, "the watchdog worker"),
-        ("twitch-bot", None, "the Twitch bot"),
         ("mcp", None, "the MCP thin client"),
         ("service", None, "the foreground gateway service"),
     ],

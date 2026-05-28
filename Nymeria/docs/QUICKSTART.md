@@ -4,8 +4,11 @@ Get Nymeria running in under 10 minutes.
 
 ## Prerequisites
 
-- **Python 3.11+** - Check with `python3 --version`
-- **pipx** - Needed for beta package installs (`python3 -m pip install --user pipx`)
+- **Python 3.11+** - Check with `python3 --version`. If you install with `uv`
+  (below), uv can fetch a matching Python for you, so you do not have to install
+  one first.
+- **An installer** - [`uv`](https://docs.astral.sh/uv/) (recommended) or `pipx`
+  (`python3 -m pip install --user pipx`).
 - **LLM API Key** - From one of:
   - [Anthropic](https://console.anthropic.com/) (recommended)
   - [OpenAI](https://platform.openai.com/)
@@ -15,7 +18,25 @@ Get Nymeria running in under 10 minutes.
 
 ### Beta Package Install
 
-Use this path when you have private beta package access:
+Use this path when you have private beta package access. `uv` is the
+recommended installer (it is fast and can fetch a matching Python for you);
+`pipx` also works.
+
+With `uv` (recommended). `--index` adds the private index alongside public PyPI,
+so Nymeria comes from the private index and its dependencies from PyPI:
+
+```bash
+export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
+uv tool install nymeria --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+nymeria init
+nymeria doctor
+nymeria api
+```
+
+To try Nymeria without a persistent install, run it ephemerally with
+`uvx --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL" nymeria slim`.
+
+With `pipx`:
 
 ```bash
 export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
@@ -33,6 +54,13 @@ pipx install nymeria \
   --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL" \
   --pip-args="--extra-index-url https://pypi.org/simple"
 ```
+
+The default install is lean. Optional chat-platform bots and heavy integrations
+install as extras, for example `uv tool install "nymeria[discord]"` (or
+`pipx install "nymeria[discord]"`). Use `nymeria[bots]` for every chat platform,
+or combine extras like `nymeria[postgres,redis,voice]`. Available extras:
+`discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
+`signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
 
 See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
 upgrade commands, and the GitHub Release wheel fallback.

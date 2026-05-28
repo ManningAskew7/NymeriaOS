@@ -1,8 +1,11 @@
 """Runtime adapter used by Twitch tools.
 
-This module intentionally lives outside ``nymeria.tools`` so tool hot-reload
-does not reset the active Twitch bot registration. Tool objects from old and
-newly reloaded modules both resolve through this stable runtime service.
+DISABLED: the Twitch bot service was removed. Nothing registers a bot anymore,
+so every tool call raises ``TwitchRuntimeUnavailable``. The Twitch tools are
+kept (and marked disabled) pending a rewrite that binds them to the standard
+optional-tool pattern (direct Helix API with their own OAuth) instead of a
+running bot. This registration mechanism stays in place so the rewrite has a
+clean seam and the existing tests still exercise the facade.
 """
 
 from __future__ import annotations
@@ -59,7 +62,8 @@ class TwitchToolRuntime:
         bot = self._current_bot()
         if bot is None:
             raise TwitchRuntimeUnavailable(
-                "Twitch bot is not running. These tools require the twitch-bot service."
+                "Twitch tools are disabled: the twitch-bot service was removed. "
+                "These tools are pending migration to standalone optional tools."
             )
         return bot
 
@@ -102,9 +106,18 @@ class TwitchToolRuntime:
         if not messages:
             return "Chat buffer is empty. No messages received yet."
 
-        from ..triggers.twitch_bot import format_chat_context
-
-        formatted = format_chat_context(messages)
+        # Formatter inlined here (the former twitch_bot.format_chat_context was
+        # removed with the bot). Badge rendering is dropped; the standalone-tool
+        # rewrite will redefine formatting against whatever source it reads.
+        lines = []
+        for msg in messages:
+            ts = msg.timestamp.strftime("%H:%M")
+            if getattr(msg, "is_system", False):
+                lines.append(f"[{ts}] [MOD] {msg.message}")
+            else:
+                mid = f" [msg:{msg.message_id}]" if getattr(msg, "message_id", None) else ""
+                lines.append(f"[{ts}] {msg.display_name}{mid}: {msg.message}")
+        formatted = "\n".join(lines)
         total = len(bot._buffer)
         return f"[{len(messages)} of {total} buffered messages]\n{formatted}"
 

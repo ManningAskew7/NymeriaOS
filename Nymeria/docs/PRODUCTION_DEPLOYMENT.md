@@ -59,8 +59,6 @@ Docker Compose builds two Nymeria application images:
   WhatsApp Cloud API, Messenger Platform, Instagram Messaging, Webex Messaging,
   Microsoft Teams, Google Chat, and LINE webhooks are handled by the API
   container.
-  Twitch is run as a standalone `python3 run.py twitch-bot` process today, not
-  as a Compose service.
 
 Both images install runtime requirements only. Install `requirements-dev.txt`
 on the host when running backend tests, coverage, or Ruff lint checks.
@@ -240,12 +238,11 @@ refuses to start when wildcard origins are configured.
 Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, and Signal
 bots run as dedicated profiled containers. Configure their tokens in
 `.env.docker` and enable their Docker Compose profiles; those clients do not
-need external webhook URLs. Twitch is currently a standalone runtime launched
-with `python3 run.py twitch-bot`, not a Compose service. See
+need external webhook URLs. See
 `docs/telegram-bot.md`, `docs/discord-bot.md`,
 `docs/slack-bot.md`, `docs/matrix-bot.md`, `docs/mattermost-bot.md`,
-`docs/zulip-bot.md`, `docs/rocketchat-bot.md`, `docs/signal-bot.md`, and
-`docs/twitch-bot.md`. Signal additionally requires a separately managed
+`docs/zulip-bot.md`, `docs/rocketchat-bot.md`, and `docs/signal-bot.md`.
+Signal additionally requires a separately managed
 `signal-cli-rest-api` daemon in JSON-RPC/SSE mode.
 
 WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE are API-hosted webhook integrations.

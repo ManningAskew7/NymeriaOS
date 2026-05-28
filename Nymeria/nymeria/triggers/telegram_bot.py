@@ -9,6 +9,11 @@ Supports bot commands, DM responses, reply-to-bot in groups, and SSE
 streaming for progressive message editing and autonomous task delivery.
 """
 
+# Keep annotations lazy (PEP 563) so signatures such as
+# ``context: ContextTypes.DEFAULT_TYPE`` never evaluate the Telegram SDK at
+# import time on a lean install that omits the optional nymeria[telegram] extra.
+from __future__ import annotations
+
 import asyncio
 import html as _html
 import io
@@ -23,24 +28,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
 
 import httpx
-from telegram import (
-    BotCommand,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    Update,
-)
-from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest, RetryAfter, TimedOut
-from telegram.ext import (
-    AIORateLimiter,
-    ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
 
 from nymeria.core.agent_compaction import COMPACTING_MESSAGE
 from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATIVE_SWITCH_THREAD_PREFIXES
@@ -55,6 +42,39 @@ from .sse_consumer import (
     parse_attach_paths as _parse_attach_paths,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
+
+try:  # pragma: no cover - python-telegram-bot ships in nymeria[telegram].
+    from telegram import (
+        BotCommand,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        Message,
+        Update,
+    )
+    from telegram.constants import ChatAction, ParseMode
+    from telegram.error import BadRequest, RetryAfter, TimedOut
+    from telegram.ext import (
+        AIORateLimiter,
+        ApplicationBuilder,
+        CallbackQueryHandler,
+        CommandHandler,
+        ContextTypes,
+        MessageHandler,
+        filters,
+    )
+except ImportError:  # pragma: no cover - lean installs omit python-telegram-bot.
+    # Fallback is typed Any (not None) so type-checking treats these as the
+    # imported SDK symbols; at runtime they are None, which SDK_AVAILABLE detects.
+    _MISSING: Any = None
+    BotCommand = InlineKeyboardButton = InlineKeyboardMarkup = _MISSING
+    Message = Update = _MISSING
+    ChatAction = ParseMode = _MISSING
+    BadRequest = RetryAfter = TimedOut = _MISSING
+    AIORateLimiter = ApplicationBuilder = CallbackQueryHandler = _MISSING
+    CommandHandler = ContextTypes = MessageHandler = filters = _MISSING
+
+#: True when python-telegram-bot is importable. run.py checks this for a friendly error.
+SDK_AVAILABLE = Update is not None
 
 logger = logging.getLogger(__name__)
 

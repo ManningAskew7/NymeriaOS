@@ -754,7 +754,7 @@ separately.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
-| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `twitch-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
 | `NYMERIA_SECRETS_KEY` | vault-required | 44-character Fernet key used to encrypt credential-vault secret fields, OAuth access/refresh tokens, and BYO bot tokens. Docker deployments must pass it through to the API/worker/MCP containers. If it is missing in the running API container, OAuth/device-code flows can complete at the provider but fail while saving the new credential. |
 | `ACCOUNT_TOKEN_TTL_DAYS` | `90` | Lifetime for newly issued Nymeria account tokens. Expired tokens are rejected and auto-revoked. |
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
@@ -1466,14 +1466,14 @@ reachable from the backend process.
 | `AGILECRM_BASE_URL` | - | Agile CRM API base URL override |
 | `MONICA_ACCESS_TOKEN` | - | Monica CRM API token fallback |
 | `MONICA_BASE_URL` | `https://app.monicahq.com/api` | Monica CRM API base URL |
-| `TWITCH_CLIENT_ID` | - | Twitch application Client ID |
+| `TWITCH_CLIENT_ID` | - | Twitch application Client ID. Note: the standalone Twitch bot was removed; these `TWITCH_*` vars are reserved for the Twitch tools, which are currently disabled pending migration to standalone optional tools. |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
 | `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
 | `TWITCH_BOT_REFRESH_TOKEN` | - | Bot's OAuth refresh token |
 | `TWITCH_BOT_USER_ID` | - | Bot's numeric Twitch user ID |
 | `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster's OAuth token (channel:bot scope) |
 | `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | - | Twitch channel to join (required when `twitch-bot` runs) |
+| `TWITCH_CHANNEL` | - | Twitch channel to join (used by the Twitch tools, currently disabled) |
 | `TWITCH_SYSTEM_PROMPT` | - | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
 | `TWITCH_BUFFER_SIZE` | `500` | Chat message ring buffer size (50-5000) |
 | `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat evaluation |

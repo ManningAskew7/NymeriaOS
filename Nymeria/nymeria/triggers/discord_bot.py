@@ -9,6 +9,11 @@ Supports slash commands, @mention responses, DMs, and SSE streaming
 for autonomous task results.
 """
 
+# Annotations are kept lazy (PEP 563) so signatures like
+# ``message: discord.Message`` do not evaluate the SDK at import time on a lean
+# install that omits discord.py.
+from __future__ import annotations
+
 import asyncio
 import io
 import json as _json
@@ -17,9 +22,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-import discord
 import httpx
-from discord.ext import commands
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
@@ -27,6 +30,19 @@ from .bot_helpers import UserResolver
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import consume_sse_stream, dispatch_event, parse_attach_paths
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
+
+try:  # pragma: no cover - discord.py ships in the optional nymeria[discord] extra.
+    import discord
+    from discord.ext import commands
+except ImportError:  # pragma: no cover - lean installs omit discord.py.
+    # Fallback is typed Any (not None) so type-checking treats these as the
+    # imported SDK symbols; at runtime they are None, which SDK_AVAILABLE detects.
+    _MISSING: Any = None
+    discord = _MISSING
+    commands = _MISSING
+
+#: True when discord.py is importable. run.py checks this for a friendly error.
+SDK_AVAILABLE = discord is not None
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +120,14 @@ def parse_thread_id(thread_id: str) -> Dict[str, Any]:
 # =============================================================================
 
 
-class NymeriaDiscordBot(commands.Bot):
+# Fall back to ``object`` so this module still imports on a lean install without
+# discord.py. run.py refuses to start the bot (via SDK_AVAILABLE) before this
+# class is ever instantiated, so the object base is never actually used.
+# Typed Any so the dynamic base class is accepted by the type checker.
+_BotBase: Any = commands.Bot if commands is not None else object
+
+
+class NymeriaDiscordBot(_BotBase):
     """Discord bot client — thin API client for Nymeria."""
 
     def __init__(

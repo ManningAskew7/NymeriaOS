@@ -1,0 +1,26 @@
+# Chat-platform bot SDKs (optional).
+#
+# These are NOT installed by the default/slim install. Install only the
+# platforms you run, via the matching extra:
+#   pip install "nymeria[discord]"      # or telegram / slack / mattermost / ...
+#   pip install "nymeria[bots]"          # all platforms at once
+#
+# This file is the requirements-style mirror of the bot extras in pyproject.toml.
+# The full Docker image includes it (via requirements-docker.txt). Keep it in
+# sync with the [discord]/[telegram]/[slack]/[mattermost]/[rocketchat]
+# extras; scripts/check_requirements_sync.py enforces this.
+
+# Discord bot (two-way communication)
+discord.py>=2.3.0
+
+# Telegram bot (two-way communication)
+python-telegram-bot[rate-limiter]>=22.0
+
+# Slack bot (two-way communication via Socket Mode)
+slack-bolt>=1.22.0
+slack-sdk>=3.35.0
+
+# Mattermost / Rocket.Chat bots (websocket gateway clients). websockets is also
+# pulled transitively by uvicorn[standard], but declared here so these bots do
+# not silently depend on a transitive package.
+websockets>=12.0

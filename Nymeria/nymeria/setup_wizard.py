@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -2194,11 +2195,28 @@ def _write_config(
         if value and env_var != provider.env_var:
             lines.append(f"{env_var}={_env_value(value)}")
     lines.append("")
-    config_path.write_text("\n".join(lines), encoding="utf-8")
+    # Atomic write: write a temp file in the same directory, set 0600 before the
+    # rename so the config (which holds API keys) is never briefly world-readable,
+    # then replace. A crash mid-write leaves any existing config intact rather
+    # than truncating it.
+    content = "\n".join(lines)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(config_path.parent), prefix=f".{config_path.name}.", suffix=".tmp"
+    )
     try:
-        config_path.chmod(0o600)
-    except OSError:
-        pass  # chmod may fail on filesystems that do not support POSIX modes
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(content)
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass  # chmod may fail on filesystems that do not support POSIX modes
+        os.replace(tmp_name, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass  # best-effort cleanup of the temp file; re-raise the original error
+        raise
 
 
 def _env_value(value: str) -> str:

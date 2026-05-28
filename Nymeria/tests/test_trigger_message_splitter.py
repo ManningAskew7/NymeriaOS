@@ -34,7 +34,6 @@ from nymeria.triggers.teams_bot import split_message as split_teams_alias
 from nymeria.triggers.matrix_bot import split_message as split_matrix_alias
 from nymeria.triggers.mattermost_bot import split_message as split_mattermost_alias
 from nymeria.triggers.telegram_bot import split_message as split_telegram_alias
-from nymeria.triggers.twitch_bot import split_message as split_twitch_alias
 from nymeria.triggers.webex_bot import split_message as split_webex_alias
 from nymeria.triggers.whatsapp_bot import split_message as split_whatsapp_alias
 from nymeria.triggers.zulip_bot import split_message as split_zulip_alias
@@ -82,7 +81,6 @@ def test_plain_splitter_hard_splits_when_no_boundary_exists():
 def test_platform_aliases_keep_existing_defaults_and_import_surfaces():
     assert split_discord_alias is split_discord_message
     assert split_telegram_alias is split_telegram_message
-    assert split_twitch_alias is split_twitch_message
     assert split_slack_alias is split_slack_message
     assert split_matrix_alias is split_matrix_message
     assert split_mattermost_alias is split_mattermost_message

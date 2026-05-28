@@ -17,7 +17,6 @@ Usage:
     python run.py zulip-bot       # Start Zulip bot (event queue mode)
     python run.py rocketchat-bot  # Start Rocket.Chat bot (realtime mode)
     python run.py signal-bot      # Start Signal bot (signal-cli SSE mode)
-    python run.py twitch-bot      # Start Twitch chat bot
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
@@ -81,7 +80,6 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
     "rocketchat-bot": "the Rocket.Chat bot",
     "signal-bot": "the Signal bot",
     "watchdog": "the watchdog worker",
-    "twitch-bot": "the Twitch bot",
     "mcp": "the MCP thin client",
 }
 
@@ -119,6 +117,14 @@ def _redis_url_for_display(redis_url: str) -> str:
     from nymeria.core.event_bus import redact_url_credentials
 
     return redact_url_credentials(redis_url)
+
+
+def _stdin_is_interactive() -> bool:
+    """True when we can prompt the user (both stdin and stdout are a TTY)."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
 
 
 def validate_config(skip_api_key: bool = False, suppress_service_token_warning: bool = False) -> None:
@@ -159,12 +165,26 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
         for error in errors:
             print(f"  [X] {error}\n")
         print("-" * 50)
-        print("\nQuick Setup:")
-        print("  1. Copy .env.docker.example to .env.docker, or create .env manually")
-        print("  2. Add your LLM provider API key")
-        print("  3. Run again: python run.py api")
-        print("  4. On first boot, use data/BOOTSTRAP_TOKEN.txt to sign in")
+        print("\nQuick Setup - run the guided wizard. It writes your config, creates")
+        print("the data directory, and mints an admin sign-in token:")
+        print("\n      nymeria init            (installed via pip/uv)")
+        print("      python3 run.py init     (from a source checkout)")
+        print("\nAdvanced: set the keys manually in .env (or copy .env.docker.example")
+        print("to .env.docker for the Docker stack), then re-run.")
         print("\nSee docs/QUICKSTART.md for detailed instructions.")
+
+        # First-run bridge: in an interactive terminal, offer to launch the
+        # wizard now instead of dead-ending here. Non-interactive contexts
+        # (Docker, pipes, CI) just see the guidance above and exit.
+        if _stdin_is_interactive():
+            try:
+                answer = input("\nRun 'nymeria init' now? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            if answer in ("", "y", "yes"):
+                init_args = build_parser().parse_args(["init"])
+                sys.exit(run_init(init_args) or 0)
+
         sys.exit(1)
 
 
@@ -191,6 +211,21 @@ def _require_service_token(settings, role: str, *, stream=None) -> str:
     print("        --role admin --id bot-service", file=stream)
     print("  Then put the printed token into NYMERIA_SERVICE_TOKEN in .env.docker.", file=stream)
     sys.exit(1)
+
+
+def _require_bot_sdk(module, platform: str, extra: str) -> None:
+    """Fail with install guidance if a bot's optional SDK is not installed.
+
+    Chat-platform SDKs live in per-platform extras (nymeria[discord], etc.) and
+    are absent from a default/slim install. Each bot module exposes
+    ``SDK_AVAILABLE``; when it is False we print an actionable message instead of
+    letting the bot crash with a raw ImportError/AttributeError on instantiation.
+    """
+    if not getattr(module, "SDK_AVAILABLE", True):
+        print(f"\n[Error] {platform} support is not installed.")
+        print(f"  Install it with:  pip install 'nymeria[{extra}]'")
+        print("  (or 'nymeria[bots]' to install every chat platform at once)")
+        sys.exit(1)
 
 
 def _require_launch_mode_service_token(args: argparse.Namespace, settings) -> None:
@@ -732,6 +767,8 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     ensures Discord always reflects the same state as the frontend.
     """
     from nymeria.config import get_settings
+    from nymeria.triggers import discord_bot as _discord_bot
+    _require_bot_sdk(_discord_bot, "Discord", "discord")
     from nymeria.triggers.discord_bot import NymeriaDiscordBot
     from nymeria.triggers.api_client import NymeriaAPIClient
 
@@ -834,6 +871,8 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
     ensures Telegram always reflects the same state as the frontend.
     """
     from nymeria.config import get_settings
+    from nymeria.triggers import telegram_bot as _telegram_bot
+    _require_bot_sdk(_telegram_bot, "Telegram", "telegram")
     from nymeria.triggers.telegram_bot import NymeriaTelegramBot
     from nymeria.triggers.api_client import NymeriaAPIClient
 
@@ -890,6 +929,8 @@ def run_slack_bot(args: argparse.Namespace) -> None:
     """
     from nymeria.config import get_settings
     from nymeria.triggers.api_client import NymeriaAPIClient
+    from nymeria.triggers import slack_bot as _slack_bot
+    _require_bot_sdk(_slack_bot, "Slack", "slack")
     from nymeria.triggers.slack_bot import NymeriaSlackBot
 
     settings = get_settings()
@@ -1216,90 +1257,6 @@ def run_signal_bot(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("\nConnecting to Signal...")
-    bot.run()
-
-
-def run_twitch_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Twitch bot.
-
-    Connects to a Twitch channel via TwitchIO v3 and responds to !commands.
-    Chat messages are buffered in memory and optionally evaluated periodically
-    ("pulse"). Moderation tools are available via the thread's tool config.
-    """
-    from nymeria import NymeriaAgent
-    from nymeria.tools import ALL_TOOLS
-    from nymeria.config import get_settings
-    from nymeria.triggers.twitch_bot import NymeriaTwitchBot
-    from nymeria.core.twitch_runtime import register_twitch_bot
-
-    settings = get_settings()
-
-    if not settings.twitch_client_id or not settings.twitch_channel:
-        print("\n[Error] Twitch credentials not configured.")
-        print("  Required environment variables:")
-        print("    TWITCH_CLIENT_ID     — from Twitch Developer Console")
-        print("    TWITCH_CLIENT_SECRET — from Twitch Developer Console")
-        print("    TWITCH_BOT_USER_ID   — numeric ID of the bot's Twitch account")
-        print("    TWITCH_CHANNEL       — channel to join")
-        print("\n  1. Create an app at https://dev.twitch.tv/console/apps")
-        print("  2. Add credentials to .env or .env.docker")
-        print("  3. Run again: python run.py twitch-bot")
-        sys.exit(1)
-
-    # The Twitch bot's agent invokes tools that call back into the API.
-    _require_service_token(settings, "the Twitch bot")
-
-    print("Starting Nymeria Twitch Bot...")
-    print(f"  - Channel: #{settings.twitch_channel}")
-    print(f"  - Buffer size: {settings.twitch_buffer_size}")
-    print(f"  - Pulse: {'enabled' if settings.twitch_pulse_enabled else 'disabled'}")
-    print(f"  - Model: {settings.llm_model}")
-
-    # Initialize Redis event bus if configured
-    if settings.redis_enabled and settings.redis_url:
-        from nymeria.core.event_bus import create_event_bus, set_event_bus
-        event_bus = create_event_bus(settings)
-        set_event_bus(event_bus)
-        print(f"  - Redis event bus: {_redis_url_for_display(settings.redis_url)}")
-
-    # Create agent without ticker (ticker runs in worker/api, not bot)
-    agent = NymeriaAgent(tools=list(ALL_TOOLS), enable_ticker=False)
-    agent.sync_agent_tools()
-
-    # Create bot
-    bot = NymeriaTwitchBot(
-        agent=agent,
-        client_id=settings.twitch_client_id,
-        client_secret=settings.twitch_client_secret,
-        bot_user_id=settings.twitch_bot_user_id,
-        access_token=settings.twitch_bot_access_token,
-        refresh_token=settings.twitch_bot_refresh_token,
-        broadcaster_token=settings.twitch_broadcaster_token,
-        broadcaster_refresh_token=settings.twitch_broadcaster_refresh_token,
-        channel=settings.twitch_channel,
-        buffer_size=settings.twitch_buffer_size,
-        pulse_enabled=settings.twitch_pulse_enabled,
-        pulse_interval=settings.twitch_pulse_interval,
-        pulse_min_messages=settings.twitch_pulse_min_messages,
-        command_context_count=settings.twitch_command_context_count,
-        system_prompt=settings.twitch_system_prompt,
-    )
-
-    # Register the bot runtime for Twitch tools. The runtime module is outside
-    # nymeria.tools so tool hot-reload does not drop this registration.
-    register_twitch_bot(bot)
-
-    # Handle shutdown signals
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Twitch bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    print("\nConnecting to Twitch...")
     bot.run()
 
 
@@ -1851,12 +1808,6 @@ Examples:
              "Defaults to http://nymeria-api:8000 for Docker deployments.",
     )
 
-    # Twitch bot subcommand
-    subparsers.add_parser(
-        "twitch-bot",
-        help="Start Twitch chat bot"
-    )
-
     # MCP subcommand
     mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for agent-to-agent communication")
     mcp_parser.add_argument(
@@ -1948,7 +1899,7 @@ def main() -> None:
     if args.command == "cli":
         if getattr(args, "transport", "api") == "local":
             validate_config(suppress_service_token_warning=suppress_service_token_warning)
-    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "twitch-bot", "watchdog", "service"):
+    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "watchdog", "service"):
         validate_config(suppress_service_token_warning=suppress_service_token_warning)
     elif args.command == "users":
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
@@ -1986,8 +1937,6 @@ def main() -> None:
         run_signal_bot(args)
     elif args.command == "watchdog":
         run_watchdog(args)
-    elif args.command == "twitch-bot":
-        run_twitch_bot(args)
     elif args.command == "mcp":
         run_mcp(args)
     elif args.command == "service":
