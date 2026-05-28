@@ -106,8 +106,8 @@ from .google_business_profile_service_integrations import (
     google_business_profile_delete_post,
     GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS,
 )
-# Private plugins (_PRV_A, Private B) are tolerated as absent so the publish-prep
-# pipeline can strip the source files without breaking the import chain.
+# Private _PRV_A plugin is tolerated as absent so the publish-prep pipeline can
+# strip the source files without breaking the import chain.
 try:
     from ..plugins._prv_a import (
         _PRV_TOOLS_A1,
@@ -130,10 +130,6 @@ from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
 from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
-try:
-    from ._prv_b import _PRV_TOOLS_B
-except ImportError:
-    _PRV_TOOLS_B = []
 from .skill_config import (
     skill_edit,
     skill_write,
@@ -1375,7 +1371,6 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SEARCH_MCP_TOOLS
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
-    + _PRV_TOOLS_B
     + SKILL_CONFIG_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
@@ -2758,7 +2753,6 @@ __all__ = [
     "AUTH_MANAGER_TOOLS",
     "request_credential",
     "REQUEST_CREDENTIAL_TOOLS",
-    "_PRV_TOOLS_B",
     "skill_write",
     "skill_edit",
     "SKILL_CONFIG_TOOLS",

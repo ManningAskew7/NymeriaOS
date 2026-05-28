@@ -28,7 +28,6 @@ class ToolCategory(str, Enum):
     IMAGE = "image"
     CALENDAR = "calendar"
     GOOGLE_DOCS = "google_docs"
-    _PRV_B = "_prv_b"
     TWITCH = "twitch"
     SKILLS = "skills"
     INTEGRATIONS = "integrations"
@@ -133,7 +132,6 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
             "GOOGLE_ANALYTICS_SERVICE_TOOLS",
         ),
     ),
-    (ToolCategory._PRV_B, ("_PRV_TOOLS_B",)),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (
@@ -1075,8 +1073,6 @@ def _infer_security_level(
             if tool_name in _GOOGLE_DOCS_SAFE_TOOL_NAMES
             else SecurityLevel.MODERATE
         )
-    if category == ToolCategory._PRV_B:
-        return SecurityLevel.MODERATE
     if category == ToolCategory.TWITCH:
         return SecurityLevel.SAFE if tool_name.startswith(("twitch_read", "twitch_get")) else SecurityLevel.MODERATE
     if category == ToolCategory.SKILLS:
