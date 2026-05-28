@@ -166,7 +166,7 @@ tokens.
 
 | Field | Values |
 |---|---|
-| `provider` | `discord`, `telegram`, `twitch`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, `signal` |
+| `provider` | `discord`, `telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`, `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, `signal` |
 | `provider_user_id` | Platform-native user ID (string) |
 
 **Responses:**
@@ -1697,7 +1697,7 @@ owned by another user is not returned.
 | `title` | Server-authoritative display title |
 | `title_source` | `"auto"` (generated from first message), `"user"` (manual rename), `"callable"` (synced from callable_name) |
 | `pinned` | Whether thread is pinned to top |
-| `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"matrix"`, `"whatsapp"`, `"messenger"`, `"instagram"`, `"webex"`, `"mattermost"`, `"zulip"`, `"rocketchat"`, `"teams"`, `"googlechat"`, `"line"`, `"signal"`, `"twitch"`, `"trigger"`, `"webhook"` |
+| `platform` | Origin surface: `"desktop"`, `"callable"`, `"discord"`, `"telegram"`, `"slack"`, `"matrix"`, `"whatsapp"`, `"messenger"`, `"instagram"`, `"webex"`, `"mattermost"`, `"zulip"`, `"rocketchat"`, `"teams"`, `"googlechat"`, `"line"`, `"signal"`, `"trigger"`, `"webhook"` |
 | `callable` | Whether the saved per-thread config currently marks the thread callable |
 | `recovered` | `true` when this row was included because a resource survived without the normal complete thread listing path and the effective caller can open it |
 | `recovery_sources` | Storage surfaces that referenced the recovered thread, e.g. `"metadata"`, `"todo"`, `"scheduled_todo"`, `"trigger"`, `"chat_binding"`, `"bind_code"`, `"checkpoint"` |
@@ -1887,7 +1887,7 @@ When metadata is supplied, the response includes the stored metadata fields:
 ```
 
 **Errors:**
-- `400`  -  `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `twitch_<c>`, `slack_C...`, `matrix_!room...`, `whatsapp_group_<id>`, `webex_<room>`, `mattermost_<server>_<channel>`, `zulip_<realm>_<stream>`, `rocketchat_<server>_<room>`, `signal_group_<group>`). These are inherently multi-user and cannot be per-user-claimed.
+- `400`  -  `thread_id` matches a shared-channel pattern (`discord_<g>_<c>`, `telegram_-<id>`, `slack_C...`, `matrix_!room...`, `whatsapp_group_<id>`, `webex_<room>`, `mattermost_<server>_<channel>`, `zulip_<realm>_<stream>`, `rocketchat_<server>_<room>`, `signal_group_<group>`). These are inherently multi-user and cannot be per-user-claimed.
 - `404`  -  Non-admin caller and the thread is owned by someone else. Mirrors `_require_thread_access`'s leak surface so callers can't probe ownership under other users. Admin callers always get `200` with the actual owner instead.
 
 See [`accounts.md` → Thread ownership](accounts.md#thread-ownership) for the full lifecycle.

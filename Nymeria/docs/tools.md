@@ -604,7 +604,7 @@ tool_search(query: str = "", category: str = "", top_k: int = 15, include_status
 
 **Parameters:**
 - `query` (`str`): Keyword to search tool names and descriptions.
-- `category` (`str`): Optional category filter (e.g. `"email"`, `"twitch"`).
+- `category` (`str`): Optional category filter (e.g. `"email"`, `"slack"`).
 - `top_k` (`int`): Result count, default 15 and capped at 50.
 - `include_status` (`bool`): Include current-thread enabled/disabled annotations.
 
@@ -2250,7 +2250,6 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Docs tools: 4 auth + 17 document + 34 Workspace = 55 total
 - Google Analytics tools: 4 auth + 4 report = 8 total
 - Google Business Profile tools: 4 auth + 11 profile = 15 total
-- Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
 - Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 

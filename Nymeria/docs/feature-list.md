@@ -191,7 +191,6 @@ total).
 | **Browser** | 9 | Playwright with BeautifulSoup fallback; navigate, click, type, screenshot, scroll |
 | **Outlook Email** | 13 | OAuth, auth reset, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
 | **Google Calendar** | 11 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
-| **Twitch** | 22 | Chat, moderation, stream info, polls, predictions, clips, channel management |
 | **Triggers** | 6 | Create, list, update, delete, inspect, source catalog |
 | **Image Generation** | 1 | OpenAI GPT Image and Gemini Nano Banana prompt-to-image generation with workspace artifacts |
 | **Watchdog** | 4 | Activity feed, cross-thread dispatch, cross-thread notepad, TODO overview |
@@ -335,13 +334,6 @@ total).
 - HTML formatting, inline stop button, privacy mode
 - File delivery: images inline, documents downloadable (50MB max)
 
-### Twitch Bot
-- Viewer: !ask (cooldowns), !status, !help
-- Mod: !clear, !pulse (periodic chat evaluation), !context, !stop, !start
-- Pulse system: configurable interval (60–3600s), minimum message threshold
-- Chat buffer (50–5000 messages), moderation EventSub awareness
-- 23 Twitch-specific tools: chat, moderation, polls, predictions, clips, channel management
-
 ### Outlook Add-in
 - Embedded taskpane in Outlook Web
 - Office.js bridge reads email subject/sender/date
@@ -458,7 +450,7 @@ total).
 | nymeria-qwen3-tts |  -  | TTS service |
 | nymeria-faster-whisper |  -  | STT service |
 
-CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`). The Twitch bot runs as a standalone runtime, not a compose service.
+CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 
 ### Other Modes
 - **Local dev**  -  `python3 run.py api|cli|worker|mcp`
@@ -550,4 +542,3 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Telegram messages | 4096 chars | No |
 | Teams messages | 4000 chars | No |
 | Signal messages | 8000 chars | No |
-| Twitch messages | 500 chars | No |
