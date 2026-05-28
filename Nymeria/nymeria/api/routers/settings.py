@@ -679,7 +679,6 @@ def _env_mapping() -> dict[str, str]:
         "embedding_model": "EMBEDDING_MODEL",
         "gemini_api_key": "GEMINI_API_KEY",
         "gemini_extraction_model": "GEMINI_EXTRACTION_MODEL",
-        "_prv_a_service_account_file": "_PRV_A_SERVICE_ACCOUNT_FILE",
         "user_timezone": "USER_TIMEZONE",
         "ticker_poll_interval": "TICKER_POLL_INTERVAL",
         "max_concurrent_autonomous": "MAX_CONCURRENT_AUTONOMOUS",

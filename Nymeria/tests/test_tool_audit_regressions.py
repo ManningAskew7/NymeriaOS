@@ -21,7 +21,6 @@ from nymeria.tools import google_docs
 from nymeria.tools import google_sheets
 from nymeria.tools import outlook_attachments
 from nymeria.tools import outlook_email
-from nymeria.plugins._prv_a import products as _prv_a_products
 from nymeria.tools.metadata import (
     TOOL_METADATA,
     ToolCategory,
@@ -243,20 +242,141 @@ def test_outlook_folder_validation_and_html_cleanup():
     assert "Hello there" in cleaned
 
 
-def test__prv_a_product_search_uses_service_account_search(monkeypatch):
-    seen = {}
+def test_search_sheet_data_with_service_account_routes_through_vault_credential(monkeypatch):
+    """Generic search_sheet_data delegates service-account reads to the
+    parameterized fetcher; it should never invoke user-OAuth in that mode.
+    """
+    fetch_calls = {}
+    user_calls = {"n": 0}
 
-    def fake_search_sheet_data(**kwargs):
-        seen.update(kwargs)
-        return "[Success]: mocked _PRV_A result"
+    def fake_fetch(spreadsheet_id, sheet_name, gid, *, service_account_credential_id):
+        fetch_calls.update(
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            gid=gid,
+            credential_id=service_account_credential_id,
+        )
+        return ["Part", "Status"], [["1756-L81E", "Active"]]
 
-    monkeypatch.setattr(google_sheets, "search_sheet_data", fake_search_sheet_data)
+    def fake_user_fetch(*args, **kwargs):
+        user_calls["n"] += 1
+        return [], []
 
-    result = _prv_a_products._prv_a_product_search.func(query="1756-L81E", config=_config())
+    monkeypatch.setattr(google_sheets, "fetch_service_account_sheet_data", fake_fetch)
+    monkeypatch.setattr(google_sheets, "_fetch_sheet", fake_user_fetch)
 
-    assert result == "[Success]: mocked _PRV_A result"
-    assert seen["user_id"] is None
-    assert seen["use__prv_a_service_account"] is True
+    result = google_sheets.search_sheet_data(
+        user_id=None,
+        spreadsheet_id="SHEET-XYZ",
+        query="1756-L81E",
+        gid=42,
+        service_account_credential_id="any_sheets",
+    )
+
+    assert "1756-L81E" in result
+    assert fetch_calls["credential_id"] == "any_sheets"
+    assert fetch_calls["spreadsheet_id"] == "SHEET-XYZ"
+    assert fetch_calls["gid"] == 42
+    assert user_calls["n"] == 0
+
+
+def test_service_account_sheet_data_pulls_secret_from_vault(monkeypatch):
+    """fetch_service_account_sheet_data resolves the JSON via the vault and
+    builds a service-account-scoped Sheets client.
+    """
+    secret_calls = {}
+    build_calls = {}
+
+    class FakeRepo:
+        def get_secret_field(self, credential_id, field_name, **kwargs):
+            secret_calls.update(credential_id=credential_id, field_name=field_name, **kwargs)
+            return json.dumps({"type": "service_account", "client_email": "svc@example.iam"})
+
+    monkeypatch.setattr(
+        "nymeria.core.credential_vault.get_credential_vault_repo",
+        lambda: FakeRepo(),
+    )
+
+    class FakeService:
+        def spreadsheets(self):
+            class V:
+                def values(self_inner):
+                    class G:
+                        def get(self_g, **kwargs):
+                            class Exec:
+                                def execute(self_e):
+                                    return {"values": [["Part", "Status"], ["X", "Y"]]}
+                            return Exec()
+                    return G()
+
+                def get(self_inner, **kwargs):
+                    class Exec:
+                        def execute(self_e):
+                            return {"sheets": []}
+                    return Exec()
+            return V()
+
+    def fake_from_info(info, scopes=None):
+        build_calls["info"] = info
+        build_calls["scopes"] = scopes
+        return "fake-creds"
+
+    def fake_build(name, version, credentials, **kwargs):
+        build_calls["name"] = name
+        build_calls["credentials"] = credentials
+        return FakeService()
+
+    monkeypatch.setattr(
+        "google.oauth2.service_account.Credentials.from_service_account_info",
+        staticmethod(fake_from_info),
+    )
+    monkeypatch.setattr("googleapiclient.discovery.build", fake_build)
+
+    # Bust cache so the fetch actually runs
+    google_sheets._sheet_cache.clear()
+
+    headers, rows = google_sheets.fetch_service_account_sheet_data(
+        "SHEET-1",
+        sheet_name="Tab",
+        service_account_credential_id="test_cred",
+    )
+
+    assert headers == ["Part", "Status"]
+    assert rows == [["X", "Y"]]
+    assert secret_calls["credential_id"] == "test_cred"
+    assert secret_calls["field_name"] == "service_account_json"
+    assert secret_calls["target_type"] == "native_tool"
+    assert build_calls["info"]["client_email"] == "svc@example.iam"
+    assert build_calls["credentials"] == "fake-creds"
+    assert build_calls["name"] == "sheets"
+
+
+def test_service_account_sheet_data_returns_friendly_error_when_credential_missing(monkeypatch):
+    """When the credential is missing, the helper raises with the documented
+    setup hint and search_sheet_data forwards that message.
+    """
+    from nymeria.core.credential_vault import CredentialNotFound
+
+    class FakeRepo:
+        def get_secret_field(self, *args, **kwargs):
+            raise CredentialNotFound("absent")
+
+    monkeypatch.setattr(
+        "nymeria.core.credential_vault.get_credential_vault_repo",
+        lambda: FakeRepo(),
+    )
+
+    google_sheets._sheet_cache.clear()
+
+    result = google_sheets.search_sheet_data(
+        user_id=None,
+        spreadsheet_id="SHEET-1",
+        query="X",
+        service_account_credential_id="absent",
+    )
+
+    assert "service-account credential 'absent'" in result
+    assert "provider=\"google_sheets\"" in result
 
 
 def test_google_account_display_validation_refreshes_and_prunes(monkeypatch):

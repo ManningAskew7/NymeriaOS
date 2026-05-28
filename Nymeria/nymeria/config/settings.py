@@ -251,14 +251,6 @@ class Settings(BaseSettings):
         description="Run in worker mode (ticker only, no API server)"
     )
 
-    # _PRV_A Google Sheets reference-data access. This is intentionally separate
-    # from GOOGLE_OAUTH_CREDENTIALS, which is a user OAuth client for the
-    # general Google Docs/Drive/Sheets tools.
-    _prv_a_service_account_file: Optional[str] = Field(
-        default=None,
-        description="Path to a Google service account JSON file for _PRV_A reference spreadsheets",
-    )
-
     # Messaging Platform Credentials - Telegram
     telegram_bot_token: Optional[str] = Field(
         default=None,
