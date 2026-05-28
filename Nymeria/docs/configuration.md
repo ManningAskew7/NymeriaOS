@@ -1465,22 +1465,22 @@ reachable from the backend process.
 | `AGILECRM_BASE_URL` | - | Agile CRM API base URL override |
 | `MONICA_ACCESS_TOKEN` | - | Monica CRM API token fallback |
 | `MONICA_BASE_URL` | `https://app.monicahq.com/api` | Monica CRM API base URL |
-| `TWITCH_CLIENT_ID` | - | Twitch application Client ID. Note: the standalone Twitch bot was removed; these `TWITCH_*` vars are reserved for the Twitch tools, which are currently disabled pending migration to standalone optional tools. |
+| `TWITCH_CLIENT_ID` | - | Twitch application Client ID. Note: the standalone Twitch bot was removed; all `TWITCH_*` vars below are reserved for the Twitch optional tools, which are currently disabled pending migration to standalone optional tools. The vars still exist in `config/settings.py` so values set here are accepted, but nothing reads them at runtime today. |
 | `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
-| `TWITCH_BOT_ACCESS_TOKEN` | - | Bot's OAuth access token |
-| `TWITCH_BOT_REFRESH_TOKEN` | - | Bot's OAuth refresh token |
-| `TWITCH_BOT_USER_ID` | - | Bot's numeric Twitch user ID |
+| `TWITCH_BOT_ACCESS_TOKEN` | - | Reserved OAuth access token (unused; bot runtime removed) |
+| `TWITCH_BOT_REFRESH_TOKEN` | - | Reserved OAuth refresh token (unused; bot runtime removed) |
+| `TWITCH_BOT_USER_ID` | - | Reserved numeric Twitch user ID (unused; bot runtime removed) |
 | `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster's OAuth token (channel:bot scope) |
 | `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | - | Twitch channel to join (used by the Twitch tools, currently disabled) |
-| `TWITCH_SYSTEM_PROMPT` | - | Optional initial system prompt for the Twitch thread; existing thread config takes precedence |
-| `TWITCH_BUFFER_SIZE` | `500` | Chat message ring buffer size (50-5000) |
-| `TWITCH_PULSE_ENABLED` | `true` | Enable periodic chat evaluation |
-| `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks (60-3600) |
-| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum new messages before a pulse fires |
-| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Messages to include in pulse context |
-| `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Messages to include with !ask context |
-| `TWITCH_RESPOND_MODE` | `command` | Response mode (command = only !commands) |
+| `TWITCH_CHANNEL` | - | Twitch channel to target (reserved for the disabled tools) |
+| `TWITCH_SYSTEM_PROMPT` | - | Reserved initial system prompt (unused; bot runtime removed) |
+| `TWITCH_BUFFER_SIZE` | `500` | Reserved chat ring buffer size (50-5000; unused; bot runtime removed) |
+| `TWITCH_PULSE_ENABLED` | `true` | Reserved periodic-evaluation toggle (unused; bot runtime removed) |
+| `TWITCH_PULSE_INTERVAL` | `300` | Reserved pulse interval seconds (60-3600; unused; bot runtime removed) |
+| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Reserved pulse minimum-message threshold (unused; bot runtime removed) |
+| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Reserved pulse context window (unused; bot runtime removed) |
+| `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Reserved !ask context window (unused; bot runtime removed) |
+| `TWITCH_RESPOND_MODE` | `command` | Reserved response-mode setting (unused; bot runtime removed) |
 
 ### Log File Rotation
 

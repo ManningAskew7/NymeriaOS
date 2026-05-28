@@ -276,7 +276,7 @@ save-account actions into `CopyOnceTokenDialog`; mobile omits those actions.
 
 ### `PlatformLinkingSection.svelte`
 
-Always uses the admin endpoints (`GET / POST / DELETE /admin/users/{user_id}/platforms`). For self use in `AccountTab` this still works because the section is only rendered for admins viewing themselves. The provider dropdown is hardcoded to the backend chat-app provider union (`discord`, `telegram`, `twitch`, Slack/Matrix/WhatsApp/Messenger/Instagram/Webex/Mattermost/Zulip/Rocket.Chat/Teams/Google Chat/LINE/Signal). Provider ID input is monospace because these are platform-native IDs.
+Always uses the admin endpoints (`GET / POST / DELETE /admin/users/{user_id}/platforms`). For self use in `AccountTab` this still works because the section is only rendered for admins viewing themselves. The provider dropdown is hardcoded to the backend chat-app provider union (`discord`, `telegram`, Slack/Matrix/WhatsApp/Messenger/Instagram/Webex/Mattermost/Zulip/Rocket.Chat/Teams/Google Chat/LINE/Signal). Provider ID input is monospace because these are platform-native IDs.
 
 ### `CopyOnceTokenDialog.svelte`
 

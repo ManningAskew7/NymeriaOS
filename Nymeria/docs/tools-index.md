@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1253 tools found.**
+**1242 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -162,6 +162,18 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `chargebee_get_record` | `nymeria/tools/commerce_billing_service_integrations.py` | Get a Chargebee record by ID. |
 | `chargebee_list_records` | `nymeria/tools/commerce_billing_service_integrations.py` | List Chargebee billing records. |
 | `chargebee_update_customer` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a Chargebee customer. |
+| `chrome_act` | `nymeria/tools/chrome_browser.py` | Perform an action against a Chrome element. |
+| `chrome_cdp` | `nymeria/tools/chrome_browser.py` | Raw Chrome DevTools Protocol escape hatch. Last-resort tool. |
+| `chrome_console` | `nymeria/tools/chrome_browser.py` | Read buffered console messages and uncaught exceptions for a Chrome tab. |
+| `chrome_dialog` | `nymeria/tools/chrome_browser.py` | Handle a pending native JS dialog (alert/confirm/prompt) in a Chrome tab. |
+| `chrome_extract_text` | `nymeria/tools/chrome_browser.py` | Return the visible text content of a Chrome tab or scoped element. |
+| `chrome_history` | `nymeria/tools/chrome_browser.py` | Move a Chrome tab one step back or forward in its history. |
+| `chrome_navigate` | `nymeria/tools/chrome_browser.py` | Navigate a Chrome tab to ``url``. |
+| `chrome_press_key` | `nymeria/tools/chrome_browser.py` | Press a key in a Chrome tab. |
+| `chrome_screenshot` | `nymeria/tools/chrome_browser.py` | Capture a PNG screenshot of a Chrome tab. |
+| `chrome_scroll` | `nymeria/tools/chrome_browser.py` | Scroll a Chrome tab. |
+| `chrome_snapshot` | `nymeria/tools/chrome_browser.py` | Read the accessibility tree of a Chrome tab. |
+| `chrome_tabs` | `nymeria/tools/chrome_browser.py` | Manage browser tabs in the user's Chrome. |
 | `circleci_get_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Get one CircleCI pipeline by project and pipeline number. |
 | `circleci_list_pipelines` | `nymeria/tools/build_ci_service_integrations.py` | List CircleCI pipelines for a GitHub or Bitbucket project. |
 | `circleci_trigger_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Trigger a CircleCI pipeline. |
@@ -1080,6 +1092,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `thehive_get_case` | `nymeria/tools/enrichment_security_service_integrations.py` | Get a TheHive case by ID. |
 | `thehive_list_alerts` | `nymeria/tools/enrichment_security_service_integrations.py` | List or query TheHive alerts. |
 | `thehive_list_cases` | `nymeria/tools/enrichment_security_service_integrations.py` | List or query TheHive cases. |
+| `thread_instructions_set` | `nymeria/tools/dream_tools.py` | Overwrite the parent thread's per-thread instructions (appended to soul.md). |
 | `todoist_close_task` | `nymeria/tools/productivity_service_integrations.py` | Close a Todoist task. |
 | `todoist_create_project` | `nymeria/tools/productivity_service_integrations.py` | Create a Todoist project. |
 | `todoist_create_task` | `nymeria/tools/productivity_service_integrations.py` | Create a Todoist task. |
@@ -1112,28 +1125,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `twilio_list_messages` | `nymeria/tools/messaging_delivery_service_integrations.py` | List Twilio messages. |
 | `twilio_make_call` | `nymeria/tools/messaging_delivery_service_integrations.py` | Start an outbound Twilio voice call. |
 | `twilio_send_message` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS/MMS/WhatsApp message with Twilio. |
-| `twitch_announce` | `nymeria/tools/twitch.py` | Send a highlighted announcement to Twitch chat. Requires moderator permissions. |
-| `twitch_automod_review` | `nymeria/tools/twitch.py` | Approve or deny a message held by AutoMod. |
-| `twitch_ban` | `nymeria/tools/twitch.py` | Permanently ban a user from Twitch chat. Requires moderator permissions. |
-| `twitch_clip` | `nymeria/tools/twitch.py` | Create a clip of the last ~30 seconds of the live stream. |
-| `twitch_create_poll` | `nymeria/tools/twitch.py` | Create a poll in the channel. Requires broadcaster token. |
-| `twitch_create_prediction` | `nymeria/tools/twitch.py` | Create a channel points prediction. Requires broadcaster token. |
-| `twitch_delete_message` | `nymeria/tools/twitch.py` | Delete a specific chat message by ID, or clear all chat if no ID given. |
-| `twitch_end_poll` | `nymeria/tools/twitch.py` | End an active poll. Requires broadcaster token. |
-| `twitch_get_banned` | `nymeria/tools/twitch.py` | Get list of banned users in the channel with reasons. |
-| `twitch_get_channel` | `nymeria/tools/twitch.py` | Get channel info: title, game, tags, language. |
-| `twitch_get_chatters` | `nymeria/tools/twitch.py` | Get list of users currently in chat with total count. |
-| `twitch_get_schedule` | `nymeria/tools/twitch.py` | Get the channel's upcoming stream schedule. |
-| `twitch_get_stream` | `nymeria/tools/twitch.py` | Get the current live stream status: viewers, game, title, uptime. Returns 'offline' if not live. |
-| `twitch_get_subs` | `nymeria/tools/twitch.py` | Check subscriber count, or check if a specific user is subscribed. Requires broadcaster token. |
-| `twitch_read_chat` | `nymeria/tools/twitch.py` | Read recent messages from the chat buffer. Does not call any API. |
-| `twitch_resolve_prediction` | `nymeria/tools/twitch.py` | Resolve, cancel, or lock a prediction. Requires broadcaster token. |
-| `twitch_send` | `nymeria/tools/twitch.py` | Send a message to the Twitch channel chat. |
-| `twitch_set_channel_info` | `nymeria/tools/twitch.py` | Update channel title, game/category, and/or tags. Requires broadcaster token. |
-| `twitch_shoutout` | `nymeria/tools/twitch.py` | Give a shoutout to another channel. Has a 2-minute cooldown per target. |
-| `twitch_timeout` | `nymeria/tools/twitch.py` | Timeout a user in Twitch chat. Requires moderator permissions. |
-| `twitch_unban` | `nymeria/tools/twitch.py` | Unban or untimeout a user in Twitch chat. Requires moderator permissions. |
-| `twitch_warn` | `nymeria/tools/twitch.py` | Issue an official warning to a user. They see a popup in chat. |
 | `twitter_create_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create an X/Twitter post, reply, or quote post. |
 | `twitter_delete_post` | `nymeria/tools/community_publishing_service_integrations.py` | Delete an X/Twitter post by ID or URL. |
 | `twitter_get_me` | `nymeria/tools/community_publishing_service_integrations.py` | Get the authenticated X/Twitter user. |

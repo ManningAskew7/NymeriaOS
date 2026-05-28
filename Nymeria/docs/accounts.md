@@ -342,7 +342,6 @@ A thread becomes owned in one of four ways:
 | `googlechat_<space>` | Shared Google Chat space/group chat | **No** |
 | `line_group_<group>` / `line_room_<room>` | Shared LINE group or room | **No** |
 | `signal_group_<group>` | Shared Signal group | **No** |
-| `twitch_<channel_name>` | Shared Twitch stream chat | **No** |
 
 Shared-channel threads are inherently multi-user - per-user ownership rows would just claim-jack to whichever user spoke first. The bot service token routes per-user attribution through `X-Nymeria-Act-As` instead (act-as targets arrive with `role="user"` plus `via_act_as=true` and bypass shared-channel owner claiming). Direct non-admin API calls to a shared-channel thread without admin act-as return 404.
 

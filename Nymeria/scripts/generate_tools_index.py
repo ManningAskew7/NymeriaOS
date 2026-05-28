@@ -40,11 +40,20 @@ def extract_tools(filepath: Path) -> list[tuple[str, str, str]]:
 NYMERIA_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = NYMERIA_ROOT / "nymeria" / "tools"
 
+# Tool source files to exclude from the public index. The corresponding tool
+# modules still exist in the codebase (kept for an eventual standalone rewrite),
+# but they are not part of the publicly documented surface area. Mirrors the
+# `_`-prefix convention used for `_prv_b.py`; we use an explicit list here
+# because `twitch.py` cannot be renamed without churning live runtime imports.
+EXCLUDED_FILES = {"twitch.py"}
+
 
 def main():
     all_tools = []
     for py_file in sorted(TOOLS_DIR.glob("*.py")):
         if py_file.name.startswith("_"):
+            continue
+        if py_file.name in EXCLUDED_FILES:
             continue
         all_tools.extend(extract_tools(py_file))
 

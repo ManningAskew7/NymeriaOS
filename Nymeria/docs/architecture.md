@@ -311,10 +311,8 @@ workstation image for every process:
 - `nymeria-full:local` (`Dockerfile.full`) runs the API and worker. The API owns
   the Docker stack's `NymeriaAgent` runtime; the worker is a scheduler/trigger
   relay that POSTs autonomous turns to the API but currently shares the full
-  image. A manually launched Twitch runtime also uses the full runtime shape
-  because it constructs its own `NymeriaAgent`. These processes keep the Kali
-  tools, browser runtime, and CLI-oriented environment that shell-capable tools
-  may call.
+  image. These processes keep the Kali tools, browser runtime, and CLI-oriented
+  environment that shell-capable tools may call.
 - `nymeria-slim:local` (`Dockerfile.slim`) runs Watchdog, Discord, Telegram,
   Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, and MCP. Those services are
   HTTP thin clients over the API and do not execute local agent tools, so they
