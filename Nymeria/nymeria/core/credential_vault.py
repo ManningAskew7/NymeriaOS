@@ -193,7 +193,6 @@ def _provider_from_cache_filename(cache_filename: str) -> str:
         "google_calendar": "google_calendar",
         "google_docs": "google_docs",
         "google_gmail": "google_gmail",
-        "_prv_b": "_prv_b",
     }.get(stem, stem)
 
 
@@ -204,7 +203,6 @@ def _cache_display_name(cache_filename: str) -> str:
         "google_calendar": "Google Calendar",
         "google_docs": "Google Docs / Drive / Sheets",
         "google_gmail": "Google Gmail",
-        "_prv_b": "Private B",
     }.get(provider, provider.replace("_", " ").title())
 
 
