@@ -19,11 +19,6 @@ CLIProxyAPI-main/config.yaml
 CLIProxyAPI-main/logs/
 CLIProxyAPI-main/.env
 
-# --- git-crypt encrypted exceptions ---
-# On a fresh clone: install git-crypt, then `git-crypt unlock <keyfile>`
-!Nymeria/.env
-!Nymeria/firebase-service-account.json
-
 # === Databases & User Data ===
 *.db
 *.db-wal
