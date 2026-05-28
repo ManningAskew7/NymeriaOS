@@ -34,7 +34,7 @@ The race fix is independent of thin-client mode and helps any future startup fai
 Thin-client is the default, so no env vars are required:
 
 ```powershell
-cd C:\NymeriaOS\nymeria-desktop
+cd nymeria-desktop
 npm run tauri dev
 ```
 
@@ -50,7 +50,7 @@ Set `NYMERIA_SPAWN_BACKEND=1` before launching. Tauri will detect the source che
 
 ```powershell
 $env:NYMERIA_SPAWN_BACKEND = "1"
-cd C:\NymeriaOS\nymeria-desktop
+cd nymeria-desktop
 npm run tauri dev
 ```
 

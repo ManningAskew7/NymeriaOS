@@ -185,6 +185,10 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 
 ## Code Reference
 
+Line numbers below are intentionally omitted because `core/agent.py` and
+`tools/tool_search.py` move with refactors. Search for the function/symbol
+names in those modules; the named entry points are stable.
+
 ### Entry Points: `tool_search()` and `tool_manage()`  -  `tools/tool_search.py`
 
 `tool_search()` is search-only. `tool_manage()` dispatches on binding actions:
@@ -198,7 +202,7 @@ When a tool is disabled, it's added to `disabled_tools` but **not** removed from
 | `tool_manage(action="status")` | `_status()` | Thread's full tool status (permanent, TTL, disabled sections) |
 | `tool_manage(action="list_categories")` | `_list_categories()` | All categories with tool counts |
 
-### Enable Classification: `_enable()`  -  `tools/tool_search.py:246`
+### Enable Classification: `_enable()`  -  `tools/tool_search.py`
 
 Each requested tool is classified into exactly one bucket (checked in this priority order):
 
@@ -214,12 +218,12 @@ Each requested tool is classified into exactly one bucket (checked in this prior
 
 After classification, if `newly_added` or `un_disabled` is non-empty **and** the reload cap hasn't been hit:
 
-1. Sets `agent._pending_tool_reload[thread_id]` with the new tool names and TTL info (`:462`)
-2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` (`:527`) with explicit "STOP NOW" wording and the private reload marker. The post-tools router uses that marker to end the graph cleanly after the tool result, handing control back to `astream()`.
+1. Sets `agent._pending_tool_reload[thread_id]` with the new tool names and TTL info.
+2. Returns `Command(goto=END, update={"messages": [ToolMessage(...)]})` with explicit "STOP NOW" wording and the private reload marker. The post-tools router uses that marker to end the graph cleanly after the tool result, handing control back to `astream()`.
 
 If the reload cap is already hit, returns a plain string instead. The enablement is still persisted, but the tool won't be bound until the next user message.
 
-### Reload Loop: `astream()`  -  `core/agent.py:4132`
+### Reload Loop: `astream()`  -  `core/agent.py`
 
 After the first graph invocation completes, `astream()` enters the reload loop:
 
@@ -238,27 +242,27 @@ while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:  # default 3
 
 Each iteration:
 
-1. **Yields a `tool_reload` SSE event** (`:4149`)  -  frontends use this to render the reload/resume message between the pre-reload and post-reload response segments.
+1. **Yields a `tool_reload` SSE event**  -  frontends use this to render the reload/resume message between the pre-reload and post-reload response segments.
 
-2. **Invalidates the graph cache** and builds a fresh graph via `_get_async_graph_for_user()` (`:4159-4162`). The new graph has the just-enabled tools bound to the LLM.
+2. **Invalidates the graph cache** and builds a fresh graph via `_get_async_graph_for_user()`. The new graph has the just-enabled tools bound to the LLM.
 
-3. **Constructs a resume prompt** (`:4175-4178`):
+3. **Constructs a resume prompt**:
    ```
    [System: tools pdf_write are now loaded for the next 2h.
    Continue the user's task using the new tools.]
    ```
 
-4. **Injects it as an internal HumanMessage** (`:4179-4184`) with `internal_type="tool_reload_resume"`. This is what the checkpointer sees as the "user message" that triggers the second invocation.
+4. **Injects it as an internal HumanMessage** with `internal_type="tool_reload_resume"`. This is what the checkpointer sees as the "user message" that triggers the second invocation.
 
-5. **Drives the fresh graph** via the same `_drive_graph_events()` inner function (`:4186`), streaming events into the same SSE connection.
+5. **Drives the fresh graph** via the same `_drive_graph_events()` inner function, streaming events into the same SSE connection.
 
-6. **Reassigns `graph = reload_graph`** (`:4192`) so post-loop logic (token tracking, dangling-tool-call patching) operates on the most recent graph.
+6. **Reassigns `graph = reload_graph`** so post-loop logic (token tracking, dangling-tool-call patching) operates on the most recent graph.
 
-The sync `chat()` method has an identical loop at `:3211` using `graph.invoke()` instead of `astream_events()`.
+The sync `chat()` method has an identical loop using `graph.invoke()` instead of `astream_events()`.
 
-### Graph Build: `_build_async_graph_with_prompt()`  -  `core/agent.py:2334`
+### Graph Build: `_build_async_graph_with_prompt()`  -  `core/agent.py`
 
-At `:2398`, the graph builder calls `_resolve_temporary_tools(tc)` to get the set of live TTL'd tool names, then merges them with permanent enablements:
+The graph builder calls `_resolve_temporary_tools(tc)` to get the set of live TTL'd tool names, then merges them with permanent enablements:
 
 ```python
 live_temp = self._resolve_temporary_tools(tc)
@@ -267,7 +271,7 @@ extra_names = (set(tc.enabled_tools) | live_temp) - disabled
 
 Tools are looked up in `ALL_TOOLS`, then `OPTIONAL_TOOLS`, then the tool registry (for MCP/custom tools).
 
-### TTL Eviction: `_resolve_temporary_tools()`  -  `core/agent.py:2802`
+### TTL Eviction: `_resolve_temporary_tools()`  -  `core/agent.py`
 
 ```python
 def _resolve_temporary_tools(self, tc) -> set:
@@ -281,7 +285,7 @@ def _resolve_temporary_tools(self, tc) -> set:
     return set(live.keys())
 ```
 
-### History Filter: `get_conversation_history()`  -  `core/agent.py:4365`
+### History Filter: `get_conversation_history()`  -  `core/agent.py`
 
 The `tool_reload_resume` HumanMessage is internal plumbing and is not returned
 as a normal user message. Its text is captured as reload metadata so frontends
@@ -298,7 +302,7 @@ elif internal_type == 'tool_reload_resume':
 
 This matches the treatment of `autonomous_wakeup`. The AI messages from the second invocation are then picked up by the turn consolidation logic and rendered as a continuation of the assistant's turn  -  or as a separate message bubble if there was no active turn (which happens when `Command(goto=END)` ended the first invocation without a final AIMessage).
 
-### ThreadConfig Model: `core/thread_config.py:42`
+### ThreadConfig Model: `core/thread_config.py`
 
 ```python
 class TemporaryToolEntry(BaseModel):
@@ -308,7 +312,7 @@ class TemporaryToolEntry(BaseModel):
     expires_at: datetime
 ```
 
-The `temporary_tools` field at `:65`:
+The `temporary_tools` field on `ThreadConfig`:
 ```python
 temporary_tools: Dict[str, TemporaryToolEntry] = Field(default_factory=dict)
 ```
@@ -324,24 +328,24 @@ security-level, default-enabled, and config-schema policy.
 
 ### Reload Cap
 
-`MAX_TOOL_RELOADS_PER_TURN = 3` (`:386`). After this many reloads in one user message, `_enable()` still persists the enablement but returns a plain string instead of `Command(goto=END)`, deferring the bind to the next turn. This prevents pathological `enable -> enable -> enable -> ...` loops.
+`MAX_TOOL_RELOADS_PER_TURN = 3`. After this many reloads in one user message, `_enable()` still persists the enablement but returns a plain string instead of `Command(goto=END)`, deferring the bind to the next turn. This prevents pathological `enable -> enable -> enable -> ...` loops.
 
-The cap is tracked via `_turn_reload_count[thread_id]` (`:510`), reset at the start of each turn (`:4125`), incremented by the reload loop (`:4140`), and read by `_enable()` (`:458`).
+The cap is tracked via `_turn_reload_count[thread_id]`, reset at the start of each turn, incremented by the reload loop, and read by `_enable()`.
 
 ### Abort Signal
 
-The reload loop checks `abort_event.is_set()` before each iteration (`:4134`). If the user hits Stop (`POST /threads/{id}/stop`), no further reloads are attempted.
+The reload loop checks `abort_event.is_set()` before each iteration. If the user hits Stop (`POST /threads/{id}/stop`), no further reloads are attempted.
 
 ### Cleanup
 
 `_pending_tool_reload` is cleared in three places to prevent stale entries:
 
-1. **Inside the loop**  -  `pop()` consumes the entry (`:4136`)
-2. **After the loop**  -  drains any residual entry (`:4196`)
-3. **In `finally`**  -  catches exceptions and early exits (`:4289`)
+1. **Inside the loop**  -  `pop()` consumes the entry
+2. **After the loop**  -  drains any residual entry
+3. **In `finally`**  -  catches exceptions and early exits
 
-`_turn_reload_count` is cleaned up in `finally` at `:4288`. Thread deletion
-also clears the per-thread active superset snapshot used by dynamic binding.
+`_turn_reload_count` is cleaned up in `finally`. Thread deletion also clears
+the per-thread active superset snapshot used by dynamic binding.
 
 At the start of every new `chat()` and `astream()` turn, Nymeria
 also discards any pre-existing pending reload for that thread before resetting
@@ -367,7 +371,7 @@ Both `_pending_tool_reload` and `_turn_reload_count` are intentionally process-l
 
 ### Dangling Tool Calls
 
-The `finally` block at `:4280` patches dangling tool calls for **both** invocations, since `graph` was reassigned to `reload_graph` (`:4192`).
+The `finally` block patches dangling tool calls for **both** invocations, since `graph` was reassigned to `reload_graph`.
 
 ### Idempotence
 

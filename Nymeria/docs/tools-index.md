@@ -752,10 +752,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `monica_get_record` | `nymeria/tools/relationship_crm_service_integrations.py` | Get one Monica CRM record by ID. |
 | `monica_list_records` | `nymeria/tools/relationship_crm_service_integrations.py` | List Monica CRM records such as contacts, activities, calls, notes, reminders, tags, or tasks. |
 | `monica_update_record` | `nymeria/tools/relationship_crm_service_integrations.py` | Update a Monica CRM record from a JSON object. |
-| `_prv_b_auth` | `nymeria/tools/_prv_b.py` | Configure and inspect Private B authentication for LMS workload tools. |
-| `_prv_b_calendar` | `nymeria/tools/_prv_b.py` | Read Private B Moodle calendar export data. |
-| `_prv_b_moodle` | `nymeria/tools/_prv_b.py` | Read Private B through Moodle's mobile web-service token. |
-| `_prv_b_rss` | `nymeria/tools/_prv_b.py` | Read Private B forum/announcement RSS feeds. |
 | `msg91_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS with MSG91. |
 | `nasa_apod` | `nymeria/tools/public_info_integrations.py` | Get NASA Astronomy Picture of the Day metadata. |
 | `netlify_cancel_deploy` | `nymeria/tools/operations_monitoring_service_integrations.py` | Cancel a Netlify deploy by deploy ID. |

@@ -246,7 +246,7 @@ its bindings; the supervisor stops the polling loop on its next refresh.
   `POST /me/telegram-bots` endpoint returns 503 with instructions on how
   to mint one.
 - The supervisor uses one asyncio task and ~25-50 MB RAM per registered
-  bot. On the 2 GB VPS this is fine for ~10 bots; if you ever scale higher,
+  bot. On a 2 GB host this is fine for ~10 bots; if you ever scale higher,
   watch RAM via `docker stats nymeria-telegram-bot`.
 
 ### Bot routing

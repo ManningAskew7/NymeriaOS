@@ -82,9 +82,6 @@ or combine extras like `nymeria[postgres,redis,voice]`. Available extras:
 `discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
 `signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
 
-See [BETA_PRIVATE_INDEX.md](./BETA_PRIVATE_INDEX.md) for private index setup,
-upgrade commands, and the GitHub Release wheel fallback.
-
 `nymeria init` prompts for the hosting/security profile, provider auth method,
 provider, model, API key, setup style, data directory, and what to do next
 after config is written. The model step offers a provider-specific default and
@@ -382,9 +379,6 @@ Start chatting with Nymeria. Here are some things to try:
 ---
 
 ## Troubleshooting
-
-For beta install diagnostics, provider/key failures, database locks, and
-`nymeria doctor` output, see [BETA_TROUBLESHOOTING.md](./BETA_TROUBLESHOOTING.md).
 
 ### "Invalid API key" / 401 from the desktop app
 

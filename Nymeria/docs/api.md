@@ -1735,27 +1735,6 @@ list derives a callable thread's visible title from `callable_name`.
 
 ---
 
-### Migrate Thread Metadata
-
-```http
-POST /threads/metadata/migrate
-Content-Type: application/json
-Authorization: Bearer <token>
-```
-
-Imports frontend-local thread metadata into the backend metadata store for the
-effective user. This is a compatibility migration endpoint and only creates
-metadata for threads that do not already have it.
-
-**Response:**
-```json
-{
-  "migrated_threads": 12
-}
-```
-
----
-
 ### Branch Thread
 
 ```http

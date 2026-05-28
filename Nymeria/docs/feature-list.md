@@ -1,6 +1,6 @@
 # Nymeria  -  Complete Feature List
 
-Comprehensive feature inventory for comparison with other AI agent platforms. Last updated: 2026-05-24.
+Comprehensive feature inventory for comparison with other AI agent platforms.
 
 ---
 
@@ -180,19 +180,20 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 | **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when needed |
 
 The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
-`ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-25.
+`ALL_TOOLS` and roughly 1,260 optional tools in `OPTIONAL_TOOLS` (the exact
+count drifts as integrations land; regenerate `tools-index.md` for the live
+total).
 
 ### Optional Tool Categories
 
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Browser** | 9 | Playwright with BeautifulSoup fallback; navigate, click, type, screenshot, scroll |
-| **Outlook Email** | 18 | OAuth, auth reset, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
-| **Google Calendar** | 15 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
-| **Twitch** | 23 | Chat, moderation, stream info, polls, predictions, clips, channel management |
+| **Outlook Email** | 13 | OAuth, auth reset, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
+| **Google Calendar** | 11 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
+| **Twitch** | 22 | Chat, moderation, stream info, polls, predictions, clips, channel management |
 | **Triggers** | 6 | Create, list, update, delete, inspect, source catalog |
 | **Image Generation** | 1 | OpenAI GPT Image and Gemini Nano Banana prompt-to-image generation with workspace artifacts |
-| **_PRV_A/Sheets** | 9 | Google Sheets CRUD, supplier lookup, product search, lifecycle status, pricing |
 | **Watchdog** | 4 | Activity feed, cross-thread dispatch, cross-thread notepad, TODO overview |
 | **Thread Spawning** | 1 | Dynamic callable thread creation with full config |
 | **Self-Modification** | 8 | (Legacy) Direct code editing with backups and validation |
@@ -210,7 +211,7 @@ The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
 ### TODO-Based Scheduling
 - **Relative scheduling**: arbitrary positive durations like "45s", "17m", "2h", "1w" from now
 - **Absolute scheduling**: ISO 8601 datetime
-- **Recurrence patterns**: 5min, 10min, 15min, 30min, hourly, daily, weekly, monthly
+- **Recurrence patterns**: canonical durations like `5m`, `2h`, `1d`, `1w`, `1mo` (60s minimum). Legacy presets (`5min`, `10min`, `15min`, `30min`, `hourly`, `daily`, `weekly`, `monthly`) are still accepted on input and normalised on storage.
 - **Status tracking**: pending → in_progress → done
 - **Auto-purge**: Completed TODOs are removed from the active TODO list after `TODO_AUTO_ARCHIVE_DAYS` (default 7)
 
@@ -398,8 +399,8 @@ The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
 - LLM config (provider, model, temperature, thinking), context management, voice, logging
 - Connection profiles for multi-server switching, CLIProxy control
 
-### Themes (5)
-- Midnight (default), Monokai, Dracula, Light, High Contrast
+### Themes (3)
+- Midnight (default), Light, Platinum
 
 ---
 
@@ -457,7 +458,7 @@ The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
 | nymeria-qwen3-tts |  -  | TTS service |
 | nymeria-faster-whisper |  -  | STT service |
 
-CLIProxyAPI runs as a separate stack from `/opt/NymeriaOS/CLIProxyAPI-main/` (not part of `Nymeria/docker-compose.yml`). The Twitch bot runs as a standalone runtime, not a compose service.
+CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`). The Twitch bot runs as a standalone runtime, not a compose service.
 
 ### Other Modes
 - **Local dev**  -  `python3 run.py api|cli|worker|mcp`

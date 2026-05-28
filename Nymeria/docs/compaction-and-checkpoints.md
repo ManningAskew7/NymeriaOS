@@ -168,7 +168,7 @@ Frontend calls `/history` on: thread switch, sync-poll every 5 s while a thread 
 
 ## Dashboard polling cost (2026-04-21 fix)
 
-Three `/threads/*`-adjacent endpoints used to instantiate heavy stateful objects on every request  -  `ActivityLog`, `NotificationStore`, `TriggerManager` each did file I/O + directory setup per call. Under normal frontend polling (30 s intervals × several dashboard panels) this saturated the API event loop on the 1-vCPU VPS.
+Three `/threads/*`-adjacent endpoints used to instantiate heavy stateful objects on every request  -  `ActivityLog`, `NotificationStore`, `TriggerManager` each did file I/O + directory setup per call. Under normal frontend polling (30 s intervals × several dashboard panels) this saturated the API event loop under load.
 
 **Fixed by:**
 - `api/routers/activity.py`: `/activity`, `/notifications`, `/notifications/{id}/read`, `/notifications/read-all` use `get_activity_log()` / `get_notification_store()` singletons.
@@ -294,8 +294,8 @@ Most likely the dashboard polling anti-pattern has regressed. Check that `/activ
 
 ```bash
 grep -nE "NotificationStore\(|ActivityLog\(|TriggerManager\(" \
-  /opt/NymeriaOS/Nymeria/nymeria/api/routers/activity.py \
-  /opt/NymeriaOS/Nymeria/nymeria/triggers/trigger_api.py
+  Nymeria/nymeria/api/routers/activity.py \
+  Nymeria/nymeria/triggers/trigger_api.py
 ```
 
 Only `core/` files should show activity/notification constructor calls. If you see them in `api/routers/activity.py` route handlers, a refactor brought back the per-request pattern.

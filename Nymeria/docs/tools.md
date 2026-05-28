@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 19 core tools in `ALL_TOOLS` and 1,253 optional tools in `OPTIONAL_TOOLS` as of 2026-05-25; use `tools-index.md` for the generated exhaustive inventory.
+Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 19 core tools in `ALL_TOOLS` and roughly 1,260 optional tools in `OPTIONAL_TOOLS` (the count drifts as integrations land; regenerate `tools-index.md` for the live total).
 
 ## Summary Table
 
@@ -68,20 +68,7 @@ which binds the facades below with a TTL.
 
 ### Optional: Integration And Service Tools
 
-Not loaded by default. Nymeria has 1,123 optional integration and service tools registered across utility, public-info, media, community, HR, device, marketing, developer, build/CI, file storage, AWS, business, productivity, work-tracking, project-management, data, CRM, messaging, commerce, monitoring, enrichment, chat-platform, Google, and Microsoft Graph modules as of 2026-05-20. The exhaustive generated inventory lives in `tools-index.md`; this page keeps only the architectural notes and hand-maintained special cases so the reference does not drift.
-
-### Optional: Private B Tools (4)
-
-Not loaded by default. Enable per-thread when the agent needs to manage Example University workload data from the LMS/Moodle. Configuration lives per user in `data/auth_tokens/<user_id>/_prv_b.json`; env fallbacks are `_PRV_B_CALENDAR_URL`, `_PRV_B_RSS_FEEDS`, `_PRV_B_MOODLE_BASE_URL`, and `_PRV_B_MOODLE_TOKEN`. See `docs/_prv_b.md`.
-
-| # | Tool | Category | Security | Description |
-|---|------|----------|----------|-------------|
-| 1 | `_prv_b_auth` | Private B | MODERATE | Configure/inspect the LMS auth; actions: `status`, `setup_guide`, `start_mobile_token_flow`, `parse_mobile_redirect`, `configure_calendar`, `configure_rss`, `configure_moodle_token`, `clear` |
-| 2 | `_prv_b_calendar` | Private B | MODERATE | Read the Moodle calendar `.ics` export URL; actions: `configure`, `status`, `clear`, `list`, `get`, `search` |
-| 3 | `_prv_b_rss` | Private B | MODERATE | Read the LMS forum or announcement RSS feeds; actions: `configure`, `status`, `clear`, `list`, `get`, `search` |
-| 4 | `_prv_b_moodle` | Private B | MODERATE | Read Moodle mobile API data from a `moodle_mobile_app` token; actions: `configure`, `status`, `clear`, `site_info`, `courses`, `course_contents`, `course_module`, `assignments`, `upcoming_events`, `grades`, `forums`, `forum_discussions`, `discussion_posts` |
-
-`_prv_b_auth(start_mobile_token_flow)` returns an the LMS mobile-app launch URL. The user completes the LMS/Microsoft MFA in a browser and gives Nymeria the resulting `moodlemobile://token=...` redirect via `parse_mobile_redirect`; Nymeria then stores the decoded Moodle `wstoken` for the read tools. The tool does not store the user's MQ password or TOTP secret.
+Not loaded by default. Nymeria registers more than a thousand optional integration and service tools across utility, public-info, media, community, HR, device, marketing, developer, build/CI, file storage, AWS, business, productivity, work-tracking, project-management, data, CRM, messaging, commerce, monitoring, enrichment, chat-platform, Google, and Microsoft Graph modules. The exhaustive generated inventory lives in `tools-index.md`; this page keeps only the architectural notes and hand-maintained special cases so the reference does not drift.
 
 ### Optional: File Editing (1)
 
@@ -107,24 +94,6 @@ Configurable options:
 - OpenAI: `openai_model`, `openai_size`, `openai_quality`, `openai_output_format`, `openai_moderation`
 - Gemini: `gemini_model`, `gemini_aspect_ratio`, `gemini_image_size`
 - `native_context_enabled`: whether supported chat models should inspect generated images natively on the next LLM call
-
-### Optional: _PRV_A and Sheets Tools (8 + 1 attachment)
-
-Google Sheets-based tools for Acme Hardware RFQ processing. Generic `google_sheets_*` tools use the current user's Google OAuth. The dedicated `_prv_a_*` reference tools live in the `nymeria/plugins/_prv_a/` package and use the app-level `_PRV_A_SERVICE_ACCOUNT_FILE` service account with 5-minute in-memory caching, so _PRV_A lookups do not depend on whichever user is authenticated for Google Docs. Products, Acme, and Vendor tools share a batch-search helper (`plugins/_prv_a/sheet_lookup.py`); Acme and Supplier have domain-specific search logic. The `outlook_get_attachments` tool (last in the table) is from `OUTLOOK_ATTACHMENT_TOOLS`, not a _PRV_A module; it's placed here as a general-purpose extraction utility.
-
-| # | Tool | Security | Description |
-|---|------|----------|-------------|
-| 1 | `google_sheets_search` | SAFE | Generic search for any Google Sheet by ID |
-| 2 | `google_sheets_append` | MODERATE | Append rows to a Google Sheet (for RFQ tracking) |
-| 3 | `google_sheets_update` | MODERATE | Find and update existing rows by search value |
-| 4 | `_prv_a_supplier_lookup` | SAFE | Find overseas suppliers by brand(s) from Y/N matrix. Supports multi-brand lookup with coverage indicators. Includes emails, websites, and inline vendor quality ratings. |
-| 5 | `_prv_a_vendor_info` | SAFE | Vendor quality ratings, contacts, and notes from past dealings |
-| 6 | `_prv_a_product_search` | SAFE | Search the master _PRV_A product catalog. Supports batch part numbers. |
-| 7 | `_prv_a_acme_lifecycle` | SAFE | Acme part lifecycle status (Active/Mature/Discontinued/Obsolete) with migration paths. Supports batch part numbers. |
-| 8 | `_prv_a_acme_pricelist` | SAFE | Acme Electric part details and list pricing (ex-GST). Supports batch part numbers. |
-| 9 | `outlook_get_attachments` | SAFE | Extract text from email attachments (PDF/DOCX via Gemini, Excel via openpyxl, CSV/TXT direct) |
-
-See `docs/_prv_a/setup-guide.md` for full setup instructions, Google Sheet IDs, and configuration.
 
 ### Optional: Watchdog Tools (4)
 
@@ -2281,7 +2250,6 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Google Docs tools: 4 auth + 17 document + 34 Workspace = 55 total
 - Google Analytics tools: 4 auth + 4 report = 8 total
 - Google Business Profile tools: 4 auth + 11 profile = 15 total
-- Google Sheets / _PRV_A tools: 3 base + 5 _PRV_A = 8 total
 - Twitch tools: 22
 - Watchdog tools: `activity_feed`, `watchdog_dispatch`, `watchdog_read_notepad`, `watchdog_todo_overview` = 4
 - Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
