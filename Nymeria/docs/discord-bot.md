@@ -264,7 +264,7 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 
 ## Future Improvements
 
-- **`/activation` command**  -  Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. OpenClaw implements this as `/activation mention|always`. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
+- **`/activation` command**  -  Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
 
 ## Key Files
 

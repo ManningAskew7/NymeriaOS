@@ -953,7 +953,7 @@ reachable from the backend process.
 | `TEAMS_CHANNEL_ID` | - | Microsoft Teams channel ID for notifications |
 | `TEAMS_ACCOUNT_ID` | - | Outlook account ID for Teams (must have ChannelMessage.Send) |
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
-| `MICROSOFT_MCP_CLIENT_ID` | `8ad36cab...` | Azure AD app client ID for Outlook/Teams OAuth |
+| `MICROSOFT_MCP_CLIENT_ID` | - | Azure AD app client ID for Outlook/Teams OAuth |
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth installed-app credentials JSON file. Used by both the legacy `*_auth_start` tools and the new unified `request_credential(kind="oauth")` flow for Google providers. Required for any Google OAuth path; user tokens are stored in the vault as `kind=oauth_token`, but the client secret itself stays in this file (one per Nymeria install). |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |

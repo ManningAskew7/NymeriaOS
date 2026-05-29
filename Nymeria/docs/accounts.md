@@ -96,7 +96,7 @@ maintenance.
 
 ```bash
 # Create a user, mint a token
-python3 run.py users add bob@example.com --role user --id bob --display-name "Bob"
+python3 run.py users add alice@example.com --role user --id alice --display-name "Alice"
 # prints: Token: nym_...   (shown once)
 
 # List users
@@ -107,15 +107,15 @@ python3 run.py users issue-token owner@localhost --label desktop
 python3 run.py users issue-token default --label desktop
 
 # Temporarily disable / re-enable
-python3 run.py users disable bob@example.com
-python3 run.py users enable bob@example.com
+python3 run.py users disable alice@example.com
+python3 run.py users enable alice@example.com
 
 # Revoke every active token, then mint a replacement
-python3 run.py users rotate-token bob@example.com
+python3 run.py users rotate-token alice@example.com
 
 # Link a chat-platform identity to a user (enables bot routing)
-python3 run.py users link-platform bob@example.com discord 123456789
-python3 run.py users platforms bob@example.com
+python3 run.py users link-platform alice@example.com discord 123456789
+python3 run.py users platforms alice@example.com
 python3 run.py users unlink-platform discord 123456789
 ```
 

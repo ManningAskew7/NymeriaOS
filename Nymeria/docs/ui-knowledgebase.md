@@ -14,9 +14,8 @@ You are reading this document because a Nymeria end-user pasted it into you so t
 2. **Assume the asker is a non-developer** unless context says otherwise. Translate technical detail into step-by-step instructions ("click the gear icon in the bottom left, then select the LLM tab…").
 3. **Cross-platform questions**  -  when a user does not say which client they are on, ask. The same capability is often exposed differently on desktop vs mobile vs Discord.
 4. **Admin/deployment questions** are out of scope. If asked how to set up a Docker container, deploy the backend, or issue API keys, direct the user to `Nymeria/docs/` (PRODUCTION_DEPLOYMENT.md, QUICKSTART.md, configuration.md) and say that their administrator handles those.
-5. **Two content caveats carry explicit warnings in this doc; relay them to the user when relevant:**
+5. **One content caveat carries an explicit warning in this doc; relay it to the user when relevant:**
    - ⚠️ **Twitch** integration is in flux: the standalone Twitch bot has been removed, and the Twitch tools are currently disabled pending a rewrite to standalone optional tools. Treat any Twitch capability as unavailable for now.
-   - The three email-automation buttons visible in some Outlook add-in screenshots ("Process RFQ", "Analyse Response", "Check Parts") belong to a private work deployment and are **not** part of the consumer product. Only the generic Outlook capability is documented here.
 
 ---
 
@@ -30,7 +29,7 @@ Nymeria is a personal AI assistant. A single backend ("the API") runs a LangGrap
 | Mobile app | Capacitor 6 + Svelte 5 | Pared-down on-the-go client. Swipe-navigated panels, haptics, camera attach. |
 | Discord bot | discord.py slash commands | Chat with Nymeria from any Discord channel or DM, per-channel threads. |
 | Telegram bot | python-telegram-bot | Chat with Nymeria from Telegram DMs or groups, per-chat threads. |
-| Twitch bot (⚠️ transitional) | TwitchIO | Chat moderator + responder for a Twitch channel. Being refactored. |
+| Twitch bot (⚠️ transitional) | TwitchIO | Chat moderator + responder for Twitch chat. Being refactored. |
 | Outlook add-in | Office.js taskpane | Sidebar inside Outlook that knows which email you are viewing. |
 | Interactive CLI | prompt_toolkit + Rich/plain renderers | Full-screen terminal client and shell fallback for power users. |
 | REST / SSE API | FastAPI | Programmatic surface. All UIs are clients of this. Also exposed to webhooks, automation clients, MCP. |
@@ -877,7 +876,7 @@ Autonomous TODO deliveries flow into the originating chat as separate messages. 
 
 **Code:** `nymeria-desktop/outlook-addin/manifest.xml`, `nymeria-desktop/src/lib/stores/outlook.svelte.ts`, `nymeria-desktop/src/lib/components/outlook/QuickActions.svelte`. Deep docs: `Nymeria/docs/outlook-addin.md`.
 
-> Note on scope: some Outlook deployments include three extra quick-action buttons labeled **Process RFQ**, **Analyse Response**, and **Check Parts**. Those belong to a private work project and are not part of the consumer product. Do not describe them as features a general user has. Only the **Ref Email** button documented below is part of the consumer surface.
+> Note on scope: only the **Ref Email** button documented below is part of the consumer Outlook surface. Do not describe any other Outlook quick-action buttons as features a general user has.
 
 ### 7.1 What the add-in is
 
@@ -894,7 +893,7 @@ Three paths:
 2. **Microsoft 365 admin deployment:** admin center → Settings → Integrated apps → Upload custom app → assign to users.
 3. ⚠️ **New Outlook desktop (limitation):** no "Add from file" option. Sideload via the web first; it will appear in the desktop client once synced.
 
-Manifest identity: App ID `b7d4e2a1-3f8c-4a5b-9e1d-6c2f8a0b3d5e`, version `1.1.0.0`, taskpane URL `https://nymeria.example.com/?outlook=1`, fixed height 450 px, permission `ReadItem` (read-only to mailbox).
+Manifest identity: App ID `<your-app-id>`, version `1.0.0.0`, taskpane URL `https://<your-taskpane-host>/?outlook=1`, fixed height 450 px, permission `ReadItem` (read-only to mailbox).
 
 ### 7.3 Ref Email button
 
@@ -1362,7 +1361,6 @@ Quick answer to "Is feature X available in Y?"
 - `confirm()` dialogs return `false` silently inside the Office.js webview. Any custom confirmation prompt the add-in uses must be a Svelte modal, not a browser-native `confirm`.
 - EWS item IDs (what Office.js exposes) differ from Graph message IDs. The add-in captures subject + sender + date alongside the EWS ID so tools can search robustly.
 - If the taskpane webview closes mid-stream the SSE may drop; the frontend polls `/threads/{id}/history` as a safety net during autonomous runs.
-- ⚠️ Some deployments show extra buttons labeled Process RFQ / Analyse Response / Check Parts. Those belong to a private work project and are not part of the consumer product.
 
 ### CLI
 - Interactive full-screen/Rich modes require a TTY. Piped or redirected output falls back to plain mode.

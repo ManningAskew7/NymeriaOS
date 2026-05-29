@@ -337,8 +337,7 @@ total).
 ### Outlook Add-in
 - Embedded taskpane in Outlook Web
 - Office.js bridge reads email subject/sender/date
-- Quick-action buttons: Process RFQ, Analyse Response, Check Parts
-- Per-staff threads with separate config and notepad
+- Ref Email quick action injects the current email's context into chat
 
 ### Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, WhatsApp, Messenger, Instagram, Webex, Teams, Google Chat & LINE Bots
 - Two-way Slack Socket Mode client with linked-user enforcement, bind codes, and thread-aware replies
