@@ -1,5 +1,6 @@
 import { marked } from 'marked';
 import remend from 'remend';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -71,15 +72,29 @@ marked.use({
 });
 
 /**
+ * Sanitize rendered HTML before it is injected via {@html ...}.
+ *
+ * marked v12 does not sanitize, so raw HTML embedded in model, tool, or trigger
+ * content (e.g. attacker-controlled email subjects / RSS titles) such as
+ * `<img src=x onerror=...>`, `<iframe srcdoc>`, or `javascript:` links would
+ * otherwise execute inside the Capacitor webview. DOMPurify strips scripts,
+ * event handlers, and dangerous URIs while preserving the syntax-highlight
+ * markup (span/class) and link target attributes this app emits.
+ */
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+}
+
+/**
  * Render markdown content to HTML using the shared marked instance.
  * Configured once at module load — safe to call from any component.
  */
 export function renderMarkdown(content: string): string {
   try {
-    return marked.parse(content) as string;
+    return sanitizeHtml(marked.parse(content) as string);
   } catch (e) {
     console.error('Markdown rendering failed:', e);
-    return content;
+    return sanitizeHtml(content);
   }
 }
 
@@ -97,13 +112,14 @@ export function renderMarkdownStreaming(content: string): string {
     // `streamdown:incomplete-link`, which can leak into the UI while tokens are
     // still arriving. Text-only mode keeps partial links readable without a fake
     // href, while preserving the other useful streaming repairs.
-    html = marked.parse(remend(content, { linkMode: 'text-only' })) as string;
+    html = sanitizeHtml(marked.parse(remend(content, { linkMode: 'text-only' })) as string);
   } catch (e) {
     console.error('Streaming markdown rendering failed:', e);
-    html = content;
+    html = sanitizeHtml(content);
   }
 
-  // Insert cursor before the last closing block tag so it appears inline
+  // Cursor is a trusted constant appended AFTER sanitization so DOMPurify
+  // does not strip it. Insert before the last closing block tag (inline).
   const match = html.match(/<\/[^>]+>\s*$/);
   if (match && match.index !== undefined) {
     return html.slice(0, match.index) + CURSOR_HTML + html.slice(match.index);

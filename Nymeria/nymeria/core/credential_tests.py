@@ -12,8 +12,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import httpx
-
 from ..config.llm_providers import is_known_llm_provider, resolve_provider_base_url
 from .llm_provider_utils import http_error_detail, redact_secrets
 
@@ -122,8 +120,35 @@ async def _get_json_probe(
     secrets: tuple[str | None, ...],
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> CredentialTestResult:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(url, headers=headers)
+    # User-supplied base URLs flow into this probe, so screen every request
+    # through the shared HTTP egress policy (private/loopback/metadata targets
+    # blocked, redirects re-validated, DNS pinned). The policy helper is
+    # synchronous, so run it off the event loop to keep the DNS pin intact.
+    from .http_policy import (
+        HTTPPolicyRedirectLimit,
+        HTTPPolicyViolation,
+        httpx_request_with_policy,
+    )
+
+    def _probe():
+        resp, _chain, _decision = httpx_request_with_policy(
+            "GET",
+            url,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        return resp
+
+    try:
+        response = await asyncio.to_thread(_probe)
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as exc:
+        return CredentialTestResult(
+            ok=False,
+            message=redact_secrets(str(exc), *secrets)[:300],
+            code="blocked_url",
+            verified=True,
+        )
     if response.status_code < 400:
         return CredentialTestResult(
             ok=True,

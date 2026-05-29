@@ -632,7 +632,13 @@ class CommandHttpClient:
         return await self._get("/settings/env", act_as=user_id)
 
     async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
-        return await self._get(f"/settings/env/{_path_param(key)}", act_as=user_id)
+        # `/env <key>` is an explicit admin reveal, so request the unmasked
+        # value; the bulk `/env` listing stays masked.
+        return await self._get(
+            f"/settings/env/{_path_param(key)}",
+            params={"reveal": "true"},
+            act_as=user_id,
+        )
 
     async def list_available_models(
         self,

@@ -991,3 +991,71 @@ def test_system_prompt_is_admin_only(tmp_path: Path, monkeypatch):
         json={"content": "nope"},
     )
     assert put.status_code == 403
+
+
+# -- H-4: env-var secret masking ------------------------------------------
+
+
+def test_is_secret_setting_key_derivation():
+    from nymeria.api.routers.settings import _is_secret_setting_key
+
+    # Suffix-derived secrets not necessarily in the explicit allowlist.
+    for key in (
+        "jwt_secret",
+        "stripe_secret_key",
+        "s3_secret_access_key",
+        "twilio_auth_token",
+        "sendgrid_api_key",
+        "github_token",
+        "hubspot_access_token",
+        "crypto_sign_private_key",
+        "some_app_password",
+        "x_refresh_token",
+    ):
+        assert _is_secret_setting_key(key) is True, key
+
+    # Explicit allowlist entries whose names lack a credential suffix.
+    for key in ("postgres_uri", "redis_url", "discord_webhook_url"):
+        assert _is_secret_setting_key(key) is True, key
+
+    # Non-secret keys must NOT be masked (suffix matching, not substring).
+    for key in (
+        "llm_max_tokens",
+        "max_output_tokens",
+        "llm_base_url",
+        "llm_model",
+        "embedding_model",
+        "watchdog_interval_minutes",
+    ):
+        assert _is_secret_setting_key(key) is False, key
+
+
+def test_get_env_var_masks_secret_by_default(monkeypatch, tmp_path):
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        openai_api_key="sk-secret-abcdef1234567890",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+
+    resp = client.get("/settings/env/openai_api_key", headers=_auth(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_secret"] is True
+    assert body["value"] != "sk-secret-abcdef1234567890"
+    assert "..." in body["value"]
+
+
+def test_get_env_var_reveals_with_explicit_flag(monkeypatch, tmp_path):
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        openai_api_key="sk-secret-abcdef1234567890",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+
+    resp = client.get(
+        "/settings/env/openai_api_key", params={"reveal": "true"}, headers=_auth(token)
+    )
+    assert resp.status_code == 200
+    assert resp.json()["value"] == "sk-secret-abcdef1234567890"

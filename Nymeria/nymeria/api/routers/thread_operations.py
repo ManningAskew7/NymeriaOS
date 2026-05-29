@@ -297,14 +297,26 @@ def create_thread_operations_router(
         streams the file from the per-thread sandbox.
         """
         require_thread_access_fn(user, thread_id, claim=False)
-        from ...core.attachment_sandbox import find_attachment_by_id
+        from ...core.attachment_sandbox import (
+            find_attachment_by_id,
+            get_thread_attachment_dir,
+        )
 
         record = find_attachment_by_id(thread_id, attachment_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Attachment not found")
 
-        path = Path(record.sandbox_path)
-        if not path.is_file():
+        # Defense in depth: re-confine the persisted sandbox_path to this
+        # thread's attachment directory before streaming it. The path is
+        # system-written today, but resolving + containment-checking ensures a
+        # tampered or legacy record can never serve a file outside the sandbox
+        # (compare the workspace tools, which confine the same way).
+        sandbox_dir = get_thread_attachment_dir(thread_id).resolve()
+        try:
+            path = Path(record.sandbox_path).resolve()
+        except (OSError, RuntimeError):
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        if not path.is_relative_to(sandbox_dir) or not path.is_file():
             raise HTTPException(status_code=404, detail="Attachment file missing on disk")
 
         media_type = (

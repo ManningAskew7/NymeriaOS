@@ -873,6 +873,52 @@ def _secret_keys() -> set[str]:
     }
 
 
+# Name suffixes that mark a settings key as credential-bearing. Used so any
+# *_api_key / *_token / *_secret / *_password / *_private_key style key is
+# masked even when it was never added to the explicit allowlist above. Suffix
+# matching (not substring) avoids false positives like ``llm_max_tokens``.
+_SECRET_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_secret_key",
+    "_secret",
+    "_secrets_key",
+    "_access_key",
+    "_private_key",
+    "_signing_key",
+    "_encryption_key",
+    "_token",
+    "_access_token",
+    "_refresh_token",
+    "_auth_token",
+    "_session_token",
+    "_verify_token",
+    "_password",
+    "_passwd",
+    "_app_password",
+    "_app_secret",
+    "_webhook_secret",
+    "_client_secret",
+    "_credentials_json",
+    "_service_account_json",
+)
+
+
+def _is_secret_setting_key(key: str) -> bool:
+    """Return True if a settings key holds a credential and must be masked.
+
+    Combines the explicit allowlist (for secret-bearing keys whose names do not
+    follow a credential suffix, e.g. ``postgres_uri``, ``redis_url``,
+    ``discord_webhook_url``) with name-suffix derivation so newly added secret
+    settings are masked by default rather than leaking until someone remembers
+    to extend the allowlist.
+    """
+    k = key.lower()
+    if k in _secret_keys():
+        return True
+    return k.endswith(_SECRET_KEY_SUFFIXES)
+
+
 def _fallback_model_list(value: Any) -> list[str]:
     """Return a normalized fallback model list for settings responses."""
     if value is None:
@@ -1569,14 +1615,13 @@ def create_settings_router(
     ):
         """Get settable environment variables with masked sensitive values."""
         entries = []
-        secret_keys = _secret_keys()
         for category, keys in _env_categories().items():
             for key in keys:
                 if key in HIDDEN_CONFIG_SETTINGS:
                     continue
                 val = getattr(settings, key, None)
                 env_var = key.upper()
-                is_secret = key in secret_keys
+                is_secret = _is_secret_setting_key(key)
                 display_val = None
                 if val is not None:
                     display_val = _mask_value(str(val)) if is_secret else str(val)
@@ -1594,10 +1639,17 @@ def create_settings_router(
     @router.get("/settings/env/{key}")
     async def get_env_var(
         key: str,
+        reveal: bool = False,
         user: AuthenticatedUser = Depends(require_admin_user),
         settings: Settings = Depends(get_settings_fn),
     ):
-        """Get a single environment variable's unmasked value. Admin-only."""
+        """Get a single environment variable. Admin-only.
+
+        Secret-named values (``*_api_key``/``*_token``/``*_secret``/... and the
+        allowlist) are masked unless ``reveal=true`` is passed, which is an
+        explicit admin reveal and is audit-logged. Non-secret values always
+        return raw.
+        """
         key_lower = key.lower()
         if key_lower in HIDDEN_CONFIG_SETTINGS:
             raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
@@ -1611,10 +1663,27 @@ def create_settings_router(
                     detail=f"Unknown setting: {key}",
                 )
             key = key_lower
+
+        is_secret = _is_secret_setting_key(key)
+        if val is None:
+            display_val = None
+        elif is_secret and not reveal:
+            display_val = _mask_value(str(val))
+        else:
+            display_val = str(val)
+
+        if is_secret and reveal and val is not None:
+            logger.warning(
+                "Admin %s revealed plaintext value of secret setting %s",
+                getattr(user, "id", "?"),
+                key,
+            )
+
         return {
             "name": key,
             "env_var": key.upper(),
-            "value": str(val) if val is not None else None,
+            "value": display_val,
+            "is_secret": is_secret,
         }
 
     @router.get("/models")
