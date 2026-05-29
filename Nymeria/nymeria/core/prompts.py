@@ -6,16 +6,13 @@ Contains mode-specific rules and system prompt building utilities.
 import json
 
 
-# Autonomous behavioral guidance (scheduled TODOs, watchdog nudges, triggers).
-# Retained for a future pass that delivers it via the message tail or an Opus 4.8
-# mid-conversation system message. It is NOT appended to the system prompt today:
-# the system prompt is kept source-invariant so it stays cache-stable across user
-# vs autonomous turns on the same thread.
-AUTONOMOUS_MODE_RULES = """
-
----
-
-## Autonomous Run Rules
+# Autonomous behavioral guidance (scheduled TODOs, watchdog nudges, triggers,
+# handoffs, dreams). Delivered on the autonomous wake-up message tail via
+# get_autonomous_tail_guidance(), NOT appended to the system prompt: the system
+# prompt is kept source-invariant so it stays cache-stable across user vs
+# autonomous turns on the same thread (see
+# docs/memory-and-compaction-rationale.md).
+AUTONOMOUS_MODE_RULES = """## Autonomous Run Rules
 
 This is autonomous user-visible work. Do not end by choosing silence, a no-op,
 or "nothing to do" as the final outcome.
@@ -28,6 +25,29 @@ or "nothing to do" as the final outcome.
 - If there is no useful action to take, still respond with a brief explanation of
   what you checked and why no action was taken.
 """
+
+
+def get_autonomous_tail_guidance(is_autonomous: bool) -> str:
+    """General behavioral guidance for autonomous turns.
+
+    Returned text is prepended to the autonomous wake-up message (right after the
+    ``[Time:]``/``[Trigger:]`` metadata) rather than added to the system prompt,
+    so the system prompt stays cache-stable across user vs autonomous turns on the
+    same thread.
+
+    Source-specific guidance is handled at the source instead of here: the
+    watchdog bakes its instructions into its nudge message, and handoffs carry
+    their routing-and-callback guidance in the ``[Handoff Metadata]`` block built
+    by ``thread_agent_executor`` (so both immediate and scheduled handoffs get
+    it). This keeps the general rules in one place without duplicating the
+    per-source bits.
+
+    Returns ``""`` for interactive turns (user / mcp / blocking callable ask),
+    which need no extra guidance.
+    """
+    if not is_autonomous:
+        return ""
+    return AUTONOMOUS_MODE_RULES.strip()
 
 
 def _clean_untrusted_prompt_value(value: object, *, max_chars: int) -> str:

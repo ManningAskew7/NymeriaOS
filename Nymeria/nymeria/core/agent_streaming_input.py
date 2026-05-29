@@ -73,11 +73,9 @@ def prepare_astream_input(
         # Text-only or sandbox-only path. Preamble is already in
         # ``message_with_context`` if records exist.
         if is_self_invoke:
-            # TODO(autonomous-rules): re-deliver AUTONOMOUS_MODE_RULES
-            # (nymeria/core/prompts.py) on this autonomous wake-up tail, so
-            # autonomous turns get the "do not end on a no-op" guidance without
-            # putting it back in the cache-stable system prompt. Placeholder only;
-            # applies to the multimodal wake-up branch below as well.
+            # ``message_with_context`` already carries the autonomous run guidance
+            # (NymeriaAgent._prefix_turn_metadata -> get_autonomous_tail_guidance),
+            # delivered on the tail rather than in the cache-stable system prompt.
             human_msg = _create_human_message(
                 message_with_context,
                 internal=True,
@@ -134,8 +132,9 @@ def prepare_astream_input(
         })
 
     if is_self_invoke:
-        # TODO(autonomous-rules): see the text-only wake-up branch above. Re-deliver
-        # AUTONOMOUS_MODE_RULES on this autonomous tail when implemented. Placeholder.
+        # The autonomous run guidance is already baked into the text block of
+        # ``content`` (see the text-only wake-up branch above and
+        # NymeriaAgent._prefix_turn_metadata).
         human_msg = _create_human_message(
             content,
             internal=True,
