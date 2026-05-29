@@ -4,6 +4,8 @@
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { Icon } from '$lib/components/common';
+  import CheckpointViewer from '$lib/components/common/CheckpointViewer.svelte';
+  import { configStore } from '$lib/stores/config.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -23,6 +25,9 @@
   let { thread, threadConfig, onOpenSettings }: Props = $props();
 
   let showMeta = $state(true);
+  // Developer-mode raw checkpoint viewer (null = closed). The button that sets
+  // this is gated behind configStore.developerMode.
+  let checkpointThreadId = $state<string | null>(null);
 
   const healthDotClass = $derived(
     healthStore.checking && !healthStore.connected
@@ -462,6 +467,17 @@
         </svg>
       </button>
     {/if}
+    {#if configStore.developerMode}
+      <button
+        class="icon-btn"
+        onclick={() => (checkpointThreadId = thread.id)}
+        title="View raw checkpoint (developer)"
+        type="button"
+        aria-label="View raw checkpoint"
+      >
+        <Icon name="terminal" size={16} />
+      </button>
+    {/if}
     <button
       class="icon-btn cog"
       class:active={threadConfig?.hasCustomizations ?? false}
@@ -474,6 +490,8 @@
     </button>
   </div>
 </header>
+
+<CheckpointViewer threadId={checkpointThreadId} onClose={() => (checkpointThreadId = null)} />
 
 <style>
   .thread-header {

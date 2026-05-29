@@ -1268,6 +1268,22 @@
           without expanding them.
         </p>
       </div>
+
+      <div class="field checkbox-field">
+        <input
+          id="global-developer-mode"
+          type="checkbox"
+          checked={configStore.developerMode}
+          onchange={(e) => (configStore.developerMode = e.currentTarget.checked)}
+        />
+        <label for="global-developer-mode">Developer mode</label>
+        <p class="hint">
+          Unlock developer and debugging tools. Adds a raw checkpoint button to
+          the thread header that previews or downloads the exact agent state
+          stored for that thread, useful for verifying how tool calls and
+          earlier turns are persisted.
+        </p>
+      </div>
     </div>
   {/if}
 
