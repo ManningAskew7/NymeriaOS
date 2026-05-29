@@ -722,7 +722,6 @@ def store_cached_graph_entry(
 def get_graph_for_user_impl(
     agent: "NymeriaAgent",
     user_id: str,
-    is_autonomous: bool,
     thread_id: str,
     cache: Dict[tuple, tuple],
     build_fn,
@@ -730,17 +729,13 @@ def get_graph_for_user_impl(
 ):
     """Shared implementation for sync/async graph-for-user lookup.
 
-    Handles caching, autonomous bypass, and LRU eviction. ``build_fn``
-    is either ``agent._build_graph_with_prompt`` or
+    Handles caching and LRU eviction. ``build_fn`` is either
+    ``agent._build_graph_with_prompt`` or
     ``agent._build_async_graph_with_prompt``.
-    """
-    if is_autonomous:
-        logger.debug(f"Building autonomous graph for user {user_id}, thread {thread_id}")
-        full_prompt = agent._build_full_system_prompt(
-            user_id, is_autonomous=True, thread_id=thread_id
-        )
-        return build_fn(full_prompt, user_id=user_id, thread_id=thread_id)
 
+    The system prompt is source-invariant, so autonomous and interactive
+    turns share the same cached graph for a given (user_id, thread_id).
+    """
     if thread_id:
         try:
             agent._clear_expired_llm_fallback_if_idle(thread_id)
@@ -797,12 +792,11 @@ def get_graph_for_user_impl(
 def get_graph_for_user(
     agent: "NymeriaAgent",
     user_id: str,
-    is_autonomous: bool = False,
     thread_id: str = "",
 ):
     """Get the appropriate sync graph for a user+thread."""
     return agent._get_graph_for_user_impl(
-        user_id, is_autonomous, thread_id,
+        user_id, thread_id,
         agent._user_graphs, agent._build_graph_with_prompt,
     )
 
@@ -810,12 +804,11 @@ def get_graph_for_user(
 def get_async_graph_for_user(
     agent: "NymeriaAgent",
     user_id: str,
-    is_autonomous: bool = False,
     thread_id: str = "",
 ):
     """Get the appropriate async graph for a user+thread."""
     return agent._get_graph_for_user_impl(
-        user_id, is_autonomous, thread_id,
+        user_id, thread_id,
         agent._async_user_graphs, agent._build_async_graph_with_prompt,
         agent._async_graph_cache_key,
     )

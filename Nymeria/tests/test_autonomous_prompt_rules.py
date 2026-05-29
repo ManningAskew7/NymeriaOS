@@ -33,40 +33,41 @@ def test_autonomous_rules_are_explicitly_non_silent():
     assert "nym_todo" in AUTONOMOUS_MODE_RULES
 
 
-def test_default_prompt_is_source_invariant():
+# The system prompt no longer takes a turn-source argument, so it is structurally
+# source-invariant. These tests guard that no mode rules and no embedded time/
+# trigger metadata leak into it (that signal lives in the message tail instead),
+# and that the build is deterministic (no timestamp creeps back in).
+
+
+def test_default_prompt_omits_mode_rules_and_time():
     agent = _agent_with_configs()
 
-    autonomous = agent._build_full_system_prompt(
-        user_id="default", thread_id="thread-1", is_autonomous=True
+    prompt = agent._build_full_system_prompt(user_id="default", thread_id="thread-1")
+
+    assert "BASE PROMPT" in prompt
+    assert "## Autonomous Run Rules" not in prompt
+    assert "[Time:" not in prompt
+    assert "[Trigger:" not in prompt
+    # Deterministic: rebuilding yields the identical prefix.
+    assert prompt == agent._build_full_system_prompt(
+        user_id="default", thread_id="thread-1"
     )
-    interactive = agent._build_full_system_prompt(
-        user_id="default", thread_id="thread-1", is_autonomous=False
-    )
-
-    # The system prompt must not change based on turn source.
-    assert autonomous == interactive
-    assert "BASE PROMPT" in autonomous
-    assert "## Autonomous Run Rules" not in autonomous
 
 
-def test_regular_custom_prompt_is_source_invariant():
+def test_regular_custom_prompt_omits_mode_rules_and_time():
     config = ThreadConfig(thread_id="thread-1", system_prompt="CUSTOM PROMPT")
     agent = _agent_with_configs({"thread-1": config})
 
-    autonomous = agent._build_full_system_prompt(
-        user_id="default", thread_id="thread-1", is_autonomous=True
-    )
-    interactive = agent._build_full_system_prompt(
-        user_id="default", thread_id="thread-1", is_autonomous=False
-    )
+    prompt = agent._build_full_system_prompt(user_id="default", thread_id="thread-1")
 
-    assert autonomous == interactive
-    assert "CUSTOM PROMPT" in autonomous
-    assert "BASE PROMPT" not in autonomous
-    assert "## Autonomous Run Rules" not in autonomous
+    assert "CUSTOM PROMPT" in prompt
+    assert "BASE PROMPT" not in prompt
+    assert "## Autonomous Run Rules" not in prompt
+    assert "[Time:" not in prompt
+    assert "[Trigger:" not in prompt
 
 
-def test_callable_custom_prompt_is_source_invariant():
+def test_callable_custom_prompt_is_focused_and_omits_mode_rules_and_time():
     config = ThreadConfig(
         thread_id="callable-1",
         callable=True,
@@ -77,23 +78,17 @@ def test_callable_custom_prompt_is_source_invariant():
     )
     agent = _agent_with_configs({"callable-1": config})
 
-    autonomous = agent._build_full_system_prompt(
-        user_id="default", thread_id="callable-1", is_autonomous=True
-    )
-    interactive = agent._build_full_system_prompt(
-        user_id="default", thread_id="callable-1", is_autonomous=False
-    )
+    prompt = agent._build_full_system_prompt(user_id="default", thread_id="callable-1")
 
-    assert autonomous == interactive
-    assert "CALLABLE PROMPT" in autonomous
+    assert "CALLABLE PROMPT" in prompt
     # Focused context: no soul.md, no profile/TODO injection.
-    assert "BASE PROMPT" not in autonomous
-    assert "## Active TODOs" not in autonomous
-    assert "## User Profile" not in autonomous
+    assert "BASE PROMPT" not in prompt
+    assert "## Active TODOs" not in prompt
+    assert "## User Profile" not in prompt
     # No mode rules and no embedded time/source: those live in the tail metadata.
-    assert "## Autonomous Run Rules" not in autonomous
-    assert "[Time:" not in autonomous
-    assert "[Trigger:" not in autonomous
+    assert "## Autonomous Run Rules" not in prompt
+    assert "[Time:" not in prompt
+    assert "[Trigger:" not in prompt
 
 
 def test_active_todos_section_uses_current_tool_names(tmp_path):

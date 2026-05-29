@@ -238,7 +238,6 @@ def test_get_graph_for_user_delegates_to_impl():
     def mock_impl(
         self,
         user_id,
-        is_autonomous,
         thread_id,
         cache,
         build_fn,
