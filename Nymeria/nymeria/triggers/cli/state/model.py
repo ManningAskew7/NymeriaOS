@@ -21,6 +21,7 @@ AssistantActivityPhase: TypeAlias = Literal[
     "thinking",
     "typing",
     "formulating",
+    "compacting",
     "processing_results",
     "waiting",
 ]

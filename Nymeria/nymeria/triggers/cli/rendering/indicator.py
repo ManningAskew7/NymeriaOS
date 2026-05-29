@@ -24,6 +24,7 @@ PHASE_LABELS: dict[ActivityPhase, str] = {
     "thinking": "Thinking...",
     "typing": "Streaming...",
     "formulating": "Formulating...",
+    "compacting": "Compacting...",
     "processing_results": "Processing results...",
     "waiting": "Waiting...",
 }
@@ -174,7 +175,7 @@ def activity_state_from_ui_state(
 
     if state.is_compacting:
         return ActivityState(
-            phase="processing",
+            phase="compacting",
             detail=detail if detail is not None else state.compacting_message,
             started_at=state.updated_at,
             updated_at=state.updated_at,

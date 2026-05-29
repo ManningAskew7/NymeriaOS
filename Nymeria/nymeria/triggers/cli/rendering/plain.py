@@ -246,6 +246,7 @@ def activity_status_text(activity: Any, *, width: int | None = None) -> str:
         "processing": "Processing...",
         "thinking": "Thinking...",
         "formulating": "Formulating...",
+        "compacting": "Compacting...",
         "processing_results": "Processing results...",
         "waiting": "Waiting...",
     }.get(phase, "")

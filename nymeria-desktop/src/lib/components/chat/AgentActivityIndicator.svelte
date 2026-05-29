@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AssistantActivityPhase, Message, MessageStep } from '$lib/types';
+  import { chatStore } from '$lib/stores/chat.svelte';
 
   interface Props {
     message: Message;
@@ -14,6 +15,7 @@
     thinking: 'Thinking',
     typing: 'Processing',
     formulating: 'Formulating',
+    compacting: 'Compacting',
     processing_results: 'Processing results',
     waiting: 'Waiting',
   };
@@ -54,6 +56,11 @@
   });
 
   let phase = $derived.by((): AssistantActivityPhase => {
+    // While the backend is compacting context, surface that explicitly instead
+    // of the generic processing/formulating labels.
+    if (chatStore.isCompacting) {
+      return 'compacting';
+    }
     const basePhase = message.activityPhase || inferPhaseFromSteps();
     if ((basePhase === 'processing' || basePhase === 'thinking') && quietElapsed) {
       return 'formulating';
