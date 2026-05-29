@@ -462,6 +462,23 @@ def create_threads_router(
             stats["processing"] = _is_thread_processing(agent, thread_id)
         return stats
 
+    @router.get("/threads/{thread_id}/checkpoint")
+    async def get_thread_checkpoint(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """
+        Return the raw deserialized latest LangGraph checkpoint for a thread.
+
+        Developer/debugging endpoint. Owner-only. Unlike /history, no display
+        projection is applied: every message is returned verbatim (tool calls,
+        tool results, metadata) so that what is actually persisted in the
+        checkpoint store can be verified.
+        """
+        require_thread_access_fn(user, thread_id, claim=False)
+        agent = get_agent_fn()
+        return await run_in_threadpool(agent.get_raw_checkpoint, thread_id)
+
     @router.get("/threads/{thread_id}/metadata")
     async def get_thread_metadata(
         thread_id: str,
