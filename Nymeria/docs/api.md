@@ -325,7 +325,7 @@ Telegram, and dashboard activity/notifications live under
 // and POST /admin/users/{user_id}/platforms (single).
 {
   "provider": "discord",
-  "provider_user_id": "699436710118817823",
+  "provider_user_id": "123456789012345678",
   "created_at": "2026-04-24T13:34:05+00:00"
 }
 ```
@@ -1920,7 +1920,7 @@ No query parameters.
 
 **Response:**
 ```json
-["default", "discord_699436710118817823", "telegram_5551234567"]
+["default", "discord_123456789012345678", "telegram_123456789"]
 ```
 
 ---
