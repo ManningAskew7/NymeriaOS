@@ -576,10 +576,10 @@ class NymeriaAgent:
         return get_memory_hash(self, user_id, thread_id)
 
     def _build_full_system_prompt(
-        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+        self, user_id: str, thread_id: str = ""
     ) -> str:
         from .agent_prompt import build_full_system_prompt
-        return build_full_system_prompt(self, user_id, is_autonomous, thread_id)
+        return build_full_system_prompt(self, user_id, thread_id)
 
     def _get_time_context(
         self,
@@ -1070,7 +1070,6 @@ class NymeriaAgent:
     def _get_graph_for_user_impl(
         self,
         user_id: str,
-        is_autonomous: bool,
         thread_id: str,
         cache: Dict[tuple, tuple],
         build_fn,
@@ -1079,22 +1078,22 @@ class NymeriaAgent:
         """Shared implementation for sync/async graph-for-user lookup."""
         from .agent_graph import get_graph_for_user_impl
         return get_graph_for_user_impl(
-            self, user_id, is_autonomous, thread_id, cache, build_fn, cache_key_fn
+            self, user_id, thread_id, cache, build_fn, cache_key_fn
         )
 
     def _get_graph_for_user(
-        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+        self, user_id: str, thread_id: str = ""
     ):
         """Get the appropriate sync graph for a user+thread."""
         from .agent_graph import get_graph_for_user
-        return get_graph_for_user(self, user_id, is_autonomous, thread_id)
+        return get_graph_for_user(self, user_id, thread_id)
 
     def _get_async_graph_for_user(
-        self, user_id: str, is_autonomous: bool = False, thread_id: str = ""
+        self, user_id: str, thread_id: str = ""
     ):
         """Get the appropriate async graph for a user+thread."""
         from .agent_graph import get_async_graph_for_user
-        return get_async_graph_for_user(self, user_id, is_autonomous, thread_id)
+        return get_async_graph_for_user(self, user_id, thread_id)
 
     def _async_graph_cache_key(self, user_id: str, thread_id: str) -> tuple:
         from .agent_graph import async_graph_cache_key
@@ -1465,7 +1464,6 @@ class NymeriaAgent:
                 try:
                     graph = self._get_graph_for_user(
                         user_id,
-                        is_autonomous=is_autonomous_source,
                         thread_id=thread_id,
                     )
                     config = self._graph_run_config(thread_id, user_id, callbacks=[])
@@ -1506,9 +1504,8 @@ class NymeriaAgent:
                     logger.debug("Activity logging failed for user message")
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
-            # For autonomous execution, include the autonomous mode instructions
             graph = self._get_graph_for_user(
-                user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                user_id, thread_id=thread_id
             )
 
             # Inject time context into the message (includes trigger type for autonomous wake-ups)
@@ -1572,7 +1569,7 @@ class NymeriaAgent:
                     )
                     self.invalidate_thread_config_cache(thread_id)
                     reload_graph = self._get_graph_for_user(
-                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                        user_id, thread_id=thread_id
                     )
                     resume_msg = self._create_tool_reload_resume_message(reload_info)
                     result = reload_graph.invoke(
@@ -1643,7 +1640,6 @@ class NymeriaAgent:
                             self.invalidate_thread_config_cache(thread_id)
                             reload_graph = self._get_graph_for_user(
                                 user_id,
-                                is_autonomous=_is_self_invoke,
                                 thread_id=thread_id,
                             )
                             resume_msg = self._create_tool_reload_resume_message(reload_info)
@@ -2092,9 +2088,8 @@ class NymeriaAgent:
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
-            # For autonomous execution, include the autonomous mode instructions
             graph = self._get_async_graph_for_user(
-                user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                user_id, thread_id=thread_id
             )
 
             # Pre-flight: patch any dangling tool calls from previous aborted runs
@@ -2280,7 +2275,7 @@ class NymeriaAgent:
                     # again defensively in case something else cached in between.
                     self.invalidate_thread_config_cache(thread_id)
                     reload_graph = self._get_async_graph_for_user(
-                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                        user_id, thread_id=thread_id
                     )
 
                     resume_msg = self._create_tool_reload_resume_message(reload_info)
@@ -2333,7 +2328,7 @@ class NymeriaAgent:
                         "subturn": True,
                     }
                     resume_graph = self._get_async_graph_for_user(
-                        user_id, is_autonomous=_is_self_invoke, thread_id=thread_id
+                        user_id, thread_id=thread_id
                     )
                     async for evt in stream_processor.drive(resume_graph, {"messages": []}):
                         yield evt
@@ -2477,7 +2472,6 @@ class NymeriaAgent:
                             self.invalidate_thread_config_cache(thread_id)
                             reload_graph = self._get_async_graph_for_user(
                                 user_id,
-                                is_autonomous=_is_self_invoke,
                                 thread_id=thread_id,
                             )
                             resume_msg = self._create_tool_reload_resume_message(reload_info)

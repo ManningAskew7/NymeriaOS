@@ -229,18 +229,16 @@ def get_memory_hash(
 def build_full_system_prompt(
     agent: "NymeriaAgent",
     user_id: str,
-    is_autonomous: bool = False,
     thread_id: str = "",
 ) -> str:
     """
     Build the complete system prompt including user memories and active TODOs.
 
-    The system prompt is source- and time-invariant: it does not change based on
-    whether the turn is user-driven or autonomous, and it embeds no timestamp.
-    Time and source are conveyed instead via the [Time:]/[Trigger:] metadata that
-    every turn prepends to the human message (see get_time_context). Keeping the
-    system prompt stable preserves the prompt-cache prefix across mixed turns on
-    the same thread.
+    The system prompt is source- and time-invariant: it does not depend on the
+    turn source and embeds no timestamp. Time and source are conveyed instead via
+    the [Time:]/[Trigger:] metadata that every turn prepends to the human message
+    (see get_time_context). Keeping the system prompt stable preserves the
+    prompt-cache prefix across mixed turns on the same thread.
 
     Thread config overrides:
     - Callable threads with system_prompt: use system_prompt only (focused context)
@@ -248,8 +246,6 @@ def build_full_system_prompt(
 
     Args:
         user_id: User identifier
-        is_autonomous: Accepted for interface stability but no longer changes the
-            prompt; the prompt is source-invariant.
         thread_id: Thread to scope TODOs to
 
     Returns:
