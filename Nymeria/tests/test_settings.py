@@ -137,3 +137,22 @@ def test_anthropic_proxy_config_uses_gatekeeper_key():
     )
 
     assert settings.get_api_key_for_provider() == "cpx-gatekeeper"
+
+
+def test_load_soul_prefers_override_then_packaged_default(tmp_path):
+    settings = Settings(_env_file=None, nymeria_data_dir=str(tmp_path))
+
+    override = settings.system_prompt_override_path
+    assert override == tmp_path / "system_prompt.md"
+
+    # No override file: falls back to the packaged soul.md (non-empty default).
+    packaged = settings.load_soul()
+    assert packaged.strip()
+
+    # A non-empty override wins over the packaged default.
+    override.write_text("CUSTOM PERSONA", encoding="utf-8")
+    assert settings.load_soul() == "CUSTOM PERSONA"
+
+    # A blank/whitespace override is ignored; falls back to the packaged default.
+    override.write_text("   \n\t ", encoding="utf-8")
+    assert settings.load_soul() == packaged

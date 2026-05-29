@@ -24,6 +24,8 @@
   import SkillsPanel from '../skills/SkillsPanel.svelte';
   import NotificationsPanel from '../notifications/NotificationsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
+  import SystemPromptEditor from './SystemPromptEditor.svelte';
+  import GlobalMemoryEditor from './GlobalMemoryEditor.svelte';
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import ProviderSelect from './ProviderSelect.svelte';
   import { AccountTab, UsersTab } from '../account';
@@ -441,8 +443,8 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
-  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'voice', 'proxy', 'users'];
+  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'persona' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -787,6 +789,15 @@
           <Icon name="bell" size={14} />
           <span>Notifications</span>
         </button>
+        <button
+          class="nav-item"
+          class:active={activeTab === 'memory'}
+          onclick={() => (activeTab = 'memory')}
+          type="button"
+        >
+          <Icon name="pin" size={14} />
+          <span>Global Memory</span>
+        </button>
       </div>
 
       <div class="nav-group">
@@ -855,6 +866,16 @@
           >
             <Icon name="cog" size={14} />
             <span>Agent</span>
+          </button>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'persona'}
+            onclick={() => (activeTab = 'persona')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="fileText" size={14} />
+            <span>System Prompt</span>
           </button>
           <button
             class="nav-item"
@@ -1787,6 +1808,20 @@
           </Button>
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- System Prompt Tab -->
+  {#if activeTab === 'persona' && isAdmin}
+    <div class="tab-content tab-tools-flex">
+      <SystemPromptEditor />
+    </div>
+  {/if}
+
+  <!-- Global Memory Tab -->
+  {#if activeTab === 'memory'}
+    <div class="tab-content tab-tools-flex">
+      <GlobalMemoryEditor />
     </div>
   {/if}
 

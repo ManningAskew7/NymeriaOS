@@ -33,7 +33,7 @@
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import ChatAppConfigTab from './ChatAppConfigTab.svelte';
 
-  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
+  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'notepad' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
@@ -124,6 +124,14 @@
   }
 
   let instructions = $state(getInitialInstructions());
+
+  // Per-thread notepad (the agent's persistent thread memory). Loaded lazily on
+  // mount via a dedicated endpoint since it is a standalone markdown file, not
+  // part of ThreadConfig.
+  let notepad = $state('');
+  let origNotepad = $state('');
+  let notepadLoaded = $state(false);
+  let notepadCharLimit = $state(0);
 
   // Derive initial tool state: if no per-thread config exists and global defaults
   // are customized, compute disabled/enabled from the default tool set so the UI
@@ -436,6 +444,15 @@
     void threadConfigStore.loadConfig(thread.id).catch((err) => {
       console.warn('[ThreadSettingsPanel] Failed to refresh thread config:', err);
     });
+    void api.getThreadNotepad(thread.id).then((np) => {
+      notepad = np.content;
+      origNotepad = np.content;
+      notepadCharLimit = np.charLimit;
+      notepadLoaded = true;
+    }).catch((err) => {
+      console.warn('[ThreadSettingsPanel] Failed to load notepad:', err);
+      notepadLoaded = true;
+    });
   });
 
   // Per-thread skill resolution: (global ∪ enabled) − disabled
@@ -689,6 +706,7 @@
     if (compactThresholdPct !== origCompactPct) return true;
     if (compactThresholdTokens !== origCompactTokens) return true;
     if (systemPrompt !== origSystemPrompt) return true;
+    if (notepad !== origNotepad) return true;
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
     if (callableDescription !== origCallableDescription) return true;
@@ -878,6 +896,15 @@
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
+      // The notepad is a standalone store (not part of ThreadConfig), so save it
+      // separately when it changed. A char-limit violation surfaces as an error.
+      if (notepad !== origNotepad) {
+        const np = await api.updateThreadNotepad(thread.id, notepad);
+        notepad = np.content;
+        origNotepad = np.content;
+        notepadCharLimit = np.charLimit;
+      }
+
       // Sync sidebar title to callable name (backend already updated metadata,
       // so this is local-only to avoid stale title until next full sync)
       if (isCallable && callableName.trim()) {
@@ -1052,6 +1079,17 @@
       </button>
       <button
         class="tab"
+        class:active={activeTab === 'notepad'}
+        onclick={() => (activeTab = 'notepad')}
+        type="button"
+      >
+        Notepad
+        {#if notepad.trim()}
+          <span class="tab-badge">1</span>
+        {/if}
+      </button>
+      <button
+        class="tab"
         class:active={activeTab === 'agent'}
         onclick={() => (activeTab = 'agent')}
         type="button"
@@ -1200,6 +1238,34 @@
             rows={12}
           ></textarea>
           <span class="char-count">{systemPrompt.length} / 50000</span>
+        </div>
+
+      {:else if activeTab === 'notepad'}
+        <div class="tab-panel">
+          <label class="field-label" for="notepad-input">
+            Notepad
+          </label>
+          <p class="field-hint">
+            The agent's persistent memory for this thread. It survives context
+            compaction and is reloaded each session. This edits the same notepad
+            the agent reads and writes with its memory tools; changes made
+            mid-conversation are picked up on the next compaction or when the
+            agent re-reads its memory.
+          </p>
+          {#if notepadLoaded}
+            <textarea
+              id="notepad-input"
+              class="instructions-input system-prompt-input"
+              bind:value={notepad}
+              placeholder="Notes the agent should remember for this thread..."
+              rows={14}
+            ></textarea>
+            <span class="char-count">
+              {notepad.length}{#if notepadCharLimit} / {notepadCharLimit}{/if}
+            </span>
+          {:else}
+            <p class="field-hint">Loading notepad...</p>
+          {/if}
         </div>
 
       {:else if activeTab === 'agent'}

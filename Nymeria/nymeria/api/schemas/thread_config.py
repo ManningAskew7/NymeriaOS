@@ -75,6 +75,12 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_dreaming: bool = False
 
 
+class NotepadUpdateRequest(BaseModel):
+    """Replace a thread's notepad content. Blank content clears the notepad."""
+
+    content: str = Field(default="", max_length=2_000_000)
+
+
 class ThreadTeamCreateRequest(BaseModel):
     """Create a callable visibility team."""
 

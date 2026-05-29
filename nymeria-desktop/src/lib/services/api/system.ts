@@ -7,11 +7,12 @@ import type {
   LLMProviderTestSuiteResponse,
   ModelMetadata,
   ServerSettings,
-  ServerSettingsUpdate
+  ServerSettingsUpdate,
+  SystemPromptInfo
 } from '$lib/types';
-import { ApiBase } from './base';
+import { MemoryApi } from './memory';
 
-export class SystemApi extends ApiBase {
+export class SystemApi extends MemoryApi {
   async healthCheck(): Promise<boolean> {
     try {
       const response = await fetch(`${this.getBaseUrl()}/health`, {
@@ -68,6 +69,50 @@ export class SystemApi extends ApiBase {
     }
 
     return response.json();
+  }
+
+  private _normalizeSystemPrompt(data: Record<string, unknown>): SystemPromptInfo {
+    return {
+      content: (data.content as string) ?? '',
+      defaultContent: (data.default_content as string) ?? '',
+      isOverride: Boolean(data.is_override)
+    };
+  }
+
+  /** Get the effective base system prompt, the shipped default, and override status. */
+  async getSystemPrompt(): Promise<SystemPromptInfo> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/system-prompt`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load system prompt'));
+    }
+    return this._normalizeSystemPrompt(await response.json());
+  }
+
+  /** Set the base system-prompt override (blank content clears it). */
+  async updateSystemPrompt(content: string): Promise<SystemPromptInfo> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/system-prompt`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ content })
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update system prompt'));
+    }
+    return this._normalizeSystemPrompt(await response.json());
+  }
+
+  /** Delete the override and restore the shipped soul.md default. */
+  async resetSystemPrompt(): Promise<SystemPromptInfo> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/system-prompt`, {
+      method: 'DELETE',
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to reset system prompt'));
+    }
+    return this._normalizeSystemPrompt(await response.json());
   }
 
   async testLLMProviderConfig(

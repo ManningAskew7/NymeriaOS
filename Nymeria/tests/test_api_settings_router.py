@@ -118,6 +118,24 @@ class FakeSettings:
             return self.openrouter_api_key
         return None
 
+    @property
+    def soul_path(self) -> Path:
+        return self.data_dir / "soul.md"
+
+    @property
+    def system_prompt_override_path(self) -> Path:
+        return self.data_dir / "system_prompt.md"
+
+    def load_soul(self) -> str:
+        override = self.system_prompt_override_path
+        if override.exists():
+            text = override.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        if self.soul_path.exists():
+            return self.soul_path.read_text(encoding="utf-8")
+        return "You are Nymeria, a helpful AI assistant."
+
 
 class FakeSettingsProvider:
     def __init__(self, settings: FakeSettings):
@@ -222,6 +240,13 @@ class FakeAgent:
         self._default_graph = None
         self._default_async_graph = None
         self.graph_rebuilds: list[str] = []
+        self.prompt_reloads = 0
+
+    def reload_base_system_prompt(self) -> str:
+        if self.settings is not None:
+            self._base_system_prompt = self.settings.load_soul()
+        self.prompt_reloads += 1
+        return self._base_system_prompt
 
     def sync_agent_tools(self) -> None:
         self.synced_tools += 1
@@ -892,3 +917,77 @@ def test_env_settings_list_masks_provider_and_capability_keys(
         assert entry["value"].endswith(secret[-3:])
         assert "..." in entry["value"]
         assert secret not in response.text
+
+
+def test_system_prompt_override_lifecycle(tmp_path: Path, monkeypatch):
+    client, agent, admin_token, provider = _client(monkeypatch, tmp_path)
+    agent.settings = provider.settings
+    provider.settings.soul_path.write_text("DEFAULT SOUL", encoding="utf-8")
+
+    # GET: the shipped default is in effect, no override.
+    got = client.get("/settings/system-prompt", headers=_auth(admin_token))
+    assert got.status_code == 200
+    body = got.json()
+    assert body["content"] == "DEFAULT SOUL"
+    assert body["default_content"] == "DEFAULT SOUL"
+    assert body["is_override"] is False
+
+    # PUT: set an override and hot-reload the agent.
+    put = client.put(
+        "/settings/system-prompt",
+        headers=_auth(admin_token),
+        json={"content": "CUSTOM PERSONA"},
+    )
+    assert put.status_code == 200
+    assert put.json()["content"] == "CUSTOM PERSONA"
+    assert put.json()["is_override"] is True
+    assert (
+        provider.settings.system_prompt_override_path.read_text(encoding="utf-8")
+        == "CUSTOM PERSONA"
+    )
+    assert agent.prompt_reloads == 1
+    assert agent._base_system_prompt == "CUSTOM PERSONA"
+
+    # GET reflects the override.
+    assert (
+        client.get("/settings/system-prompt", headers=_auth(admin_token)).json()["content"]
+        == "CUSTOM PERSONA"
+    )
+
+    # DELETE: drop the override, restore the shipped default, reload again.
+    deleted = client.delete("/settings/system-prompt", headers=_auth(admin_token))
+    assert deleted.status_code == 200
+    assert deleted.json()["is_override"] is False
+    assert deleted.json()["content"] == "DEFAULT SOUL"
+    assert not provider.settings.system_prompt_override_path.exists()
+    assert agent.prompt_reloads == 2
+    assert agent._base_system_prompt == "DEFAULT SOUL"
+
+    # Blank PUT also clears the override.
+    client.put(
+        "/settings/system-prompt",
+        headers=_auth(admin_token),
+        json={"content": "X"},
+    )
+    blanked = client.put(
+        "/settings/system-prompt",
+        headers=_auth(admin_token),
+        json={"content": "   "},
+    )
+    assert blanked.status_code == 200
+    assert blanked.json()["is_override"] is False
+    assert not provider.settings.system_prompt_override_path.exists()
+
+
+def test_system_prompt_is_admin_only(tmp_path: Path, monkeypatch):
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+
+    assert client.get("/settings/system-prompt", headers=_auth(user_token)).status_code == 403
+    put = client.put(
+        "/settings/system-prompt",
+        headers=_auth(user_token),
+        json={"content": "nope"},
+    )
+    assert put.status_code == 403

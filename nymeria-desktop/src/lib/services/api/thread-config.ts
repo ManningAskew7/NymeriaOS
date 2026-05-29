@@ -109,6 +109,47 @@ export class ThreadConfigApi extends MCPApi {
     return this._normalizeThreadConfig(data);
   }
 
+  private _normalizeThreadNotepad(data: any): import('$lib/types').ThreadNotepad {
+    return {
+      threadId: data.thread_id,
+      content: data.content ?? '',
+      charCount: data.char_count ?? 0,
+      charLimit: data.char_limit ?? 0,
+    };
+  }
+
+  /** Read a thread's persistent notepad (the agent's thread memory). */
+  async getThreadNotepad(threadId: string): Promise<import('$lib/types').ThreadNotepad> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/notepad`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return this._normalizeThreadNotepad(await response.json());
+  }
+
+  /** Replace a thread's notepad content (blank clears it). */
+  async updateThreadNotepad(
+    threadId: string,
+    content: string
+  ): Promise<import('$lib/types').ThreadNotepad> {
+    const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/notepad`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ content }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    return this._normalizeThreadNotepad(await response.json());
+  }
+
   async triggerThreadDream(
     threadId: string,
     request: import('$lib/types').ThreadDreamRequest = {}
