@@ -213,3 +213,41 @@ fn spawn_no_window(command: &mut Command) -> std::io::Result<Child> {
 
     command.spawn()
 }
+
+// ---------------------------------------------------------------------------
+// OS keychain (H-7): keep backend bearer tokens out of plaintext localStorage.
+//
+// The frontend stores secret material (the live API token + saved-connection
+// tokens) here instead of localStorage. Backed by the platform secret store:
+// macOS Keychain, Windows Credential Manager, and the Linux Secret Service.
+// Keys are namespaced under the app's bundle id; the frontend uses a small
+// wrapper (`secureStorage.ts`) that falls back to localStorage when these
+// commands are unavailable (e.g. a browser dev preview).
+// ---------------------------------------------------------------------------
+
+const KEYCHAIN_SERVICE: &str = "com.nymeriaos.desktop";
+
+#[tauri::command]
+pub fn keychain_set(key: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn keychain_get(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn keychain_delete(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}

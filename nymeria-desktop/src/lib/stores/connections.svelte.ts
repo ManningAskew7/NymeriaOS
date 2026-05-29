@@ -5,8 +5,13 @@ import { threadsStore } from '$lib/stores/threads.svelte';
 import { autonomousStore } from '$lib/stores/autonomous.svelte';
 import { notificationStore } from '$lib/stores/notifications.svelte';
 import { stopSyncPoll } from '$lib/stores/syncPoll.svelte';
+import { secureGet, secureSet } from '$lib/services/secureStorage';
 
 const CONNECTIONS_KEY = 'nymeria-saved-connections';
+// H-7: the full saved-connection list (including per-account apiKeys) lives in
+// the OS keychain under this key. CONNECTIONS_KEY keeps only a redacted copy
+// (apiKey blanked) for a fast first paint before async hydration completes.
+const CONNECTIONS_KEYCHAIN_KEY = 'saved-connections';
 const ACTIVE_ID_KEY = 'nymeria-active-connection-id';
 
 function normalizeApiUrl(url: string): string {
@@ -41,11 +46,16 @@ function loadConnections(): SavedConnection[] {
 }
 
 function saveConnections(connections: SavedConnection[]): void {
+  // Full list (with apiKeys) -> OS keychain (or secureStorage's localStorage
+  // fallback when the keychain is unavailable, e.g. a browser dev preview).
+  void secureSet(CONNECTIONS_KEYCHAIN_KEY, JSON.stringify(connections));
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(CONNECTIONS_KEY, JSON.stringify(connections));
+    // Redacted breadcrumb for first paint: names/urls only, never the token.
+    const redacted = connections.map((c) => ({ ...c, apiKey: '' }));
+    localStorage.setItem(CONNECTIONS_KEY, JSON.stringify(redacted));
   } catch (e) {
-    console.error('Failed to save connections:', e);
+    console.error('Failed to save connections metadata:', e);
   }
 }
 
@@ -79,6 +89,35 @@ export function createConnectionsStore() {
   function persist() {
     saveConnections(connections);
   }
+
+  // Load full connections (with apiKeys) from the OS keychain after the
+  // synchronous redacted-metadata init. Migrates a legacy localStorage list
+  // that still held inline apiKeys, then redacts the plaintext copy. The live
+  // token comes from configStore (also keychain-backed), so a brief empty-token
+  // window here only delays the saved-account list, not authentication.
+  async function hydrateConnections(): Promise<void> {
+    let stored: string | null = null;
+    try {
+      stored = await secureGet(CONNECTIONS_KEYCHAIN_KEY);
+    } catch (e) {
+      console.error('Failed to hydrate connections from secure storage:', e);
+    }
+    if (stored) {
+      try {
+        connections = JSON.parse(stored) as SavedConnection[];
+        return;
+      } catch (e) {
+        console.error('Failed to parse stored connections:', e);
+      }
+    }
+    const legacy = loadConnections();
+    if (legacy.some((c) => c.apiKey)) {
+      connections = legacy;
+      saveConnections(legacy);
+    }
+  }
+
+  void hydrateConnections();
 
   function findCredentialIndex(
     apiUrl: string,
@@ -336,6 +375,9 @@ export function createConnectionsStore() {
     async verifyEntry(id: string): Promise<AccountIdentity | null> {
       const entry = connections.find((c) => c.id === id);
       if (!entry) return null;
+      // Token may not be hydrated from the keychain yet at boot; skip rather
+      // than probe /me with an empty bearer and spuriously mark it revoked.
+      if (!entry.apiKey) return null;
       const base = entry.apiUrl.replace(/\/$/, '');
       try {
         const response = await fetch(`${base}/me`, {
