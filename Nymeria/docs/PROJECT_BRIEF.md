@@ -1,10 +1,10 @@
-# Nymeria Project Brief
+# NymeriaOS Project Brief
 
-> High-level overview of Nymeria's current architecture and capabilities (updated for the current codebase).
+> High-level overview of NymeriaOS's current architecture and capabilities (updated for the current codebase).
 
-## What Nymeria Is
+## What NymeriaOS Is
 
-Nymeria is a personal AI assistant framework built on a LangGraph ReAct runtime, designed for:
+NymeriaOS is a personal AI assistant framework built on a LangGraph ReAct runtime, designed for:
 - Stateful conversations with persistence
 - Long-running autonomous task execution
 - Tool-augmented workflows
@@ -17,7 +17,7 @@ Core operating model:
 
 ## System Shape
 
-Nymeria is organized into:
+NymeriaOS is organized into:
 - `nymeria/core/` runtime orchestration (`NymeriaAgent`, ticker, TODO manager, trigger manager, event bus, thread metadata)
 - `nymeria/tools/` tool surface (core tools plus a larger optional-tool catalog)
 - `nymeria/agents/` callable thread tool factory + executor
@@ -72,7 +72,7 @@ Legacy `data/tasks.db` files from older installs are ignored by the current runt
 
 ## Tooling Model
 
-Nymeria currently exposes:
+NymeriaOS currently exposes:
 - **Core tools** (`ALL_TOOLS`) - 19 always-loaded tools for shell, files,
   web, consult, memory/RAG, TODOs, notifications, slash commands, and
   credential prompting
@@ -150,7 +150,7 @@ of constructing its own `NymeriaAgent`.
 
 ### MCP (`run.py mcp`)
 
-Nymeria capability exposure over MCP (stdio or HTTP mode).
+NymeriaOS capability exposure over MCP (stdio or HTTP mode).
 
 ### Discord Bot (`run.py discord-bot`)
 

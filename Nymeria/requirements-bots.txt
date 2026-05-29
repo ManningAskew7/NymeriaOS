@@ -2,8 +2,8 @@
 #
 # These are NOT installed by the default/slim install. Install only the
 # platforms you run, via the matching extra:
-#   pip install "nymeria[discord]"      # or telegram / slack / mattermost / ...
-#   pip install "nymeria[bots]"          # all platforms at once
+#   pip install "nymeriaos[discord]"      # or telegram / slack / mattermost / ...
+#   pip install "nymeriaos[bots]"          # all platforms at once
 #
 # This file is the requirements-style mirror of the bot extras in pyproject.toml.
 # The full Docker image includes it (via requirements-docker.txt). Keep it in

@@ -1,4 +1,4 @@
-# Nymeria Roadmap
+# NymeriaOS Roadmap
 
 This file tracks current product and engineering follow-ups. Completed feature
 descriptions belong in [feature-list.md](./feature-list.md), implementation
@@ -19,7 +19,7 @@ not be added here.
    thinking, waiting, queued, and final-response transitions.
 7. Add native Gmail tools to the optional tool catalog; current Gmail support
    is through managed MCP server setup.
-8. Close remaining Nymeria MCP server gaps for provider/model mutation UX,
+8. Close remaining NymeriaOS MCP server gaps for provider/model mutation UX,
    callable-thread workflows, and admin lifecycle ergonomics. Triggers, TODOs,
    thread config, settings, notifications, profile, and RAG are already
    API-backed MCP tools.
@@ -44,4 +44,4 @@ not be added here.
 - [api.md](./api.md)
 - [skills.md](./skills.md)
 - [notifications.md](./notifications.md)
-- [deployment/README.md](./deployment/README.md)
+- [deployment-README.md](./deployment-README.md)

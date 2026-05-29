@@ -1,5 +1,5 @@
 #!/bin/sh
-# Nymeria installer (clone-free front door).
+# NymeriaOS installer (clone-free front door).
 #
 #   curl -fsSL https://get.nymeriaos.com/install.sh | sh
 #
@@ -95,7 +95,7 @@ choose_mode() {
         return 0
     fi
     printf '%s\n' "" > /dev/tty
-    printf '%s\n' "${C_BOLD}Choose how to install Nymeria:${C_RESET}" > /dev/tty
+    printf '%s\n' "${C_BOLD}Choose how to install NymeriaOS:${C_RESET}" > /dev/tty
     printf '%s\n' "  ${C_BOLD}1) Slim${C_RESET} - simpler, best for a few users. Single process on SQLite," > /dev/tty
     printf '%s\n' "           installed with uv. No Docker required." > /dev/tty
     printf '%s\n' "  ${C_BOLD}2) Full${C_RESET} - more robust, better multi-user support. Runs in Docker" > /dev/tty
@@ -128,11 +128,11 @@ ensure_uv() {
 
 install_slim() {
     ensure_uv
-    info "Installing the nymeria package with uv ..."
+    info "Installing the nymeriaos package with uv ..."
     if [ -n "${NYMERIA_PYPI_SIMPLE_INDEX_URL:-}" ]; then
-        uv tool install nymeria --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+        uv tool install nymeriaos --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
     else
-        uv tool install nymeria
+        uv tool install nymeriaos
     fi
     info "Installed. ${C_BOLD}nymeria${C_RESET} is on your PATH."
     if [ "$INTERACTIVE" -eq 1 ]; then
@@ -252,7 +252,7 @@ install_full() {
         _i=$((_i + 1)); sleep 2
     done
     if [ "$_ok" -eq 1 ]; then
-        info "${C_BOLD}Nymeria is running${C_RESET} at http://localhost:8000"
+        info "${C_BOLD}NymeriaOS is running${C_RESET} at http://localhost:8000"
     else
         warn "API did not report healthy yet. Check: cd $WORKDIR && $(compose_label) -f $COMPOSE_FILE logs -f"
     fi
@@ -280,7 +280,7 @@ compose_label() {
 # ---------------------------------------------------------------------------
 usage() {
     cat <<EOF
-Nymeria installer
+NymeriaOS installer
 
 Usage: install.sh [--slim | --full] [--non-interactive] [-h|--help]
 
@@ -307,7 +307,7 @@ main() {
     done
 
     detect_os
-    info "Nymeria installer (${OS})"
+    info "NymeriaOS installer (${OS})"
     choose_mode
 
     case "$MODE" in

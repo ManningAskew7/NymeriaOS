@@ -31,7 +31,7 @@ from .message_splitter import split_discord_message as split_message
 from .sse_consumer import consume_sse_stream, dispatch_event, parse_attach_paths
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
-try:  # pragma: no cover - discord.py ships in the optional nymeria[discord] extra.
+try:  # pragma: no cover - discord.py ships in the optional nymeriaos[discord] extra.
     import discord
     from discord.ext import commands
 except ImportError:  # pragma: no cover - lean installs omit discord.py.

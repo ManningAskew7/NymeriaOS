@@ -107,8 +107,8 @@
   <div class="wizard-container">
     <!-- Header -->
     <div class="wizard-header">
-      <h1>Welcome to Nymeria</h1>
-      <p class="subtitle">Connect this app to your Nymeria backend</p>
+      <h1>Welcome to NymeriaOS</h1>
+      <p class="subtitle">Connect this app to your NymeriaOS backend</p>
     </div>
 
     <!-- Progress indicator -->
@@ -153,7 +153,7 @@
         <!-- Step 2: Backend URL -->
         <div class="step">
           <h2>Backend Connection</h2>
-          <p>Enter the URL where your Nymeria backend is running:</p>
+          <p>Enter the URL where your NymeriaOS backend is running:</p>
           <div class="field">
             <label for="api-url">API URL</label>
             <input
@@ -178,7 +178,7 @@
               bind:value={apiKey}
               placeholder="nym_..."
             />
-            <p class="hint">Identifies which Nymeria account this install connects as</p>
+            <p class="hint">Identifies which NymeriaOS account this install connects as</p>
           </div>
 
           <div class="test-section">
@@ -229,7 +229,7 @@
             <Icon name="success" size={48} />
           </div>
           <h2>Connection Ready</h2>
-          <p>This app is connected to Nymeria. Start a conversation to begin.</p>
+          <p>This app is connected to NymeriaOS. Start a conversation to begin.</p>
 
           <div class="tips">
             <h3>Quick Tips:</h3>
