@@ -49,6 +49,35 @@ class FakeAgent:
     def get_context_stats(self, thread_id: str):
         return {"thread_id": thread_id, "tokens": 42}
 
+    def get_raw_checkpoint(self, thread_id: str):
+        # Mirrors agent_context.get_raw_checkpoint's shape: messages are dumped
+        # verbatim (a standalone ToolMessage is kept, not embedded like /history).
+        return {
+            "thread_id": thread_id,
+            "checkpoint_id": "0003",
+            "checkpoint_ns": "",
+            "next": [],
+            "config": {
+                "configurable": {"thread_id": thread_id, "checkpoint_id": "0003"}
+            },
+            "metadata": {"step": 2},
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "parent_config": None,
+            "message_count": 2,
+            "values": {
+                "messages": [
+                    {
+                        "type": "ai",
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "web_search", "args": {"q": "x"}, "id": "call_1"}
+                        ],
+                    },
+                    {"type": "tool", "content": "result", "tool_call_id": "call_1"},
+                ]
+            },
+        }
+
     def invalidate_thread_config_cache(self, thread_id: str):
         self.invalidated.append(thread_id)
 
@@ -217,6 +246,55 @@ def test_thread_history_show_autonomous_prompts_query_param_overrides_thread_con
             "show_prompt_metadata": False,
         },
     ]
+
+
+def test_thread_checkpoint_returns_raw_state_for_owner(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The checkpoint endpoint returns the raw, unprojected state so tool calls
+    and standalone tool results from prior turns can be verified verbatim (the
+    /history endpoint would consolidate turns and embed/drop tool results)."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    thread_id = "thread-checkpoint"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.get(
+        f"/threads/{thread_id}/checkpoint",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["thread_id"] == thread_id
+    assert body["checkpoint_id"] == "0003"
+    messages = body["values"]["messages"]
+    assert messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert messages[1]["tool_call_id"] == "call_1"
+
+
+def test_thread_checkpoint_enforces_thread_access(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent = _client(tmp_path, api_client_builder)
+    owner_token = _create_user(agent, "owner")
+    other_token = _create_user(agent, "other")
+    thread_id = "thread-owned-checkpoint"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    owner = client.get(
+        f"/threads/{thread_id}/checkpoint",
+        headers=api_client_builder.auth(owner_token),
+    )
+    other = client.get(
+        f"/threads/{thread_id}/checkpoint",
+        headers=api_client_builder.auth(other_token),
+    )
+
+    assert owner.status_code == 200
+    assert other.status_code == 404
 
 
 def test_thread_status_returns_revision_and_processing_state(

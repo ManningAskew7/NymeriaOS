@@ -84,6 +84,35 @@ def get_conversation_history(
         return []
 
 
+def get_raw_checkpoint(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
+    """Dump the latest deserialized LangGraph checkpoint for debugging.
+
+    Unlike :func:`get_conversation_history`, this applies no display projection:
+    every message is returned verbatim (tool calls, tool results, metadata) so
+    that what is actually persisted can be verified. Only the latest
+    ``StateSnapshot`` is returned because its ``messages`` channel already holds
+    the full multi-turn history. An unknown thread yields an empty ``messages``
+    list (LangGraph returns an empty snapshot rather than raising).
+    """
+    state = agent._default_graph.get_state({"configurable": {"thread_id": thread_id}})
+    messages = state.values.get("messages", [])
+    configurable = (state.config or {}).get("configurable", {})
+    return {
+        "thread_id": thread_id,
+        "checkpoint_id": configurable.get("checkpoint_id"),
+        "checkpoint_ns": configurable.get("checkpoint_ns", ""),
+        "next": list(state.next),
+        "config": state.config,
+        "metadata": state.metadata,
+        "created_at": state.created_at,
+        "parent_config": state.parent_config,
+        "message_count": len(messages),
+        "values": {
+            "messages": [m.model_dump(mode="json") for m in messages],
+        },
+    }
+
+
 def _thread_is_processing(agent: "NymeriaAgent", thread_id: str) -> bool:
     """True when a turn currently holds the thread lock (mirrors the threads router)."""
     thread_locks = getattr(agent, "_thread_locks", None)

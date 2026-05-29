@@ -172,6 +172,7 @@ EXPECTED_ROUTES = [
     ('/threads/{thread_id}/chatapp/bind-code', ('POST',)),
     ('/threads/{thread_id}/chatapp/bindings', ('GET',)),
     ('/threads/{thread_id}/chatapp/bindings/{binding_id}', ('DELETE',)),
+    ('/threads/{thread_id}/checkpoint', ('GET',)),
     ('/threads/{thread_id}/claim', ('POST',)),
     ('/threads/{thread_id}/clear', ('POST',)),
     ('/threads/{thread_id}/compact', ('POST',)),

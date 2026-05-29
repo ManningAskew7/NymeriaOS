@@ -2831,6 +2831,10 @@ class NymeriaAgent:
             show_prompt_metadata=show_prompt_metadata,
         )
 
+    def get_raw_checkpoint(self, thread_id: str) -> Dict[str, Any]:
+        from .agent_context import get_raw_checkpoint
+        return get_raw_checkpoint(self, thread_id)
+
     def should_reset_context(
         self,
         thread_id: str,

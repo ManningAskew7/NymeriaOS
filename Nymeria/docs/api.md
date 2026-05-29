@@ -726,6 +726,47 @@ Get context window usage statistics for a thread.
 
 ---
 
+### Get Raw Checkpoint
+
+```http
+GET /threads/{thread_id}/checkpoint
+Authorization: Bearer <token>
+```
+
+Developer/debugging endpoint. Returns the raw, deserialized latest LangGraph
+checkpoint for a thread. Owner-only (same access rule as history). Unlike
+`/history`, no display projection is applied: every message is returned verbatim
+(tool calls, standalone tool results, metadata) so the persisted state can be
+verified. Only the latest snapshot is returned, because its `messages` channel
+already holds the full multi-turn history.
+
+**Response:**
+```json
+{
+  "thread_id": "abc123",
+  "checkpoint_id": "1efabc...",
+  "checkpoint_ns": "",
+  "next": [],
+  "config": { "configurable": { "thread_id": "abc123", "checkpoint_id": "1efabc..." } },
+  "metadata": { "source": "loop", "step": 4 },
+  "created_at": "2026-01-15T10:30:00+00:00",
+  "parent_config": { "configurable": { "thread_id": "abc123", "checkpoint_id": "1efaaa..." } },
+  "message_count": 6,
+  "values": {
+    "messages": [
+      { "type": "human", "content": "..." },
+      { "type": "ai", "content": "", "tool_calls": [ { "name": "web_search", "args": {}, "id": "call_1" } ] },
+      { "type": "tool", "content": "...", "tool_call_id": "call_1" }
+    ]
+  }
+}
+```
+
+The desktop app surfaces this behind a client-local Developer mode toggle (a raw
+checkpoint button in the thread header that previews or downloads this payload).
+
+---
+
 ### Get Thread Platform Metadata
 
 ```http
