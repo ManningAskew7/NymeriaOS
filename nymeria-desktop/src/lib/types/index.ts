@@ -351,6 +351,33 @@ export interface ThreadConfigUpdateRequest {
   clear_dreaming?: boolean;
 }
 
+/** A thread's persistent notepad (the agent's thread memory) for direct editing. */
+export interface ThreadNotepad {
+  threadId: string;
+  content: string;
+  charCount: number;
+  charLimit: number;
+}
+
+/** Base system prompt editor payload (global, admin-only). */
+export interface SystemPromptInfo {
+  /** Effective base system prompt currently in use (override or default). */
+  content: string;
+  /** Shipped soul.md default, used for the reset action and comparison. */
+  defaultContent: string;
+  /** True when a user override is active instead of the shipped default. */
+  isOverride: boolean;
+}
+
+/** A single structured global-memory record (profile.json entry). */
+export interface UserMemory {
+  key: string;
+  value: string;
+  createdAt?: string | null;
+  accessedAt?: string | null;
+  accessCount?: number;
+}
+
 export interface ThreadDreamRequest {
   model?: string | null;
   force?: boolean;

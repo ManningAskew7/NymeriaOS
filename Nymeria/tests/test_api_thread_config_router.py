@@ -39,6 +39,78 @@ def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]
     return client, agent, token
 
 
+def test_thread_notepad_round_trip(tmp_path: Path, api_client_builder, monkeypatch):
+    from nymeria.tools import thread_notes
+
+    # Redirect the notepad store to a temp dir (thread_notes resolves its dir via
+    # the global get_settings(), not the injected test settings).
+    monkeypatch.setattr(thread_notes, "_notes_dir", tmp_path / "thread_notes")
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-notepad"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Empty to start.
+    empty = client.get(f"/threads/{thread_id}/notepad", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json()["content"] == ""
+    assert empty.json()["char_count"] == 0
+    assert empty.json()["char_limit"] > 0
+
+    # Write content.
+    note = "Remember: ship on Friday."
+    put = client.put(
+        f"/threads/{thread_id}/notepad",
+        headers=headers,
+        json={"content": note},
+    )
+    assert put.status_code == 200
+    assert put.json()["content"] == note
+    assert put.json()["char_count"] == len(note)
+
+    # Read it back.
+    got = client.get(f"/threads/{thread_id}/notepad", headers=headers)
+    assert got.json()["content"] == note
+
+    # Blank content clears the notepad.
+    cleared = client.put(
+        f"/threads/{thread_id}/notepad",
+        headers=headers,
+        json={"content": ""},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["content"] == ""
+    assert client.get(f"/threads/{thread_id}/notepad", headers=headers).json()["content"] == ""
+
+
+def test_thread_notepad_rejects_over_limit(tmp_path: Path, api_client_builder, monkeypatch):
+    from nymeria.tools import thread_notes
+    from nymeria.core import memory_limits
+
+    monkeypatch.setattr(thread_notes, "_notes_dir", tmp_path / "thread_notes")
+    # Force a tiny effective limit so the write is rejected.
+    monkeypatch.setattr(
+        memory_limits, "get_effective_thread_memory_char_limit", lambda *a, **k: 10
+    )
+    monkeypatch.setattr(
+        thread_notes, "get_effective_thread_memory_char_limit", lambda *a, **k: 10
+    )
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-notepad-limit"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    resp = client.put(
+        f"/threads/{thread_id}/notepad",
+        headers=headers,
+        json={"content": "x" * 200},
+    )
+    assert resp.status_code == 400
+    assert "limit" in resp.json()["detail"].lower()
+
+
 def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     tmp_path: Path,
     api_client_builder,

@@ -1660,17 +1660,36 @@ These directories and files are created automatically on first run.
 
 ## System Prompt (soul.md)
 
-Located at `nymeria/config/soul.md` in the source tree or installed package.
-This file defines Nymeria's:
+The packaged default lives at `nymeria/config/soul.md` in the source tree or
+installed package. This file defines Nymeria's:
 - Personality and tone
 - Capabilities and limitations
 - Guidelines for tool usage
 - Autonomous behavior rules
 
-For source checkouts, edit this file to customize how Nymeria responds.
-Packaged installs load the bundled package copy; keep local personality edits in
-source or a custom package build until user-editable packaged prompts are added.
-Changes take effect on agent restart.
+### Editing the base system prompt
+
+There are two ways to customize the base prompt for the whole instance:
+
+- **In-app (recommended):** Settings -> System Prompt (admin only). Saving writes
+  a data-dir override at `data/system_prompt.md` and hot-reloads the agent, so
+  the new persona applies to new turns immediately without a restart. "Reset to
+  default" deletes the override and restores the packaged `soul.md`. The
+  git-tracked `soul.md` is never modified, and the override works on read-only
+  packaged installs.
+- **On disk:** edit `nymeria/config/soul.md` directly (source checkouts only;
+  changes take effect on agent restart).
+
+Precedence: `load_soul()` returns the `data/system_prompt.md` override when it is
+present and non-empty, otherwise the packaged `soul.md`. The same editor is
+exposed over the admin-only `GET/PUT/DELETE /settings/system-prompt` endpoints (a
+blank `PUT` body clears the override).
+
+Per-thread overlays still apply on top of the base prompt: a thread's custom
+instructions are appended, and a thread's system-prompt override replaces the
+base for that thread only (Thread Settings -> System Prompt). A thread's
+free-form notepad (its persistent memory) is editable at Thread Settings ->
+Notepad, backed by `GET/PUT /threads/{id}/notepad`.
 
 ---
 

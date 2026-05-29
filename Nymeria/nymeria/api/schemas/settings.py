@@ -37,6 +37,24 @@ class LLMProviderSpecResponse(BaseModel):
     verified: bool = False
 
 
+class SystemPromptResponse(BaseModel):
+    """Current base system prompt plus the shipped default, for the editor."""
+
+    content: str = Field(..., description="Effective base system prompt in use")
+    default_content: str = Field(
+        ..., description="Shipped soul.md default, shown for reset/compare"
+    )
+    is_override: bool = Field(
+        ..., description="True when a user override file is active (not the default)"
+    )
+
+
+class SystemPromptUpdate(BaseModel):
+    """Update the base system prompt override. Blank content resets to default."""
+
+    content: str = Field(default="", max_length=100_000)
+
+
 class ServerSettingsResponse(BaseModel):
     """Response model for server settings."""
 

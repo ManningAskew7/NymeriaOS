@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.accounts import AuthenticatedUser
 from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
 from ..schemas.thread_config import (
+    NotepadUpdateRequest,
     ThreadConfigUpdateRequest,
     ThreadTeamCreateRequest,
     ThreadTeamUpdateRequest,
@@ -375,6 +376,56 @@ def create_thread_config_router(
 
             mark_tool_search_dirty()
         return {"status": "ok", "thread_id": thread_id}
+
+    @router.get("/threads/{thread_id}/notepad")
+    async def get_thread_notepad(
+        thread_id: str,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Read a thread's persistent notepad (the agent's thread memory).
+
+        This is the same markdown store the agent edits via memory tools and the
+        /notepad slash command; here it is exposed for direct editing in the UI.
+        """
+        require_thread_access_fn(user, thread_id, claim=False)
+        from ...core.memory_limits import get_effective_thread_memory_char_limit
+        from ...tools import thread_notes
+
+        content = thread_notes.read_notepad(thread_id) or ""
+        return {
+            "thread_id": thread_id,
+            "content": content,
+            "char_count": len(content),
+            "char_limit": get_effective_thread_memory_char_limit(thread_id),
+        }
+
+    @router.put("/threads/{thread_id}/notepad")
+    async def update_thread_notepad(
+        thread_id: str,
+        request: NotepadUpdateRequest,
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Replace a thread's notepad content (blank clears it).
+
+        Enforces the per-thread/global memory char limit via write_notepad; a
+        limit violation surfaces as HTTP 400.
+        """
+        require_thread_access_fn(user, thread_id)
+        from ...core.memory_limits import get_effective_thread_memory_char_limit
+        from ...tools import thread_notes
+
+        result = thread_notes.write_notepad(thread_id, request.content, mode="replace")
+        if result.startswith("[Error]"):
+            raise HTTPException(status_code=400, detail=result)
+
+        content = thread_notes.read_notepad(thread_id) or ""
+        return {
+            "thread_id": thread_id,
+            "content": content,
+            "char_count": len(content),
+            "char_limit": get_effective_thread_memory_char_limit(thread_id),
+            "message": result,
+        }
 
     @router.get("/thread-teams")
     async def list_thread_teams(user_id: str = Depends(authed_user_id)):

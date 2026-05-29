@@ -49,6 +49,8 @@ from ..schemas.settings import (
     OpenRouterKeyDiagnostics,
     ServerSettingsResponse,
     ServerSettingsUpdate,
+    SystemPromptResponse,
+    SystemPromptUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -1202,6 +1204,66 @@ def create_settings_router(
             stt_language=settings.stt_language,
             voice_default_thread_id=settings.voice_default_thread_id,
         )
+
+    def _system_prompt_response() -> SystemPromptResponse:
+        """Build the current system-prompt editor payload from disk."""
+        settings = get_settings_fn()
+        default_content = (
+            settings.soul_path.read_text(encoding="utf-8")
+            if settings.soul_path.exists()
+            else ""
+        )
+        override_path = settings.system_prompt_override_path
+        is_override = bool(
+            override_path.exists()
+            and override_path.read_text(encoding="utf-8").strip()
+        )
+        return SystemPromptResponse(
+            content=settings.load_soul(),
+            default_content=default_content,
+            is_override=is_override,
+        )
+
+    @router.get("/settings/system-prompt", response_model=SystemPromptResponse)
+    async def get_system_prompt(
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Get the effective base system prompt, the shipped default, and override status."""
+        return _system_prompt_response()
+
+    @router.put("/settings/system-prompt", response_model=SystemPromptResponse)
+    async def update_system_prompt(
+        request: SystemPromptUpdate,
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Set or clear the base system-prompt override, then hot-reload the agent.
+
+        Blank content clears the override (reset to the shipped soul.md). The
+        packaged soul.md is never modified; the override lives in the data dir.
+        """
+        override_path = settings.system_prompt_override_path
+        content = request.content.strip()
+        if content:
+            override_path.parent.mkdir(parents=True, exist_ok=True)
+            override_path.write_text(content, encoding="utf-8")
+        elif override_path.exists():
+            override_path.unlink()
+
+        get_agent_fn().reload_base_system_prompt()
+        return _system_prompt_response()
+
+    @router.delete("/settings/system-prompt", response_model=SystemPromptResponse)
+    async def reset_system_prompt(
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Delete the override and restore the shipped soul.md, then hot-reload."""
+        override_path = settings.system_prompt_override_path
+        if override_path.exists():
+            override_path.unlink()
+        get_agent_fn().reload_base_system_prompt()
+        return _system_prompt_response()
 
     @router.post("/settings/llm/test", response_model=LLMProviderTestResponse)
     async def test_llm_provider_config(

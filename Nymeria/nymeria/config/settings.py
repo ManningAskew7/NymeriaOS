@@ -1519,8 +1519,18 @@ class Settings(BaseSettings):
 
     @property
     def soul_path(self) -> Path:
-        """Get the path to the soul.md system prompt."""
+        """Get the path to the packaged soul.md system prompt (shipped default)."""
         return PACKAGE_ROOT / "config" / "soul.md"
+
+    @property
+    def system_prompt_override_path(self) -> Path:
+        """Get the path to the user-editable system-prompt override.
+
+        Lives in the (writable, gitignored) data dir so the packaged soul.md is
+        never mutated. When this file exists and is non-empty, load_soul() uses
+        it instead of soul.md; deleting it restores the shipped default.
+        """
+        return self.data_dir / "system_prompt.md"
 
     @property
     def dream_prompt_path(self) -> Path:
@@ -1580,7 +1590,16 @@ class Settings(BaseSettings):
         return resolve_provider_api_key(provider, settings=self)
 
     def load_soul(self) -> str:
-        """Load the system prompt from soul.md."""
+        """Load the base system prompt.
+
+        Precedence: a non-empty user override (system_prompt_override_path) wins,
+        otherwise the packaged soul.md, otherwise a minimal fallback.
+        """
+        override_path = self.system_prompt_override_path
+        if override_path.exists():
+            override_text = override_path.read_text(encoding="utf-8").strip()
+            if override_text:
+                return override_text
         if self.soul_path.exists():
             return self.soul_path.read_text(encoding="utf-8")
         return "You are Nymeria, a helpful AI assistant."
