@@ -236,9 +236,18 @@ to the human message, which lives in the cache-stable tail. This keeps the
 system-prompt prefix identical across mixed turns on a thread so the prompt cache
 is not invalidated when the turn source changes. Callable threads with a custom
 system prompt use that prompt alone (focused context, no profile/TODO injection
-and no embedded time). `AUTONOMOUS_MODE_RULES` is retained in `core/prompts.py`
-for a possible future tail or mid-conversation delivery, but is not appended to
-the system prompt.
+and no embedded time).
+
+Behavioral guidance for autonomous turns rides on this same tail rather than the
+system prompt. For any autonomous wake-up (scheduled TODO, watchdog nudge,
+trigger fire, handoff, dream), `NymeriaAgent._prefix_turn_metadata` appends the
+general autonomous run rules from `AUTONOMOUS_MODE_RULES`
+(`get_autonomous_tail_guidance` in `core/prompts.py`) after the `[Time:]/[Trigger:]`
+line. Interactive turns (user, MCP, blocking callable ask) get no extra guidance.
+Source-specific guidance stays with its source: the watchdog bakes its
+instructions into its nudge message, and handoffs carry their routing IDs plus
+call-back / `notify` guidance in the `[Handoff Metadata]` block built by
+`thread_agent_executor` (so both immediate and scheduled handoffs receive it).
 
 **Recovery on Restart:**
 When Nymeria starts, the Ticker:

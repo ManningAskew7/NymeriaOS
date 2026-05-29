@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from nymeria.core.agent import NymeriaAgent
-from nymeria.core.prompts import AUTONOMOUS_MODE_RULES
+from nymeria.core.prompts import AUTONOMOUS_MODE_RULES, get_autonomous_tail_guidance
+from nymeria.core.thread_agent_executor import _format_handoff_prompt
 from nymeria.core.thread_config import ThreadConfig
 from nymeria.core.todo_manager import TodoManager
 from nymeria.triggers.watchdog_worker import WatchdogWorker
@@ -31,6 +32,66 @@ def test_autonomous_rules_are_explicitly_non_silent():
     assert "Do not end by choosing silence" in AUTONOMOUS_MODE_RULES
     assert "nothing to do" in AUTONOMOUS_MODE_RULES
     assert "nym_todo" in AUTONOMOUS_MODE_RULES
+
+
+# The general autonomous guidance now rides on the message tail (not the system
+# prompt). get_autonomous_tail_guidance() gates it on the turn being autonomous.
+
+
+def test_tail_guidance_empty_for_interactive_turns():
+    assert get_autonomous_tail_guidance(False) == ""
+
+
+def test_tail_guidance_carries_non_silence_rules_for_autonomous_turns():
+    guidance = get_autonomous_tail_guidance(True)
+    assert "## Autonomous Run Rules" in guidance
+    assert "Do not end by choosing silence" in guidance
+    assert "nym_todo" in guidance
+    # Tail-friendly: no leading horizontal-rule separator (that was for the old
+    # system-prompt append).
+    assert not guidance.startswith("---")
+
+
+def test_prefix_turn_metadata_appends_guidance_only_when_autonomous(monkeypatch):
+    agent = _agent_with_configs()
+    monkeypatch.setattr(
+        agent, "_get_time_context", lambda **kwargs: "[Time: X]\n[Trigger: Y]"
+    )
+
+    autonomous = agent._prefix_turn_metadata(
+        "do the thing", is_self_invoke=True, trigger_override=None, is_autonomous=True
+    )
+    assert autonomous.startswith("[Time: X]\n[Trigger: Y]")
+    assert "## Autonomous Run Rules" in autonomous
+    assert autonomous.endswith("do the thing")
+
+    interactive = agent._prefix_turn_metadata(
+        "say hi", is_self_invoke=False, trigger_override=None, is_autonomous=False
+    )
+    assert interactive == "[Time: X]\n[Trigger: Y]\n\nsay hi"
+    assert "Autonomous Run Rules" not in interactive
+
+
+def test_handoff_metadata_block_explains_non_return_and_callback():
+    prompt = _format_handoff_prompt(
+        task="summarize the report",
+        handoff_id="handoff-abc123",
+        caller_thread_id="thread-42",
+        caller_name="Planner",
+        callable_name="Researcher",
+    )
+    # Routing facts the receiver needs to call the source back.
+    assert "[Handoff Metadata]" in prompt
+    assert "handoff_id: handoff-abc123" in prompt
+    assert "source_thread_id: thread-42" in prompt
+    assert "source_thread_name: Planner" in prompt
+    # Behavioral guidance: output is not returned; call back if callable; else notify.
+    assert "non-blocking handoff" in prompt
+    assert "NOT returned" in prompt
+    assert "call it back" in prompt
+    assert "notify tool" in prompt
+    # The actual task still trails the metadata block.
+    assert prompt.rstrip().endswith("summarize the report")
 
 
 # The system prompt no longer takes a turn-source argument, so it is structurally

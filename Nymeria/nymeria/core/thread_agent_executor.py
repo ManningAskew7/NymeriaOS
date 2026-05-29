@@ -73,8 +73,11 @@ def _format_handoff_prompt(
         f"source_thread_name: {caller_display}\n"
         f"target_callable_name: {callable_name}\n"
         "mode: handoff\n"
-        "The source thread will not automatically receive your final answer. "
-        "If it is useful, call the source thread after you finish.\n"
+        "This is a non-blocking handoff: your final output is NOT returned to the "
+        "source thread automatically. If the source thread is itself callable, you "
+        "can call it back with anything important it needs to know; otherwise it "
+        "will not see your output. To tell the user something directly, use the "
+        "notify tool.\n"
         "[/Handoff Metadata]\n\n"
         f"{task}"
     )

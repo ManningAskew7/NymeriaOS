@@ -589,6 +589,31 @@ class NymeriaAgent:
         from .agent_prompt import get_time_context_for_agent
         return get_time_context_for_agent(self, is_autonomous, trigger_override)
 
+    def _prefix_turn_metadata(
+        self,
+        message: str,
+        *,
+        is_self_invoke: bool,
+        trigger_override: Optional[str],
+        is_autonomous: bool,
+    ) -> str:
+        """Prepend the cache-safe turn metadata to the message.
+
+        This metadata lives on the message tail, not in the system prompt, so the
+        system prompt stays cache-stable across user vs autonomous turns on the
+        same thread. It carries the ``[Time:]``/``[Trigger:]`` line for every turn
+        and, for autonomous turns, the general autonomous run guidance.
+        """
+        from .prompts import get_autonomous_tail_guidance
+
+        time_context = self._get_time_context(
+            is_autonomous=is_self_invoke, trigger_override=trigger_override
+        )
+        guidance = get_autonomous_tail_guidance(is_autonomous)
+        if guidance:
+            return f"{time_context}\n\n{guidance}\n\n{message}"
+        return f"{time_context}\n\n{message}"
+
     def _get_memory_index(self, user_id: str) -> Optional[MemoryIndex]:
         from .agent_prompt import get_memory_index
         return get_memory_index(self, user_id)
@@ -1034,6 +1059,26 @@ class NymeriaAgent:
         """Build an async LangGraph execution graph with a specific system prompt."""
         from .agent_graph import build_async_graph_with_prompt
         return build_async_graph_with_prompt(self, system_prompt, user_id, thread_id)
+
+    def reload_base_system_prompt(self) -> str:
+        """Re-read the base system prompt (soul.md / override) and rebuild graphs.
+
+        Called after the system-prompt override is edited via the API so the new
+        persona takes effect live without a process restart. Mirrors the graph
+        rebuild PATCH /settings performs for LLM/graph fields: clears the per-user
+        graph caches and recompiles the default graphs from the fresh prompt.
+        Returns the newly loaded base system prompt.
+        """
+        self._base_system_prompt = self.settings.load_soul()
+        with self._graph_cache_lock:
+            self._user_graphs.clear()
+            self._async_user_graphs.clear()
+        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
+        self._default_async_graph = self._build_async_graph_with_prompt(
+            self._base_system_prompt
+        )
+        logger.info("Reloaded base system prompt (%d chars)", len(self._base_system_prompt))
+        return self._base_system_prompt
 
     def _build_dynamic_graph_with_prompt(
         self,
@@ -1508,9 +1553,14 @@ class NymeriaAgent:
                 user_id, thread_id=thread_id
             )
 
-            # Inject time context into the message (includes trigger type for autonomous wake-ups)
-            time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
-            message_with_context = f"{time_context}\n\n{message}"
+            # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
+            # guidance for autonomous wake-ups) to the message tail.
+            message_with_context = self._prefix_turn_metadata(
+                message,
+                is_self_invoke=_is_self_invoke,
+                trigger_override=_trigger_override,
+                is_autonomous=is_autonomous_source,
+            )
 
             # Pre-flight auto-compact (sync path)
             try:
@@ -2126,9 +2176,14 @@ class NymeriaAgent:
                 except Exception as e:
                     logger.warning(f"[ASTREAM] Could not fetch existing state: {e}")
 
-            # Inject time context into the message (includes trigger type for autonomous wake-ups)
-            time_context = self._get_time_context(is_autonomous=_is_self_invoke, trigger_override=_trigger_override)
-            message_with_context = f"{time_context}\n\n{message}"
+            # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
+            # guidance for autonomous wake-ups) to the message tail.
+            message_with_context = self._prefix_turn_metadata(
+                message,
+                is_self_invoke=_is_self_invoke,
+                trigger_override=_trigger_override,
+                is_autonomous=is_autonomous_source,
+            )
 
             # Pre-flight auto-compact for streaming chat. Without this, a
             # bloated thread can fail on the first provider call before the
