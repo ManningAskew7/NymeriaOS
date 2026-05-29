@@ -958,6 +958,7 @@ export interface AppConfig {
   suppressAttachmentWarnings?: boolean;
   showAutonomousPrompts?: boolean;
   describeToolCalls?: boolean;
+  developerMode?: boolean;
   identity?: AccountIdentity | null;
 }
 

@@ -136,6 +136,7 @@ function loadConfig(): AppConfig {
       suppressAttachmentWarnings: false,
       showAutonomousPrompts: true,
       describeToolCalls: true,
+      developerMode: false,
       identity: null,
     };
   }
@@ -156,6 +157,9 @@ function loadConfig(): AppConfig {
       if (config.describeToolCalls === undefined) {
         config.describeToolCalls = true;
       }
+      if (config.developerMode === undefined) {
+        config.developerMode = false;
+      }
       if (config.identity === undefined) {
         config.identity = null;
       }
@@ -172,6 +176,7 @@ function loadConfig(): AppConfig {
     suppressAttachmentWarnings: false,
     showAutonomousPrompts: true,
     describeToolCalls: true,
+    developerMode: false,
     identity: null,
   };
 }
@@ -195,6 +200,7 @@ function createConfigStore() {
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
   let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
   let describeToolCalls = $state(initial.describeToolCalls ?? true);
+  let developerMode = $state(initial.developerMode ?? false);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
   // Seed the module-level scope cache with whatever identity is persisted so
@@ -217,6 +223,7 @@ function createConfigStore() {
       suppressAttachmentWarnings,
       showAutonomousPrompts,
       describeToolCalls,
+      developerMode,
       identity,
     });
   }
@@ -416,6 +423,13 @@ function createConfigStore() {
       describeToolCalls = value;
       saveCurrentConfig();
     },
+    get developerMode() {
+      return developerMode;
+    },
+    set developerMode(value: boolean) {
+      developerMode = value;
+      saveCurrentConfig();
+    },
     get identity(): AccountIdentity | null {
       return identity;
     },
@@ -432,6 +446,7 @@ function createConfigStore() {
       suppressAttachmentWarnings = false;
       showAutonomousPrompts = true;
       describeToolCalls = true;
+      developerMode = false;
       identity = null;
       currentIdentityId = null;
       applyTheme('midnight');

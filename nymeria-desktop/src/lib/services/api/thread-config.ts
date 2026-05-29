@@ -289,6 +289,25 @@ export class ThreadConfigApi extends MCPApi {
     return response.json();
   }
 
+  /**
+   * Developer/debugging: fetch the raw deserialized latest LangGraph checkpoint
+   * for a thread. Unlike getThreadHistory, no display projection is applied, so
+   * tool calls and standalone tool results from prior turns appear verbatim.
+   * Gated in the UI behind the client-local developer-mode toggle.
+   */
+  async getThreadCheckpoint(threadId: string): Promise<unknown> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/checkpoint`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load checkpoint'));
+    }
+
+    return response.json();
+  }
+
   async importThread(document: ThreadShareDocument | Record<string, unknown>): Promise<ThreadShareImportResult> {
     const response = await fetch(`${this.getBaseUrl()}/threads/import`, {
       method: 'POST',
