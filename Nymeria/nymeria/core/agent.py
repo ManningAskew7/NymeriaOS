@@ -581,10 +581,6 @@ class NymeriaAgent:
         from .agent_prompt import build_full_system_prompt
         return build_full_system_prompt(self, user_id, is_autonomous, thread_id)
 
-    def _append_mode_rules(self, prompt: str, is_autonomous: bool) -> str:
-        from .agent_prompt import append_mode_rules
-        return append_mode_rules(self, prompt, is_autonomous)
-
     def _get_time_context(
         self,
         is_autonomous: bool = False,

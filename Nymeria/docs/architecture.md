@@ -229,13 +229,16 @@ Ticker finds due scheduled TODO:
     10. Clears the active-execution marker when the run exits
 ```
 
-Autonomous executions append `AUTONOMOUS_MODE_RULES` from `core/prompts.py`.
-Those rules make scheduled TODOs, watchdog nudges, triggers, and autonomous
-callable-thread wake-ups user-visible work: the agent must complete/update/delete
-the TODO when appropriate, or briefly explain what it checked and why no action
-was taken. Callable threads with a custom system prompt still keep their focused
-context (no profile/TODO injection), but autonomous wake-ups receive the same
-autonomous rules.
+The system prompt is source- and time-invariant: it does not change based on
+whether a turn is user-driven or autonomous, and it embeds no timestamp. Time and
+source are conveyed for every turn via the `[Time:]/[Trigger:]` metadata prepended
+to the human message, which lives in the cache-stable tail. This keeps the
+system-prompt prefix identical across mixed turns on a thread so the prompt cache
+is not invalidated when the turn source changes. Callable threads with a custom
+system prompt use that prompt alone (focused context, no profile/TODO injection
+and no embedded time). `AUTONOMOUS_MODE_RULES` is retained in `core/prompts.py`
+for a possible future tail or mid-conversation delivery, but is not appended to
+the system prompt.
 
 **Recovery on Restart:**
 When Nymeria starts, the Ticker:

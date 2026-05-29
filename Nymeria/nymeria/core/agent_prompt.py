@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING, List, Optional
 
 from .memory_index import MemoryIndex
 from .prompts import (
-    AUTONOMOUS_MODE_RULES,
-    INTERACTIVE_MODE_RULES,
     format_untrusted_json_record,
     get_time_context,
 )
@@ -237,32 +235,32 @@ def build_full_system_prompt(
     """
     Build the complete system prompt including user memories and active TODOs.
 
-    Mode-specific rules are appended:
-    - INTERACTIVE_MODE_RULES for user messages (simple, natural responses)
-    - AUTONOMOUS_MODE_RULES for self_invoke (autonomous task execution)
+    The system prompt is source- and time-invariant: it does not change based on
+    whether the turn is user-driven or autonomous, and it embeds no timestamp.
+    Time and source are conveyed instead via the [Time:]/[Trigger:] metadata that
+    every turn prepends to the human message (see get_time_context). Keeping the
+    system prompt stable preserves the prompt-cache prefix across mixed turns on
+    the same thread.
 
     Thread config overrides:
-    - Callable threads with system_prompt: use system_prompt + time context only (focused context)
+    - Callable threads with system_prompt: use system_prompt only (focused context)
     - Regular threads with system_prompt: replace soul.md but keep memories/TODOs/instructions
 
     Args:
         user_id: User identifier
-        is_autonomous: If True, append autonomous mode rules; otherwise interactive rules
+        is_autonomous: Accepted for interface stability but no longer changes the
+            prompt; the prompt is source-invariant.
         thread_id: Thread to scope TODOs to
 
     Returns:
         Full system prompt with base content + user memories + thread-scoped TODOs
-        + mode-specific rules
     """
     tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
 
-    # Callable threads with system_prompt: focused context (no memories/TODOs/instructions)
+    # Callable threads with system_prompt: focused context (no memories/TODOs/instructions).
+    # Time/source come from the [Time:]/[Trigger:] tail metadata, not the system prompt.
     if tc and tc.callable and tc.system_prompt:
-        time_context = agent._get_time_context(is_autonomous=is_autonomous)
-        return agent._append_mode_rules(
-            f"{tc.system_prompt}\n\n{time_context}",
-            is_autonomous,
-        )
+        return tc.system_prompt
 
     # Determine base prompt: custom system_prompt or default soul.md
     base = tc.system_prompt if (tc and tc.system_prompt) else agent._base_system_prompt
@@ -275,21 +273,11 @@ def build_full_system_prompt(
         todos_section = agent._build_active_todos_section(user_id, thread_id)
     prompt = base + profile_section + todos_section
 
-    # Inject per-thread instructions (before mode rules so they always come last)
+    # Inject per-thread instructions (appended last)
     if tc and tc.instructions:
         prompt += f"\n\n---\n\n## Thread-Specific Instructions\n\n{tc.instructions}\n"
 
-    # Add mode-specific behavioral rules
-    return agent._append_mode_rules(prompt, is_autonomous)
-
-
-def append_mode_rules(
-    agent: "NymeriaAgent", prompt: str, is_autonomous: bool
-) -> str:
-    """Append mode-specific prompt rules."""
-    if is_autonomous:
-        return prompt + AUTONOMOUS_MODE_RULES
-    return prompt + INTERACTIVE_MODE_RULES
+    return prompt
 
 
 def get_time_context_for_agent(

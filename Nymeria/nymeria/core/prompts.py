@@ -6,11 +6,11 @@ Contains mode-specific rules and system prompt building utilities.
 import json
 
 
-# Rules for interactive mode (responding to user messages)
-# Kept minimal — soul.md carries all behavioral guidance
-INTERACTIVE_MODE_RULES = ''
-
-# Rules for autonomous mode (scheduled TODOs, watchdog nudges, triggers)
+# Autonomous behavioral guidance (scheduled TODOs, watchdog nudges, triggers).
+# Retained for a future pass that delivers it via the message tail or an Opus 4.8
+# mid-conversation system message. It is NOT appended to the system prompt today:
+# the system prompt is kept source-invariant so it stays cache-stable across user
+# vs autonomous turns on the same thread.
 AUTONOMOUS_MODE_RULES = """
 
 ---
