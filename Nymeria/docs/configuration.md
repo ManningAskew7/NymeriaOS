@@ -1593,9 +1593,10 @@ key is restricted to Firebase services. Do not add server credentials or
 non-Firebase Google API keys to this file; use a separate restricted key for
 non-Firebase APIs.
 
-The private server-side FCM credential remains
-`Nymeria/firebase-service-account.json`, which is managed separately with
-git-crypt and wired into Docker via `FCM_CREDENTIALS_JSON`.
+The private server-side FCM credential is an operator-provided JSON file (for
+example `Nymeria/firebase-service-account.json`). It is supplied out of band,
+never committed to the repository, and wired into Docker via
+`FCM_CREDENTIALS_JSON`.
 
 **Watchdog runtime kill switches** (disable without restart):
 
