@@ -6,6 +6,7 @@ export type AssistantActivityPhase =
   | 'thinking'
   | 'typing'
   | 'formulating'
+  | 'compacting'
   | 'processing_results'
   | 'waiting';
 

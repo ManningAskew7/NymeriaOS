@@ -26,6 +26,7 @@ def test_phase_labels_match_desktop_text_with_ellipses() -> None:
         "thinking": "Thinking...",
         "typing": "Streaming...",
         "formulating": "Formulating...",
+        "compacting": "Compacting...",
         "processing_results": "Processing results...",
         "waiting": "Waiting...",
     }
@@ -46,6 +47,28 @@ def test_processing_and_thinking_become_formulating_after_quiet_timeout() -> Non
 
     assert activity_state_from_ui_state(state, now=3.9).phase == "thinking"
     assert activity_state_from_ui_state(state, now=4.01).phase == "formulating"
+
+
+def test_compacting_state_renders_compacting_label() -> None:
+    caps = FakeTerminalCapabilities()
+    indicator = ActivityIndicator()
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "compacting", "message": "Compacting context..."},
+        now=1.1,
+    )
+
+    activity = activity_state_from_ui_state(state, now=1.2)
+    rendered = indicator.render_from_state(state, capabilities=caps, now=1.2)
+
+    assert activity is not None
+    assert activity.phase == "compacting"
+    assert rendered is not None
+    assert rendered.phase == "compacting"
+    assert rendered.label == "Compacting..."
+    assert "Compacting context..." in rendered.text
 
 
 def test_typing_phase_renders_animated_streaming_indicator() -> None:
