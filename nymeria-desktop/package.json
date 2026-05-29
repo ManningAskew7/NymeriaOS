@@ -1,7 +1,7 @@
 {
   "name": "nymeria-desktop",
   "version": "0.1.0",
-  "description": "Desktop UI for Nymeria AI Agent",
+  "description": "Desktop UI for NymeriaOS",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

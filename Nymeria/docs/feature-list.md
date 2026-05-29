@@ -1,4 +1,4 @@
-# Nymeria  -  Complete Feature List
+# NymeriaOS  -  Complete Feature List
 
 Comprehensive feature inventory for comparison with other AI agent platforms.
 
@@ -47,7 +47,7 @@ Each thread improves as it's used through two knowledge systems:
 
 ## 2. Persistent Memory & Learning
 
-Nymeria threads don't just respond  -  they learn. Three interconnected systems ensure nothing is forgotten and every thread improves with use.
+NymeriaOS threads don't just respond  -  they learn. Three interconnected systems ensure nothing is forgotten and every thread improves with use.
 
 ### Profile (Shared Knowledge Base)
 - **Scope**: Global  -  shared across ALL threads for a user
@@ -88,7 +88,7 @@ User input → Agent responds (with profile + notepad context)
 
 ## 3. Dynamic Self-Customization
 
-Nymeria adapts its capabilities at runtime without code changes. The agent discovers, installs, and enables tools and skills on the fly.
+NymeriaOS adapts its capabilities at runtime without code changes. The agent discovers, installs, and enables tools and skills on the fly.
 
 ### User-Defined Default Tools
 - Users configure their personal default tool set via API (`GET/PUT/DELETE /tools/defaults`) or desktop UI
@@ -118,7 +118,7 @@ Nymeria adapts its capabilities at runtime without code changes. The agent disco
 - **`skill_manage`**  -  List/search installed + Anthropic marketplace skills, install bundles, and enable/disable them per-thread
 - **Security scanning**  -  Detects curl|bash pipes, rm -rf, eval base64, fork bombs before install
 - **Progressive disclosure**  -  Only name + description loaded; full body on activation
-- **Skill Kits**  -  Skills may declare exact Nymeria `required_tools`; activation strictly binds them with TTL
+- **Skill Kits**  -  Skills may declare exact NymeriaOS `required_tools`; activation strictly binds them with TTL
 - **Self-improve Skill Kit**  -  Bundled workflow seeded into user global skills by default; users can untick "Enable globally" while generated Skill Kits activate only on the current thread unless explicitly made global
 - **`skill_write` / `skill_edit`**  -  Validated agent-facing writer/editor for generated Skill packages; strict dependency checks, user scope by default, global scope admin-only
 - **Per-thread control**  -  Enable/disable skills per thread; four scopes (thread > user > global > bundled)
@@ -262,16 +262,16 @@ total).
 
 ## 8. MCP (Model Context Protocol)
 
-### Nymeria as MCP Server
+### NymeriaOS as MCP Server
 - **Dual transport**: STDIO and HTTP (port 8001)
-- **Thin-client architecture**  -  MCP calls the Nymeria REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
+- **Thin-client architecture**  -  MCP calls the NymeriaOS REST/SSE API with `NYMERIA_SERVICE_TOKEN`; it does not create a second in-process agent
 - **52 API-backed MCP tools** covering health/auth, chat, background chat, triggers, threads, thread config, global settings, TODOs, profile/memory/RAG, and notification routing
 - **Configurable transcript verbosity**  -  `nymeria_chat`, `nymeria_get_thread_history`, and `nymeria_thread_history` accept `verbosity`: `verbose` preserves full-fidelity thinking, preamble text, raw SSE events when requested, persisted tool calls/args/results, workspace artifacts, final response, context stats, model metadata, and copy-ready markdown; `concise` keeps thinking/response text plus tool names/status without tool payloads; `chat` returns the smallest conversational text shape
 - **Core management tools**  -  threads, per-thread config, global settings, TODOs, triggers, memories, RAG search, and history
 - **MCP-friendly collection responses**  -  trigger lists and execution histories are wrapped as JSON objects with `total` counts so empty collections stay valid tool results
 - **Per-user isolation** via `X-Nymeria-Act-As`
 
-### Nymeria as MCP Client
+### NymeriaOS as MCP Client
 - **4 install formats**: Claude Desktop JSON, bare stdio command, HTTP/SSE URL, registry ID
 - **Auto-discovery**  -  Connect, discover tools, store schemas
 - **Tool namespacing**  -  `mcp__<server_id>__<tool_name>`

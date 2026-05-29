@@ -1,7 +1,7 @@
 {
   "name": "nymeria-mobile",
   "version": "0.1.0",
-  "description": "Mobile UI for Nymeria AI Agent",
+  "description": "Mobile UI for NymeriaOS",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

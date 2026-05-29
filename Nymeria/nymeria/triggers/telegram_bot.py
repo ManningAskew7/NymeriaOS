@@ -11,7 +11,7 @@ streaming for progressive message editing and autonomous task delivery.
 
 # Keep annotations lazy (PEP 563) so signatures such as
 # ``context: ContextTypes.DEFAULT_TYPE`` never evaluate the Telegram SDK at
-# import time on a lean install that omits the optional nymeria[telegram] extra.
+# import time on a lean install that omits the optional nymeriaos[telegram] extra.
 from __future__ import annotations
 
 import asyncio
@@ -43,7 +43,7 @@ from .sse_consumer import (
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
-try:  # pragma: no cover - python-telegram-bot ships in nymeria[telegram].
+try:  # pragma: no cover - python-telegram-bot ships in nymeriaos[telegram].
     from telegram import (
         BotCommand,
         InlineKeyboardButton,

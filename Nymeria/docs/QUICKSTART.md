@@ -1,6 +1,6 @@
-# Nymeria Quick Start Guide
+# NymeriaOS Quick Start Guide
 
-Get Nymeria running in under 10 minutes.
+Get NymeriaOS running in under 10 minutes.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ Get Nymeria running in under 10 minutes.
   - [OpenAI](https://platform.openai.com/)
   - [OpenRouter](https://openrouter.ai/)
 
-## Step 1: Install Nymeria
+## Step 1: Install NymeriaOS
 
 ### One-line installer (front door)
 
@@ -43,42 +43,42 @@ recommended installer (it is fast and can fetch a matching Python for you);
 `pipx` also works.
 
 With `uv` (recommended). `--index` adds the private index alongside public PyPI,
-so Nymeria comes from the private index and its dependencies from PyPI:
+so NymeriaOS comes from the private index and its dependencies from PyPI:
 
 ```bash
 export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
-uv tool install nymeria --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+uv tool install nymeriaos --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
 nymeria init
 nymeria doctor
 nymeria api
 ```
 
-To try Nymeria without a persistent install, run it ephemerally with
-`uvx --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL" nymeria slim`.
+To try NymeriaOS without a persistent install, run it ephemerally with
+`uvx --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL" --from nymeriaos nymeria slim`.
 
 With `pipx`:
 
 ```bash
 export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
-pipx install nymeria --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+pipx install nymeriaos --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
 nymeria init
 nymeria doctor
 nymeria api
 ```
 
 If the private index does not proxy public PyPI dependencies, keep the private
-index as the primary source for Nymeria and add public PyPI for dependencies:
+index as the primary source for NymeriaOS and add public PyPI for dependencies:
 
 ```bash
-pipx install nymeria \
+pipx install nymeriaos \
   --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL" \
   --pip-args="--extra-index-url https://pypi.org/simple"
 ```
 
 The default install is lean. Optional chat-platform bots and heavy integrations
-install as extras, for example `uv tool install "nymeria[discord]"` (or
-`pipx install "nymeria[discord]"`). Use `nymeria[bots]` for every chat platform,
-or combine extras like `nymeria[postgres,redis,voice]`. Available extras:
+install as extras, for example `uv tool install "nymeriaos[discord]"` (or
+`pipx install "nymeriaos[discord]"`). Use `nymeriaos[bots]` for every chat platform,
+or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 `discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
 `signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
 
@@ -89,7 +89,7 @@ lets you press Enter to accept it.
 
 For package installs, choose the Python virtual environment / pipx hosting
 option. It isolates Python dependencies, but it is not an OS security sandbox:
-Nymeria can still access files your user can access when tools are enabled.
+NymeriaOS can still access files your user can access when tools are enabled.
 The Docker option is a source-checkout handoff for direct API-key setup; it
 prints compose steps and exits without writing `config.env` or `.env.docker`.
 
@@ -103,7 +103,7 @@ capability keys. Advanced setup can write optional provider keys and a separate
 CLIProxy Claude OAuth and CLIProxy Codex/OpenAI OAuth are advanced
 source-checkout paths. They use the existing pinned
 `CLIProxyAPI-main/temp/latest/` deployment, may start that Docker compose
-service, require active local OAuth auth files, and write Nymeria config only
+service, require active local OAuth auth files, and write NymeriaOS config only
 after the relevant proxy verification passes. Use direct API keys unless you
 specifically need this subscription-routing path.
 
@@ -288,7 +288,7 @@ python3 run.py slim
 
 You should see:
 ```
-Starting Nymeria SLIM (single-process) on 127.0.0.1:8000
+Starting NymeriaOS SLIM (single-process) on 127.0.0.1:8000
   - Mode: SQLite + in-process ticker + embedded MCP
   - Internal API URL: http://127.0.0.1:8000
   - Data directory: <data_dir>
@@ -318,7 +318,7 @@ nymeria api
 
 `nymeria api` prints:
 ```
-Starting Nymeria API server on 0.0.0.0:8000
+Starting NymeriaOS API server on 0.0.0.0:8000
   - API docs: disabled (set NYMERIA_API_DOCS=true to enable)
 ```
 
@@ -353,7 +353,7 @@ The backend-served web UI auto-detects the current origin as the API URL after
 For the Windows desktop app:
 
 1. Start or choose a separately installed backend
-2. Open the Nymeria desktop app
+2. Open the NymeriaOS desktop app
 3. The setup wizard will guide you through:
    - Entering the backend URL (default: `http://localhost:8000`)
    - Pasting a `nym_<token>` account token, such as the bootstrap token from
@@ -370,7 +370,7 @@ files directly.
 
 ## You're Done!
 
-Start chatting with Nymeria. Here are some things to try:
+Start chatting with NymeriaOS. Here are some things to try:
 
 - "Remember that my name is [your name]"
 - "Create a TODO to remind me to check email in 2 hours"

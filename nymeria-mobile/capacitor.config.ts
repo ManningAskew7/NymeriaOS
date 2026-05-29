@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.nymeria.mobile',
-  appName: 'Nymeria',
+  appId: 'com.nymeriaos.mobile',
+  appName: 'NymeriaOS',
   webDir: 'build',
   server: {
     // During development, point to Vite dev server on LAN

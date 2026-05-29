@@ -22,7 +22,7 @@
     </div>
 
     {#if backendProcessStore.status === 'starting'}
-      <h1 class="startup-title">Starting Nymeria{dots}</h1>
+      <h1 class="startup-title">Starting NymeriaOS{dots}</h1>
       <p class="startup-subtitle">Initializing backend services</p>
     {:else if backendProcessStore.status === 'failed'}
       <h1 class="startup-title error-text">Startup Failed</h1>

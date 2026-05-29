@@ -161,7 +161,7 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
     if errors:
         print("\n[Configuration Error]")
         print("-" * 50)
-        print("Nymeria cannot start due to missing configuration:\n")
+        print("NymeriaOS cannot start due to missing configuration:\n")
         for error in errors:
             print(f"  [X] {error}\n")
         print("-" * 50)
@@ -216,15 +216,15 @@ def _require_service_token(settings, role: str, *, stream=None) -> str:
 def _require_bot_sdk(module, platform: str, extra: str) -> None:
     """Fail with install guidance if a bot's optional SDK is not installed.
 
-    Chat-platform SDKs live in per-platform extras (nymeria[discord], etc.) and
+    Chat-platform SDKs live in per-platform extras (nymeriaos[discord], etc.) and
     are absent from a default/slim install. Each bot module exposes
     ``SDK_AVAILABLE``; when it is False we print an actionable message instead of
     letting the bot crash with a raw ImportError/AttributeError on instantiation.
     """
     if not getattr(module, "SDK_AVAILABLE", True):
         print(f"\n[Error] {platform} support is not installed.")
-        print(f"  Install it with:  pip install 'nymeria[{extra}]'")
-        print("  (or 'nymeria[bots]' to install every chat platform at once)")
+        print(f"  Install it with:  pip install 'nymeriaos[{extra}]'")
+        print("  (or 'nymeriaos[bots]' to install every chat platform at once)")
         sys.exit(1)
 
 
@@ -428,7 +428,7 @@ def run_api(args: argparse.Namespace) -> None:
     host = args.host or settings.api_host
     port = args.port or settings.api_port
 
-    print(f"Starting Nymeria API server on {host}:{port}...")
+    print(f"Starting NymeriaOS API server on {host}:{port}...")
     if settings.api_docs_enabled:
         print(f"  - Docs: http://{host}:{port}/docs")
         print(f"  - ReDoc: http://{host}:{port}/redoc")
@@ -522,7 +522,7 @@ def run_slim(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
-    print(f"Starting Nymeria SLIM (single-process) on {host}:{port}...")
+    print(f"Starting NymeriaOS SLIM (single-process) on {host}:{port}...")
     print("  - Mode: SQLite + in-process ticker + embedded MCP")
     print(f"  - Internal API URL: {base_url}")
     print(f"  - Data directory: {settings.data_dir}")

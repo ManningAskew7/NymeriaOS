@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nymeria"
+name = "nymeriaos"
 dynamic = ["version"]
 description = "Personal AI assistant platform built on LangGraph, FastAPI, and local-first persistence."
 readme = { file = "docs/README.md", content-type = "text/markdown" }
@@ -70,7 +70,7 @@ dependencies = [
   "Pillow>=10.4.0,<12.0.0",
   "mcp>=1.2.0",
   # Chat-platform bot SDKs are NOT in core. They install via per-platform extras
-  # (nymeria[discord], nymeria[telegram], ...) so a default install stays lean.
+  # (nymeriaos[discord], nymeriaos[telegram], ...) so a default install stays lean.
   # The full Docker image pulls them via requirements-bots.txt.
   "cryptography>=42.0.0",
   "PyJWT>=2.8.0",
@@ -108,7 +108,7 @@ firebase = [
   "firebase-admin>=6.0.0",
 ]
 # Chat-platform bots. Install only the platforms you use, e.g.
-# pip install "nymeria[discord]" or "nymeria[bots]" for all of them.
+# pip install "nymeriaos[discord]" or "nymeriaos[bots]" for all of them.
 discord = [
   "discord.py>=2.3.0",
 ]
