@@ -102,6 +102,9 @@ pub fn run() {
             commands::stop_cliproxy,
             commands::get_cliproxy_status,
             commands::cliproxy_login,
+            commands::keychain_set,
+            commands::keychain_get,
+            commands::keychain_delete,
         ])
         .on_window_event(|window, event| {
             // Hide window on close instead of quitting (tray keeps running)

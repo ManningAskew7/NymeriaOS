@@ -1,7 +1,11 @@
 import type { AccountIdentity, AppConfig, ThemeName } from '$lib/types';
 import { applyTheme } from '$lib/themes';
+import { secureGet, secureSet, secureDelete } from '$lib/services/secureStorage';
 
 const STORAGE_KEY = 'nymeria-config';
+// H-7: the live bearer token is persisted in the OS keychain under this key,
+// never inline in the localStorage config blob.
+const CONFIG_APIKEY_KEYCHAIN_KEY = 'config-apikey';
 
 // Build-time defaults (set via VITE_DEFAULT_API_URL / VITE_DEFAULT_API_KEY env vars)
 const DEFAULT_API_URL = import.meta.env.VITE_DEFAULT_API_URL || 'http://localhost:8000';
@@ -214,10 +218,27 @@ function createConfigStore() {
     applyTheme(initial.theme ?? 'midnight');
   }
 
+  // Tracks the token last written to secure storage so routine config saves
+  // (theme toggles, etc.) don't issue a redundant keychain write every time.
+  let lastPersistedApiKey: string | null = null;
+
+  function persistApiKeySecret() {
+    if (apiKey === lastPersistedApiKey) return;
+    lastPersistedApiKey = apiKey;
+    if (apiKey) {
+      void secureSet(CONFIG_APIKEY_KEYCHAIN_KEY, apiKey);
+    } else {
+      void secureDelete(CONFIG_APIKEY_KEYCHAIN_KEY);
+    }
+  }
+
   function saveCurrentConfig() {
+    // H-7: persist the token to the OS keychain out-of-band and redact it from
+    // the localStorage blob so a plaintext bearer never sits in localStorage.
+    persistApiKeySecret();
     saveConfig({
       apiUrl,
-      apiKey,
+      apiKey: '',
       setupCompleted,
       theme,
       suppressAttachmentWarnings,
@@ -226,6 +247,31 @@ function createConfigStore() {
       developerMode,
       identity,
     });
+  }
+
+  // Load the token from secure storage after the synchronous init. Migrates a
+  // legacy token that an older build stored inline in the config blob, then
+  // redacts the plaintext copy. Setting apiKey here flips `isConfigured`, which
+  // the +page boot effect reacts to, so a keychain-only install still
+  // initializes once the async read resolves.
+  async function hydrateApiKeySecret() {
+    let stored: string | null = null;
+    try {
+      stored = await secureGet(CONFIG_APIKEY_KEYCHAIN_KEY);
+    } catch (e) {
+      console.error('Failed to hydrate API key from secure storage:', e);
+    }
+    if (stored) {
+      lastPersistedApiKey = stored;
+      if (stored !== apiKey) apiKey = stored;
+      return;
+    }
+    if (apiKey) {
+      // Legacy inline token (already loaded synchronously): migrate + redact.
+      await secureSet(CONFIG_APIKEY_KEYCHAIN_KEY, apiKey);
+      lastPersistedApiKey = apiKey;
+      saveCurrentConfig();
+    }
   }
 
   function notifyIdentityReloadHooks(label: string): void {
@@ -353,6 +399,11 @@ function createConfigStore() {
     }
     return detected;
   }
+
+  // Kick off async token hydration from the keychain (migrated installs start
+  // with apiKey == '' until this resolves; the +page boot effect reacts to the
+  // resulting isConfigured change).
+  void hydrateApiKeySecret();
 
   return {
     get apiUrl() {

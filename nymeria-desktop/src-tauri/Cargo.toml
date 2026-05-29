@@ -25,6 +25,9 @@ serde_json = "1"
 shared_child = "1"
 reqwest = { version = "0.12", features = ["blocking", "json"], default-features = false }
 uuid = { version = "1", features = ["v4"] }
+# OS keychain for backend bearer tokens (H-7). Native backends on macOS/Windows
+# plus the Linux Secret Service; crypto-rust avoids a system OpenSSL build dep.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
