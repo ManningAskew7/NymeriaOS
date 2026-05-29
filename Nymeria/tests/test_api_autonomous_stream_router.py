@@ -267,3 +267,53 @@ def test_autonomous_sse_filters_origin_client_events():
     assert "self echo" not in frame
     assert "_origin_client_id" not in frame
     assert bus.get_subscriber_count() == 0
+
+
+# -- M-1: stream auth failures route through the shared rate limiter --------
+
+
+def test_resolve_stream_auth_invokes_failure_handler_on_bad_token():
+    class _Repo:
+        def verify_token(self, _token):
+            return None
+
+    class _Agent:
+        accounts_repo = _Repo()
+
+    calls = []
+
+    def handler(request, failure):
+        calls.append((request, failure))
+        raise HTTPException(status_code=429, detail="rate limited")
+
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_stream_auth(
+            get_agent_fn=lambda: _Agent(),
+            requested_user_id="default",
+            presented_token="bad-token",
+            x_nymeria_act_as=None,
+            request=object(),
+            auth_failure_handler=handler,
+        )
+
+    assert exc_info.value.status_code == 429
+    assert len(calls) == 1
+
+
+def test_resolve_stream_auth_still_401s_without_handler():
+    class _Repo:
+        def verify_token(self, _token):
+            return None
+
+    class _Agent:
+        accounts_repo = _Repo()
+
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_stream_auth(
+            get_agent_fn=lambda: _Agent(),
+            requested_user_id="default",
+            presented_token="bad-token",
+            x_nymeria_act_as=None,
+        )
+
+    assert exc_info.value.status_code == 401

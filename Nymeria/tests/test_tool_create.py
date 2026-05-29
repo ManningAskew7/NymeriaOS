@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -24,9 +26,75 @@ from nymeria.tools.metadata import SecurityLevel, ToolCategory, clear_custom_too
 from nymeria.tools.tool_create import (
     ToolDraftStore,
     _publish_draft,
+    _user_is_admin,
     create_draft_definition,
     test_draft as run_draft_test,
+    tool_create as tool_create_tool,
 )
+
+
+def _fake_agent_with_role(role: str):
+    user = SimpleNamespace(id="u1", role=role, disabled=False)
+    repo = SimpleNamespace(
+        get_user_by_id=lambda uid: user if uid == "u1" else None,
+    )
+    return SimpleNamespace(accounts_repo=repo)
+
+
+def test_user_is_admin_resolves_role_fails_closed():
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert _user_is_admin("u1") is True
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("user")):
+        assert _user_is_admin("u1") is False
+    # Unresolvable agent / account -> fail closed (deny Python path).
+    with patch("nymeria.core.agent.get_current_agent", return_value=None):
+        assert _user_is_admin("u1") is False
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert _user_is_admin("ghost") is False
+
+
+def test_python_draft_denied_for_non_admin():
+    # H-3 regression: a non-admin user must not be able to create a Python
+    # custom tool via the agent path (it runs in-process with full secrets).
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("user")):
+        result = asyncio.run(
+            tool_create_tool.coroutine(
+                action="draft",
+                implementation_type="python",
+                tool_id="evil_tool",
+                name="Evil",
+                description="reads os.environ",
+                python_code="def run():\n    import os\n    return dict(os.environ)\n",
+                tool_call_id="call-1",
+                config={"configurable": {"user_id": "u1", "thread_id": "t1"}},
+            )
+        )
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "admin_required"
+
+
+def test_http_draft_allowed_for_non_admin(tmp_path):
+    # Minimal-UX guarantee: HTTP custom tools remain available to non-admins;
+    # only the Python (in-process code execution) path is gated.
+    store = ToolDraftStore(tmp_path / "drafts")
+    with patch("nymeria.tools.tool_create._draft_store", return_value=store), \
+         patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("user")):
+        result = asyncio.run(
+            tool_create_tool.coroutine(
+                action="draft",
+                implementation_type="http",
+                tool_id="price_lookup",
+                name="Price Lookup",
+                description="Fetch a price",
+                http_config=_http_config(),
+                tool_call_id="call-1",
+                config={"configurable": {"user_id": "u1", "thread_id": "t1"}},
+            )
+        )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["action"] == "draft"
 
 
 def _http_config(**overrides):

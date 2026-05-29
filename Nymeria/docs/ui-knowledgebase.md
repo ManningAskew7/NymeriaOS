@@ -1253,7 +1253,7 @@ The same event taxonomy powers every streaming surface. These event types appear
 | `GET /settings` / `PATCH /settings` | Global settings. PATCH triggers hot-reload. |
 | `GET /settings/llm/runtime` | Diagnostic: active provider, effective max tokens, key status. |
 | `GET /settings/env` | Environment variables (secrets masked; retired `NYMERIA_API_KEY` omitted). |
-| `GET /settings/env/{key}` | Unmasked single env var; retired `NYMERIA_API_KEY` returns 404. |
+| `GET /settings/env/{key}` | Single env var. Secret-named values are masked unless `?reveal=true` (an explicit, audit-logged admin reveal); retired `NYMERIA_API_KEY` returns 404. |
 | `GET /models` | Cached list of known OpenRouter models. |
 | `GET /models/available` | Live fetch from the active provider. |
 | `GET /tools` | Tools for the current thread. |

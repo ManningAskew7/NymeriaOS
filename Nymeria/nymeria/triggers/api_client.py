@@ -1453,8 +1453,10 @@ class NymeriaAPIClient:
         return await self._get("/settings/env", act_as=user_id)
 
     async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
-        """Get a single env var's unmasked value."""
-        return await self._get(f"/settings/env/{key}", act_as=user_id)
+        """Get a single env var's value (`/env <key>` is an explicit reveal)."""
+        return await self._get(
+            f"/settings/env/{key}", params={"reveal": "true"}, act_as=user_id
+        )
 
     async def list_models(self, user_id: Optional[str] = None) -> List[dict]:
         """List known models from the model capabilities cache."""

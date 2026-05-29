@@ -4,12 +4,14 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Callable, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+
+from .body_limit import BodySizeLimitMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
@@ -74,6 +76,12 @@ _bot_admin_endpoint_rate_limiter = SlidingWindowRateLimiter()
 _AUTH_FAILURE_RATE_LIMIT = 10
 _AUTH_FAILURE_RATE_WINDOW_SECONDS = 60.0
 _auth_failure_rate_limiter = SlidingWindowRateLimiter()
+# Per-user cap on expensive authenticated endpoints (chat / voice / commands)
+# to bound runaway LLM/STT spend from a compromised or looping token. Generous
+# by default (a human never approaches it), admins are exempt (the worker
+# relays autonomous turns as the admin/service user), and 0 disables it.
+_EXPENSIVE_ENDPOINT_RATE_WINDOW_SECONDS = 60.0
+_expensive_endpoint_rate_limiter = SlidingWindowRateLimiter()
 _FRONTEND_RESERVED_PREFIXES = {"_app", "docs", "openapi.json", "redoc"}
 _REQUEST_ID_HEADER = "X-Request-ID"
 _REQUEST_ID_ALLOWED_CHARS = frozenset(
@@ -299,6 +307,54 @@ def _resolve_caller_from_bearer(
         )
 
     return caller, agent
+
+
+def _expensive_endpoint_rate_limit() -> int:
+    """Per-user request cap per window for chat/voice/commands (0 disables)."""
+    try:
+        return int(os.environ.get("NYMERIA_USER_REQUEST_RATE_LIMIT", "300"))
+    except ValueError:
+        return 300
+
+
+def _make_rate_limited_auth(scope: str) -> Callable[..., Any]:
+    """Build an auth dependency that adds a per-user cap on top of verify_api_key.
+
+    Admins are exempt so the worker's autonomous-turn relay (which calls /chat
+    as the admin/service user) is never throttled. Returns the resolved user so
+    routes can keep ``user: AuthenticatedUser = Depends(...)`` unchanged.
+    """
+
+    async def _dependency(
+        request: Request,
+        authorization: Optional[str] = Header(None),
+        x_nymeria_act_as: Optional[str] = Header(None),
+        settings: Settings = Depends(get_settings),
+    ) -> AuthenticatedUser:
+        user = await verify_api_key(
+            request=request,
+            authorization=authorization,
+            x_nymeria_act_as=x_nymeria_act_as,
+            settings=settings,
+        )
+        limit = _expensive_endpoint_rate_limit()
+        if limit <= 0 or getattr(user, "role", None) == "admin":
+            return user
+        result = _expensive_endpoint_rate_limiter.check(
+            f"{scope}:{user.id}",
+            limit=limit,
+            window_seconds=_EXPENSIVE_ENDPOINT_RATE_WINDOW_SECONDS,
+        )
+        if not result.allowed:
+            retry_after = max(1, math.ceil(result.retry_after))
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests; please slow down.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        return user
+
+    return _dependency
 
 
 async def resolve_authenticated_user(
@@ -708,6 +764,22 @@ def create_api_app(
             response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
+    # Reject oversized request bodies before any handler buffers them. Added
+    # before CORS so CORS ends up outermost (413s keep their CORS headers) but
+    # the cap still runs ahead of auth/signature checks and route handlers.
+    # Webhooks are server-to-server text payloads (tight cap); /chat and /voice
+    # carry inline base64 attachments / audio (generous caps).
+    _MB = 1024 * 1024
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        default_limit=16 * _MB,
+        path_limits=[
+            ("/integrations/", 1 * _MB),
+            ("/chat", 32 * _MB),
+            ("/voice/", 32 * _MB),
+        ],
+    )
+
     # Add CORS middleware with configurable origins
     app.add_middleware(
         CORSMiddleware,
@@ -820,7 +892,7 @@ def create_api_app(
     app.include_router(create_memory_router(verify_api_key, get_agent, _require_same_user_or_admin))
     app.include_router(create_user_tools_router(verify_api_key, get_agent, _require_same_user_or_admin))
     app.include_router(create_skills_router(verify_api_key, _authed_user_id, get_agent, _require_thread_access))
-    app.include_router(create_voice_router(verify_api_key, get_agent, get_settings, _require_thread_access))
+    app.include_router(create_voice_router(_make_rate_limited_auth("voice"), get_agent, get_settings, _require_thread_access))
     app.include_router(create_agent_threads_router(verify_api_key, get_agent, publish_sync_event))
     app.include_router(create_activity_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(
@@ -832,8 +904,14 @@ def create_api_app(
         )
     )
     app.include_router(create_todos_router(verify_api_key, require_admin_user, _authed_user_id, get_settings))
-    app.include_router(create_commands_router(verify_api_key, get_agent, get_settings))
-    app.include_router(create_autonomous_stream_router(get_agent, get_settings))
+    app.include_router(create_commands_router(_make_rate_limited_auth("commands"), get_agent, get_settings))
+    app.include_router(
+        create_autonomous_stream_router(
+            get_agent,
+            get_settings,
+            auth_failure_handler=_raise_rate_limited_auth_failure,
+        )
+    )
     app.include_router(create_custom_tools_router(require_admin_user, get_agent))
     app.include_router(
         create_settings_router(
@@ -881,7 +959,7 @@ def create_api_app(
     )
     app.include_router(
         create_chat_router(
-            verify_api_key,
+            _make_rate_limited_auth("chat"),
             get_agent,
             get_settings,
             _require_thread_access,
@@ -1179,4 +1257,16 @@ def run_api(
         enable_slim_mcp=enable_slim_mcp,
         enable_slim_watchdog=enable_slim_watchdog,
     )
-    uvicorn.run(app, host=host, port=port)
+
+    # Honor X-Forwarded-For only from explicitly trusted proxy IPs. Without
+    # this, behind Caddy every client collapses to the proxy IP, so the per-IP
+    # auth-failure limiter both fails to isolate attackers and lets one client
+    # lock everyone out. Opt-in via NYMERIA_FORWARDED_ALLOW_IPS (e.g.
+    # "127.0.0.1" when Caddy is colocated); unset means do not trust the header.
+    forwarded_allow_ips = os.environ.get("NYMERIA_FORWARDED_ALLOW_IPS", "").strip()
+    uvicorn_kwargs: dict = {"host": host, "port": port}
+    if forwarded_allow_ips:
+        uvicorn_kwargs["proxy_headers"] = True
+        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips
+
+    uvicorn.run(app, **uvicorn_kwargs)

@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
+from .mcp_auth import MCPAuthMiddleware, effective_act_as
 from .mcp_backend_client import (
     NymeriaAPIError,
     NymeriaBackendClient,
@@ -135,16 +136,19 @@ async def _call(awaitable) -> Any:
 
 async def _json_call(method: str, path: str, *, user_id: Optional[str] = None, body: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> Any:
     client = _get_client()
+    # In HTTP mode the inbound bearer governs identity: non-admins are pinned to
+    # their own user_id and admins keep Act-As. STDIO mode is unchanged.
+    act_as = effective_act_as(user_id)
     if method == "GET":
-        return await _call(client.get(path, params=params, act_as=user_id))
+        return await _call(client.get(path, params=params, act_as=act_as))
     if method == "POST":
-        return await _call(client.post(path, json_body=body, params=params, act_as=user_id))
+        return await _call(client.post(path, json_body=body, params=params, act_as=act_as))
     if method == "PATCH":
-        return await _call(client.patch(path, json_body=body, params=params, act_as=user_id))
+        return await _call(client.patch(path, json_body=body, params=params, act_as=act_as))
     if method == "PUT":
-        return await _call(client.put(path, json_body=body, params=params, act_as=user_id))
+        return await _call(client.put(path, json_body=body, params=params, act_as=act_as))
     if method == "DELETE":
-        return await _call(client.delete(path, params=params, act_as=user_id))
+        return await _call(client.delete(path, params=params, act_as=act_as))
     return {"error": f"Unsupported method: {method}"}
 
 
@@ -196,6 +200,7 @@ async def nymeria_chat(
     """
     if not message or not message.strip():
         return {"error": "message is required"}
+    user_id = effective_act_as(user_id) or user_id
     try:
         return await collect_chat_transcript(
             _get_client(),
@@ -282,6 +287,9 @@ async def nymeria_chat_background(
         return {
             "error": "thread_id is required (background dispatch needs an existing thread)"
         }
+    # Pin identity now (synchronously, while the request context var is set) so
+    # the background task captures the resolved user, not a caller-spoofed one.
+    user_id = effective_act_as(user_id) or user_id
 
     _evict_old_background_chats()
     window_ms = max(50, min(10_000, int(capture_window_ms)))
@@ -846,6 +854,7 @@ async def nymeria_get_recent_trigger_executions(user_id: str = "default", limit:
 @mcp.tool()
 async def nymeria_profile_list(user_id: str = "default") -> Dict[str, Any]:
     """List memories stored for a user."""
+    user_id = effective_act_as(user_id) or user_id
     return await _json_call("GET", f"/users/{_enc(user_id)}/memories", user_id=user_id)
 
 
@@ -854,6 +863,7 @@ async def nymeria_profile_save(key: str, value: str, user_id: str = "default") -
     """Save or update a memory for a user."""
     if not key or not value:
         return {"error": "key and value are required"}
+    user_id = effective_act_as(user_id) or user_id
     return await _json_call(
         "POST",
         f"/users/{_enc(user_id)}/memories",
@@ -867,6 +877,7 @@ async def nymeria_profile_forget(key: str, user_id: str = "default") -> Dict[str
     """Remove a memory from a user profile."""
     if not key:
         return {"error": "key is required"}
+    user_id = effective_act_as(user_id) or user_id
     return await _json_call("DELETE", f"/users/{_enc(user_id)}/memories/{_enc(key)}", user_id=user_id)
 
 
@@ -875,6 +886,7 @@ async def nymeria_rag_search(query: str, max_results: int = 5, user_id: str = "d
     """Search the user's RAG index through the backend API."""
     if not query:
         return {"error": "query is required"}
+    user_id = effective_act_as(user_id) or user_id
     return await _json_call(
         "GET",
         f"/users/{_enc(user_id)}/rag/search",
@@ -1109,7 +1121,10 @@ def create_mcp_asgi_app(
         "Creating Nymeria MCP ASGI app for embedded mount; api=%s",
         _resolve_api_url(),
     )
-    return mcp.streamable_http_app()
+    # Require + resolve an inbound bearer on every request. Tools run with the
+    # admin service token, so without this any reachable caller could act as
+    # any user (C-4). The resolver targets the same backend the tools use.
+    return MCPAuthMiddleware(mcp.streamable_http_app(), resolve_base_url=_resolve_api_url)
 
 
 def run_stdio(api_url: Optional[str] = None) -> None:
@@ -1120,7 +1135,15 @@ def run_stdio(api_url: Optional[str] = None) -> None:
 
 
 def run_http(host: str = "127.0.0.1", port: int = 8001, api_url: Optional[str] = None) -> None:
-    """Run the MCP server in streamable HTTP mode."""
+    """Run the MCP server in streamable HTTP mode.
+
+    The streamable-HTTP endpoint is gated by :class:`MCPAuthMiddleware`, which
+    requires an inbound bearer resolving to a real account. This endpoint must
+    still never be exposed beyond loopback / a private mesh: it holds the admin
+    service token, so auth is defense-in-depth, not a license to publish it.
+    """
+    import uvicorn
+
     configure_backend(api_url)
     logger.info("Starting Nymeria MCP server in HTTP mode on %s:%s; api=%s", host, port, _resolve_api_url())
     mcp.settings.host = host
@@ -1129,7 +1152,8 @@ def run_http(host: str = "127.0.0.1", port: int = 8001, api_url: Optional[str] =
     # rewrites this for embedded slim-mode mounts; reset it here so successive
     # run_http() calls in the same process behave identically.
     mcp.settings.streamable_http_path = "/mcp"
-    mcp.run(transport="streamable-http")
+    app = MCPAuthMiddleware(mcp.streamable_http_app(), resolve_base_url=_resolve_api_url)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

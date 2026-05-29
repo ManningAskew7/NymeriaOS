@@ -62,24 +62,32 @@ def test_create_mcp_asgi_app_service_token_override_used_by_client() -> None:
     assert client.service_token == "nym_override-token"
 
 
-def test_run_http_restores_mcp_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``run_http`` should reset the streamable HTTP path back to ``/mcp``."""
+def test_run_http_restores_path_and_wraps_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run_http`` resets the streamable path to ``/mcp``, wraps the app in the
+    inbound-auth middleware (C-4), and serves it via uvicorn."""
     # Simulate prior embedded usage that set the path to "/".
     mcp_server.mcp.settings.streamable_http_path = "/"
 
+    sentinel_app = object()
+    monkeypatch.setattr(mcp_server.mcp, "streamable_http_app", lambda: sentinel_app)
+
     called: dict[str, object] = {}
 
-    def _fake_run(**kwargs: object) -> None:
-        called["transport"] = kwargs.get("transport")
+    def _fake_uvicorn_run(app: object, **kwargs: object) -> None:
+        called["app"] = app
+        called["host"] = kwargs.get("host")
+        called["port"] = kwargs.get("port")
         called["streamable_http_path"] = mcp_server.mcp.settings.streamable_http_path
-        called["host"] = mcp_server.mcp.settings.host
-        called["port"] = mcp_server.mcp.settings.port
 
-    monkeypatch.setattr(mcp_server.mcp, "run", _fake_run)
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
 
     mcp_server.run_http(host="127.0.0.1", port=8001)
 
-    assert called["transport"] == "streamable-http"
     assert called["streamable_http_path"] == "/mcp"
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 8001
+    # The served app must be the auth middleware wrapping the streamable app.
+    assert isinstance(called["app"], mcp_server.MCPAuthMiddleware)
+    assert called["app"].app is sentinel_app

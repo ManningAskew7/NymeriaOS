@@ -32,6 +32,21 @@ __all__ = ["MCPInstallError", "describe_definition", "parse_mcp_source"]
 logger = logging.getLogger(__name__)
 
 
+def _validate_http_url(url: str) -> None:
+    """Structurally screen an MCP HTTP server URL at install/parse time.
+
+    The live connect path (``mcp_manager``) runs the full DNS-pinned egress
+    check; this catches obvious private/loopback/link-local/metadata literals
+    and bad schemes up front so such a target is never persisted.
+    """
+    from .http_policy import validate_http_egress_url
+
+    try:
+        validate_http_egress_url(url, label="MCP server URL", resolve_dns=False)
+    except ValueError as exc:
+        raise MCPInstallError(str(exc)) from exc
+
+
 def parse_mcp_source(
     source: str,
     *,
@@ -102,6 +117,7 @@ def _parse_json_blob(blob: str, *, name: Optional[str]) -> MCPServerDefinition:
         url = entry["url"]
         if not isinstance(url, str) or not url:
             raise MCPInstallError("'url' must be a non-empty string")
+        _validate_http_url(url)
         return MCPServerDefinition(
             id=new_mcp_server_id(display_name),
             name=display_name,
@@ -137,6 +153,7 @@ def _parse_url(url: str, *, name: Optional[str]) -> MCPServerDefinition:
     parsed = urlparse(url)
     if not parsed.netloc:
         raise MCPInstallError(f"URL has no host: {url}")
+    _validate_http_url(url)
     display_name = name or parsed.hostname or "mcp-http"
     return MCPServerDefinition(
         id=new_mcp_server_id(display_name),

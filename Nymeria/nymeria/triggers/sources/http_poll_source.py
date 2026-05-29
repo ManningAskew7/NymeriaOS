@@ -92,21 +92,29 @@ class HTTPPollSource(BaseTriggerSource):
     }
 
     def check(self, config: dict, state: dict, user_id: str = "") -> List[dict]:
-        import httpx
-
         url = config["url"]
         method = config.get("method", "GET")
         custom_headers = config.get("headers") or {}
 
+        from ...core.http_policy import (
+            HTTPPolicyRedirectLimit,
+            HTTPPolicyViolation,
+            httpx_request_with_policy,
+        )
+
         try:
-            resp = httpx.request(
-                method, url,
+            resp, _redirect_chain, _policy = httpx_request_with_policy(
+                method,
+                url,
                 headers=custom_headers,
                 timeout=15,
                 follow_redirects=True,
             )
             body = resp.text
             status = resp.status_code
+        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+            logger.error(f"http_poll source: blocked URL {url}: {e}")
+            raise
         except Exception as e:
             logger.error(f"http_poll source: request to {url} failed: {e}")
             raise
@@ -160,6 +168,17 @@ class HTTPPollSource(BaseTriggerSource):
         url = config.get("url", "")
         if url and not url.startswith(("http://", "https://")):
             return False, "URL must start with http:// or https://"
+        if url:
+            from ...core.http_policy import validate_http_egress_url
+
+            try:
+                # Structural egress check at create time (rejects literal
+                # private/loopback/metadata targets and bad schemes without a
+                # network call). Full DNS-pinned enforcement runs at request
+                # time in check() via httpx_request_with_policy.
+                validate_http_egress_url(url, label="Poll URL", resolve_dns=False)
+            except ValueError as e:
+                return False, str(e)
         return True, "ok"
 
 

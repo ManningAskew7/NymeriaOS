@@ -19,6 +19,24 @@
   // confirm they're signing in as the expected account before completing.
   let resolvedIdentity = $state<AccountIdentity | null>(null);
 
+  // Android enforces TLS for non-loopback backends (see network_security_config
+  // .xml): the bearer token would otherwise be exposed in cleartext. Surface a
+  // clear message instead of a confusing connection failure.
+  function cleartextError(url: string): string | null {
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return null; // let probeConnection surface a clearer parse error
+    }
+    if (parsed.protocol !== 'http:') return null;
+    const loopback = ['localhost', '127.0.0.1', '10.0.2.2', '10.0.3.2'];
+    if (loopback.includes(parsed.hostname)) return null;
+    return 'Use an https:// URL. Cleartext HTTP to a non-local backend is blocked because your access token would be exposed on the network.';
+  }
+
   function canProceed(): boolean {
     switch (step) {
       case 0: return true;
@@ -48,6 +66,12 @@
     resolvedIdentity = null;
 
     try {
+      const tlsError = cleartextError(apiUrl);
+      if (tlsError) {
+        testResult = 'error';
+        testMessage = tlsError;
+        return;
+      }
       const result = await probeConnection(apiUrl, apiKey);
       if (!result.ok) {
         testResult = 'error';
@@ -121,9 +145,9 @@
             id="api-url"
             type="url"
             bind:value={apiUrl}
-            placeholder="http://192.168.1.100:8000"
+            placeholder="https://nymeria.example.com"
           />
-          <span class="input-hint">Example: http://192.168.1.100:8000</span>
+          <span class="input-hint">Use https:// for a remote backend. Plain http:// works only for a local backend (localhost / emulator).</span>
         </div>
       </div>
 

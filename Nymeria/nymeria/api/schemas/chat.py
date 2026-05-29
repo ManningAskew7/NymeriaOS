@@ -27,7 +27,9 @@ class ImageData(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
 
-    message: str = Field(..., min_length=1, description="User message")
+    message: str = Field(
+        ..., min_length=1, max_length=1_000_000, description="User message"
+    )
     thread_id: Optional[str] = Field(
         default=None, description="Conversation thread ID (generated if not provided)"
     )
@@ -36,10 +38,12 @@ class ChatRequest(BaseModel):
         description="User ID for profile and memory access (defaults to 'default')",
     )
     attachments: list[FileData] | None = Field(
-        default=None, description="Optional list of file attachments for multimodal models"
+        default=None,
+        max_length=50,
+        description="Optional list of file attachments for multimodal models",
     )
     images: list[ImageData] | None = Field(
-        default=None, description="Deprecated: use attachments instead"
+        default=None, max_length=50, description="Deprecated: use attachments instead"
     )
     force_unsupported_attachments: bool = Field(
         default=False,

@@ -123,6 +123,21 @@ def test_probe_exception_redacts_submitted_secrets():
     assert "[redacted]" in result.message
 
 
+def test_probe_blocks_internal_base_url():
+    # A user-supplied metadata.base_url pointing at an internal/loopback target
+    # must be rejected by the HTTP egress policy before the probe is sent.
+    result = asyncio.run(
+        run_credential_test(
+            provider="github",
+            kind="api_key",
+            metadata={"base_url": "http://127.0.0.1:8000"},
+            secret_fields={"token": "ghp_example"},
+        )
+    )
+    assert result.ok is False
+    assert result.code == "blocked_url"
+
+
 def test_probe_timeout_returns_timeout_status():
     async def slow_tester(
         provider: str,

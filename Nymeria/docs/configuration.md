@@ -766,6 +766,9 @@ separately.
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled |
+| `NYMERIA_FORWARDED_ALLOW_IPS` | - | Comma-separated trusted proxy IPs. When set, uvicorn runs with `--proxy-headers` and honors `X-Forwarded-For` only from these IPs, so the per-IP auth-failure limiter keys on the real client (set to your reverse proxy's IP, e.g. `127.0.0.1` for a colocated Caddy). Unset means the header is not trusted. |
+| `NYMERIA_USER_REQUEST_RATE_LIMIT` | `300` | Per-user request cap per 60s on the expensive endpoints (`/chat`, `/chat/sync`, `/voice/*`, `/commands/execute`) to bound runaway LLM/STT spend from a compromised token. Admin-role callers (including the worker's autonomous-turn relay) are exempt. Set `0` to disable. |
+| `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` | `false` | Escape hatch that disables inbound bearer auth on the MCP streamable-HTTP server. Leave off; only enable for a fully trusted, loopback-only local setup. |
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
 | `NYMERIA_WORKSPACE_DIR` | `/workspace` | Workspace root for generated artifacts and optional file-tool confinement |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |

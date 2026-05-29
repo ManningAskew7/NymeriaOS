@@ -44,8 +44,15 @@ def _resolve_stream_auth(
     requested_user_id: str,
     presented_token: Optional[str],
     x_nymeria_act_as: Optional[str],
+    request: Optional[Request] = None,
+    auth_failure_handler: Optional[Callable[[Request, HTTPException], Any]] = None,
 ) -> tuple[str, bool]:
-    """Resolve the effective stream user and firehose mode from a raw token."""
+    """Resolve the effective stream user and firehose mode from a raw token.
+
+    Authentication failures are routed through ``auth_failure_handler`` (the
+    shared per-IP auth-failure rate limiter) when supplied, so this endpoint is
+    subject to the same brute-force throttle as the rest of the API.
+    """
     authorized = False
     firehose = False
     user_id = requested_user_id
@@ -75,7 +82,10 @@ def _resolve_stream_auth(
             authorized = False
 
     if not authorized:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+        failure = HTTPException(status_code=401, detail="Invalid API key")
+        if auth_failure_handler is not None and request is not None:
+            auth_failure_handler(request, failure)
+        raise failure
 
     return user_id, firehose
 
@@ -221,8 +231,13 @@ async def _generate_autonomous_sse_events(
 def create_autonomous_stream_router(
     get_agent_fn: Callable[[], Any],
     get_settings_fn: Callable[[], Any],
+    auth_failure_handler: Optional[Callable[[Request, HTTPException], Any]] = None,
 ) -> APIRouter:
-    """Create the autonomous SSE router with app dependencies injected."""
+    """Create the autonomous SSE router with app dependencies injected.
+
+    ``auth_failure_handler`` is the shared per-IP auth-failure rate limiter; if
+    omitted, invalid tokens still 401 but are not throttled.
+    """
     router = APIRouter(tags=["Autonomous"])
 
     @router.get("/autonomous/stream")
@@ -250,7 +265,14 @@ def create_autonomous_stream_router(
         clients send interactive chat messages, or when thread metadata changes.
         """
         presented = _extract_bearer_token(authorization)
-        if presented is None:
+        if presented is None and api_key:
+            # Deprecated: tokens in the query string leak into proxy/access
+            # logs and browser history. Prefer the Authorization header (or a
+            # fetch-based SSE client). Kept for legacy EventSource clients.
+            logger.warning(
+                "[AUTONOMOUS SSE] deprecated api_key query parameter used; "
+                "migrate to the Authorization header to avoid token log leakage"
+            )
             presented = api_key
 
         stream_user_id, firehose = _resolve_stream_auth(
@@ -258,6 +280,8 @@ def create_autonomous_stream_router(
             requested_user_id=user_id,
             presented_token=presented,
             x_nymeria_act_as=x_nymeria_act_as,
+            request=request,
+            auth_failure_handler=auth_failure_handler,
         )
 
         subscriber_id = str(uuid.uuid4())

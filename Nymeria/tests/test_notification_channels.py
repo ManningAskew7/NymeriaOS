@@ -128,8 +128,10 @@ def test_dispatch_webhook_round_trip(repo):
     ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
 
     mock_response = MagicMock(status_code=200)
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request.return_value = mock_response
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=mock_response,
+    ):
         result = dispatch_to_profile(
             message="hi", profile_name="default", ctx=ctx, repo=repo,
         )
@@ -149,14 +151,16 @@ def test_dispatch_webhook_sends_bearer_token_header(repo):
     ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
     mock_response = MagicMock(status_code=200)
     captured = {}
-    def fake_request(method, url, headers=None, json=None):
+    def fake_send(method, url, headers=None, json=None, timeout=None):
         captured["headers"] = headers
         captured["json"] = json
         captured["method"] = method
         captured["url"] = url
         return mock_response
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request = fake_request
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        side_effect=fake_send,
+    ):
         dispatch_to_profile(
             message="hello world", profile_name="default", ctx=ctx, repo=repo,
         )
@@ -174,16 +178,35 @@ def test_dispatch_records_send_error(repo):
         user_id="alice", name="default", destination_names=["hook"],
     )
     ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request.return_value = MagicMock(
-            status_code=500, text="oops",
-        )
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=MagicMock(status_code=500, text="oops"),
+    ):
         result = dispatch_to_profile(
             message="hi", profile_name="default", ctx=ctx, repo=repo,
         )
     assert result.delivered_to == []
     assert "hook" in result.errors
     assert "500" in result.errors["hook"]
+
+
+def test_dispatch_webhook_blocks_internal_url(repo):
+    # H-1 regression: a webhook destination pointed at an internal/loopback
+    # target must be blocked by the HTTP egress policy, surfacing as a send
+    # error rather than an outbound SSRF request.
+    repo.create_destination(
+        user_id="alice", name="hook", type="webhook",
+        config={"url": "http://127.0.0.1:8000/hook"},
+    )
+    repo.create_profile(
+        user_id="alice", name="default", destination_names=["hook"],
+    )
+    ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
+    result = dispatch_to_profile(
+        message="hi", profile_name="default", ctx=ctx, repo=repo,
+    )
+    assert result.delivered_to == []
+    assert "hook" in result.errors
 
 
 # -- auto-seed --------------------------------------------------------------

@@ -46,6 +46,36 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 30.0
 
 
+def _send_with_egress_policy(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    json: Optional[Any] = None,
+    timeout: float = HTTP_TIMEOUT,
+):
+    """Send a notification request through the shared HTTP egress policy.
+
+    Destination URLs are user-configured and therefore attacker-controllable,
+    so every outbound notification is screened (private/loopback/link-local/
+    metadata targets blocked, redirects re-validated, DNS pinned) before the
+    request leaves the process. ``follow_redirects=False`` preserves the prior
+    httpx default; a blocked target raises ``HTTPPolicyViolation`` (a
+    ``RuntimeError``) which the callers already surface as a send error.
+    """
+    from .http_policy import httpx_request_with_policy
+
+    response, _chain, _decision = httpx_request_with_policy(
+        method,
+        url,
+        headers=headers,
+        json=json,
+        timeout=timeout,
+        follow_redirects=False,
+    )
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Send context + result
 # ---------------------------------------------------------------------------
@@ -211,11 +241,11 @@ class DiscordChannel(_BaseChannel):
             return SendResult.error("Discord webhook URL not configured")
         username = destination.config.get("username") or "Nymeria"
         try:
-            with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-                response = client.post(
-                    webhook_url,
-                    json={"content": message, "username": username},
-                )
+            response = _send_with_egress_policy(
+                "POST",
+                webhook_url,
+                json={"content": message, "username": username},
+            )
             if response.status_code in (200, 204):
                 return SendResult.success("Sent to Discord")
             return SendResult.error(f"Discord HTTP {response.status_code}")
@@ -252,11 +282,11 @@ class SlackChannel(_BaseChannel):
             return SendResult.error("Slack webhook URL not configured")
         username = destination.config.get("username") or "Nymeria"
         try:
-            with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-                response = client.post(
-                    webhook_url,
-                    json={"text": message, "username": username},
-                )
+            response = _send_with_egress_policy(
+                "POST",
+                webhook_url,
+                json={"text": message, "username": username},
+            )
             if response.status_code == 200 and response.text == "ok":
                 return SendResult.success("Sent to Slack")
             return SendResult.error(f"Slack error: {response.text[:100]}")
@@ -390,8 +420,7 @@ class WebhookChannel(_BaseChannel):
             "task_id": ctx.task_id,
         }
         try:
-            with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-                response = client.request(method, url, headers=headers, json=payload)
+            response = _send_with_egress_policy(method, url, headers=headers, json=payload)
             if 200 <= response.status_code < 300:
                 return SendResult.success(f"Sent webhook to {url}")
             return SendResult.error(f"Webhook HTTP {response.status_code}: {response.text[:120]}")

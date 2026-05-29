@@ -580,6 +580,49 @@ def _publish_draft(
     return _prefix_command_result(enable_result, publish_text, tool_call_id)
 
 
+def _user_is_admin(user_id: str) -> bool:
+    """Return True only if ``user_id`` resolves to an active admin account.
+
+    Python custom tools execute code in a child process that inherits the
+    API's OS user, full environment (DB URI, vault key, OAuth tokens, service
+    token), and network, so creating/testing/publishing them is restricted to
+    admins -- matching the admin-gated REST custom-tool endpoints. Resolution
+    failures fail closed (deny). The single-operator bootstrap ``default`` user
+    is provisioned as admin, so solo installs are unaffected.
+    """
+    try:
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        repo = getattr(agent, "accounts_repo", None) if agent is not None else None
+        if repo is None:
+            return False
+        user = repo.get_user_by_id(user_id)
+        return bool(user is not None and getattr(user, "role", None) == "admin")
+    except Exception:
+        logger.warning(
+            "tool_create: could not resolve role for user %r; denying Python path",
+            user_id,
+            exc_info=True,
+        )
+        return False
+
+
+def _python_admin_required_result() -> str:
+    return _json_result(
+        ok=False,
+        error={
+            "type": "admin_required",
+            "message": (
+                "Python custom tools run code inside the assistant's own "
+                "process, so creating, testing, and publishing them is "
+                "restricted to admin users. Use an HTTP custom tool instead, "
+                "or ask an administrator to publish this Python tool."
+            ),
+        },
+    )
+
+
 @tool
 async def tool_create(
     action: str,
@@ -608,7 +651,9 @@ async def tool_create(
     rejected for agent-created tools. Plain public headers like Accept are OK.
     Python tools are for small deterministic helpers that can be expressed as
     a pure function. Python code is stored in data/custom_tools and executed in
-    a child process; it is never imported into the API process.
+    a child process. That child runs with the same OS user, environment, and
+    network access as the API, so it is not a security sandbox; creating,
+    testing, and publishing Python tools is therefore restricted to admins.
 
     Actions:
       draft:   Save or update a per-user tool draft. HTTP requires http_config.
@@ -646,6 +691,10 @@ async def tool_create(
 
     try:
         if action_key == "draft":
+            impl = (implementation_type or "http").strip().lower()
+            if impl == "python" and not _user_is_admin(user_id):
+                return _python_admin_required_result()
+
             from ..core.agent import get_current_agent
 
             draft = create_draft_definition(
@@ -666,6 +715,13 @@ async def tool_create(
 
         if action_key == "test":
             target_draft_id = _normalize_draft_id(draft_id or tool_id)
+            existing = store.get(user_id, target_draft_id)
+            if (
+                existing is not None
+                and existing.implementation_type == "python"
+                and not _user_is_admin(user_id)
+            ):
+                return _python_admin_required_result()
             result = await test_draft(
                 store,
                 user_id,
@@ -677,6 +733,13 @@ async def tool_create(
 
         if action_key == "publish":
             target_draft_id = _normalize_draft_id(draft_id or tool_id)
+            existing = store.get(user_id, target_draft_id)
+            if (
+                existing is not None
+                and existing.implementation_type == "python"
+                and not _user_is_admin(user_id)
+            ):
+                return _python_admin_required_result()
             return _publish_draft(
                 store=store,
                 user_id=user_id,

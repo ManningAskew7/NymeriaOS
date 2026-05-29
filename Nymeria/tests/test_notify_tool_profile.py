@@ -124,10 +124,10 @@ def test_notify_via_webhook_profile_logs_audit_with_destination(fake_env):
     fake_env.repo.create_profile(
         user_id="alice", name="default", destination_names=["hook"],
     )
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request.return_value = MagicMock(
-            status_code=200,
-        )
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=MagicMock(status_code=200),
+    ):
         result = _invoke("audit me")
     assert "delivered to hook" in result.lower() or "success" in result.lower()
     rows = fake_env.store.get_all("alice")
@@ -152,13 +152,15 @@ def test_notify_records_partial_failure_in_audit_log(fake_env):
         destination_names=["ok", "bad"],
     )
 
-    def fake_request(method, url, headers=None, json=None):
+    def fake_send(method, url, headers=None, json=None, timeout=None):
         if "bad" in url:
             return MagicMock(status_code=500, text="server error")
         return MagicMock(status_code=200)
 
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request = fake_request
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        side_effect=fake_send,
+    ):
         _invoke("split outcome")
 
     rows = fake_env.store.get_all("alice")
@@ -185,10 +187,10 @@ def test_notify_skips_audit_when_in_app_level_off(fake_env):
         notification_profile=None,
     )
 
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request.return_value = MagicMock(
-            status_code=200,
-        )
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=MagicMock(status_code=200),
+    ):
         _invoke("silent please")
     assert fake_env.store.get_all("alice") == []
 
@@ -213,12 +215,14 @@ def test_notify_explicit_profile_overrides_default(fake_env):
     )
     seen_urls = []
 
-    def fake_request(method, url, headers=None, json=None):
+    def fake_send(method, url, headers=None, json=None, timeout=None):
         seen_urls.append(url)
         return MagicMock(status_code=200)
 
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request = fake_request
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        side_effect=fake_send,
+    ):
         _invoke("send me urgent", profile="urgent")
     assert seen_urls == ["https://email.example.com"]
 
@@ -245,12 +249,14 @@ def test_notify_thread_override_takes_precedence_over_user_default(fake_env):
     )
 
     seen_urls = []
-    def fake_request(method, url, headers=None, json=None):
+    def fake_send(method, url, headers=None, json=None, timeout=None):
         seen_urls.append(url)
         return MagicMock(status_code=200)
 
-    with patch("nymeria.core.notification_channels.httpx.Client") as client_cls:
-        client_cls.return_value.__enter__.return_value.request = fake_request
+    with patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        side_effect=fake_send,
+    ):
         _invoke("thread override")
     assert seen_urls == ["https://email.example.com"]
 
