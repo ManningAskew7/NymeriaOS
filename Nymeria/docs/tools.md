@@ -372,7 +372,7 @@ memory_add(scope: str, content: str, key: Optional[str] = None)
 **Examples:**
 ```python
 memory_add(scope="global", key="prefers_typescript", content="Yes")
-memory_add(scope="global", key="timezone", content="Australia/Sydney")
+memory_add(scope="global", key="timezone", content="America/New_York")
 memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
 memory_add(scope="global", key="prefers_typescript", content="")   # deletes the entry
 memory_add(scope="thread", content="")                             # deletes the notepad
@@ -1633,7 +1633,7 @@ slash_command(command: str)
 **Example commands:**
 - `/help`  -  list every supported command
 - `/status`  -  model, context, tools, tasks summary
-- `/config set llm_model claude-opus-4-6`  -  change global model
+- `/config set llm_model claude-opus-4-7`  -  change global model
 - `/env get PERPLEXITY_API_KEY`  -  fetch unmasked secret
 - `/memory save color "deep blue"`  -  save a user memory
 - `/tools enable browser`  -  turn on a category on this thread
@@ -2119,7 +2119,7 @@ The agent connects Outlook by calling `request_credential(provider="outlook", ki
 | `outlook_search_emails` | `(query?, queries?, sender?, to?, subject?, folder?, category?, days_back=0, has_attachments=False, thread_id?, kql?, account_id?, limit=10)` | Search emails with filters. Results include body preview (120 chars) and thread ID. Without `days_back`, results ranked by relevance not date. Use `thread_id` to pull full conversation chain. Use `kql` for raw KQL queries (OR logic, etc). Use `category` to find tagged emails. |
 | `outlook_send_email` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Send a new email. |
 | `outlook_reply_email` | `(email_id, body, account_id?, reply_all=False)` | Reply to an email (sends immediately). |
-| `outlook_draft_reply` | `(email_id, body, reply_all=False, is_html=False, account_id?)` | Create an unsent reply draft that preserves the email thread. Staff reviews and sends manually. |
+| `outlook_draft_reply` | `(email_id, body, reply_all=False, is_html=False, account_id?)` | Create an unsent reply draft that preserves the email thread. You review and send it manually. |
 | `outlook_create_draft` | `(to, subject, body, account_id?, cc?, bcc?, is_html=False)` | Create a standalone draft without sending. |
 | `outlook_edit_draft` | `(draft_id, body?, subject?, to?, cc?, bcc?, is_html=False, account_id?)` | Edit an existing draft. Only provided fields are updated. Works on drafts from create_draft or draft_reply. |
 | `outlook_delete_email` | `(email_id, account_id?, permanent=False)` | Move to trash or permanently delete. |

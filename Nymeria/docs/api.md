@@ -2138,7 +2138,7 @@ DELETE /notifications
   "notifications": [
     {
       "id": "notif123",
-      "summary": "Found important email from boss",
+      "summary": "Found important email",
       "thread_id": "thread-xyz",
       "task_id": "todo-abc",
       "created_at": "2026-02-02T10:00:00Z",
