@@ -43,7 +43,7 @@ TOOLS_DIR = NYMERIA_ROOT / "nymeria" / "tools"
 # Tool source files to exclude from the public index. The corresponding tool
 # modules still exist in the codebase (kept for an eventual standalone rewrite),
 # but they are not part of the publicly documented surface area. Mirrors the
-# `_`-prefix convention used for `_prv_b.py`; we use an explicit list here
+# `_`-prefix convention used for private/internal tool modules; we use an explicit list here
 # because `twitch.py` cannot be renamed without churning live runtime imports.
 EXCLUDED_FILES = {"twitch.py"}
 

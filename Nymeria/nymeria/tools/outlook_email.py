@@ -708,11 +708,11 @@ def outlook_search_emails(
 
     Args:
         query: Keywords to search across subject, body, and sender names.
-               e.g. "1783-CMS10P" or "Acme RFQ"
+               e.g. "PART-12345" or "Acme RFQ"
         queries: Multiple searches separated by " | " (pipe with spaces).
                  Takes precedence over query. Each is searched independently.
                  Filters (sender, folder, etc.) apply to ALL queries.
-                 e.g. "1783-CMS10P | 5069-RTB64 | 1783-SFP1GLX"
+                 e.g. "PART-12345 | PART-67890 | PART-24680"
                  Max 10 queries per call.
         sender: Filter by sender email or name. e.g. "j.smith" or "acme"
         to: Filter by recipient email or name. Useful for finding sent emails
@@ -736,7 +736,7 @@ def outlook_search_emails(
              Still respects folder, category, and days_back.
              Syntax: from:name to:name subject:keyword hasattachment:true
              e.g. "from:j.smith subject:RFQ hasattachment:true"
-             e.g. "from:acme OR from:acme"
+             e.g. "from:acme OR from:globex"
              Only use this if the structured parameters above can't express
              what you need (e.g. OR logic, body-only search).
         account_id: Microsoft account ID (optional)
