@@ -1,0 +1,100 @@
+/* First-run wizard theme: light-blue accents, white text, boxy borders.
+   Seeded from the chat CLI palette so the family resemblance holds, without
+   reusing the chat banner. Custom ASCII art slots in at #wizard-title later. */
+
+Screen {
+    background: #121620;
+    color: #e8eaed;
+}
+
+#wizard-title {
+    text-style: bold;
+    color: #ffffff;
+    padding: 1 2 0 2;
+}
+
+#wizard-step {
+    color: #6b7280;
+    padding: 0 2 1 2;
+}
+
+#wizard-note {
+    color: #aab4c3;
+    padding: 0 2 1 2;
+}
+
+#wizard-body {
+    height: 1fr;
+    padding: 0 2;
+}
+
+#choice-desc {
+    color: #aab4c3;
+    padding: 1 1 0 1;
+}
+
+#wizard-error {
+    color: #fca5a5;
+    height: auto;
+    padding: 0 2;
+}
+
+#wizard-hint {
+    color: #6b7280;
+    padding: 1 2;
+    dock: bottom;
+}
+
+.field-label {
+    color: #aab4c3;
+    padding: 1 0 0 0;
+}
+
+RadioSet,
+SelectionList {
+    width: 1fr;
+    background: #151a24;
+    border: round #3a4251;
+    padding: 0 1;
+}
+
+RadioSet:focus,
+SelectionList:focus {
+    border: round #bbddfb;
+}
+
+Input {
+    border: tall #3a4251;
+}
+
+Input:focus {
+    border: tall #bbddfb;
+}
+
+Button {
+    margin: 1 1 0 0;
+}
+
+Button:focus {
+    border: tall #bbddfb;
+}
+
+QuitConfirmScreen {
+    align: center middle;
+}
+
+#quit-box {
+    width: 60;
+    height: auto;
+    background: #151a24;
+    border: round #bbddfb;
+    padding: 1 2;
+}
+
+#quit-text {
+    padding: 0 0 1 0;
+}
+
+#quit-buttons {
+    height: auto;
+}

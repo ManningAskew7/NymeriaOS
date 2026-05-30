@@ -564,7 +564,7 @@ def run_service(args: argparse.Namespace) -> None:
 
 def run_init(args: argparse.Namespace) -> int:
     """Run first-time package setup."""
-    from nymeria.setup_wizard import run_init as start_init
+    from nymeria.setup import run_init as start_init
 
     return start_init(args)
 
@@ -1327,13 +1327,7 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level launcher parser."""
-    from nymeria.onboarding import (
-        HostingOption,
-        NextAction,
-        ProviderAuthMethod,
-        SetupStyle,
-        choice_values,
-    )
+    from nymeria.setup import add_init_arguments
 
     parser = argparse.ArgumentParser(
         description="Nymeria - Personal AI Assistant",
@@ -1594,106 +1588,7 @@ Examples:
         "init",
         help="Create first-time config.env and data directory",
     )
-    init_parser.add_argument(
-        "--provider",
-        choices=("anthropic", "openai", "openrouter"),
-        default=None,
-    )
-    init_parser.add_argument(
-        "--model",
-        default=None,
-        help="Model identifier to write to config.env",
-    )
-    init_parser.add_argument("--api-key", default=None)
-    init_parser.add_argument(
-        "--hosting",
-        choices=choice_values(HostingOption),
-        default=None,
-        help="Onboarding hosting profile",
-    )
-    init_parser.add_argument(
-        "--auth-method",
-        choices=choice_values(ProviderAuthMethod),
-        default=None,
-        help="Provider authentication method",
-    )
-    init_parser.add_argument(
-        "--setup-style",
-        choices=choice_values(SetupStyle),
-        default=None,
-        help="Amount of setup detail to collect",
-    )
-    init_parser.add_argument(
-        "--next-action",
-        choices=choice_values(NextAction),
-        default=None,
-        help="Post-setup handoff action",
-    )
-    init_parser.add_argument(
-        "--cliproxy-root",
-        default=None,
-        help="CLIProxy temp/latest directory for OAuth setup",
-    )
-    init_parser.add_argument(
-        "--cliproxy-base-url",
-        default=None,
-        help="Host-reachable CLIProxy root URL for Claude OAuth setup",
-    )
-    init_parser.add_argument(
-        "--embedding-api-key",
-        default=None,
-        help="Optional OpenAI-compatible key for RAG/memory/skill embeddings",
-    )
-    init_parser.add_argument(
-        "--openai-api-key",
-        default=None,
-        help="Optional OpenAI key for image generation/STT/OpenAI-backed tools",
-    )
-    init_parser.add_argument(
-        "--gemini-api-key",
-        default=None,
-        help="Optional Gemini key for Gemini image/document/TTS tools",
-    )
-    init_parser.add_argument(
-        "--perplexity-api-key",
-        default=None,
-        help="Optional Perplexity key for web search",
-    )
-    init_parser.add_argument(
-        "--root",
-        default=None,
-        help="Runtime root for config.env and the default data/ directory",
-    )
-    init_parser.add_argument(
-        "--data-dir",
-        default=None,
-        help="Advanced setup data directory to write as NYMERIA_DATA_DIR",
-    )
-    init_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite config.env if it exists",
-    )
-    init_parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Require flags instead of prompting",
-    )
-    init_parser.add_argument(
-        "--skip-llm-test",
-        action="store_true",
-        help="Write config without making the provider smoke-test API call",
-    )
-    init_parser.add_argument(
-        "--run-doctor",
-        action="store_true",
-        help="Run nymeria doctor after writing config",
-    )
-    init_parser.add_argument(
-        "--full-doctor",
-        action="store_true",
-        help="Run post-init doctor with its live LLM check; implies --run-doctor",
-    )
+    add_init_arguments(init_parser)
 
     # Doctor subcommand
     doctor_parser = subparsers.add_parser(

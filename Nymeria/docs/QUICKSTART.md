@@ -67,38 +67,26 @@ or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 `discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
 `signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
 
-`nymeria init` prompts for the hosting/security profile, provider auth method,
-provider, model, API key, setup style, data directory, and what to do next
-after config is written. The model step offers a provider-specific default and
-lets you press Enter to accept it.
+`nymeria init` opens an interactive setup wizard. Step 1 chooses how to host the
+slim backend on this machine (run it directly, install a background service, or
+run a single Docker container). Step 2 chooses your LLM provider, API key, and
+model. Further capability steps (web search, embeddings, image generation,
+speech, tool selection, and agent settings) are being built out and can be
+skipped for now. Move with the arrow keys, Enter to advance, Esc to go back a
+step, and Ctrl+Q to quit. A review screen confirms before anything is written.
 
-For package installs, choose the Python virtual environment / pipx hosting
-option. It isolates Python dependencies, but it is not an OS security sandbox:
-NymeriaOS can still access files your user can access when tools are enabled.
-The Docker option is a source-checkout handoff for direct API-key setup; it
-prints compose steps and exits without writing `config.env` or `.env.docker`.
+After you confirm, NymeriaOS validates the provider key with a small LLM API
+call (unless you pass `--skip-llm-test`), writes `~/.nymeria/config.env`, creates
+`~/.nymeria/data/`, and mints the first bootstrap admin token. The token handoff
+and a capability summary print to the terminal after the wizard closes. Optional
+provider keys (embeddings, OpenAI tools, Gemini, Perplexity) can be supplied with
+flags now and will get their own wizard steps later.
 
-The normal first-run path is direct API-key authentication. It validates the
-provider key with a small LLM API call, writes `~/.nymeria/config.env`, creates
-`~/.nymeria/data/`, and creates the first bootstrap admin token. Recommended
-setup writes only the primary provider credential and defers optional
-capability keys. Advanced setup can write optional provider keys and a separate
-`NYMERIA_DATA_DIR`.
-
-CLIProxy Claude OAuth and CLIProxy Codex/OpenAI OAuth are advanced
-source-checkout paths. They use the existing pinned
-`CLIProxyAPI-main/temp/latest/` deployment, may start that Docker compose
-service, require active local OAuth auth files, and write NymeriaOS config only
-after the relevant proxy verification passes. Use direct API keys unless you
-specifically need this subscription-routing path.
-
-The final validation prompt can run `nymeria doctor --skip-llm-test`; because
-provider auth was already tested, the full doctor LLM call runs only when you
-ask for it. The final handoff prompt can print backend commands, print the
-`nymeria cli` handoff, or show the backend/web UI start command.
-`nymeria doctor` checks the installed Python version, config files, data
-directory, LLM connectivity, local databases, optional Redis/voice setup,
-bundled frontend, and API port before you start the server.
+For unattended setup, `nymeria init --non-interactive` takes flags instead of
+prompting (see "Scripted setup" below). `nymeria doctor` checks the installed
+Python version, config files, data directory, LLM connectivity, local databases,
+optional Redis/voice setup, bundled frontend, and API port before you start the
+server.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend
@@ -131,10 +119,10 @@ docker compose --env-file .env.docker logs api
 
 Paste the token into the web UI setup wizard.
 
-`nymeria init --hosting docker` can be used as a command reminder, but it does
-not generate `.env.docker` yet. Create `.env.docker` from the example and edit
-it in the source checkout so provider credentials are written to the Docker
-runtime config, not to a packaged `config.env`.
+For the full source-checkout service stack above, use the compose flow directly
+rather than `nymeria init`. Create `.env.docker` from the example and edit it in
+the source checkout so provider credentials are written to the Docker runtime
+config, not to a packaged `config.env`.
 
 ### Source-Checkout Development
 
@@ -227,30 +215,22 @@ If `LLM_PROVIDER=openai`, the primary `OPENAI_API_KEY` also covers optional
 OpenAI-backed features.
 
 For scripted setup in CI or an offline support session, `nymeria init` accepts
-`--non-interactive` plus flags such as `--provider`, `--model`, `--api-key`,
-and `--root`. Use `--data-dir` with `--setup-style advanced` when the writable
-data directory should be separate from the runtime root. The current scripted
-direct setup also accepts
-`--hosting venv|bare_metal`, `--auth-method api_key`,
-`--setup-style advanced|recommended`, and `--next-action print_commands|cli|start_api_open_frontend`;
-when these are omitted, it keeps the old direct API-key setup and prints the
-commands to run next. `--hosting docker` prints the Docker source-checkout
-handoff and exits without writing `config.env` or `.env.docker` for direct
-API-key setup.
+`--non-interactive` plus `--provider`, `--model`, and `--api-key` (all three are
+required in non-interactive mode), and `--root` / `--data-dir` to control where
+config and data are written. Optional connection flags are `--base-url` and
+`--api-mode responses|chat_completions` for OpenAI-compatible providers, plus
+`--hosting local|service|docker`. `--next-action print_commands|cli|start_api_open_frontend`
+selects the closing handoff. Optional capability keys can be supplied with
+`--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, and
+`--perplexity-api-key`.
 
-Scripted CLIProxy setup uses `--auth-method cliproxy_claude_oauth` or
-`--auth-method cliproxy_codex_oauth`. Pass `--cliproxy-root <path>` if the
-pinned `CLIProxyAPI-main/temp/latest/` directory is not in the default source
-checkout location, and pass `--cliproxy-base-url <url>` if the host-reachable
-proxy URL is not the compose-published default. In non-interactive mode, setup
-fails with exact manual OAuth steps if no active local auth JSON is present.
+Add `--skip-llm-test` to write config without validating provider access, and
+`--force` to overwrite an existing `config.env`. Add `--run-doctor` for the quick
+post-init doctor check, or `--full-doctor` when you also want doctor to make its
+own live LLM check.
 
-Add `--skip-llm-test` only when you intentionally want to write direct API-key
-config without validating provider access. Non-interactive
-`--setup-style recommended` rejects optional capability keys and `--data-dir`;
-use advanced setup for those values. Add `--run-doctor` for the quick
-post-init doctor check in scripted setup, or `--full-doctor` when you also want
-doctor to make its own live LLM check.
+CLIProxy subscription-OAuth provider routing is deferred and is not part of
+`nymeria init` in this phase. Use a direct provider API key.
 
 To diagnose an existing install without changing files, run:
 
