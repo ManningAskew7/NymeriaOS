@@ -191,6 +191,14 @@ class Settings(BaseSettings):
             "for example https://nymeria.example.com"
         ),
     )
+    nymeria_error_report_email: Optional[str] = Field(
+        default=None,
+        description=(
+            "Destination address for the in-app 'report a problem' email, sent "
+            "via the Outlook email tool. If unset, the report endpoint returns "
+            "503 instead of emailing anyone."
+        ),
+    )
     account_token_ttl_days: int = Field(
         default=90,
         ge=1,

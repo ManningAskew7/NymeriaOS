@@ -533,13 +533,13 @@ def google_sheets_append(
     """
     Append one or more rows to a Google Sheet.
 
-    Use this to log RFQ tracking data, add records, or update reference sheets.
+    Use this to log tracking data, add records, or update reference sheets.
 
     Args:
         spreadsheet_id: The Google Sheets document ID (from the URL)
         data: Row data as comma-separated values. For multiple rows, separate
               with " | " (pipe with spaces).
-              Single row: "RFQ-20260330-7K4P, Acme, 2026-03-30, Acme parts, Drafted"
+              Single row: "INV-20260330-001, Acme Supplies, 2026-03-30, Widget parts, Drafted"
               Multiple rows: "Header1, Header2 | Value1, Value2 | Value3, Value4"
         sheet_name: Target sheet/tab name (optional, defaults to first sheet)
 

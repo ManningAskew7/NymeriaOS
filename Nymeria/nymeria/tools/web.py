@@ -107,7 +107,7 @@ def web_search(
         query: Single search query or prompt for Perplexity.
         queries: Multiple search queries separated by " | " (pipe with spaces).
                  Takes precedence over query. Each query is searched independently.
-                 e.g. "Acme 440N-Z21S26H datasheet | 1783-CMS10P lifecycle status"
+                 e.g. "LangGraph streaming API docs | OpenAI structured outputs guide"
                  Max 10 queries per call.
         search_depth: "quick" (sonar), "standard" (sonar-pro), or "deep" (sonar-deep-research).
                       Applies to all queries in batch mode.

@@ -278,9 +278,21 @@ def create_system_router(
     async def report_problem(
         request: ReportRequest,
         _user: AuthenticatedUser = Depends(verify_api_key),
+        settings: Any = Depends(get_settings_fn),
     ):
-        """Send an error report email to support with debug context."""
+        """Send an error report email to the configured destination with debug context."""
         from ...tools.outlook_email import outlook_send_email
+
+        recipient = settings.nymeria_error_report_email
+        if not recipient:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Error reporting is not configured. Set "
+                    "NYMERIA_ERROR_REPORT_EMAIL to a destination address to "
+                    "enable the report endpoint."
+                ),
+            )
 
         sections = ["<h2>Nymeria Error Report</h2>"]
         sections.append(
@@ -335,7 +347,7 @@ def create_system_router(
         try:
             result = outlook_send_email.invoke(
                 {
-                    "to": "reports@example.com",
+                    "to": recipient,
                     "subject": subject,
                     "body": body,
                     "is_html": True,
