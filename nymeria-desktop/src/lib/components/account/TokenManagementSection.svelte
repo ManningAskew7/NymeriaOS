@@ -269,7 +269,7 @@
   {:else if tokens.length === 0}
     <div class="empty-state">
       <Icon name="info" size={20} />
-      <span>No tokens yet. Issue one to use Nymeria from another browser, the mobile app, or the API.</span>
+      <span>No tokens yet. Issue one to use NymeriaOS from another browser, the mobile app, or the API.</span>
     </div>
   {:else}
     <div class="token-list">

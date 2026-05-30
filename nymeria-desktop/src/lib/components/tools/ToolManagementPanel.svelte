@@ -290,7 +290,7 @@
       unifiedToolsStore.resetLoaded();
       await unifiedToolsStore.loadTools();
       saveStatus = 'success';
-      saveMessage = 'Reset to Nymeria defaults';
+      saveMessage = 'Reset to NymeriaOS defaults';
     } else {
       saveStatus = 'error';
       saveMessage = defaultToolsStore.error || 'Failed to reset';
@@ -932,7 +932,7 @@
         disabled={defaultToolsStore.saving}
         type="button"
       >
-        Reset to Nymeria Defaults
+        Reset to NymeriaOS Defaults
       </button>
       <button
         class="btn btn-primary"

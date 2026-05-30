@@ -143,7 +143,7 @@
       {#if connectionsStore.connections.length === 0}
         <div class="empty-state">
           <span>No saved accounts yet.</span>
-          <span class="empty-hint">Add one below to keep multiple Nymeria accounts handy.</span>
+          <span class="empty-hint">Add one below to keep multiple NymeriaOS accounts handy.</span>
         </div>
       {:else}
         {#each connectionsStore.connections as entry (entry.id)}

@@ -161,7 +161,7 @@
     </div>
   {:else if currentStep === 'link'}
     <p>
-      Your Telegram account isn't linked to Nymeria yet. Open your Telegram bot
+      Your Telegram account isn't linked to NymeriaOS yet. Open your Telegram bot
       and send the link command. We'll detect it and continue automatically.
     </p>
 

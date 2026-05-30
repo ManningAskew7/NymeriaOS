@@ -119,7 +119,7 @@
   {#if !identity}
     <div class="empty-state">
       <Icon name="user" size={32} />
-      <p>Not connected to a Nymeria server.</p>
+      <p>Not connected to a NymeriaOS server.</p>
       <span>Switch to the Connection tab to set an API URL and token.</span>
     </div>
   {:else}
@@ -239,7 +239,7 @@
         </div>
         <p class="section-hint">
           Chat-platform IDs that map to this account. Bots route
-          messages from these platform users back to this Nymeria identity.
+          messages from these platform users back to this NymeriaOS identity.
         </p>
         <PlatformLinkingSection
           userId={identity.id}
