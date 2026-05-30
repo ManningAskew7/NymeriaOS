@@ -13,10 +13,10 @@ from typing import TypeVar
 
 
 class HostingOption(StrEnum):
-    """Supported runtime hosting profiles for first-run setup."""
+    """How the slim backend is hosted on this machine (first-run step 1)."""
 
-    BARE_METAL = "bare_metal"
-    VENV = "venv"
+    LOCAL = "local"
+    SERVICE = "service"
     DOCKER = "docker"
 
 
@@ -70,8 +70,8 @@ class OnboardingSelection:
 
 
 HOSTING_ORDER = (
-    HostingOption.BARE_METAL,
-    HostingOption.VENV,
+    HostingOption.LOCAL,
+    HostingOption.SERVICE,
     HostingOption.DOCKER,
 )
 
@@ -93,33 +93,33 @@ NEXT_ACTION_ORDER = (
 )
 
 HOSTING_CHOICES = {
-    HostingOption.BARE_METAL: OnboardingChoice(
-        value=HostingOption.BARE_METAL,
-        label="Bare metal",
+    HostingOption.LOCAL: OnboardingChoice(
+        value=HostingOption.LOCAL,
+        label="Run on this machine",
         description=(
-            "Runs directly on your PC with your user permissions. It can "
-            "control your machine and access files your account can access "
-            "when tools are enabled. Most power, least isolation."
+            "Runs the slim backend as a normal process on this computer with "
+            "your user permissions. Simplest option and good for trying "
+            "Nymeria. You start it yourself with `nymeria slim`."
         ),
+        recommended=True,
     ),
-    HostingOption.VENV: OnboardingChoice(
-        value=HostingOption.VENV,
-        label="Python virtual environment / pipx",
+    HostingOption.SERVICE: OnboardingChoice(
+        value=HostingOption.SERVICE,
+        label="Background service",
         description=(
-            "Runs as a normal user Python process with isolated Python "
-            "packages. It is not an OS security sandbox; Nymeria can still "
-            "access files your user can access when tools are enabled."
+            "Installs a background service (a systemd user unit on Linux, a "
+            "launchd agent on macOS) so the slim backend starts on login and "
+            "keeps running. Best for always-on use."
         ),
     ),
     HostingOption.DOCKER: OnboardingChoice(
         value=HostingOption.DOCKER,
-        label="Docker",
+        label="Docker (single container)",
         description=(
-            "Runs backend services in containers with explicit volumes and "
-            "network boundaries. More setup, easier to reset, and the best "
-            "isolation of these options."
+            "Runs the slim backend inside one Docker container with explicit "
+            "volumes. More isolation and easy to reset, and it requires "
+            "Docker to be installed."
         ),
-        recommended=True,
     ),
 }
 

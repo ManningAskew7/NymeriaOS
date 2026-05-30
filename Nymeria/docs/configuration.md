@@ -711,34 +711,23 @@ or tool explicitly requires them.
 | `XERO_CONNECTIONS_URL` | `https://api.xero.com/connections` | Xero connections API URL |
 | `XERO_TENANT_ID` | - | Xero tenant or organization ID fallback |
 
-`nymeria init` can collect these optional capability keys during first-run
-setup after the user chooses a hosting/security profile. For bare-metal and
-venv/pipx hosting, it validates the selected provider/model/key combination
-with a small LLM API call before writing `config.env`. Interactive setup offers
-a provider-specific default model and accepts Enter to use it. The venv/pipx
-profile isolates Python packages only; it is not an OS security sandbox, and
-Nymeria can still access files your user can access when tools are enabled. In
-non-interactive mode, pass `--embedding-api-key`, `--openai-api-key`,
-`--gemini-api-key`, or `--perplexity-api-key`; keys that are not supplied are
-left out of `config.env`. Use `--data-dir` with `--setup-style advanced` when
-`NYMERIA_DATA_DIR` should differ from the runtime root's `data/` directory.
-Non-interactive setup defaults to direct API-key auth and printed next commands.
-It accepts `--hosting venv|bare_metal`, `--auth-method api_key`,
-`--setup-style advanced|recommended`, and
-`--next-action print_commands|cli|start_api_open_frontend`. `--hosting docker`
-with direct API-key setup prints source-checkout Docker setup commands and
-exits without writing `config.env` or `.env.docker`, so Docker credentials are
-not silently written to the wrong runtime root. CLIProxy Claude and
-Codex/OpenAI OAuth auth methods are advanced local setup paths that use your
-local CLIProxy deployment, require active local OAuth
-auth files, write only a local `cpx-*` gatekeeper key into Nymeria config, and
-stop before writing config if their verification probes fail. Codex/OpenAI
-setup writes `LLM_PROVIDER=openai`,
-`OPENAI_API_MODE=responses`, `OPENAI_API_KEY=<cpx-gatekeeper-key>`, and an
-`LLM_BASE_URL` ending in `/v1`; do not use that `cpx-*` value for
-`EMBEDDING_API_KEY`. Add `--skip-llm-test` only for deliberate
-offline/scripted direct API-key setup where provider access will be verified
-separately.
+`nymeria init` collects these optional capability keys during first-run setup.
+The interactive flow is a step wizard: step 1 chooses how to host the slim
+backend (`local`, `service`, or `docker`), step 2 chooses the provider, API key,
+and model, and a review screen confirms before `config.env` is written. It
+validates the provider/model/key combination with a small LLM API call (unless
+`--skip-llm-test`) before writing config. In non-interactive mode, pass
+`--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, or
+`--perplexity-api-key`; keys that are not supplied are left out of `config.env`.
+Use `--data-dir` when `NYMERIA_DATA_DIR` should differ from the runtime root's
+`data/` directory, and `--root` to relocate both. Non-interactive setup accepts
+`--provider`, `--model`, `--api-key` (all required), `--base-url`,
+`--api-mode responses|chat_completions`, `--hosting local|service|docker`,
+`--next-action print_commands|cli|start_api_open_frontend`, `--force`, and
+`--skip-llm-test`. Add `--run-doctor` (quick) or `--full-doctor` (with a live LLM
+check) to validate after writing config. CLIProxy subscription-OAuth provider
+routing is deferred and is not part of `nymeria init` in this phase; use a direct
+provider API key.
 
 ### Database
 
@@ -793,9 +782,9 @@ root. When it runs from a wheel/pipx install, it uses `~/.nymeria/` for
 `config.env`, `data/`, and logs while loading bundled package assets such as
 `nymeria/config/soul.md` from the installed Python package. `nymeria init`
 writes an explicit `NYMERIA_DATA_DIR=<root>/data` line to `config.env` by
-default, or the custom `--data-dir` value in advanced setup, so a later root or
-data-directory move should update that value or rerun `nymeria init --root ...`
-or `nymeria init --setup-style advanced --data-dir ...`.
+default, or the custom `--data-dir` value, so a later root or data-directory
+move should update that value or rerun `nymeria init --root ...` or
+`nymeria init --data-dir ...`.
 The beta Windows desktop release is client-only: it does not bundle a backend
 executable, does not read or write backend config files, and does not set
 `NYMERIA_PROJECT_ROOT` for a local backend process.
@@ -1818,11 +1807,9 @@ follow your CLIProxy setup notes, keep the pinned image and Nymeria proxy
 headers/fingerprint behavior unchanged, and run the documented smoke tests
 before routing real traffic.
 
-For first-run setup from a source checkout, `nymeria init --auth-method
-cliproxy_claude_oauth` and `nymeria init --auth-method
-cliproxy_codex_oauth` can prepare your existing
-local CLIProxy deployment and write Nymeria config only after
-verification succeeds. From an already-connected admin desktop session, use
+First-run CLIProxy OAuth setup through `nymeria init` is deferred and is not part
+of the rebuilt wizard in this phase; use a direct provider API key for first-run,
+or configure CLIProxy manually. From an already-connected admin desktop session, use
 Settings > Provider > Open Wizard to point the backend at an already-running
 proxy endpoint; installed desktop builds do not start CLIProxy or perform OAuth
 login.
