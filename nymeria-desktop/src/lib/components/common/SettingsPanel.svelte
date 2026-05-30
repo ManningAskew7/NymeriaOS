@@ -1031,7 +1031,7 @@
             bind:value={apiUrl}
             placeholder="http://localhost:8000"
           />
-          <p class="hint">The URL of your Nymeria API server</p>
+          <p class="hint">The URL of your NymeriaOS API server</p>
         </div>
 
         <div class="field">

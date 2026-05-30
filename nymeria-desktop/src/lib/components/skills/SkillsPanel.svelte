@@ -18,7 +18,7 @@
   const scopeLabel: Record<SkillScope, string> = {
     user: 'User-installed',
     global: 'Global (all users)',
-    bundled: 'Bundled (ships with Nymeria)',
+    bundled: 'Bundled (ships with NymeriaOS)',
   };
   const skillKindLabel: Record<SkillKind, string> = {
     kits: 'Skill Kits',

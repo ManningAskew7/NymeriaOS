@@ -149,7 +149,7 @@ export function createConnectionsStore() {
     const apiUrl = normalizeApiUrl(args.apiUrl);
     const apiKey = args.apiKey.trim();
     const explicitName = args.name?.trim();
-    const fallbackName = identityLabel(args.identity) ?? safeHostname(apiUrl) ?? 'Nymeria account';
+    const fallbackName = identityLabel(args.identity) ?? safeHostname(apiUrl) ?? 'NymeriaOS account';
     const name = explicitName || fallbackName;
     const checkedAt = args.identity !== undefined ? new Date().toISOString() : undefined;
     const existingIndex = findCredentialIndex(apiUrl, apiKey, args.identity);

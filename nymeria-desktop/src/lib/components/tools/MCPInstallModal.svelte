@@ -477,7 +477,7 @@ https://github.com/example/mcp-server`}
           <label class="confirm-box">
             <input type="checkbox" bind:checked={confirmed} />
             <span>
-              I approve running this managed MCP setup on the Nymeria host.
+              I approve running this managed MCP setup on the NymeriaOS host.
             </span>
           </label>
         {/if}

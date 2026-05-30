@@ -17,7 +17,7 @@
     {
       name: 'Filesystem',
       source: 'npx -y @modelcontextprotocol/server-filesystem /workspace',
-      description: 'Read/write files in /workspace. Paths must exist on the machine Nymeria runs on; edit the path before installing if you want a different folder.',
+      description: 'Read/write files in /workspace. Paths must exist on the machine NymeriaOS runs on; edit the path before installing if you want a different folder.',
       kind: 'stdio',
     },
     {

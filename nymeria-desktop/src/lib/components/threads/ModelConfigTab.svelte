@@ -155,7 +155,7 @@
         placeholder={threadDisplayProvider === 'openai_custom' ? 'http://cli-proxy-api-latest:8317/v1' : 'Provider default'}
       />
       <span class="field-hint">
-        Optional OpenAI-compatible endpoint override reachable from the Nymeria backend. Leave empty to inherit global settings, a saved credential base URL, or the provider default.
+        Optional OpenAI-compatible endpoint override reachable from the NymeriaOS backend. Leave empty to inherit global settings, a saved credential base URL, or the provider default.
       </span>
     </div>
 
@@ -170,7 +170,7 @@
         autocomplete="off"
       />
       <span class="field-hint">
-        Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list (e.g. <code>cpx-latest-local-test</code> for the GPT-5.5 sidecar). Stored per-thread in the Nymeria data directory.
+        Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list (e.g. <code>cpx-latest-local-test</code> for the GPT-5.5 sidecar). Stored per-thread in the NymeriaOS data directory.
       </span>
     </div>
   {/if}

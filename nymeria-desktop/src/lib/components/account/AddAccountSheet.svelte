@@ -105,7 +105,7 @@
 <Modal title="Add account" {isOpen} {onClose}>
   <div class="add-account">
     <p class="intro">
-      Connect to another Nymeria server (or another account on the same one).
+      Connect to another NymeriaOS server (or another account on the same one).
       Saved accounts show up in the bottom-bar switcher.
     </p>
 
