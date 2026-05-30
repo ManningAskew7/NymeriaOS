@@ -239,9 +239,9 @@ Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, and Signal
 bots run as dedicated profiled containers. Configure their tokens in
 `.env.docker` and enable their Docker Compose profiles; those clients do not
 need external webhook URLs. See
-`docs/telegram-bot.md`, `docs/discord-bot.md`,
-`docs/slack-bot.md`, `docs/matrix-bot.md`, `docs/mattermost-bot.md`,
-`docs/zulip-bot.md`, `docs/rocketchat-bot.md`, and `docs/signal-bot.md`.
+`chat-apps/telegram-bot.md`, `chat-apps/discord-bot.md`,
+`chat-apps/slack-bot.md`, `chat-apps/matrix-bot.md`, `chat-apps/mattermost-bot.md`,
+`chat-apps/zulip-bot.md`, `chat-apps/rocketchat-bot.md`, and `chat-apps/signal-bot.md`.
 Signal additionally requires a separately managed
 `signal-cli-rest-api` daemon in JSON-RPC/SSE mode.
 
@@ -249,27 +249,27 @@ WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE ar
 WhatsApp uses the official WhatsApp Business Cloud API at
 `/integrations/whatsapp/webhook`; configure a public HTTPS callback URL in Meta
 and set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, and
-`WHATSAPP_WEBHOOK_VERIFY_TOKEN`; see `docs/whatsapp-bot.md`. Messenger uses
+`WHATSAPP_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/whatsapp-bot.md`. Messenger uses
 Meta Messenger Platform webhooks at `/integrations/messenger/webhook`;
 configure a public HTTPS callback URL in Meta and set
 `MESSENGER_PAGE_ACCESS_TOKEN`, `MESSENGER_PAGE_ID`, and
-`MESSENGER_WEBHOOK_VERIFY_TOKEN`; see `docs/messenger-bot.md`. Instagram uses
+`MESSENGER_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/messenger-bot.md`. Instagram uses
 Meta Instagram Messaging webhooks at `/integrations/instagram/webhook`;
 configure a public HTTPS callback URL in Meta and set
 `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_IG_USER_ID`, and
-`INSTAGRAM_WEBHOOK_VERIFY_TOKEN`; see `docs/instagram-bot.md`. Webex uses Webex
+`INSTAGRAM_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/instagram-bot.md`. Webex uses Webex
 Messaging webhooks at `/integrations/webex/webhook`; configure a public HTTPS
 callback URL in Webex and set `WEBEX_ACCESS_TOKEN` and optionally
-`WEBEX_WEBHOOK_SECRET`; see `docs/webex-bot.md`. Microsoft Teams uses Bot
+`WEBEX_WEBHOOK_SECRET`; see `chat-apps/webex-bot.md`. Microsoft Teams uses Bot
 Framework message activities at `/integrations/teams/webhook`; configure that
 URL as the bot messaging endpoint and set `TEAMS_BOT_APP_ID` and
-`TEAMS_BOT_APP_PASSWORD`; see `docs/teams-bot.md`. Google Chat uses interaction
+`TEAMS_BOT_APP_PASSWORD`; see `chat-apps/teams-bot.md`. Google Chat uses interaction
 events at `/integrations/google-chat/webhook`; configure that URL as the Chat
 app endpoint and set `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` or
-`GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`; see `docs/google-chat-bot.md`. LINE uses
+`GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`; see `chat-apps/google-chat-bot.md`. LINE uses
 Messaging API webhooks at `/integrations/line/webhook`; configure that URL in
 the LINE Developers Console and set `LINE_CHANNEL_ACCESS_TOKEN` and
-`LINE_CHANNEL_SECRET`; see `docs/line-bot.md`.
+`LINE_CHANNEL_SECRET`; see `chat-apps/line-bot.md`.
 
 For event-driven automations from external services (IFTTT, Zapier, etc.),
 use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.md`.
@@ -381,13 +381,23 @@ docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
 
 ## Secrets Management
 
-`Nymeria/.env.docker` and other secret files are encrypted at rest in the repo via [git-crypt](https://github.com/AGWA/git-crypt). After `git-crypt unlock`, they are transparent in the working tree. Compose reads `.env.docker` with `--env-file` and injects only the variables each service declares; the full env file is not bind-mounted into containers.
+The repo ships no secrets. Start from the tracked `Nymeria/.env.docker.example`
+template, copy it to `.env.docker`, and fill in real values on each machine:
 
-- **Fresh clone:** `git-crypt unlock /path/to/nymeria-gitcrypt.key`, or copy `.env.docker.example` and fill in your own keys.
-- **Per-machine drift:** Each machine may have different values in `.env.docker` (different API keys, proxy URLs, etc.). A modified `.env.docker` in `git status` is expected; only commit when updating the shared baseline.
-- **Rotation:** See `docs/git-crypt.md` for per-secret rotation checklists covering LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
+```bash
+cd Nymeria
+cp .env.docker.example .env.docker
+# Edit .env.docker with your API keys, passwords, and service tokens
+```
+
+`.env.docker` is gitignored and should never be committed. Compose reads it with
+`--env-file` and injects only the variables each service declares; the full env
+file is not bind-mounted into containers.
+
+- **Per-machine values:** Each machine has its own `.env.docker` (different API keys, proxy URLs, passwords, etc.). Keep it local; do not share or commit it.
+- **Rotation:** When a credential is compromised or due for rotation, update the value in `.env.docker` and restart the affected services. This covers LLM API keys, CLIProxy OAuth, Postgres, Redis, service tokens, Fernet keys, and Firebase/Google credentials.
 - **Docker images:** `.env.docker` is excluded from the Docker build context. Compose injects selected values with `--env-file` instead of copying or mounting the full secret file into containers.
-- **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/`; they are not managed by git-crypt. Never copy them between machines.
+- **CLIProxy OAuth tokens** are per-machine and gitignored at `CLIProxyAPI-main/temp/latest/auths/`. Never copy them between machines.
 
 ## Reverse Proxy (Caddy)
 
@@ -431,7 +441,7 @@ just as they do for local Docker.
 ## Security Considerations
 
 1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, watchdog, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
-2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` are git-crypt encrypted. See `docs/git-crypt.md` for policy, rotation, and history-rewriting decisions.
+2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` hold secrets and are gitignored. Keep them out of version control, restrict file permissions, and back them up separately from the repo. See the Secrets Management section above.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: TLS is terminated at the Caddy reverse proxy (above). Only 80/443 should be open on the host firewall; 8000/8001 are loopback-only.

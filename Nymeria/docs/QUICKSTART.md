@@ -36,43 +36,28 @@ be live. Until then, use the manual commands below, which work today.
 
 ### Manual install
 
-### Beta Package Install
+`uv` is the recommended installer (it is fast and can fetch a matching Python
+for you); `pipx` also works.
 
-Use this path when you have private beta package access. `uv` is the
-recommended installer (it is fast and can fetch a matching Python for you);
-`pipx` also works.
-
-With `uv` (recommended). `--index` adds the private index alongside public PyPI,
-so NymeriaOS comes from the private index and its dependencies from PyPI:
+With `uv` (recommended):
 
 ```bash
-export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
-uv tool install nymeriaos --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+uv tool install nymeriaos
 nymeria init
 nymeria doctor
 nymeria api
 ```
 
 To try NymeriaOS without a persistent install, run it ephemerally with
-`uvx --index "$NYMERIA_PYPI_SIMPLE_INDEX_URL" --from nymeriaos nymeria slim`.
+`uvx --from nymeriaos nymeria slim`.
 
 With `pipx`:
 
 ```bash
-export NYMERIA_PYPI_SIMPLE_INDEX_URL="https://<user>:<token>@<registry-host>/<repo>/simple/"
-pipx install nymeriaos --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL"
+pipx install nymeriaos
 nymeria init
 nymeria doctor
 nymeria api
-```
-
-If the private index does not proxy public PyPI dependencies, keep the private
-index as the primary source for NymeriaOS and add public PyPI for dependencies:
-
-```bash
-pipx install nymeriaos \
-  --index-url "$NYMERIA_PYPI_SIMPLE_INDEX_URL" \
-  --pip-args="--extra-index-url https://pypi.org/simple"
 ```
 
 The default install is lean. Optional chat-platform bots and heavy integrations
@@ -300,7 +285,7 @@ Starting NymeriaOS SLIM (single-process) on 127.0.0.1:8000
 can authenticate against the API in the same process. That is NOT the
 human bootstrap token; paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
 Setup Wizard, not `SLIM_SERVICE_TOKEN.txt`. See
-[deployment/slim.md](deployment/slim.md) for the full launcher reference.
+[deployment-slim.md](deployment-slim.md) for the full launcher reference.
 
 For source-checkout API-only development, use:
 
@@ -341,7 +326,7 @@ python3 -m pytest tests --cov=nymeria --cov=run --cov-report=term --cov-fail-und
 
 ## Step 5: Open the Web UI or Desktop App
 
-For beta package installs and source checkouts with a bundled frontend, open:
+For package installs and source checkouts with a bundled frontend, open:
 
 ```text
 http://localhost:8000

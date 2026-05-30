@@ -2,7 +2,7 @@
 
 HexStrike AI is installed as an optional Docker sidecar, not inside the main
 Nymeria API image. This keeps the broad pentesting toolchain isolated while
-still letting both Codex and Nymeria connect through native MCP.
+still letting both an external MCP client and Nymeria connect through native MCP.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ still letting both Codex and Nymeria connect through native MCP.
   Supergateway as Streamable HTTP at `/mcp` on port `8889`.
 - Host ports bind to `127.0.0.1` only.
 - Nymeria containers connect to `http://hexstrike-mcp:8889/mcp`.
-- Codex connects to `http://localhost:8889/mcp`.
+- An external MCP client connects to `http://localhost:8889/mcp`.
 
 The image pins upstream `0x4m4/hexstrike-ai` to commit
 `9b8c780f324ce5145a322bfa23c98886f8424ba3` and uses `supergateway@3.4.3`.

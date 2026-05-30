@@ -2,14 +2,14 @@
 
 Nymeria supports two deployment shapes from the same codebase. Pick the one that matches your use case. You can switch later.
 
-New here? Read [shapes-explained.md](./shapes-explained.md) first for a beginner-friendly tour of SSE, Redis, SQLite vs Postgres, and why two shapes exist. This page is the chooser; that one is the explainer.
+New here? Read [shapes-explained.md](deployment-shapes-explained.md) first for a beginner-friendly tour of SSE, Redis, SQLite vs Postgres, and why two shapes exist. This page is the chooser; that one is the explainer.
 
 ## Decision tree
 
 | Goal | Use |
 |---|---|
 | Want to try it on your laptop in five minutes | **Slim** |
-| Self-host for personal use on a VPS or home server | **Slim** + [remote access](remote-access.md) |
+| Self-host for personal use on a VPS or home server | **Slim** + [remote access](deployment-remote-access.md) |
 | Run a small team or business deployment | **Docker stack** + reverse proxy |
 | Need multi-machine scaling, network segmentation, or capability-dropped sandboxing | **Docker stack** |
 
@@ -26,7 +26,7 @@ New here? Read [shapes-explained.md](./shapes-explained.md) first for a beginner
 
 The slim shape is the **default** the codebase has always supported. It is how the project is developed. It is suitable for individuals and small teams (rule of thumb: comfortable up to ~10 active users; heavy concurrent writes start queueing past that).
 
-See [slim.md](slim.md) for the full launcher reference, token-file map, and Docker-vs-slim caveats.
+See [slim.md](deployment-slim.md) for the full launcher reference, token-file map, and Docker-vs-slim caveats.
 
 ### Docker stack
 - Multi-container: `api`, `worker`, `watchdog`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots and voice services
@@ -35,7 +35,7 @@ See [slim.md](slim.md) for the full launcher reference, token-file map, and Dock
 - Hardened: non-root/capability-dropped app containers, minimal thin-client env, network segmentation, read-only source bind mounts, resource limits
 - Install: `docker compose --env-file .env.docker up -d`
 
-The Docker stack is what you reach for in production. It has stronger isolation, can host more concurrent users, and survives container failures cleanly. See [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md) for the operator's guide.
+The Docker stack is what you reach for in production. It has stronger isolation, can host more concurrent users, and survives container failures cleanly. See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for the operator's guide.
 
 ## What's the same in both shapes
 
@@ -59,7 +59,7 @@ The slim shape is not a stripped-down product. It runs the same code in a smalle
 | Process isolation | One process | Per-service containers |
 | Agent runtime | In-process (the one process) | API container only; `worker` schedules and relays turns to the API |
 | Network segmentation | None | `edge` + `backend` networks |
-| TLS / public URL | Bring your own (see [remote-access.md](remote-access.md)) | Bundled Caddy |
+| TLS / public URL | Bring your own (see [remote-access.md](deployment-remote-access.md)) | Bundled Caddy |
 | Container security boundary | N/A (runs on host) | Cap-dropped, non-root, read-only rootfs where possible |
 | Chat bots | Run as separate thin-client processes if launched | Profiled thin-client containers for Discord, Telegram, Slack, Matrix, Signal, Mattermost, Zulip, and Rocket.Chat; API-hosted webhooks run inside `api` |
 
@@ -70,12 +70,12 @@ stays the sole publisher of autonomous SSE events (with stable
 `todo.id` / `trigger-<id>` task ids). The API runs the agent. This
 keeps the in-memory `ThreadLockManager` and `PendingPromptQueue`
 authoritative for cross-source contention without any distributed
-locking. See [architecture.md](../architecture.md) §4 and
+locking. See [architecture.md](architecture.md) §4 and
 `nymeria/core/turn_executor.py` for the abstraction.
 
 ## Remote access
 
-Both shapes can be accessed from anywhere: your laptop, your phone, or a coworker's machine. The patterns are the same regardless of shape. See [remote-access.md](remote-access.md).
+Both shapes can be accessed from anywhere: your laptop, your phone, or a coworker's machine. The patterns are the same regardless of shape. See [remote-access.md](deployment-remote-access.md).
 
 Short version:
 - **Chat bots** (Telegram/Discord/etc.): talk to your assistant from anywhere with zero network setup

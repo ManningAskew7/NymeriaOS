@@ -2,8 +2,8 @@
 
 The Tauri desktop app supports two runtime modes:
 
-- **Thin-client** (default) — No local backend is launched; the frontend connects to a remote backend (e.g. a VPS deployment).
-- **Self-contained** — Tauri spawns a local Python backend from a source checkout (`python run.py api`/`worker`) and waits for it to come up on `127.0.0.1:8000`. The frontend talks to the local API.
+- **Thin-client** (default): no local backend is launched; the frontend connects to a remote backend (e.g. a VPS deployment).
+- **Self-contained**: Tauri spawns a local Python backend from a source checkout (`python run.py api`/`worker`) and waits for it to come up on `127.0.0.1:8000`. The frontend talks to the local API.
 
 This doc covers thin-client mode (the default) and how to opt into self-contained mode for source-checkout dev work.
 
@@ -19,7 +19,7 @@ Self-contained mode is now opt-in. Running `npm run tauri dev` with no env vars 
 
 ## Why this used to silently freeze the UI
 
-When a backend spawn failed in self-contained mode, the Rust side emitted a `backend-status: failed:<msg>` Tauri event. The JS listener in `nymeria-desktop/src/lib/stores/backendProcess.svelte.ts` registered for that event via a dynamic `import('@tauri-apps/api/event')`, which is async. If the Rust failure landed *before* the JS listener attached, the event was dropped and `status` stayed at `'starting'` — leaving the user on `StartupOverlay.svelte`'s spinner forever (black screen, no error message).
+When a backend spawn failed in self-contained mode, the Rust side emitted a `backend-status: failed:<msg>` Tauri event. The JS listener in `nymeria-desktop/src/lib/stores/backendProcess.svelte.ts` registered for that event via a dynamic `import('@tauri-apps/api/event')`, which is async. If the Rust failure landed *before* the JS listener attached, the event was dropped and `status` stayed at `'starting'`, leaving the user on `StartupOverlay.svelte`'s spinner forever (black screen, no error message).
 
 This was fixed by:
 
@@ -60,7 +60,7 @@ NYMERIA_SPAWN_BACKEND=1 npm run tauri dev
 
 ## Verifying you're in thin-client mode
 
-- The `StartupOverlay` should flicker briefly (or not appear at all) — Rust emits `ready` immediately when there's no `ProcessManager`.
+- The `StartupOverlay` should flicker briefly (or not appear at all). Rust emits `ready` immediately when there's no `ProcessManager`.
 - The settings panel will show no local backend process status (since there isn't one).
 - `commands::get_auto_config` returns `Err("Client-only mode — configure backend URL in settings")`, so the SetupWizard / SettingsPanel won't try to auto-fill `localhost:8000`.
 
@@ -70,8 +70,8 @@ If you want Tauri to manage a local Python backend for you (the source-checkout 
 
 ## Code references
 
-- `nymeria-desktop/src-tauri/src/lib.rs` — `env_flag`, `emit_status`, `run()` mode selection
-- `nymeria-desktop/src-tauri/src/commands.rs` — `get_backend_lifecycle_status`
-- `nymeria-desktop/src-tauri/src/process_manager.rs` — `detect_project_root`
-- `nymeria-desktop/src/lib/stores/backendProcess.svelte.ts` — listener + replay
-- `nymeria-desktop/src/lib/components/common/StartupOverlay.svelte` — UI shown while `status !== 'ready'`
+- `nymeria-desktop/src-tauri/src/lib.rs`: `env_flag`, `emit_status`, `run()` mode selection
+- `nymeria-desktop/src-tauri/src/commands.rs`: `get_backend_lifecycle_status`
+- `nymeria-desktop/src-tauri/src/process_manager.rs`: `detect_project_root`
+- `nymeria-desktop/src/lib/stores/backendProcess.svelte.ts`: listener + replay
+- `nymeria-desktop/src/lib/components/common/StartupOverlay.svelte`: UI shown while `status !== 'ready'`

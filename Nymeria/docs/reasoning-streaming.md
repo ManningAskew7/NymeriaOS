@@ -18,7 +18,7 @@ How live-streaming reasoning tokens flow from the LLM provider to the frontend t
 - For **native OpenAI/OpenRouter Responses mode**, Nymeria replays the checkpointed Responses content blocks on each request instead of using `previous_response_id`. That keeps LangGraph's checkpoint authoritative for compaction, system prompt changes, injected context, and per-thread tool changes while still preserving prior reasoning/tool blocks in provider-native shape.
 - If an OpenRouter model leaks Qwen/DeepSeek-style `<think>...</think>` markup through a normal text block instead of a provider-native reasoning block, Nymeria strips that text from live display, history, and later stateless replay. Leaked inline thinking is not converted into durable `thinking` history. When a provider emits an empty reasoning block, the live sanitizer may briefly hold following text while it checks for leaked inline thinking; `[ASTREAM DIAG] inline_thinking_*` logs show whether visible pre-tool preamble was held and released before or at model end.
 
-If CLIProxy gets wiped, the only thing that needs rebuilding is the sidecar container and its auth tokens (see [docs/cliproxy.md](cliproxy.md)). The Python/Svelte code in this repository requires no change  -  the fix is committed and automatic for any OpenAI-compatible endpoint that emits reasoning in either convention.
+If the proxy gets wiped, the only thing that needs rebuilding is the sidecar container and its auth tokens. The Python/Svelte code in this repository requires no change  -  the fix is committed and automatic for any OpenAI-compatible endpoint that emits reasoning in either convention.
 
 For Anthropic-over-CLIProxy thinking, the persistence rule is different but
 simple: the safe beta header comes from Nymeria, not from the proxy container.
@@ -198,11 +198,11 @@ The CLIProxy sidecar does not trigger langchain-openai's built-in Responses auto
 
 ## Sidecar requirements for reasoning to keep working
 
-If the GPT-5.5 CLIProxy sidecar gets wiped and you're rebuilding from scratch, the **reasoning-translation** behaviour requires the following to line up. All of them are already satisfied by the procedure in [docs/cliproxy.md § Codex OAuth GPT-5.5 sidecar](cliproxy.md#codex-oauth-gpt-55-sidecar), but it's worth stating them explicitly because they're the failure points:
+If the GPT-5.5 proxy sidecar gets wiped and you're rebuilding from scratch, the **reasoning-translation** behaviour requires the following to line up. All of them are already satisfied by the standard sidecar setup procedure, but it's worth stating them explicitly because they're the failure points:
 
 1. **Image version ≥ v6.9.36.** The Codex→chat-completions reasoning translator at `internal/translator/codex/openai/chat-completions/codex_openai_response.go:105` was added in that release. Older images (including the pinned `v6.9.0` Claude proxy) do not have it and will strip reasoning before it reaches Nymeria. Use `eceasy/cli-proxy-api:latest` for the sidecar  -  it bumps as new Codex models land.
 2. **`config.yaml` has a non-empty `api-keys:` list.** CLIProxy's local gatekeeper. The value isn't upstream auth  -  it's what you paste into the thread's "API Key" field. See `CLIProxyAPI-main/config.nymeria.example.yaml` for the expected shape.
-3. **A valid Codex OAuth token in `auths/`.** Generated via the `-codex-device-login -no-browser` flow (see cliproxy.md). This is the subscription-side auth. Upstream reasoning visibility depends on this account's model access  -  Plus-tier gives `gpt-5.5` with reasoning summaries; free tier currently does not.
+3. **A valid Codex OAuth token in `auths/`.** Generated via the `-codex-device-login -no-browser` flow. This is the subscription-side auth. Upstream reasoning visibility depends on this account's model access  -  Plus-tier gives `gpt-5.5` with reasoning summaries; free tier currently does not.
 4. **The sidecar container is attached to the `nymeria_nymeria-network` Docker network.** `docker network connect nymeria_nymeria-network cli-proxy-api-latest`. Without this, the Nymeria API container resolves `http://cli-proxy-api-latest:8317` → no route. Per-thread `base_url` would have to switch to a host-routable address (`http://host.docker.internal:8318/v1`) as a fallback.
 
 Given those four, reasoning streaming works immediately  -  no Python or Svelte change is ever needed after a sidecar rebuild.
@@ -221,7 +221,7 @@ python3 Nymeria/tools/check_cliproxy_cloak.py \
   --check-thinking
 ```
 
-Expected: the thinking probe reports at least one `thinking_delta`. If it reports only `signature_delta`, check that `_create_anthropic_llm()` is sending the explicit `Anthropic-Beta` header documented in [cliproxy.md](cliproxy.md#thinking-beta-override--the-visible-reasoning-detail), and verify the CLIProxy request log does not include `redact-thinking-2026-02-12`.
+Expected: the thinking probe reports at least one `thinking_delta`. If it reports only `signature_delta`, check that `_create_anthropic_llm()` is sending the explicit `Anthropic-Beta` header that overrides the thinking-redaction beta, and verify the proxy request log does not include `redact-thinking-2026-02-12`.
 
 ### Is CLIProxy emitting reasoning at all?
 
@@ -292,6 +292,5 @@ Expected for a GPT-5.5 sidecar turn: a `steps` array with a `thinking` entry bef
 
 ## Related docs
 
-- [cliproxy.md](cliproxy.md)  -  full sidecar setup and OAuth procedure. Required reading if rebuilding from scratch.
 - [architecture.md](architecture.md)  -  overall SSE event protocol and streaming model.
 - [configuration.md](configuration.md)  -  per-thread LLM config fields (`provider`, `base_url`, `api_key`, `reasoning_effort`, `extended_thinking`).

@@ -53,7 +53,7 @@ Template variables: any keys in the POST body, plus `{fired_at}`, `{source_ip}`,
 
 Template variables: `{subject}`, `{from_address}`, `{from_name}`, `{preview}`, `{received_at}`, `{importance}`, `{has_attachments}`.
 
-Requires Microsoft OAuth  -  shares auth infrastructure with the Outlook add-in.
+Requires Microsoft OAuth (shares Microsoft Graph infrastructure).
 
 ### RSS/Atom Feed
 
