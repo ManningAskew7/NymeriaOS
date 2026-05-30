@@ -20,8 +20,8 @@ from ..onboarding import (
     choice_values,
     parse_choice,
 )
+from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from .finalize import finalize
-from .providers import PROVIDERS
 from .state import WizardState
 
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
@@ -43,7 +43,13 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Optional wizard section to jump to (for example: provider)",
     )
-    parser.add_argument("--provider", choices=tuple(PROVIDERS), default=None)
+    parser.add_argument(
+        "--provider",
+        choices=tuple(spec.id for spec in list_llm_provider_specs()),
+        metavar="PROVIDER",
+        default=None,
+        help="LLM provider id from the registry (e.g. anthropic, openai, openrouter)",
+    )
     parser.add_argument("--model", default=None, help="Model identifier")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
@@ -165,10 +171,15 @@ def run_init(args: argparse.Namespace) -> int:
     if non_interactive:
         if not state.provider:
             raise SystemExit("--provider is required with --non-interactive")
+        spec = get_llm_provider_spec(state.provider)
         if not state.model:
             raise SystemExit("--model is required with --non-interactive")
-        if not state.api_key:
+        if spec is not None and spec.requires_api_key and not state.api_key:
             raise SystemExit("--api-key is required with --non-interactive")
+        if spec is not None and spec.requires_base_url and not state.base_url:
+            raise SystemExit(
+                "--base-url is required with --non-interactive for this provider"
+            )
         return finalize(state, console=console, non_interactive=True)
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():

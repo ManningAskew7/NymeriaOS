@@ -22,13 +22,14 @@ from typing import Mapping
 from rich.console import Console
 
 from .._runtime_paths import default_user_project_root, find_project_root
+from ..config.llm_providers import LLMProviderSpec
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
-from ..onboarding import HostingOption, NextAction, ProviderOption
+from ..onboarding import HostingOption, NextAction
 from .providers import (
     LLMConnectionError,
     OPTIONAL_ENV_ORDER,
-    check_llm_connection,
-    valid_key_format,
+    check_llm_connection_for_spec,
+    valid_key_format_for_spec,
 )
 from .state import WizardState
 
@@ -54,24 +55,37 @@ def finalize(
 ) -> int:
     """Validate the collected state, write config, and bootstrap the admin."""
 
-    provider = state.provider_option()
+    spec = state.provider_spec()
     api_key = state.api_key.strip()
+    base_url = state.base_url.strip()
     model = ""
     provider_auth_validated = False
-    if provider is None or not api_key:
-        # Provider step was skipped; write a usable config without LLM creds.
-        provider = None
+    if spec is None or (spec.requires_api_key and not api_key):
+        # Provider step was skipped (or a required key is missing); write a
+        # usable config without LLM creds.
+        spec = None
         api_key = ""
         console.print(
             "[yellow]No LLM provider configured. Set one later with "
             "`nymeria init` or by editing config.env.[/yellow]"
         )
     else:
-        model = (state.model or provider.default_model).strip()
-        if not valid_key_format(provider, api_key):
+        model = (state.model or spec.default_model or "").strip()
+        ok, prefix = valid_key_format_for_spec(spec, api_key)
+        if not ok and prefix:
             console.print(
-                f"[red]The {provider.label} key should start with "
-                f"`{provider.key_prefix}`.[/red]"
+                f"[red]The {spec.label} key should start with `{prefix}`.[/red]"
+            )
+            return 2
+        if not model:
+            console.print(
+                f"[red]No model set for {spec.label}. Re-run `nymeria init` and "
+                "choose a model.[/red]"
+            )
+            return 2
+        if spec.requires_base_url and not base_url:
+            console.print(
+                f"[red]{spec.label} needs a base URL. Re-run with --base-url.[/red]"
             )
             return 2
         if state.skip_llm_test:
@@ -79,12 +93,20 @@ def finalize(
         else:
             console.print("\nTesting LLM connection...")
             try:
-                result = check_llm_connection(provider, model, api_key)
+                result = check_llm_connection_for_spec(
+                    spec, model, api_key, base_url=base_url or None
+                )
             except LLMConnectionError as exc:
                 console.print(f"[red]LLM connection failed:[/red] {exc}")
                 return 2
-            console.print(f"[green]Connected:[/green] {result.model}")
-            provider_auth_validated = True
+            if result.tested:
+                console.print(f"[green]Connected:[/green] {result.model}")
+                provider_auth_validated = True
+            else:
+                console.print(
+                    f"[yellow]Skipped live test for {spec.label} "
+                    "(cannot verify without extra setup).[/yellow]"
+                )
 
     root = resolve_root(state)
     data_dir = resolve_data_dir(state, root=root)
@@ -114,7 +136,7 @@ def finalize(
         )
         return 2
 
-    optional_env = _resolve_optional_env(state, provider=provider, api_key=api_key)
+    optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
 
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +144,7 @@ def finalize(
     write_config(
         config_path,
         data_dir=data_dir,
-        provider=provider,
+        spec=spec,
         model=model,
         api_key=api_key,
         optional_env=optional_env,
@@ -136,7 +158,7 @@ def finalize(
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     print_bootstrap_token_handoff(token_path, console)
-    print_capability_summary(provider, optional_env, console)
+    print_capability_summary(spec, optional_env, console)
 
     doctor_status = _maybe_run_doctor(
         state,
@@ -158,7 +180,7 @@ def write_config(
     config_path: Path,
     *,
     data_dir: Path,
-    provider: ProviderOption | None = None,
+    spec: LLMProviderSpec | None = None,
     model: str = "",
     api_key: str = "",
     optional_env: Mapping[str, str] | None = None,
@@ -166,18 +188,22 @@ def write_config(
 ) -> None:
     """Atomically write config.env with 0600 perms (it holds API keys).
 
-    When `provider` is None (the provider step was skipped), the LLM lines are
-    omitted so the backend still starts and a provider can be set later.
+    When `spec` is None (the provider step was skipped), the LLM lines are
+    omitted so the backend still starts and a provider can be set later. The key
+    is written to the provider's highest-priority env var; for Anthropic that is
+    `ANTHROPIC_DIRECT_API_KEY` (the direct, non-proxy key), not `ANTHROPIC_API_KEY`.
     """
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     optional_env = optional_env or {}
     extra_env = extra_env or {}
+    provider_env = spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
     lines = ["# Generated by `nymeria init`."]
-    if provider is not None and api_key:
-        lines.append(f"LLM_PROVIDER={provider.name}")
+    if spec is not None:
+        lines.append(f"LLM_PROVIDER={spec.id}")
         lines.append(f"LLM_MODEL={_env_value(model)}")
-        lines.append(f"{provider.env_var}={api_key}")
+        if api_key and provider_env:
+            lines.append(f"{provider_env}={api_key}")
     for env_var, value in extra_env.items():
         if value:
             lines.append(f"{env_var}={_env_value(value)}")
@@ -185,7 +211,6 @@ def write_config(
     lines.append(f"NYMERIA_DATA_DIR={_env_value(str(data_dir))}")
     lines.append("API_HOST=0.0.0.0")
     lines.append("API_PORT=8000")
-    provider_env = provider.env_var if provider is not None else None
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
@@ -221,11 +246,11 @@ def _env_value(value: str) -> str:
 def _resolve_optional_env(
     state: WizardState,
     *,
-    provider: ProviderOption | None,
+    spec: LLMProviderSpec | None,
     api_key: str,
 ) -> dict[str, str]:
     optional_env = {k: v.strip() for k, v in state.optional_env.items() if v}
-    if provider is not None and provider.env_var == "OPENAI_API_KEY":
+    if spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars:
         # The primary key already writes OPENAI_API_KEY; never duplicate it.
         optional_env.pop("OPENAI_API_KEY", None)
     return optional_env
@@ -349,7 +374,7 @@ def _powershell_single_quote(value: str) -> str:
 
 
 def print_capability_summary(
-    provider: ProviderOption | None,
+    spec: LLMProviderSpec | None,
     optional_env: Mapping[str, str],
     console: Console,
 ) -> None:
@@ -360,11 +385,11 @@ def print_capability_summary(
     resolvers without changing the output shape.
     """
 
-    openai_ready = (provider is not None and provider.env_var == "OPENAI_API_KEY") or bool(
-        optional_env.get("OPENAI_API_KEY")
-    )
+    openai_ready = (
+        spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
+    ) or bool(optional_env.get("OPENAI_API_KEY"))
     rows = [
-        ("Primary LLM", provider is not None, "set a provider with nymeria init"),
+        ("Primary LLM", spec is not None, "set a provider with nymeria init"),
         (
             "Semantic memory / RAG",
             bool(optional_env.get("EMBEDDING_API_KEY")),

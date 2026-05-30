@@ -63,6 +63,27 @@ SelectionList:focus {
     border: round #bbddfb;
 }
 
+SearchableList {
+    width: 1fr;
+    height: auto;
+}
+
+OptionList {
+    width: 1fr;
+    background: #151a24;
+    border: round #3a4251;
+    padding: 0 1;
+}
+
+OptionList:focus {
+    border: round #bbddfb;
+}
+
+#model-hint {
+    color: #aab4c3;
+    padding: 1 0 0 0;
+}
+
 Input {
     border: tall #3a4251;
 }

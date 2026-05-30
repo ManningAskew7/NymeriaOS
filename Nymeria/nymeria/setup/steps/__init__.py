@@ -13,6 +13,7 @@ from .placeholders import (
     make_tts_step,
     make_web_search_step,
 )
+from .model import make_model_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
 
@@ -24,6 +25,7 @@ def build_default_steps() -> list[Step]:
         make_hosting_step(),
         make_provider_step(),
         make_connection_step(),
+        make_model_step(),
         make_web_search_step(),
         make_embeddings_step(),
         make_image_gen_step(),

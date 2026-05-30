@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from ...config.llm_providers import get_llm_provider_spec
 from ...onboarding import HOSTING_CHOICES
 from ..nav import Step
-from ..providers import PROVIDERS
 from ..state import WizardState
 from .base import WizardStep
 
@@ -32,11 +32,13 @@ def _summary_markup(state: WizardState) -> str:
     if state.hosting is not None:
         lines.append(f"[bold]Hosting[/bold]   {HOSTING_CHOICES[state.hosting].label}")
 
-    provider = PROVIDERS.get(state.provider or "")
-    if provider is not None:
-        lines.append(f"[bold]Provider[/bold]  {provider.label}")
-        lines.append(f"[bold]Model[/bold]     {state.model or provider.default_model}")
-        lines.append("[bold]API key[/bold]   set")
+    spec = get_llm_provider_spec(state.provider)
+    if spec is not None:
+        lines.append(f"[bold]Provider[/bold]  {spec.label}  ({spec.tier})")
+        model = state.model or spec.default_model or "(choose on next run)"
+        lines.append(f"[bold]Model[/bold]     {model}")
+        if state.api_key:
+            lines.append("[bold]API key[/bold]   set")
         if state.api_mode:
             lines.append(f"[bold]API mode[/bold]  {state.api_mode}")
         if state.base_url:

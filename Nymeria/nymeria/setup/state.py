@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..config.llm_providers import LLMProviderSpec, get_llm_provider_spec
 from ..onboarding import HostingOption, NextAction
-from .providers import PROVIDERS
 
 
 @dataclass
@@ -45,11 +45,11 @@ class WizardState:
     run_doctor: bool = False
     full_doctor: bool = False
 
-    def provider_option(self):
-        """Return the ProviderOption for the chosen provider, or None."""
+    def provider_spec(self) -> LLMProviderSpec | None:
+        """Return the registry LLMProviderSpec for the chosen provider, or None."""
         if self.provider is None:
             return None
-        return PROVIDERS.get(self.provider)
+        return get_llm_provider_spec(self.provider)
 
 
 __all__ = ["WizardState"]
