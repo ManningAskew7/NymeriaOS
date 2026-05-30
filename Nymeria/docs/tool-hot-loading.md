@@ -61,17 +61,14 @@ even when LangGraph also sees a regular post-tools edge.
 
 ## Tool-Call Argument Boundary
 
-On 2026-05-18, `tool_manage(action="enable", tools=["random_cat_fact"], ttl="30m")`
-regressed with Claude Opus 4.6 through CLIProxy: the model/provider path emitted
-the `tools` argument as the JSON-encoded string `"[\"random_cat_fact\"]"` instead
-of a JSON array. Pydantic correctly rejected that value before `tool_manage`
-executed because the tool schema expects `tools: Optional[List[str]]`.
+Some model/provider paths can emit a list-typed tool-call argument as a
+JSON-encoded string (for example the `tools` argument arriving as
+`"[\"random_cat_fact\"]"` instead of a JSON array). Pydantic rejects that value
+before the tool executes because the tool schema expects
+`tools: Optional[List[str]]`. This is a boundary issue with list-typed tool-call
+arguments at the LLM/tool-adapter layer, not with dynamic tool binding itself.
 
-The schema and tool signature were unchanged, and `tool_manage(action="status")`
-continued to work. That isolated the failure to list-typed tool-call arguments
-at the LLM/tool-adapter boundary, not to dynamic tool binding itself.
-
-`SafeToolNode` now normalizes this boundary before dispatch:
+`SafeToolNode` normalizes this boundary before dispatch:
 
 - It inspects the target tool's JSON schema.
 - It only attempts JSON decoding for fields whose schema allows `array` or
@@ -426,15 +423,3 @@ The two bubbles appear separate because:
 ### Other Frontends
 
 Discord and Telegram bots handle the `tool_reload` SSE event by flushing buffered text and sending a brief indicator message (embed or HTML) between the two response segments.
-
-## Files Changed
-
-| File | Lines changed | What |
-|------|--------------|------|
-| `tools/tool_search.py` | +492 | TTL support, classification buckets, `Command(goto=END)` return, reload cap logic, preserve-on-disable, status/search annotations |
-| `core/tool_reload.py` + `vendor/react_agent/{graph,nodes}.py` | small | Private reload marker plus post-tools routing guard so same-turn reloads end before the model continues |
-| `core/agent.py` | +283 | `_pending_tool_reload`, `_turn_reload_count`, `MAX_TOOL_RELOADS_PER_TURN`, reload loop in `astream()` and `chat()`, `_resolve_temporary_tools()`, `tool_reload_resume` history filter case, merge temporary tools in graph builders |
-| `core/stream_bridge.py` | new | Sync worker bridge that lets scheduled TODOs, triggers, callable threads, and spawned threads consume `astream()` live on one bridge loop |
-| `core/thread_config.py` | +19 | `TemporaryToolEntry` model, `temporary_tools` field on `ThreadConfig` |
-| `tools/metadata.py` | +7 | Updated `tool_search` description |
-| `docs/tools.md` | +46 | Updated tool_search section with TTL and auto-continue docs |

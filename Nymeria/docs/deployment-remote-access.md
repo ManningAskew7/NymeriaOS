@@ -27,7 +27,7 @@ For those outbound bot daemons, **no inbound network access is needed**. Your ba
 
 ### Why this is so good for personal use
 
-- You can talk to your assistant from your phone, your watch, your work laptop, or anywhere the chat app is installed.
+- You can talk to your assistant from your phone, your work laptop, or anywhere the chat app is installed.
 - Your backend's IP and presence are never exposed to anyone but the chat platform.
 - Nymeria still enforces account linking: the Telegram/Discord/etc. sender must resolve to a Nymeria user before the bot will run chat turns.
 - It works in the slim shape as a separate thin-client Python process and in the Docker stack as a profiled thin-client container.
@@ -57,7 +57,7 @@ For those outbound bot daemons, **no inbound network access is needed**. Your ba
    python3 run.py users link-platform <email> telegram <telegram-user-id>
    ```
 
-For other chat platforms see [telegram-bot.md](../telegram-bot.md), [discord-bot.md](../discord-bot.md), [slack-bot.md](../slack-bot.md), [matrix-bot.md](../matrix-bot.md), [signal-bot.md](../signal-bot.md), etc.
+For other chat platforms see [telegram-bot.md](chat-apps/telegram-bot.md), [discord-bot.md](chat-apps/discord-bot.md), [slack-bot.md](chat-apps/slack-bot.md), [matrix-bot.md](chat-apps/matrix-bot.md), [signal-bot.md](chat-apps/signal-bot.md), etc.
 
 ### When bots alone aren't enough
 
@@ -181,7 +181,7 @@ NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
 
 The classic deployment: buy a domain, point its DNS at your VPS, and let [Caddy](https://caddyserver.com) handle TLS.
 
-The [Docker stack](../PRODUCTION_DEPLOYMENT.md) bundles Caddy out of the box. For the slim shape, the manual steps are:
+The [Docker stack](PRODUCTION_DEPLOYMENT.md) bundles Caddy out of the box. For the slim shape, the manual steps are:
 
 1. Buy a domain. Point its A record at your VPS's public IP.
 2. Open ports 80 and 443:
@@ -218,7 +218,7 @@ NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
 - You want a permanent, professional URL
 - You want full control without third-party services in the request path
 
-For multi-user production, prefer the [Docker stack](../PRODUCTION_DEPLOYMENT.md). It bundles Caddy plus the hardening you want.
+For multi-user production, prefer the [Docker stack](PRODUCTION_DEPLOYMENT.md). It bundles Caddy plus the hardening you want.
 
 ---
 

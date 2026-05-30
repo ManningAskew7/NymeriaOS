@@ -110,7 +110,7 @@ Authorization: Bearer <token>
 
 Sends a support email with optional thread/message identifiers, a description,
 client info, and up to the latest 10 included messages. The backend sends the
-report through the Outlook email tool.
+report through the configured error-report email destination.
 
 **Request Body:**
 ```json
@@ -345,7 +345,8 @@ Telegram, and dashboard activity/notifications live under
 **curl examples:**
 
 ```bash
-TOKEN=$(grep -oE 'nym_[A-Za-z0-9_-]+' Nymeria/data/BOOTSTRAP_TOKEN.txt)
+# Issue an admin token for these calls (see `accounts.md` for the account model)
+TOKEN=$(python3 run.py users issue-token default --label admin-curl)
 
 # Create a non-admin user and capture their first token
 curl -sX POST http://localhost:8000/admin/users \
@@ -420,12 +421,12 @@ Bind-code claim routes inspect and authorize before consuming a code. If
 authorization or binding creation fails, the code remains reusable until it
 expires; successful claims consume it.
 
-See [`telegram-bot.md`](telegram-bot.md), [`slack-bot.md`](slack-bot.md),
-[`matrix-bot.md`](matrix-bot.md), [`mattermost-bot.md`](mattermost-bot.md),
-[`zulip-bot.md`](zulip-bot.md), [`rocketchat-bot.md`](rocketchat-bot.md), [`signal-bot.md`](signal-bot.md),
-[`whatsapp-bot.md`](whatsapp-bot.md), [`messenger-bot.md`](messenger-bot.md), [`instagram-bot.md`](instagram-bot.md), [`webex-bot.md`](webex-bot.md),
-[`teams-bot.md`](teams-bot.md), [`google-chat-bot.md`](google-chat-bot.md), and
-[`line-bot.md`](line-bot.md)
+See [`telegram-bot.md`](chat-apps/telegram-bot.md), [`slack-bot.md`](chat-apps/slack-bot.md),
+[`matrix-bot.md`](chat-apps/matrix-bot.md), [`mattermost-bot.md`](chat-apps/mattermost-bot.md),
+[`zulip-bot.md`](chat-apps/zulip-bot.md), [`rocketchat-bot.md`](chat-apps/rocketchat-bot.md), [`signal-bot.md`](chat-apps/signal-bot.md),
+[`whatsapp-bot.md`](chat-apps/whatsapp-bot.md), [`messenger-bot.md`](chat-apps/messenger-bot.md), [`instagram-bot.md`](chat-apps/instagram-bot.md), [`webex-bot.md`](chat-apps/webex-bot.md),
+[`teams-bot.md`](chat-apps/teams-bot.md), [`google-chat-bot.md`](chat-apps/google-chat-bot.md), and
+[`line-bot.md`](chat-apps/line-bot.md)
 for client-specific commands and setup behavior.
 
 **WhatsApp Cloud API webhook:**
@@ -1138,8 +1139,7 @@ GET /commands?actor=user&surface=desktop
 `actor` may be `user`, `agent`, or `system`. `surface` may be `desktop`,
 `mobile`, `cli`, `discord`, `telegram`, `slack`, `matrix`, `whatsapp`, `messenger`, `instagram`, `webex`,
 `mattermost`, `zulip`, `rocketchat`, `teams`, `googlechat`, `line`, `signal`,
-`api`, or `agent` (`twitch` is still accepted for compatibility, but the Twitch
-bot is deprecated). The legacy
+`api`, or `agent`. The legacy
 `source=user|agent|cli` query parameter still works; `actor` and `surface`
 are preferred for new callers. Agent actor hides commands whose metadata marks
 them unavailable to agents. Non-admin users do not see admin-only commands.
@@ -1637,7 +1637,7 @@ Authorization: Bearer <admin-token>
 
 **Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 
-Native optional tools prefer saved credentials from the user/system credential vault. The same settings endpoint can still manage deployment-wide fallback env fields for integrations, including `DHL_API_KEY`, `ONFLEET_API_KEY`, `PHANTOMBUSTER_API_KEY`, `WEBFLOW_ACCESS_TOKEN`, `LEMLIST_API_KEY`, `SENDY_API_KEY`, `EMELIA_API_KEY`, `AFFINITY_API_KEY`, `KEAP_ACCESS_TOKEN`, `MAGENTO_ACCESS_TOKEN`, `UNLEASHED_API_KEY`, `DRIFT_ACCESS_TOKEN`, `OKTA_ACCESS_TOKEN`, `MAUTIC_BASE_URL`, `RUNDECK_BASE_URL`, `RUNDECK_TOKEN`, `KOBOTOOLBOX_API_TOKEN`, `KOBOTOOLBOX_BASE_URL`, `QUICKBOOKS_ACCESS_TOKEN`, `QUICKBOOKS_REALM_ID`, `XERO_ACCESS_TOKEN`, `XERO_TENANT_ID`, `MICROSOFT_GRAPH_ACCESS_TOKEN`, and `MICROSOFT_GRAPH_BASE_URL`; see `docs/tools.md` for the exact provider and field names.
+Native optional tools prefer saved credentials from the user/system credential vault. The same settings endpoint can still manage deployment-wide fallback env fields for integrations, including `DHL_API_KEY`, `ONFLEET_API_KEY`, `PHANTOMBUSTER_API_KEY`, `WEBFLOW_ACCESS_TOKEN`, `LEMLIST_API_KEY`, `SENDY_API_KEY`, `EMELIA_API_KEY`, `AFFINITY_API_KEY`, `KEAP_ACCESS_TOKEN`, `MAGENTO_ACCESS_TOKEN`, `UNLEASHED_API_KEY`, `DRIFT_ACCESS_TOKEN`, `OKTA_ACCESS_TOKEN`, `MAUTIC_BASE_URL`, `RUNDECK_BASE_URL`, `RUNDECK_TOKEN`, `KOBOTOOLBOX_API_TOKEN`, `KOBOTOOLBOX_BASE_URL`, `QUICKBOOKS_ACCESS_TOKEN`, `QUICKBOOKS_REALM_ID`, `XERO_ACCESS_TOKEN`, `XERO_TENANT_ID`, `MICROSOFT_GRAPH_ACCESS_TOKEN`, and `MICROSOFT_GRAPH_BASE_URL`; see `tools.md` for the exact provider and field names.
 
 ---
 
@@ -2187,7 +2187,7 @@ DELETE /notifications
       "profile": "default",
       "attempted": ["my-phone", "work-email"],
       "delivered_to": ["my-phone"],
-      "errors": {"work-email": "No authenticated Outlook account"}
+      "errors": {"work-email": "No authenticated email account"}
     }
   ],
   "unread_count": 1
@@ -2820,7 +2820,7 @@ Manage RAG (Retrieval Augmented Generation) settings and indexes per user.
 
 `rag_enabled` defaults to `true` as of 2026-04. Existing profiles created before that are migrated once on load (watermarked by `opt_in.rag_migrated`). To disable, set `rag_enabled=false` via this API or the frontend settings UI  -  the watermark prevents re-flipping.
 
-Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. Saved profile memories are also synced into the memory chunk index when created or updated through the REST API or agent tools, and removed from the index when forgotten. See `Nymeria/docs/architecture.md` → "RAG (Semantic Conversation Recall)".
+Conversation indexing happens automatically in four places: per turn, before `/compact` (manual + auto), before `/threads/{id}/clear`, and thread chunks are removed as part of the full `DELETE /threads/{id}` cascade. Saved profile memories are also synced into the memory chunk index when created or updated through the REST API or agent tools, and removed from the index when forgotten. See `architecture.md` → "RAG (Semantic Conversation Recall)".
 
 ### Get RAG Settings
 

@@ -116,7 +116,7 @@ Set `LLM_PROVIDER_ROUTE=openai_compat` for the global default, or use the per-th
 
 ---
 
-## Technical: What We Fixed and Why
+## Technical notes
 
 ### Problem 1  -  Streaming tool-call name mangling
 
@@ -209,4 +209,4 @@ Responses appear all at once instead of token-by-token. This is an intentional t
 - If Windows Defender Firewall is blocking, add an inbound rule for `llama-server.exe`
 
 ### Model identifies as Claude Code instead of Nymeria
-- This is a CLIProxy version issue, not a local LLM issue. Pin CLIProxy to v6.9.0. See the CLIProxy section in CLAUDE.md.
+- This is a CLIProxy version issue, not a local LLM issue. Pin CLIProxy to v6.9.36 and see the CLIProxy doc for the working configuration.

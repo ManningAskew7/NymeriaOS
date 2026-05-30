@@ -382,7 +382,7 @@ If you're adding something like "user activity log" or "two-factor enrollment", 
 
 ## Testing flow
 
-Cross-reference [`chrome-mcp-testing.md`](chrome-mcp-testing.md) for general frontend testing setup. Account-specific manual flow:
+Use your usual frontend testing setup as a starting point. Account-specific manual flow:
 
 1. **Fresh setup** - wipe localStorage (`localStorage.clear()`), launch app. SetupWizard should render.
 2. **Account token step** - paste bootstrap token, click Test. Should show "You'll be signed in as owner@localhost [admin]" preview before Continue.

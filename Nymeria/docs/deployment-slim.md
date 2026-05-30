@@ -14,7 +14,7 @@ This is the right launcher for:
   semantics without a multi-container deployment)
 
 For multi-user or production deployments use the Docker stack instead. See
-[README.md](README.md) for the side-by-side comparison.
+[README.md](deployment-README.md) for the side-by-side comparison.
 
 ## Quick start
 

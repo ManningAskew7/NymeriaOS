@@ -2,7 +2,7 @@
 
 ## Overview
 
-This feature allows users to create, edit, complete, and delete TODOs for Nymeria through the desktop UI, with support for recurring schedules. Previously, only the LLM agent could manage TODOs via tools.
+This feature allows users to create, edit, complete, and delete TODOs for Nymeria through the desktop UI, with support for recurring schedules. The LLM agent can also manage TODOs via tools.
 
 **Key Features:**
 - Full CRUD operations for TODOs via REST API
@@ -275,49 +275,6 @@ This ensures users can see and interact with scheduled TODO responses.
 
 ---
 
-## Critical Bug Fixes
-
-### 1. Schedule Sync Timing Bug
-
-**Problem:** User-created TODOs weren't triggering because the schedule wasn't being synced to the database.
-
-**Root Cause:** `sync_schedule_to_db()` was called inside `atomic_update` context manager, but it reads from disk - and the file hadn't been saved yet.
-
-**Fix:** Move `sync_schedule_to_db()` call OUTSIDE the `atomic_update` context:
-
-```python
-# WRONG - sync inside atomic_update
-with todo_manager.atomic_update(user_id) as todo_list:
-    item = todo_list.add_item(...)
-    todo_manager.sync_schedule_to_db(user_id, item.id, schedule_db)  # File not saved yet!
-
-# CORRECT - sync after atomic_update
-with todo_manager.atomic_update(user_id) as todo_list:
-    item = todo_list.add_item(...)
-    created_item = item
-
-# File is now saved
-todo_manager.sync_schedule_to_db(user_id, created_item.id, schedule_db)
-```
-
-### 2. Timezone Conversion Bug
-
-**Problem:** Scheduled times were off by hours due to timezone mishandling.
-
-**Root Cause:** `datetime.utcnow()` returns a naive datetime, but `timestamp()` interprets naive datetimes as local time.
-
-**Fix:** Use timezone-aware datetimes for relative times and convert parsed absolute times to UTC before storage.
-
-```python
-# WRONG
-datetime.utcnow() + timedelta(hours=1)  # Naive, timestamp() assumes local
-
-# CORRECT
-datetime.now(timezone.utc) + timedelta(hours=1)  # Aware, timestamp() correct
-```
-
----
-
 ## Potential Failure Points
 
 ### 1. Database Lock Contention
@@ -406,22 +363,3 @@ No new TODO-specific configuration options were introduced.
 Scheduling behavior uses existing runtime settings such as:
 - `TICKER_POLL_INTERVAL`
 - `MAX_CONCURRENT_AUTONOMOUS`
-
----
-
-## Files Modified
-
-### Backend
-- `nymeria/core/todo_manager.py` - Added `created_by`, `recurrence` fields
-- `nymeria/api/routers/todos.py` - Added CRUD endpoints, fixed sync timing
-- `nymeria/core/ticker.py` - Added recurrence handling, debug logging
-- `nymeria/core/todo_schedule_db.py` - Added debug logging
-
-### Frontend
-- `nymeria-desktop/src/lib/types/index.ts` - Added types
-- `nymeria-desktop/src/lib/services/api.svelte.ts` - Added CRUD methods
-- `nymeria-desktop/src/lib/stores/todos.svelte.ts` - Added mutations
-- `nymeria-desktop/src/lib/components/todos/TodoForm.svelte` - New component
-- `nymeria-desktop/src/lib/components/todos/TodoItem.svelte` - Added badges, actions
-- `nymeria-desktop/src/lib/components/todos/TodoFeed.svelte` - Added create button
-- `nymeria-desktop/src/lib/components/common/Icon.svelte` - Added icons

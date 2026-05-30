@@ -379,14 +379,11 @@ Marketplace installs or thread enables through `skill_manage` use
 - **Skill version pinning and semver resolution**  -  currently always
   grabs `main`.
 - **Graph RAG-Tool Fusion / hybrid retrieval**  -  combining semantic +
-  BM25 with reciprocal rank fusion beats either alone past ~100 skills
-  (see research-doc citation). Not worth the code until the installed
-  library outgrows ~50 skills.
+  BM25 with reciprocal rank fusion beats either alone past ~100 skills.
+  Not worth the code until the installed library outgrows ~50 skills.
 
 ## References
 
-- Research synthesis on skills architectures:
-  `compass_artifact_wf-e088516e-e35b-4ba3-8124-078f934fdccd_text_markdown.md`
 - Anthropic spec + reference skills: https://github.com/anthropics/skills
 - Skills module: `nymeria/skills/` (loader, meta-tool factory, marketplace, embedding index)
 - Agent-facing tools: `nymeria/tools/search_skills.py`

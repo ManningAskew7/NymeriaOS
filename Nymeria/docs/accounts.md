@@ -84,7 +84,7 @@ token authenticates same-process MCP, watchdog, trigger-fire, and
 command-service calls; it is verified against the accounts repo on every
 boot and rotated automatically if invalid. It is an **internal service
 credential**, not a human bootstrap token - do not paste it into the Setup
-Wizard. See [deployment/slim.md](deployment/slim.md) for the full launcher
+Wizard. See [deployment-slim.md](deployment-slim.md) for the full launcher
 reference.
 
 ## CLI

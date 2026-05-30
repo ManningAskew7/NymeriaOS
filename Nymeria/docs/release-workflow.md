@@ -1,6 +1,6 @@
 # Release Workflow
 
-The beta release pipeline lives in `.github/workflows/release.yml`. It runs on
+The release pipeline lives in `.github/workflows/release.yml`. It runs on
 tags matching `v*` and can also be started manually from GitHub Actions.
 
 ## What The Workflow Builds
@@ -53,27 +53,6 @@ smoke test. The image namespace defaults to
 `IMAGE_NAMESPACE` repository variable. The `nymeria-single` image is what
 the clone-free `install.sh --full` track pulls.
 
-## Private Python Index
-
-GitHub Packages does not provide a PyPI-compatible package registry. Its
-[documented package registries](https://docs.github.com/en/enterprise-server@3.20/packages/learn-github-packages/introduction-to-github-packages#support-for-package-registries)
-are npm, RubyGems, Maven/Gradle, NuGet, and Docker/container images. For beta
-Python package installs, use a private index that accepts Twine/Warehouse
-uploads, or distribute the wheel from the private GitHub Release.
-
-The `private-python-index` job publishes only when these repository secrets are
-set:
-
-| Secret | Purpose |
-|--------|---------|
-| `NYMERIA_PYPI_REPOSITORY_URL` | Upload endpoint, for example `https://upload.pypi.org/legacy/` or a private registry's legacy upload URL |
-| `NYMERIA_PYPI_USERNAME` | Registry username, or `__token__` for token-based registries |
-| `NYMERIA_PYPI_PASSWORD` | Registry password or API token |
-
-If any of those secrets are missing, the job logs a skip message and succeeds.
-The Twine upload URL is not the same as the Simple API URL that installers
-pass to `pipx` or `uv tool install`.
-
 ## Release Steps
 
 ```bash
@@ -85,6 +64,5 @@ git push origin main v0.2.0-beta.1
 ```
 
 After the workflow finishes, confirm the GitHub Release has the wheel, source
-distribution, and Windows installer attached. If private index secrets are
-configured, also check the package appears in that index. If `PUBLISH_IMAGES`
+distribution, and Windows installer attached. If `PUBLISH_IMAGES`
 is enabled, confirm the container images appear under the GHCR namespace.

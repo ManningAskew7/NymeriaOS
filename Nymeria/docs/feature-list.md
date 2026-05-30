@@ -334,11 +334,6 @@ total).
 - HTML formatting, inline stop button, privacy mode
 - File delivery: images inline, documents downloadable (50MB max)
 
-### Outlook Add-in
-- Embedded taskpane in Outlook Web
-- Office.js bridge reads email subject/sender/date
-- Ref Email quick action injects the current email's context into chat
-
 ### Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, WhatsApp, Messenger, Instagram, Webex, Teams, Google Chat & LINE Bots
 - Two-way Slack Socket Mode client with linked-user enforcement, bind codes, and thread-aware replies
 - Two-way Matrix Client-Server API sync client with mention/free-room gating and bind codes

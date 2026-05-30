@@ -50,7 +50,7 @@ These variables are deployment-wide server defaults, not per-user account prefer
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native partner-package paths: `anthropic`, `openai`, `google` (Gemini via langchain-google-genai), `bedrock` (AWS via langchain-aws ChatBedrockConverse), `ollama` (native protocol via langchain-ollama). OpenAI-compatible IDs include `openrouter`, `xai`, `groq`, `deepseek`, `mistral`, `lmstudio`, plus the full registry documented in [`chat_completions_providers.md`](chat_completions_providers.md). |
+| `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native partner-package paths: `anthropic`, `openai`, `google` (Gemini via langchain-google-genai), `bedrock` (AWS via langchain-aws ChatBedrockConverse), `ollama` (native protocol via langchain-ollama). OpenAI-compatible IDs include `openrouter`, `xai`, `groq`, `deepseek`, `mistral`, `lmstudio`, plus the full registry of supported OpenAI-compatible providers. |
 | `LLM_PROVIDER_ROUTE` | No | provider default | Adapter route for providers with more than one supported path. Valid values: `native`, `openai_compat`. Today this is exposed for `google` and `ollama`; both default to `native`. Per-thread settings can override it. |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
@@ -729,8 +729,8 @@ It accepts `--hosting venv|bare_metal`, `--auth-method api_key`,
 with direct API-key setup prints source-checkout Docker setup commands and
 exits without writing `config.env` or `.env.docker`, so Docker credentials are
 not silently written to the wrong runtime root. CLIProxy Claude and
-Codex/OpenAI OAuth auth methods are advanced local setup paths that use the
-pinned `CLIProxyAPI-main/temp/latest/` deployment, require active local OAuth
+Codex/OpenAI OAuth auth methods are advanced local setup paths that use your
+local CLIProxy deployment, require active local OAuth
 auth files, write only a local `cpx-*` gatekeeper key into Nymeria config, and
 stop before writing config if their verification probes fail. Codex/OpenAI
 setup writes `LLM_PROVIDER=openai`,
@@ -1468,22 +1468,6 @@ reachable from the backend process.
 | `AGILECRM_BASE_URL` | - | Agile CRM API base URL override |
 | `MONICA_ACCESS_TOKEN` | - | Monica CRM API token fallback |
 | `MONICA_BASE_URL` | `https://app.monicahq.com/api` | Monica CRM API base URL |
-| `TWITCH_CLIENT_ID` | - | Twitch application Client ID. Note: the standalone Twitch bot was removed; all `TWITCH_*` vars below are reserved for the Twitch optional tools, which are currently disabled pending migration to standalone optional tools. The vars still exist in `config/settings.py` so values set here are accepted, but nothing reads them at runtime today. |
-| `TWITCH_CLIENT_SECRET` | - | Twitch application Client Secret |
-| `TWITCH_BOT_ACCESS_TOKEN` | - | Reserved OAuth access token (unused; bot runtime removed) |
-| `TWITCH_BOT_REFRESH_TOKEN` | - | Reserved OAuth refresh token (unused; bot runtime removed) |
-| `TWITCH_BOT_USER_ID` | - | Reserved numeric Twitch user ID (unused; bot runtime removed) |
-| `TWITCH_BROADCASTER_TOKEN` | - | Broadcaster's OAuth token (channel:bot scope) |
-| `TWITCH_BROADCASTER_REFRESH_TOKEN` | - | Broadcaster's refresh token |
-| `TWITCH_CHANNEL` | - | Twitch channel to target (reserved for the disabled tools) |
-| `TWITCH_SYSTEM_PROMPT` | - | Reserved initial system prompt (unused; bot runtime removed) |
-| `TWITCH_BUFFER_SIZE` | `500` | Reserved chat ring buffer size (50-5000; unused; bot runtime removed) |
-| `TWITCH_PULSE_ENABLED` | `true` | Reserved periodic-evaluation toggle (unused; bot runtime removed) |
-| `TWITCH_PULSE_INTERVAL` | `300` | Reserved pulse interval seconds (60-3600; unused; bot runtime removed) |
-| `TWITCH_PULSE_MIN_MESSAGES` | `10` | Reserved pulse minimum-message threshold (unused; bot runtime removed) |
-| `TWITCH_PULSE_MESSAGE_COUNT` | `100` | Reserved pulse context window (unused; bot runtime removed) |
-| `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Reserved !ask context window (unused; bot runtime removed) |
-| `TWITCH_RESPOND_MODE` | `command` | Reserved response-mode setting (unused; bot runtime removed) |
 
 ### Log File Rotation
 
@@ -1583,18 +1567,6 @@ registry, and REST API.
 | `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
 | `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog without restarting. See also the file flag below. |
-
-**Wear OS Firebase client config:**
-
-The Wear OS companion app intentionally tracks
-`nymeria-watch/app/google-services.json`. That file is the Android client
-configuration consumed by the Google Services Gradle plugin for Firebase Cloud
-Messaging, and it contains Firebase project/app identifiers plus the
-Firebase-provisioned Android API key. Firebase documents these app config
-values as safe to include in client code or checked-in configuration when the
-key is restricted to Firebase services. Do not add server credentials or
-non-Firebase Google API keys to this file; use a separate restricted key for
-non-Firebase APIs.
 
 The private server-side FCM credential is an operator-provided JSON file (for
 example `Nymeria/firebase-service-account.json`). It is supplied out of band,
@@ -1801,7 +1773,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Available models:
-- `claude-opus-4-7` (current flagship  -  see `docs/cliproxy.md` "Claude 4.7 compatibility" for the thinking/sampling-param caveats the provider already handles)
+- `claude-opus-4-7` (current flagship; the provider already handles the thinking/sampling-param caveats for this model)
 - `claude-opus-4-6` (previous flagship)
 - `claude-sonnet-4-6` (balanced default)
 - `claude-opus-4-20250514`
@@ -1840,16 +1812,16 @@ Most OpenRouter models work with Nymeria's agent harness, including tool calling
 
 ### Local Proxy (e.g., CLIProxyAPI)
 
-Route requests through the pinned local CLIProxy deployment to use subscription
+Route requests through your local CLIProxy deployment to use subscription
 OAuth where supported instead of per-API-call billing. This is an advanced path:
-follow [cliproxy.md](./cliproxy.md), keep the pinned image and Nymeria proxy
+follow your CLIProxy setup notes, keep the pinned image and Nymeria proxy
 headers/fingerprint behavior unchanged, and run the documented smoke tests
 before routing real traffic.
 
 For first-run setup from a source checkout, `nymeria init --auth-method
 cliproxy_claude_oauth` and `nymeria init --auth-method
-cliproxy_codex_oauth` can prepare the existing
-`CLIProxyAPI-main/temp/latest/` deployment and write Nymeria config only after
+cliproxy_codex_oauth` can prepare your existing
+local CLIProxy deployment and write Nymeria config only after
 verification succeeds. From an already-connected admin desktop session, use
 Settings > Provider > Open Wizard to point the backend at an already-running
 proxy endpoint; installed desktop builds do not start CLIProxy or perform OAuth

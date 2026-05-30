@@ -62,7 +62,7 @@ This matters because the apps now differ in several real ways, including:
 - desktop-only Tauri startup readiness state; release builds enter
   client-only mode immediately, while source-checkout dev can still manage a
   local backend process
-- desktop-only Outlook mode and CLIProxy integration
+- desktop-only CLIProxy integration
 - different component organization in a few areas
 - some store and type files already diverging in content, not just comments
 
@@ -365,14 +365,12 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/common/ProviderSetupWizard.svelte` | Admin provider credential setup and test flow | Desktop-only for now; configures the connected backend through settings APIs |
 | `components/common/StartupOverlay.svelte` | Tauri startup/readiness overlay | Source-checkout dev mode can display local backend startup; release client-only builds normally transition to ready immediately |
 | `components/common/ToggleSwitch.svelte` | Shared desktop switch primitive used by tool, trigger, and MCP management surfaces | Mobile still uses platform-specific switch markup pending a touch-target-focused mobile primitive |
-| `components/outlook/QuickActions.svelte` | Outlook-specific quick actions | Desktop-only Outlook integration |
 | `components/chat/AgentActivityIndicator.svelte` | Inline animated phase text for silent assistant phases (`Processing...`, `Thinking...`, `Formulating...`, `Compacting...`, `Processing results...`, `Waiting...`); `Compacting...` shows while the backend is compacting context (`chatStore.isCompacting`); visible response chunks render directly without a separate typing label or cursor | Desktop-only v1; mobile still uses its existing dots/ThinkingIndicator flow |
 | `components/tools/ToolForm.svelte` | Create/edit custom tool form | Desktop-only today |
 | `components/tools/ToolTestPanel.svelte` | Test tool with parameters | Desktop-only today |
 | `stores/backendProcess.svelte.ts` | Tracks Tauri readiness and optional source-checkout managed backend state | Desktop-only; release client-only builds have no local backend process |
 | `stores/cliproxy.svelte.ts` | CLIProxy status and controls | Desktop-only |
 | `stores/connections.svelte.ts` | Connection-switching helpers | Desktop-only |
-| `stores/outlook.svelte.ts` | Outlook mode state | Desktop-only |
 | `stores/syncPoll.svelte.ts` | Lightweight checkpoint revision polling via `/threads/{thread_id}/status`; full history/context is fetched only when the revision changes, processing finishes, or no baseline is known | Desktop-only |
 | `lib/index.ts` | Barrel exports | Not needed |
 

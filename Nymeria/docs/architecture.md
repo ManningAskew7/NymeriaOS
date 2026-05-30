@@ -988,7 +988,7 @@ path is kept for import stability, but this package is an owned fork, not a
 drop-in upstream mirror. It provides:
 - Zero external source-path dependencies (no need to configure `LANGGRAPH_PATH`)
 - Consistent behavior across all installations
-- Easier deployment for beta testers
+- Easier, consistent deployment
 - Nymeria-specific provider, checkpoint, timeout, tool-reload, and reasoning
   streaming behavior
 
@@ -1008,51 +1008,3 @@ nodes, and graph construction. See
 | **langgraph-checkpoint-sqlite** | Conversation persistence |
 | **Pydantic** | Settings and validation |
 | **httpx** | HTTP client for Perplexity API |
-
----
-
-## Recent Refactoring & Migration Notes
-
-### Code Cleanup (2026-02)
-
-The codebase underwent significant modularization:
-
-1. **Extracted Modules from `agent.py`:**
-   - `prompts.py`: System prompt templates and time context
-   - `time_utils.py`: Shared time parsing (from TODO tools and scheduler parsing)
-   - `todo_constants.py`: TODO display constants
-   - `agent_history.py`: Conversation-history projection, checkpoint timestamp recovery, and provider reasoning/tool-step rendering
-   - `agent_streaming.py`: Graph stream event processing, stream chunk classification, and reasoning-delta deduplication helpers
-
-2. **Removed Legacy Scheduler:**
-   - `scheduler.py`, `rate_limiter.py`, `migration.py`, and `_deprecated/task_db.py` were removed after scheduled TODOs became the only runtime scheduling path.
-   - The REST `GET /tasks` compatibility endpoint was removed; use `GET /todos` and filter scheduled TODOs instead.
-
-3. **Frontend Cleanup:**
-   - `tasks.svelte.ts`: Deleted (replaced by `todosStore.scheduledTodos`)
-   - `ScheduledTaskItem.svelte`: Deleted (no longer used)
-   - Legacy type aliases removed from `types/index.ts`
-   - Unused experimental store utilities were later removed after never being adopted
-
-### Potential Failure Points
-
-These changes may cause issues in certain scenarios:
-
-| Change | Potential Issue | Mitigation |
-|--------|----------------|------------|
-| Legacy scheduler removed | External code importing `DurableScheduler`, `TaskDatabase`, or calling `GET /tasks` will fail | Use TODO scheduling through `nym_todo` or REST `/todos` |
-| `tasksStore` removed (frontend) | Any external frontend code using `tasksStore` will break | Use `todosStore.scheduledTodos` instead |
-| `message.images` removed | Code accessing `message.images` property will fail | Use `message.attachments` instead |
-| `ImageAttachment` type removed | TypeScript errors for code using this type | Use `Attachment` type instead |
-
-### Migration Checklist
-
-For users upgrading from older versions:
-
-1. **Check import paths**: If you have custom code importing legacy scheduler classes from `nymeria.core`, remove those imports.
-2. **Frontend stores**: Replace any `tasksStore` usage with `todosStore`.
-3. **Verify data**: Check that scheduled tasks appear in the TODO list with `scheduled_for` times.
-
-### Cleanup Timeline
-
-- **Done**: All legacy scheduler modules removed; `_deprecated/` is empty.

@@ -2,12 +2,12 @@
 
 A beginner-friendly tour of the two deployment shapes (slim and Docker),
 the moving parts inside each, and why both exist. Read this before
-[deployment/README.md](./README.md) if the terms "SSE", "Redis", or
+[README.md](deployment-README.md) if the terms "SSE", "Redis", or
 "Postgres vs SQLite" are not already comfortable for you.
 
 If you already know what those terms mean and just want to pick a shape,
-skip to [deployment/README.md](./README.md). If you are operating a
-Docker deployment, see [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md).
+skip to [README.md](deployment-README.md). If you are operating a
+Docker deployment, see [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md).
 
 ## The one-sentence version
 
@@ -50,7 +50,7 @@ the pipe as they happen. Each event has a type ("thinking",
 displays them as they arrive, which is what creates the typewriter
 effect of words appearing live.
 
-In Nymeria, every frontend (desktop, mobile, watch, web, CLI) opens an
+In Nymeria, every frontend (desktop, mobile, web, CLI) opens an
 SSE connection to the API at `/autonomous/stream` as soon as the user
 logs in, and keeps it open the whole time the user is active. Anything
 the API needs to tell the frontend gets pushed down that pipe.
@@ -191,13 +191,13 @@ This is the clearest concrete example of the difference.
 ### In slim
 
 1. The in-process ticker notices a TODO is due
-   ([`ticker.py`](../../nymeria/core/ticker.py)).
+   (`nymeria/core/ticker.py`).
 2. It calls the agent directly via `LocalAgentExecutor`
-   ([`turn_executor.py`](../../nymeria/core/turn_executor.py)). Same
+   (`nymeria/core/turn_executor.py`). Same
    process, no network hop.
 3. As the agent produces chunks, the ticker publishes them through
    `publish_agent_stream_chunk` to the in-memory event bus
-   ([`event_bus.py`](../../nymeria/core/event_bus.py)).
+   (`nymeria/core/event_bus.py`).
 4. The SSE generator handling the user's `/autonomous/stream`
    connection drains the queue and pushes each chunk to the frontend.
 
@@ -213,7 +213,7 @@ Five function calls. No network. No Redis. No serialization.
    response.
 3. As each chunk arrives at the worker, the worker republishes it via
    `RedisEventBus.publish`
-   ([`event_bus_redis.py`](../../nymeria/core/event_bus_redis.py))
+   (`nymeria/core/event_bus_redis.py`)
    using stable task IDs (`todo.id`).
 4. The worker's publisher-only `RedisEventBus.publish` skips local SSE
    dispatch because the worker has no local SSE subscribers, then
@@ -241,7 +241,7 @@ out of the architecture:
   background loops should be registered as startup tasks gated on
   `slim_mode` for the slim path, and as a separate container service
   for Docker. The watchdog at
-  [`api.py`](../../nymeria/triggers/api.py) `_register_slim_watchdog_lifecycle`
+  `nymeria/triggers/api.py` `_register_slim_watchdog_lifecycle`
   is the template.
 - **Branch on `settings.database_backend` only where Postgres is
   actually used.** The known sites are `checkpointer_config.py`,
@@ -260,12 +260,12 @@ out of the architecture:
 
 ## Where to go next
 
-- [deployment/README.md](./README.md): the chooser (which shape do I
+- [README.md](deployment-README.md): the chooser (which shape do I
   want?) and side-by-side comparison
-- [deployment/slim.md](./slim.md): the slim launcher reference
-- [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md): Docker
+- [slim.md](deployment-slim.md): the slim launcher reference
+- [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md): Docker
   operator's manual
-- [architecture.md](../architecture.md): full agent runtime internals
+- [architecture.md](architecture.md): full agent runtime internals
   for engineers
-- [deployment/remote-access.md](./remote-access.md): accessing either
+- [remote-access.md](deployment-remote-access.md): accessing either
   shape from outside the host
