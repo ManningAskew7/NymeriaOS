@@ -27,6 +27,10 @@ _TAVILY_ANSWER_MODES = {"basic", "advanced"}
 
 _EXA_SEARCH_URL = "https://api.exa.ai/search"
 _EXA_INTEGRATION = "nymeria"
+# Cap highlight length per result so output stays source-sized, not a page dump.
+# Uncapped, Exa returns ~8k chars of highlights per result; the cap does not
+# change cost (only search depth / result count do).
+_EXA_HIGHLIGHT_MAX_CHARS = 1000
 _EXA_SEARCH_TYPES = {"auto", "fast", "instant"}
 _EXA_CATEGORIES = {
     "company",
@@ -384,9 +388,13 @@ def web_search_exa(
         num_results = 5
 
     # Highlights are bundled free with a search and serve as the snippet, so they
-    # are always requested. Full-page text and per-result summaries stay off: a
-    # dedicated fetch tool covers full pages, and summaries cost extra credits.
-    base_payload: dict = {"numResults": num_results, "contents": {"highlights": True}}
+    # are always requested (capped to keep results source-sized, not page dumps).
+    # Full-page text and per-result summaries stay off: a dedicated fetch tool
+    # covers full pages, and summaries cost extra credits.
+    base_payload: dict = {
+        "numResults": num_results,
+        "contents": {"highlights": {"maxCharacters": _EXA_HIGHLIGHT_MAX_CHARS}},
+    }
     if search_type and search_type.lower() in _EXA_SEARCH_TYPES:
         base_payload["type"] = search_type.lower()
 

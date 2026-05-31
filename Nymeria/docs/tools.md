@@ -344,7 +344,7 @@ web_search_exa(query: str = "", queries: str = "", search_type: Optional[str] = 
 - `include_domains` (`str`): Comma-separated domains to restrict results to
 - `exclude_domains` (`str`): Comma-separated domains to exclude
 
-Hard defaults (not exposed): `highlights` are always on (bundled free, used as the snippet); full-page `text` and per-result `summary` are off (a dedicated fetch tool covers full pages; summaries cost extra credits); the agentic `deep`/`deep-reasoning` modes and image/subpage/extras payloads are off.
+Hard defaults (not exposed): `highlights` are always on (bundled free, used as the snippet, capped at ~1000 chars per result so output stays source-sized); full-page `text` and per-result `summary` are off (a dedicated fetch tool covers full pages; summaries cost extra credits); the agentic `deep`/`deep-reasoning` modes and image/subpage/extras payloads are off.
 
 **Returns:** Ranked sources as `N. <title>\n   <url>  (score) · <date>\n   <highlights>`. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
 
