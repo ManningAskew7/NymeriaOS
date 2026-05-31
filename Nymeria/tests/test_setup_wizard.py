@@ -705,6 +705,80 @@ def test_wizard_pilot_ctrl_s_skips_without_recording():
     assert app.nav.current() == 1
 
 
+def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
+    """In the provider picker, down enters the list and up at the first row hands
+    focus back to the search box (instead of wrapping the highlight to the
+    bottom); up from a lower row stays in the list and moves up by one.
+    """
+    from textual.widgets import Input
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.widgets import PickerOptionList
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # hosting -> provider (focus picker search)
+            await pilot.pause()
+            search = app.screen.query_one("#provider-search", Input)
+            option_list = app.screen.query_one(PickerOptionList)
+            first = option_list._first_selectable_index()
+            assert app.focused is search
+
+            await pilot.press("down")  # into the list, highlight on the first row
+            await pilot.pause()
+            assert app.focused is option_list
+            assert option_list.highlighted == first
+
+            await pilot.press("down")  # move down one selectable row
+            await pilot.pause()
+            assert option_list.highlighted == first + 1
+
+            await pilot.press("up")  # back to the first row, still in the list
+            await pilot.pause()
+            assert app.focused is option_list
+            assert option_list.highlighted == first
+
+            await pilot.press("up")  # at the first row -> focus returns to search
+            await pilot.pause()
+            assert app.focused is search
+
+    asyncio.run(drive())
+
+
+def test_wizard_pilot_provider_picker_first_row_reveals_top_header():
+    """Returning to the first selectable row scrolls the list fully to the top so
+    the leading group header is revealed, rather than staying clipped above the
+    viewport (a disabled header is never highlighted, so the stock scroll never
+    returns to it on its own).
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.widgets import PickerOptionList
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # hosting -> provider
+            await pilot.pause()
+            option_list = app.screen.query_one(PickerOptionList)
+            # The registry yields more providers than fit, so the list scrolls.
+            assert option_list.option_count > 14
+            option_list.focus()
+
+            await pilot.press("end")  # jump to the last row: list scrolls down
+            await pilot.pause()
+            assert option_list.scroll_offset.y > 0
+
+            await pilot.press("home")  # back to the first row: header revealed
+            await pilot.pause()
+            assert option_list.highlighted == option_list._first_selectable_index()
+            assert option_list.scroll_offset.y == 0
+
+    asyncio.run(drive())
+
+
 def test_finalize_writes_config_without_provider_when_skipped(tmp_path):
     from rich.console import Console
 
