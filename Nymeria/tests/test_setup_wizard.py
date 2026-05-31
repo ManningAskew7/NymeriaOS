@@ -432,6 +432,95 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
     assert state.model == "claude-sonnet-4-6"  # provider default model filled in
 
 
+def test_wizard_pilot_arrow_keys_select_and_update_description():
+    """Arrow keys move the highlight, the pressed dot follows it, and the
+    per-option description tracks it. No separate Space/Enter is needed to commit
+    a choice (the highlight *is* the selection).
+
+    Regression: the stock RadioSet posts `Changed` only when the pressed button
+    changes (Space/Enter/click), so arrow navigation left both the dot and the
+    description frozen. `SelectingRadioSet` presses whatever the cursor lands on.
+    """
+    from textual.widgets import RadioSet, Static
+
+    from nymeria.onboarding import HOSTING_CHOICES, HOSTING_ORDER
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    def desc_for(index: int) -> str:
+        return HOSTING_CHOICES[HOSTING_ORDER[index]].description
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel = app.screen.query_one("#choice-desc", Static)
+            radio_set = app.screen.query_one(RadioSet)
+
+            def assert_at(index: int) -> None:
+                # The dot follows the highlight, and the description matches.
+                assert radio_set.pressed_index == index
+                assert str(panel.render()) == desc_for(index)
+
+            assert_at(0)  # default LOCAL on entry
+            await pilot.press("down")
+            await pilot.pause()
+            assert_at(1)
+            await pilot.press("down")
+            await pilot.pause()
+            assert_at(2)
+            await pilot.press("up")
+            await pilot.pause()
+            assert_at(1)
+
+    asyncio.run(drive())
+
+
+def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
+    """A placeholder step's stored default is the trailing "Skip" row. Entering
+    the step must keep that default (the dot must not jump to the first row), and
+    pressing Enter without moving must record "Skip", not the first option.
+    Arrow keys then move the highlight and the dot together.
+    """
+    from textual.widgets import RadioSet, Static
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_web_search_step
+
+    # web_search options, with the appended "Skip for now" row last (index 4).
+    skip_index = 4
+
+    async def drive_enter_only() -> dict:
+        app = SetupWizardApp(WizardState(), steps=[make_web_search_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            radio_set = app.screen.query_one(RadioSet)
+            panel = app.screen.query_one("#choice-desc", Static)
+            # On entry the cursor, the dot, and the description all sit on the
+            # stored default ("Skip"), not the first row.
+            assert radio_set.pressed_index == skip_index
+            assert str(panel.render()) == "Configure this later."
+            await pilot.press("enter")  # commit without moving
+            await pilot.pause()
+        return dict(app.state.extras)
+
+    async def drive_down_then_enter() -> dict:
+        app = SetupWizardApp(WizardState(), steps=[make_web_search_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            radio_set = app.screen.query_one(RadioSet)
+            await pilot.press("down")  # Skip is last, so down wraps to the first
+            await pilot.pause()
+            assert radio_set.pressed_index == 0  # dot followed the highlight
+            await pilot.press("enter")
+            await pilot.pause()
+        return dict(app.state.extras)
+
+    assert asyncio.run(drive_enter_only()) == {"web_search": "__skip__"}
+    assert asyncio.run(drive_down_then_enter()) == {"web_search": "tavily"}
+
+
 def test_wizard_pilot_selects_non_default_provider(monkeypatch):
     from textual.widgets import Input
 

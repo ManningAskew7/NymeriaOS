@@ -124,6 +124,52 @@ class WizardStep(Screen):
         self._wizard.request_quit()
 
 
+class SelectingRadioSet(RadioSet):
+    """A `RadioSet` whose pressed dot follows the highlight cursor.
+
+    The stock `RadioSet` keeps two states: a highlight cursor moved by the arrow
+    keys (`_selected`) and a pressed dot changed only by Space, Enter, or a mouse
+    click. That is select-then-confirm behaviour. The wizard wants the highlight
+    to *be* the selection, so this subclass presses whichever option the cursor
+    lands on as it moves. Pressing fires the stock `RadioSet.Changed`, which the
+    step handles to keep its description in sync, so no extra message type is
+    needed.
+
+    The press is gated on `is_mounted`, so it never fires during the base's own
+    mount-time cursor setup (`_on_mount` calls `action_next_button` to park the
+    cursor). The base leaves the cursor on the first row even when the pressed
+    dot is a later one, e.g. the trailing "Skip" row on placeholder steps, so the
+    step calls `align_cursor_to_selection` after mount to put them in agreement.
+    """
+
+    def align_cursor_to_selection(self) -> None:
+        """Move the highlight cursor onto the already-pressed dot. Call after mount.
+
+        Assigning `_selected` only moves the cursor (no press, no `Changed`); the
+        dot is already on the stored default from the `value=True` button, so this
+        just makes the highlight match it without disturbing the selection.
+        """
+        if self.pressed_index >= 0:
+            self._selected = self.pressed_index
+
+    def _follow_highlight(self) -> None:
+        index = self._selected
+        if index is None or not self.is_mounted:
+            return
+        if 0 <= index < len(self._nodes):
+            button = self._nodes[index]
+            if isinstance(button, RadioButton) and not button.value:
+                button.value = True
+
+    def action_next_button(self) -> None:
+        super().action_next_button()
+        self._follow_highlight()
+
+    def action_previous_button(self) -> None:
+        super().action_previous_button()
+        self._follow_highlight()
+
+
 class SingleSelectStep(WizardStep):
     """A radio-button choice that stores one value into state."""
 
@@ -155,17 +201,28 @@ class SingleSelectStep(WizardStep):
         ]
         if initial is None and buttons:
             buttons[0] = RadioButton(self._choices[0].label, value=True)
-        yield RadioSet(*buttons)
+        yield SelectingRadioSet(*buttons)
         yield Static("", id="choice-desc")
 
     def on_mount(self) -> None:
-        radio_set = self.query_one(RadioSet)
-        radio_set.focus()
-        idx = radio_set.pressed_index
+        self.query_one(SelectingRadioSet).focus()
+        # Align the highlight with the stored default and seed the description
+        # once the mount settles. call_after_refresh runs after the base RadioSet
+        # has parked its cursor, so the alignment is not undone.
+        self.call_after_refresh(self._sync_on_entry)
+
+    def _sync_on_entry(self) -> None:
+        radio_set = self.query_one(SelectingRadioSet)
+        radio_set.align_cursor_to_selection()
+        idx = getattr(radio_set, "_selected", None)
+        if not isinstance(idx, int) or idx < 0:
+            idx = radio_set.pressed_index
         if 0 <= idx < len(self._choices):
             self._set_description(idx)
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        # The dot follows the highlight (SelectingRadioSet), so this fires on
+        # every arrow move as well as on Space/click, keeping the description live.
         self._set_description(event.index)
 
     def _set_description(self, index: int) -> None:
@@ -318,6 +375,7 @@ def placeholder_step(
 __all__ = [
     "Choice",
     "WizardStep",
+    "SelectingRadioSet",
     "SingleSelectStep",
     "MultiSelectStep",
     "single_select_step",
