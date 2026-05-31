@@ -476,7 +476,7 @@ def test_exa_builds_payload_with_filters(monkeypatch):
     assert payload["endPublishedDate"] == "2025-06-01"
     assert payload["includeDomains"] == ["arxiv.org", "nature.com"]
     assert payload["excludeDomains"] == ["spam.example"]
-    assert payload["contents"] == {"highlights": True}
+    assert payload["contents"] == {"highlights": {"maxCharacters": 1000}}
     # Auth uses the x-api-key header plus the integration tag.
     assert captured["headers"]["x-api-key"] == "key"
     assert captured["headers"]["x-exa-integration"] == "nymeria"
