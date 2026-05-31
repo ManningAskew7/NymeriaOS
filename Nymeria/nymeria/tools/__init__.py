@@ -14,6 +14,7 @@ from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
 from .web_search_integrations import (
     web_search_tavily,
     web_search_exa,
+    web_search_firecrawl,
     WEB_SEARCH_INTEGRATION_TOOLS,
 )
 from .think import consult, CONSULT_TOOLS
@@ -2647,6 +2648,7 @@ __all__ = [
     "WEB_SEARCH_SERVICE_TOOLS",
     "web_search_tavily",
     "web_search_exa",
+    "web_search_firecrawl",
     "WEB_SEARCH_INTEGRATION_TOOLS",
     "consult",
     "CONSULT_TOOLS",

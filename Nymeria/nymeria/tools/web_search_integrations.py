@@ -2,9 +2,9 @@
 
 The first web search tool, ``web_search_perplexity``, lives in ``web.py``. This
 module holds the extra opt-in providers added per
-``docs/private/plans/web-search-integrations.md``, starting with Tavily, then
-Exa. Each
-provider resolves its key through the credential vault (vault, then settings,
+``docs/private/plans/web-search-integrations.md``, starting with Tavily, Exa,
+then Firecrawl. Each provider resolves its key through the credential vault
+(vault, then settings,
 then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
 ``tools/__init__.py`` folds into ``OPTIONAL_TOOLS`` alongside
 ``WEB_SEARCH_SERVICE_TOOLS``.
@@ -42,6 +42,19 @@ _EXA_CATEGORIES = {
 }
 # "company" / "people" categories reject date filters and exclude_domains.
 _EXA_CATEGORY_DATE_CONFLICT = {"company", "people"}
+
+_FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
+# "images" is dropped: an unused modality for a text agent.
+_FIRECRAWL_SOURCES = {"web", "news"}
+_FIRECRAWL_CATEGORIES = {"github", "research", "pdf"}
+# Friendly recency values mapped to Firecrawl's Google-style "tbs" codes.
+_FIRECRAWL_TIME_RANGES = {
+    "hour": "qdr:h",
+    "day": "qdr:d",
+    "week": "qdr:w",
+    "month": "qdr:m",
+    "year": "qdr:y",
+}
 
 
 def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -444,8 +457,213 @@ def web_search_exa(
     return "\n\n".join(sections)
 
 
+def _get_firecrawl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
+    """Resolve the Firecrawl API key: credential vault, then settings, then env."""
+    from .native_credentials import get_native_credential_value
+
+    cred = get_native_credential_value(
+        provider="firecrawl",
+        provider_aliases=("firecrawl_api", "fc"),
+        field_names=("api_key", "token", "value"),
+        tool_name="web_search_firecrawl",
+        config=config,
+    )
+    if cred and cred.value:
+        return cred.value
+
+    from ..config import get_settings
+    import os
+    settings = get_settings()
+    return settings.firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY")
+
+
+def _format_firecrawl_results(data: dict, max_results: int) -> str:
+    """Format a Firecrawl /v2/search response into ranked-source text.
+
+    Results arrive under data.web[] and data.news[] (no flat results list). Web
+    items carry a "description" snippet; news items carry a "snippet" plus a
+    free-form "date". News items are tagged so the agent can tell them apart.
+    """
+    payload = data.get("data") or {}
+    web = payload.get("web") or []
+    news = payload.get("news") or []
+
+    lines: list[str] = []
+    counter = 1
+    for tag, items in (("", web), (" [news]", news)):
+        for item in items[:max_results]:
+            title = (item.get("title") or "").strip() or "(untitled)"
+            url = item.get("url") or ""
+            published = (item.get("date") or item.get("publishedDate") or "").strip()
+            snippet = (item.get("description") or item.get("snippet") or "").strip()
+            meta = f" · {published}" if published else ""
+            block = f"{counter}. {title}{tag}\n   {url}{meta}"
+            if snippet:
+                block += f"\n   {snippet}"
+            lines.append(block)
+            counter += 1
+
+    return "\n".join(lines) if lines else "[No results]"
+
+
+def _firecrawl_domain(raw: str) -> str:
+    """Reduce a domain to a bare hostname; Firecrawl rejects scheme/path entries."""
+    host = raw.strip()
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    return host.split("/", 1)[0].strip().lower()
+
+
+def _firecrawl_search_single(payload: dict, api_key: str, timeout: float, max_results: int) -> str:
+    """Execute a single Firecrawl search and return formatted result."""
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(_FIRECRAWL_SEARCH_URL, headers=headers, json=payload)
+            response.raise_for_status()
+
+        data = response.json()
+        out = _format_firecrawl_results(data, max_results)
+        logger.debug("Firecrawl search returned %d characters", len(out))
+        return out
+
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Firecrawl API error: {e.response.status_code}"
+        logger.error(error_msg)
+        return f"[Error]: {error_msg}"
+
+    except Exception as e:
+        error_msg = f"Firecrawl search failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return f"[Error]: {error_msg}"
+
+
+@tool
+def web_search_firecrawl(
+    query: str = "",
+    queries: str = "",
+    limit: Optional[int] = None,
+    time_range: Optional[str] = None,
+    sources: str = "",
+    categories: str = "",
+    include_domains: str = "",
+    exclude_domains: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Search the web for current information using Firecrawl.
+
+    Returns a ranked list of sources (title, URL, snippet) for a query. This is
+    the snippet-only search mode: it does not scrape result pages. For a single
+    synthesized answer prefer web_search_perplexity; to pull the full body of a
+    specific page, use a dedicated page-fetch tool.
+
+    Args:
+        query: Single search query.
+        queries: Multiple queries separated by " | " (pipe with spaces). Takes
+                 precedence over query; each is searched independently. Max 10.
+                 e.g. "rust async runtimes | tokio vs async-std 2025"
+        limit: Sources to return per query (1-100, default 5).
+        time_range: Restrict results by recency: "hour", "day", "week", "month",
+                    or "year".
+        sources: Comma-separated result types: "web" (default) and/or "news",
+                 e.g. "web, news".
+        categories: Comma-separated content-type filters: "github", "research",
+                    or "pdf". Omit for a general search.
+        include_domains: Comma-separated domains to restrict results to,
+                         e.g. "github.com, arxiv.org". Cannot be combined with
+                         exclude_domains (exclude_domains is ignored when both set).
+        exclude_domains: Comma-separated domains to exclude from results.
+
+    Returns:
+        Ranked sources as "N. <title>[ [news]]\\n   <url> · <date>\\n   <snippet>".
+        Batch mode: sections separated by "=== Query N/M: <query> ===" headers.
+        Errors: "[Error]: <reason>".
+    """
+    # Parse queries (batch takes precedence over single query).
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ")]
+        query_list = [q for q in query_list if q]
+        if len(query_list) > _MAX_BATCH_QUERIES:
+            query_list = query_list[:_MAX_BATCH_QUERIES]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    api_key = _get_firecrawl_api_key(config)
+    if not api_key:
+        return (
+            "[Error]: No Firecrawl credential found. Set FIRECRAWL_API_KEY or call "
+            'request_credential(provider="firecrawl", '
+            'bind_target="native_tool:web_search_firecrawl") to provision one.'
+        )
+
+    # Clamp limit; build a base payload omitting unset params so Firecrawl applies
+    # its own defaults. Invalid enum values are ignored (fall back to the default).
+    if limit is not None:
+        limit = max(1, min(100, limit))
+    else:
+        limit = 5
+
+    # Snippet-only: scrapeOptions is intentionally never set. Setting it would
+    # scrape every result page (~6x the credits) and overlaps the page-fetch
+    # tool's role; full page bodies belong to that dedicated tool.
+    base_payload: dict = {"limit": limit}
+
+    if time_range and time_range.lower() in _FIRECRAWL_TIME_RANGES:
+        base_payload["tbs"] = _FIRECRAWL_TIME_RANGES[time_range.lower()]
+
+    src = [s.strip().lower() for s in sources.split(",") if s.strip()]
+    src = [s for s in src if s in _FIRECRAWL_SOURCES]
+    if src:
+        base_payload["sources"] = src
+
+    cats = [c.strip().lower() for c in categories.split(",") if c.strip()]
+    cats = [c for c in cats if c in _FIRECRAWL_CATEGORIES]
+    if cats:
+        base_payload["categories"] = cats
+
+    inc = [h for h in (_firecrawl_domain(d) for d in include_domains.split(",")) if h]
+    exc = [h for h in (_firecrawl_domain(d) for d in exclude_domains.split(",")) if h]
+    # includeDomains and excludeDomains are mutually exclusive (Firecrawl 400s if
+    # both are sent); prefer include and drop exclude.
+    if inc:
+        base_payload["includeDomains"] = inc
+    elif exc:
+        base_payload["excludeDomains"] = exc
+
+    logger.info(
+        "Firecrawl search: %d query(ies) (limit=%d)",
+        len(query_list),
+        limit,
+    )
+
+    # Single query: return directly.
+    if len(query_list) == 1:
+        payload = {**base_payload, "query": query_list[0]}
+        return _firecrawl_search_single(payload, api_key, 30.0, limit)
+
+    # Batch mode.
+    total = len(query_list)
+    sections = []
+    for i, q in enumerate(query_list, 1):
+        header = f"=== Query {i}/{total}: {q} ==="
+        payload = {**base_payload, "query": q}
+        result = _firecrawl_search_single(payload, api_key, 30.0, limit)
+        sections.append(f"{header}\n{result}")
+
+    return "\n\n".join(sections)
+
+
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
 # into OPTIONAL_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
-# Search group. Remaining providers (Firecrawl, Brave, DuckDuckGo, SearXNG) are
-# appended here per docs/private/plans/web-search-integrations.md.
-WEB_SEARCH_INTEGRATION_TOOLS = [web_search_tavily, web_search_exa]
+# Search group. Remaining providers (Brave, DuckDuckGo, SearXNG) are appended
+# here per docs/private/plans/web-search-integrations.md.
+WEB_SEARCH_INTEGRATION_TOOLS = [web_search_tavily, web_search_exa, web_search_firecrawl]
