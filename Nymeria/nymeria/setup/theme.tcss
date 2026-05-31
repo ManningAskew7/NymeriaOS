@@ -75,23 +75,20 @@ RadioButton.-on > .toggle--button {
     color: #ffffff;
 }
 
-/* Full-row selection bar. Stock RadioSet tints only the label (`.toggle--label`),
-   which leaves a ragged-width bar with the circle floating outside it. Instead
-   tint the whole highlighted RadioButton (it is `1fr` wide) and make the label
-   background transparent so the row colour shows through circle + text + full
-   width. A soft steel-blue replaces the loud `$block-cursor-background`; dimmer
-   when the set is blurred (e.g. the connection step's API-mode set). */
+/* No selection bar: the highlighted option is marked by bold + brighter text
+   alone, not a background. Stock RadioSet tints `.toggle--label`; we override
+   that to transparent and instead lift the selected row's text. The filled white
+   circle (the dot follows the highlight) already pins which row is current, so
+   bold-bright text reads clearly without a bar. Slightly dimmer when the set is
+   blurred (e.g. the connection step's API-mode set while focus is elsewhere). */
 RadioSet > RadioButton.-selected {
-    background: #26303d;
+    background: transparent;
 }
 
 RadioSet > RadioButton.-selected > .toggle--label {
     background: transparent;
-    color: #e8eaed;
-}
-
-RadioSet:focus > RadioButton.-selected {
-    background: #2b4d70;
+    color: #cdd6e3;
+    text-style: bold;
 }
 
 RadioSet:focus > RadioButton.-selected > .toggle--label {

@@ -506,18 +506,21 @@ def test_wizard_radio_renders_bare_circles_without_box():
     asyncio.run(drive())
 
 
-def test_wizard_radio_highlight_spans_full_row():
-    """The highlighted option is tinted across the whole row (circle + text +
-    full width), not just the label.
+def test_wizard_radio_highlight_is_bold_brighten_no_bar():
+    """The highlighted option is marked by bold + brighter text alone, with no
+    background bar.
 
-    Regression: the stock RadioSet paints only ``.toggle--label`` (auto-width),
-    leaving a ragged bar with the filled circle floating outside it. The fix
-    tints the whole ``1fr``-wide RadioButton and makes the label transparent so
-    the row colour is the highlight.
+    The filled white circle (the dot follows the highlight) already pins the
+    current row, so the selection reads from the text weight/brightness rather
+    than a tinted bar. This asserts no row carries a background, and the selected
+    label is both bold and brighter than the non-selected labels.
     """
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.base import CircleRadioButton
+
+    def luma(color) -> int:
+        return color.r + color.g + color.b
 
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
@@ -525,25 +528,21 @@ def test_wizard_radio_highlight_spans_full_row():
             await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
             selected = [b for b in buttons if b.has_class("-selected")]
+            others = [b for b in buttons if not b.has_class("-selected")]
             assert len(selected) == 1  # exactly the highlighted row
-            row = selected[0]
-            # The whole row carries an opaque tint, so the bar spans the 1fr
-            # width (circle + text + the gap out to the border), not just the
-            # auto-width label.
-            row_bg = row.styles.background
-            assert row_bg.a == 1
-            # The label declares a transparent background, so it adds no separate
-            # box inside the bar: its composited colour is exactly the row tint.
-            # (get_visual_style composites transparency against the row, so we
-            # compare the result to the row colour rather than expecting a==0.)
-            label_bg = row.get_visual_style("toggle--label").background
-            assert (label_bg.r, label_bg.g, label_bg.b) == (row_bg.r, row_bg.g, row_bg.b)
-            # Non-selected rows show no bar at all.
-            assert all(
-                b.styles.background.a == 0
-                for b in buttons
-                if not b.has_class("-selected")
-            )
+            assert others  # and there are unselected rows to contrast against
+
+            # No row paints a background: there is no selection bar.
+            assert all(b.styles.background.a == 0 for b in buttons)
+
+            sel_label = selected[0].get_visual_style("toggle--label")
+            assert sel_label.bold is True  # the selected row is bold...
+            # ...and brighter than every unselected label, which stay un-bold.
+            sel_luma = luma(sel_label.foreground)
+            for other in others:
+                other_label = other.get_visual_style("toggle--label")
+                assert other_label.bold is not True
+                assert sel_luma >= luma(other_label.foreground)
 
     asyncio.run(drive())
 
