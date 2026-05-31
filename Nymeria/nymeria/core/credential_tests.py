@@ -225,6 +225,22 @@ async def _test_anthropic(
     )
 
 
+async def _test_tavily(
+    provider: str,
+    kind: str,
+    metadata: dict[str, Any],
+    secret_fields: dict[str, str],
+    settings: Any,
+) -> CredentialTestResult:
+    _ = provider, kind, metadata, settings
+    api_key = _first_secret(secret_fields, "api_key", "token", "value")
+    return await _get_json_probe(
+        "https://api.tavily.com/usage",
+        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+        secrets=(api_key,),
+    )
+
+
 async def _test_openai_compatible_llm(
     provider: str,
     kind: str,
@@ -260,6 +276,7 @@ register_credential_tester("github", _test_github)
 register_credential_tester("todoist", _test_todoist)
 register_credential_tester("anthropic", _test_anthropic)
 register_credential_tester("anthropic_direct", _test_anthropic)
+register_credential_tester("tavily", _test_tavily)
 
 
 __all__ = [

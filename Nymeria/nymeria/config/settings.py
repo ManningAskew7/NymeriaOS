@@ -692,6 +692,7 @@ class Settings(BaseSettings):
     openrouter_api_key: Optional[str] = Field(default=None)
     perplexity_api_key: Optional[str] = Field(default=None)
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
+    tavily_api_key: Optional[str] = Field(default=None, description="Tavily API key for web_search_tavily")
     wolfram_alpha_app_id: Optional[str] = Field(default=None, description="Wolfram|Alpha AppID for wolfram_alpha_query")
     searxng_base_url: Optional[str] = Field(default=None, description="Base URL for a SearXNG instance")
     nasa_api_key: Optional[str] = Field(default=None, description="NASA API key for nasa_apod")
