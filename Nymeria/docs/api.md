@@ -543,8 +543,8 @@ finishes or errors.
 data: {"type": "thinking", "content": "...", "thread_id": "abc123"}
 data: {"type": "response", "content": "I'll check that now.", "thread_id": "abc123"}
 data: {"type": "tool_call_delta", "thread_id": "abc123"}
-data: {"type": "tool_call", "name": "web_search", "args": {...}, "thread_id": "abc123"}
-data: {"type": "tool_result", "name": "web_search", "result": "...", "thread_id": "abc123"}
+data: {"type": "tool_call", "name": "web_search_perplexity", "args": {...}, "thread_id": "abc123"}
+data: {"type": "tool_result", "name": "web_search_perplexity", "result": "...", "thread_id": "abc123"}
 data: {"type": "workspace_artifact", "tool_call_id": "tool1", "tool_name": "file_write", "path": "/workspace/report.csv", "name": "report.csv", "mime_type": "text/csv", "size_bytes": 1024, "thread_id": "abc123"}
 data: {"type": "response", "content": "...", "thread_id": "abc123"}
 data: {"type": "done", "thread_id": "abc123"}
@@ -756,7 +756,7 @@ already holds the full multi-turn history.
   "values": {
     "messages": [
       { "type": "human", "content": "..." },
-      { "type": "ai", "content": "", "tool_calls": [ { "name": "web_search", "args": {}, "id": "call_1" } ] },
+      { "type": "ai", "content": "", "tool_calls": [ { "name": "web_search_perplexity", "args": {}, "id": "call_1" } ] },
       { "type": "tool", "content": "...", "tool_call_id": "call_1" }
     ]
   }
@@ -3310,7 +3310,7 @@ Returns available tool categories.
 ```json
 {
   "categories": {
-    "general": ["bash_execute", "file_read", "file_write", "web_search", "consult", "notify"],
+    "general": ["bash_execute", "file_read", "file_write", "web_search_perplexity", "consult", "notify"],
     "profile": ["memory_add", "memory_edit", "memory_read", "personality_set", "rag_search"],
     "todo": ["nym_todo", "nym_todo_delete", "nym_todo_list"],
     "skills": ["skill_manage", "list_installed_skills", "search_skills", "install_skill"],

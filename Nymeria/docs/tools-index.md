@@ -1160,7 +1160,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `watchdog_dispatch` | `nymeria/tools/watchdog_dispatch.py` | Dispatch a TODO to a target thread. You CANNOT target your own thread. |
 | `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read another thread's notepad to understand what it's currently focused on. |
 | `watchdog_todo_overview` | `nymeria/tools/watchdog_dispatch.py` | List all active TODOs across ALL threads, showing which thread each belongs to. |
-| `web_search` | `nymeria/tools/web.py` | Search the web for current information using Perplexity. |
+| `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
 | `webex_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Webex message. |
 | `webex_get_message` | `nymeria/tools/chat_platform_service_integrations.py` | Get one Webex message. |
 | `webex_get_room` | `nymeria/tools/chat_platform_service_integrations.py` | Get Webex room metadata. |

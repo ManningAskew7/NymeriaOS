@@ -2891,17 +2891,21 @@ class NymeriaAgent:
             profile = self.profile_manager.get_profile(user_id)
             if profile.tool_preferences.default_thread_tools is not None:
                 current = set(profile.tool_preferences.default_thread_tools)
-                updated = [
-                    name
+                # web_search was renamed to web_search_perplexity and moved into
+                # the opt-in WEB_SEARCH_SERVICE_TOOLS group. Rename in place so
+                # users who had web search enabled by default keep it (now as an
+                # opt-in tool) and no orphaned "web_search" entry remains.
+                updated = list(dict.fromkeys(
+                    ("web_search_perplexity" if name == "web_search" else name)
                     for name in profile.tool_preferences.default_thread_tools
                     if name not in CAPABILITY_EXPANSION_TOOL_NAMES
-                ]
+                ))
                 if set(updated) != current:
                     profile.tool_preferences.default_thread_tools = updated
                     self.profile_manager.save_profile(profile)
                     logger.info(
-                        "Removed capability expansion tools from default_thread_tools "
-                        "for user %s",
+                        "Normalized default_thread_tools for user %s "
+                        "(web_search -> web_search_perplexity, stripped capability expansion)",
                         user_id,
                     )
                 continue  # Already migrated
@@ -2930,6 +2934,12 @@ class NymeriaAgent:
                 except Exception:
                     logger.warning("Best-effort migration of enabled_overrides failed", exc_info=True)
 
+            # Normalize any legacy web_search reference carried over from old
+            # enabled_overrides (renamed to web_search_perplexity, now opt-in).
+            default_names = list(dict.fromkeys(
+                "web_search_perplexity" if n == "web_search" else n
+                for n in default_names
+            ))
             profile.tool_preferences.default_thread_tools = default_names
             self.profile_manager.save_profile(profile)
             logger.info(f"Initialized default_thread_tools for user {user_id} ({len(default_names)} tools)")

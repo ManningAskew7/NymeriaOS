@@ -4,7 +4,7 @@ import { getToolSummary } from './toolSummary';
 
 describe('getToolSummary', () => {
   it('uses a self-describing query argument', () => {
-    expect(getToolSummary('web_search', { query: 'best coffee shops in sydney' })).toBe(
+    expect(getToolSummary('web_search_perplexity', { query: 'best coffee shops in sydney' })).toBe(
       'best coffee shops in sydney',
     );
   });
@@ -20,7 +20,7 @@ describe('getToolSummary', () => {
   });
 
   it('joins array values like queries', () => {
-    expect(getToolSummary('web_search', { queries: ['a', 'b', 'c', 'd'] })).toBe('a, b, c');
+    expect(getToolSummary('web_search_perplexity', { queries: ['a', 'b', 'c', 'd'] })).toBe('a, b, c');
   });
 
   it('prefixes a named target with the verb', () => {
@@ -80,7 +80,7 @@ describe('getToolSummary', () => {
   });
 
   it('handles missing or undefined args', () => {
-    expect(getToolSummary('web_search', undefined)).toBeNull();
+    expect(getToolSummary('web_search_perplexity', undefined)).toBeNull();
   });
 
   it('keeps a long command at length, bounded only by the content safety cap', () => {

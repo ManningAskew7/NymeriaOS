@@ -11,7 +11,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands in the backend environment |
 | 2 | `file_read` | Core | SAFE | On | Read file contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
-| 4 | `web_search` | Core | SAFE | On | Search the web via Perplexity |
+| 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -266,22 +266,24 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 ---
 
-### web_search
+### web_search_perplexity
 
-Search the web using the Perplexity API.
+Search the web using the Perplexity API. Opt-in tool in the
+`WEB_SEARCH_SERVICE_TOOLS` group (enable per thread), not a core tool.
 
 ```python
-web_search(query: str, search_depth: Optional[str] = None, max_sources: Optional[int] = None)
+web_search_perplexity(query: str = "", queries: str = "", search_depth: Optional[str] = None, max_sources: Optional[int] = None)
 ```
 
 **Parameters:**
-- `query` (`str`): Search query
+- `query` (`str`): Single search query
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
 - `search_depth` (`Optional[str]`): `"quick"` (sonar), `"standard"` (sonar-pro), or `"deep"` (sonar-deep-research). Defaults to `settings.perplexity_search_model`.
 - `max_sources` (`Optional[int]`): Maximum sources to cite (1-10, default 5)
 
-**Returns:** Search results with citations.
+**Returns:** Search results with a numbered `**Sources:**` list (batch mode adds `=== Query N/M: ... ===` headers); errors as `[Error]: ...`.
 
-**Requires:** `PERPLEXITY_API_KEY` environment variable.
+**Requires:** a Perplexity credential, resolved credential vault -> `PERPLEXITY_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="perplexity", bind_target="native_tool:web_search_perplexity")`.
 
 **Timeouts:** 60s for quick/standard, 180s for deep research. Max tokens: 2000 for quick/standard, 4000 for deep.
 
@@ -2485,7 +2487,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 

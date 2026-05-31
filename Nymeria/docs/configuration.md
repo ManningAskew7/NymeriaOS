@@ -126,7 +126,7 @@ Set the API key for your chosen provider:
 | `EMBEDDING_API_KEY` | OpenAI-compatible embeddings | Optional; enables semantic memory/skill search. Keep separate from CLIProxy `OPENAI_API_KEY` values. |
 | `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
 | `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
-| `PERPLEXITY_API_KEY` | Perplexity | Required for `web_search` tool |
+| `PERPLEXITY_API_KEY` | Perplexity | Used by `web_search_perplexity` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
 | `SEARXNG_BASE_URL` | SearXNG | Optional env fallback for `searxng_search`; credential vault provider `searxng` is preferred |
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
@@ -947,7 +947,7 @@ reachable from the backend process.
 | `OUTLOOK_DEFAULT_ACCOUNT_ID` | - | Default Outlook account for email tools |
 | `MICROSOFT_MCP_CLIENT_ID` | - | Azure AD app client ID for Outlook/Teams OAuth |
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth installed-app credentials JSON file. Used by both the legacy `*_auth_start` tools and the new unified `request_credential(kind="oauth")` flow for Google providers. Required for any Google OAuth path; user tokens are stored in the vault as `kind=oauth_token`, but the client secret itself stays in this file (one per Nymeria install). |
-| `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search tool |
+| `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search_perplexity tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |

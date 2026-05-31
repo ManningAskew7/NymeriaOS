@@ -171,7 +171,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 |----------|-------|
 | **Files** | `file_read`, `file_write` (broad write access by default; optional `NYMERIA_CONFINE_FILE_TO_WORKSPACE=true`) |
 | **Shell** | `bash_execute` (backend shell execution, bounded by deployment and tool policy) |
-| **Web** | `web_search` (Perplexity, 3 depth levels) |
+| **Web** | `web_search_perplexity` (Perplexity, 3 depth levels; opt-in) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
 | **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |

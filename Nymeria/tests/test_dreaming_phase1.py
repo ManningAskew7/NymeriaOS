@@ -301,7 +301,7 @@ def test_dream_graph_uses_strict_tool_allowlist(stub_agent):
             enabled_tools=[
                 "thread_instructions_set",
                 "tool_create",
-                "web_search",
+                "web_search_perplexity",
                 "browser_navigate",
             ],
             disabled_tools=["nym_todo_delete"],
@@ -316,7 +316,7 @@ def test_dream_graph_uses_strict_tool_allowlist(stub_agent):
     assert set(DEFAULT_DREAM_ENABLED_CORE_TOOLS) - {"nym_todo_delete"} <= names
     assert "thread_instructions_set" in names
     assert "tool_create" in names
-    assert "web_search" not in names
+    assert "web_search_perplexity" not in names
     assert "browser_navigate" not in names
     assert "bash_execute" not in names
     assert "nym_todo_delete" not in names

@@ -10,7 +10,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 from .bash import bash_execute
 from .filesystem import file_read, file_write
 from .file_edit import file_edit, FILE_EDIT_TOOLS
-from .web import web_search
+from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
@@ -1352,6 +1352,7 @@ _PRV_TOOLS_A = (
 OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
+    + WEB_SEARCH_SERVICE_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
@@ -1497,7 +1498,6 @@ ALL_TOOLS = [
     bash_execute,
     file_read,
     file_write,
-    web_search,
     consult,
     # Memory tools (unified profile + thread-notepad CRUD)
     memory_add,
@@ -2637,7 +2637,8 @@ __all__ = [
     "microsoft_excel_list_tables",
     "microsoft_excel_add_table_row",
     "MICROSOFT_GRAPH_SERVICE_TOOLS",
-    "web_search",
+    "web_search_perplexity",
+    "WEB_SEARCH_SERVICE_TOOLS",
     "consult",
     "CONSULT_TOOLS",
     "claude_code",

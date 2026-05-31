@@ -172,7 +172,7 @@ def _spawn_goal_supervisor(
                 "mode": "fresh",
                 "ttl_hours": 48,
                 "make_callable": True,
-                "optional_tools": ["web_search", "http_request", "tool_search"],
+                "optional_tools": ["web_search_perplexity", "http_request", "tool_search"],
             },
             config=config,
         )
