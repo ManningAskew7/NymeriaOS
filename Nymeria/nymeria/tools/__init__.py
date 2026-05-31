@@ -11,7 +11,11 @@ from .bash import bash_execute
 from .filesystem import file_read, file_write
 from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
-from .web_search_integrations import web_search_tavily, WEB_SEARCH_INTEGRATION_TOOLS
+from .web_search_integrations import (
+    web_search_tavily,
+    web_search_exa,
+    WEB_SEARCH_INTEGRATION_TOOLS,
+)
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
@@ -2642,6 +2646,7 @@ __all__ = [
     "web_search_perplexity",
     "WEB_SEARCH_SERVICE_TOOLS",
     "web_search_tavily",
+    "web_search_exa",
     "WEB_SEARCH_INTEGRATION_TOOLS",
     "consult",
     "CONSULT_TOOLS",

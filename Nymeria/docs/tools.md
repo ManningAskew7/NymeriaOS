@@ -13,6 +13,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4c | `web_search_exa` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -319,6 +320,37 @@ Hard defaults (not exposed): `include_raw_content`, `include_images`, `auto_para
 **Requires:** a Tavily credential, resolved credential vault -> `TAVILY_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="tavily", bind_target="native_tool:web_search_tavily")`. Free tier: 1,000 credits/month.
 
 **Timeouts:** 30s basic, 60s advanced.
+
+### web_search_exa
+
+Search the web using Exa, a neural/semantic retrieval API. Finds conceptually
+related pages that plain keyword search misses and returns the most
+query-relevant highlight sentences from each page. Returns ranked sources, not a
+synthesized answer (use `web_search_perplexity` for an answer). Opt-in tool in
+the `WEB_SEARCH_INTEGRATION_TOOLS` group (enable per thread), not a core tool.
+
+```python
+web_search_exa(query: str = "", queries: str = "", search_type: Optional[str] = None, num_results: Optional[int] = None, category: Optional[str] = None, start_published_date: str = "", end_published_date: str = "", include_domains: str = "", exclude_domains: str = "")
+```
+
+**Parameters (all agent-controlled per query):**
+- `query` (`str`): Single search query
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
+- `search_type` (`Optional[str]`): `"auto"` (default, Exa picks the mode), `"fast"` (lower latency), or `"instant"` (fastest)
+- `num_results` (`Optional[int]`): Sources to return per query (1-100, default 5); more than 10 costs extra credits
+- `category` (`Optional[str]`): Restrict to a content type: `"news"`, `"research paper"`, `"company"`, `"financial report"`, `"people"`, or `"personal site"`. `"company"`/`"people"` ignore date filters and `exclude_domains`
+- `start_published_date` (`str`): Only pages published on or after this ISO date (`YYYY-MM-DD`)
+- `end_published_date` (`str`): Only pages published on or before this ISO date (`YYYY-MM-DD`)
+- `include_domains` (`str`): Comma-separated domains to restrict results to
+- `exclude_domains` (`str`): Comma-separated domains to exclude
+
+Hard defaults (not exposed): `highlights` are always on (bundled free, used as the snippet); full-page `text` and per-result `summary` are off (a dedicated fetch tool covers full pages; summaries cost extra credits); the agentic `deep`/`deep-reasoning` modes and image/subpage/extras payloads are off.
+
+**Returns:** Ranked sources as `N. <title>\n   <url>  (score) · <date>\n   <highlights>`. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
+
+**Requires:** an Exa credential, resolved credential vault -> `EXA_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="exa", bind_target="native_tool:web_search_exa")`. Free tier: 1,000 requests/month; search bundles text + highlights for the first 10 results.
+
+**Timeout:** 30s.
 
 ---
 
@@ -2520,7 +2552,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
