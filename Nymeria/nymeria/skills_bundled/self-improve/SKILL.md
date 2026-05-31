@@ -51,11 +51,11 @@ the user is asking for a repeatable workflow rather than a single tool.
 Use this when Nymeria needs an external service, local app, database, browser,
 or API surface that is better exposed as an MCP server.
 
-Flow: `manage_mcp(action="search")` or `web_search` -> `manage_mcp(action="preview")`
+Flow: `manage_mcp(action="search")` or `web_search_perplexity` -> `manage_mcp(action="preview")`
 -> `manage_mcp(action="install")`.
 
 Start with `manage_mcp(action="search")` for official registry and Smithery
-results. If the registry search misses, use `web_search` to find official docs
+results. If the registry search misses, use `web_search_perplexity` to find official docs
 or GitHub repositories for MCP servers; `manage_mcp(action="install")` can
 often install directly from a repo URL, command, package page, HTTP endpoint,
 or Claude Desktop JSON snippet.

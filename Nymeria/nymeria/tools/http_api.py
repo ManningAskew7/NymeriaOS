@@ -1134,7 +1134,7 @@ def _api_discover_impl(
         tried=tried,
         hints=[
             "If the API has documentation, pass its exact URL as docs_url.",
-            "If no OpenAPI/Swagger spec exists, use web_search for official docs and examples, then call http_request with the documented endpoint and payload.",
+            "If no OpenAPI/Swagger spec exists, use web_search_perplexity for official docs and examples, then call http_request with the documented endpoint and payload.",
             "For GraphQL APIs, try an OPTIONS request or the documented GraphQL endpoint with http_request.",
         ],
     )

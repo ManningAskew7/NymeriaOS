@@ -8,7 +8,7 @@ metadata:
     required_tools:
       - mark_task_done
       - provide_review_feedback
-      - web_search
+      - web_search_perplexity
       - tool_search
     tool_ttl: 24h
 ---
@@ -54,7 +54,7 @@ Match the strictness to the criterion. Common patterns:
 | "Tests pass" | Run the test command yourself (`bash_execute`), check exit code |
 | "File `X` exists / contains Y" | `file_read X`, grep for Y |
 | "Endpoint returns 200" | `http_request` it yourself |
-| "Web search confirms Z" | `web_search` and read the actual result |
+| "Web search confirms Z" | `web_search_perplexity` and read the actual result |
 | "Code is well-formatted" | Read the diff/file and judge |
 | "Documentation updated" | Read the file and confirm the section is present |
 

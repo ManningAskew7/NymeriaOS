@@ -5,7 +5,7 @@ import { computeEffectiveToolCounts, liveTemporaryToolNames } from './toolCounts
 describe('computeEffectiveToolCounts', () => {
   it('counts default tools as active', () => {
     const counts = computeEffectiveToolCounts({
-      defaultToolNames: ['file_read', 'web_search'],
+      defaultToolNames: ['file_read', 'web_search_perplexity'],
     });
 
     expect(counts.totalActiveCount).toBe(2);

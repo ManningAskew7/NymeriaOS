@@ -20,7 +20,7 @@ __all__ = [
     "bash_execute",
     "file_read",
     "file_write",
-    "web_search",
+    "web_search_perplexity",
     # Triggers
     "CLITrigger",
     "create_api_app",
@@ -37,15 +37,15 @@ def __getattr__(name: str):
         from .config import Settings, get_settings
 
         return {"Settings": Settings, "get_settings": get_settings}[name]
-    if name in {"ALL_TOOLS", "bash_execute", "file_read", "file_write", "web_search"}:
-        from .tools import ALL_TOOLS, bash_execute, file_read, file_write, web_search
+    if name in {"ALL_TOOLS", "bash_execute", "file_read", "file_write", "web_search_perplexity"}:
+        from .tools import ALL_TOOLS, bash_execute, file_read, file_write, web_search_perplexity
 
         return {
             "ALL_TOOLS": ALL_TOOLS,
             "bash_execute": bash_execute,
             "file_read": file_read,
             "file_write": file_write,
-            "web_search": web_search,
+            "web_search_perplexity": web_search_perplexity,
         }[name]
     if name in {"CLITrigger", "create_api_app"}:
         from .triggers import CLITrigger, create_api_app

@@ -1,9 +1,10 @@
 """Web search tool for Nymeria."""
 
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,20 @@ SEARCH_DEPTH_MODELS = {
 _MAX_BATCH_QUERIES = 10
 
 
-def _get_perplexity_api_key() -> Optional[str]:
-    """Get Perplexity API key from settings or environment."""
+def _get_perplexity_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
+    """Resolve the Perplexity API key: credential vault, then settings, then env."""
+    from .native_credentials import get_native_credential_value
+
+    cred = get_native_credential_value(
+        provider="perplexity",
+        provider_aliases=("perplexity_api", "pplx"),
+        field_names=("api_key", "token", "value"),
+        tool_name="web_search_perplexity",
+        config=config,
+    )
+    if cred and cred.value:
+        return cred.value
+
     from ..config import get_settings
     import os
     settings = get_settings()
@@ -90,14 +103,15 @@ def _search_single(
 
 
 @tool
-def web_search(
+def web_search_perplexity(
     query: str = "",
     queries: str = "",
     search_depth: Optional[str] = None,
     max_sources: Optional[int] = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
     """
-    Search the web for current information using Perplexity.
+    Search the web for current information using Perplexity (Sonar).
 
     Use this tool when you need to find current information from the internet,
     such as recent news, documentation, facts, or any information that might
@@ -131,9 +145,13 @@ def web_search(
 
     logger.info(f"Web search: {len(query_list)} query(ies) (depth={search_depth})")
 
-    api_key = _get_perplexity_api_key()
+    api_key = _get_perplexity_api_key(config)
     if not api_key:
-        return "[Error]: PERPLEXITY_API_KEY not set. Web search is unavailable."
+        return (
+            "[Error]: No Perplexity credential found. Set PERPLEXITY_API_KEY or call "
+            'request_credential(provider="perplexity", '
+            'bind_target="native_tool:web_search_perplexity") to provision one.'
+        )
 
     # Resolve model from search_depth or fall back to settings default
     if search_depth and search_depth.lower() in SEARCH_DEPTH_MODELS:
@@ -166,3 +184,10 @@ def web_search(
         sections.append(f"{header}\n{result}")
 
     return "\n\n".join(sections)
+
+
+# Opt-in web search tool group. web_search_perplexity is the first member;
+# additional providers (Tavily, Exa, Firecrawl, Brave, DuckDuckGo, SearXNG) are
+# planned in docs/private/plans/web-search-integrations.md and will be appended
+# here as they land.
+WEB_SEARCH_SERVICE_TOOLS = [web_search_perplexity]

@@ -73,7 +73,7 @@ Look for the `[ASTREAM]` START→END pair matching the thread_id:
 ```
 [ASTREAM] === START === thread=abc-123, user=default
 [LLM] Invoking with 5 messages (0 tool rounds)
-[LLM] Response: 200 chars, tool_calls=['web_search']
+[LLM] Response: 200 chars, tool_calls=['web_search_perplexity']
 [LLM] Invoking with 7 messages (1 tool rounds)
 [LLM] Response: 500 chars, final answer
 [ASTREAM] === END === thread=abc-123, elapsed=8.2s
@@ -84,7 +84,7 @@ The `[LLM]` lines between START/END show each ReAct loop iteration. "tool rounds
 Set `LOG_PROFILES=llm`. This enables DEBUG-level message dumps showing every message in the context array:
 ```
 [LLM]   [0] HumanMessage: What's the weather in Sydney?...
-[LLM]   [1] AIMessage [tools: web_search]: Let me check...
+[LLM]   [1] AIMessage [tools: web_search_perplexity]: Let me check...
 [LLM]   [2] ToolMessage: {"temperature": 22, ...}...
 ```
 
@@ -117,7 +117,7 @@ To trace one thread through interleaved logs, grep for its thread_id.
 **5. "A tool timed out"**
 Look for `[LLM] TRUNCATED` (max_tokens hit) or check `SafeToolNode` timeout logs:
 ```
-Tool execution timed out after 300s. Tools: ['web_search']
+Tool execution timed out after 300s. Tools: ['web_search_perplexity']
 ```
 If a callable thread tool times out, the parent thread's `_on_tool_timeout` fires and signals abort on the callable's thread_id, cascading to any children.
 

@@ -492,7 +492,8 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 
 | Category | Tools |
 |----------|-------|
-| Core System | bash_execute, file_read, file_write, web_search, consult, notify, slash_command |
+| Core System | bash_execute, file_read, file_write, consult, notify, slash_command |
+| Web Search (opt-in) | web_search_perplexity |
 | Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
 | Credentials | auth_inspect, auth_cleanup, auth_bindings, request_credential |
@@ -756,7 +757,7 @@ Lifecycle (`pending_approval` → `active` → `done` / `paused` / `cleared` /
    it calls `request_review(task_id, summary, evidence)`, which marks the
    task `awaiting_review`, invokes S via `thread_agent_executor.invoke`,
    and **blocks for S's verdict**.
-5. S verifies independently (it can read files, run tests, web_search,
+5. S verifies independently (it can read files, run tests, web_search_perplexity,
    enable more tools) and either calls `mark_task_done` (approve) or
    `provide_review_feedback` (refine). The verdict and any feedback flow
    back to X as the tool's return value.
