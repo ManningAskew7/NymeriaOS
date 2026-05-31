@@ -24,7 +24,7 @@ from ..providers import (
 )
 from ..state import WizardState
 from ..widgets import ListItem, SearchableList
-from .base import WizardStep, commit_radio_highlight
+from .base import SelectingRadioSet, WizardStep, commit_radio_highlight
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -146,7 +146,7 @@ class ConnectionStep(WizardStep):
                 RadioButton(label, value=(value == self.state.api_mode))
                 for value, label in _API_MODE_CHOICES
             ]
-            yield RadioSet(*buttons, id="api-mode-set")
+            yield SelectingRadioSet(*buttons, id="api-mode-set")
         placeholder = (spec.default_base_url if spec else None) or "Provider default"
         yield Static("API base URL (optional)", classes="field-label")
         yield Input(
@@ -156,9 +156,13 @@ class ConnectionStep(WizardStep):
         )
 
     def on_mount(self) -> None:
-        api_mode_sets = list(self.query("#api-mode-set").results(RadioSet))
+        api_mode_sets = list(self.query("#api-mode-set").results(SelectingRadioSet))
         if api_mode_sets:
-            api_mode_sets[0].focus()
+            radio_set = api_mode_sets[0]
+            radio_set.focus()
+            # Land the highlight on the stored API mode so the dot follows from
+            # the first keypress (see SelectingRadioSet).
+            self.call_after_refresh(radio_set.align_cursor_to_selection)
         else:
             self.query_one("#base-url", Input).focus()
 
