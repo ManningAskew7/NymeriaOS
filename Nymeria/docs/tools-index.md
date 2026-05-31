@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1244 tools found.**
+**1245 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1161,6 +1161,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read another thread's notepad to understand what it's currently focused on. |
 | `watchdog_todo_overview` | `nymeria/tools/watchdog_dispatch.py` | List all active TODOs across ALL threads, showing which thread each belongs to. |
 | `web_search_exa` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Exa (neural/semantic retrieval). |
+| `web_search_firecrawl` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Firecrawl. |
 | `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
 | `web_search_tavily` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Tavily (agent-optimized retrieval). |
 | `webex_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Webex message. |

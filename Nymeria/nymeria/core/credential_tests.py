@@ -289,6 +289,53 @@ async def _test_exa(
     )
 
 
+async def _test_firecrawl(
+    provider: str,
+    kind: str,
+    metadata: dict[str, Any],
+    secret_fields: dict[str, str],
+    settings: Any,
+) -> CredentialTestResult:
+    # Firecrawl has no free GET auth-check endpoint, so validate the key with the
+    # cheapest representative call: a minimal /v2/search (limit=1, no
+    # scrapeOptions) against the fixed api.firecrawl.dev host. 401 means a bad
+    # key; a status below 400 means the key works. The host is a hard-coded
+    # constant (no user-supplied URL), so a bare httpx POST off the event loop is
+    # fine here.
+    _ = provider, kind, metadata, settings
+    import httpx
+
+    api_key = _first_secret(secret_fields, "api_key", "token", "value")
+
+    def _probe():
+        with httpx.Client(timeout=_DEFAULT_TIMEOUT_SECONDS) as client:
+            return client.post(
+                "https://api.firecrawl.dev/v2/search",
+                headers={
+                    "Authorization": f"Bearer {api_key or ''}",
+                    "Content-Type": "application/json",
+                },
+                json={"query": "ping", "limit": 1},
+            )
+
+    response = await asyncio.to_thread(_probe)
+    if response.status_code < 400:
+        return CredentialTestResult(
+            ok=True,
+            message="Provider verification succeeded.",
+            code="verified",
+            verified=True,
+            metadata={"status_code": response.status_code},
+        )
+    return CredentialTestResult(
+        ok=False,
+        message=f"Provider returned HTTP {response.status_code}: {http_error_detail(response, api_key)}",
+        code="http_error",
+        verified=True,
+        metadata={"status_code": response.status_code},
+    )
+
+
 async def _test_openai_compatible_llm(
     provider: str,
     kind: str,
@@ -326,6 +373,7 @@ register_credential_tester("anthropic", _test_anthropic)
 register_credential_tester("anthropic_direct", _test_anthropic)
 register_credential_tester("tavily", _test_tavily)
 register_credential_tester("exa", _test_exa)
+register_credential_tester("firecrawl", _test_firecrawl)
 
 
 __all__ = [
