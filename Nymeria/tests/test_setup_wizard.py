@@ -476,6 +476,78 @@ def test_wizard_pilot_arrow_keys_select_and_update_description():
     asyncio.run(drive())
 
 
+def test_wizard_radio_renders_bare_circles_without_box():
+    """The radio indicator is a bare circle (outline when off, filled when on),
+    never the stock ``BUTTON_LEFT/RIGHT`` half-block box. Regression for removing
+    the blue box around the dial: the box came from those side glyphs, so their
+    absence is what proves it is gone.
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import CircleRadioButton
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            buttons = list(app.screen.query(CircleRadioButton))
+            assert buttons  # the hosting step is a single-select radio screen
+            for button in buttons:
+                glyph = button._button.plain
+                assert "▐" not in glyph and "▌" not in glyph  # no box sides
+                assert glyph.strip() in {"○", "●"}  # outline / filled circle
+            on = [b for b in buttons if b.value]
+            assert len(on) == 1  # exactly the selected (highlighted) row
+            assert on[0]._button.plain.strip() == "●"
+            assert all(
+                b._button.plain.strip() == "○" for b in buttons if not b.value
+            )
+
+    asyncio.run(drive())
+
+
+def test_wizard_radio_highlight_spans_full_row():
+    """The highlighted option is tinted across the whole row (circle + text +
+    full width), not just the label.
+
+    Regression: the stock RadioSet paints only ``.toggle--label`` (auto-width),
+    leaving a ragged bar with the filled circle floating outside it. The fix
+    tints the whole ``1fr``-wide RadioButton and makes the label transparent so
+    the row colour is the highlight.
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import CircleRadioButton
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            buttons = list(app.screen.query(CircleRadioButton))
+            selected = [b for b in buttons if b.has_class("-selected")]
+            assert len(selected) == 1  # exactly the highlighted row
+            row = selected[0]
+            # The whole row carries an opaque tint, so the bar spans the 1fr
+            # width (circle + text + the gap out to the border), not just the
+            # auto-width label.
+            row_bg = row.styles.background
+            assert row_bg.a == 1
+            # The label declares a transparent background, so it adds no separate
+            # box inside the bar: its composited colour is exactly the row tint.
+            # (get_visual_style composites transparency against the row, so we
+            # compare the result to the row colour rather than expecting a==0.)
+            label_bg = row.get_visual_style("toggle--label").background
+            assert (label_bg.r, label_bg.g, label_bg.b) == (row_bg.r, row_bg.g, row_bg.b)
+            # Non-selected rows show no bar at all.
+            assert all(
+                b.styles.background.a == 0
+                for b in buttons
+                if not b.has_class("-selected")
+            )
+
+    asyncio.run(drive())
+
+
 def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
     """A placeholder step's stored default is the trailing "Skip" row. Entering
     the step must keep that default (the dot must not jump to the first row), and

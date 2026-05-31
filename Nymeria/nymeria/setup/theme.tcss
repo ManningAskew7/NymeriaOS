@@ -63,6 +63,43 @@ SelectionList:focus {
     border: round #bbddfb;
 }
 
+/* The radio indicator is a bare circle (CircleRadioButton renders the glyph),
+   so paint it white over a transparent background: no blue box around the dot.
+   Transparent (not a flat colour) keeps it blended under the focus tint too. */
+RadioButton > .toggle--button {
+    background: transparent;
+    color: #aab4c3;
+}
+
+RadioButton.-on > .toggle--button {
+    color: #ffffff;
+}
+
+/* Full-row selection bar. Stock RadioSet tints only the label (`.toggle--label`),
+   which leaves a ragged-width bar with the circle floating outside it. Instead
+   tint the whole highlighted RadioButton (it is `1fr` wide) and make the label
+   background transparent so the row colour shows through circle + text + full
+   width. A soft steel-blue replaces the loud `$block-cursor-background`; dimmer
+   when the set is blurred (e.g. the connection step's API-mode set). */
+RadioSet > RadioButton.-selected {
+    background: #26303d;
+}
+
+RadioSet > RadioButton.-selected > .toggle--label {
+    background: transparent;
+    color: #e8eaed;
+}
+
+RadioSet:focus > RadioButton.-selected {
+    background: #2b4d70;
+}
+
+RadioSet:focus > RadioButton.-selected > .toggle--label {
+    background: transparent;
+    color: #ffffff;
+    text-style: bold;
+}
+
 SearchableList {
     width: 1fr;
     height: auto;
