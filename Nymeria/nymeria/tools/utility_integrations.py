@@ -7,7 +7,6 @@ LangChain/community utilities, plus a local safe calculator.
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import math
 import operator
@@ -115,10 +114,6 @@ def _evaluate_ast(node: ast.AST) -> int | float:
         return func(*args)
 
     raise ValueError(f"unsupported expression element: {type(node).__name__}")
-
-
-def _split_csv(value: str) -> list[str]:
-    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def _require_langchain_community(tool_name: str, extra: str = "") -> Optional[str]:
@@ -255,88 +250,8 @@ def wolfram_alpha_query(
         return f"[Error]: Wolfram|Alpha query failed: {e}"
 
 
-@tool
-def searxng_search(
-    query: str,
-    num_results: int = 10,
-    page_number: int = 1,
-    language: str = "en",
-    safesearch: int = 0,
-    categories: str = "",
-    engines: str = "",
-    config: Annotated[RunnableConfig, InjectedToolArg] = None,
-) -> str:
-    """Search a configured SearXNG instance and return JSON results.
-
-    Args:
-        query: Search query.
-        num_results: Number of results to return, 1-20.
-        page_number: Search page number, 1 or greater.
-        language: SearXNG language code, e.g. "en".
-        safesearch: Safe-search level: 0 none, 1 moderate, 2 strict.
-        categories: Optional comma-separated SearXNG categories.
-        engines: Optional comma-separated SearXNG engines.
-    """
-    query = query.strip()
-    if not query:
-        return "[Error]: query is required."
-
-    from ..config import get_settings
-    from .native_credentials import get_native_credential_value, native_credential_setup_hint
-
-    base_url_credential = get_native_credential_value(
-        provider="searxng",
-        provider_aliases=("searx", "searx_ng"),
-        field_names=("base_url", "url", "value"),
-        tool_name="searxng_search",
-        config=config,
-    )
-    searxng_base_url = base_url_credential.value if base_url_credential else get_settings().searxng_base_url
-    if not searxng_base_url:
-        return native_credential_setup_hint(
-            provider="searxng",
-            field_names=("base_url", "value"),
-            tool_name="searxng_search",
-            env_var="SEARXNG_BASE_URL",
-            display_name="SearXNG",
-        )
-
-    missing = _require_langchain_community("searxng_search")
-    if missing:
-        return missing
-
-    num_results = max(1, min(20, int(num_results)))
-    page_number = max(1, int(page_number))
-    safesearch = max(0, min(2, int(safesearch)))
-    language = (language or "en").strip() or "en"
-
-    try:
-        from langchain_community.utilities.searx_search import SearxSearchWrapper
-
-        wrapper = SearxSearchWrapper(
-            searx_host=searxng_base_url,
-            headers={"Accept": "application/json"},
-            params={
-                "language": language,
-                "safesearch": safesearch,
-            },
-        )
-        results = wrapper.results(
-            query,
-            num_results=num_results,
-            categories=_split_csv(categories),
-            engines=_split_csv(engines),
-            pageno=page_number,
-        )
-        return json.dumps(results, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error("searxng_search failed", exc_info=True)
-        return f"[Error]: SearXNG search failed: {e}"
-
-
 UTILITY_INTEGRATION_TOOLS = [
     calculator,
     wikipedia_search,
     wolfram_alpha_query,
-    searxng_search,
 ]

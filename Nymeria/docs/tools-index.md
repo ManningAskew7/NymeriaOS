@@ -966,7 +966,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `salesmate_update_record` | `nymeria/tools/sales_crm_service_integrations.py` | Update one Salesmate record from a JSON object. |
 | `search_mcp` | `nymeria/tools/search_mcp.py` | Search public MCP server registries for servers matching a query. |
 | `search_skills` | `nymeria/tools/search_skills.py` | Search for Agent Skills by natural-language query. |
-| `searxng_search` | `nymeria/tools/utility_integrations.py` | Search a configured SearXNG instance and return JSON results. |
 | `seatable_create_row` | `nymeria/tools/data_table_service_integrations.py` | Create a SeaTable row. |
 | `seatable_delete_row` | `nymeria/tools/data_table_service_integrations.py` | Delete a SeaTable row. |
 | `seatable_get_metadata` | `nymeria/tools/data_table_service_integrations.py` | Get SeaTable base metadata. |
@@ -1164,6 +1163,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `web_search_exa` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Exa (neural/semantic retrieval). |
 | `web_search_firecrawl` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Firecrawl. |
 | `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
+| `web_search_searxng` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using a self-hosted SearXNG instance. |
 | `web_search_tavily` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Tavily (agent-optimized retrieval). |
 | `webex_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Webex message. |
 | `webex_get_message` | `nymeria/tools/chat_platform_service_integrations.py` | Get one Webex message. |

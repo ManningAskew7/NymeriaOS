@@ -295,7 +295,6 @@ _INTEGRATION_SAFE_TOOL_NAMES = frozenset(
         "calculator",
         "wikipedia_search",
         "wolfram_alpha_query",
-        "searxng_search",
         "coingecko_price",
         "coingecko_coin_markets",
         "hackernews_search",

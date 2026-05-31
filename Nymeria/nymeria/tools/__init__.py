@@ -16,6 +16,7 @@ from .web_search_integrations import (
     web_search_exa,
     web_search_firecrawl,
     web_search_brave,
+    web_search_searxng,
     WEB_SEARCH_INTEGRATION_TOOLS,
 )
 from .think import consult, CONSULT_TOOLS
@@ -165,7 +166,6 @@ from .utility_integrations import (
     calculator,
     wikipedia_search,
     wolfram_alpha_query,
-    searxng_search,
     UTILITY_INTEGRATION_TOOLS,
 )
 from .transform_utility_integrations import (
@@ -1540,7 +1540,6 @@ __all__ = [
     "calculator",
     "wikipedia_search",
     "wolfram_alpha_query",
-    "searxng_search",
     "UTILITY_INTEGRATION_TOOLS",
     "datetime_current",
     "datetime_add",
@@ -2651,6 +2650,7 @@ __all__ = [
     "web_search_exa",
     "web_search_firecrawl",
     "web_search_brave",
+    "web_search_searxng",
     "WEB_SEARCH_INTEGRATION_TOOLS",
     "consult",
     "CONSULT_TOOLS",

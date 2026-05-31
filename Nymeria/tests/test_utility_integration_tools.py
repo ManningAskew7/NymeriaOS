@@ -1,4 +1,3 @@
-import json
 import sys
 import types
 
@@ -189,98 +188,6 @@ def test_wolfram_alpha_query_uses_vault_app_id(tmp_path, monkeypatch):
     assert captured["wrapper"] == {"wolfram_alpha_appid": "vault-app-id"}
 
 
-def test_searxng_search_uses_configured_base_url(monkeypatch):
-    from nymeria.tools.utility_integrations import searxng_search
-
-    captured = {}
-
-    class FakeSearxSearchWrapper:
-        def __init__(self, **kwargs):
-            captured["init"] = kwargs
-
-        def results(self, query, num_results, categories, engines, **kwargs):
-            captured["call"] = {
-                "query": query,
-                "num_results": num_results,
-                "categories": categories,
-                "engines": engines,
-                **kwargs,
-            }
-            return [{"title": "Result", "link": "https://example.com"}]
-
-    monkeypatch.setenv("SEARXNG_BASE_URL", "https://searx.example/search")
-    _install_langchain_community_parents(monkeypatch)
-    _module(
-        monkeypatch,
-        "langchain_community.utilities.searx_search",
-        SearxSearchWrapper=FakeSearxSearchWrapper,
-    )
-
-    result = searxng_search.func(
-        query="nymeria",
-        num_results=3,
-        page_number=2,
-        language="en",
-        safesearch=1,
-        categories="general, news",
-        engines="duckduckgo, brave",
-    )
-
-    assert json.loads(result) == [{"title": "Result", "link": "https://example.com"}]
-    assert captured["init"] == {
-        "searx_host": "https://searx.example/search",
-        "headers": {"Accept": "application/json"},
-        "params": {"language": "en", "safesearch": 1},
-    }
-    assert captured["call"] == {
-        "query": "nymeria",
-        "num_results": 3,
-        "categories": ["general", "news"],
-        "engines": ["duckduckgo", "brave"],
-        "pageno": 2,
-    }
-
-
-def test_searxng_search_uses_vault_base_url(tmp_path, monkeypatch):
-    from nymeria.tools.utility_integrations import searxng_search
-
-    repo = _repo(tmp_path, monkeypatch)
-    _use_repo(monkeypatch, repo)
-    repo.create_credential(
-        owner_type="user",
-        owner_user_id="alice",
-        name="SearXNG",
-        provider="searxng",
-        kind="api_key",
-        allowed_targets=["native_tool:searxng_search"],
-        secret_fields={"base_url": "https://vault-searx.example/search"},
-        created_by_user_id="alice",
-    )
-    captured = {}
-
-    class FakeSearxSearchWrapper:
-        def __init__(self, **kwargs):
-            captured["init"] = kwargs
-
-        def results(self, query, num_results, categories, engines, **kwargs):
-            return [{"title": "Vault Result"}]
-
-    _install_langchain_community_parents(monkeypatch)
-    _module(
-        monkeypatch,
-        "langchain_community.utilities.searx_search",
-        SearxSearchWrapper=FakeSearxSearchWrapper,
-    )
-
-    result = searxng_search.func(
-        query="nymeria",
-        config={"configurable": {"user_id": "alice"}},
-    )
-
-    assert json.loads(result) == [{"title": "Vault Result"}]
-    assert captured["init"]["searx_host"] == "https://vault-searx.example/search"
-
-
 def test_utility_integrations_tools_are_optional_integrations():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
@@ -289,7 +196,6 @@ def test_utility_integrations_tools_are_optional_integrations():
         "calculator",
         "wikipedia_search",
         "wolfram_alpha_query",
-        "searxng_search",
     }:
         assert name in OPTIONAL_TOOLS
         metadata = get_tool_metadata(name)
