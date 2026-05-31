@@ -130,6 +130,7 @@ Set the API key for your chosen provider:
 | `TAVILY_API_KEY` | Tavily | Used by `web_search_tavily` tool (credential vault preferred) |
 | `EXA_API_KEY` | Exa | Used by `web_search_exa` tool (credential vault preferred) |
 | `FIRECRAWL_API_KEY` | Firecrawl | Used by `web_search_firecrawl` tool (credential vault preferred) |
+| `BRAVE_API_KEY` | Brave | Used by `web_search_brave` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
 | `SEARXNG_BASE_URL` | SearXNG | Optional env fallback for `searxng_search`; credential vault provider `searxng` is preferred |
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
@@ -954,6 +955,7 @@ reachable from the backend process.
 | `TAVILY_API_KEY` | - | Tavily API key for web_search_tavily tool |
 | `EXA_API_KEY` | - | Exa API key for web_search_exa tool |
 | `FIRECRAWL_API_KEY` | - | Firecrawl API key for web_search_firecrawl tool |
+| `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |

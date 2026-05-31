@@ -1,4 +1,4 @@
-"""Tests for the opt-in web search tools (web_search_perplexity, web_search_tavily, web_search_exa, web_search_firecrawl).
+"""Tests for the opt-in web search tools (web_search_perplexity, web_search_tavily, web_search_exa, web_search_firecrawl, web_search_brave).
 
 Covers credential resolution precedence (vault -> settings -> env), the
 missing-credential hint, source formatting, and registration in the opt-in
@@ -768,8 +768,294 @@ def test_firecrawl_registered_in_optional_group():
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
     assert "web_search_firecrawl" in OPTIONAL_TOOLS
+    assert "web_search_firecrawl" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
+
+
+# --- Brave (web_search_brave) --------------------------------------------------
+
+
+def _fake_httpx_get_client(payload):
+    """Return a FakeClient class whose .get() yields ``payload`` as JSON."""
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    return FakeClient
+
+
+def _capturing_httpx_get_client(response_payload, captured):
+    """FakeClient that records the GET url/headers/params into ``captured``."""
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return response_payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None, params=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["params"] = params
+            return FakeResponse()
+
+    return FakeClient
+
+
+def test_brave_key_prefers_vault_over_settings(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import nymeria.tools.native_credentials as nc
+
+    class FakeCred:
+        value = "vault-key"
+        credential_id = "c1"
+        field_name = "api_key"
+
+    monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: FakeCred())
+
+    assert wsi._get_brave_api_key(config=None) == "vault-key"
+
+
+def test_brave_key_falls_back_to_settings(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import nymeria.config as config
+    import nymeria.tools.native_credentials as nc
+
+    monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: None)
+
+    class FakeSettings:
+        brave_api_key = "settings-key"
+
+    monkeypatch.setattr(config, "get_settings", lambda: FakeSettings())
+
+    assert wsi._get_brave_api_key(config=None) == "settings-key"
+
+
+def test_brave_missing_credential_returns_setup_hint(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: None)
+
+    result = wsi.web_search_brave.func(query="hello")
+
+    assert result.startswith("[Error]")
+    assert "request_credential" in result
+    assert "native_tool:web_search_brave" in result
+
+
+def test_brave_requires_a_query():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi.web_search_brave.func() == (
+        "[Error]: Provide a query or pipe-separated queries."
+    )
+
+
+def test_brave_formats_ranked_sources():
+    from nymeria.tools import web_search_integrations as wsi
+
+    data = {
+        "web": {
+            "results": [
+                {"title": "First", "url": "https://a.example", "description": "snippet a", "page_age": "2025-01-02T10:00:00Z"},
+                {"title": "Second", "url": "https://b.example", "description": "snippet b"},
+            ]
+        },
+        "news": {
+            "results": [
+                {"title": "Newsy", "url": "https://n.example", "description": "news body", "age": "2 days ago"},
+            ]
+        },
+        "discussions": {
+            "results": [
+                {"title": "Thread", "url": "https://d.example", "description": "forum body"},
+            ]
+        },
+    }
+
+    out = wsi._format_brave_results(data, count=5)
+
+    assert "1. First" in out
+    # Web items: description snippet + page_age (ISO) date.
+    assert "https://a.example · 2025-01-02T10:00:00Z" in out
+    assert "snippet a" in out
+    assert "2. Second" in out
+    # News and discussions are tagged; news falls back to the relative "age".
+    assert "3. Newsy [news]" in out
+    assert "· 2 days ago" in out
+    assert "news body" in out
+    assert "4. Thread [discussion]" in out
+    assert "forum body" in out
+
+
+def test_brave_formats_no_results():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi._format_brave_results({}, count=5) == "[No results]"
+
+
+def test_brave_single_query_end_to_end(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: "key")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        _fake_httpx_get_client(
+            {"web": {"results": [{"title": "Doc", "url": "https://d.example", "description": "body"}]}}
+        ),
+    )
+
+    out = wsi.web_search_brave.func(query="brave search", count=3)
+
+    assert "1. Doc" in out
+    assert "https://d.example" in out
+    assert "body" in out
+
+
+def test_brave_builds_params_with_filters(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: "key")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"web": {"results": []}}, captured))
+
+    wsi.web_search_brave.func(
+        query="anthropic claude",
+        count=5,
+        time_range="week",
+        sources="web, news",
+        include_domains="github.com",
+    )
+
+    params = captured["params"]
+    assert params["count"] == 5
+    assert params["freshness"] == "pw"
+    assert params["result_filter"] == "web,news"
+    # text_decorations off keeps <strong> tags out of snippets.
+    assert params["text_decorations"] == "false"
+    # include_domains becomes a site: operator appended to the query (Brave has
+    # no native domain filter).
+    assert params["q"] == "anthropic claude site:github.com"
+    # Auth uses the X-Subscription-Token header, not a Bearer token.
+    assert captured["headers"]["X-Subscription-Token"] == "key"
+
+
+def test_brave_site_operators_include_and_exclude(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: "key")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"web": {"results": []}}, captured))
+
+    wsi.web_search_brave.func(
+        query="rust",
+        include_domains="github.com, https://docs.rs/foo",
+        exclude_domains="pinterest.com",
+    )
+
+    # Multiple includes group with OR; each exclude uses NOT site:. Hosts are
+    # reduced to bare hostnames first (https://docs.rs/foo -> docs.rs).
+    assert captured["params"]["q"] == "rust (site:github.com OR site:docs.rs) NOT site:pinterest.com"
+
+
+def test_brave_invalid_source_is_ignored(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: "key")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"web": {"results": []}}, captured))
+
+    # "videos" is not a text-useful bucket and is dropped; only news survives.
+    wsi.web_search_brave.func(query="q", sources="videos, news")
+
+    assert captured["params"]["result_filter"] == "news"
+
+
+def test_brave_date_range_passthrough(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_brave_api_key", lambda config=None: "key")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"web": {"results": []}}, captured))
+
+    wsi.web_search_brave.func(query="q", time_range="2024-01-01to2024-12-31")
+
+    assert captured["params"]["freshness"] == "2024-01-01to2024-12-31"
+
+
+def test_brave_api_error_is_returned_as_error_string(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    class FakeResponse:
+        status_code = 401
+
+    def raise_status(self):
+        raise httpx.HTTPStatusError("nope", request=None, response=FakeResponse())
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            resp = FakeResponse()
+            resp.raise_for_status = raise_status.__get__(resp)
+            return resp
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    out = wsi._brave_search_single({"q": "q"}, "key", 15.0, 5)
+
+    assert out.startswith("[Error]: Brave API error: 401")
+
+
+def test_brave_registered_in_optional_group():
+    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
+
+    assert "web_search_brave" in OPTIONAL_TOOLS
     assert [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS] == [
         "web_search_tavily",
         "web_search_exa",
         "web_search_firecrawl",
+        "web_search_brave",
     ]

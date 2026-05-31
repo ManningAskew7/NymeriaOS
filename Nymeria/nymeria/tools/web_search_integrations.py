@@ -3,7 +3,7 @@
 The first web search tool, ``web_search_perplexity``, lives in ``web.py``. This
 module holds the extra opt-in providers added per
 ``docs/private/plans/web-search-integrations.md``, starting with Tavily, Exa,
-then Firecrawl. Each provider resolves its key through the credential vault
+Firecrawl, then Brave. Each provider resolves its key through the credential vault
 (vault, then settings,
 then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
 ``tools/__init__.py`` folds into ``OPTIONAL_TOOLS`` alongside
@@ -11,6 +11,7 @@ then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
 """
 
 import logging
+import re
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -55,6 +56,20 @@ _FIRECRAWL_TIME_RANGES = {
     "month": "qdr:m",
     "year": "qdr:y",
 }
+
+_BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+# Text-useful result buckets. Brave also returns videos/faq/infobox/locations,
+# dropped here as non-text modalities for a text agent.
+_BRAVE_SOURCES = {"web", "news", "discussions"}
+# Friendly recency values mapped to Brave's "freshness" codes.
+_BRAVE_TIME_RANGES = {
+    "day": "pd",
+    "week": "pw",
+    "month": "pm",
+    "year": "py",
+}
+# Brave freshness also accepts an explicit range, e.g. "2024-01-01to2024-12-31".
+_BRAVE_DATE_RANGE = re.compile(r"^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$")
 
 
 def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -506,8 +521,12 @@ def _format_firecrawl_results(data: dict, max_results: int) -> str:
     return "\n".join(lines) if lines else "[No results]"
 
 
-def _firecrawl_domain(raw: str) -> str:
-    """Reduce a domain to a bare hostname; Firecrawl rejects scheme/path entries."""
+def _bare_domain(raw: str) -> str:
+    """Reduce a domain to a bare hostname (strip scheme and path), lowercased.
+
+    Firecrawl rejects scheme/path entries, and Brave's site: operators need bare
+    hostnames too, so both providers funnel domain args through here.
+    """
     host = raw.strip()
     if "://" in host:
         host = host.split("://", 1)[1]
@@ -630,8 +649,8 @@ def web_search_firecrawl(
     if cats:
         base_payload["categories"] = cats
 
-    inc = [h for h in (_firecrawl_domain(d) for d in include_domains.split(",")) if h]
-    exc = [h for h in (_firecrawl_domain(d) for d in exclude_domains.split(",")) if h]
+    inc = [h for h in (_bare_domain(d) for d in include_domains.split(",")) if h]
+    exc = [h for h in (_bare_domain(d) for d in exclude_domains.split(",")) if h]
     # includeDomains and excludeDomains are mutually exclusive (Firecrawl 400s if
     # both are sent); prefer include and drop exclude.
     if inc:
@@ -662,8 +681,233 @@ def web_search_firecrawl(
     return "\n\n".join(sections)
 
 
+def _get_brave_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
+    """Resolve the Brave API key: credential vault, then settings, then env."""
+    from .native_credentials import get_native_credential_value
+
+    cred = get_native_credential_value(
+        provider="brave",
+        provider_aliases=("brave_search", "brave_api"),
+        field_names=("api_key", "token", "value"),
+        tool_name="web_search_brave",
+        config=config,
+    )
+    if cred and cred.value:
+        return cred.value
+
+    from ..config import get_settings
+    import os
+    settings = get_settings()
+    return settings.brave_api_key or os.environ.get("BRAVE_API_KEY")
+
+
+def _format_brave_results(data: dict, count: int) -> str:
+    """Format a Brave web-search response into ranked-source text.
+
+    Results arrive in per-type buckets (data["web"]["results"], data["news"], and
+    data["discussions"]). Web, news, and discussion items all carry a
+    "description" snippet; the publish date is "page_age" (ISO) or "age"
+    (relative), either of which can be missing. News and discussion items are
+    tagged so the agent can tell them apart.
+    """
+    def _bucket(key: str) -> list:
+        section = data.get(key)
+        if isinstance(section, dict):
+            return section.get("results") or []
+        return []
+
+    web = _bucket("web")
+    news = _bucket("news")
+    discussions = _bucket("discussions")
+
+    lines: list[str] = []
+    counter = 1
+    for tag, items in (("", web), (" [news]", news), (" [discussion]", discussions)):
+        for item in items[:count]:
+            title = (item.get("title") or "").strip() or "(untitled)"
+            url = item.get("url") or ""
+            published = (item.get("page_age") or item.get("age") or "").strip()
+            snippet = (item.get("description") or "").strip()
+            meta = f" · {published}" if published else ""
+            block = f"{counter}. {title}{tag}\n   {url}{meta}"
+            if snippet:
+                block += f"\n   {snippet}"
+            lines.append(block)
+            counter += 1
+
+    return "\n".join(lines) if lines else "[No results]"
+
+
+def _brave_site_filter(include_domains: str, exclude_domains: str) -> str:
+    """Translate include/exclude domain lists into Brave query operators.
+
+    Brave has no native include/exclude_domains parameter, so domain scoping is
+    expressed as search operators appended to the query: a single include becomes
+    "site:host", multiple includes become "(site:a OR site:b)", and each exclude
+    becomes "NOT site:host". Hosts are reduced to bare hostnames first.
+    """
+    inc = [h for h in (_bare_domain(d) for d in include_domains.split(",")) if h]
+    exc = [h for h in (_bare_domain(d) for d in exclude_domains.split(",")) if h]
+    parts: list[str] = []
+    if len(inc) == 1:
+        parts.append(f"site:{inc[0]}")
+    elif len(inc) > 1:
+        parts.append("(" + " OR ".join(f"site:{h}" for h in inc) + ")")
+    parts.extend(f"NOT site:{h}" for h in exc)
+    return " ".join(parts)
+
+
+def _brave_search_single(params: dict, api_key: str, timeout: float, count: int) -> str:
+    """Execute a single Brave web search (GET) and return formatted result."""
+    import httpx
+
+    headers = {
+        "X-Subscription-Token": api_key,
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(_BRAVE_SEARCH_URL, headers=headers, params=params)
+            response.raise_for_status()
+
+        data = response.json()
+        out = _format_brave_results(data, count)
+        logger.debug("Brave search returned %d characters", len(out))
+        return out
+
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Brave API error: {e.response.status_code}"
+        logger.error(error_msg)
+        return f"[Error]: {error_msg}"
+
+    except Exception as e:
+        error_msg = f"Brave search failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return f"[Error]: {error_msg}"
+
+
+@tool
+def web_search_brave(
+    query: str = "",
+    queries: str = "",
+    count: Optional[int] = None,
+    time_range: Optional[str] = None,
+    sources: str = "",
+    include_domains: str = "",
+    exclude_domains: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Search the web for current information using Brave (independent search index).
+
+    Returns a ranked list of sources (title, URL, snippet) from Brave's own index
+    (not a Google/Bing reseller). Use web_search_perplexity for a single
+    synthesized answer; use a dedicated page-fetch tool to pull the full body of a
+    specific page.
+
+    Args:
+        query: Single search query (keep it under ~400 chars / 50 words,
+               including any domain filters below).
+        queries: Multiple queries separated by " | " (pipe with spaces). Takes
+                 precedence over query; each is searched independently. Max 10.
+                 e.g. "rust async runtimes | tokio vs async-std 2025"
+        count: Sources to return per query (1-20, default 5).
+        time_range: Restrict results by recency: "day", "week", "month", or
+                    "year". Also accepts an explicit "YYYY-MM-DDtoYYYY-MM-DD" range.
+        sources: Comma-separated result types: "web" (default), "news", and/or
+                 "discussions" (forum threads), e.g. "web, news".
+        include_domains: Comma-separated domains to restrict results to,
+                         e.g. "github.com, arxiv.org". Applied as site: operators
+                         in the query (Brave has no native domain filter).
+        exclude_domains: Comma-separated domains to exclude from results.
+
+    Returns:
+        Ranked sources as "N. <title>[ [news]]\\n   <url> · <date>\\n   <snippet>".
+        News and discussion results are tagged. Batch mode: sections separated by
+        "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
+    """
+    # Parse queries (batch takes precedence over single query).
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ")]
+        query_list = [q for q in query_list if q]
+        if len(query_list) > _MAX_BATCH_QUERIES:
+            query_list = query_list[:_MAX_BATCH_QUERIES]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    api_key = _get_brave_api_key(config)
+    if not api_key:
+        return (
+            "[Error]: No Brave credential found. Set BRAVE_API_KEY or call "
+            'request_credential(provider="brave", '
+            'bind_target="native_tool:web_search_brave") to provision one.'
+        )
+
+    # Clamp count; build base params omitting unset params so Brave applies its
+    # own defaults. Invalid enum values are ignored (fall back to the default).
+    if count is not None:
+        count = max(1, min(20, count))
+    else:
+        count = 5
+
+    # text_decorations off keeps <strong> tags out of snippets. extra_snippets is
+    # intentionally left off: every result already carries a concise "description"
+    # snippet; extra_snippets only piles on raw RAG-style excerpts (more tokens).
+    base_params: dict = {"count": count, "text_decorations": "false"}
+
+    if time_range:
+        tr = time_range.strip().lower()
+        if tr in _BRAVE_TIME_RANGES:
+            base_params["freshness"] = _BRAVE_TIME_RANGES[tr]
+        elif _BRAVE_DATE_RANGE.match(time_range.strip()):
+            base_params["freshness"] = time_range.strip()
+
+    # result_filter selects which buckets come back. Default to web only; omitting
+    # it makes Brave return every bucket (videos/faq/infobox/...), which is noisy.
+    src = [s.strip().lower() for s in sources.split(",") if s.strip()]
+    src = [s for s in src if s in _BRAVE_SOURCES]
+    base_params["result_filter"] = ",".join(src) if src else "web"
+
+    # Brave has no native domain filter; express include/exclude as query operators.
+    site_filter = _brave_site_filter(include_domains, exclude_domains)
+
+    logger.info(
+        "Brave search: %d query(ies) (count=%d, filter=%s)",
+        len(query_list),
+        count,
+        base_params["result_filter"],
+    )
+
+    # Single query: return directly.
+    if len(query_list) == 1:
+        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
+        params = {**base_params, "q": q}
+        return _brave_search_single(params, api_key, 15.0, count)
+
+    # Batch mode.
+    total = len(query_list)
+    sections = []
+    for i, raw_q in enumerate(query_list, 1):
+        header = f"=== Query {i}/{total}: {raw_q} ==="
+        q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
+        params = {**base_params, "q": q}
+        result = _brave_search_single(params, api_key, 15.0, count)
+        sections.append(f"{header}\n{result}")
+
+    return "\n\n".join(sections)
+
+
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
 # into OPTIONAL_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
-# Search group. Remaining providers (Brave, DuckDuckGo, SearXNG) are appended
-# here per docs/private/plans/web-search-integrations.md.
-WEB_SEARCH_INTEGRATION_TOOLS = [web_search_tavily, web_search_exa, web_search_firecrawl]
+# Search group. Remaining providers (DuckDuckGo, SearXNG) are appended here per
+# docs/private/plans/web-search-integrations.md.
+WEB_SEARCH_INTEGRATION_TOOLS = [
+    web_search_tavily,
+    web_search_exa,
+    web_search_firecrawl,
+    web_search_brave,
+]

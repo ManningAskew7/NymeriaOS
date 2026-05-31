@@ -695,6 +695,7 @@ class Settings(BaseSettings):
     tavily_api_key: Optional[str] = Field(default=None, description="Tavily API key for web_search_tavily")
     exa_api_key: Optional[str] = Field(default=None, description="Exa API key for web_search_exa")
     firecrawl_api_key: Optional[str] = Field(default=None, description="Firecrawl API key for web_search_firecrawl")
+    brave_api_key: Optional[str] = Field(default=None, description="Brave Search API key for web_search_brave")
     wolfram_alpha_app_id: Optional[str] = Field(default=None, description="Wolfram|Alpha AppID for wolfram_alpha_query")
     searxng_base_url: Optional[str] = Field(default=None, description="Base URL for a SearXNG instance")
     nasa_api_key: Optional[str] = Field(default=None, description="NASA API key for nasa_apod")

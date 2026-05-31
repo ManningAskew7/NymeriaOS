@@ -15,6 +15,7 @@ from .web_search_integrations import (
     web_search_tavily,
     web_search_exa,
     web_search_firecrawl,
+    web_search_brave,
     WEB_SEARCH_INTEGRATION_TOOLS,
 )
 from .think import consult, CONSULT_TOOLS
@@ -2649,6 +2650,7 @@ __all__ = [
     "web_search_tavily",
     "web_search_exa",
     "web_search_firecrawl",
+    "web_search_brave",
     "WEB_SEARCH_INTEGRATION_TOOLS",
     "consult",
     "CONSULT_TOOLS",
