@@ -1050,12 +1050,271 @@ def test_brave_api_error_is_returned_as_error_string(monkeypatch):
 
 def test_brave_registered_in_optional_group():
     from nymeria.tools import OPTIONAL_TOOLS
-    from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
     assert "web_search_brave" in OPTIONAL_TOOLS
+
+
+# --- SearXNG ---------------------------------------------------------------
+
+
+def test_searxng_base_url_prefers_vault_over_settings(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import nymeria.tools.native_credentials as nc
+
+    class FakeCred:
+        value = "http://vault-searx:8080"
+        credential_id = "c1"
+        field_name = "base_url"
+
+    monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: FakeCred())
+
+    assert wsi._get_searxng_base_url(config=None) == "http://vault-searx:8080"
+
+
+def test_searxng_base_url_falls_back_to_settings(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import nymeria.config as config
+    import nymeria.tools.native_credentials as nc
+
+    monkeypatch.delenv("SEARXNG_BASE_URL", raising=False)
+    monkeypatch.setattr(nc, "get_native_credential_value", lambda **kw: None)
+
+    class FakeSettings:
+        searxng_base_url = "http://settings-searx:8080"
+
+    monkeypatch.setattr(config, "get_settings", lambda: FakeSettings())
+
+    assert wsi._get_searxng_base_url(config=None) == "http://settings-searx:8080"
+
+
+def test_searxng_missing_config_returns_setup_hint(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: None)
+
+    result = wsi.web_search_searxng.func(query="hello")
+
+    assert result.startswith("[Error]")
+    assert "SEARXNG_BASE_URL" in result
+    assert "native_tool:web_search_searxng" in result
+    assert "search.formats" in result
+
+
+def test_searxng_requires_a_query():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi.web_search_searxng.func() == (
+        "[Error]: Provide a query or pipe-separated queries."
+    )
+
+
+def test_searxng_formats_ranked_sources():
+    from nymeria.tools import web_search_integrations as wsi
+
+    # Deliberately out of score order: the formatter re-sorts by score desc.
+    data = {
+        "results": [
+            {"title": "Low", "url": "https://low.example", "content": "low body", "category": "general", "score": 0.2},
+            {"title": "High", "url": "https://high.example", "content": "high body", "category": "general", "score": 0.9, "publishedDate": "2025-03-01T00:00:00"},
+            {"title": "Newsy", "url": "https://news.example", "content": "news body", "category": "news", "score": 0.5},
+            {"title": "Sci", "url": "https://sci.example", "content": "sci body", "category": "science", "score": 0.4},
+        ]
+    }
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    # Sorted by score desc: High (0.9), Newsy (0.5), Sci (0.4), Low (0.2).
+    assert "1. High" in out
+    assert "https://high.example · 2025-03-01T00:00:00" in out
+    assert "high body" in out
+    # Non-general categories are tagged; general is left untagged.
+    assert "2. Newsy [news]" in out
+    assert "3. Sci [science]" in out
+    assert "4. Low" in out
+    assert "[general]" not in out
+
+
+def test_searxng_formats_no_results():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi._format_searxng_results({}, count=5) == "[No results]"
+    assert wsi._format_searxng_results({"results": []}, count=5) == "[No results]"
+
+
+def test_searxng_single_query_end_to_end(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: "http://searx:8080")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        _fake_httpx_get_client(
+            {"results": [{"title": "Doc", "url": "https://d.example", "content": "body"}]}
+        ),
+    )
+
+    out = wsi.web_search_searxng.func(query="searxng search", count=3)
+
+    assert "1. Doc" in out
+    assert "https://d.example" in out
+    assert "body" in out
+
+
+def test_searxng_builds_params_with_filters(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: "http://searx:8080")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"results": []}, captured))
+
+    wsi.web_search_searxng.func(
+        query="anthropic claude",
+        count=5,
+        time_range="week",
+        sources="general, news",
+        include_domains="github.com",
+    )
+
+    # The search endpoint is base_url + /search.
+    assert captured["url"] == "http://searx:8080/search"
+    params = captured["params"]
+    # format=json, safesearch=1 (moderate), pageno=1 are hard defaults.
+    assert params["format"] == "json"
+    assert params["safesearch"] == 1
+    assert params["pageno"] == 1
+    # time_range maps 1:1 to SearXNG's own value; categories from sources.
+    assert params["time_range"] == "week"
+    assert params["categories"] == "general,news"
+    # include_domains becomes a site: operator appended to the query (SearXNG has
+    # no native domain filter).
+    assert params["q"] == "anthropic claude site:github.com"
+    assert captured["headers"]["Accept"] == "application/json"
+
+
+def test_searxng_site_operators_include_and_exclude(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: "http://searx:8080")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"results": []}, captured))
+
+    wsi.web_search_searxng.func(
+        query="rust",
+        include_domains="github.com, https://docs.rs/foo",
+        exclude_domains="pinterest.com",
+    )
+
+    # Multiple includes group with OR; each exclude uses -site: (SearXNG/Google
+    # syntax). Hosts are reduced to bare hostnames (https://docs.rs/foo -> docs.rs).
+    assert captured["params"]["q"] == "rust (site:github.com OR site:docs.rs) -site:pinterest.com"
+
+
+def test_searxng_invalid_source_is_ignored(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: "http://searx:8080")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"results": []}, captured))
+
+    # "videos" is not an exposed category and is dropped; only news survives.
+    wsi.web_search_searxng.func(query="q", sources="videos, news")
+
+    assert captured["params"]["categories"] == "news"
+
+
+def test_searxng_defaults_to_general_category(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: "http://searx:8080")
+    captured: dict = {}
+    monkeypatch.setattr(httpx, "Client", _capturing_httpx_get_client({"results": []}, captured))
+
+    wsi.web_search_searxng.func(query="q")
+
+    assert captured["params"]["categories"] == "general"
+
+
+def test_searxng_json_disabled_returns_hint(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("not json")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    out = wsi._searxng_search_single("http://searx:8080", {"q": "x"}, 20.0, 5)
+
+    assert out.startswith("[Error]")
+    assert "JSON" in out
+    assert "search.formats" in out
+
+
+def test_searxng_api_error_is_returned_as_error_string(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    import httpx
+
+    class FakeResponse:
+        status_code = 503
+
+    def raise_status(self):
+        raise httpx.HTTPStatusError("nope", request=None, response=FakeResponse())
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            resp = FakeResponse()
+            resp.raise_for_status = raise_status.__get__(resp)
+            return resp
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    out = wsi._searxng_search_single("http://searx:8080", {"q": "q"}, 20.0, 5)
+
+    assert out.startswith("[Error]: SearXNG API error: 503")
+
+
+def test_searxng_registered_in_optional_group():
+    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
+
+    assert "web_search_searxng" in OPTIONAL_TOOLS
+    # The old utility-group searxng_search was replaced by this family member.
+    assert "searxng_search" not in OPTIONAL_TOOLS
     assert [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS] == [
         "web_search_tavily",
         "web_search_exa",
         "web_search_firecrawl",
         "web_search_brave",
+        "web_search_searxng",
     ]

@@ -132,7 +132,7 @@ Set the API key for your chosen provider:
 | `FIRECRAWL_API_KEY` | Firecrawl | Used by `web_search_firecrawl` tool (credential vault preferred) |
 | `BRAVE_API_KEY` | Brave | Used by `web_search_brave` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
-| `SEARXNG_BASE_URL` | SearXNG | Optional env fallback for `searxng_search`; credential vault provider `searxng` is preferred |
+| `SEARXNG_BASE_URL` | SearXNG | Base URL for `web_search_searxng` (defaults to the bundled `http://searxng:8080` sidecar); credential vault provider `searxng` field `base_url` also works |
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
 | `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
 | `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
@@ -957,7 +957,7 @@ reachable from the backend process.
 | `FIRECRAWL_API_KEY` | - | Firecrawl API key for web_search_firecrawl tool |
 | `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
-| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by searxng_search |
+| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar) |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |

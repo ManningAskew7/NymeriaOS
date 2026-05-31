@@ -360,6 +360,77 @@ async def _test_brave(
     )
 
 
+async def _test_searxng(
+    provider: str,
+    kind: str,
+    metadata: dict[str, Any],
+    secret_fields: dict[str, str],
+    settings: Any,
+) -> CredentialTestResult:
+    # SearXNG runs as an internal sidecar (e.g. http://searxng:8080), so its base
+    # URL is intentionally a private/loopback host. The shared SSRF egress policy
+    # would block the very host we need to reach, so this probe uses a bare httpx
+    # GET against the operator-configured base URL. It also verifies that JSON
+    # output is enabled (search.formats must include "json"); a non-JSON response
+    # means JSON is off.
+    _ = provider, kind
+    import httpx
+
+    base_url = _first_secret(secret_fields, "base_url", "url", "value")
+    if not base_url:
+        configured = getattr(settings, "searxng_base_url", None) if settings is not None else None
+        base_url = _base_url(metadata, "base_url", "url") or configured
+    if not base_url:
+        return CredentialTestResult(
+            ok=False,
+            message="No SearXNG base URL was provided.",
+            code="missing_base_url",
+            verified=True,
+        )
+    base = str(base_url).rstrip("/")
+
+    def _probe():
+        with httpx.Client(timeout=_DEFAULT_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            return client.get(
+                f"{base}/search",
+                params={"q": "ping", "format": "json"},
+                headers={"Accept": "application/json"},
+            )
+
+    response = await asyncio.to_thread(_probe)
+    if response.status_code >= 400:
+        return CredentialTestResult(
+            ok=False,
+            message=f"SearXNG returned HTTP {response.status_code}: {http_error_detail(response, base)}",
+            code="http_error",
+            verified=True,
+            metadata={"status_code": response.status_code},
+        )
+    try:
+        data = response.json()
+    except Exception:
+        return CredentialTestResult(
+            ok=False,
+            message="SearXNG responded without JSON; enable 'json' in the instance's search.formats.",
+            code="json_disabled",
+            verified=True,
+        )
+    if not isinstance(data, dict) or "results" not in data:
+        return CredentialTestResult(
+            ok=False,
+            message="SearXNG response is missing a results field; check that JSON output is enabled.",
+            code="bad_response",
+            verified=True,
+        )
+    return CredentialTestResult(
+        ok=True,
+        message="Provider verification succeeded.",
+        code="verified",
+        verified=True,
+        metadata={"status_code": response.status_code},
+    )
+
+
 async def _test_openai_compatible_llm(
     provider: str,
     kind: str,
@@ -399,6 +470,7 @@ register_credential_tester("tavily", _test_tavily)
 register_credential_tester("exa", _test_exa)
 register_credential_tester("firecrawl", _test_firecrawl)
 register_credential_tester("brave", _test_brave)
+register_credential_tester("searxng", _test_searxng)
 
 
 __all__ = [

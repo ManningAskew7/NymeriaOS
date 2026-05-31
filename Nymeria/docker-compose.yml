@@ -275,6 +275,11 @@ services:
       # Optional integrations
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
       PERPLEXITY_SEARCH_MODEL: ${PERPLEXITY_SEARCH_MODEL:-sonar-pro}
+      # SearXNG metasearch for web_search_searxng. Defaults to the bundled
+      # `searxng` sidecar (start it with the `search` compose profile). The
+      # other web-search providers (Tavily/Exa/Firecrawl/Brave) use API keys via
+      # the credential vault and are intentionally not passed through here.
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_EXTRACTION_MODEL: ${GEMINI_EXTRACTION_MODEL:-gemini-3-flash-preview}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
@@ -847,6 +852,52 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 60s
+      retries: 3
+    networks:
+      - edge
+
+  # SearXNG - self-hosted, keyless metasearch backing the web_search_searxng
+  # tool. Behind the `search` profile, so it only starts when explicitly
+  # enabled (the tool itself is opt-in per thread):
+  #   docker compose --profile search --env-file .env.docker up -d searxng
+  # Internal-only: no host port is published; the API reaches it at
+  # http://searxng:8080 on the edge network. JSON output (which the tool
+  # requires) is enabled in ./searxng/settings.yml. Pin a digest for production.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: nymeria-searxng
+    restart: unless-stopped
+    profiles:
+      - search
+    # SearXNG's entrypoint chowns its config and drops to an unprivileged uid,
+    # so it needs these three caps back on top of the cap_drop ALL baseline.
+    # no-new-privileges is intentionally NOT set here (it can break the
+    # entrypoint's privilege drop); the matching upstream searxng-docker setup
+    # relies on the same cap_drop/cap_add posture.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.75
+    pids_limit: 128
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      # Signs the web UI's cookies/CSRF tokens; substituted into settings.yml at
+      # startup. Change it for any non-local deployment.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-nymeria-searxng-internal-change-me}
+      SEARXNG_UWSGI_WORKERS: ${SEARXNG_WORKERS:-2}
+      SEARXNG_UWSGI_THREADS: ${SEARXNG_THREADS:-2}
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
       retries: 3
     networks:
       - edge

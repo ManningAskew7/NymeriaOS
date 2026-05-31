@@ -16,6 +16,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 4c | `web_search_exa` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -416,6 +417,39 @@ Hard defaults (not exposed): `text_decorations=false` (no `<strong>` markup in s
 **Requires:** a Brave credential, resolved credential vault -> `BRAVE_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="brave", bind_target="native_tool:web_search_brave")`. Brave removed its free tier on 2026-02-12, so a paid Search plan is required (about $5 per 1,000 queries, with a $5 monthly credit auto-applied).
 
 **Timeout:** 15s.
+
+---
+
+### web_search_searxng
+
+Search the web using a self-hosted SearXNG instance. SearXNG is a keyless
+metasearch engine: it queries many upstream engines (DuckDuckGo, Brave, Google,
+Mojeek, Wikipedia, and more) and returns a single merged, relevance-ranked list
+of sources (title, URL, snippet). Use `web_search_perplexity` for a synthesized
+answer, and a dedicated page-fetch tool to pull the full body of a specific
+page. Opt-in tool in the `WEB_SEARCH_INTEGRATION_TOOLS` group (enable per
+thread), not a core tool. This replaced the older `searxng_search` utility tool.
+
+```python
+web_search_searxng(query: str = "", queries: str = "", count: Optional[int] = None, time_range: Optional[str] = None, sources: str = "", include_domains: str = "", exclude_domains: str = "")
+```
+
+**Parameters (all agent-controlled per query):**
+- `query` (`str`): Single search query
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
+- `count` (`Optional[int]`): Sources to return per query (1-20, default 5). SearXNG returns a full page of merged results; this keeps the top-ranked `count` (a display cap on an already-ranked page, not a fetch directive)
+- `time_range` (`Optional[str]`): Restrict by recency: `"day"`, `"week"`, `"month"`, or `"year"` (maps 1:1 to SearXNG's own values)
+- `sources` (`str`): Comma-separated result categories: `"general"` (default), `"news"`, and/or `"science"`
+- `include_domains` (`str`): Comma-separated domains to restrict results to. SearXNG has no native domain filter, so these are applied as `site:` operators in the query
+- `exclude_domains` (`str`): Comma-separated domains to exclude (applied as `-site:` operators)
+
+Hard defaults (not exposed): `format=json`; `pageno=1` (no pagination); `safesearch=1` (moderate); `language` and `engines` left to the instance configuration.
+
+**Returns:** Ranked sources as `N. <title>[ [news]]\n   <url> · <date>\n   <snippet>`. Non-general categories are tagged. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
+
+**Requires:** a running SearXNG instance with JSON output enabled (`search.formats` must include `json`). The base URL is resolved credential vault (provider `searxng`, field `base_url`) -> `searxng_base_url` setting -> `SEARXNG_BASE_URL` env. The bundled Docker sidecar (the `search` compose profile) ships JSON pre-enabled and defaults `SEARXNG_BASE_URL` to `http://searxng:8080`. No API key (SearXNG is keyless). Note: SearXNG is blocked from datacenter IPs for some engines, but the instance's own egress IP governs that, not Nymeria.
+
+**Timeout:** 20s.
 
 ---
 
@@ -868,26 +902,6 @@ wolfram_alpha_query(query: str)
 Uses vault provider `wolfram_alpha` fields `app_id`, `appid`, or `value`, then
 falls back to `WOLFRAM_ALPHA_APP_ID`. Also requires the Python
 `langchain-community` and `wolframalpha` packages from `requirements.txt`.
-
-### searxng_search
-
-Search a configured SearXNG instance and return JSON results.
-
-```python
-searxng_search(
-    query: str,
-    num_results: int = 10,
-    page_number: int = 1,
-    language: str = "en",
-    safesearch: int = 0,
-    categories: str = "",
-    engines: str = "",
-)
-```
-
-Uses vault provider `searxng` fields `base_url`, `url`, or `value`, then falls
-back to `SEARXNG_BASE_URL`, pointing at the endpoint accepted by
-`langchain_community.utilities.SearxSearchWrapper`.
 
 ### Transform Utility Tools
 

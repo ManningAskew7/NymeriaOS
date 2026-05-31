@@ -3,7 +3,8 @@
 The first web search tool, ``web_search_perplexity``, lives in ``web.py``. This
 module holds the extra opt-in providers added per
 ``docs/private/plans/web-search-integrations.md``, starting with Tavily, Exa,
-Firecrawl, then Brave. Each provider resolves its key through the credential vault
+Firecrawl, Brave, then SearXNG. Each provider resolves its credential (an API
+key, or a base URL for the self-hosted SearXNG) through the credential vault
 (vault, then settings,
 then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
 ``tools/__init__.py`` folds into ``OPTIONAL_TOOLS`` alongside
@@ -70,6 +71,12 @@ _BRAVE_TIME_RANGES = {
 }
 # Brave freshness also accepts an explicit range, e.g. "2024-01-01to2024-12-31".
 _BRAVE_DATE_RANGE = re.compile(r"^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$")
+
+# SearXNG (self-hosted metasearch). The "credential" is the instance base URL,
+# not an API key. time_range maps 1:1 to SearXNG's own values; categories are
+# restricted to the text-useful ones for an agent.
+_SEARXNG_TIME_RANGES = {"day", "week", "month", "year"}
+_SEARXNG_CATEGORIES = {"general", "news", "science"}
 
 
 def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -901,13 +908,244 @@ def web_search_brave(
     return "\n\n".join(sections)
 
 
+def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[str]:
+    """Resolve the SearXNG base URL: credential vault, then settings, then env.
+
+    Unlike the keyed providers, SearXNG's "credential" is the base URL of a
+    self-hosted instance (it needs no API key). The base URL is typically an
+    internal sidecar such as http://searxng:8080.
+    """
+    from .native_credentials import get_native_credential_value
+
+    cred = get_native_credential_value(
+        provider="searxng",
+        provider_aliases=("searx", "searx_ng"),
+        field_names=("base_url", "url", "value"),
+        tool_name="web_search_searxng",
+        config=config,
+    )
+    if cred and cred.value:
+        return cred.value
+
+    from ..config import get_settings
+    import os
+    settings = get_settings()
+    return settings.searxng_base_url or os.environ.get("SEARXNG_BASE_URL")
+
+
+def _format_searxng_results(data: dict, count: int) -> str:
+    """Format a SearXNG /search JSON response into ranked-source text.
+
+    SearXNG returns a single flat results[] list, merged and relevance-ranked
+    across its engines. Each item carries "title", "url", a "content" snippet,
+    and an optional "publishedDate"; "category" is tagged when it is not the
+    default "general" (e.g. news/science) so the agent can tell result types
+    apart. We keep the top "count": the search is already paid for, so this only
+    caps how much enters the model context.
+    """
+    results = data.get("results") or []
+    # Defensive re-sort by score (SearXNG normally pre-sorts, but engine results
+    # merge asynchronously); items without a numeric score sort last.
+    results = sorted(
+        results,
+        key=lambda r: r.get("score") if isinstance(r.get("score"), (int, float)) else 0.0,
+        reverse=True,
+    )
+
+    lines: list[str] = []
+    for i, item in enumerate(results[:count], 1):
+        title = (item.get("title") or "").strip() or "(untitled)"
+        url = item.get("url") or ""
+        published = (item.get("publishedDate") or "").strip()
+        category = (item.get("category") or "").strip().lower()
+        tag = f" [{category}]" if category and category != "general" else ""
+        snippet = (item.get("content") or "").strip()
+        meta = f" · {published}" if published else ""
+        block = f"{i}. {title}{tag}\n   {url}{meta}"
+        if snippet:
+            block += f"\n   {snippet}"
+        lines.append(block)
+
+    return "\n".join(lines) if lines else "[No results]"
+
+
+def _searxng_site_filter(include_domains: str, exclude_domains: str) -> str:
+    """Translate include/exclude domain lists into SearXNG query operators.
+
+    SearXNG has no native domain filter; it forwards the query to its engines,
+    which understand the Google-style site: operators. A single include becomes
+    "site:host", multiple includes become "(site:a OR site:b)", and each exclude
+    becomes "-site:host". Hosts are reduced to bare hostnames first.
+    """
+    inc = [h for h in (_bare_domain(d) for d in include_domains.split(",")) if h]
+    exc = [h for h in (_bare_domain(d) for d in exclude_domains.split(",")) if h]
+    parts: list[str] = []
+    if len(inc) == 1:
+        parts.append(f"site:{inc[0]}")
+    elif len(inc) > 1:
+        parts.append("(" + " OR ".join(f"site:{h}" for h in inc) + ")")
+    parts.extend(f"-site:{h}" for h in exc)
+    return " ".join(parts)
+
+
+def _searxng_search_single(base_url: str, params: dict, timeout: float, count: int) -> str:
+    """Execute a single SearXNG search (GET) and return formatted result.
+
+    A bare httpx client is used on purpose: SearXNG runs as an internal sidecar
+    (e.g. http://searxng:8080), so the SSRF egress policy used elsewhere would
+    block the very host we need to reach. The base URL comes from operator
+    config or the vault, not from model input.
+    """
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/search"
+
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(url, headers={"Accept": "application/json"}, params=params)
+            response.raise_for_status()
+
+        try:
+            data = response.json()
+        except Exception:
+            return (
+                "[Error]: SearXNG did not return JSON. Enable the JSON format on the "
+                "instance (search.formats must include 'json')."
+            )
+
+        out = _format_searxng_results(data, count)
+        logger.debug("SearXNG search returned %d characters", len(out))
+        return out
+
+    except httpx.HTTPStatusError as e:
+        error_msg = f"SearXNG API error: {e.response.status_code}"
+        logger.error(error_msg)
+        return f"[Error]: {error_msg}"
+
+    except Exception as e:
+        error_msg = f"SearXNG search failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return f"[Error]: {error_msg}"
+
+
+@tool
+def web_search_searxng(
+    query: str = "",
+    queries: str = "",
+    count: Optional[int] = None,
+    time_range: Optional[str] = None,
+    sources: str = "",
+    include_domains: str = "",
+    exclude_domains: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """
+    Search the web for current information using a self-hosted SearXNG instance.
+
+    SearXNG is a keyless metasearch engine: it queries many upstream engines
+    (DuckDuckGo, Brave, Google, Mojeek, Wikipedia, and more) and returns a single
+    merged, relevance-ranked list of sources (title, URL, snippet). Use
+    web_search_perplexity for a single synthesized answer; use a dedicated
+    page-fetch tool to pull the full body of a specific page.
+
+    Args:
+        query: Single search query.
+        queries: Multiple queries separated by " | " (pipe with spaces). Takes
+                 precedence over query; each is searched independently. Max 10.
+                 e.g. "rust async runtimes | tokio vs async-std 2025"
+        count: Sources to return per query (1-20, default 5). SearXNG returns a
+               full page of merged results; this keeps the top-ranked count.
+        time_range: Restrict results by recency: "day", "week", "month", or "year".
+        sources: Comma-separated result categories: "general" (default), "news",
+                 and/or "science", e.g. "general, news".
+        include_domains: Comma-separated domains to restrict results to,
+                         e.g. "github.com, arxiv.org". Applied as site: operators
+                         in the query (SearXNG has no native domain filter).
+        exclude_domains: Comma-separated domains to exclude from results.
+
+    Returns:
+        Ranked sources as "N. <title>[ [news]]\\n   <url> · <date>\\n   <snippet>".
+        Non-general categories are tagged. Batch mode: sections separated by
+        "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
+    """
+    # Parse queries (batch takes precedence over single query).
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ")]
+        query_list = [q for q in query_list if q]
+        if len(query_list) > _MAX_BATCH_QUERIES:
+            query_list = query_list[:_MAX_BATCH_QUERIES]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    base_url = _get_searxng_base_url(config)
+    if not base_url:
+        return (
+            "[Error]: No SearXNG instance configured. Set SEARXNG_BASE_URL "
+            "(e.g. http://searxng:8080) or call "
+            'request_credential(provider="searxng", '
+            'bind_target="native_tool:web_search_searxng") with the base URL. '
+            "The instance must have JSON output enabled (search.formats: [json])."
+        )
+
+    # Clamp count (top-N cap on an already-ranked page, not a fetch directive).
+    if count is not None:
+        count = max(1, min(20, count))
+    else:
+        count = 5
+
+    # safesearch=1 (moderate), pageno=1 and format=json are hard defaults;
+    # language and engine selection are left to the instance configuration.
+    base_params: dict = {"format": "json", "safesearch": 1, "pageno": 1}
+
+    if time_range and time_range.strip().lower() in _SEARXNG_TIME_RANGES:
+        base_params["time_range"] = time_range.strip().lower()
+
+    cats = [c.strip().lower() for c in sources.split(",") if c.strip()]
+    cats = [c for c in cats if c in _SEARXNG_CATEGORIES]
+    base_params["categories"] = ",".join(cats) if cats else "general"
+
+    # SearXNG has no native domain filter; express include/exclude as operators.
+    site_filter = _searxng_site_filter(include_domains, exclude_domains)
+
+    logger.info(
+        "SearXNG search: %d query(ies) (count=%d, categories=%s)",
+        len(query_list),
+        count,
+        base_params["categories"],
+    )
+
+    # SearXNG fans out to many engines per query, so allow a longer timeout.
+    timeout = 20.0
+
+    # Single query: return directly.
+    if len(query_list) == 1:
+        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
+        params = {**base_params, "q": q}
+        return _searxng_search_single(base_url, params, timeout, count)
+
+    # Batch mode.
+    total = len(query_list)
+    sections = []
+    for i, raw_q in enumerate(query_list, 1):
+        header = f"=== Query {i}/{total}: {raw_q} ==="
+        q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
+        params = {**base_params, "q": q}
+        result = _searxng_search_single(base_url, params, timeout, count)
+        sections.append(f"{header}\n{result}")
+
+    return "\n\n".join(sections)
+
+
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
 # into OPTIONAL_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
-# Search group. Remaining providers (DuckDuckGo, SearXNG) are appended here per
-# docs/private/plans/web-search-integrations.md.
+# Search group. SearXNG (keyless, self-hosted) replaced the old utility-group
+# searxng_search per docs/private/plans/web-search-integrations.md.
 WEB_SEARCH_INTEGRATION_TOOLS = [
     web_search_tavily,
     web_search_exa,
     web_search_firecrawl,
     web_search_brave,
+    web_search_searxng,
 ]
