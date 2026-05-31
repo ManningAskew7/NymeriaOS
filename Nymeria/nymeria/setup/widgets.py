@@ -74,6 +74,46 @@ def _row_prompt(item: ListItem) -> Text:
     return prompt
 
 
+class PickerOptionList(OptionList):
+    """The picker's `OptionList`, with two wizard-specific tweaks over the stock list.
+
+    1. Up on the first selectable row hands focus back to the search box (posting
+       `LeaveTop`) instead of wrapping to the bottom, so the arrow keys alone can
+       travel between the filter field and the list.
+    2. Whenever the first selectable row becomes current, the list scrolls fully
+       to the top. The only thing above that row is the leading group header, a
+       disabled option the highlight can never land on, so the stock
+       scroll-to-highlight never brings it back once it has scrolled off the top.
+
+    A selectable row carries a non-None `id`; headers (and the empty-state row)
+    do not, matching the convention used throughout `SearchableList`.
+    """
+
+    class LeaveTop(Message):
+        """Posted when up is pressed while the first selectable row is current."""
+
+    def _first_selectable_index(self) -> int | None:
+        for index in range(self.option_count):
+            if self.get_option_at_index(index).id is not None:
+                return index
+        return None
+
+    def action_cursor_up(self) -> None:
+        first = self._first_selectable_index()
+        if first is not None and self.highlighted is not None and self.highlighted > first:
+            super().action_cursor_up()
+            return
+        # At (or above) the first selectable row: instead of wrapping to the
+        # bottom, return focus to the search box.
+        self.post_message(self.LeaveTop())
+
+    def watch_highlighted(self, highlighted: int | None) -> None:
+        super().watch_highlighted(highlighted)
+        if highlighted is not None and highlighted == self._first_selectable_index():
+            # Reveal the leading group header sitting just above this row.
+            self.scroll_home(animate=False)
+
+
 class SearchableList(Widget):
     """A search box over a filtered OptionList. See module docstring."""
 
@@ -126,7 +166,7 @@ class SearchableList(Widget):
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder=self._placeholder, id=self._search_id)
-        yield OptionList(id=self._list_id)
+        yield PickerOptionList(id=self._list_id)
 
     def on_mount(self) -> None:
         self._populate(self._items)
@@ -174,8 +214,8 @@ class SearchableList(Widget):
         return self.query_one(f"#{self._search_id}", Input)
 
     @property
-    def _option_list(self) -> OptionList:
-        return self.query_one(f"#{self._list_id}", OptionList)
+    def _option_list(self) -> PickerOptionList:
+        return self.query_one(f"#{self._list_id}", PickerOptionList)
 
     def _populate(self, items: list[ListItem]) -> None:
         option_list = self._option_list
@@ -227,6 +267,11 @@ class SearchableList(Widget):
         event.stop()
         option_id = event.option.id if event.option is not None else None
         self.post_message(self.Highlighted(option_id))
+
+    def on_picker_option_list_leave_top(self, event: PickerOptionList.LeaveTop) -> None:
+        # Up at the top of the list returns focus to the search box.
+        event.stop()
+        self._input.focus()
 
     def on_key(self, event: Key) -> None:
         # Down from the search box jumps into the list; the OptionList then owns
