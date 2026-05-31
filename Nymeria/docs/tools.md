@@ -12,6 +12,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 2 | `file_read` | Core | SAFE | On | Read file contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
+| 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -286,6 +287,38 @@ web_search_perplexity(query: str = "", queries: str = "", search_depth: Optional
 **Requires:** a Perplexity credential, resolved credential vault -> `PERPLEXITY_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="perplexity", bind_target="native_tool:web_search_perplexity")`.
 
 **Timeouts:** 60s for quick/standard, 180s for deep research. Max tokens: 2000 for quick/standard, 4000 for deep.
+
+---
+
+### web_search_tavily
+
+Search the web using Tavily, an agent-optimized retrieval API. Returns a ranked
+list of sources rather than a synthesized answer (use `web_search_perplexity`
+for an answer). Opt-in tool in the `WEB_SEARCH_INTEGRATION_TOOLS` group (enable
+per thread), not a core tool.
+
+```python
+web_search_tavily(query: str = "", queries: str = "", search_depth: Optional[str] = None, topic: Optional[str] = None, max_results: Optional[int] = None, time_range: Optional[str] = None, include_domains: str = "", exclude_domains: str = "", include_answer: Optional[str] = None)
+```
+
+**Parameters (all agent-controlled per query):**
+- `query` (`str`): Single search query
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
+- `search_depth` (`Optional[str]`): `"basic"` (1 credit, default) or `"advanced"` (2 credits, deeper/more relevant)
+- `topic` (`Optional[str]`): `"general"` (default), `"news"`, or `"finance"` (an index router, not a query term)
+- `max_results` (`Optional[int]`): Sources to return per query (1-20, default 5)
+- `time_range` (`Optional[str]`): Restrict by recency: `"day"`, `"week"`, `"month"`, or `"year"`
+- `include_domains` (`str`): Comma-separated domains to restrict results to
+- `exclude_domains` (`str`): Comma-separated domains to exclude
+- `include_answer` (`Optional[str]`): `"basic"` or `"advanced"` to prepend a short LLM answer (off by default; adds no extra credits)
+
+Hard defaults (not exposed): `include_raw_content`, `include_images`, `auto_parameters` are off; `country`/`chunks_per_source` use API defaults.
+
+**Returns:** Ranked sources as `N. <title>\n   <url>  (score) · <date>\n   <snippet>`. With `include_answer`, an `**Answer:**` block precedes a `**Sources:**` list. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
+
+**Requires:** a Tavily credential, resolved credential vault -> `TAVILY_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="tavily", bind_target="native_tool:web_search_tavily")`. Free tier: 1,000 credits/month.
+
+**Timeouts:** 30s basic, 60s advanced.
 
 ---
 
@@ -2487,7 +2520,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search_perplexity`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 

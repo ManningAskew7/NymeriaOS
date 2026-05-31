@@ -11,6 +11,7 @@ from .bash import bash_execute
 from .filesystem import file_read, file_write
 from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
+from .web_search_integrations import web_search_tavily, WEB_SEARCH_INTEGRATION_TOOLS
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
@@ -1353,6 +1354,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
+    + WEB_SEARCH_INTEGRATION_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
@@ -2639,6 +2641,8 @@ __all__ = [
     "MICROSOFT_GRAPH_SERVICE_TOOLS",
     "web_search_perplexity",
     "WEB_SEARCH_SERVICE_TOOLS",
+    "web_search_tavily",
+    "WEB_SEARCH_INTEGRATION_TOOLS",
     "consult",
     "CONSULT_TOOLS",
     "claude_code",
