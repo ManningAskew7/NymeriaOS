@@ -15,6 +15,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4c | `web_search_exa` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -384,6 +385,37 @@ Hard defaults (not exposed): `scrapeOptions` is never set, so result pages are n
 **Requires:** a Firecrawl credential, resolved credential vault -> `FIRECRAWL_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="firecrawl", bind_target="native_tool:web_search_firecrawl")`. Free tier: 1,000 credits/month; search costs 2 credits per 10 results.
 
 **Timeout:** 30s.
+
+---
+
+### web_search_brave
+
+Search the web using Brave Search, which runs on Brave's own independent index
+(not a Google/Bing reseller). Returns a ranked list of sources (title, URL,
+snippet). Use `web_search_perplexity` for a synthesized answer, and a dedicated
+page-fetch tool to pull the full body of a specific page. Opt-in tool in the
+`WEB_SEARCH_INTEGRATION_TOOLS` group (enable per thread), not a core tool.
+
+```python
+web_search_brave(query: str = "", queries: str = "", count: Optional[int] = None, time_range: Optional[str] = None, sources: str = "", include_domains: str = "", exclude_domains: str = "")
+```
+
+**Parameters (all agent-controlled per query):**
+- `query` (`str`): Single search query (keep under ~400 chars / 50 words, including any domain filters)
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
+- `count` (`Optional[int]`): Sources to return per query (1-20, default 5)
+- `time_range` (`Optional[str]`): Restrict by recency: `"day"`, `"week"`, `"month"`, or `"year"`; also accepts an explicit `"YYYY-MM-DDtoYYYY-MM-DD"` range
+- `sources` (`str`): Comma-separated result types: `"web"` (default), `"news"`, and/or `"discussions"` (forum threads)
+- `include_domains` (`str`): Comma-separated domains to restrict results to. Brave has no native domain filter, so these are applied as `site:` operators in the query
+- `exclude_domains` (`str`): Comma-separated domains to exclude (applied as `NOT site:` operators)
+
+Hard defaults (not exposed): `text_decorations=false` (no `<strong>` markup in snippets); `extra_snippets` off (every result already carries a concise `description`; extra_snippets only adds raw RAG-style excerpts, more tokens); `safesearch`, `country`, `search_lang`, `ui_lang` left at Brave defaults; `goggles`, `summary`, and `offset` (pagination) off.
+
+**Returns:** Ranked sources as `N. <title>[ [news]]\n   <url> · <date>\n   <snippet>`. News and discussion results are tagged. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
+
+**Requires:** a Brave credential, resolved credential vault -> `BRAVE_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="brave", bind_target="native_tool:web_search_brave")`. Brave removed its free tier on 2026-02-12, so a paid Search plan is required (about $5 per 1,000 queries, with a $5 monthly credit auto-applied).
+
+**Timeout:** 15s.
 
 ---
 
@@ -2585,7 +2617,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa`, `web_search_firecrawl`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa`, `web_search_firecrawl`, `web_search_brave`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 

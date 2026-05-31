@@ -336,6 +336,30 @@ async def _test_firecrawl(
     )
 
 
+async def _test_brave(
+    provider: str,
+    kind: str,
+    metadata: dict[str, Any],
+    secret_fields: dict[str, str],
+    settings: Any,
+) -> CredentialTestResult:
+    # Brave's Web Search endpoint is a GET, so validate the key with a minimal
+    # query (count=1) against the fixed api.search.brave.com host. The token rides
+    # in the X-Subscription-Token header (not a Bearer). 401 means a bad key; a
+    # status below 400 means the key works.
+    _ = provider, kind, metadata, settings
+    api_key = _first_secret(secret_fields, "api_key", "token", "value")
+    return await _get_json_probe(
+        "https://api.search.brave.com/res/v1/web/search?q=ping&count=1",
+        headers={
+            "X-Subscription-Token": api_key or "",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+        },
+        secrets=(api_key,),
+    )
+
+
 async def _test_openai_compatible_llm(
     provider: str,
     kind: str,
@@ -374,6 +398,7 @@ register_credential_tester("anthropic_direct", _test_anthropic)
 register_credential_tester("tavily", _test_tavily)
 register_credential_tester("exa", _test_exa)
 register_credential_tester("firecrawl", _test_firecrawl)
+register_credential_tester("brave", _test_brave)
 
 
 __all__ = [
