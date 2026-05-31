@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
-from textual.widgets import Input, RadioButton, RadioSet, Static
+from textual.widgets import Input, RadioSet, Static
 
 from ...config.llm_providers import get_llm_provider_spec
 from ..nav import Step
@@ -24,7 +24,12 @@ from ..providers import (
 )
 from ..state import WizardState
 from ..widgets import ListItem, SearchableList
-from .base import SelectingRadioSet, WizardStep, commit_radio_highlight
+from .base import (
+    CircleRadioButton,
+    SelectingRadioSet,
+    WizardStep,
+    commit_radio_highlight,
+)
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -143,7 +148,7 @@ class ConnectionStep(WizardStep):
         if spec is not None and spec.supports_responses:
             yield Static("API mode", classes="field-label")
             buttons = [
-                RadioButton(label, value=(value == self.state.api_mode))
+                CircleRadioButton(label, value=(value == self.state.api_mode))
                 for value, label in _API_MODE_CHOICES
             ]
             yield SelectingRadioSet(*buttons, id="api-mode-set")

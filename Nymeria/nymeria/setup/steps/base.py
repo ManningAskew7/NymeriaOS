@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import RadioButton, RadioSet, SelectionList, Static
 from textual.widgets.selection_list import Selection
@@ -124,6 +125,28 @@ class WizardStep(Screen):
         self._wizard.request_quit()
 
 
+class CircleRadioButton(RadioButton):
+    """A `RadioButton` drawn as a bare circle, with no filled indicator box.
+
+    Stock Textual frames the radio glyph in `BUTTON_LEFT`/`BUTTON_RIGHT`
+    half-blocks painted in the panel colour, so each option shows a blue-grey box
+    around the dot. This renders only the circle itself: an outline glyph when off
+    and a filled glyph when on. The `toggle--button` component style (see
+    theme.tcss) keeps it white over the list background, so the circles stay
+    visible with no box, in focused and blurred states alike. It subclasses
+    `RadioButton`, so the `RadioSet`/`query(RadioButton)` machinery still finds
+    it.
+    """
+
+    _GLYPH_ON = "●"  # filled circle
+    _GLYPH_OFF = "○"  # outline circle
+
+    @property
+    def _button(self) -> Content:
+        glyph = self._GLYPH_ON if self.value else self._GLYPH_OFF
+        return Content.assemble((glyph, self.get_visual_style("toggle--button")))
+
+
 class SelectingRadioSet(RadioSet):
     """A `RadioSet` whose pressed dot follows the highlight cursor.
 
@@ -196,11 +219,11 @@ class SingleSelectStep(WizardStep):
     def compose_body(self) -> ComposeResult:
         initial = self._get_initial(self.state)
         buttons = [
-            RadioButton(choice.label, value=(choice.value == initial))
+            CircleRadioButton(choice.label, value=(choice.value == initial))
             for choice in self._choices
         ]
         if initial is None and buttons:
-            buttons[0] = RadioButton(self._choices[0].label, value=True)
+            buttons[0] = CircleRadioButton(self._choices[0].label, value=True)
         yield SelectingRadioSet(*buttons)
         yield Static("", id="choice-desc")
 
@@ -375,6 +398,7 @@ def placeholder_step(
 __all__ = [
     "Choice",
     "WizardStep",
+    "CircleRadioButton",
     "SelectingRadioSet",
     "SingleSelectStep",
     "MultiSelectStep",
