@@ -381,3 +381,40 @@ def test_summarize_handles_list_content(monkeypatch):
 
     out = web_fetch._maybe_summarize("page body", "prompt")
     assert out == "PART ONE"
+
+
+# --- round 2: encoding + comma-split ------------------------------------------
+
+
+_UTF8_ACCENTED_HTML = (
+    "<html><head><title>t</title></head><body><article>"
+    "<p>This is a sufficiently long paragraph of genuine article body content so it "
+    "clears the thin-content threshold. Café résumé naïve accents and unicode must "
+    "survive extraction without mojibake corruption of any kind here.</p>"
+    "</article></body></html>"
+).encode("utf-8")
+
+
+def test_charsetless_utf8_decodes_without_mojibake(monkeypatch):
+    # text/html WITHOUT a charset, and requests-style encoding=ISO-8859-1: the tool
+    # must default to utf-8 (not latin-1) so accented text survives.
+    _patch_fetch(
+        monkeypatch,
+        FakeResponse(content=_UTF8_ACCENTED_HTML, content_type="text/html", encoding="ISO-8859-1"),
+    )
+    out = web_fetch.fetch_url_nymeria.func(url="https://ex.com/article")
+    assert "Café résumé naïve" in out
+    assert "CafÃ©" not in out  # the mojibake form
+
+
+def test_comma_inside_query_not_split(monkeypatch):
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML, url="https://a.example/p"))
+    out = web_fetch.fetch_url_nymeria.func(urls="https://a.example/p?lat=1,2,3")
+    assert out.count("=== URL") == 0  # single URL, not fragmented by query commas
+
+
+def test_comma_between_full_urls_splits(monkeypatch):
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    out = web_fetch.fetch_url_nymeria.func(urls="https://a.example/p, https://b.example/p")
+    assert "=== URL 1/2: https://a.example/p ===" in out
+    assert "=== URL 2/2: https://b.example/p ===" in out

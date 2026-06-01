@@ -127,11 +127,17 @@ def _fetch_one(url: str, *, timeout: float = 25.0):
                 ), final_url
             chunks.append(chunk)
 
+        # requests defaults charset-less text/* responses to ISO-8859-1 (RFC 2616),
+        # which mojibakes UTF-8 pages that declare their charset only via <meta>.
+        # Honor an explicit header charset; otherwise default to utf-8 (as the
+        # prior httpx path did) and let errors="replace" cover the rare exception.
+        ctype = response.headers.get("content-type", "")
+        encoding = response.encoding if "charset=" in ctype.lower() else None
         fetched = _Fetched(
             headers=dict(response.headers),
             content=b"".join(chunks),
             url=final_url,
-            encoding=response.encoding,
+            encoding=encoding,
         )
         return fetched, None, final_url
     except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
@@ -494,8 +500,9 @@ def fetch_url_nymeria(
 
     Args:
         url: Single URL to fetch.
-        urls: Multiple URLs separated by " | " (pipe) or commas. Takes precedence
-              over url. Each is fetched independently. Max 10 per call.
+        urls: Multiple URLs separated by " | " (pipe), or by commas between full
+              http(s) URLs. Takes precedence over url. Each is fetched
+              independently. Max 10 per call.
         extract: "markdown" (default, preserves structure) or "text" (plain prose).
         summarize: If true, return an LLM extraction/summary instead of the full
                    page. Use when you only need specific information.
@@ -514,7 +521,13 @@ def fetch_url_nymeria(
         HTTP code, timeout, unsupported type, or could-not-extract), never raised.
     """
     if urls.strip():
-        url_list = [u.strip() for u in re.split(r"\s*\|\s*|\s*,\s*", urls) if u.strip()]
+        # Split on pipes, or on a comma only when the next token is a full http(s)
+        # URL, so commas inside a single URL's query string do not fragment it.
+        url_list = [
+            u.strip()
+            for u in re.split(r"\s*\|\s*|\s*,\s*(?=https?://)", urls)
+            if u.strip()
+        ]
         url_list = url_list[:_MAX_BATCH_URLS]
     elif url.strip():
         url_list = [url.strip()]
