@@ -14,7 +14,7 @@
 
   let loadError = $state<string | null>(null);
   let configureThread = $state<Thread | null>(null);
-  let configureInitialTab = $state<'instructions' | 'agent'>('instructions');
+  let configureInitialTab = $state<'behavior' | 'connections'>('behavior');
   let deleteConfirmThreadId = $state<string | null>(null);
   let deleteConfirmTitle = $state('');
   let importInput: HTMLInputElement | null = null;
@@ -428,7 +428,7 @@
     threadsStore.renameThread(threadId, newTitle);
   }
 
-  async function openThreadSettings(thread: Thread, initialTab: 'instructions' | 'agent') {
+  async function openThreadSettings(thread: Thread, initialTab: 'behavior' | 'connections') {
     configureInitialTab = initialTab;
     try {
       await threadConfigStore.loadConfig(thread.id);
@@ -439,11 +439,11 @@
   }
 
   function handleConfigureThread(thread: Thread) {
-    void openThreadSettings(thread, 'instructions');
+    void openThreadSettings(thread, 'behavior');
   }
 
   function handleOpenAgentConfig(thread: Thread) {
-    void openThreadSettings(thread, 'agent');
+    void openThreadSettings(thread, 'connections');
   }
 
   function isCallableThread(thread: Thread): boolean {

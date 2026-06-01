@@ -1,15 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, UnifiedTool, ProviderRoute, ToolSearchResult } from '$lib/types';
-  import { Icon, ToggleSwitch } from '$lib/components/common';
+  import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, ProviderRoute } from '$lib/types';
+  import { Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
   import { trapFocus } from '$lib/actions/focus';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
-  import { triggersStore } from '$lib/stores/triggers.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -17,8 +15,7 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
-  import { filterToolSearch } from '$lib/utils/toolSearch';
-  import { computeEffectiveToolCounts, isMcpToolName, liveTemporaryToolNames } from '$lib/utils/toolCounts';
+  import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     fromThreadDisplayProvider,
@@ -27,13 +24,14 @@
     type ThreadDisplayProvider,
   } from '$lib/utils/providerMapping';
   import { detectThreadPlatform, isNativeDisplayPlatform } from '$lib/utils/platform';
-  import { fade } from 'svelte/transition';
-  import { cubicOut } from 'svelte/easing';
+  import BehaviorConfigTab from './BehaviorConfigTab.svelte';
   import ModelConfigTab from './ModelConfigTab.svelte';
+  import ToolsConfigTab from './ToolsConfigTab.svelte';
   import SkillsConfigTab from './SkillsConfigTab.svelte';
-  import ChatAppConfigTab from './ChatAppConfigTab.svelte';
+  import MemoryConfigTab from './MemoryConfigTab.svelte';
+  import ConnectionsConfigTab from './ConnectionsConfigTab.svelte';
 
-  type ThreadSettingsTab = 'instructions' | 'system-prompt' | 'notepad' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'chatapp';
+  type ThreadSettingsTab = 'behavior' | 'model' | 'tools' | 'skills' | 'memory' | 'connections';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
@@ -41,15 +39,45 @@
   const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
   const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
 
+  const TABS: { id: ThreadSettingsTab; label: string; icon: string }[] = [
+    { id: 'behavior', label: 'Behavior', icon: 'fileText' },
+    { id: 'model', label: 'Model', icon: 'terminal' },
+    { id: 'tools', label: 'Tools', icon: 'tool' },
+    { id: 'skills', label: 'Skills', icon: 'bolt' },
+    { id: 'memory', label: 'Memory', icon: 'pin' },
+    { id: 'connections', label: 'Connections', icon: 'chat' },
+  ];
+
+  // Map legacy / external initialTab values onto the new six-tab IA so existing
+  // callers (e.g. ThreadList's "configure as agent") keep deep-linking sanely.
+  function normalizeTab(tab: string | undefined): ThreadSettingsTab {
+    switch (tab) {
+      case 'model': return 'model';
+      case 'tools':
+      case 'mcp': return 'tools';
+      case 'skills': return 'skills';
+      case 'memory':
+      case 'notepad':
+      case 'dream': return 'memory';
+      case 'connections':
+      case 'agent':
+      case 'chatapp': return 'connections';
+      case 'behavior':
+      case 'instructions':
+      case 'system-prompt':
+      default: return 'behavior';
+    }
+  }
+
   interface Props {
     thread: Thread;
     threadConfig: ThreadConfig | null;
-    initialTab?: ThreadSettingsTab;
+    initialTab?: string;
     onClose: () => void;
     onSaved: (config: ThreadConfig) => void;
   }
 
-  let { thread, threadConfig, initialTab = 'instructions', onClose, onSaved }: Props = $props();
+  let { thread, threadConfig, initialTab = 'behavior', onClose, onSaved }: Props = $props();
 
   function platformAfterCallableChange(target: Thread, callable: boolean): ThreadPlatform {
     const detected = detectThreadPlatform(target.id);
@@ -60,10 +88,11 @@
   }
 
   // Active tab
-  let activeTab = $state<ThreadSettingsTab>('instructions');
+  // svelte-ignore state_referenced_locally — intentional: seed from the prop, then the effect keeps it synced
+  let activeTab = $state<ThreadSettingsTab>(normalizeTab(initialTab));
 
   $effect(() => {
-    activeTab = initialTab;
+    activeTab = normalizeTab(initialTab);
   });
 
   let chatAppBindings = $derived(chatAppBindingsStore.getBindings(thread.id));
@@ -138,62 +167,17 @@
   // reflects what the agent will actually receive.
   function computeInitialToolState(): { disabled: Set<string>; enabled: Set<string> } {
     if (threadConfig?.hasCustomizations) {
-      // Thread has its own customized config — use it directly
       return {
         disabled: new Set(threadConfig.disabledTools ?? []),
         enabled: new Set(threadConfig.enabledTools ?? []),
       };
     }
-    // No per-thread overrides for uncustomized threads.
-    // The default tool set already defines what's loaded.
     return { disabled: new Set(), enabled: new Set() };
   }
 
   const initialToolState = computeInitialToolState();
   let disabledTools = $state<Set<string>>(initialToolState.disabled);
   let enabledTools = $state<Set<string>>(initialToolState.enabled);
-
-  // Optional non-MCP tools (derived from defaultToolsStore — tools NOT in the user's core set)
-  const optionalTools = $derived.by(() => {
-    if (!defaultToolsStore.loaded) return [];
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    return defaultToolsStore.tools
-      .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
-      .map(t => ({
-        name: t.name,
-        description: t.description,
-        category: t.category,
-        securityLevel: t.security_level,
-      }));
-  });
-
-  // MCP tools grouped by server. Default MCP tools can be disabled for this
-  // thread; non-default MCP tools can be enabled for this thread. Server
-  // lifecycle controls live in the global MCP tab.
-  const mcpServersForThread = $derived.by(() => {
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    return mcpServersStore.servers.map(server => {
-      const tools = server.discoveredTools
-        .map(t => ({
-          mcpName: `mcp__${server.id}__${t.name}`,
-          shortName: t.name,
-          description: t.description,
-        }))
-        .map(t => ({
-          ...t,
-          isDefault: coreSet.has(t.mcpName),
-        }));
-      return {
-        id: server.id,
-        name: server.name,
-        enabled: server.enabled,
-        discoveredCount: server.discoveredTools.length,
-        tools,
-      };
-    });
-  });
-
-  let expandedMcpServer = $state<string | null>(null);
 
   function getInitialThreadDisplayProvider(): ThreadDisplayProvider {
     return toThreadDisplayProvider(
@@ -391,32 +375,54 @@
   let dreamRunning = $state(false);
   let dreamStatus = $state('');
 
-  // Search
-  let toolSearch = $state('');
-  let backendSearchResults = $state<ToolSearchResult[]>([]);
-  let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null;
-  let searchGeneration = 0;
   let saving = $state(false);
   let error = $state('');
   let showToolWarning = $state(false);
 
-  // Effective tool count for this thread (default tools minus disabled, plus optional enabled)
-  const effectiveToolCount = $derived.by(() => {
-    return computeEffectiveToolCounts({
+  // Tools tab transient UI state lives here (not in ToolsConfigTab) so the
+  // search query and group expand/collapse survive switching tabs, which
+  // unmounts/remounts the active tab body.
+  let toolSearch = $state('');
+  let toolsExpanded = $state<Set<string>>(new Set());
+  let toolsCollapsed = $state<Set<string>>(new Set());
+
+  // Effective active tool count for this thread (default minus disabled, plus
+  // optional enabled + live TTL'd) — drives the >25 tool warning shown on save.
+  const effectiveToolCount = $derived(
+    computeEffectiveToolCounts({
       defaultToolNames: defaultToolsStore.defaultToolNames,
       enabledTools: [...enabledTools],
       disabledTools: [...disabledTools],
       temporaryTools: liveTemporaryToolNames(threadConfig?.temporaryTools),
-    }).totalActiveCount;
-  });
+    }).totalActiveCount
+  );
 
-  // Ensure tools, triggers, and model metadata are loaded
+  // Tab indicator helpers
+  const toolOverrideCount = $derived(disabledTools.size + enabledTools.size);
+  const connectionsCount = $derived(chatAppBindings.length + (isCallable ? 1 : 0));
+  const behaviorCustomized = $derived(
+    Boolean(instructions.trim() || systemPrompt.trim() || injectTodosInPrompt || showAutonomousPrompts || showPromptMetadata)
+  );
+  const modelCustomized = $derived(
+    Boolean(
+      threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens || llmContextLength ||
+      llmOllamaNumCtx || llmExtendedThinking !== 'default' || llmReasoningEffort ||
+      llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
+      llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
+      compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens
+    )
+  );
+  const memoryCustomized = $derived(
+    Boolean(dreamEnabled || String(memoryCharLimit ?? '').trim())
+  );
+
+  const effectiveModelLabel = $derived(llmModel || serverSettingsStore.model || 'Global default');
+  const modelInherited = $derived(!llmModel);
+
+  // Ensure tools and model metadata are loaded for the child tabs.
   $effect(() => {
     if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) {
       unifiedToolsStore.loadTools();
-    }
-    if (!triggersStore.loaded && !triggersStore.loading) {
-      triggersStore.loadTriggers();
     }
     if (!modelsStore.loaded && !modelsStore.loading) {
       modelsStore.loadModels();
@@ -433,14 +439,17 @@
   });
 
   // Force-refresh MCP servers + default tools on panel mount so changes made
-  // in the global Settings → MCP panel (new server installed, defaults
-  // edited) are reflected here without a full app reload.
+  // in the global Settings → Tools / MCP panel are reflected here without a
+  // full app reload.
   onMount(() => {
     mcpServersStore.refresh();
     defaultToolsStore.resetLoaded();
     void defaultToolsStore.load();
     void skillsStore.refreshInstalled();
     void skillsStore.refreshGlobal();
+    // Load chat-app bindings up front so the Connections tab badge is accurate
+    // before that tab is opened.
+    void chatAppBindingsStore.loadBindings(thread.id).catch(() => {});
     void threadConfigStore.loadConfig(thread.id).catch((err) => {
       console.warn('[ThreadSettingsPanel] Failed to refresh thread config:', err);
     });
@@ -466,162 +475,6 @@
     }
     return seen;
   });
-
-  const toolsLoadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
-  const toolsReady = $derived(unifiedToolsStore.loaded && defaultToolsStore.loaded);
-  const toolsLoading = $derived(unifiedToolsStore.loading || defaultToolsStore.loading || !toolsReady);
-
-  const filteredTools = $derived.by(() => {
-    if (!defaultToolsStore.loaded) return [];
-
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
-    return filterToolSearch(allTools, toolSearch, (tool: UnifiedTool) => ({
-      id: tool.id,
-      name: tool.name,
-      description: tool.description,
-      category: tool.category,
-      tags: tool.tags,
-      toolType: tool.toolType,
-      implementationType: tool.implementationType,
-    }));
-  });
-
-  const filteredOptionalTools = $derived.by(() =>
-    filterToolSearch(optionalTools, toolSearch, (tool) => ({
-      name: tool.name,
-      description: tool.description,
-      category: tool.category,
-      tags: [tool.securityLevel, 'optional'],
-      toolType: 'optional',
-    }))
-  );
-
-  // Backend semantic-search fallback. Fires when the local result set is sparse
-  // so exact / fuzzy / semantic matches the client-side ranker missed still
-  // surface in the picker.
-  $effect(() => {
-    const q = toolSearch.trim();
-    if (searchDebounceHandle) {
-      clearTimeout(searchDebounceHandle);
-      searchDebounceHandle = null;
-    }
-    if (q.length < 2) {
-      backendSearchResults = [];
-      return;
-    }
-    const myGen = ++searchGeneration;
-    searchDebounceHandle = setTimeout(async () => {
-      try {
-        const resp = await api.searchTools({
-          query: q,
-          threadId: thread.id,
-          topK: 20,
-          includeStatus: false,
-        });
-        if (myGen !== searchGeneration) return;
-        backendSearchResults = resp.results.filter(
-          (r) => r.toolType !== 'mcp_server' && !r.name.startsWith('mcp__')
-        );
-      } catch {
-        if (myGen === searchGeneration) backendSearchResults = [];
-      }
-    }, 200);
-  });
-
-  // Backend extras for the Core section: only include backend hits that belong
-  // to the core pool AND aren't already in the local filtered list AND have a
-  // matching UnifiedTool we can render.
-  const backendExtrasCore = $derived.by(() => {
-    if (backendSearchResults.length === 0) return [] as UnifiedTool[];
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    const localNames = new Set(filteredTools.map((t) => t.name));
-    const out: UnifiedTool[] = [];
-    for (const r of backendSearchResults) {
-      if (!coreSet.has(r.name)) continue;
-      if (localNames.has(r.name)) continue;
-      const match = unifiedToolsStore.tools.find((t) => t.name === r.name);
-      if (match) out.push(match);
-    }
-    return out;
-  });
-
-  // Backend extras for the Optional section. If the tool isn't in the local
-  // optional pool (stale frontend store), synthesize a row from the backend
-  // result so the user can enable it anyway — toggleOptionalTool only needs
-  // the tool name.
-  const backendExtrasOptional = $derived.by(() => {
-    if (backendSearchResults.length === 0) return [] as typeof optionalTools;
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    const localOptionalNames = new Set(filteredOptionalTools.map((t) => t.name));
-    const out: typeof optionalTools = [];
-    for (const r of backendSearchResults) {
-      if (coreSet.has(r.name)) continue;
-      if (localOptionalNames.has(r.name)) continue;
-      const match = optionalTools.find((t) => t.name === r.name);
-      if (match) {
-        out.push(match);
-      } else {
-        out.push({
-          name: r.name,
-          description: r.description,
-          category: r.category,
-          securityLevel: r.securityLevel,
-        });
-      }
-    }
-    return out;
-  });
-
-  const currentToolCounts = $derived.by(() =>
-    computeEffectiveToolCounts({
-      defaultToolNames: defaultToolsStore.defaultToolNames,
-      enabledTools: [...enabledTools],
-      disabledTools: [...disabledTools],
-      temporaryTools: liveTemporaryToolNames(threadConfig?.temporaryTools),
-    })
-  );
-
-  const disabledToolCount = $derived(currentToolCounts.disabledNonMcpCount);
-
-  const enabledToolCount = $derived(currentToolCounts.enabledExtraNonMcpCount);
-
-  const mcpOverrideCount = $derived(
-    [...disabledTools].filter(isMcpToolName).length +
-    [...enabledTools].filter(isMcpToolName).length
-  );
-
-  function isMcpThreadToolEnabled(tool: { mcpName: string; isDefault: boolean }): boolean {
-    return tool.isDefault ? !disabledTools.has(tool.mcpName) : enabledTools.has(tool.mcpName);
-  }
-
-  function toggleMcpThreadTool(tool: { mcpName: string; isDefault: boolean }) {
-    if (tool.isDefault) {
-      toggleTool(tool.mcpName);
-    } else {
-      toggleOptionalTool(tool.mcpName);
-    }
-  }
-
-  function toggleOptionalTool(toolName: string) {
-    const next = new Set(enabledTools);
-    if (next.has(toolName)) {
-      next.delete(toolName);
-    } else {
-      next.add(toolName);
-    }
-    enabledTools = next;
-  }
-
-  function toggleTool(toolName: string) {
-    const next = new Set(disabledTools);
-    if (next.has(toolName)) {
-      next.delete(toolName);
-    } else {
-      next.add(toolName);
-    }
-    disabledTools = next;
-  }
 
   function boundedInt(value: string | number, fallback: number, min: number, max: number): number {
     const parsed = parseInt(String(value ?? '').trim(), 10);
@@ -772,8 +625,7 @@
       }
 
       // Disabled tools are authoritative thread overrides and must be preserved
-      // even if the tool is not currently in the global default set. If it is
-      // promoted later, this thread remains explicitly opted out.
+      // even if the tool is not currently in the global default set.
       const effectiveDisabled = [...disabledTools];
       if (effectiveDisabled.length > 0) {
         updates.disabled_tools = effectiveDisabled;
@@ -813,9 +665,6 @@
         const mapped = fromThreadDisplayProvider(threadDisplayProvider);
         llm.provider = mapped.provider || null;
         const effectiveProviderForSave = mapped.provider || getEffectiveProvider();
-        // For openai_custom, persist the user-editable base URL (not the default
-        // from fromThreadDisplayProvider, which is just a placeholder). Other
-        // OpenAI-compatible providers may also carry an optional per-thread URL.
         if (threadDisplayProvider === 'openai_custom') {
           llm.base_url = llmBaseUrl || DEFAULT_CUSTOM_OPENAI_BASE_URL;
         } else if (supportsOpenAiApiMode(effectiveProviderForSave)) {
@@ -836,7 +685,6 @@
         if (llmUseModelDefaults !== 'default') {
           llm.use_model_defaults = llmUseModelDefaults === 'true';
         } else {
-          // Explicitly clear to remove stale per-thread override
           llm.use_model_defaults = null;
         }
         llm.provider_route = llmProviderRoute !== 'default' ? llmProviderRoute : null;
@@ -905,8 +753,6 @@
         notepadCharLimit = np.charLimit;
       }
 
-      // Sync sidebar title to callable name (backend already updated metadata,
-      // so this is local-only to avoid stale title until next full sync)
       if (isCallable && callableName.trim()) {
         threadsStore.applyBackendTitle(thread.id, callableName.trim());
       }
@@ -917,7 +763,6 @@
 
       onSaved(result);
 
-      // Refresh context stats so status bar shows new model + correct percentage
       const savedThreadId = thread.id;
       api.getThreadContextStats(savedThreadId).then((stats) => {
         if (stats && threadsStore.currentThreadId === savedThreadId) {
@@ -934,42 +779,57 @@
     }
   }
 
+  // Reset every form field to its "no override" baseline. The notepad is the
+  // agent's persistent memory (not a config override), so it is intentionally
+  // left untouched here.
+  function resetFormState() {
+    instructions = '';
+    systemPrompt = '';
+    disabledTools = new Set();
+    enabledTools = new Set();
+    threadEnabledSkills = new Set();
+    threadDisabledSkills = new Set();
+    threadDisplayProvider = toThreadDisplayProvider('', undefined);
+    llmProvider = '';
+    llmModel = '';
+    llmBaseUrl = '';
+    llmApiKey = '';
+    llmTemperature = '';
+    llmMaxTokens = '';
+    llmContextLength = '';
+    llmOllamaNumCtx = '';
+    llmExtendedThinking = 'default';
+    llmReasoningEffort = '';
+    llmUseModelDefaults = 'default';
+    llmProviderRoute = 'default';
+    llmOpenAiApiMode = 'default';
+    compactThresholdMode = 'default';
+    compactThresholdPct = '';
+    compactThresholdTokens = '';
+    isCallable = false;
+    callableName = '';
+    callableDescription = '';
+    injectTodosInPrompt = false;
+    showAutonomousPrompts = false;
+    showPromptMetadata = false;
+    telegramAutonomousDelivery = 'full';
+    inAppNotificationLevel = 'notify_only';
+    notificationProfile = null;
+    memoryCharLimit = '';
+    dreamEnabled = false;
+    dreamMinIntervalHours = String(DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+    dreamMinIdleMinutes = String(DREAM_DEFAULT_MIN_IDLE_MINUTES);
+    dreamMinTurnsSinceLast = String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    dreamModel = '';
+    dreamStatus = '';
+  }
+
   async function handleReset() {
     saving = true;
     error = '';
     try {
       await threadConfigStore.deleteConfig(thread.id);
-      // Reset form
-      instructions = '';
-      disabledTools = new Set();
-      enabledTools = new Set();
-      threadEnabledSkills = new Set();
-      threadDisabledSkills = new Set();
-      llmProvider = '';
-      llmModel = '';
-      llmTemperature = '';
-      llmMaxTokens = '';
-      llmExtendedThinking = 'default';
-      llmReasoningEffort = '';
-      compactThresholdMode = 'default';
-      compactThresholdPct = '';
-      compactThresholdTokens = '';
-      systemPrompt = '';
-      isCallable = false;
-      callableName = '';
-      callableDescription = '';
-      showAutonomousPrompts = false;
-      showPromptMetadata = false;
-      telegramAutonomousDelivery = 'full';
-      inAppNotificationLevel = 'notify_only';
-      notificationProfile = null;
-      memoryCharLimit = '';
-      dreamEnabled = false;
-      dreamMinIntervalHours = String(DREAM_DEFAULT_MIN_INTERVAL_HOURS);
-      dreamMinIdleMinutes = String(DREAM_DEFAULT_MIN_IDLE_MINUTES);
-      dreamMinTurnsSinceLast = String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
-      dreamModel = '';
-      dreamStatus = '';
+      resetFormState();
       threadsStore.updateThread(thread.id, {
         callable: false,
         platform: platformAfterCallableChange(thread, false),
@@ -999,7 +859,6 @@
         hasCustomizations: false,
       });
 
-      // Refresh context stats so status bar reverts to global model
       const resetThreadId = thread.id;
       api.getThreadContextStats(resetThreadId).then((stats) => {
         if (stats && threadsStore.currentThreadId === resetThreadId) {
@@ -1036,6 +895,20 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
+
+  // WAI-ARIA tab keyboard contract: arrows move between tabs, Home/End jump.
+  function handleTabKeydown(e: KeyboardEvent) {
+    const idx = TABS.findIndex((t) => t.id === activeTab);
+    let next = idx;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % TABS.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + TABS.length) % TABS.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = TABS.length - 1;
+    else return;
+    e.preventDefault();
+    activeTab = TABS[next].id;
+    document.getElementById(`thread-tab-${TABS[next].id}`)?.focus();
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -1050,616 +923,139 @@
   ></button>
   <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="thread-settings-title" tabindex="-1" use:trapFocus>
     <div class="modal-header">
-      <h2 id="thread-settings-title">Thread Settings</h2>
-      <span class="modal-subtitle">{thread.title}</span>
-      <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
-        <Icon name="x" size={18} />
-      </button>
-    </div>
-
-    <div class="tabs">
-      <button
-        class="tab"
-        class:active={activeTab === 'instructions'}
-        onclick={() => (activeTab = 'instructions')}
-        type="button"
-      >
-        Instructions
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'system-prompt'}
-        onclick={() => (activeTab = 'system-prompt')}
-        type="button"
-      >
-        System Prompt
-        {#if systemPrompt.trim()}
-          <span class="tab-badge">1</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'notepad'}
-        onclick={() => (activeTab = 'notepad')}
-        type="button"
-      >
-        Notepad
-        {#if notepad.trim()}
-          <span class="tab-badge">1</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'agent'}
-        onclick={() => (activeTab = 'agent')}
-        type="button"
-      >
-        Agent
-        {#if isCallable}
-          <span class="tab-badge">1</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'dream'}
-        onclick={() => (activeTab = 'dream')}
-        type="button"
-      >
-        Dream
-        {#if dreamEnabled}
-          <span class="tab-badge">1</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'model'}
-        onclick={() => (activeTab = 'model')}
-        type="button"
-      >
-        Model
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'tools'}
-        onclick={() => (activeTab = 'tools')}
-        type="button"
-      >
-        Tools
-        {#if disabledToolCount > 0}
-          <span class="tab-badge">{disabledToolCount}</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'mcp'}
-        onclick={() => (activeTab = 'mcp')}
-        type="button"
-      >
-        MCP
-        {#if mcpOverrideCount > 0}
-          <span class="tab-badge">{mcpOverrideCount}</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'skills'}
-        onclick={() => (activeTab = 'skills')}
-        type="button"
-      >
-        Skills
-        {#if resolvedActiveSkillNames.size > 0}
-          <span class="tab-badge">{resolvedActiveSkillNames.size}</span>
-        {/if}
-      </button>
-      <button
-        class="tab"
-        class:active={activeTab === 'chatapp'}
-        onclick={() => (activeTab = 'chatapp')}
-        type="button"
-      >
-        Chat App
-        {#if chatAppBindings.length > 0}
-          <span class="tab-badge">{chatAppBindings.length}</span>
-        {/if}
-      </button>
-    </div>
-
-    <div class="tab-content">
-      {#key activeTab}
-      <div class="tab-fade">
-      {#if activeTab === 'instructions'}
-        <div class="tab-panel">
-          <label class="field-label" for="thread-instructions">
-            Custom Instructions
-          </label>
-          <p class="field-hint">
-            Appended to the base system prompt for this thread only.
-          </p>
-          <textarea
-            id="thread-instructions"
-            class="instructions-input"
-            bind:value={instructions}
-            placeholder="e.g. Focus on email management. Be concise. Always check the calendar before scheduling."
-            maxlength={5000}
-            rows={8}
-          ></textarea>
-          <span class="char-count">{instructions.length} / 5000</span>
-
-          <div class="visibility-section">
-            <h3 class="section-title">Advanced</h3>
-
-            <label class="toggle-row">
-              <input type="checkbox" bind:checked={injectTodosInPrompt} />
-              <span class="toggle-label">Inject TODOs into system prompt</span>
-            </label>
-            <p class="field-hint">
-              Include active TODOs directly in the system prompt so the LLM can
-              see and act on them without tool calls. Uses extra context tokens.
-            </p>
-
-            <label class="toggle-row">
-              <input type="checkbox" bind:checked={showAutonomousPrompts} />
-              <span class="toggle-label">Force show autonomous prompts on this thread</span>
-            </label>
-            <p class="field-hint">
-              Per-thread override. When the global "Show autonomous prompts"
-              setting (Settings, Appearance) is off, enable this to still show
-              scheduler, watchdog, and trigger prompts on this specific thread.
-              When the global setting is on, this has no effect (prompts already
-              show on all threads).
-            </p>
-
-            <label class="toggle-row">
-              <input type="checkbox" bind:checked={showPromptMetadata} />
-              <span class="toggle-label">Show prompt metadata</span>
-            </label>
-            <p class="field-hint">
-              Show the time context and trigger type prepended to each message.
-              Useful for debugging prompt flow and callable thread routing.
-            </p>
-          </div>
+      <div class="header-row">
+        <span class="header-scope-icon"><Icon name="settings" size={16} /></span>
+        <div class="header-titles">
+          <h2 id="thread-settings-title">Thread Settings</h2>
+          <span class="modal-subtitle">{thread.title}</span>
         </div>
-
-      {:else if activeTab === 'system-prompt'}
-        <div class="tab-panel">
-          <label class="field-label" for="system-prompt-input">
-            Custom System Prompt
-          </label>
-          <p class="field-hint">
-            Replaces the base system prompt (soul.md) entirely for this thread.
-            Leave empty to use the default.
-          </p>
-          <textarea
-            id="system-prompt-input"
-            class="instructions-input system-prompt-input"
-            bind:value={systemPrompt}
-            placeholder="You are a specialized assistant that..."
-            maxlength={50000}
-            rows={12}
-          ></textarea>
-          <span class="char-count">{systemPrompt.length} / 50000</span>
-        </div>
-
-      {:else if activeTab === 'notepad'}
-        <div class="tab-panel">
-          <label class="field-label" for="notepad-input">
-            Notepad
-          </label>
-          <p class="field-hint">
-            The agent's persistent memory for this thread. It survives context
-            compaction and is reloaded each session. This edits the same notepad
-            the agent reads and writes with its memory tools; changes made
-            mid-conversation are picked up on the next compaction or when the
-            agent re-reads its memory.
-          </p>
-          {#if notepadLoaded}
-            <textarea
-              id="notepad-input"
-              class="instructions-input system-prompt-input"
-              bind:value={notepad}
-              placeholder="Notes the agent should remember for this thread..."
-              rows={14}
-            ></textarea>
-            <span class="char-count">
-              {notepad.length}{#if notepadCharLimit} / {notepadCharLimit}{/if}
-            </span>
-          {:else}
-            <p class="field-hint">Loading notepad...</p>
-          {/if}
-        </div>
-
-      {:else if activeTab === 'agent'}
-        <div class="tab-panel">
-          <div class="agent-config-section">
-            <h3 class="section-title">Agent Configuration</h3>
-            <p class="field-hint">
-              Mark this thread as a callable sub-agent. When enabled, Nymeria can delegate tasks to this thread.
-            </p>
-
-            <label class="toggle-row">
-              <input type="checkbox" bind:checked={isCallable} />
-              <span class="toggle-label">Make Callable</span>
-            </label>
-
-            {#if isCallable}
-              <div class="field-group">
-                <label class="field-label" for="callable-name-input">Callable Name</label>
-                <p class="field-hint">The tool name Nymeria uses to call this thread (e.g., "BrowserAgent").</p>
-                <input
-                  id="callable-name-input"
-                  class="field-input"
-                  type="text"
-                  bind:value={callableName}
-                  placeholder="e.g. ResearchAgent"
-                  maxlength={64}
-                />
-              </div>
-
-              <div class="field-group">
-                <label class="field-label" for="callable-desc-input">Callable Description</label>
-                <p class="field-hint">What the LLM sees as the tool description. Describe when to use this thread.</p>
-                <textarea
-                  id="callable-desc-input"
-                  class="instructions-input"
-                  bind:value={callableDescription}
-                  placeholder="e.g. Autonomous web research that finds information, summarizes articles, and compiles reports"
-                  maxlength={500}
-                  rows={3}
-                ></textarea>
-                <span class="char-count">{callableDescription.length} / 500</span>
-              </div>
-            {/if}
-          </div>
-
-          <div class="agent-config-section">
-            <h3 class="section-title">Memory</h3>
-            <p class="field-hint">
-              Limit the persistent notepad for this thread. Leave blank to inherit the global limit{serverSettingsStore.memoryCharLimit ? ` (${serverSettingsStore.memoryCharLimit.toLocaleString()} chars)` : ''}.
-            </p>
-            <div class="field-group">
-              <label class="field-label" for="thread-memory-limit-input">Memory Character Limit</label>
-              <input
-                id="thread-memory-limit-input"
-                class="field-input"
-                type="number"
-                min="1"
-                max="2000000"
-                step="500"
-                bind:value={memoryCharLimit}
-                placeholder="Inherit global"
-              />
-            </div>
-          </div>
-        </div>
-
-      {:else if activeTab === 'dream'}
-        <div class="tab-panel">
-          <div class="agent-config-section">
-            <h3 class="section-title">Dreaming</h3>
-            <p class="field-hint">
-              Background self-reflection for this thread. Dream turns run in a shadow thread and write only through the dream tool policy.
-            </p>
-
-            <label class="toggle-row">
-              <input type="checkbox" bind:checked={dreamEnabled} />
-              <span class="toggle-label">Enable Dreaming</span>
-            </label>
-
-            <div class="dream-grid">
-              <div class="field-group">
-                <label class="field-label" for="dream-min-interval">Min Interval Hours</label>
-                <input
-                  id="dream-min-interval"
-                  class="field-input"
-                  type="number"
-                  min="1"
-                  max="168"
-                  step="1"
-                  bind:value={dreamMinIntervalHours}
-                />
-              </div>
-              <div class="field-group">
-                <label class="field-label" for="dream-min-idle">Min Idle Minutes</label>
-                <input
-                  id="dream-min-idle"
-                  class="field-input"
-                  type="number"
-                  min="5"
-                  max="10080"
-                  step="5"
-                  bind:value={dreamMinIdleMinutes}
-                />
-              </div>
-              <div class="field-group">
-                <label class="field-label" for="dream-min-turns">Min Turns Since Last</label>
-                <input
-                  id="dream-min-turns"
-                  class="field-input"
-                  type="number"
-                  min="1"
-                  max="10000"
-                  step="1"
-                  bind:value={dreamMinTurnsSinceLast}
-                />
-              </div>
-              <div class="field-group">
-                <label class="field-label" for="dream-model">Dream Model</label>
-                <input
-                  id="dream-model"
-                  class="field-input"
-                  type="text"
-                  bind:value={dreamModel}
-                  placeholder="Default model"
-                  maxlength={120}
-                />
-              </div>
-            </div>
-
-            {#if threadConfig?.dreaming?.lastDreamAt}
-              <p class="field-hint">
-                Last dream: {new Date(threadConfig.dreaming.lastDreamAt).toLocaleString()}
-              </p>
-            {/if}
-
-            <div class="dream-actions">
-              <button
-                class="btn btn-primary"
-                type="button"
-                onclick={handleRunDream}
-                disabled={saving || dreamRunning || !dreamEnabled || hasChanges()}
-                title={hasChanges() ? 'Save changes before running a dream' : 'Run dream now'}
-              >
-                {dreamRunning ? 'Starting...' : 'Run Dream'}
-              </button>
-              {#if dreamStatus}
-                <span class="dream-status">{dreamStatus}</span>
-              {/if}
-            </div>
-          </div>
-        </div>
-
-      {:else if activeTab === 'model'}
-        <ModelConfigTab
-          bind:threadDisplayProvider
-          bind:llmProvider
-          bind:llmModel
-          bind:llmBaseUrl
-          bind:llmApiKey
-          bind:llmTemperature
-          bind:llmMaxTokens
-          bind:llmContextLength
-          bind:llmOllamaNumCtx
-          bind:llmExtendedThinking
-          bind:llmReasoningEffort
-          bind:llmUseModelDefaults
-          bind:llmProviderRoute
-          bind:llmOpenAiApiMode
-          bind:compactThresholdMode
-          bind:compactThresholdPct
-          bind:compactThresholdTokens
-        />
-
-      {:else if activeTab === 'tools'}
-        <div class="tab-panel tools-panel">
-          <div class="tools-search">
-            <input
-              type="text"
-              class="field-input"
-              bind:value={toolSearch}
-              placeholder="Search tools..."
-            />
-          </div>
-
-          {#if toolsLoadError}
-            <div class="tools-loading">{toolsLoadError}</div>
-          {:else if toolsLoading}
-            <div class="tools-loading">Loading tools...</div>
-          {:else}
-            <div class="tools-list">
-              {#if backendExtrasCore.length > 0}
-                <div class="search-extras-label">More from search</div>
-                {#each backendExtrasCore as tool (tool.id)}
-                  <div
-                    class="tool-row"
-                    class:disabled={disabledTools.has(tool.name)}
-                  >
-                    <div class="tool-info">
-                      <span class="tool-name">{tool.name}</span>
-                      <span class="tool-desc">{tool.description}</span>
-                    </div>
-                    <ToggleSwitch
-                      checked={!disabledTools.has(tool.name)}
-                      onclick={() => toggleTool(tool.name)}
-                      title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
-                      ariaLabel={`${disabledTools.has(tool.name) ? 'Enable' : 'Disable'} ${tool.name}`}
-                    />
-                  </div>
-                {/each}
-              {/if}
-              {#if filteredTools.length === 0 && backendExtrasCore.length === 0}
-                <div class="tools-loading">
-                  {toolSearch.trim() ? 'No core tools match your search.' : 'No core tools enabled by default.'}
-                </div>
-              {:else}
-                {#each filteredTools as tool (tool.id)}
-                  <div
-                    class="tool-row"
-                    class:disabled={disabledTools.has(tool.name)}
-                  >
-                    <div class="tool-info">
-                      <span class="tool-name">{tool.name}</span>
-                      <span class="tool-desc">{tool.description}</span>
-                    </div>
-                    <ToggleSwitch
-                      checked={!disabledTools.has(tool.name)}
-                      onclick={() => toggleTool(tool.name)}
-                      title={disabledTools.has(tool.name) ? 'Enable tool' : 'Disable tool'}
-                      ariaLabel={`${disabledTools.has(tool.name) ? 'Enable' : 'Disable'} ${tool.name}`}
-                    />
-                  </div>
-                {/each}
-              {/if}
-            </div>
-
-            {#if optionalTools.length > 0}
-              <div class="optional-tools-section">
-                <span class="field-label">
-                  Optional Tools
-                  {#if enabledToolCount > 0}
-                    <span class="tab-badge">{enabledToolCount}</span>
-                  {/if}
-                </span>
-                <p class="field-hint">
-                  These tools are not in your core set. Enable them for this thread only.
-                </p>
-                <div class="tools-list">
-                  {#if backendExtrasOptional.length > 0}
-                    <div class="search-extras-label">More from search</div>
-                    {#each backendExtrasOptional as tool (tool.name)}
-                      <div
-                        class="tool-row"
-                        class:optional-enabled={enabledTools.has(tool.name)}
-                      >
-                        <div class="tool-info">
-                          <span class="tool-name">{tool.name}</span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <ToggleSwitch
-                          checked={enabledTools.has(tool.name)}
-                          onclick={() => toggleOptionalTool(tool.name)}
-                          title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
-                          ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
-                        />
-                      </div>
-                    {/each}
-                  {/if}
-                  {#if filteredOptionalTools.length === 0 && backendExtrasOptional.length === 0}
-                    <div class="tools-loading">
-                      {toolSearch.trim() ? 'No optional tools match your search.' : 'No optional tools available.'}
-                    </div>
-                  {:else}
-                    {#each filteredOptionalTools as tool (tool.name)}
-                      <div
-                        class="tool-row"
-                        class:optional-enabled={enabledTools.has(tool.name)}
-                      >
-                        <div class="tool-info">
-                          <span class="tool-name">{tool.name}</span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <ToggleSwitch
-                          checked={enabledTools.has(tool.name)}
-                          onclick={() => toggleOptionalTool(tool.name)}
-                          title={enabledTools.has(tool.name) ? 'Disable optional tool' : 'Enable optional tool'}
-                          ariaLabel={`${enabledTools.has(tool.name) ? 'Disable' : 'Enable'} optional tool ${tool.name}`}
-                        />
-                      </div>
-                    {/each}
-                  {/if}
-                </div>
-              </div>
-            {/if}
-
-          {/if}
-        </div>
-
-      {:else if activeTab === 'mcp'}
-        <div class="tab-panel tools-panel">
-          {#if toolsLoadError}
-            <div class="tools-loading">{toolsLoadError}</div>
-          {:else if toolsLoading}
-            <div class="tools-loading">Loading MCP tools...</div>
-          {:else}
-            <div class="optional-tools-section">
-              <span class="field-label">
-                <Icon name="terminal" size={14} />
-                MCP Servers
-              </span>
-              <p class="field-hint">
-                Tools from installed MCP servers. Enable them for this thread,
-                or tick them in <strong>Settings → MCP</strong> to make them
-                core across every thread. Add, enable, or remove servers from
-                that same panel.
-              </p>
-
-              {#if mcpServersForThread.length === 0}
-                <div class="tools-loading">No MCP servers installed.</div>
-              {:else}
-                {#each mcpServersForThread as server (server.id)}
-                  <div class="mcp-server-group" class:mcp-server-group-dormant={!server.enabled}>
-                    <div class="mcp-server-header-row">
-                      <button
-                        class="mcp-server-header"
-                        type="button"
-                        onclick={() => expandedMcpServer = expandedMcpServer === server.id ? null : server.id}
-                      >
-                        <span
-                          class="mcp-status-dot"
-                          class:mcp-status-running={server.enabled && server.discoveredCount > 0}
-                          class:mcp-status-warning={server.enabled && server.discoveredCount === 0}
-                          class:mcp-status-stopped={!server.enabled}
-                          title={server.enabled ? (server.discoveredCount > 0 ? 'Running' : 'Running, no tools discovered') : 'Stopped. Enable the server in Settings → MCP to make this tool available'}
-                        ></span>
-                        <span class="mcp-server-name">{server.name}</span>
-                        <span class="mcp-tool-count">
-                          {server.tools.filter(isMcpThreadToolEnabled).length}/{server.tools.length}
-                        </span>
-                      </button>
-                    </div>
-                    {#if expandedMcpServer === server.id}
-                      <div class="mcp-tool-list">
-                        {#if server.tools.length === 0}
-                          <div class="mcp-empty-tools">
-                            No tools discovered for this server. Rediscover it in Settings → MCP.
-                          </div>
-                        {:else}
-                          {#each server.tools as tool (tool.mcpName)}
-                            {@const isEnabled = isMcpThreadToolEnabled(tool)}
-                            <div
-                              class="tool-row"
-                              class:optional-enabled={isEnabled}
-                              class:disabled={!isEnabled && tool.isDefault}
-                              class:tool-row-dormant={!server.enabled}
-                              title={!server.enabled ? 'MCP server is not running. Enable it in Settings → MCP to make this tool available' : ''}
-                            >
-                              <div class="tool-info">
-                                <span class="tool-name">{tool.shortName}</span>
-                                <span class="tool-desc">{tool.description}</span>
-                              </div>
-                              <ToggleSwitch
-                                checked={isEnabled}
-                                onclick={() => toggleMcpThreadTool(tool)}
-                                title={isEnabled ? 'Disable for this thread' : 'Enable for this thread'}
-                                ariaLabel={`${isEnabled ? 'Disable' : 'Enable'} MCP tool ${tool.shortName} for this thread`}
-                              />
-                            </div>
-                          {/each}
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          {/if}
-        </div>
-
-      {:else if activeTab === 'skills'}
-        <SkillsConfigTab
-          bind:threadEnabledSkills
-          bind:threadDisabledSkills
-        />
-
-      {:else if activeTab === 'chatapp'}
-        <ChatAppConfigTab
-          {thread}
-          bind:telegramAutonomousDelivery
-          bind:inAppNotificationLevel
-          bind:notificationProfile
-        />
-
-      {/if}
+        <span class="model-badge" title="Effective model for this thread">
+          <Icon name="terminal" size={12} />
+          {effectiveModelLabel}{#if modelInherited} · global{/if}
+        </span>
+        <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
+          <Icon name="x" size={18} />
+        </button>
       </div>
+      <p class="scope-line">Overrides apply to this thread only. Unset fields inherit your global defaults.</p>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Thread settings sections">
+      {#each TABS as tab (tab.id)}
+        <button
+          class="tab"
+          class:active={activeTab === tab.id}
+          id={`thread-tab-${tab.id}`}
+          onclick={() => (activeTab = tab.id)}
+          onkeydown={handleTabKeydown}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          aria-controls="thread-settings-tabpanel"
+          tabindex={activeTab === tab.id ? 0 : -1}
+        >
+          <Icon name={tab.icon} size={15} />
+          <span class="tab-label">{tab.label}</span>
+          {#if tab.id === 'tools' && toolOverrideCount > 0}
+            <span class="tab-badge">{toolOverrideCount}</span>
+          {:else if tab.id === 'skills' && resolvedActiveSkillNames.size > 0}
+            <span class="tab-badge">{resolvedActiveSkillNames.size}</span>
+          {:else if tab.id === 'connections' && connectionsCount > 0}
+            <span class="tab-badge">{connectionsCount}</span>
+          {:else if tab.id === 'behavior' && behaviorCustomized}
+            <span class="tab-dot" aria-hidden="true"></span>
+          {:else if tab.id === 'model' && modelCustomized}
+            <span class="tab-dot" aria-hidden="true"></span>
+          {:else if tab.id === 'memory' && memoryCustomized}
+            <span class="tab-dot" aria-hidden="true"></span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+
+    <div
+      class="tab-content"
+      id="thread-settings-tabpanel"
+      role="tabpanel"
+      aria-labelledby={`thread-tab-${activeTab}`}
+      tabindex="0"
+    >
+      {#key activeTab}
+        <div class="tab-fade">
+          {#if activeTab === 'behavior'}
+            <BehaviorConfigTab
+              bind:instructions
+              bind:systemPrompt
+              bind:injectTodosInPrompt
+              bind:showAutonomousPrompts
+              bind:showPromptMetadata
+            />
+          {:else if activeTab === 'model'}
+            <ModelConfigTab
+              bind:threadDisplayProvider
+              bind:llmProvider
+              bind:llmModel
+              bind:llmBaseUrl
+              bind:llmApiKey
+              bind:llmTemperature
+              bind:llmMaxTokens
+              bind:llmContextLength
+              bind:llmOllamaNumCtx
+              bind:llmExtendedThinking
+              bind:llmReasoningEffort
+              bind:llmUseModelDefaults
+              bind:llmProviderRoute
+              bind:llmOpenAiApiMode
+              bind:compactThresholdMode
+              bind:compactThresholdPct
+              bind:compactThresholdTokens
+            />
+          {:else if activeTab === 'tools'}
+            <ToolsConfigTab
+              threadId={thread.id}
+              bind:disabledTools
+              bind:enabledTools
+              temporaryTools={threadConfig?.temporaryTools}
+              bind:query={toolSearch}
+              bind:expanded={toolsExpanded}
+              bind:collapsed={toolsCollapsed}
+            />
+          {:else if activeTab === 'skills'}
+            <SkillsConfigTab
+              bind:threadEnabledSkills
+              bind:threadDisabledSkills
+            />
+          {:else if activeTab === 'memory'}
+            <MemoryConfigTab
+              bind:notepad
+              {notepadLoaded}
+              {notepadCharLimit}
+              bind:memoryCharLimit
+              globalMemoryLimit={serverSettingsStore.memoryCharLimit}
+              bind:dreamEnabled
+              bind:dreamMinIntervalHours
+              bind:dreamMinIdleMinutes
+              bind:dreamMinTurnsSinceLast
+              bind:dreamModel
+              lastDreamAt={threadConfig?.dreaming?.lastDreamAt}
+              {dreamRunning}
+              {dreamStatus}
+              {saving}
+              hasUnsavedChanges={hasChanges()}
+              onRunDream={handleRunDream}
+            />
+          {:else if activeTab === 'connections'}
+            <ConnectionsConfigTab
+              {thread}
+              bind:isCallable
+              bind:callableName
+              bind:callableDescription
+              bind:telegramAutonomousDelivery
+              bind:inAppNotificationLevel
+              bind:notificationProfile
+            />
+          {/if}
+        </div>
       {/key}
     </div>
 
@@ -1668,8 +1064,8 @@
     {/if}
 
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick={handleReset} disabled={saving} type="button">
-        Reset to Defaults
+      <button class="btn btn-ghost btn-reset" onclick={handleReset} disabled={saving} type="button">
+        Reset thread to defaults
       </button>
       <div class="footer-right">
         <button class="btn btn-ghost" onclick={onClose} disabled={saving} type="button">
@@ -1720,15 +1116,13 @@
 
   .modal-panel {
     position: relative;
-    background: var(--bg-elevated);
+    background: var(--bg-base);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
-    /* Fixed dimensions so the modal can't resize when switching between
-       tabs — the inner tab area scrolls when content overflows. */
     width: 760px;
-    height: 620px;
+    height: 640px;
     max-width: 90vw;
-    max-height: 90vh;
+    max-height: 92vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
@@ -1736,15 +1130,44 @@
     overflow: hidden;
   }
 
-  /* Header — title + thread name on one tight row, close button far right.
-     Distinct from the main Settings modal because of the inline subtitle and
-     the integrated top-tab layout below. */
+  /* Header — thread-scoped, with an accent rule + model badge + scope line so
+     it reads as a different surface from the global Settings modal. */
   .modal-header {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 14px var(--spacing-lg) 12px;
     flex-shrink: 0;
+    padding: 14px var(--spacing-lg) 12px;
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--accent-primary) 7%, var(--bg-elevated)),
+      var(--bg-elevated)
+    );
+    border-bottom: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--accent-primary);
+  }
+
+  .header-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header-scope-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  }
+
+  .header-titles {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
   }
 
   .modal-header h2 {
@@ -1761,8 +1184,24 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 1;
-    min-width: 0;
+  }
+
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    max-width: 240px;
+    padding: 3px 8px;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .close-btn {
@@ -1774,8 +1213,6 @@
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     flex-shrink: 0;
-    margin-left: auto;
-    align-self: center;
     transition: color var(--transition-fast), background var(--transition-fast);
   }
 
@@ -1784,9 +1221,15 @@
     background: var(--bg-hover);
   }
 
-  /* Top-tab strip — sleeker than the underline-only version: the active tab
-     gets a subtle bg pill *and* a thicker accent underline so it reads
-     clearly without shouting. */
+  .scope-line {
+    margin: 8px 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  /* Top-tab strip — icon + label tabs with an accent underline on the active
+     tab. Distinct from the global Settings panel's left sidebar. */
   .tabs {
     display: flex;
     flex-wrap: nowrap;
@@ -1794,8 +1237,9 @@
     overflow-x: auto;
     overflow-y: hidden;
     gap: 2px;
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 0 12px;
+    padding: 4px var(--spacing-md) 0;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-default);
     scrollbar-width: thin;
   }
 
@@ -1803,9 +1247,10 @@
     position: relative;
     display: inline-flex;
     align-items: center;
-    flex: 0 0 auto;
+    flex: 1 1 0;
+    justify-content: center;
     gap: 6px;
-    padding: 10px 12px;
+    padding: 9px 10px;
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-muted);
@@ -1835,16 +1280,13 @@
   }
 
   .tab.active {
-    color: var(--text-primary);
-    background: var(--bg-elevated-2);
+    color: var(--accent-primary);
   }
 
   .tab.active::after {
     background: var(--accent-primary);
   }
 
-  /* Tab count badge — quiet circle that doesn't compete with the active tab
-     indicator. */
   .tab-badge {
     display: inline-flex;
     align-items: center;
@@ -1860,24 +1302,24 @@
   }
 
   .tab.active .tab-badge {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
+    background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
+    color: var(--accent-primary);
+  }
+
+  .tab-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-primary);
   }
 
   .tab-content {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    /* Hide the scrollbar but keep scroll functionality so long tabs
-       (Tools, Skills) still scroll without the visual chrome. */
-    scrollbar-width: none;
-  }
-  .tab-content::-webkit-scrollbar {
-    display: none;
+    scrollbar-width: thin;
   }
 
-  /* Fade wrapper — `{#key activeTab}` re-mounts this so the keyframe runs on
-     every tab switch, giving a smooth fade/slide instead of a snap. */
   .tab-fade {
     animation: threadTabFade 180ms cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -1887,262 +1329,6 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .tab-panel {
-    padding: var(--spacing-lg);
-  }
-
-  .field-label {
-    display: block;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--text-primary);
-    line-height: 1.4;
-    margin-bottom: 6px;
-  }
-
-  /* Hints sit just under a label or a toggle and explain the field.
-     Comfortable line-height + a touch more bottom margin so multi-line
-     hints don't visually merge with the next control. */
-  .field-hint {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    line-height: 1.5;
-    margin: 0 0 var(--spacing-md) 0;
-  }
-
-  .field-group {
-    margin-bottom: var(--spacing-lg);
-  }
-
-  .field-input {
-    width: 100%;
-    padding: var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    color: var(--text-primary);
-    background: var(--bg-base);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    outline: none;
-    transition: border-color var(--transition-fast);
-  }
-
-  .field-input:focus {
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
-  }
-
-  .field-input::placeholder {
-    color: var(--text-muted);
-  }
-
-  .instructions-input {
-    width: 100%;
-    padding: var(--spacing-sm);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-    color: var(--text-primary);
-    background: var(--bg-base);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    outline: none;
-    resize: vertical;
-    min-height: 120px;
-    transition: border-color var(--transition-fast);
-  }
-
-  .instructions-input:focus {
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
-  }
-
-  .instructions-input::placeholder {
-    color: var(--text-muted);
-  }
-
-  .system-prompt-input {
-    min-height: 200px;
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
-    font-size: calc(var(--font-size-sm) - 1px);
-    line-height: 1.5;
-  }
-
-  .visibility-section {
-    margin-top: var(--spacing-lg);
-    padding-top: var(--spacing-lg);
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  .agent-config-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-  }
-
-  .dream-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--spacing-md);
-  }
-
-  .dream-grid .field-group {
-    margin-bottom: 0;
-  }
-
-  .dream-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    flex-wrap: wrap;
-  }
-
-  .dream-status {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-  }
-
-  /* Section headers sit above grouped controls — give them clear breathing
-     room below so toggles/inputs don't crowd the title. */
-  .section-title {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--text-primary);
-    line-height: 1.35;
-    margin: 0 0 var(--spacing-sm) 0;
-  }
-
-  /* Toggle + its hint form a pair. Keep the toggle tight to its label
-     and let the hint underneath have a comfortable margin to the *next*
-     control so adjacent toggle groups don't visually merge. */
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    margin: 0 0 6px 0;
-    cursor: pointer;
-  }
-
-  /* When a hint follows a toggle-row, it's describing that toggle — leave
-     a slightly larger margin before the next toggle starts. */
-  .toggle-row + .field-hint {
-    margin: 0 0 var(--spacing-md) 28px;
-  }
-
-  .toggle-row input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--accent-primary);
-    cursor: pointer;
-  }
-
-  .toggle-label {
-    font-size: var(--font-size-sm);
-    line-height: 1.4;
-    color: var(--text-primary);
-  }
-
-  .char-count {
-    display: block;
-    text-align: right;
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    margin-top: 6px;
-  }
-
-  /* Tools tab */
-  .tools-panel {
-    padding-bottom: var(--spacing-md);
-  }
-
-  .tools-search {
-    padding: 0 0 var(--spacing-sm) 0;
-  }
-
-  .tools-list {
-    max-height: 340px;
-    overflow-y: auto;
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-  }
-
-  .tools-loading {
-    padding: var(--spacing-lg);
-    text-align: center;
-    color: var(--text-muted);
-  }
-
-  .tool-row {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-bottom: 1px solid var(--border-subtle, var(--border-default));
-    transition: opacity var(--transition-fast);
-  }
-
-  .tool-row:last-child {
-    border-bottom: none;
-  }
-
-  .tool-row.disabled {
-    opacity: 0.5;
-  }
-
-  .tool-info {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-
-  .tool-name {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .tool-row.disabled .tool-name {
-    text-decoration: line-through;
-  }
-
-  .tool-desc {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .optional-tools-section {
-    margin-top: var(--spacing-lg);
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-default);
-  }
-
-  .optional-tools-section > .field-label {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-  }
-
-  .tool-row.optional-enabled {
-    background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
-  }
-
-  .search-extras-label {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
-    border-bottom: 1px solid var(--border-default);
-  }
-
   /* Footer */
   .modal-footer {
     display: flex;
@@ -2150,6 +1336,8 @@
     justify-content: space-between;
     padding: var(--spacing-md) var(--spacing-lg);
     border-top: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
   }
 
   .footer-right {
@@ -2182,6 +1370,11 @@
     background: var(--bg-hover);
   }
 
+  .btn-reset:hover:not(:disabled) {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 45%, var(--border-default));
+  }
+
   .btn-primary {
     color: white;
     background: var(--accent-primary);
@@ -2197,89 +1390,6 @@
     background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
     font-size: var(--font-size-sm);
-  }
-
-  /* MCP Servers in tools tab */
-  .mcp-server-group {
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    margin-bottom: var(--spacing-xs);
-    overflow: hidden;
-  }
-
-  .mcp-server-group-dormant {
-    border-style: dashed;
-  }
-
-  .mcp-server-header-row {
-    display: flex;
-    align-items: center;
-    background: var(--bg-elevated-2);
-  }
-
-  .mcp-server-header {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--text-primary);
-    font-size: var(--font-size-sm);
-  }
-
-  .mcp-server-header:hover {
-    background: var(--bg-hover);
-  }
-
-  .mcp-status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
     flex-shrink: 0;
-    background: var(--text-muted);
   }
-
-  .mcp-status-dot.mcp-status-running {
-    background: #22c55e;
-  }
-
-  .mcp-status-dot.mcp-status-warning {
-    background: #f59e0b;
-  }
-
-  .mcp-status-dot.mcp-status-stopped {
-    background: var(--text-muted);
-    opacity: 0.5;
-  }
-
-  .mcp-server-name {
-    flex: 1;
-    text-align: left;
-    font-weight: 500;
-  }
-
-  .mcp-tool-count {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-  }
-
-  .mcp-tool-list {
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  .mcp-empty-tools {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    font-style: italic;
-  }
-
-  .tool-row-dormant {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
 </style>
