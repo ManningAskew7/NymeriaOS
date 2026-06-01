@@ -11,15 +11,12 @@
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
   /**
-   * Connections tab: how this thread is exposed and reached. Publish it as a
-   * callable tool, bind it to chat apps, and route its autonomous output and
-   * notifications. (Notification routing used to be mislabeled under "Chat App".)
+   * Connections tab: how this thread reaches the outside. Bind it to chat apps
+   * and route its autonomous output and notifications. (Notification routing
+   * used to be mislabeled under "Chat App".)
    */
   interface Props {
     thread: Thread;
-    isCallable: boolean;
-    callableName: string;
-    callableDescription: string;
     telegramAutonomousDelivery: TelegramAutonomousDelivery;
     inAppNotificationLevel: InAppNotificationLevel;
     notificationProfile: string | null | undefined;
@@ -27,9 +24,6 @@
 
   let {
     thread,
-    isCallable = $bindable(),
-    callableName = $bindable(),
-    callableDescription = $bindable(),
     telegramAutonomousDelivery = $bindable(),
     inAppNotificationLevel = $bindable(),
     notificationProfile = $bindable(),
@@ -76,66 +70,27 @@
 
 <div class="tab-body">
   <ThreadSettingsSection
-    title="Publish as Tool"
-    icon="users"
-    description="Mark this thread as a callable sub-agent so Nymeria can delegate tasks to it."
-  >
-    <label class="toggle-row">
-      <input type="checkbox" bind:checked={isCallable} />
-      <span class="toggle-label">Make callable</span>
-    </label>
-
-    {#if isCallable}
-      <div class="field-group">
-        <label class="field-label" for="callable-name-input">Callable Name</label>
-        <input
-          id="callable-name-input"
-          class="field-input"
-          type="text"
-          bind:value={callableName}
-          placeholder="e.g. ResearchAgent"
-          maxlength={64}
-        />
-        <span class="field-hint">The tool name Nymeria uses to call this thread.</span>
-      </div>
-
-      <div class="field-group last">
-        <label class="field-label" for="callable-desc-input">Callable Description</label>
-        <textarea
-          id="callable-desc-input"
-          class="text-input"
-          bind:value={callableDescription}
-          placeholder="e.g. Autonomous web research that finds information, summarizes articles, and compiles reports"
-          maxlength={500}
-          rows={3}
-        ></textarea>
-        <span class="char-count">{callableDescription.length} / 500</span>
-        <span class="field-hint">What the LLM sees as the tool description. Describe when to use this thread.</span>
-      </div>
-    {/if}
-  </ThreadSettingsSection>
-
-  <ThreadSettingsSection
     title="Notifications & Delivery"
-    icon="bell"
     description="How this thread's autonomous output is delivered and where notifications route."
   >
-    <div class="field-group">
-      <label class="field-label" for="telegram-autonomous-delivery">Telegram autonomous output</label>
-      <select id="telegram-autonomous-delivery" class="field-select" bind:value={telegramAutonomousDelivery}>
-        <option value="full">Full output</option>
-        <option value="notify_only">Notify only</option>
-        <option value="off">Off</option>
-      </select>
-    </div>
+    <div class="grid-2">
+      <div class="field-group">
+        <label class="field-label" for="telegram-autonomous-delivery">Telegram autonomous output</label>
+        <select id="telegram-autonomous-delivery" class="field-select" bind:value={telegramAutonomousDelivery}>
+          <option value="full">Full output</option>
+          <option value="notify_only">Notify only</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
 
-    <div class="field-group">
-      <label class="field-label" for="in-app-notification-level">Notification center</label>
-      <select id="in-app-notification-level" class="field-select" bind:value={inAppNotificationLevel}>
-        <option value="notify_only">Notify only</option>
-        <option value="all_autonomous">All autonomous completions</option>
-        <option value="off">Off</option>
-      </select>
+      <div class="field-group">
+        <label class="field-label" for="in-app-notification-level">Notification center</label>
+        <select id="in-app-notification-level" class="field-select" bind:value={inAppNotificationLevel}>
+          <option value="notify_only">Notify only</option>
+          <option value="all_autonomous">All autonomous completions</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
     </div>
 
     <div class="field-group last">
@@ -157,47 +112,43 @@
 
   <ThreadSettingsSection
     title="Chat Apps"
-    icon="chat"
     description="Bind this thread to a chat-app conversation so messages flow both ways. You can keep using the desktop app for the same thread."
-    flush
   >
-    <div class="chatapp-body">
-      {#if chatAppLoadError}
-        <div class="error-bar">{chatAppLoadError}</div>
-      {/if}
+    {#if chatAppLoadError}
+      <div class="error-bar">{chatAppLoadError}</div>
+    {/if}
 
-      {#if chatAppBindings.length === 0}
-        <div class="chatapp-cta">
-          <p style="margin: 0;">No chats bound to this thread yet. Pick how you want to connect:</p>
-          <div class="chatapp-cta-buttons">
-            <button class="btn btn-primary" type="button" onclick={() => (showChatAppWizard = true)}>Connect via shared bot</button>
-            <button class="btn btn-secondary" type="button" onclick={() => (showMyBotWizard = true)}>Use my own bot</button>
-          </div>
-          <p class="field-hint" style="margin: 0.25rem 0 0;">
-            <strong>Shared:</strong> use the existing Nymeria bot for the fastest setup, with no BotFather required.
-            <br />
-            <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
-          </p>
+    {#if chatAppBindings.length === 0}
+      <div class="chatapp-cta">
+        <p style="margin: 0;">No chats bound to this thread yet. Pick how you want to connect:</p>
+        <div class="chatapp-cta-buttons">
+          <button class="btn btn-primary" type="button" onclick={() => (showChatAppWizard = true)}>Connect via shared bot</button>
+          <button class="btn btn-secondary" type="button" onclick={() => (showMyBotWizard = true)}>Use my own bot</button>
         </div>
-      {:else}
-        <ul class="binding-list">
-          {#each chatAppBindings as binding (binding.id)}
-            <li class="binding-row">
-              <div class="binding-meta">
-                <span class="binding-provider">{binding.provider}</span>
-                <code class="binding-chat">chat {binding.platform_chat_id}</code>
-                <span class="binding-when">
-                  via {binding.user_telegram_bot_id ? 'your bot' : 'shared bot'}
-                  &middot; since {new Date(binding.created_at).toLocaleString()}
-                </span>
-              </div>
-              <button class="btn btn-ghost" type="button" onclick={() => handleUnbindChatApp(binding.id)}>Unbind</button>
-            </li>
-          {/each}
-        </ul>
-        <p class="field-hint" style="margin-top: 0.5rem;">Only one chat per thread at a time. Unbind first to switch.</p>
-      {/if}
-    </div>
+        <p class="field-hint" style="margin: 0.25rem 0 0;">
+          <strong>Shared:</strong> use the existing Nymeria bot for the fastest setup, with no BotFather required.
+          <br />
+          <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
+        </p>
+      </div>
+    {:else}
+      <ul class="binding-list">
+        {#each chatAppBindings as binding (binding.id)}
+          <li class="binding-row">
+            <div class="binding-meta">
+              <span class="binding-provider">{binding.provider}</span>
+              <code class="binding-chat">chat {binding.platform_chat_id}</code>
+              <span class="binding-when">
+                via {binding.user_telegram_bot_id ? 'your bot' : 'shared bot'}
+                &middot; since {new Date(binding.created_at).toLocaleString()}
+              </span>
+            </div>
+            <button class="btn btn-ghost" type="button" onclick={() => handleUnbindChatApp(binding.id)}>Unbind</button>
+          </li>
+        {/each}
+      </ul>
+      <p class="field-hint" style="margin-top: 0.5rem;">Only one chat per thread at a time. Unbind first to switch.</p>
+    {/if}
   </ThreadSettingsSection>
 </div>
 
@@ -236,8 +187,15 @@
     padding: var(--spacing-lg);
   }
 
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--spacing-md);
+  }
+
   .field-group { margin-bottom: var(--spacing-md); }
   .field-group.last { margin-bottom: 0; }
+  .grid-2 .field-group { margin-bottom: 0; }
 
   .field-label {
     display: block;
@@ -250,13 +208,11 @@
   .field-hint {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    line-height: 1.5;
+    line-height: 1.45;
     margin: var(--spacing-xs) 0 0;
   }
 
-  .field-input,
-  .field-select,
-  .text-input {
+  .field-select {
     width: 100%;
     padding: var(--spacing-sm);
     font-size: var(--font-size-sm);
@@ -265,47 +221,13 @@
     border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
     outline: none;
+    cursor: pointer;
     transition: border-color var(--transition-fast);
   }
-  .text-input { font-family: inherit; resize: vertical; }
-  .field-select { cursor: pointer; }
-  .field-input:focus,
-  .field-select:focus,
-  .text-input:focus {
+  .field-select:focus {
     border-color: var(--accent-primary);
     box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
   }
-  .field-input::placeholder,
-  .text-input::placeholder { color: var(--text-muted); }
-
-  .char-count {
-    display: block;
-    text-align: right;
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    margin-top: 6px;
-  }
-
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    margin: 0 0 var(--spacing-md) 0;
-    cursor: pointer;
-  }
-  .toggle-row input[type='checkbox'] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--accent-primary);
-    cursor: pointer;
-  }
-  .toggle-label {
-    font-size: var(--font-size-sm);
-    line-height: 1.4;
-    color: var(--text-primary);
-  }
-
-  .chatapp-body { padding: var(--spacing-md); }
 
   .error-bar {
     padding: var(--spacing-sm) var(--spacing-md);

@@ -11,12 +11,12 @@
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import type { TemporaryToolEntry, ToolSearchResult } from '$lib/types';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
+  import ThreadSubTabs from './ThreadSubTabs.svelte';
 
   /**
-   * Per-thread Tools tab. Merges the old Tools + MCP tabs into a single
-   * "Enabled / Available" view over one scroll surface (the parent modal body).
-   * No core/optional framing: section 1 is what is active for THIS thread,
-   * section 2 is everything else, grouped by category and by MCP server.
+   * Per-thread Tools tab. Native and MCP tools live under inner sub-tabs; each
+   * shows an "Enabled for this thread" / "Available to add" split over the one
+   * scroll surface (the parent modal body). No core/optional framing.
    */
   interface Props {
     threadId: string;
@@ -41,21 +41,21 @@
   }: Props = $props();
 
   type ToolItem = {
-    name: string;        // full tool name (mcp__server__tool for MCP)
-    shortName: string;   // display name
+    name: string;
+    shortName: string;
     description: string;
-    category: string;    // category key, or 'mcp_server'
+    category: string;
     isMcp: boolean;
     serverId?: string;
     serverName?: string;
     serverEnabled?: boolean;
-    isDefault: boolean;  // part of the user's global core set
+    isDefault: boolean;
     isTemporary: boolean;
     expiresAt?: string | null;
   };
 
-  // Map categories to icons that actually exist in the Icon set (CATEGORY_INFO
-  // references several kebab-case Lucide names the local set doesn't define).
+  // Map categories to icons that exist in the Icon set (CATEGORY_INFO uses
+  // several kebab-case Lucide names the local set doesn't define).
   const CATEGORY_ICON: Record<string, string> = {
     general: 'terminal', profile: 'user', notepad: 'pin', self_modify: 'edit',
     todo: 'check', subagent: 'refresh', trigger: 'bolt', email: 'send',
@@ -64,13 +64,14 @@
   };
   const categoryIcon = (c: string) => CATEGORY_ICON[c] ?? 'tool';
 
+  let subTab = $state('native');
+
   const searchActive = $derived(query.trim().length > 0);
 
   const loadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
   const ready = $derived(defaultToolsStore.loaded && unifiedToolsStore.loaded);
   const loading = $derived(!ready);
 
-  // MCP tools grouped by server (same derivation the old inline MCP tab used).
   const mcpServersForThread = $derived.by(() => {
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return mcpServersStore.servers.map((server) => ({
@@ -86,8 +87,6 @@
 
   const liveTempNames = $derived(new Set(liveTemporaryToolNames(temporaryTools)));
 
-  // The authoritative active-for-this-thread name set (default ∪ enabled ∪
-  // live-temporary, minus disabled) — identical math to the save path.
   const enabledNameSet = $derived(
     computeEffectiveToolCounts({
       defaultToolNames: defaultToolsStore.defaultToolNames,
@@ -97,7 +96,6 @@
     }).activeNames
   );
 
-  // Universe of every tool we can show, native + MCP.
   const allItems = $derived.by(() => {
     const items: ToolItem[] = [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
@@ -112,8 +110,6 @@
     const names = new Set<string>();
     for (const t of defaultToolsStore.tools) if (!isMcpToolName(t.name) && t.category !== 'mcp_server') names.add(t.name);
     for (const t of unifiedToolsStore.tools) if (!isMcpToolName(t.name) && t.category !== 'mcp_server') names.add(t.name);
-    // Stale per-thread overrides may name tools no longer in the catalog; keep
-    // them visible so the user can still see/clear the override.
     for (const n of enabledTools) if (!isMcpToolName(n)) names.add(n);
     for (const n of disabledTools) if (!isMcpToolName(n)) names.add(n);
     for (const n of liveTempNames) if (!isMcpToolName(n)) names.add(n);
@@ -163,6 +159,12 @@
   const enabledItems = $derived(filtered.filter((i) => enabledNameSet.has(i.name)));
   const availableItems = $derived(filtered.filter((i) => !enabledNameSet.has(i.name)));
 
+  // Counts per source for the sub-tab badges + section headers.
+  const nativeEnabledCount = $derived(enabledItems.filter((i) => !i.isMcp).length);
+  const nativeAvailCount = $derived(availableItems.filter((i) => !i.isMcp).length);
+  const mcpEnabledCount = $derived(enabledItems.filter((i) => i.isMcp).length);
+  const mcpAvailCount = $derived(availableItems.filter((i) => i.isMcp).length);
+
   function buildGroups(items: ToolItem[]) {
     const byCat = new Map<string, ToolItem[]>();
     const byServer = new Map<string, { id: string; name: string; enabled: boolean; items: ToolItem[] }>();
@@ -202,13 +204,9 @@
   const enabledGroups = $derived(buildGroups(enabledItems));
   const availableGroups = $derived(buildGroups(availableItems));
 
-  // Installed MCP servers that discovered no tools still get a visible entry
-  // (with a rediscover hint), matching the old MCP tab so a misconfigured or
-  // not-yet-running server is not silently hidden.
+  // Installed MCP servers that discovered no tools still get a visible entry.
   const emptyMcpServers = $derived(mcpServersForThread.filter((s) => s.tools.length === 0));
 
-  // Group collapse state. Enabled groups default open, Available groups default
-  // closed; an active search forces every matching group open.
   function groupOpen(id: string, defaultOpen: boolean): boolean {
     if (searchActive) return true;
     if (collapsed.has(id)) return false;
@@ -226,26 +224,19 @@
   }
 
   // Toggle a tool on/off, routing through the same two sets the save path uses.
-  // A tool can be active via the global default set, an explicit enabledTools
-  // pin, or a live temporary (TTL) binding. "activeWithoutPin" = it would stay
-  // on even without an enabledTools entry, so suppressing it needs a disabled
-  // override rather than removing a (possibly non-existent) pin.
+  // "activeWithoutPin" tools (default or live-temporary) stay on without an
+  // enabledTools entry, so suppressing them needs a disabled override.
   function setToolEnabled(item: ToolItem, on: boolean) {
     const activeWithoutPin = item.isDefault || item.isTemporary;
     const d = new Set(disabledTools);
     const e = new Set(enabledTools);
     if (on) {
-      // Clear any off-override; pin it on only if nothing else keeps it active.
-      // An existing pin is left intact.
       d.delete(item.name);
       if (!activeWithoutPin) e.add(item.name);
     } else if (activeWithoutPin) {
-      // Active via default/temporary: the only way to suppress it is an explicit
-      // off-override. Do NOT drop an existing enabledTools pin, so it survives a
-      // later re-enable or TTL expiry.
+      // Don't drop an existing pin, so it survives a re-enable or TTL expiry.
       d.add(item.name);
     } else {
-      // Pure optional: removing the pin turns it off.
       e.delete(item.name);
     }
     disabledTools = d;
@@ -274,8 +265,6 @@
         if (gen === searchGen) backendResults = [];
       }
     }, 200);
-    // Cancel the pending request if the query changes or the component unmounts
-    // (the tab body is remounted on every tab switch).
     return () => {
       if (searchDebounce) {
         clearTimeout(searchDebounce);
@@ -284,6 +273,7 @@
     };
   });
 
+  // Native-only extras from backend search (MCP results are dropped here).
   const backendExtras = $derived.by(() => {
     if (!searchActive || backendResults.length === 0) return [] as ToolItem[];
     const shown = new Set(filtered.map((i) => i.name));
@@ -305,80 +295,99 @@
     }
     return out;
   });
+
+  const SUBTABS = $derived([
+    { id: 'native', label: 'Native', count: nativeEnabledCount },
+    { id: 'mcp', label: 'MCP', count: mcpEnabledCount },
+  ]);
 </script>
 
 <div class="tools-tab">
-  <div class="tools-search">
-    <input
-      type="text"
-      class="search-field"
-      bind:value={query}
-      placeholder="Search tools by name or description..."
-      aria-label="Search tools"
-    />
-    {#if query}
-      <button class="search-clear" type="button" onclick={() => (query = '')} aria-label="Clear search">
-        <Icon name="x" size={14} />
-      </button>
-    {/if}
-  </div>
-
   {#if loadError}
     <div class="tools-msg">{loadError}</div>
   {:else if loading}
     <div class="tools-msg">Loading tools...</div>
   {:else}
-    <!-- Enabled for this thread -->
-    <ThreadSettingsSection
-      title="Enabled for this thread"
-      icon="check"
-      count={enabledItems.length}
-      description="Tools the agent can use in this thread."
-      flush
-    >
-      {#if enabledItems.length === 0}
-        <div class="tools-msg subtle">
-          {searchActive ? 'No enabled tools match your search.' : 'No tools enabled for this thread.'}
-        </div>
-      {:else}
-        {#each enabledGroups.catGroups as g (g.key)}
-          {@render toolGroup(`enab:cat:${g.key}`, g.title, g.icon, g.items, false, true)}
-        {/each}
-        {#each enabledGroups.serverGroups as g (g.id)}
-          {@render toolGroup(`enab:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, true)}
-        {/each}
-      {/if}
-    </ThreadSettingsSection>
+    <ThreadSubTabs tabs={SUBTABS} bind:active={subTab} ariaLabel="Tool source" />
 
-    <!-- Available to add -->
-    <ThreadSettingsSection
-      title="Available to add"
-      icon="plus"
-      count={availableItems.length + backendExtras.length}
-      description="Not enabled here. Toggle on to add for this thread only."
-      flush
-    >
-      {#if availableItems.length === 0 && backendExtras.length === 0 && emptyMcpServers.length === 0}
-        <div class="tools-msg subtle">
-          {searchActive ? 'No other tools match your search.' : 'Every available tool is already enabled.'}
-        </div>
-      {:else}
-        {#if backendExtras.length > 0}
-          {@render toolGroup('avail:more', 'More from search', 'tool', backendExtras, false, true)}
-        {/if}
-        {#each availableGroups.catGroups as g (g.key)}
-          {@render toolGroup(`avail:cat:${g.key}`, g.title, g.icon, g.items, false, false)}
-        {/each}
-        {#each availableGroups.serverGroups as g (g.id)}
-          {@render toolGroup(`avail:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, false)}
-        {/each}
-        {#if !searchActive}
-          {#each emptyMcpServers as s (s.id)}
-            {@render toolGroup(`avail:srv:${s.id}`, s.name, 'server', [], !s.enabled, false)}
+    <div class="tools-search">
+      <input
+        type="text"
+        class="search-field"
+        bind:value={query}
+        placeholder="Search tools by name or description..."
+        aria-label="Search tools"
+      />
+      {#if query}
+        <button class="search-clear" type="button" onclick={() => (query = '')} aria-label="Clear search">
+          <Icon name="x" size={14} />
+        </button>
+      {/if}
+    </div>
+
+    {#if subTab === 'native'}
+      <ThreadSettingsSection title="Enabled for this thread" icon="check" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
+        {#if nativeEnabledCount === 0}
+          <div class="tools-msg subtle">
+            {searchActive ? 'No enabled native tools match your search.' : 'No native tools enabled for this thread.'}
+          </div>
+        {:else}
+          {#each enabledGroups.catGroups as g (g.key)}
+            {@render toolGroup(`enab:cat:${g.key}`, g.title, g.icon, g.items, false, true)}
           {/each}
         {/if}
-      {/if}
-    </ThreadSettingsSection>
+      </ThreadSettingsSection>
+
+      <ThreadSettingsSection title="Available to add" icon="plus" count={nativeAvailCount + backendExtras.length} description="Not enabled here. Toggle on to add for this thread only." flush>
+        {#if nativeAvailCount === 0 && backendExtras.length === 0}
+          <div class="tools-msg subtle">
+            {searchActive ? 'No other native tools match your search.' : 'Every native tool is already enabled.'}
+          </div>
+        {:else}
+          {#if backendExtras.length > 0}
+            {@render toolGroup('avail:more', 'More from search', 'tool', backendExtras, false, true)}
+          {/if}
+          {#each availableGroups.catGroups as g (g.key)}
+            {@render toolGroup(`avail:cat:${g.key}`, g.title, g.icon, g.items, false, false)}
+          {/each}
+        {/if}
+      </ThreadSettingsSection>
+    {:else}
+      <ThreadSettingsSection title="Enabled for this thread" icon="check" count={mcpEnabledCount} description="MCP server tools enabled in this thread." flush>
+        {#if mcpEnabledCount === 0}
+          <div class="tools-msg subtle">
+            {searchActive ? 'No enabled MCP tools match your search.' : 'No MCP tools enabled for this thread.'}
+          </div>
+        {:else}
+          {#each enabledGroups.serverGroups as g (g.id)}
+            {@render toolGroup(`enab:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, true)}
+          {/each}
+        {/if}
+      </ThreadSettingsSection>
+
+      <ThreadSettingsSection title="Available to add" icon="plus" count={mcpAvailCount + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
+        {#if mcpAvailCount === 0 && (searchActive || emptyMcpServers.length === 0)}
+          <div class="tools-msg subtle">
+            {#if searchActive}
+              No other MCP tools match your search.
+            {:else if mcpServersForThread.length === 0}
+              No MCP servers installed.
+            {:else}
+              Every MCP tool is already enabled.
+            {/if}
+          </div>
+        {:else}
+          {#each availableGroups.serverGroups as g (g.id)}
+            {@render toolGroup(`avail:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, false)}
+          {/each}
+          {#if !searchActive}
+            {#each emptyMcpServers as s (s.id)}
+              {@render toolGroup(`avail:srv:${s.id}`, s.name, 'server', [], !s.enabled, false)}
+            {/each}
+          {/if}
+        {/if}
+      </ThreadSettingsSection>
+    {/if}
 
     <p class="tools-foot-hint">
       Install or remove MCP servers and create custom tools in
@@ -387,8 +396,7 @@
   {/if}
 </div>
 
-<!-- Collapsible group, renders rows only when open. Used for both Enabled
-     (defaultOpen) and Available (default closed) sections. -->
+<!-- Collapsible group, renders rows only when open. -->
 {#snippet toolGroup(id: string, title: string, icon: string, items: ToolItem[], dormant: boolean, defaultOpen: boolean)}
   {@const open = groupOpen(id, defaultOpen)}
   <div class="group" class:dormant>
@@ -420,7 +428,7 @@
       <span class="tool-name">
         {item.shortName}
         {#if item.isTemporary}<span class="tool-tag" title="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
-        {#if dormant}<span class="tool-tag muted" title="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
+        {#if dormant}<span class="tool-tag" title="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
       </span>
       <span class="tool-desc">{item.description || 'No description'}</span>
     </div>
@@ -487,7 +495,7 @@
   .tools-msg.subtle { font-size: var(--font-size-xs); }
 
   .tools-foot-hint {
-    margin: var(--spacing-xs) 0 0;
+    margin: var(--spacing-md) 0 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     line-height: 1.5;
@@ -522,6 +530,7 @@
     transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
   .group-chevron.open { transform: rotate(90deg); }
+  .group-head :global(svg) { color: var(--text-muted); }
   .group-name {
     flex: 1;
     font-size: var(--font-size-sm);
@@ -581,11 +590,7 @@
     letter-spacing: 0.03em;
     padding: 1px 5px;
     border-radius: var(--radius-sm);
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
-  }
-  .tool-tag.muted {
-    color: var(--text-muted);
+    color: var(--text-secondary);
     background: var(--bg-elevated-2);
   }
 </style>

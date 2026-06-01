@@ -29,9 +29,11 @@
   import ToolsConfigTab from './ToolsConfigTab.svelte';
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import MemoryConfigTab from './MemoryConfigTab.svelte';
+  import DreamingConfigTab from './DreamingConfigTab.svelte';
+  import AgentConfigTab from './AgentConfigTab.svelte';
   import ConnectionsConfigTab from './ConnectionsConfigTab.svelte';
 
-  type ThreadSettingsTab = 'behavior' | 'model' | 'tools' | 'skills' | 'memory' | 'connections';
+  type ThreadSettingsTab = 'behavior' | 'model' | 'tools' | 'skills' | 'memory' | 'dreaming' | 'agent' | 'connections';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
@@ -39,13 +41,15 @@
   const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
   const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
 
-  const TABS: { id: ThreadSettingsTab; label: string; icon: string }[] = [
-    { id: 'behavior', label: 'Behavior', icon: 'fileText' },
-    { id: 'model', label: 'Model', icon: 'terminal' },
-    { id: 'tools', label: 'Tools', icon: 'tool' },
-    { id: 'skills', label: 'Skills', icon: 'bolt' },
-    { id: 'memory', label: 'Memory', icon: 'pin' },
-    { id: 'connections', label: 'Connections', icon: 'chat' },
+  const TABS: { id: ThreadSettingsTab; label: string }[] = [
+    { id: 'behavior', label: 'Behavior' },
+    { id: 'model', label: 'Model' },
+    { id: 'tools', label: 'Tools' },
+    { id: 'skills', label: 'Skills' },
+    { id: 'memory', label: 'Memory' },
+    { id: 'dreaming', label: 'Dreaming' },
+    { id: 'agent', label: 'Agent' },
+    { id: 'connections', label: 'Connections' },
   ];
 
   // Map legacy / external initialTab values onto the new six-tab IA so existing
@@ -57,10 +61,11 @@
       case 'mcp': return 'tools';
       case 'skills': return 'skills';
       case 'memory':
-      case 'notepad':
-      case 'dream': return 'memory';
+      case 'notepad': return 'memory';
+      case 'dreaming':
+      case 'dream': return 'dreaming';
+      case 'agent': return 'agent';
       case 'connections':
-      case 'agent':
       case 'chatapp': return 'connections';
       case 'behavior':
       case 'instructions':
@@ -397,9 +402,9 @@
     }).totalActiveCount
   );
 
-  // Tab indicator helpers
+  // Tab indicator helpers (muted dots/counts — accent is reserved for active state)
   const toolOverrideCount = $derived(disabledTools.size + enabledTools.size);
-  const connectionsCount = $derived(chatAppBindings.length + (isCallable ? 1 : 0));
+  const connectionsCount = $derived(chatAppBindings.length);
   const behaviorCustomized = $derived(
     Boolean(instructions.trim() || systemPrompt.trim() || injectTodosInPrompt || showAutonomousPrompts || showPromptMetadata)
   );
@@ -412,9 +417,9 @@
       compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens
     )
   );
-  const memoryCustomized = $derived(
-    Boolean(dreamEnabled || String(memoryCharLimit ?? '').trim())
-  );
+  const memoryCustomized = $derived(Boolean(String(memoryCharLimit ?? '').trim()));
+  const dreamingActive = $derived(dreamEnabled);
+  const agentActive = $derived(isCallable);
 
   const effectiveModelLabel = $derived(llmModel || serverSettingsStore.model || 'Global default');
   const modelInherited = $derived(!llmModel);
@@ -924,14 +929,14 @@
   <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="thread-settings-title" tabindex="-1" use:trapFocus>
     <div class="modal-header">
       <div class="header-row">
-        <span class="header-scope-icon"><Icon name="settings" size={16} /></span>
         <div class="header-titles">
           <h2 id="thread-settings-title">Thread Settings</h2>
           <span class="modal-subtitle">{thread.title}</span>
         </div>
-        <span class="model-badge" title="Effective model for this thread">
-          <Icon name="terminal" size={12} />
-          {effectiveModelLabel}{#if modelInherited} · global{/if}
+        <span class="header-model" title="Effective model for this thread">
+          <span class="header-model-label">Model</span>
+          <span class="header-model-value">{effectiveModelLabel}</span>
+          {#if modelInherited}<span class="header-model-tag">global default</span>{/if}
         </span>
         <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
           <Icon name="x" size={18} />
@@ -954,7 +959,6 @@
           aria-controls="thread-settings-tabpanel"
           tabindex={activeTab === tab.id ? 0 : -1}
         >
-          <Icon name={tab.icon} size={15} />
           <span class="tab-label">{tab.label}</span>
           {#if tab.id === 'tools' && toolOverrideCount > 0}
             <span class="tab-badge">{toolOverrideCount}</span>
@@ -962,11 +966,7 @@
             <span class="tab-badge">{resolvedActiveSkillNames.size}</span>
           {:else if tab.id === 'connections' && connectionsCount > 0}
             <span class="tab-badge">{connectionsCount}</span>
-          {:else if tab.id === 'behavior' && behaviorCustomized}
-            <span class="tab-dot" aria-hidden="true"></span>
-          {:else if tab.id === 'model' && modelCustomized}
-            <span class="tab-dot" aria-hidden="true"></span>
-          {:else if tab.id === 'memory' && memoryCustomized}
+          {:else if (tab.id === 'behavior' && behaviorCustomized) || (tab.id === 'model' && modelCustomized) || (tab.id === 'memory' && memoryCustomized) || (tab.id === 'dreaming' && dreamingActive) || (tab.id === 'agent' && agentActive)}
             <span class="tab-dot" aria-hidden="true"></span>
           {/if}
         </button>
@@ -1032,6 +1032,9 @@
               {notepadCharLimit}
               bind:memoryCharLimit
               globalMemoryLimit={serverSettingsStore.memoryCharLimit}
+            />
+          {:else if activeTab === 'dreaming'}
+            <DreamingConfigTab
               bind:dreamEnabled
               bind:dreamMinIntervalHours
               bind:dreamMinIdleMinutes
@@ -1044,12 +1047,15 @@
               hasUnsavedChanges={hasChanges()}
               onRunDream={handleRunDream}
             />
-          {:else if activeTab === 'connections'}
-            <ConnectionsConfigTab
-              {thread}
+          {:else if activeTab === 'agent'}
+            <AgentConfigTab
               bind:isCallable
               bind:callableName
               bind:callableDescription
+            />
+          {:else if activeTab === 'connections'}
+            <ConnectionsConfigTab
+              {thread}
               bind:telegramAutonomousDelivery
               bind:inAppNotificationLevel
               bind:notificationProfile
@@ -1119,10 +1125,10 @@
     background: var(--bg-base);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
-    width: 760px;
-    height: 640px;
-    max-width: 90vw;
-    max-height: 92vh;
+    /* Grow with the window so maximising/fullscreen uses the space, but stay
+       capped so forms don't stretch absurdly wide. */
+    width: min(1040px, 93vw);
+    height: min(840px, 90vh);
     display: flex;
     flex-direction: column;
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
@@ -1130,42 +1136,26 @@
     overflow: hidden;
   }
 
-  /* Header — thread-scoped, with an accent rule + model badge + scope line so
-     it reads as a different surface from the global Settings modal. */
+  /* Header — plain and thread-scoped: title + thread name on the left, the
+     effective model as quiet bold text on the right, then a one-line scope
+     note. No accent fills. */
   .modal-header {
     flex-shrink: 0;
     padding: 14px var(--spacing-lg) 12px;
-    background: linear-gradient(
-      to bottom,
-      color-mix(in srgb, var(--accent-primary) 7%, var(--bg-elevated)),
-      var(--bg-elevated)
-    );
-    border-bottom: 1px solid var(--border-subtle);
-    border-left: 3px solid var(--accent-primary);
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-default);
   }
 
   .header-row {
     display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .header-scope-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    flex-shrink: 0;
-    border-radius: var(--radius-sm);
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    align-items: baseline;
+    gap: var(--spacing-md);
   }
 
   .header-titles {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
+    align-items: baseline;
+    gap: var(--spacing-sm);
     min-width: 0;
     flex: 1;
   }
@@ -1176,6 +1166,7 @@
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.005em;
+    flex-shrink: 0;
   }
 
   .modal-subtitle {
@@ -1186,22 +1177,32 @@
     text-overflow: ellipsis;
   }
 
-  .model-badge {
+  .header-model {
     display: inline-flex;
-    align-items: center;
-    gap: 4px;
+    align-items: baseline;
+    gap: 6px;
     flex-shrink: 0;
-    max-width: 240px;
-    padding: 3px 8px;
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-    border-radius: var(--radius-full);
+    max-width: 340px;
     white-space: nowrap;
     overflow: hidden;
+  }
+
+  .header-model-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .header-model-value {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .header-model-tag {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
   .close-btn {
@@ -1228,19 +1229,16 @@
     line-height: 1.4;
   }
 
-  /* Top-tab strip — icon + label tabs with an accent underline on the active
+  /* Top-tab strip — quiet text tabs with an accent underline on the active
      tab. Distinct from the global Settings panel's left sidebar. */
   .tabs {
     display: flex;
     flex-wrap: nowrap;
     flex-shrink: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
     gap: 2px;
-    padding: 4px var(--spacing-md) 0;
+    padding: 0 var(--spacing-md);
     background: var(--bg-elevated);
     border-bottom: 1px solid var(--border-default);
-    scrollbar-width: thin;
   }
 
   .tab {
@@ -1248,39 +1246,43 @@
     display: inline-flex;
     align-items: center;
     flex: 1 1 0;
+    min-width: 0;
     justify-content: center;
     gap: 6px;
-    padding: 9px 10px;
+    padding: 10px 8px;
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-muted);
     background: transparent;
     border: none;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
     cursor: pointer;
     white-space: nowrap;
-    transition: color var(--transition-fast), background var(--transition-fast);
+    transition: color var(--transition-fast);
+  }
+
+  .tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .tab::after {
     content: '';
     position: absolute;
-    left: 8px;
-    right: 8px;
+    left: 0;
+    right: 0;
     bottom: -1px;
     height: 2px;
     background: transparent;
-    border-radius: 1px 1px 0 0;
     transition: background var(--transition-fast);
   }
 
   .tab:hover {
     color: var(--text-primary);
-    background: var(--bg-hover);
   }
 
   .tab.active {
-    color: var(--accent-primary);
+    color: var(--text-primary);
+    font-weight: 600;
   }
 
   .tab.active::after {
@@ -1301,23 +1303,20 @@
     border-radius: var(--radius-full);
   }
 
-  .tab.active .tab-badge {
-    background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
-    color: var(--accent-primary);
-  }
-
   .tab-dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
-    background: var(--accent-primary);
+    background: var(--text-muted);
   }
 
+  /* No scrollbar-width here: that switches WebView2/Chromium to the standard
+     (white) scrollbar and ignores the app's global ::-webkit-scrollbar theme.
+     Letting it inherit keeps the themed thin scrollbar. */
   .tab-content {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    scrollbar-width: thin;
   }
 
   .tab-fade {
