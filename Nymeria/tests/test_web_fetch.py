@@ -5,7 +5,6 @@ the SSRF-gated fetch path, content extraction dispatch, batch handling, error
 envelopes, and the optional summarize step (secondary-model wiring).
 """
 
-import httpx
 import pytest
 
 from nymeria.tools import web_fetch
@@ -22,18 +21,30 @@ def clear_settings_cache():
 
 
 class FakeResponse:
-    """Minimal stand-in for an httpx.Response returned by the policy wrapper."""
+    """Stand-in usable both as the streamed requests response consumed by
+    _fetch_one (iter_content/raise_for_status/headers) and as the object
+    _extract_content consumes (.headers/.content/.url/.encoding)."""
 
-    def __init__(self, *, content=b"", content_type="text/html", url="https://example.com/page", status=200, encoding="utf-8"):
+    def __init__(self, *, content=b"", content_type="text/html", url="https://example.com/page", status=200, encoding="utf-8", with_content_length=True):
         self.content = content
         self.headers = {"content-type": content_type}
+        if with_content_length:
+            self.headers["content-length"] = str(len(content))
         self.url = url
         self.status_code = status
         self.encoding = encoding
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError("error", request=None, response=self)
+            import requests
+            raise requests.exceptions.HTTPError(str(self.status_code), response=self)
+
+    def iter_content(self, chunk_size=65536):
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
+
+    def close(self):
+        pass
 
     @property
     def text(self):
@@ -41,10 +52,10 @@ class FakeResponse:
 
 
 def _patch_fetch(monkeypatch, response):
-    """Make the policy wrapper return ``response`` without touching the network."""
+    """Make the gated fetch return ``response`` without touching the network."""
     monkeypatch.setattr(
         web_fetch,
-        "httpx_request_with_policy",
+        "requests_get_with_policy",
         lambda *a, **k: (response, [], None),
     )
 
@@ -161,10 +172,32 @@ def test_single_fetch_renders_header_and_content(monkeypatch):
 
 
 def test_truncation_marker(monkeypatch):
+    # No thread in config -> plain truncation (no spill path).
     _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
     monkeypatch.setattr(web_fetch, "_extract_html", lambda html, extract: "word " * 400)
     out = web_fetch.fetch_url_nymeria.func(url="https://example.com/page", max_length=500)
-    assert "[Content truncated to 500 characters]" in out
+    assert "Content truncated to 500 of 2000 characters" in out
+    assert "Full text saved to" not in out
+
+
+def test_overflow_spills_full_text_to_thread_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    full = "word " * 4000  # 20000 chars, well over max_length
+    monkeypatch.setattr(web_fetch, "_extract_html", lambda html, extract: full)
+    out = web_fetch.fetch_url_nymeria.func(
+        url="https://ex.com/page",
+        max_length=500,
+        config={"configurable": {"thread_id": "t-spill"}},
+    )
+    assert "Content truncated to 500 of 20000 characters" in out
+    assert "Full text saved to" in out
+    fetch_dir = tmp_path / "threads" / "t-spill" / "fetched"
+    files = list(fetch_dir.glob("*.md"))
+    assert len(files) == 1
+    assert files[0].read_text() == full          # full content preserved on disk
+    assert str(files[0]) in out                    # path surfaced to the agent
+    assert len(out) < len(full)                    # returned preview is truncated
 
 
 def test_batch_urls_split_and_headers(monkeypatch):
@@ -184,7 +217,7 @@ def test_ssrf_blocked_returns_error(monkeypatch):
             HTTPPolicyDecision(False, "metadata_target", "http://169.254.169.254", "169.254.169.254")
         )
 
-    monkeypatch.setattr(web_fetch, "httpx_request_with_policy", boom)
+    monkeypatch.setattr(web_fetch, "requests_get_with_policy", boom)
     out = web_fetch.fetch_url_nymeria.func(url="http://169.254.169.254/latest/meta-data")
     assert out.startswith("[Error]: Blocked by egress policy")
 
@@ -270,3 +303,81 @@ def test_summary_config_uses_override_model():
     assert cfg.model == "qwen2.5-7b"
     assert cfg.provider == "openai"
     assert cfg.base_url == "http://localhost:1234/v1"
+
+
+# --- review hardening: size cap, redaction, spill fallback, sanitization ------
+
+
+def test_redact_url_strips_credentials():
+    assert web_fetch._redact_url("https://user:pass@host.example/p?q=1") == "https://host.example/p?q=1"
+    assert web_fetch._redact_url("https://host.example/p") == "https://host.example/p"
+
+
+def test_oversize_declared_content_length_rejected(monkeypatch):
+    monkeypatch.setattr(web_fetch, "_MAX_FETCH_BYTES", 100)
+    _patch_fetch(monkeypatch, FakeResponse(content=b"x" * 500, content_type="text/plain"))
+    out = web_fetch.fetch_url_nymeria.func(url="https://ex.com/big")
+    assert out.startswith("[Error]: Response too large")
+
+
+def test_oversize_streamed_body_capped(monkeypatch):
+    # No Content-Length -> the streaming loop must enforce the cap.
+    monkeypatch.setattr(web_fetch, "_MAX_FETCH_BYTES", 100)
+    _patch_fetch(monkeypatch, FakeResponse(content=b"x" * 500, content_type="text/plain", with_content_length=False))
+    out = web_fetch.fetch_url_nymeria.func(url="https://ex.com/chunked")
+    assert out.startswith("[Error]") and "exceeded" in out
+
+
+def test_get_thread_fetch_dir_sanitizes_thread_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+    import nymeria.core.attachment_sandbox as sandbox
+
+    d = sandbox.get_thread_fetch_dir("../../etc/evil")
+    rel = d.relative_to(tmp_path.resolve())
+    # Traversal collapses into a single sanitized path segment under threads/.
+    assert rel.parts[0] == "threads"
+    assert rel.parts[-1] == "fetched"
+    assert len(rel.parts) == 3
+
+
+def test_spill_write_failure_falls_back_to_plain_truncation(monkeypatch, tmp_path):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    monkeypatch.setattr(web_fetch, "_extract_html", lambda html, extract: "word " * 4000)
+    import nymeria.core.attachment_sandbox as sandbox
+
+    def boom(thread_id):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sandbox, "get_thread_fetch_dir", boom)
+    out = web_fetch.fetch_url_nymeria.func(
+        url="https://ex.com/page",
+        max_length=500,
+        config={"configurable": {"thread_id": "t-x"}},
+    )
+    assert "Content truncated to 500 of 20000 characters" in out
+    assert "Full text saved to" not in out
+
+
+def test_summarize_handles_list_content(monkeypatch):
+    from nymeria.vendor.react_agent import providers
+
+    class FakeMessage:
+        content = [
+            {"type": "text", "text": "PART ONE"},
+            {"type": "text", "text": None},   # must not crash the join
+            {"type": "tool_use"},             # no text key
+        ]
+
+    class FakeLLM:
+        def invoke(self, messages):
+            return FakeMessage()
+
+    class FakeConfig:
+        model = "fake"
+
+    monkeypatch.setattr(web_fetch, "_build_fetch_summary_llm_config", lambda settings: FakeConfig())
+    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
+
+    out = web_fetch._maybe_summarize("page body", "prompt")
+    assert out == "PART ONE"
