@@ -121,6 +121,23 @@ def test_pdf_dispatch(monkeypatch):
     assert web_fetch._extract_content(resp, "markdown") == "PDF BODY TEXT"
 
 
+def test_pdf_detected_by_magic_bytes_despite_octet_stream(monkeypatch):
+    # Many servers send PDFs as application/octet-stream; the %PDF- header wins.
+    monkeypatch.setattr(web_fetch, "_extract_pdf", lambda raw: "PDF BODY TEXT")
+    resp = FakeResponse(content=b"%PDF-1.7\nbinary...", content_type="application/octet-stream")
+    assert web_fetch._extract_content(resp, "markdown") == "PDF BODY TEXT"
+
+
+def test_pdf_detected_by_url_extension(monkeypatch):
+    monkeypatch.setattr(web_fetch, "_extract_pdf", lambda raw: "PDF BODY TEXT")
+    resp = FakeResponse(
+        content=b"no-magic-here",
+        content_type="application/octet-stream",
+        url="https://example.com/report.pdf?dl=1",
+    )
+    assert web_fetch._extract_content(resp, "markdown") == "PDF BODY TEXT"
+
+
 def test_plaintext_passthrough():
     resp = FakeResponse(content=b"just some plain text", content_type="text/plain")
     assert web_fetch._extract_content(resp, "text") == "just some plain text"

@@ -170,7 +170,16 @@ def _extract_content(response, extract: str) -> str:
     content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
     raw = response.content[:_MAX_FETCH_BYTES]
 
-    if "pdf" in content_type:
+    # Detect PDFs by content-type, magic bytes, or .pdf extension. Many servers
+    # send PDFs as application/octet-stream or binary/octet-stream, so the
+    # content-type alone is not reliable; the "%PDF-" header is definitive.
+    url_path = str(response.url).split("?", 1)[0].lower()
+    is_pdf = (
+        "pdf" in content_type
+        or b"%PDF-" in raw[:1024]
+        or url_path.endswith(".pdf")
+    )
+    if is_pdf:
         try:
             text = _extract_pdf(raw)
         except Exception as e:  # noqa: BLE001
