@@ -4,7 +4,7 @@
   import { api } from '$lib/services/api.svelte';
   import type { LLMProviderSpec, ProviderRoute } from '$lib/types';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
-  import ThreadSettingsSection from './ThreadSettingsSection.svelte';
+  import ThreadSubTabs from './ThreadSubTabs.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
@@ -60,11 +60,15 @@
     compactThresholdTokens = $bindable(),
   }: Props = $props();
 
+  let sub = $state('provider');
+  const SUBTABS = [
+    { id: 'provider', label: 'Provider' },
+    { id: 'generation', label: 'Generation' },
+    { id: 'context', label: 'Context' },
+  ];
+
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
   let providerCatalog = $state<LLMProviderSpec[]>([]);
-  // Tier-grouped picker options. Drops the synthetic "Local LLM
-  // (OpenAI-compatible)" entry here since the per-thread surface picks a
-  // concrete provider id; users override base_url separately further down.
   let threadProviderGroups = $derived(
     buildProviderGroups(providerCatalog, { includeLocalOpenAISentinel: false })
   );
@@ -75,7 +79,6 @@
     loading: false,
   });
 
-  // True when the global default model is in effect (no per-thread override).
   const inheritsGlobalModel = $derived(!llmModel);
   const globalModel = $derived(serverSettingsStore.model || '');
 
@@ -122,11 +125,9 @@
 </script>
 
 <div class="tab-body">
-  <ThreadSettingsSection
-    title="Provider & Routing"
-    icon="server"
-    description="Which model serves this thread. Leave fields on Default to inherit the global setup."
-  >
+  <ThreadSubTabs tabs={SUBTABS} bind:active={sub} ariaLabel="Model settings" />
+
+  {#if sub === 'provider'}
     <div class="field-group">
       <label class="field-label" for="llm-provider">Provider</label>
       <ProviderSelect
@@ -141,7 +142,7 @@
 
     {#if showProviderRouteSelect()}
       <div class="field-group">
-        <label class="field-label" for="llm-provider-route">Provider Route</label>
+        <label class="field-label" for="llm-provider-route">Provider route</label>
         <select id="llm-provider-route" class="field-select" bind:value={llmProviderRoute}>
           <option value="default">Default (inherit global)</option>
           {#each supportedRoutesForProvider(getEffectiveProvider(), providerCatalog) as route}
@@ -153,47 +154,42 @@
     {/if}
 
     {#if getEffectiveProvider() && supportsApiMode(getEffectiveProvider())}
-      <div class="field-group">
-        <label class="field-label" for="llm-base-url">API Base URL</label>
-        <input
-          id="llm-base-url"
-          class="field-input"
-          type="text"
-          bind:value={llmBaseUrl}
-          placeholder={threadDisplayProvider === 'openai_custom' ? 'http://cli-proxy-api-latest:8317/v1' : 'Provider default'}
-        />
-        <span class="field-hint">
-          Optional OpenAI-compatible endpoint override reachable from the NymeriaOS backend. Leave empty to inherit global settings, a saved credential base URL, or the provider default.
-        </span>
-      </div>
-
-      <div class="field-group">
-        <label class="field-label" for="llm-api-key">API Key (Optional)</label>
-        <input
-          id="llm-api-key"
-          class="field-input"
-          type="password"
-          bind:value={llmApiKey}
-          placeholder="Leave empty to inherit global provider key"
-          autocomplete="off"
-        />
-        <span class="field-hint">
-          Required when pointing at a CLIProxy sidecar with its own <code>api-keys</code> list. Stored per-thread in the NymeriaOS data directory.
-        </span>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="llm-base-url">API base URL</label>
+          <input
+            id="llm-base-url"
+            class="field-input"
+            type="text"
+            bind:value={llmBaseUrl}
+            placeholder={threadDisplayProvider === 'openai_custom' ? 'http://cli-proxy-api-latest:8317/v1' : 'Provider default'}
+          />
+          <span class="field-hint">Optional OpenAI-compatible endpoint override. Leave empty to inherit.</span>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="llm-api-key">API key (optional)</label>
+          <input
+            id="llm-api-key"
+            class="field-input"
+            type="password"
+            bind:value={llmApiKey}
+            placeholder="Inherit global provider key"
+            autocomplete="off"
+          />
+          <span class="field-hint">Per-thread key, stored in the NymeriaOS data directory.</span>
+        </div>
       </div>
     {/if}
 
     {#if supportsApiMode(getEffectiveProvider())}
       <div class="field-group">
-        <label class="field-label" for="llm-openai-api-mode">API Mode</label>
+        <label class="field-label" for="llm-openai-api-mode">API mode</label>
         <select id="llm-openai-api-mode" class="field-select" bind:value={llmOpenAiApiMode}>
           <option value="default">Default (inherit global)</option>
-          <option value="chat_completions">Chat Completions (not recommended if thinking is enabled)</option>
+          <option value="chat_completions">Chat Completions</option>
           <option value="responses">Responses API</option>
         </select>
-        <span class="field-hint">
-          Responses API is the default for OpenAI-compatible reasoning models and OpenRouter beta. Chat Completions remains available as a compatibility override.
-        </span>
+        <span class="field-hint">Responses API is the default for OpenAI-compatible reasoning models. Chat Completions remains a compatibility override.</span>
       </div>
     {/if}
 
@@ -241,122 +237,100 @@
           <span class="meta-name">{threadModelMeta.name}</span>
           <span class="meta-details">
             {modelsStore.formatContext(threadModelMeta.context_length)} ctx
-            {#if threadModelMeta.pricing_prompt != null}
-              &middot; In: {modelsStore.formatPrice(threadModelMeta.pricing_prompt)}
-            {/if}
-            {#if threadModelMeta.pricing_completion != null}
-              &middot; Out: {modelsStore.formatPrice(threadModelMeta.pricing_completion)}
-            {/if}
-            {#if threadModelMeta.input_modalities.includes('image')}
-              &middot; Vision
-            {/if}
-            {#if threadModelMeta.supported_parameters.includes('reasoning')}
-              &middot; Reasoning
-            {/if}
+            {#if threadModelMeta.pricing_prompt != null}&middot; In: {modelsStore.formatPrice(threadModelMeta.pricing_prompt)}{/if}
+            {#if threadModelMeta.pricing_completion != null}&middot; Out: {modelsStore.formatPrice(threadModelMeta.pricing_completion)}{/if}
+            {#if threadModelMeta.input_modalities.includes('image')}&middot; Vision{/if}
+            {#if threadModelMeta.supported_parameters.includes('reasoning')}&middot; Reasoning{/if}
           </span>
         </div>
       {/if}
     </div>
-  </ThreadSettingsSection>
-
-  <ThreadSettingsSection
-    title="Generation"
-    icon="bolt"
-    description="Sampling and reasoning controls. Default inherits the global value."
-  >
-    <div class="field-group">
-      <label class="field-label" for="llm-use-defaults">Use Model Defaults</label>
-      <select id="llm-use-defaults" class="field-select" bind:value={llmUseModelDefaults}>
-        <option value="default">Default (inherit global)</option>
-        <option value="true">On</option>
-        <option value="false">Off</option>
-      </select>
-      <span class="field-hint">
-        Let the provider apply optimal defaults for temperature, top_p, frequency penalty
-        {#if llmUseModelDefaults === 'true' && threadModelMeta?.default_temperature != null}
-          (temp: {threadModelMeta.default_temperature})
-        {/if}
-      </span>
+  {:else if sub === 'generation'}
+    <div class="grid-2">
+      <div class="field-group">
+        <label class="field-label" for="llm-use-defaults">Use model defaults</label>
+        <select id="llm-use-defaults" class="field-select" bind:value={llmUseModelDefaults}>
+          <option value="default">Default (inherit global)</option>
+          <option value="true">On</option>
+          <option value="false">Off</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-temp">Temperature</label>
+        <input id="llm-temp" class="field-input" type="number" min="0" max="2" step="0.1" bind:value={llmTemperature} placeholder="Default" disabled={llmUseModelDefaults === 'true'} />
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-max-tokens">Max output tokens</label>
+        <input id="llm-max-tokens" class="field-input" type="number" min="1" max="128000" step="1" bind:value={llmMaxTokens} placeholder="Default" />
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-ext-thinking">Extended thinking</label>
+        <select id="llm-ext-thinking" class="field-select" bind:value={llmExtendedThinking}>
+          <option value="default">Default (inherit global)</option>
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-reasoning">Reasoning effort</label>
+        <select id="llm-reasoning" class="field-select" bind:value={llmReasoningEffort}>
+          <option value="">Default (inherit global)</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
     </div>
-
-    <div class="field-group">
-      <label class="field-label" for="llm-temp">Temperature</label>
-      <input id="llm-temp" class="field-input" type="number" min="0" max="2" step="0.1" bind:value={llmTemperature} placeholder="Default" disabled={llmUseModelDefaults === 'true'} />
-    </div>
-
-    <div class="field-group">
-      <label class="field-label" for="llm-max-tokens">Max Output Tokens</label>
-      <input id="llm-max-tokens" class="field-input" type="number" min="1" max="128000" step="1" bind:value={llmMaxTokens} placeholder="Default" />
-    </div>
-
-    <div class="field-group">
-      <label class="field-label" for="llm-ext-thinking">Extended Thinking</label>
-      <select id="llm-ext-thinking" class="field-select" bind:value={llmExtendedThinking}>
-        <option value="default">Default (inherit global)</option>
-        <option value="true">Enabled</option>
-        <option value="false">Disabled</option>
-      </select>
-    </div>
-
-    <div class="field-group last">
-      <label class="field-label" for="llm-reasoning">Reasoning Effort</label>
-      <select id="llm-reasoning" class="field-select" bind:value={llmReasoningEffort}>
-        <option value="">Default (inherit global)</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-      </select>
-    </div>
-  </ThreadSettingsSection>
-
-  <ThreadSettingsSection
-    title="Context & Compaction"
-    icon="refresh"
-    description="Context-window sizing and when this thread auto-compacts."
-  >
-    <div class="field-group">
-      <label class="field-label" for="llm-context-length">Context Window Tokens</label>
-      <input id="llm-context-length" class="field-input" type="number" min="1000" max="2000000" step="1" bind:value={llmContextLength} placeholder="Default" />
-      <span class="field-hint">Manual local-model context override. Leave empty to inherit global or auto-detected metadata.</span>
-    </div>
-
-    <div class="field-group">
-      <label class="field-label" for="llm-ollama-num-ctx">Ollama num_ctx</label>
-      <input id="llm-ollama-num-ctx" class="field-input" type="number" min="1000" max="2000000" step="1" bind:value={llmOllamaNumCtx} placeholder="Default" />
-      <span class="field-hint">Per-thread Ollama options.num_ctx override. Leave empty to inherit global or auto-detect.</span>
+  {:else}
+    <div class="grid-2">
+      <div class="field-group">
+        <label class="field-label" for="llm-context-length">Context window tokens</label>
+        <input id="llm-context-length" class="field-input" type="number" min="1000" max="2000000" step="1" bind:value={llmContextLength} placeholder="Default" />
+        <span class="field-hint">Manual local-model context override.</span>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-ollama-num-ctx">Ollama num_ctx</label>
+        <input id="llm-ollama-num-ctx" class="field-input" type="number" min="1000" max="2000000" step="1" bind:value={llmOllamaNumCtx} placeholder="Default" />
+        <span class="field-hint">Per-thread Ollama options.num_ctx override.</span>
+      </div>
     </div>
 
     <div class="field-group" class:last={compactThresholdMode === 'default'}>
-      <label class="field-label" for="thread-compact-mode">Auto-Compact Trigger</label>
+      <label class="field-label" for="thread-compact-mode">Auto-compact trigger</label>
       <select id="thread-compact-mode" class="field-select" bind:value={compactThresholdMode}>
         <option value="default">Default (inherit global)</option>
         <option value="percentage">Percentage of context window</option>
         <option value="tokens">Absolute input-token count</option>
       </select>
-      <span class="field-hint">
-        Overrides the global compact trigger for this thread only. Real provider-reported input tokens are used either way.
-      </span>
+      <span class="field-hint">Overrides the global compact trigger for this thread only.</span>
     </div>
 
     {#if compactThresholdMode === 'percentage'}
       <div class="field-group last">
-        <label class="field-label" for="thread-compact-pct">Compact Threshold (0.05 – 0.95)</label>
-        <input id="thread-compact-pct" class="field-input" type="number" min="0.05" max="0.95" step="0.01" bind:value={compactThresholdPct} placeholder="Leave empty to inherit global" />
+        <label class="field-label" for="thread-compact-pct">Compact threshold (0.05 – 0.95)</label>
+        <input id="thread-compact-pct" class="field-input narrow" type="number" min="0.05" max="0.95" step="0.01" bind:value={compactThresholdPct} placeholder="Inherit global" />
       </div>
     {:else if compactThresholdMode === 'tokens'}
       <div class="field-group last">
-        <label class="field-label" for="thread-compact-tokens">Compact Token Threshold (1,000 – 2,000,000)</label>
-        <input id="thread-compact-tokens" class="field-input" type="number" min="1000" max="2000000" step="1000" bind:value={compactThresholdTokens} placeholder="Leave empty to inherit global" />
+        <label class="field-label" for="thread-compact-tokens">Compact token threshold</label>
+        <input id="thread-compact-tokens" class="field-input narrow" type="number" min="1000" max="2000000" step="1000" bind:value={compactThresholdTokens} placeholder="Inherit global" />
         <span class="field-hint">Clamped to the model's context window at runtime.</span>
       </div>
     {/if}
-  </ThreadSettingsSection>
+  {/if}
 </div>
 
 <style>
   .tab-body {
     padding: var(--spacing-lg);
   }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--spacing-md);
+  }
+  .grid-2 .field-group { margin-bottom: var(--spacing-md); }
 
   .field-group {
     margin-bottom: var(--spacing-md);
@@ -374,10 +348,11 @@
   }
 
   .field-hint {
+    display: block;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    line-height: 1.5;
-    margin: var(--spacing-xs) 0 0;
+    line-height: 1.45;
+    margin-top: var(--spacing-xs);
   }
 
   .field-input,
@@ -392,6 +367,7 @@
     outline: none;
     transition: border-color var(--transition-fast);
   }
+  .field-input.narrow { max-width: 280px; }
 
   .field-input:focus,
   .field-select:focus {
@@ -418,8 +394,8 @@
     gap: var(--spacing-xs);
     margin-top: var(--spacing-xs);
     padding: 5px 8px;
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
   }

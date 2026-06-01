@@ -5,24 +5,20 @@
   import Icon from '$lib/components/common/Icon.svelte';
 
   /**
-   * Card-style section used across every per-thread settings tab. Deliberately
-   * NOT the global Settings panel's underlined-h3 / uppercase-small-caps look:
-   * a rounded bordered card with an accent-tinted icon disc gives the thread
-   * panel its own visual rhythm so the two surfaces never read as the same one.
+   * Card-style section used across the per-thread settings tabs. Quiet and
+   * uniform: a subtle bordered card with a bold title and muted description.
+   * No accent fills (accent is reserved for active states / toggles / focus).
    */
   interface Props {
     title: string;
     icon?: string;
-    /** Short helper text rendered under the title. */
     description?: string;
-    /** When set, renders a small count chip next to the title. */
     count?: number | null;
     collapsible?: boolean;
     defaultOpen?: boolean;
     /** Tighter body padding for list-heavy sections (tools). */
     flush?: boolean;
-    /** Right-aligned header content (counts, buttons, etc.). Rendered as a
-     *  sibling of the toggle button so interactive controls stay valid. */
+    /** Right-aligned header content, rendered as a sibling of the toggle. */
     actions?: Snippet;
     children: Snippet;
   }
@@ -43,38 +39,26 @@
   let open = $state(collapsible ? defaultOpen : true);
 </script>
 
-<section class="ts-section" class:collapsible>
-  <div class="ts-section-head">
+<section class="ts-section">
+  <div class="ts-head">
     {#if collapsible}
-      <button
-        class="ts-head-btn"
-        type="button"
-        onclick={() => (open = !open)}
-        aria-expanded={open}
-      >
-        <span class="ts-chevron" class:open><Icon name="chevronRight" size={15} /></span>
-        {#if icon}<span class="ts-icon"><Icon name={icon} size={15} /></span>{/if}
+      <button class="ts-head-btn" type="button" onclick={() => (open = !open)} aria-expanded={open}>
+        <span class="ts-chevron" class:open><Icon name="chevronRight" size={14} /></span>
+        {#if icon}<span class="ts-icon"><Icon name={icon} size={14} /></span>{/if}
         <span class="ts-title-wrap">
-          <span class="ts-title">
-            {title}
-            {#if count != null}<span class="ts-count">{count}</span>{/if}
-          </span>
+          <span class="ts-title">{title}{#if count != null}<span class="ts-count">{count}</span>{/if}</span>
           {#if description}<span class="ts-desc">{description}</span>{/if}
         </span>
       </button>
     {:else}
       <div class="ts-head-static">
-        {#if icon}<span class="ts-icon"><Icon name={icon} size={15} /></span>{/if}
+        {#if icon}<span class="ts-icon"><Icon name={icon} size={14} /></span>{/if}
         <span class="ts-title-wrap">
-          <span class="ts-title">
-            {title}
-            {#if count != null}<span class="ts-count">{count}</span>{/if}
-          </span>
+          <span class="ts-title">{title}{#if count != null}<span class="ts-count">{count}</span>{/if}</span>
           {#if description}<span class="ts-desc">{description}</span>{/if}
         </span>
       </div>
     {/if}
-
     {#if actions}
       <div class="ts-actions">{@render actions()}</div>
     {/if}
@@ -95,18 +79,21 @@
     margin-bottom: var(--spacing-md);
     overflow: hidden;
   }
+  .ts-section:last-child {
+    margin-bottom: 0;
+  }
 
-  .ts-section-head {
+  .ts-head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
+    padding: var(--spacing-md);
   }
 
   .ts-head-btn,
   .ts-head-static {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--spacing-sm);
     flex: 1;
     min-width: 0;
@@ -120,10 +107,9 @@
 
   .ts-head-btn {
     cursor: pointer;
-    /* Stretch the hit target across the head row's padding. */
-    margin: calc(-1 * var(--spacing-sm)) calc(-1 * var(--spacing-md));
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--radius-sm);
+    margin: calc(-1 * var(--spacing-md));
+    padding: var(--spacing-md);
+    border-radius: var(--radius-md);
   }
   .ts-head-btn:hover {
     background: var(--bg-hover);
@@ -131,6 +117,7 @@
 
   .ts-chevron {
     display: inline-flex;
+    margin-top: 1px;
     color: var(--text-muted);
     transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
@@ -138,23 +125,16 @@
     transform: rotate(90deg);
   }
 
-  /* Accent-tinted icon disc — a visual signature the global panel doesn't use. */
   .ts-icon {
     display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    flex-shrink: 0;
-    border-radius: var(--radius-sm);
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    margin-top: 1px;
+    color: var(--text-muted);
   }
 
   .ts-title-wrap {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 3px;
     min-width: 0;
     flex: 1;
   }
@@ -178,15 +158,15 @@
     padding: 0 6px;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    color: var(--text-secondary);
+    background: var(--bg-elevated-2);
     border-radius: var(--radius-full);
   }
 
   .ts-desc {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    line-height: 1.4;
+    line-height: 1.45;
   }
 
   .ts-actions {
@@ -200,7 +180,6 @@
   .ts-body {
     padding: 0 var(--spacing-md) var(--spacing-md);
   }
-
   .ts-body.flush {
     padding: 0;
   }
