@@ -107,6 +107,36 @@ def classify_stream_exception(error: Exception) -> Dict[str, Any]:
             "details": details,
         }
 
+    # Anthropic's Claude-subscription OAuth path (used via CLIProxy) rejects
+    # requests that carry a tool whose name it recognizes as a known third-party
+    # integration, returning a 400 that talks about "extra usage" rather than
+    # plan limits. It reads like a billing/credits problem but is almost always a
+    # tool-name collision (e.g. a tool named exactly like an MCP/Exa tool, or a
+    # name starting/ending with "mcp"). Surface an actionable hint instead of the
+    # raw provider text. See Nymeria/docs/ (cliproxy) and the web-search plan doc.
+    if (
+        ("extra usage" in lower and ("third-party" in lower or "third party" in lower))
+        or "draw from your extra usage" in lower
+    ):
+        message = (
+            "Anthropic's subscription API rejected this request as a third-party app "
+            "and tried to bill it to extra usage instead of your plan. This is almost "
+            "always a tool-name collision, not a credit problem: a tool bound to this "
+            "thread has a name Anthropic recognizes as a known integration (for example "
+            "a tool named exactly like an MCP or Exa tool, or one whose name starts or "
+            "ends with 'mcp'). Disable or rename the offending tool on this thread, "
+            "then retry."
+        )
+        return {
+            "type": "error",
+            "content": message,
+            "code": "anthropic_third_party_tool_name",
+            "details": {
+                "http_status": status_code or 400,
+                "hint": "tool_name_collision",
+            },
+        }
+
     details = {"http_status": status_code} if status_code is not None else {}
     return {
         "type": "error",
