@@ -276,7 +276,7 @@ def _get_exa_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
         provider="exa",
         provider_aliases=("exa_ai", "exaai"),
         field_names=("api_key", "token", "value"),
-        tool_name="web_search_exa",
+        tool_name="web_search_exa_ai",
         config=config,
     )
     if cred and cred.value:
@@ -349,7 +349,7 @@ def _exa_search_single(payload: dict, api_key: str, timeout: float, max_results:
 
 
 @tool
-def web_search_exa(
+def web_search_exa_ai(
     query: str = "",
     queries: str = "",
     search_type: Optional[str] = None,
@@ -412,7 +412,7 @@ def web_search_exa(
         return (
             "[Error]: No Exa credential found. Set EXA_API_KEY or call "
             'request_credential(provider="exa", '
-            'bind_target="native_tool:web_search_exa") to provision one.'
+            'bind_target="native_tool:web_search_exa_ai") to provision one.'
         )
 
     # Clamp num_results; build a base payload omitting unset params so Exa applies
@@ -1144,7 +1144,7 @@ def web_search_searxng(
 # searxng_search per docs/private/plans/web-search-integrations.md.
 WEB_SEARCH_INTEGRATION_TOOLS = [
     web_search_tavily,
-    web_search_exa,
+    web_search_exa_ai,
     web_search_firecrawl,
     web_search_brave,
     web_search_searxng,

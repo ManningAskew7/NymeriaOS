@@ -13,7 +13,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
-| 4c | `web_search_exa` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4c | `web_search_exa_ai` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
@@ -324,7 +324,7 @@ Hard defaults (not exposed): `include_raw_content`, `include_images`, `auto_para
 
 **Timeouts:** 30s basic, 60s advanced.
 
-### web_search_exa
+### web_search_exa_ai
 
 Search the web using Exa, a neural/semantic retrieval API. Finds conceptually
 related pages that plain keyword search misses and returns the most
@@ -333,7 +333,7 @@ synthesized answer (use `web_search_perplexity` for an answer). Opt-in tool in
 the `WEB_SEARCH_INTEGRATION_TOOLS` group (enable per thread), not a core tool.
 
 ```python
-web_search_exa(query: str = "", queries: str = "", search_type: Optional[str] = None, num_results: Optional[int] = None, category: Optional[str] = None, start_published_date: str = "", end_published_date: str = "", include_domains: str = "", exclude_domains: str = "")
+web_search_exa_ai(query: str = "", queries: str = "", search_type: Optional[str] = None, num_results: Optional[int] = None, category: Optional[str] = None, start_published_date: str = "", end_published_date: str = "", include_domains: str = "", exclude_domains: str = "")
 ```
 
 **Parameters (all agent-controlled per query):**
@@ -351,7 +351,7 @@ Hard defaults (not exposed): `highlights` are always on (bundled free, used as t
 
 **Returns:** Ranked sources as `N. <title>\n   <url>  (score) · <date>\n   <highlights>`. Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`.
 
-**Requires:** an Exa credential, resolved credential vault -> `EXA_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="exa", bind_target="native_tool:web_search_exa")`. Free tier: 1,000 requests/month; search bundles text + highlights for the first 10 results.
+**Requires:** an Exa credential, resolved credential vault -> `EXA_API_KEY` setting/env. The agent can self-provision via `request_credential(provider="exa", bind_target="native_tool:web_search_exa_ai")`. Free tier: 1,000 requests/month; search bundles text + highlights for the first 10 results.
 
 **Timeout:** 30s.
 
@@ -2631,7 +2631,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa`, `web_search_firecrawl`, `web_search_brave`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa_ai`, `web_search_firecrawl`, `web_search_brave`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
