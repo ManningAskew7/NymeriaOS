@@ -14,11 +14,13 @@ with DNS pinning. This is the same path rss_source and the credential probes use
 
 from __future__ import annotations
 
+import hashlib
 import html as html_mod
 import io
 import logging
 import re
-from typing import Annotated
+from typing import Annotated, Optional
+from urllib.parse import urlparse
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -26,13 +28,13 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
-    httpx_request_with_policy,
+    requests_get_with_policy,
 )
 
 logger = logging.getLogger(__name__)
 
 _MAX_BATCH_URLS = 10
-_MAX_FETCH_BYTES = 10 * 1024 * 1024  # 10 MB soft guard
+_MAX_FETCH_BYTES = 10 * 1024 * 1024  # 10 MB hard cap, enforced while streaming
 _THIN_CONTENT_CHARS = 200  # below this, try the readability fallback
 _MIN_MAX_LENGTH = 500
 _MAX_MAX_LENGTH = 50_000
@@ -46,46 +48,105 @@ _EXTRACT_FORMATS = {"markdown", "text"}
 # --- fetch --------------------------------------------------------------------
 
 
-def _fetch_one(url: str, *, timeout: float = 25.0):
-    """Fetch a URL through the SSRF egress policy.
+def _redact_url(url: str) -> str:
+    """Strip userinfo (user:pass@) so credentials never reach the agent or logs."""
+    try:
+        parsed = urlparse(url)
+        if parsed.username or parsed.password:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            parsed = parsed._replace(netloc=netloc)
+        return parsed.geturl()
+    except Exception:  # noqa: BLE001
+        return "the requested URL"
 
-    Returns ``(response, error, final_url)``. On failure ``response`` is None and
+
+class _Fetched:
+    """Lightweight, client-agnostic holder for a fetched (already size-capped) body."""
+
+    __slots__ = ("headers", "content", "url", "encoding")
+
+    def __init__(self, headers: dict, content: bytes, url: str, encoding):
+        self.headers = headers
+        self.content = content
+        self.url = url
+        self.encoding = encoding
+
+    @property
+    def text(self) -> str:
+        return self.content.decode(self.encoding or "utf-8", errors="replace")
+
+
+def _fetch_one(url: str, *, timeout: float = 25.0):
+    """Fetch a URL through the SSRF egress policy, streaming with a hard byte cap.
+
+    Returns ``(fetched, error, final_url)``. On failure ``fetched`` is None and
     ``error`` is a ``[Error]: ...`` string; on success ``error`` is None.
     """
-    import httpx
+    import requests
 
+    response = None
     try:
-        with httpx.Client(
-            timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
-            follow_redirects=False,
-            limits=httpx.Limits(max_keepalive_connections=0),
-            trust_env=False,
-        ) as client:
-            response, _chain, _decision = httpx_request_with_policy(
-                "GET",
-                url,
-                client=client,
-                headers={
-                    "User-Agent": _USER_AGENT,
-                    "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain,*/*",
-                    "Accept-Language": "en",
-                },
-                follow_redirects=True,
-            )
-            final_url = str(response.url)
+        response, _chain, _decision = requests_get_with_policy(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain,*/*",
+                "Accept-Language": "en",
+            },
+            timeout=timeout,        # applied to both connect and read phases
+            stream=True,            # defer the body so we can cap it before reading
+            follow_redirects=True,
+        )
+        final_url = str(response.url)
+        try:
             response.raise_for_status()
-            # Materialize the body inside the client context.
-            _ = response.content
-            return response, None, final_url
+        except requests.exceptions.HTTPError:
+            return None, f"[Error]: HTTP {response.status_code} for {_redact_url(url)}", final_url
+
+        # Reject early when the server honestly advertises an over-cap body.
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > _MAX_FETCH_BYTES:
+            return None, (
+                f"[Error]: Response too large ({int(declared)} bytes; limit "
+                f"{_MAX_FETCH_BYTES}). Try a more specific URL."
+            ), final_url
+
+        # Stream and enforce the cap even when Content-Length is absent or lies.
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _MAX_FETCH_BYTES:
+                return None, (
+                    f"[Error]: Response exceeded the {_MAX_FETCH_BYTES} byte limit. "
+                    f"Try a more specific URL."
+                ), final_url
+            chunks.append(chunk)
+
+        fetched = _Fetched(
+            headers=dict(response.headers),
+            content=b"".join(chunks),
+            url=final_url,
+            encoding=response.encoding,
+        )
+        return fetched, None, final_url
     except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
         return None, f"[Error]: Blocked by egress policy: {e}", url
-    except httpx.HTTPStatusError as e:
-        return None, f"[Error]: HTTP {e.response.status_code} for {url}", url
-    except httpx.TimeoutException:
-        return None, f"[Error]: Timed out fetching {url}", url
-    except Exception as e:
-        logger.error("fetch_url_nymeria fetch failed: %s", e, exc_info=True)
-        return None, f"[Error]: Fetch failed for {url}: {e}", url
+    except requests.exceptions.Timeout:
+        return None, f"[Error]: Timed out fetching {_redact_url(url)}", url
+    except Exception as e:  # noqa: BLE001
+        logger.error("fetch_url_nymeria fetch failed: %s", type(e).__name__, exc_info=True)
+        return None, f"[Error]: Fetch failed for {_redact_url(url)}: {type(e).__name__}", url
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- extraction ---------------------------------------------------------------
@@ -294,15 +355,18 @@ def _maybe_summarize(content: str, extraction_prompt: str) -> str:
         result = llm.invoke(messages)
         text = getattr(result, "content", "")
         if isinstance(text, list):
-            text = " ".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in text
-            )
+            # Anthropic-style content blocks: keep text parts, tolerate None/non-dicts.
+            parts: list[str] = []
+            for part in text:
+                value = part.get("text") if isinstance(part, dict) else part
+                if value:
+                    parts.append(str(value))
+            text = " ".join(parts)
         text = (text or "").strip()
         return text or "[Error]: Summarizer returned no content."
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - never leak provider URLs/keys from the exception text
         logger.error("fetch_url_nymeria summarize failed: %s", e, exc_info=True)
-        return f"[Error]: Summarize step failed: {e}"
+        return f"[Error]: Summarize step failed: {type(e).__name__} (see server logs)"
 
 
 # --- rendering ----------------------------------------------------------------
@@ -319,6 +383,48 @@ def _format_header(title: str, requested_url: str, final_url: str) -> str:
     return "\n".join(lines)
 
 
+def _spill_filename(url: str, extract: str) -> str:
+    """Stable, filesystem-safe filename derived from the URL (re-fetch overwrites).
+
+    Uses the hostname (not netloc) so any user:pass@ userinfo never lands in the
+    filename, and a hash for uniqueness.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "page").lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", (host + parsed.path).lower()).strip("-")[:80] or "page"
+    digest = hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:8]
+    ext = "md" if extract == "markdown" else "txt"
+    return f"{slug}-{digest}.{ext}"
+
+
+def _spill_to_file(body: str, url: str, extract: str, config) -> Optional[str]:
+    """Write the full extracted content to the thread's fetch dir.
+
+    Returns the absolute path, or None when there is no thread to key by or the
+    write fails (best-effort: a spill failure must never fail the fetch).
+    """
+    from .utils import get_thread_id_or_none
+
+    thread_id = get_thread_id_or_none(config)
+    if not thread_id:
+        return None
+    try:
+        from ..core.attachment_sandbox import get_thread_fetch_dir
+
+        # Write the FULL extracted text (already bounded by the 10 MB fetch cap).
+        # The agent pages through it with file_read or bash_execute (grep/sed).
+        target = get_thread_fetch_dir(thread_id) / _spill_filename(url, extract)
+        target.write_text(body, encoding="utf-8")
+        try:
+            target.chmod(0o600)
+        except (PermissionError, OSError):
+            pass
+        return str(target)
+    except Exception as e:  # noqa: BLE001 - spill is best-effort
+        logger.debug("fetch spill failed for %s: %s", url, e)
+        return None
+
+
 def _fetch_and_render(
     url: str,
     *,
@@ -326,6 +432,7 @@ def _fetch_and_render(
     summarize: bool,
     extraction_prompt: str,
     max_length: int,
+    config=None,
 ) -> str:
     response, error, final_url = _fetch_one(url)
     if error is not None or response is None:
@@ -348,7 +455,17 @@ def _fetch_and_render(
         if body.startswith("[Error]:"):
             return body
     elif len(body) > max_length:
-        body = body[:max_length].rstrip() + f"\n\n[Content truncated to {max_length} characters]"
+        full_len = len(body)
+        preview = body[:max_length].rstrip()
+        spill_path = _spill_to_file(body, url, extract, config)
+        if spill_path:
+            body = (
+                f"{preview}\n\n[Content truncated to {max_length} of {full_len} characters. "
+                f"Full text saved to {spill_path}. Read it with file_read, or use "
+                f"bash_execute (grep/sed/head) to search it or read specific sections.]"
+            )
+        else:
+            body = f"{preview}\n\n[Content truncated to {max_length} of {full_len} characters]"
 
     header = _format_header(title, url, final_url)
     return f"{header}\n\n{body}"
@@ -385,13 +502,16 @@ def fetch_url_nymeria(
         extraction_prompt: What to extract or summarize (e.g. "pricing tiers and
                    limits"). Only used when summarize=true.
         max_length: Max characters of content returned (500-50000, default 8000).
-                   Long pages are truncated unless summarize=true.
+                   Long pages are truncated unless summarize=true. When truncated,
+                   the FULL extracted text is saved to a file in your thread
+                   sandbox and the path is included so you can file_read or grep it.
 
     Returns:
         A short header (title, source URL) followed by the content. Batch mode:
-        sections separated by "=== URL N/M: <url> ===" headers. Failures are
-        returned as "[Error]: <reason>" strings (blocked, HTTP code, timeout,
-        unsupported type, or could-not-extract), never raised.
+        sections separated by "=== URL N/M: <url> ===" headers. When a page
+        exceeds max_length, the preview ends with the saved file path for the
+        full text. Failures are returned as "[Error]: <reason>" strings (blocked,
+        HTTP code, timeout, unsupported type, or could-not-extract), never raised.
     """
     if urls.strip():
         url_list = [u.strip() for u in re.split(r"\s*\|\s*|\s*,\s*", urls) if u.strip()]
@@ -415,6 +535,7 @@ def fetch_url_nymeria(
             summarize=summarize,
             extraction_prompt=extraction_prompt,
             max_length=max_length,
+            config=config,
         )
 
     total = len(url_list)
@@ -426,6 +547,7 @@ def fetch_url_nymeria(
             summarize=summarize,
             extraction_prompt=extraction_prompt,
             max_length=max_length,
+            config=config,
         )
         sections.append(f"=== URL {i}/{total}: {u} ===\n{result}")
 

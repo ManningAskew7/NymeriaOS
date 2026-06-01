@@ -104,6 +104,25 @@ def get_thread_attachment_dir(thread_id: str) -> Path:
     return base
 
 
+def get_thread_fetch_dir(thread_id: str) -> Path:
+    """Resolve (and create) the per-thread web-fetch spill directory.
+
+    Layout: ``<workspace>/threads/<thread_id>/fetched/`` (sibling of
+    ``attachments/``). Used by fetch tools to drop the full text of an
+    over-length page so the agent can ``file_read`` / ``bash_execute`` it.
+    ``cleanup_thread_attachments`` already removes the whole ``threads/<id>/``
+    tree, so this directory is cleaned up with the thread.
+    """
+    sanitized = _sanitize_thread_id(thread_id)
+    base = _workspace_root() / "threads" / sanitized / "fetched"
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except (PermissionError, OSError):
+        logger.debug("Could not chmod %s; continuing", base)
+    return base
+
+
 def _sanitize_thread_id(thread_id: str) -> str:
     """Defensive: thread ids come from auth-protected code paths, but we still
     refuse traversal characters here so the path stays inside the workspace.
