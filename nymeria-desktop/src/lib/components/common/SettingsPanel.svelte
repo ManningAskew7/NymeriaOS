@@ -30,7 +30,7 @@
   import ProviderSelect from './ProviderSelect.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
-  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_LOCAL_BASE_URL,
@@ -75,8 +75,11 @@
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
-  // Optional dedicated model for fetch_url_nymeria's summarize step.
-  let fetchSummaryProvider = $state('');
+  // LLM tab sub-view toggle: main provider / fallback (placeholder) / fetch summarizer.
+  let llmSubView = $state<'main' | 'fallback' | 'fetch'>('main');
+  // Optional dedicated model for fetch_url_nymeria's summarize step. The display
+  // provider mirrors the main picker (synthetic local_openai/openai_custom entries).
+  let fetchSummaryDisplayProvider = $state<DisplayProvider>('');
   let fetchSummaryModel = $state('');
   let fetchSummaryBaseUrl = $state('');
   let llmTemperature = $state(1);
@@ -404,6 +407,31 @@
     void loadAvailableModels(provider, availableModelsState, baseUrlOverride);
   });
 
+  // Dynamic model list for the fetch summarizer provider (mirrors the main one).
+  let summaryModelsState = $state<AvailableModelsState>({
+    models: [],
+    provider: '',
+    loading: false,
+  });
+
+  // Backend provider id behind the summarizer display provider ('' = use main).
+  const fetchSummaryProviderId = $derived(
+    fetchSummaryDisplayProvider ? fromDisplayProvider(fetchSummaryDisplayProvider).provider : ''
+  );
+
+  $effect(() => {
+    const dp = fetchSummaryDisplayProvider;
+    if (!dp) {
+      clearAvailableModels(summaryModelsState);
+      return;
+    }
+    const { provider } = fromDisplayProvider(dp);
+    const baseUrlOverride = (
+      dp === 'local_openai' || dp === 'openai_custom' || fetchSummaryBaseUrl
+    ) ? fetchSummaryBaseUrl : '';
+    void loadAvailableModels(provider, summaryModelsState, baseUrlOverride);
+  });
+
   $effect(() => {
     if (hasRouteChoice(llmProvider, providerCatalog)) {
       llmProviderRoute = coerceProviderRoute(llmProvider, providerCatalog, llmProviderRoute);
@@ -510,9 +538,12 @@
       llmContextLength = serverSettings.llm_context_length;
       llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
-      fetchSummaryProvider = serverSettings.fetch_summary_provider ?? '';
       fetchSummaryModel = serverSettings.fetch_summary_model ?? '';
       fetchSummaryBaseUrl = serverSettings.fetch_summary_base_url ?? '';
+      fetchSummaryDisplayProvider = toDisplayProvider(
+        (serverSettings.fetch_summary_provider || '') as LLMProvider,
+        serverSettings.fetch_summary_base_url || ''
+      );
       contextManagement = serverSettings.context_management;
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
       compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
@@ -679,6 +710,7 @@
         : displayProvider === 'openai_custom'
           ? (llmBaseUrl || DEFAULT_OPENAI_CLIPROXY_BASE_URL)
           : llmBaseUrl;
+      const fetchSummary = fromDisplayProvider(fetchSummaryDisplayProvider);
 
       const result = await api.updateServerSettings({
         llm_provider: actualProvider,
@@ -698,9 +730,11 @@
         llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
         llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
         openai_api_mode: openaiApiMode,
-        fetch_summary_provider: fetchSummaryProvider || null,
+        fetch_summary_provider: fetchSummaryDisplayProvider ? fetchSummary.provider : null,
         fetch_summary_model: fetchSummaryModel || null,
-        fetch_summary_base_url: fetchSummaryBaseUrl || null,
+        fetch_summary_base_url: (fetchSummaryDisplayProvider && !fetchSummary.clearBaseUrl)
+          ? (fetchSummaryBaseUrl || null)
+          : null,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
         compact_threshold_mode: compactThresholdMode,
@@ -1303,6 +1337,13 @@
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
       {:else}
+        <div class="llm-subview-toggle">
+          <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button">Main</button>
+          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button">Fallback</button>
+          <button class="llm-subview-btn" class:active={llmSubView === 'fetch'} onclick={() => (llmSubView = 'fetch')} type="button">Fetch tool</button>
+        </div>
+
+        {#if llmSubView === 'main'}
         <div class="provider-setup-callout">
           <div>
             <span class="section-title">Provider Setup</span>
@@ -1502,39 +1543,6 @@
           </div>
         {/if}
 
-        <h3 class="section-heading">Fetch Tool Summarizer</h3>
-        <p class="hint">
-          Optional dedicated model for <code>fetch_url_nymeria</code>'s summarize option. A small
-          local model works well here (no tool calling is required). Leave blank to reuse the main model.
-        </p>
-        <div class="field">
-          <label for="fetch-summary-model">Summarizer model</label>
-          <input
-            id="fetch-summary-model"
-            type="text"
-            bind:value={fetchSummaryModel}
-            placeholder="Leave blank to use the main model"
-          />
-        </div>
-        <div class="field">
-          <label for="fetch-summary-provider">Summarizer provider</label>
-          <input
-            id="fetch-summary-provider"
-            type="text"
-            bind:value={fetchSummaryProvider}
-            placeholder="e.g. openai, ollama, lmstudio (blank = main provider)"
-          />
-        </div>
-        <div class="field">
-          <label for="fetch-summary-base-url">Summarizer base URL</label>
-          <input
-            id="fetch-summary-base-url"
-            type="text"
-            bind:value={fetchSummaryBaseUrl}
-            placeholder="e.g. http://localhost:1234/v1 (blank = provider default)"
-          />
-        </div>
-
         <!-- Advanced Settings Collapsible -->
         <div class="advanced-section">
           <button
@@ -1708,6 +1716,84 @@
             </div>
           {/if}
         </div>
+        {/if}
+
+        {#if llmSubView === 'fallback'}
+        <div class="field">
+          <h3 class="section-heading">Fallback Models</h3>
+          <p class="hint">
+            Not implemented yet. Fallback models (tried in order when the main
+            provider fails) currently come from the <code>LLM_FALLBACK_MODELS</code>
+            server setting. A configuration UI is planned here.
+          </p>
+        </div>
+        {/if}
+
+        {#if llmSubView === 'fetch'}
+        <p class="hint">
+          Optional dedicated model for <code>fetch_url_nymeria</code>'s summarize
+          option. A small local model works well here (no tool calling is
+          required). Leave the model blank to reuse your main model.
+        </p>
+
+        <div class="field">
+          <label for="fetch-summary-provider">Provider</label>
+          <ProviderSelect
+            id="fetch-summary-provider"
+            bind:value={fetchSummaryDisplayProvider}
+            groups={settingsProviderGroups}
+            includeDefault={true}
+            defaultLabel="Use main provider"
+            defaultDescription="Reuse the main agent provider"
+          />
+        </div>
+
+        <div class="field">
+          <label for="fetch-summary-model">Model</label>
+          {#if summaryModelsState.models.length > 0}
+            <select id="fetch-summary-model" bind:value={fetchSummaryModel}>
+              <option value="">(use main model)</option>
+              {#each summaryModelsState.models as model}
+                <option value={model.id}>{model.name || model.id}</option>
+              {/each}
+            </select>
+            <p class="hint">{summaryModelsState.models.length} models available</p>
+          {:else if summaryModelsState.loading}
+            <select id="fetch-summary-model" disabled>
+              <option>Loading models...</option>
+            </select>
+          {:else}
+            <select id="fetch-summary-model" bind:value={fetchSummaryModel}>
+              <option value="">(use main model)</option>
+              {#each (modelOptions[fetchSummaryProviderId] ?? []) as model}
+                <option value={model.value}>{model.label}</option>
+              {/each}
+            </select>
+          {/if}
+          <div class="model-custom-row">
+            <input
+              type="text"
+              bind:value={fetchSummaryModel}
+              placeholder="Model id, or blank to use the main model"
+              class="model-custom"
+            />
+          </div>
+          <p class="hint">Pick from the list or type any model id. Blank reuses the main model.</p>
+        </div>
+
+        {#if fetchSummaryDisplayProvider === 'local_openai' || fetchSummaryDisplayProvider === 'openai_custom'}
+          <div class="field">
+            <label for="fetch-summary-base-url">API Base URL</label>
+            <input
+              id="fetch-summary-base-url"
+              type="text"
+              bind:value={fetchSummaryBaseUrl}
+              placeholder="e.g. http://host.docker.internal:1234/v1"
+            />
+            <p class="hint">Local OpenAI-compatible server endpoint. From Docker, <code>host.docker.internal</code> reaches the host.</p>
+          </div>
+        {/if}
+        {/if}
 
         <div class="actions">
           <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
@@ -2266,6 +2352,36 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+  }
+
+  .llm-subview-toggle {
+    display: flex;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-md);
+  }
+
+  .llm-subview-btn {
+    flex: 1;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .llm-subview-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .llm-subview-btn.active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
   }
 
   .section-heading {
