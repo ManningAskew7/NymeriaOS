@@ -87,6 +87,9 @@ class ServerSettingsResponse(BaseModel):
     compact_threshold_tokens: int = 100_000
     compact_keep_messages: int
     compact_model: Optional[str] = None
+    fetch_summary_provider: Optional[str] = None
+    fetch_summary_model: Optional[str] = None
+    fetch_summary_base_url: Optional[str] = None
     sliding_window_cycles: int
     tool_output_max_chars: int
     memory_char_limit: int = 8000
@@ -130,6 +133,9 @@ class ServerSettingsUpdate(BaseModel):
     llm_ollama_num_ctx: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
     llm_provider_route: Optional[ProviderRoute] = None
     openai_api_mode: Optional[OpenAIApiMode] = None
+    fetch_summary_provider: Optional[str] = None
+    fetch_summary_model: Optional[str] = None
+    fetch_summary_base_url: Optional[str] = None
     # Accepted by PATCH /settings only. Secret values are intentionally absent
     # from ServerSettingsResponse.
     anthropic_api_key: Optional[str] = None

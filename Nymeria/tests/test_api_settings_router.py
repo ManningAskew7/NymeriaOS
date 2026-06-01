@@ -58,6 +58,9 @@ class FakeSettings:
     compact_threshold_tokens: int = 100_000
     compact_keep_messages: int = 4
     compact_model: str | None = None
+    fetch_summary_provider: str | None = None
+    fetch_summary_model: str | None = None
+    fetch_summary_base_url: str | None = None
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
     memory_char_limit: int = 8000

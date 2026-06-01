@@ -1071,6 +1071,9 @@ export interface ServerSettings {
   compact_threshold_tokens: number;
   compact_keep_messages: number;
   compact_model: string | null;
+  fetch_summary_provider: string | null;
+  fetch_summary_model: string | null;
+  fetch_summary_base_url: string | null;
   sliding_window_cycles: number;
   tool_output_max_chars: number;
   memory_char_limit: number;
@@ -1492,6 +1495,9 @@ export interface ServerSettingsUpdate {
   compact_threshold_tokens?: number;
   compact_keep_messages?: number;
   compact_model?: string | null;
+  fetch_summary_provider?: string | null;
+  fetch_summary_model?: string | null;
+  fetch_summary_base_url?: string | null;
   sliding_window_cycles?: number;
   tool_output_max_chars?: number;
   log_level?: LogLevel;

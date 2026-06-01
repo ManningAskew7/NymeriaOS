@@ -17,6 +17,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4g | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional summarize; opt-in `WEB_FETCH_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -450,6 +451,42 @@ Hard defaults (not exposed): `format=json`; `pageno=1` (no pagination); `safesea
 **Requires:** a running SearXNG instance with JSON output enabled (`search.formats` must include `json`). The base URL is resolved credential vault (provider `searxng`, field `base_url`) -> `searxng_base_url` setting -> `SEARXNG_BASE_URL` env. The bundled Docker sidecar (the `search` compose profile) ships JSON pre-enabled and defaults `SEARXNG_BASE_URL` to `http://searxng:8080`. No API key (SearXNG is keyless). Note: SearXNG is blocked from datacenter IPs for some engines, but the instance's own egress IP governs that, not Nymeria.
 
 **Timeout:** 20s.
+
+---
+
+### fetch_url_nymeria
+
+Fetch a web page or PDF by URL and return its readable content. This is the free,
+in-process member of a fetch family (`fetch_url_<provider>`); hosted members
+(`fetch_url_firecrawl`, ...) land later as separate opt-in tools for the cases
+free extraction cannot match (hard anti-bot). Where the `web_search_*` tools find
+URLs and return snippets, this tool reads the full body of a specific page.
+
+The fetch is gated by the shared HTTP egress policy (`core/http_policy.py`): the
+agent supplies an arbitrary URL, so every request and redirect hop is validated
+against the SSRF rules (no loopback, private, link-local, or metadata targets)
+with DNS pinning. Content is extracted with Trafilatura (primary, emits markdown)
+and a readability-lxml + markdownify fallback; PDFs go through pypdf.
+
+```python
+fetch_url_nymeria(url: str = "", urls: str = "", extract: str = "markdown", summarize: bool = False, extraction_prompt: str = "", max_length: int = 8000)
+```
+
+**Parameters (agent-controlled):**
+- `url` (`str`): Single URL to fetch
+- `urls` (`str`): Multiple URLs separated by `" | "` (pipe) or commas; takes precedence over `url`, max 10 per call
+- `extract` (`str`): `"markdown"` (default, preserves structure) or `"text"` (plain prose)
+- `summarize` (`bool`): If true, return an LLM extraction/summary instead of the full page (use when you only need specific info)
+- `extraction_prompt` (`str`): What to extract or summarize; only used when `summarize=true`
+- `max_length` (`int`): Max characters of content returned (clamped 500-50000, default 8000); long pages are truncated unless `summarize=true`
+
+Hard defaults (not exposed): granular httpx timeouts (connect 10s, read 25s), an honest `User-Agent`, a 10 MB fetch guard, redirect handling and DNS pinning via the egress policy, and the extraction cascade order.
+
+**Returns:** A short header (title, source URL, redirect note) followed by the content. Batch mode adds `=== URL N/M: <url> ===` headers. Failures are returned as `[Error]: <reason>` strings (blocked by egress policy, HTTP code, timeout, unsupported content type, or could-not-extract), never raised.
+
+**Summarize step:** uses a dedicated, optional model resolved from the global settings `fetch_summary_provider` / `fetch_summary_model` / `fetch_summary_base_url` (env `FETCH_SUMMARY_PROVIDER` / `FETCH_SUMMARY_MODEL` / `FETCH_SUMMARY_BASE_URL`). A small local model works well (no tool calling needed). When unset, it falls back to the main agent model.
+
+**Scope:** v1 is static and server-rendered pages plus PDFs. JavaScript-only pages may return little content (a hosted fetch provider or the future browser tier handles those). No API key (the in-process path is keyless).
 
 ---
 
@@ -2631,7 +2668,7 @@ default even when they are classified `SAFE`.
 
 Representative examples:
 
-**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa_ai`, `web_search_firecrawl`, `web_search_brave`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
+**SAFE:** `file_read`, `web_search_perplexity`, `web_search_tavily`, `web_search_exa_ai`, `web_search_firecrawl`, `web_search_brave`, `web_search_searxng`, `fetch_url_nymeria`, `consult`, `memory_add`, `memory_edit`, `memory_read`, `personality_set`, `rag_search`, `nym_todo`, `nym_todo_delete`, `nym_todo_list`
 
 **MODERATE:** `bash_execute`, `file_write`, `file_edit`, `claude_code`, `notify`, `http_request`, `api_discover`, `tool_create`, many trigger/email/calendar/browser actions
 
