@@ -75,6 +75,10 @@
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
+  // Optional dedicated model for fetch_url_nymeria's summarize step.
+  let fetchSummaryProvider = $state('');
+  let fetchSummaryModel = $state('');
+  let fetchSummaryBaseUrl = $state('');
   let llmTemperature = $state(1);
   let showModelHelp = $state(false);
   // Advanced LLM settings
@@ -506,6 +510,9 @@
       llmContextLength = serverSettings.llm_context_length;
       llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
+      fetchSummaryProvider = serverSettings.fetch_summary_provider ?? '';
+      fetchSummaryModel = serverSettings.fetch_summary_model ?? '';
+      fetchSummaryBaseUrl = serverSettings.fetch_summary_base_url ?? '';
       contextManagement = serverSettings.context_management;
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
       compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
@@ -691,6 +698,9 @@
         llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
         llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
         openai_api_mode: openaiApiMode,
+        fetch_summary_provider: fetchSummaryProvider || null,
+        fetch_summary_model: fetchSummaryModel || null,
+        fetch_summary_base_url: fetchSummaryBaseUrl || null,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
         compact_threshold_mode: compactThresholdMode,
@@ -1491,6 +1501,39 @@
             <p class="hint">Responses API is the default path for OpenAI reasoning models, CLIProxy Codex OAuth, and OpenRouter beta.</p>
           </div>
         {/if}
+
+        <h3 class="section-heading">Fetch Tool Summarizer</h3>
+        <p class="hint">
+          Optional dedicated model for <code>fetch_url_nymeria</code>'s summarize option. A small
+          local model works well here (no tool calling is required). Leave blank to reuse the main model.
+        </p>
+        <div class="field">
+          <label for="fetch-summary-model">Summarizer model</label>
+          <input
+            id="fetch-summary-model"
+            type="text"
+            bind:value={fetchSummaryModel}
+            placeholder="Leave blank to use the main model"
+          />
+        </div>
+        <div class="field">
+          <label for="fetch-summary-provider">Summarizer provider</label>
+          <input
+            id="fetch-summary-provider"
+            type="text"
+            bind:value={fetchSummaryProvider}
+            placeholder="e.g. openai, ollama, lmstudio (blank = main provider)"
+          />
+        </div>
+        <div class="field">
+          <label for="fetch-summary-base-url">Summarizer base URL</label>
+          <input
+            id="fetch-summary-base-url"
+            type="text"
+            bind:value={fetchSummaryBaseUrl}
+            placeholder="e.g. http://localhost:1234/v1 (blank = provider default)"
+          />
+        </div>
 
         <!-- Advanced Settings Collapsible -->
         <div class="advanced-section">

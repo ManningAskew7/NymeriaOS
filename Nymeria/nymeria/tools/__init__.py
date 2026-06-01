@@ -19,6 +19,7 @@ from .web_search_integrations import (
     web_search_searxng,
     WEB_SEARCH_INTEGRATION_TOOLS,
 )
+from .web_fetch import fetch_url_nymeria, WEB_FETCH_TOOLS
 from .think import consult, CONSULT_TOOLS
 from .claude_code import claude_code
 from .memory import (
@@ -1361,6 +1362,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + FILE_EDIT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
+    + WEB_FETCH_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
@@ -2652,6 +2654,8 @@ __all__ = [
     "web_search_brave",
     "web_search_searxng",
     "WEB_SEARCH_INTEGRATION_TOOLS",
+    "fetch_url_nymeria",
+    "WEB_FETCH_TOOLS",
     "consult",
     "CONSULT_TOOLS",
     "claude_code",

@@ -133,6 +133,9 @@ Set the API key for your chosen provider:
 | `BRAVE_API_KEY` | Brave | Used by `web_search_brave` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
 | `SEARXNG_BASE_URL` | SearXNG | Base URL for `web_search_searxng` (defaults to the bundled `http://searxng:8080` sidecar); credential vault provider `searxng` field `base_url` also works |
+| `FETCH_SUMMARY_PROVIDER` | fetch_url_nymeria | Provider for `fetch_url_nymeria`'s optional summarize step; blank reuses the main provider |
+| `FETCH_SUMMARY_MODEL` | fetch_url_nymeria | Model for the summarize step; a small local model works well (no tool calling needed); blank reuses the main model |
+| `FETCH_SUMMARY_BASE_URL` | fetch_url_nymeria | Base URL for the summarizer (e.g. a local model server); blank uses the provider default |
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
 | `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
 | `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
@@ -958,6 +961,9 @@ reachable from the backend process.
 | `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar) |
+| `FETCH_SUMMARY_PROVIDER` | (main provider) | Provider for fetch_url_nymeria's summarize step |
+| `FETCH_SUMMARY_MODEL` | (main model) | Model for fetch_url_nymeria's summarize step; a small local model works well |
+| `FETCH_SUMMARY_BASE_URL` | (provider default) | Base URL for the fetch summarizer (e.g. a local model server) |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |
