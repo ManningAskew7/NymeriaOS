@@ -2,7 +2,7 @@
 
 Covers registration in the Web group, the WEB metadata category/security level,
 the SSRF-gated fetch path, content extraction dispatch, batch handling, error
-envelopes, and the optional summarize step (secondary-model wiring).
+envelopes, and the optional distill step (secondary-model wiring).
 """
 
 import pytest
@@ -235,10 +235,10 @@ def test_thin_content_returns_error(monkeypatch):
     assert out.startswith("[Error]: Could not extract readable content")
 
 
-# --- summarize ----------------------------------------------------------------
+# --- distill ------------------------------------------------------------------
 
 
-def test_summarize_invokes_secondary_model(monkeypatch):
+def test_distill_invokes_secondary_model(monkeypatch):
     from nymeria.vendor.react_agent import providers
 
     class FakeMessage:
@@ -257,11 +257,32 @@ def test_summarize_invokes_secondary_model(monkeypatch):
     monkeypatch.setattr(web_fetch, "_build_fetch_summary_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    out = web_fetch._maybe_summarize("page body content", "extract the pricing")
+    out = web_fetch._distill("page body content", "extract the pricing")
     assert out == "EXTRACTED SUMMARY"
-    # The nested summarizer call MUST sever callbacks so its tokens never leak
+    # The nested distill call MUST sever callbacks so its tokens never leak
     # into the parent agent's astream_events transcript.
     assert seen["config"] == {"callbacks": []}
+
+
+def test_distill_arg_gates_the_llm_call(monkeypatch):
+    # The single optional `distill` string is the knob: empty -> full page (no
+    # LLM), non-empty -> the secondary model runs with that instruction.
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    calls = {}
+
+    def fake_distill(content, instruction):
+        calls["instruction"] = instruction
+        return "DISTILLED"
+
+    monkeypatch.setattr(web_fetch, "_distill", fake_distill)
+
+    full = web_fetch.fetch_url_nymeria.func(url="https://example.com/page")
+    assert "instruction" not in calls       # empty distill never calls the model
+    assert "The Heading" in full
+
+    out = web_fetch.fetch_url_nymeria.func(url="https://example.com/page", distill="pricing tiers")
+    assert calls["instruction"] == "pricing tiers"
+    assert "DISTILLED" in out
 
 
 def test_summary_config_falls_back_to_main_model():
@@ -365,7 +386,7 @@ def test_spill_write_failure_falls_back_to_plain_truncation(monkeypatch, tmp_pat
     assert "Full text saved to" not in out
 
 
-def test_summarize_handles_list_content(monkeypatch):
+def test_distill_handles_list_content(monkeypatch):
     from nymeria.vendor.react_agent import providers
 
     class FakeMessage:
@@ -385,7 +406,7 @@ def test_summarize_handles_list_content(monkeypatch):
     monkeypatch.setattr(web_fetch, "_build_fetch_summary_llm_config", lambda settings: FakeConfig())
     monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
 
-    out = web_fetch._maybe_summarize("page body", "prompt")
+    out = web_fetch._distill("page body", "prompt")
     assert out == "PART ONE"
 
 

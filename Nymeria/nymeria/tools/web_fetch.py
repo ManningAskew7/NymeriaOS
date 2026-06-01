@@ -2,8 +2,8 @@
 
 `fetch_url_nymeria` is the first member of an opt-in fetch family that mirrors the
 web_search_* family: a free, in-process, SSRF-safe fetcher that pulls a URL,
-extracts the readable content as markdown or text, and optionally summarizes it
-with a configurable secondary model. Hosted members (fetch_url_firecrawl, ...)
+extracts the readable content as markdown or text, and optionally distills it
+down to an instruction with a configurable secondary model. Hosted members (fetch_url_firecrawl, ...)
 land later as separate opt-in tools for the cases free extraction cannot match.
 
 The fetch is gated by the shared HTTP egress policy (core/http_policy.py): the
@@ -281,7 +281,7 @@ def _extract_content(response, extract: str) -> str:
     return f"[Error]: Unsupported content type '{content_type or 'unknown'}' for {response.url}"
 
 
-# --- optional summarize -------------------------------------------------------
+# --- optional distill ---------------------------------------------------------
 
 
 def _build_fetch_summary_llm_config(settings):
@@ -333,8 +333,8 @@ def _build_fetch_summary_llm_config(settings):
     )
 
 
-def _maybe_summarize(content: str, extraction_prompt: str) -> str:
-    """Summarize/extract from already-cleaned content with the secondary model."""
+def _distill(content: str, instruction: str) -> str:
+    """Distill already-cleaned content down to an instruction with the secondary model."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from ..config import get_settings
@@ -348,7 +348,7 @@ def _maybe_summarize(content: str, extraction_prompt: str) -> str:
                 "model in settings or configure a default LLM."
             )
         llm = create_llm(config)
-        prompt = extraction_prompt.strip() or "Summarize the key points of this page."
+        prompt = instruction.strip() or "Summarize the key points of this page."
         messages = [
             SystemMessage(
                 content=(
@@ -375,8 +375,8 @@ def _maybe_summarize(content: str, extraction_prompt: str) -> str:
         text = (text or "").strip()
         return text or "[Error]: Summarizer returned no content."
     except Exception as e:  # noqa: BLE001 - never leak provider URLs/keys from the exception text
-        logger.error("fetch_url_nymeria summarize failed: %s", e, exc_info=True)
-        return f"[Error]: Summarize step failed: {type(e).__name__} (see server logs)"
+        logger.error("fetch_url_nymeria distill failed: %s", e, exc_info=True)
+        return f"[Error]: Distill step failed: {type(e).__name__} (see server logs)"
 
 
 # --- rendering ----------------------------------------------------------------
@@ -439,8 +439,7 @@ def _fetch_and_render(
     url: str,
     *,
     extract: str,
-    summarize: bool,
-    extraction_prompt: str,
+    distill: str,
     max_length: int,
     config=None,
 ) -> str:
@@ -460,8 +459,8 @@ def _fetch_and_render(
         except Exception:  # noqa: BLE001
             title = ""
 
-    if summarize:
-        body = _maybe_summarize(body, extraction_prompt)
+    if distill.strip():
+        body = _distill(body, distill)
         if body.startswith("[Error]:"):
             return body
     elif len(body) > max_length:
@@ -489,8 +488,7 @@ def fetch_url_nymeria(
     url: str = "",
     urls: str = "",
     extract: str = "markdown",
-    summarize: bool = False,
-    extraction_prompt: str = "",
+    distill: str = "",
     max_length: int = _DEFAULT_MAX_LENGTH,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -508,12 +506,11 @@ def fetch_url_nymeria(
               http(s) URLs. Takes precedence over url. Each is fetched
               independently. Max 10 per call.
         extract: "markdown" (default, preserves structure) or "text" (plain prose).
-        summarize: If true, return an LLM extraction/summary instead of the full
-                   page. Use when you only need specific information.
-        extraction_prompt: What to extract or summarize (e.g. "pricing tiers and
-                   limits"). Only used when summarize=true.
+        distill: Leave empty to return the full readable page. Provide an
+                 instruction (e.g. "pricing tiers and limits") to have a secondary
+                 LLM read the page and return only that, instead of the full text.
         max_length: Max characters of content returned (500-50000, default 8000).
-                   Long pages are truncated unless summarize=true. When truncated,
+                   Long pages are truncated when distill is empty. When truncated,
                    the FULL extracted text is saved to a file in your thread
                    sandbox and the path is included so you can file_read or grep it.
 
@@ -543,14 +540,13 @@ def fetch_url_nymeria(
         extract = "markdown"
     max_length = max(_MIN_MAX_LENGTH, min(_MAX_MAX_LENGTH, max_length))
 
-    logger.info("fetch_url_nymeria: %d url(s) (extract=%s, summarize=%s)", len(url_list), extract, summarize)
+    logger.info("fetch_url_nymeria: %d url(s) (extract=%s, distill=%s)", len(url_list), extract, bool(distill.strip()))
 
     if len(url_list) == 1:
         return _fetch_and_render(
             url_list[0],
             extract=extract,
-            summarize=summarize,
-            extraction_prompt=extraction_prompt,
+            distill=distill,
             max_length=max_length,
             config=config,
         )
@@ -561,8 +557,7 @@ def fetch_url_nymeria(
         result = _fetch_and_render(
             u,
             extract=extract,
-            summarize=summarize,
-            extraction_prompt=extraction_prompt,
+            distill=distill,
             max_length=max_length,
             config=config,
         )
