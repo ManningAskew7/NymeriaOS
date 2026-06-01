@@ -244,8 +244,11 @@ def test_summarize_invokes_secondary_model(monkeypatch):
     class FakeMessage:
         content = "EXTRACTED SUMMARY"
 
+    seen = {}
+
     class FakeLLM:
-        def invoke(self, messages):
+        def invoke(self, messages, config=None):
+            seen["config"] = config
             return FakeMessage()
 
     class FakeConfig:
@@ -256,6 +259,9 @@ def test_summarize_invokes_secondary_model(monkeypatch):
 
     out = web_fetch._maybe_summarize("page body content", "extract the pricing")
     assert out == "EXTRACTED SUMMARY"
+    # The nested summarizer call MUST sever callbacks so its tokens never leak
+    # into the parent agent's astream_events transcript.
+    assert seen["config"] == {"callbacks": []}
 
 
 def test_summary_config_falls_back_to_main_model():
@@ -370,7 +376,7 @@ def test_summarize_handles_list_content(monkeypatch):
         ]
 
     class FakeLLM:
-        def invoke(self, messages):
+        def invoke(self, messages, config=None):
             return FakeMessage()
 
     class FakeConfig:

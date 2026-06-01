@@ -358,7 +358,11 @@ def _maybe_summarize(content: str, extraction_prompt: str) -> str:
             ),
             HumanMessage(content=f"{prompt}\n\n---\nPAGE CONTENT:\n{content[:_SUMMARY_INPUT_CHAR_BUDGET]}"),
         ]
-        result = llm.invoke(messages)
+        # callbacks=[] severs this nested call from the parent agent's
+        # astream_events stream, so the summary lands ONLY in the tool result and
+        # never leaks token-by-token into the live transcript (mirrors the
+        # callbacks=[] isolation used for chat()-from-inside-a-tool in agent.py).
+        result = llm.invoke(messages, config={"callbacks": []})
         text = getattr(result, "content", "")
         if isinstance(text, list):
             # Anthropic-style content blocks: keep text parts, tolerate None/non-dicts.
