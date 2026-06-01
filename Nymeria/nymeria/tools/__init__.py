@@ -13,7 +13,7 @@ from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
 from .web_search_integrations import (
     web_search_tavily,
-    web_search_exa,
+    web_search_exa_ai,
     web_search_firecrawl,
     web_search_brave,
     web_search_searxng,
@@ -2647,7 +2647,7 @@ __all__ = [
     "web_search_perplexity",
     "WEB_SEARCH_SERVICE_TOOLS",
     "web_search_tavily",
-    "web_search_exa",
+    "web_search_exa_ai",
     "web_search_firecrawl",
     "web_search_brave",
     "web_search_searxng",

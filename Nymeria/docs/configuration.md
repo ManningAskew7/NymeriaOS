@@ -128,7 +128,7 @@ Set the API key for your chosen provider:
 | `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
 | `PERPLEXITY_API_KEY` | Perplexity | Used by `web_search_perplexity` tool (credential vault preferred) |
 | `TAVILY_API_KEY` | Tavily | Used by `web_search_tavily` tool (credential vault preferred) |
-| `EXA_API_KEY` | Exa | Used by `web_search_exa` tool (credential vault preferred) |
+| `EXA_API_KEY` | Exa | Used by `web_search_exa_ai` tool (credential vault preferred) |
 | `FIRECRAWL_API_KEY` | Firecrawl | Used by `web_search_firecrawl` tool (credential vault preferred) |
 | `BRAVE_API_KEY` | Brave | Used by `web_search_brave` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
@@ -953,7 +953,7 @@ reachable from the backend process.
 | `GOOGLE_OAUTH_CREDENTIALS` | - | Path to Google OAuth installed-app credentials JSON file. Used by both the legacy `*_auth_start` tools and the new unified `request_credential(kind="oauth")` flow for Google providers. Required for any Google OAuth path; user tokens are stored in the vault as `kind=oauth_token`, but the client secret itself stays in this file (one per Nymeria install). |
 | `PERPLEXITY_API_KEY` | - | Perplexity API key for web_search_perplexity tool |
 | `TAVILY_API_KEY` | - | Tavily API key for web_search_tavily tool |
-| `EXA_API_KEY` | - | Exa API key for web_search_exa tool |
+| `EXA_API_KEY` | - | Exa API key for web_search_exa_ai tool |
 | `FIRECRAWL_API_KEY` | - | Firecrawl API key for web_search_firecrawl tool |
 | `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |

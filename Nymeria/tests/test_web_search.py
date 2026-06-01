@@ -1,4 +1,4 @@
-"""Tests for the opt-in web search tools (web_search_perplexity, web_search_tavily, web_search_exa, web_search_firecrawl, web_search_brave).
+"""Tests for the opt-in web search tools (web_search_perplexity, web_search_tavily, web_search_exa_ai, web_search_firecrawl, web_search_brave).
 
 Covers credential resolution precedence (vault -> settings -> env), the
 missing-credential hint, source formatting, and registration in the opt-in
@@ -317,7 +317,7 @@ def test_tavily_registered_in_optional_group():
     assert "web_search_tavily" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
 
 
-# --- Exa (web_search_exa) ------------------------------------------------------
+# --- Exa (web_search_exa_ai) ------------------------------------------------------
 
 
 def _capturing_httpx_client(response_payload, captured):
@@ -383,17 +383,17 @@ def test_exa_missing_credential_returns_setup_hint(monkeypatch):
 
     monkeypatch.setattr(wsi, "_get_exa_api_key", lambda config=None: None)
 
-    result = wsi.web_search_exa.func(query="hello")
+    result = wsi.web_search_exa_ai.func(query="hello")
 
     assert result.startswith("[Error]")
     assert "request_credential" in result
-    assert "native_tool:web_search_exa" in result
+    assert "native_tool:web_search_exa_ai" in result
 
 
 def test_exa_requires_a_query():
     from nymeria.tools import web_search_integrations as wsi
 
-    assert wsi.web_search_exa.func() == (
+    assert wsi.web_search_exa_ai.func() == (
         "[Error]: Provide a query or pipe-separated queries."
     )
 
@@ -442,7 +442,7 @@ def test_exa_single_query_end_to_end(monkeypatch):
         ),
     )
 
-    out = wsi.web_search_exa.func(query="neural retrieval", num_results=3)
+    out = wsi.web_search_exa_ai.func(query="neural retrieval", num_results=3)
 
     assert "1. Doc" in out
     assert "https://d.example" in out
@@ -457,7 +457,7 @@ def test_exa_builds_payload_with_filters(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(httpx, "Client", _capturing_httpx_client({"results": []}, captured))
 
-    wsi.web_search_exa.func(
+    wsi.web_search_exa_ai.func(
         query="llms",
         search_type="fast",
         num_results=3,
@@ -490,7 +490,7 @@ def test_exa_invalid_search_type_is_ignored(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(httpx, "Client", _capturing_httpx_client({"results": []}, captured))
 
-    wsi.web_search_exa.func(query="q", search_type="turbo")
+    wsi.web_search_exa_ai.func(query="q", search_type="turbo")
 
     assert "type" not in captured["json"]
 
@@ -503,7 +503,7 @@ def test_exa_company_category_drops_date_and_exclude(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(httpx, "Client", _capturing_httpx_client({"results": []}, captured))
 
-    wsi.web_search_exa.func(
+    wsi.web_search_exa_ai.func(
         query="acme corp",
         category="company",
         start_published_date="2024-01-01",
@@ -558,8 +558,8 @@ def test_exa_registered_in_optional_group():
     from nymeria.tools import OPTIONAL_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
-    assert "web_search_exa" in OPTIONAL_TOOLS
-    assert "web_search_exa" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
+    assert "web_search_exa_ai" in OPTIONAL_TOOLS
+    assert "web_search_exa_ai" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
 
 
 # --- Firecrawl (web_search_firecrawl) ------------------------------------------
@@ -1313,7 +1313,7 @@ def test_searxng_registered_in_optional_group():
     assert "searxng_search" not in OPTIONAL_TOOLS
     assert [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS] == [
         "web_search_tavily",
-        "web_search_exa",
+        "web_search_exa_ai",
         "web_search_firecrawl",
         "web_search_brave",
         "web_search_searxng",

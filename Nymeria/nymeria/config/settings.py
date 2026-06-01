@@ -693,7 +693,7 @@ class Settings(BaseSettings):
     perplexity_api_key: Optional[str] = Field(default=None)
     perplexity_search_model: str = Field(default="sonar-pro", description="Default Perplexity model for web search")
     tavily_api_key: Optional[str] = Field(default=None, description="Tavily API key for web_search_tavily")
-    exa_api_key: Optional[str] = Field(default=None, description="Exa API key for web_search_exa")
+    exa_api_key: Optional[str] = Field(default=None, description="Exa API key for web_search_exa_ai")
     firecrawl_api_key: Optional[str] = Field(default=None, description="Firecrawl API key for web_search_firecrawl")
     brave_api_key: Optional[str] = Field(default=None, description="Brave Search API key for web_search_brave")
     wolfram_alpha_app_id: Optional[str] = Field(default=None, description="Wolfram|Alpha AppID for wolfram_alpha_query")
