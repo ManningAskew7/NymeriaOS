@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 import pytest
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.activity_log import ActivityEntry, ActivityLog, ActivityType
@@ -424,3 +426,95 @@ def test_invoke_dream_single_flight_guard(stub_agent, no_daemon_dispatch):
     finally:
         # Don't leak the process-local slot into other tests.
         _release_dream_slot(parent)
+
+
+# ---------------------------------------------------------------------------
+# Dream fork-seeding: clone parent checkpoint + soft-prune into the shadow
+# ---------------------------------------------------------------------------
+
+
+class _StubSyncGraph:
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.updates: list = []
+
+    def get_state(self, config):
+        return SimpleNamespace(values={"messages": list(self._messages)})
+
+    def update_state(self, config, payload):
+        self.updates.append(payload)
+
+
+def test_seed_shadow_clones_and_soft_prunes(monkeypatch):
+    import nymeria.config as cfg
+    import nymeria.core.thread_branch as tb
+    from nymeria.core.dreaming import invoke as invoke_mod
+
+    clone_calls: list = []
+
+    def fake_clone(settings, src, dst, **kw):
+        clone_calls.append((src, dst))
+        return {"checkpoints": 1}
+
+    monkeypatch.setattr(tb, "clone_thread_checkpoints", fake_clone)
+    monkeypatch.setattr(cfg, "get_settings", lambda: SimpleNamespace(data_dir="/tmp"))
+
+    big = ToolMessage(content="W" * 1200, tool_call_id="tc1", name="web", id="t1")
+    graph = _StubSyncGraph([big, HumanMessage(content="hi", id="h1")])
+    agent = SimpleNamespace(_default_graph=graph)
+
+    invoke_mod._seed_shadow_from_parent(agent, "parent-1", "dream-shadow-x")
+
+    assert clone_calls == [("parent-1", "dream-shadow-x")]
+    assert len(graph.updates) == 1
+    reps = graph.updates[0]["messages"]
+    assert len(reps) == 1 and reps[0].id == "t1"  # only the big tool result rewritten
+    assert "truncated" in reps[0].content
+    assert reps[0].additional_kwargs["prune_mode"] == "soft"
+
+
+def test_seed_shadow_swallows_clone_failure(monkeypatch):
+    """A clone failure must not raise — the dream falls back to memory-only."""
+    import nymeria.config as cfg
+    import nymeria.core.thread_branch as tb
+    from nymeria.core.dreaming import invoke as invoke_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("checkpoint db down")
+
+    monkeypatch.setattr(tb, "clone_thread_checkpoints", boom)
+    monkeypatch.setattr(cfg, "get_settings", lambda: SimpleNamespace(data_dir="/tmp"))
+
+    graph = _StubSyncGraph([])
+    agent = SimpleNamespace(_default_graph=graph)
+
+    # Must not raise.
+    invoke_mod._seed_shadow_from_parent(agent, "p", "s")
+    assert graph.updates == []
+
+
+# ---------------------------------------------------------------------------
+# Memory-seed suppression on shadow threads
+# ---------------------------------------------------------------------------
+
+
+def test_skip_memory_seed_true_for_shadow(stub_agent):
+    from nymeria.core.agent import NymeriaAgent
+
+    stub_agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="dream-x", shadow_parent_id="parent-1")
+    )
+    assert NymeriaAgent._thread_skip_memory_seed(stub_agent, "dream-x") is True
+
+
+def test_skip_memory_seed_false_for_normal(stub_agent):
+    from nymeria.core.agent import NymeriaAgent
+
+    stub_agent.thread_config_manager.save_config(ThreadConfig(thread_id="normal-1"))
+    assert NymeriaAgent._thread_skip_memory_seed(stub_agent, "normal-1") is False
+
+
+def test_skip_memory_seed_false_for_unknown_thread(stub_agent):
+    from nymeria.core.agent import NymeriaAgent
+
+    assert NymeriaAgent._thread_skip_memory_seed(stub_agent, "never-seen") is False

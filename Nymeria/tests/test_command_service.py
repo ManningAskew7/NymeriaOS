@@ -531,7 +531,10 @@ def test_prune_dispatches_to_backend_client(
 
     fake_agent = _FakeAgent()
 
-    async def fake_prune_now(thread_id: str, user_id: str) -> dict[str, Any]:
+    async def fake_prune_now(
+        thread_id: str, user_id: str, *, mode: str = "full"
+    ) -> dict[str, Any]:
+        assert mode == "full"  # default when /prune has no mode arg
         return {
             "success": True,
             "pruned_count": 2,

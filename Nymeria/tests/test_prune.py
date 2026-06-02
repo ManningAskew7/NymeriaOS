@@ -11,9 +11,11 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from nymeria.core.agent_prune import (
     PRUNED_INTERNAL_TYPE,
     SKIP_BELOW_CHARS,
+    SOFT_TRUNCATE_CHARS,
     PruneManager,
     _detect_status,
     _format_marker,
+    build_pruned_replacements,
 )
 
 
@@ -247,3 +249,81 @@ class TestPruneNow:
         result = await mgr.prune_now("t")
         assert result["success"] is False
         assert "write failed" in result["reason"]
+
+
+class TestBuildPrunedReplacements:
+    """Pure function shared by /prune and dream seeding."""
+
+    def test_full_mode_uses_placeholder(self):
+        msgs = [ToolMessage(content=_big_content(1000), tool_call_id="tc1", id="t1")]
+        reps, stats = build_pruned_replacements(msgs, mode="full")
+        assert len(reps) == 1
+        assert "/prune placeholder" in reps[0].content
+        assert reps[0].additional_kwargs["prune_mode"] == "full"
+        assert stats["pruned_count"] == 1
+
+    def test_soft_mode_keeps_head_and_tags(self):
+        content = ("A" * 600) + ("B" * 600)  # 1200 chars
+        msgs = [ToolMessage(content=content, tool_call_id="tc1", id="t1")]
+        reps, stats = build_pruned_replacements(msgs, mode="soft")
+        assert len(reps) == 1
+        body = reps[0].content
+        # Head preserved, tail dropped.
+        assert body.startswith("A" * 100)
+        assert "B" not in body
+        assert "truncated" in body
+        # Roughly the head plus a short tag, well under the original.
+        assert len(body) < SOFT_TRUNCATE_CHARS + 200
+        assert reps[0].additional_kwargs["prune_mode"] == "soft"
+        assert reps[0].additional_kwargs["original_chars"] == 1200
+        assert stats["chars_saved"] > 0
+
+    def test_soft_mode_skips_below_its_threshold(self):
+        # 400 chars: pruned under full (>200), skipped under soft (<500).
+        msgs = [ToolMessage(content=_big_content(400), tool_call_id="tc1", id="t1")]
+        reps_full, sf = build_pruned_replacements(msgs, mode="full")
+        reps_soft, ss = build_pruned_replacements(msgs, mode="soft")
+        assert sf["pruned_count"] == 1
+        assert ss["pruned_count"] == 0
+        assert ss["skipped_too_short"] == 1
+        assert reps_soft == []
+
+    def test_skips_already_pruned_across_modes(self):
+        already = ToolMessage(content=_big_content(1000), tool_call_id="tc1", id="t1")
+        already.additional_kwargs["internal_type"] = PRUNED_INTERNAL_TYPE
+        reps, stats = build_pruned_replacements([already], mode="soft")
+        assert reps == []
+        assert stats["skipped_already_pruned"] == 1
+
+    def test_preserves_id_and_tool_call_id(self):
+        msgs = [
+            ToolMessage(content=_big_content(800), tool_call_id="tc9", name="web", id="m9")
+        ]
+        reps, _ = build_pruned_replacements(msgs, mode="soft")
+        assert reps[0].id == "m9"
+        assert reps[0].tool_call_id == "tc9"
+        assert reps[0].name == "web"
+
+
+class TestPruneSoftMode:
+    @pytest.mark.asyncio
+    async def test_prune_now_soft_truncates(self):
+        msgs = [ToolMessage(content=("Z" * 1200), tool_call_id="tc1", id="t1")]
+        mgr, graph = _make_manager(msgs)
+        result = await mgr.prune_now("t", mode="soft")
+        assert result["success"] is True
+        assert result["pruned_count"] == 1
+        replaced = graph._messages[0]
+        assert replaced.content.startswith("Z" * 100)
+        assert "truncated" in replaced.content
+        assert replaced.additional_kwargs["prune_mode"] == "soft"
+
+    @pytest.mark.asyncio
+    async def test_prune_now_rejects_unknown_mode(self):
+        mgr, graph = _make_manager(
+            [ToolMessage(content=_big_content(800), tool_call_id="tc1", id="t1")]
+        )
+        result = await mgr.prune_now("t", mode="medium")
+        assert result["success"] is False
+        assert "mode" in result["reason"].lower()
+        assert graph.updates == []

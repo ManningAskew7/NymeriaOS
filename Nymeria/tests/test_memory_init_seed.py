@@ -18,8 +18,11 @@ SENTINEL_EXCHANGE = [
 ]
 
 
-def _fake_self():
-    return SimpleNamespace(_memory_seeded_threads=set())
+def _fake_self(skip_seed: bool = False):
+    return SimpleNamespace(
+        _memory_seeded_threads=set(),
+        _thread_skip_memory_seed=lambda thread_id: skip_seed,
+    )
 
 
 class FakeSyncGraph:
@@ -130,3 +133,18 @@ def test_async_skips_non_empty_thread(monkeypatch):
 
     assert seeded is False
     assert graph.updated is None
+
+
+def test_sync_skips_inherited_history_thread(monkeypatch):
+    """Shadow/dream threads (skip_seed=True) are not freshly seeded; they carry
+    the parent's memory via their cloned checkpoint."""
+    _patch_builder(monkeypatch)
+    me = _fake_self(skip_seed=True)
+    graph = FakeSyncGraph([])
+
+    seeded = NymeriaAgent._seed_memory_init_if_empty_sync(me, graph, {}, "dream-x", "u1")
+
+    assert seeded is False
+    assert graph.updated is None
+    assert graph.get_state_calls == 0  # guard returns before reading state
+    assert "dream-x" in me._memory_seeded_threads

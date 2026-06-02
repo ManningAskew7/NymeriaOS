@@ -292,6 +292,18 @@ and holds a process-local single-flight slot per parent, so the interval gate
 self-serializes successive sweeps and a manual trigger cannot race a scheduled
 one.
 
+Before the dream turn runs, `_seed_shadow_from_parent` forks the parent's full
+conversation into the (empty) shadow checkpoint via the same row-level copy
+`/branch` uses (`thread_branch.clone_thread_checkpoints`), then soft-prunes it
+(`agent_prune.build_pruned_replacements(mode="soft")`, shared with the
+`/prune soft` command) so bulky web/file tool results are truncated to their
+gist. It deliberately does not compact (the dream reflects on the real
+dialogue; size control is the soft-prune). Seeding is best-effort: a copy
+failure leaves the dream to reflect from memory alone. Because shadow threads
+inherit their memory from this copy and their memory tools resolve to the
+parent, the fresh-thread memory seed is suppressed for them
+(`_thread_skip_memory_seed`).
+
 ---
 
 ### 4.1 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)

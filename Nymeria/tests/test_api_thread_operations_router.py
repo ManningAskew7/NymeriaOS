@@ -38,7 +38,7 @@ class FakeAgent:
         self._thread_locks = FakeThreadLocks()
         self.aborted_threads: list[str] = []
         self.compactions: list[tuple[str, str]] = []
-        self.prunes: list[tuple[str, str]] = []
+        self.prunes: list[tuple[str, str, str]] = []
         self.rewinds: list[tuple[str, int]] = []
         self.rewind_return = 0
         self.synced_tools = 0
@@ -53,8 +53,8 @@ class FakeAgent:
         self.compactions.append((thread_id, user_id))
         return {"status": "compacted", "thread_id": thread_id, "user_id": user_id}
 
-    async def prune_now(self, thread_id: str, user_id: str):
-        self.prunes.append((thread_id, user_id))
+    async def prune_now(self, thread_id: str, user_id: str, *, mode: str = "full"):
+        self.prunes.append((thread_id, user_id, mode))
         return {"success": True, "pruned_count": 3, "chars_saved": 1234}
 
     def rewind_thread_exchanges(self, thread_id: str, steps: int = 1) -> int:
@@ -181,7 +181,7 @@ def test_prune_route_runs_under_authenticated_user(tmp_path: Path, api_client_bu
         "pruned_count": 3,
         "chars_saved": 1234,
     }
-    assert agent.prunes == [(thread_id, "owner")]
+    assert agent.prunes == [(thread_id, "owner", "full")]
 
 
 def test_rewind_route_defaults_to_one_step(tmp_path: Path, api_client_builder):
