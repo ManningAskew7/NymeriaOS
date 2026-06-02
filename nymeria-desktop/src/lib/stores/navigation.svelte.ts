@@ -52,11 +52,15 @@ export async function switchToThread(
     // Start cross-client sync poller
     startSyncPoll(threadId, status);
 
-    // Stream recovery — resume if thread has an active task or interactive stream
-    const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
+    // Stream recovery — resume if the thread has an in-flight turn. The two
+    // cases bind differently and must not be conflated: an interactive turn
+    // streams via chatStore alone (MainPanel's chatStream loop), while an
+    // autonomous turn renders through the autonomous store, which needs to bind
+    // its own activeMessagesByThread entry and replay the buffered turn so far.
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
+    const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
 
-    if (hasAutonomousTask || hasInteractiveStream) {
+    if (hasInteractiveStream) {
       // Only reuse the last assistant message when it represents the in-flight
       // turn (status === 'streaming'). History always hydrates messages as
       // 'complete', so a completed assistant at the tail is the *previous*
@@ -71,9 +75,10 @@ export async function switchToThread(
         chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
-      if (hasAutonomousTask) {
-        autonomousStore.resumeStreamingForThread(threadId);
-      }
+    } else if (hasAutonomousTask) {
+      // Bind a streaming message and replay the turn so far (applies the same
+      // graft-safe reuse rule internally), then live events render.
+      autonomousStore.attachToThread(threadId);
     }
 
     return { success: true };
