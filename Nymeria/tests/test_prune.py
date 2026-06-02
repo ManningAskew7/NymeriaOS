@@ -305,6 +305,52 @@ class TestBuildPrunedReplacements:
         assert reps[0].name == "web"
 
 
+class TestSoftBoundaryAndEscalation:
+    def test_soft_never_bloats_near_threshold(self):
+        # Content just over 500 would bloat (500-char head + ~85-char tag), so
+        # soft must SKIP it rather than produce a larger message.
+        for n in (501, 540, 583):
+            reps, stats = build_pruned_replacements(
+                [ToolMessage(content="X" * n, tool_call_id="c", id="m")], mode="soft"
+            )
+            assert reps == [], f"n={n} should be skipped, not bloated"
+            assert stats["pruned_count"] == 0
+            assert stats["skipped_too_short"] == 1
+
+    def test_soft_prunes_once_it_actually_saves(self):
+        reps, stats = build_pruned_replacements(
+            [ToolMessage(content="X" * 1000, tool_call_id="c", id="m")], mode="soft"
+        )
+        assert len(reps) == 1
+        assert len(reps[0].content) < 1000
+        assert stats["chars_saved"] > 0
+
+    def test_full_escalates_soft_pruned_entry(self):
+        msgs = [ToolMessage(content="Z" * 5000, tool_call_id="c", id="m")]
+        soft, _ = build_pruned_replacements(msgs, mode="soft")
+        assert soft[0].additional_kwargs["original_chars"] == 5000
+
+        # /prune full should reclaim the rest of a previously soft-pruned entry.
+        full, stats = build_pruned_replacements(soft, mode="full")
+        assert len(full) == 1
+        assert "/prune placeholder" in full[0].content
+        # True original is preserved across the escalation, not the soft length.
+        assert full[0].additional_kwargs["original_chars"] == 5000
+        assert stats["pruned_count"] == 1
+
+        # full -> full is then an idempotent no-op.
+        again, again_stats = build_pruned_replacements(full, mode="full")
+        assert again == []
+        assert again_stats["skipped_already_pruned"] == 1
+
+    def test_soft_does_not_escalate_soft(self):
+        msgs = [ToolMessage(content="Z" * 5000, tool_call_id="c", id="m")]
+        soft, _ = build_pruned_replacements(msgs, mode="soft")
+        again, stats = build_pruned_replacements(soft, mode="soft")
+        assert again == []
+        assert stats["skipped_already_pruned"] == 1
+
+
 class TestPruneSoftMode:
     @pytest.mark.asyncio
     async def test_prune_now_soft_truncates(self):

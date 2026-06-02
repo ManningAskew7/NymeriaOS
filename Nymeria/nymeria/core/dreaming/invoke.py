@@ -296,14 +296,20 @@ def invoke_dream(
 
         # Bookkeeping on the parent: record when we kicked off and which shadow
         # thread carries the transcript. These are the gating fields the
-        # scheduler reads next time around.
+        # scheduler reads next time around. Re-load the config immediately before
+        # the write so we patch only the dreaming fields onto the freshest copy
+        # rather than clobbering anything a concurrent writer (a parent turn, a
+        # UI config edit) changed since we loaded parent_tc at the top.
         from ..thread_config import DreamingConfig
 
-        parent_dream = parent_tc.dreaming or DreamingConfig()
+        fresh_parent = (
+            agent.thread_config_manager.get_config(parent_thread_id) or parent_tc
+        )
+        parent_dream = fresh_parent.dreaming or DreamingConfig()
         parent_dream.last_dream_at = utc_now()
         parent_dream.last_dream_thread_id = shadow_thread_id
-        parent_tc.dreaming = parent_dream
-        if not agent.thread_config_manager.save_config(parent_tc):
+        fresh_parent.dreaming = parent_dream
+        if not agent.thread_config_manager.save_config(fresh_parent):
             logger.warning(
                 "invoke_dream: failed to persist last_dream_at on parent %s",
                 parent_thread_id,
@@ -446,18 +452,21 @@ def _run_dream_cycle(
         tracing_v2_callback_var,
     )
 
-    from ..event_bus import publish_agent_stream_chunk, publish_autonomous_event
-    from ..stream_bridge import stream_and_collect
-
+    # Default the tokens to None so the finally can run even if the setup below
+    # raises: a failed import or seed must still release the single-flight slot,
+    # or the parent would be barred from dreaming until the process restarts.
+    config_token = callback_token = collector_token = None
     task_id = f"dream-{uuid.uuid4().hex[:8]}"
-
-    config_token = var_child_runnable_config.set(None)
-    callback_token = tracing_v2_callback_var.set(None)
-    collector_token = run_collector_var.set(None)
-
     started_published = False
 
     try:
+        from ..event_bus import publish_agent_stream_chunk, publish_autonomous_event
+        from ..stream_bridge import stream_and_collect
+
+        config_token = var_child_runnable_config.set(None)
+        callback_token = tracing_v2_callback_var.set(None)
+        collector_token = run_collector_var.set(None)
+
         # Seed the shadow with the parent's conversation (forked + soft-pruned)
         # before the dream turn runs, so the dream reflects on what actually
         # happened. Best-effort; never raises.
@@ -558,6 +567,11 @@ def _run_dream_cycle(
             exc_info=True,
         )
         try:
+            # Re-import locally: the top-of-try import may not have bound the
+            # name if setup failed before it, and this except still wants to
+            # publish the failure event.
+            from ..event_bus import publish_autonomous_event
+
             publish_autonomous_event(
                 event_type="task_completed",
                 thread_id=shadow_thread_id,
@@ -575,9 +589,13 @@ def _run_dream_cycle(
             logger.warning("Failed to publish dream error event", exc_info=True)
 
     finally:
-        # Release the single-flight slot claimed in invoke_dream so the parent
-        # can be dreamed again once the gates allow it.
+        # Release the single-flight slot first, so a later reset failure (or a
+        # setup error that left the tokens unset) can never strand it and bar
+        # the parent from future dreams.
         _release_dream_slot(parent_thread_id)
-        run_collector_var.reset(collector_token)
-        tracing_v2_callback_var.reset(callback_token)
-        var_child_runnable_config.reset(config_token)
+        if collector_token is not None:
+            run_collector_var.reset(collector_token)
+        if callback_token is not None:
+            tracing_v2_callback_var.reset(callback_token)
+        if config_token is not None:
+            var_child_runnable_config.reset(config_token)

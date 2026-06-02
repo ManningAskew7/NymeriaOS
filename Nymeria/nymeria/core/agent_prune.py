@@ -96,8 +96,11 @@ def build_pruned_replacements(
             continue
         kwargs = dict(msg.additional_kwargs or {})
         if kwargs.get("internal_type") == PRUNED_INTERNAL_TYPE:
-            skipped_already_pruned += 1
-            continue
+            # Re-pruning is an idempotent no-op, EXCEPT that `full` may escalate
+            # a previously soft-pruned entry to reclaim the rest of its space.
+            if not (mode == "full" and kwargs.get("prune_mode") == "soft"):
+                skipped_already_pruned += 1
+                continue
         raw_content = msg.content
         content = raw_content if isinstance(raw_content, str) else str(raw_content)
         original_chars = len(content)
@@ -106,15 +109,25 @@ def build_pruned_replacements(
             continue
 
         status_label = _detect_status(msg, content)
+        # Preserve the TRUE original size across a soft->full escalation: a soft
+        # entry already recorded it, and `original_chars` here is only the
+        # truncated length.
+        reported_chars = int(kwargs.get("original_chars", original_chars))
         if mode == "soft":
             marker = _format_soft_marker(content, original_chars)
+            # Never let the soft marker bloat a result that is only just over the
+            # threshold (head + tag could exceed the original). Skip if it would
+            # not actually save space.
+            if len(marker) >= original_chars:
+                skipped_too_short += 1
+                continue
         else:
-            marker = _format_marker(original_chars, status_label)
+            marker = _format_marker(reported_chars, status_label)
 
         new_kwargs = {
             **kwargs,
             "internal_type": PRUNED_INTERNAL_TYPE,
-            "original_chars": original_chars,
+            "original_chars": reported_chars,
             "original_status": status_label,
             "pruned_at": timestamp,
             "prune_mode": mode,
