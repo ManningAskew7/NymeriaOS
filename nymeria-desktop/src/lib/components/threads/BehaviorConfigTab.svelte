@@ -27,7 +27,6 @@
 <div class="tab-body">
   <ThreadSettingsSection
     title="Custom Instructions"
-    icon="fileText"
     description="Appended to the base system prompt for this thread only."
   >
     <textarea
@@ -43,7 +42,6 @@
 
   <ThreadSettingsSection
     title="System Prompt Override"
-    icon="textEdit"
     description="Replaces the base system prompt entirely for this thread. Leave empty to use the default."
   >
     <textarea
@@ -57,7 +55,7 @@
     <span class="char-count">{systemPrompt.length} / 50000</span>
   </ThreadSettingsSection>
 
-  <ThreadSettingsSection title="Prompt Visibility" icon="settings">
+  <ThreadSettingsSection title="Prompt Visibility">
     <label class="toggle-row">
       <input type="checkbox" bind:checked={injectTodosInPrompt} />
       <span class="toggle-label">Inject TODOs into system prompt</span>

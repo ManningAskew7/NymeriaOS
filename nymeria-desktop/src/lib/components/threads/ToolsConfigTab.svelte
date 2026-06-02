@@ -326,7 +326,7 @@
     </div>
 
     {#if subTab === 'native'}
-      <ThreadSettingsSection title="Enabled for this thread" icon="check" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
+      <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
         {#if nativeEnabledCount === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled native tools match your search.' : 'No native tools enabled for this thread.'}
@@ -338,7 +338,7 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" icon="plus" count={nativeAvailCount + backendExtras.length} description="Not enabled here. Toggle on to add for this thread only." flush>
+      <ThreadSettingsSection title="Available to add" count={nativeAvailCount + backendExtras.length} description="Not enabled here. Toggle on to add for this thread only." flush>
         {#if nativeAvailCount === 0 && backendExtras.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No other native tools match your search.' : 'Every native tool is already enabled.'}
@@ -353,7 +353,7 @@
         {/if}
       </ThreadSettingsSection>
     {:else}
-      <ThreadSettingsSection title="Enabled for this thread" icon="check" count={mcpEnabledCount} description="MCP server tools enabled in this thread." flush>
+      <ThreadSettingsSection title="Enabled for this thread" count={mcpEnabledCount} description="MCP server tools enabled in this thread." flush>
         {#if mcpEnabledCount === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled MCP tools match your search.' : 'No MCP tools enabled for this thread.'}
@@ -365,7 +365,7 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" icon="plus" count={mcpAvailCount + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
+      <ThreadSettingsSection title="Available to add" count={mcpAvailCount + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
         {#if mcpAvailCount === 0 && (searchActive || emptyMcpServers.length === 0)}
           <div class="tools-msg subtle">
             {#if searchActive}

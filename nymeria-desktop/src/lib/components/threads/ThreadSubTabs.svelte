@@ -1,8 +1,10 @@
 <script lang="ts">
   /**
-   * Inner segmented control used inside a tab body (e.g. Tools -> Native / MCP,
-   * Model -> Provider / Generation / Context) to cut down on scrolling. Plain
-   * neutral styling: a filled active segment, no accent fills.
+   * Inner sub-view toggle used inside a tab body (e.g. Tools -> Native / MCP,
+   * Model -> Provider / Generation / Context) to cut down on scrolling. Matches
+   * the global settings `.llm-subview-btn` idiom: equal-width bordered buttons,
+   * accent on the active segment. Same visual language as the global menu, only
+   * the surrounding layout differs.
    */
   interface SubTab {
     id: string;
@@ -39,51 +41,43 @@
 
 <style>
   .subtabs {
-    display: inline-flex;
-    gap: 2px;
-    padding: 3px;
+    display: flex;
+    gap: var(--spacing-xs);
     margin-bottom: var(--spacing-md);
-    background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
   }
 
   .subtab {
+    flex: 1;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
-    padding: 5px 14px;
-    font-size: var(--font-size-sm);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--text-muted);
     background: transparent;
-    border: none;
-    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
     cursor: pointer;
-    transition: color var(--transition-fast), background var(--transition-fast);
+    transition: all var(--transition-fast);
   }
 
   .subtab:hover {
     color: var(--text-primary);
+    border-color: var(--text-muted);
   }
 
   .subtab.active {
-    color: var(--text-primary);
-    background: var(--bg-base);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
   }
 
   .subtab-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 5px;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    color: var(--text-secondary);
-    background: var(--bg-elevated);
-    border-radius: var(--radius-full);
+    color: inherit;
+    opacity: 0.85;
   }
 </style>
