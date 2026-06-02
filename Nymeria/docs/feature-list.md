@@ -21,7 +21,7 @@ The core differentiating feature. Any conversation thread can be made "callable"
 - **LLM model**: Different threads can use different models and providers (e.g., Opus for reasoning, Haiku for fast tasks)
 - **Extended thinking**: Per-thread reasoning effort (off, on, low, medium, high)
 - **Skills**: Per-thread skill enablement/disablement
-- **Dreaming**: Per-thread opt-in self-reflection that runs in a temporary shadow thread with a strict memory/TODO/instructions/skills tool policy
+- **Dreaming**: Per-thread opt-in self-reflection that runs in a temporary shadow thread with a strict memory/TODO/instructions/skills tool policy. Fires automatically when a thread goes idle (gated on interval, idle time, and turns since the last dream) or on demand via the dream endpoint
 - **Turn safety**: 500 main-agent tool calls, 300 default callable tool calls, configurable callables up to 1000, plus repeated tool/result loop detection
 - **Profile injection**: Toggle whether user memories and TODOs appear in this thread's prompt
 

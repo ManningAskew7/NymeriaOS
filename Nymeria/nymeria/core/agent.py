@@ -497,6 +497,11 @@ class NymeriaAgent:
 
                 return sweep_idle_spawned_threads(self)
 
+            def _local_dream_sweeper() -> int:
+                from .dreaming import sweep_dreamable_threads
+
+                return sweep_dreamable_threads(self)
+
             self._ticker = Ticker(
                 executor=LocalAgentExecutor(self),
                 settings=self.settings,
@@ -507,6 +512,7 @@ class NymeriaAgent:
                 poll_interval=self.settings.ticker_poll_interval,
                 busy_agent=self,
                 spawn_sweeper=_local_spawn_sweeper,
+                dream_sweeper=_local_dream_sweeper,
             )
 
             startup_status = self._ticker.prepare_startup_recovery()

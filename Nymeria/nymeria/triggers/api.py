@@ -1022,6 +1022,7 @@ def create_api_app(
     # so temporary callable threads still get reaped on schedule.
     if disable_ticker:
         _register_spawn_thread_housekeeping_lifecycle(app, agent_getter=get_agent)
+        _register_dream_scheduler_lifecycle(app, agent_getter=get_agent)
 
     # ========================================================================
     # Frontend static hosting (Outlook add-in / web UI)
@@ -1208,6 +1209,76 @@ def _register_spawn_thread_housekeeping_lifecycle(
         app.state.spawn_housekeeping_task = task
         app.state.spawn_housekeeping_stop = stop_event
         logger.info("Spawn-thread housekeeping task started (Docker mode)")
+
+    async def _stop() -> None:
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    app.router.add_event_handler("startup", _start)
+    app.router.add_event_handler("shutdown", _stop)
+
+
+def _register_dream_scheduler_lifecycle(
+    app: FastAPI,
+    *,
+    agent_getter: Callable[[], NymeriaAgent],
+) -> None:
+    """Drive automatic dream scheduling API-side when the API owns no ticker.
+
+    Slim runs the dream sweep from the in-process ticker's housekeeping
+    executor (``Ticker(dream_sweeper=...)``). In Docker the worker drives
+    scheduling but holds no local agent, and ``invoke_dream`` spawns the
+    dream turn in-process, so the sweep must run where the agent lives: the
+    API. This heartbeat mirrors the ticker's dream-sweep cadence.
+    """
+    import asyncio
+
+    from ..core.dreaming import DREAM_SWEEP_INTERVAL_SECONDS
+
+    stop_event: "asyncio.Event | None" = None
+    task: "asyncio.Task[None] | None" = None
+
+    async def _dream_loop(event: asyncio.Event) -> None:
+        from ..core.dreaming import sweep_dreamable_threads
+
+        # Short startup delay so the first sweep doesn't race app boot.
+        try:
+            await asyncio.wait_for(event.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass  # Expected — first sweep fires after the delay.
+
+        while not event.is_set():
+            try:
+                agent = agent_getter()
+                started = await asyncio.to_thread(sweep_dreamable_threads, agent)
+                if started:
+                    logger.info("Dream sweep started %d dream(s)", started)
+            except Exception:
+                logger.exception("Dream scheduler pass failed")
+
+            try:
+                await asyncio.wait_for(
+                    event.wait(), timeout=DREAM_SWEEP_INTERVAL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                pass  # Normal heartbeat tick.
+
+    async def _start() -> None:
+        nonlocal stop_event, task
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(_dream_loop(stop_event))
+        app.state.dream_scheduler_task = task
+        app.state.dream_scheduler_stop = stop_event
+        logger.info("Dream scheduler task started (Docker mode)")
 
     async def _stop() -> None:
         if stop_event is not None:

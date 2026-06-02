@@ -21,8 +21,11 @@ A dream invocation:
 7. Spawns a daemon thread that dispatches the initial dream prompt and
    streams the turn through the standard agent runtime.
 
-Phase 1 scope: the manual trigger path. Scheduling, gating, and concurrency
-control live in :mod:`nymeria.core.dreaming.scheduler` (Phase 2).
+The same entry point serves both the manual trigger (``POST
+/threads/{id}/dream``) and the automatic scheduler
+(:mod:`nymeria.core.dreaming.scheduler`, which decides *when* to dream). A
+process-local in-flight guard keyed on the parent thread prevents the manual
+and scheduled paths from double-dreaming the same thread at once.
 """
 
 from __future__ import annotations
@@ -88,6 +91,34 @@ DREAM_IDLE_TIMEOUT_HOURS = 24
 
 class DreamInvocationError(Exception):
     """Raised when a dream cannot be started (validation / persistence failure)."""
+
+
+# Process-local single-flight guard: parent_thread_id of every dream whose
+# daemon is currently running. Claimed in ``invoke_dream`` once setup is about
+# to succeed and released in ``_run_dream_cycle``'s ``finally`` (or by
+# ``invoke_dream`` itself if setup fails before the daemon starts). The
+# scheduler's interval gate already serializes successive automatic dreams;
+# this also stops a manual trigger from racing a scheduled one. Process-local
+# is sufficient: the agent runtime is single-process, and a crash that skips
+# the release is reset by the restart that empties the set.
+_dreams_in_flight: set[str] = set()
+_dreams_in_flight_lock = threading.Lock()
+
+
+def _claim_dream_slot(parent_thread_id: str) -> None:
+    """Reserve the in-flight slot for a parent, or raise if one is active."""
+    with _dreams_in_flight_lock:
+        if parent_thread_id in _dreams_in_flight:
+            raise DreamInvocationError(
+                f"A dream is already in progress for thread {parent_thread_id}"
+            )
+        _dreams_in_flight.add(parent_thread_id)
+
+
+def _release_dream_slot(parent_thread_id: str) -> None:
+    """Release a parent's in-flight slot (idempotent)."""
+    with _dreams_in_flight_lock:
+        _dreams_in_flight.discard(parent_thread_id)
 
 
 def _slug_from_thread_id(thread_id: str, max_len: int = 24) -> str:
@@ -165,169 +196,185 @@ def invoke_dream(
             f"Refusing to dream from a shadow thread (parent={parent_tc.shadow_parent_id})"
         )
 
-    # Build the shadow thread ID. Suffix-only to keep the listing tidy.
-    timestamp = utc_now().strftime("%Y%m%dT%H%M%S")
-    rand = uuid.uuid4().hex[:6]
-    parent_slug = _slug_from_thread_id(parent_thread_id, max_len=24)
-    shadow_thread_id = f"{DREAM_THREAD_ID_PREFIX}-{parent_slug}-{timestamp}-{rand}"
-
-    # Build the shadow's LLM override. Default: inherit the parent's effective
-    # llm_config; allow caller (manual trigger or future scheduler) to override
-    # just the model.
-    from ..thread_config import ThreadConfig, ThreadLLMConfig
-
-    shadow_llm_config: Optional[ThreadLLMConfig] = None
-    if parent_tc.llm_config is not None:
-        shadow_llm_config = parent_tc.llm_config.model_copy(deep=True)
-    if model_override:
-        if shadow_llm_config is None:
-            shadow_llm_config = ThreadLLMConfig(model=model_override)
-        else:
-            shadow_llm_config.model = model_override
-
-    enabled_opt = list(enabled_optional_tools or DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS)
-    disabled_core = list(disabled_core_tools or DEFAULT_DREAM_DISABLED_CORE_TOOLS)
-
-    # Load the dream system prompt — replaces soul.md entirely for this thread.
-    from ...config import get_settings
-
-    settings = get_settings()
-    dream_system_prompt = settings.load_dream_prompt()
-
+    # Claim the single-flight slot before persisting anything. From here on any
+    # early failure releases it; a successful daemon start hands the release off
+    # to _run_dream_cycle's finally.
+    _claim_dream_slot(parent_thread_id)
+    started = False
     try:
-        shadow_tc = ThreadConfig(
-            thread_id=shadow_thread_id,
-            system_prompt=dream_system_prompt,
-            shadow_parent_id=parent_thread_id,
-            enabled_tools=sorted(set(enabled_opt)),
-            disabled_tools=sorted(set(disabled_core)),
-            llm_config=shadow_llm_config,
-            # Inject the user's saved profile so the dream sees who it's
-            # reflecting for without needing extra tool calls in phase 1.
-            inject_profile_in_prompt=True,
+        # Build the shadow thread ID. Suffix-only to keep the listing tidy.
+        timestamp = utc_now().strftime("%Y%m%dT%H%M%S")
+        rand = uuid.uuid4().hex[:6]
+        parent_slug = _slug_from_thread_id(parent_thread_id, max_len=24)
+        shadow_thread_id = f"{DREAM_THREAD_ID_PREFIX}-{parent_slug}-{timestamp}-{rand}"
+
+        # Build the shadow's LLM override. Default: inherit the parent's
+        # effective llm_config; allow the caller (manual trigger or scheduler)
+        # to override just the model.
+        from ..thread_config import ThreadConfig, ThreadLLMConfig
+
+        shadow_llm_config: Optional[ThreadLLMConfig] = None
+        if parent_tc.llm_config is not None:
+            shadow_llm_config = parent_tc.llm_config.model_copy(deep=True)
+        if model_override:
+            if shadow_llm_config is None:
+                shadow_llm_config = ThreadLLMConfig(model=model_override)
+            else:
+                shadow_llm_config.model = model_override
+
+        enabled_opt = list(
+            enabled_optional_tools or DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS
         )
-    except Exception as e:  # pydantic validation
-        raise DreamInvocationError(f"Invalid shadow ThreadConfig: {e}") from e
+        disabled_core = list(disabled_core_tools or DEFAULT_DREAM_DISABLED_CORE_TOOLS)
 
-    if not agent.thread_config_manager.save_config(shadow_tc):
-        raise DreamInvocationError("Failed to save shadow ThreadConfig")
+        # Load the dream system prompt — replaces soul.md entirely for this thread.
+        from ...config import get_settings
 
-    # Register thread metadata so the idle-sweeper cleans it up after 24h of
-    # inactivity. Reuses the spawn_thread temporary-lifetime markers so the
-    # existing housekeeping path picks it up without changes.
-    from ...tools.spawn_thread import (
-        PLATFORM_META_IDLE_TIMEOUT,
-        PLATFORM_META_LAST_ACTIVE,
-        PLATFORM_META_LIFETIME,
-    )
+        settings = get_settings()
+        dream_system_prompt = settings.load_dream_prompt()
 
-    platform_meta: Dict[str, str] = {
-        "dream": "true",
-        "shadow_parent": parent_thread_id,
-        PLATFORM_META_LIFETIME: "temporary",
-        PLATFORM_META_IDLE_TIMEOUT: str(DREAM_IDLE_TIMEOUT_HOURS),
-        PLATFORM_META_LAST_ACTIVE: utc_now().isoformat(),
-    }
-    title = f"Dream: {parent_thread_id[:48]}"
-
-    try:
-        agent.thread_metadata_manager.upsert_thread(
-            user_id,
-            shadow_thread_id,
-            title=title,
-            title_source="dream",
-            platform="dream",
-            platform_meta=platform_meta,
-        )
-    except Exception as e:
         try:
-            agent.thread_config_manager.delete_config(shadow_thread_id)
-        except Exception:
-            logger.warning("Rollback of shadow config failed", exc_info=True)
-        raise DreamInvocationError(f"Failed to save shadow metadata: {e}") from e
+            shadow_tc = ThreadConfig(
+                thread_id=shadow_thread_id,
+                system_prompt=dream_system_prompt,
+                shadow_parent_id=parent_thread_id,
+                enabled_tools=sorted(set(enabled_opt)),
+                disabled_tools=sorted(set(disabled_core)),
+                llm_config=shadow_llm_config,
+                # Inject the user's saved profile so the dream sees who it's
+                # reflecting for without needing extra tool calls in phase 1.
+                inject_profile_in_prompt=True,
+            )
+        except Exception as e:  # pydantic validation
+            raise DreamInvocationError(f"Invalid shadow ThreadConfig: {e}") from e
 
-    try:
-        agent.accounts_repo.claim_thread(shadow_thread_id, user_id)
-    except Exception as e:
-        logger.warning(
-            "invoke_dream: claim_thread failed for %s: %s", shadow_thread_id, e
+        if not agent.thread_config_manager.save_config(shadow_tc):
+            raise DreamInvocationError("Failed to save shadow ThreadConfig")
+
+        # Register thread metadata so the idle-sweeper cleans it up after 24h of
+        # inactivity. Reuses the spawn_thread temporary-lifetime markers so the
+        # existing housekeeping path picks it up without changes.
+        from ...tools.spawn_thread import (
+            PLATFORM_META_IDLE_TIMEOUT,
+            PLATFORM_META_LAST_ACTIVE,
+            PLATFORM_META_LIFETIME,
         )
 
-    agent.invalidate_thread_config_cache(shadow_thread_id)
+        platform_meta: Dict[str, str] = {
+            "dream": "true",
+            "shadow_parent": parent_thread_id,
+            PLATFORM_META_LIFETIME: "temporary",
+            PLATFORM_META_IDLE_TIMEOUT: str(DREAM_IDLE_TIMEOUT_HOURS),
+            PLATFORM_META_LAST_ACTIVE: utc_now().isoformat(),
+        }
+        title = f"Dream: {parent_thread_id[:48]}"
 
-    # Bookkeeping on the parent: record when we kicked off and which shadow
-    # thread carries the transcript. These are the gating fields the
-    # scheduler reads next time around.
-    from ..thread_config import DreamingConfig
+        try:
+            agent.thread_metadata_manager.upsert_thread(
+                user_id,
+                shadow_thread_id,
+                title=title,
+                title_source="dream",
+                platform="dream",
+                platform_meta=platform_meta,
+            )
+        except Exception as e:
+            try:
+                agent.thread_config_manager.delete_config(shadow_thread_id)
+            except Exception:
+                logger.warning("Rollback of shadow config failed", exc_info=True)
+            raise DreamInvocationError(f"Failed to save shadow metadata: {e}") from e
 
-    parent_dream = parent_tc.dreaming or DreamingConfig()
-    parent_dream.last_dream_at = utc_now()
-    parent_dream.last_dream_thread_id = shadow_thread_id
-    parent_tc.dreaming = parent_dream
-    if not agent.thread_config_manager.save_config(parent_tc):
-        logger.warning(
-            "invoke_dream: failed to persist last_dream_at on parent %s",
-            parent_thread_id,
+        try:
+            agent.accounts_repo.claim_thread(shadow_thread_id, user_id)
+        except Exception as e:
+            logger.warning(
+                "invoke_dream: claim_thread failed for %s: %s", shadow_thread_id, e
+            )
+
+        agent.invalidate_thread_config_cache(shadow_thread_id)
+
+        # Bookkeeping on the parent: record when we kicked off and which shadow
+        # thread carries the transcript. These are the gating fields the
+        # scheduler reads next time around.
+        from ..thread_config import DreamingConfig
+
+        parent_dream = parent_tc.dreaming or DreamingConfig()
+        parent_dream.last_dream_at = utc_now()
+        parent_dream.last_dream_thread_id = shadow_thread_id
+        parent_tc.dreaming = parent_dream
+        if not agent.thread_config_manager.save_config(parent_tc):
+            logger.warning(
+                "invoke_dream: failed to persist last_dream_at on parent %s",
+                parent_thread_id,
+            )
+        else:
+            agent.invalidate_thread_config_cache(parent_thread_id)
+
+        initial_prompt = _build_initial_prompt(
+            parent_thread_id, parent_tc.instructions
         )
-    else:
-        agent.invalidate_thread_config_cache(parent_thread_id)
 
-    initial_prompt = _build_initial_prompt(parent_thread_id, parent_tc.instructions)
+        try:
+            from ..event_bus import publish_sync_event
 
-    try:
-        from ..event_bus import publish_sync_event
+            publish_sync_event(
+                event_type="thread_created",
+                thread_id=shadow_thread_id,
+                user_id=user_id,
+                data={
+                    "title": title,
+                    "title_source": "dream",
+                    "platform": "dream",
+                    "platform_meta": platform_meta,
+                },
+            )
+        except Exception as e:
+            logger.debug("invoke_dream: thread_created publish failed: %s", e)
 
-        publish_sync_event(
-            event_type="thread_created",
-            thread_id=shadow_thread_id,
-            user_id=user_id,
-            data={
+        started_at = utc_now()
+
+        # Fire-and-forget dispatch. We deliberately don't await — the endpoint
+        # returns immediately and observers consume the autonomous event stream
+        # to watch the dream progress.
+        thread = threading.Thread(
+            target=_run_dream_cycle,
+            kwargs={
+                "agent": agent,
+                "shadow_thread_id": shadow_thread_id,
+                "parent_thread_id": parent_thread_id,
+                "user_id": user_id,
+                "initial_prompt": initial_prompt,
                 "title": title,
-                "title_source": "dream",
-                "platform": "dream",
-                "platform_meta": platform_meta,
             },
+            name=f"dream-{shadow_thread_id}",
+            daemon=True,
         )
-    except Exception as e:
-        logger.debug("invoke_dream: thread_created publish failed: %s", e)
+        thread.start()
+        started = True
 
-    started_at = utc_now()
-
-    # Fire-and-forget dispatch. We deliberately don't await — the endpoint
-    # returns immediately and observers consume the autonomous event stream
-    # to watch the dream progress.
-    thread = threading.Thread(
-        target=_run_dream_cycle,
-        kwargs={
-            "agent": agent,
+        summary = {
             "shadow_thread_id": shadow_thread_id,
             "parent_thread_id": parent_thread_id,
-            "user_id": user_id,
-            "initial_prompt": initial_prompt,
-            "title": title,
-        },
-        name=f"dream-{shadow_thread_id}",
-        daemon=True,
-    )
-    thread.start()
-
-    summary = {
-        "shadow_thread_id": shadow_thread_id,
-        "parent_thread_id": parent_thread_id,
-        "started_at": started_at.isoformat(),
-        "model": (shadow_llm_config.model if shadow_llm_config else None)
-        or model_override
-        or "(inherits global)",
-        "enabled_optional_tools": list(enabled_opt),
-        "disabled_core_tools": list(disabled_core),
-    }
-    logger.info(
-        "invoke_dream: spawned shadow thread %s for parent %s (user=%s)",
-        shadow_thread_id,
-        parent_thread_id,
-        user_id,
-    )
-    return shadow_thread_id, summary
+            "started_at": started_at.isoformat(),
+            "model": (shadow_llm_config.model if shadow_llm_config else None)
+            or model_override
+            or "(inherits global)",
+            "enabled_optional_tools": list(enabled_opt),
+            "disabled_core_tools": list(disabled_core),
+        }
+        logger.info(
+            "invoke_dream: spawned shadow thread %s for parent %s (user=%s)",
+            shadow_thread_id,
+            parent_thread_id,
+            user_id,
+        )
+        return shadow_thread_id, summary
+    finally:
+        # If the daemon never started, no _run_dream_cycle finally will fire,
+        # so release here. On success the daemon owns the release.
+        if not started:
+            _release_dream_slot(parent_thread_id)
 
 
 def _run_dream_cycle(
@@ -477,6 +524,9 @@ def _run_dream_cycle(
             logger.warning("Failed to publish dream error event", exc_info=True)
 
     finally:
+        # Release the single-flight slot claimed in invoke_dream so the parent
+        # can be dreamed again once the gates allow it.
+        _release_dream_slot(parent_thread_id)
         run_collector_var.reset(collector_token)
         tracing_v2_callback_var.reset(callback_token)
         var_child_runnable_config.reset(config_token)

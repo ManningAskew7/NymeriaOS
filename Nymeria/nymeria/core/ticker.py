@@ -252,6 +252,7 @@ class Ticker:
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         busy_agent: Optional["NymeriaAgent"] = None,
         spawn_sweeper: Optional[Callable[[], int]] = None,
+        dream_sweeper: Optional[Callable[[], int]] = None,
     ):
         """
         Initialize the ticker.
@@ -279,6 +280,12 @@ class Ticker:
                 passes a closure over its local agent; Docker passes
                 None because the cleanup runs API-side via a
                 housekeeping task.
+            dream_sweeper: Optional callable that fires due dreams for
+                dream-enabled threads (returns started count). Like
+                ``spawn_sweeper``, slim injects a closure over its
+                local agent and Docker passes None (the API heartbeat
+                drives it, since the worker holds no agent to dream
+                against).
         """
         self._turn_executor = executor
         self.settings = settings
@@ -288,6 +295,7 @@ class Ticker:
         self.profile_manager = profile_manager
         self._busy_agent = busy_agent
         self._spawn_sweeper = spawn_sweeper
+        self._dream_sweeper = dream_sweeper
         self.poll_interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -315,6 +323,14 @@ class Ticker:
         # idle_timeout_hours has elapsed since their last activity.
         self._spawn_sweep_interval = 1800  # 30 minutes
         self._last_spawn_sweep_check: float = 0.0
+
+        # Dream sweep: fire self-reflection dreams for dream-enabled threads
+        # that have gone quiet. The per-thread gates do the real rate limiting;
+        # this interval is just the polling granularity.
+        from .dreaming import DREAM_SWEEP_INTERVAL_SECONDS
+
+        self._dream_sweep_interval = DREAM_SWEEP_INTERVAL_SECONDS
+        self._last_dream_sweep_check: float = 0.0
 
         self._recovery_lock = threading.Lock()
         self._startup_recovery_prepared = False
@@ -474,6 +490,7 @@ class Ticker:
             self._maybe_submit_archive(now)
             self._maybe_submit_trigger_poll(now)
             self._maybe_submit_spawn_sweep(now)
+            self._maybe_submit_dream_sweep(now)
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -576,6 +593,39 @@ class Ticker:
                 )
         except Exception as e:
             logger.error(f"Spawn idle-sweep error: {e}", exc_info=True)
+
+    def _maybe_submit_dream_sweep(self, now: float) -> bool:
+        """Submit the dream sweep off the main loop, like the spawn sweep."""
+        if now - self._last_dream_sweep_check < self._dream_sweep_interval:
+            return False
+
+        self._last_dream_sweep_check = now
+        if self._housekeeping_executor:
+            try:
+                self._housekeeping_executor.submit(self._run_dream_sweep)
+            except Exception as e:
+                logger.debug(f"Dream sweep submit skipped: {e}")
+                return False
+            return True
+
+        self._run_dream_sweep()
+        return True
+
+    def _run_dream_sweep(self) -> None:
+        """Fire due dreams with exception isolation.
+
+        The Docker worker passes ``dream_sweeper=None`` because dreams are
+        scheduled API-side (the worker has no local agent to dream against).
+        Slim injects a closure over its local agent.
+        """
+        if self._dream_sweeper is None:
+            return
+        try:
+            started = self._dream_sweeper()
+            if started:
+                logger.info(f"Dream sweep started {started} dream(s)")
+        except Exception as e:
+            logger.error(f"Dream sweep error: {e}", exc_info=True)
 
     def _archive_completed_todos(self) -> None:
         """Archive completed TODOs older than the configured retention for all users."""
