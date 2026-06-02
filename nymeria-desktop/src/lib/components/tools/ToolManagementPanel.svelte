@@ -5,7 +5,7 @@
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { trapFocus } from '$lib/actions/focus';
-  import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo, ToolSearchResult } from '$lib/types';
+  import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo, ToolSearchResult, GroupedToolItem } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
@@ -13,7 +13,8 @@
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
   import ToolCountWarning from './ToolCountWarning.svelte';
-  import { CATEGORY_ORDER, getCategoryInfo } from '$lib/utils/toolCategories';
+  import ToolGroupedList from './ToolGroupedList.svelte';
+  import { getCategoryInfo } from '$lib/utils/toolCategories';
   import { filterToolSearch } from '$lib/utils/toolSearch';
 
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
@@ -55,6 +56,11 @@
   // when collapsed, so it's clear results landed in there.
   let coreOpen = $state(true);
   let availableOpen = $state(false);
+
+  // Per-card collapse state for the shared grouped lists (Core + Available
+  // pools share these; distinct poolKeys keep their ids from colliding).
+  let glExpanded = $state<Set<string>>(new Set());
+  let glCollapsed = $state<Set<string>>(new Set());
 
   const isSearching = $derived(searchQuery.trim().length > 0);
   const effectiveCoreOpen = $derived(coreOpen);
@@ -101,29 +107,6 @@
     }));
   });
 
-  // Split into core (selected) and available (not selected), grouped by category
-  const coreToolsByCategory = $derived.by(() => {
-    const result: Record<string, DefaultToolInfo[]> = {};
-    for (const tool of filteredTools) {
-      if (selectedTools.has(tool.name)) {
-        if (!result[tool.category]) result[tool.category] = [];
-        result[tool.category].push(tool);
-      }
-    }
-    return result;
-  });
-
-  const availableToolsByCategory = $derived.by(() => {
-    const result: Record<string, DefaultToolInfo[]> = {};
-    for (const tool of filteredTools) {
-      if (!selectedTools.has(tool.name)) {
-        if (!result[tool.category]) result[tool.category] = [];
-        result[tool.category].push(tool);
-      }
-    }
-    return result;
-  });
-
   const visibleDefaultToolCount = $derived(defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool)).length);
   const coreCount = $derived(
     defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool) && selectedTools.has(tool.name)).length
@@ -131,20 +114,20 @@
   const availableCount = $derived(visibleDefaultToolCount - coreCount);
   const totalWithCallable = $derived(coreCount + defaultToolsStore.callableThreadCount);
 
-  // Match counts within the current search, per section. Used to show
-  // "no results" hints inside sections the search failed to find anything in.
-  const coreMatchCount = $derived(
-    Object.values(coreToolsByCategory).reduce((n, arr) => n + arr.length, 0)
-  );
-  const availableMatchCount = $derived(
-    Object.values(availableToolsByCategory).reduce((n, arr) => n + arr.length, 0)
-  );
-
-  // Flat score-ranked lists used when a search query is active. filteredTools
-  // is already sorted by rankToolSearch (score desc), so .filter preserves
-  // that order and we present pure relevance with no category grouping.
-  const flatCoreFiltered = $derived(filteredTools.filter((t) => selectedTools.has(t.name)));
-  const flatAvailableFiltered = $derived(filteredTools.filter((t) => !selectedTools.has(t.name)));
+  // Normalize a built-in tool row for the shared grouped list. `data` carries
+  // the original DefaultToolInfo back to the row snippet for badges/edit/toggle.
+  function toGrouped(t: DefaultToolInfo): GroupedToolItem<DefaultToolInfo> {
+    return {
+      key: t.name,
+      label: t.name,
+      category: t.category,
+      group: t.group ?? null,
+      groupLabel: t.group_label ?? null,
+      service: t.service ?? null,
+      serviceLabel: t.service_label ?? null,
+      data: t,
+    };
+  }
 
   // Backend semantic-search fallback. Surfaces tools the local ranker missed
   // (e.g. because the frontend pool was stale or the query fell under the
@@ -186,6 +169,10 @@
       security_level: r.securityLevel,
       is_optional: optional,
       is_default: r.isDefault,
+      group: r.group ?? null,
+      group_label: r.groupLabel ?? null,
+      service: r.service ?? null,
+      service_label: r.serviceLabel ?? null,
     };
   }
 
@@ -193,10 +180,9 @@
   // tools) but weren't surfaced locally.
   const backendExtrasCoreList = $derived.by(() => {
     if (backendSearchResults.length === 0) return [] as DefaultToolInfo[];
-    const localNames = new Set<string>();
-    for (const arr of Object.values(coreToolsByCategory)) {
-      for (const t of arr) localNames.add(t.name);
-    }
+    const localNames = new Set(
+      filteredTools.filter((t) => selectedTools.has(t.name)).map((t) => t.name)
+    );
     const out: DefaultToolInfo[] = [];
     for (const r of backendSearchResults) {
       if (!selectedTools.has(r.name)) continue;
@@ -210,10 +196,9 @@
   // Backend results that belong in the Available section.
   const backendExtrasAvailableList = $derived.by(() => {
     if (backendSearchResults.length === 0) return [] as DefaultToolInfo[];
-    const localNames = new Set<string>();
-    for (const arr of Object.values(availableToolsByCategory)) {
-      for (const t of arr) localNames.add(t.name);
-    }
+    const localNames = new Set(
+      filteredTools.filter((t) => !selectedTools.has(t.name)).map((t) => t.name)
+    );
     const out: DefaultToolInfo[] = [];
     for (const r of backendSearchResults) {
       if (selectedTools.has(r.name)) continue;
@@ -223,6 +208,18 @@
     }
     return out;
   });
+
+  // Normalized pools for the shared grouped list. Available folds in the
+  // backend search extras so they group naturally; relevance order is kept.
+  const coreItems = $derived(
+    [...filteredTools.filter((t) => selectedTools.has(t.name)), ...backendExtrasCoreList].map(toGrouped)
+  );
+  const availItems = $derived(
+    [...filteredTools.filter((t) => !selectedTools.has(t.name)), ...backendExtrasAvailableList].map(toGrouped)
+  );
+  // Section-header match badges (filtered + backend extras).
+  const coreMatchCount = $derived(coreItems.length);
+  const availableMatchCount = $derived(availItems.length);
 
   const hasChanges = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
@@ -480,167 +477,21 @@
         </button>
         {#if effectiveCoreOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
-        {#if isSearching && coreMatchCount === 0 && backendExtrasCoreList.length === 0}
-          <div class="section-empty">No core tools match "{searchQuery}".</div>
+        {#if coreItems.length === 0}
+          <div class="section-empty">{isSearching ? `No core tools match "${searchQuery}".` : 'No core tools yet.'}</div>
+        {:else}
+          <div class="tools-body">
+            <ToolGroupedList
+              items={coreItems}
+              searchActive={isSearching}
+              poolKey="core"
+              defaultOpenTopLevel
+              bind:expanded={glExpanded}
+              bind:collapsed={glCollapsed}
+              row={builtinRow}
+            />
+          </div>
         {/if}
-        <div class="tools-list">
-          {#if backendExtrasCoreList.length > 0}
-            <div class="category-group search-extras-group">
-              <div class="search-extras-label">More from search</div>
-              <div class="category-tools">
-                {#each backendExtrasCoreList as tool (tool.name)}
-                  <div class="tool-row selected">
-                    <div class="tool-info">
-                      <span class="tool-name">
-                        {tool.name}
-                        {#if isAdminOnlyTool(tool.name)}
-                          <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                        {/if}
-                      </span>
-                      <span class="tool-desc">{tool.description}</span>
-                    </div>
-                    <div class="tool-row-actions">
-                      <button
-                        class="row-edit-btn"
-                        onclick={() => openBuiltinEditor(tool.name)}
-                        type="button"
-                        title="Edit tool"
-                      >
-                        <Icon name="edit" size={14} />
-                      </button>
-                      <ToggleSwitch
-                        checked={true}
-                        onclick={() => toggleTool(tool.name)}
-                        title="Remove from core"
-                        ariaLabel={`Remove ${tool.name} from core tools`}
-                      />
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-          {#if isSearching}
-            {#each flatCoreFiltered as tool (tool.name)}
-              <div class="tool-row selected">
-                <div class="tool-info">
-                  <span class="tool-name">
-                    {tool.name}
-                    {#if isAdminOnlyTool(tool.name)}
-                      <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                    {/if}
-                  </span>
-                  <span class="tool-desc">{tool.description}</span>
-                </div>
-                <div class="tool-row-actions">
-                  <button
-                    class="row-edit-btn"
-                    onclick={() => openBuiltinEditor(tool.name)}
-                    type="button"
-                    title="Edit tool"
-                  >
-                    <Icon name="edit" size={14} />
-                  </button>
-                  <ToggleSwitch
-                    checked={true}
-                    onclick={() => toggleTool(tool.name)}
-                    title="Remove from core"
-                    ariaLabel={`Remove ${tool.name} from core tools`}
-                  />
-                </div>
-              </div>
-            {/each}
-          {:else}
-            {#each CATEGORY_ORDER as category}
-              {#if coreToolsByCategory[category]?.length}
-                {@const info = getCategoryInfo(category)}
-                {@const categoryTools = coreToolsByCategory[category]}
-                <div class="category-group">
-                  <div class="category-label">
-                    <span class="category-name">{info.name}</span>
-                    <span class="category-count">{categoryTools.length}</span>
-                  </div>
-                  <div class="category-tools">
-                    {#each categoryTools as tool (tool.name)}
-                      <div class="tool-row selected">
-                        <div class="tool-info">
-                          <span class="tool-name">
-                            {tool.name}
-                            {#if isAdminOnlyTool(tool.name)}
-                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                            {/if}
-                          </span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <div class="tool-row-actions">
-                          <button
-                            class="row-edit-btn"
-                            onclick={() => openBuiltinEditor(tool.name)}
-                            type="button"
-                            title="Edit tool"
-                          >
-                            <Icon name="edit" size={14} />
-                          </button>
-                          <ToggleSwitch
-                            checked={true}
-                            onclick={() => toggleTool(tool.name)}
-                            title="Remove from core"
-                            ariaLabel={`Remove ${tool.name} from core tools`}
-                          />
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-
-            <!-- Categories not in CATEGORY_ORDER -->
-            {#each Object.keys(coreToolsByCategory) as category}
-              {#if !CATEGORY_ORDER.includes(category) && coreToolsByCategory[category]?.length}
-                {@const info = getCategoryInfo(category)}
-                {@const categoryTools = coreToolsByCategory[category]}
-                <div class="category-group">
-                  <div class="category-label">
-                    <span class="category-name">{info.name}</span>
-                    <span class="category-count">{categoryTools.length}</span>
-                  </div>
-                  <div class="category-tools">
-                    {#each categoryTools as tool (tool.name)}
-                      <div class="tool-row selected">
-                        <div class="tool-info">
-                          <span class="tool-name">
-                            {tool.name}
-                            {#if isAdminOnlyTool(tool.name)}
-                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                            {/if}
-                          </span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <div class="tool-row-actions">
-                          <button
-                            class="row-edit-btn"
-                            onclick={() => openBuiltinEditor(tool.name)}
-                            type="button"
-                            title="Edit tool"
-                          >
-                            <Icon name="edit" size={14} />
-                          </button>
-                          <ToggleSwitch
-                            checked={true}
-                            onclick={() => toggleTool(tool.name)}
-                            title="Remove from core"
-                            ariaLabel={`Remove ${tool.name} from core tools`}
-                          />
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-          {/if}
-        </div>
         {/if}
       </div>
     {/if}
@@ -662,171 +513,20 @@
         </button>
         {#if effectiveAvailableOpen}
         <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
-        {#if isSearching && availableMatchCount === 0 && backendExtrasAvailableList.length === 0}
-          <div class="section-empty">No available tools match "{searchQuery}".</div>
+        {#if availItems.length === 0}
+          <div class="section-empty">{isSearching ? `No available tools match "${searchQuery}".` : 'No available tools.'}</div>
+        {:else}
+          <div class="tools-body">
+            <ToolGroupedList
+              items={availItems}
+              searchActive={isSearching}
+              poolKey="avail"
+              bind:expanded={glExpanded}
+              bind:collapsed={glCollapsed}
+              row={builtinRow}
+            />
+          </div>
         {/if}
-        <div class="tools-list">
-          {#if backendExtrasAvailableList.length > 0}
-            <div class="category-group search-extras-group">
-              <div class="search-extras-label">More from search</div>
-              <div class="category-tools">
-                {#each backendExtrasAvailableList as tool (tool.name)}
-                  <div class="tool-row" class:optional={tool.is_optional}>
-                    <div class="tool-info">
-                      <span class="tool-name">
-                        {tool.name}
-                        {#if tool.is_optional}
-                          <span class="optional-badge">optional</span>
-                        {/if}
-                        {#if isAdminOnlyTool(tool.name)}
-                          <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                        {/if}
-                      </span>
-                      <span class="tool-desc">{tool.description}</span>
-                    </div>
-                    <div class="tool-row-actions">
-                      <button
-                        class="row-edit-btn"
-                        onclick={() => openBuiltinEditor(tool.name)}
-                        type="button"
-                        title="Edit tool"
-                      >
-                        <Icon name="edit" size={14} />
-                      </button>
-                      <ToggleSwitch
-                        checked={false}
-                        onclick={() => toggleTool(tool.name)}
-                        title="Add to core"
-                        ariaLabel={`Add ${tool.name} to core tools`}
-                      />
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-          {#if isSearching}
-            {#each flatAvailableFiltered as tool (tool.name)}
-              <div class="tool-row" class:optional={tool.is_optional}>
-                <div class="tool-info">
-                  <span class="tool-name">
-                    {tool.name}
-                    {#if tool.is_optional}
-                      <span class="optional-badge">optional</span>
-                    {/if}
-                    {#if isAdminOnlyTool(tool.name)}
-                      <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                    {/if}
-                  </span>
-                  <span class="tool-desc">{tool.description}</span>
-                </div>
-                <div class="tool-row-actions">
-                  <button
-                    class="row-edit-btn"
-                    onclick={() => openBuiltinEditor(tool.name)}
-                    type="button"
-                    title="Edit tool"
-                  >
-                    <Icon name="edit" size={14} />
-                  </button>
-                  <ToggleSwitch
-                    checked={false}
-                    onclick={() => toggleTool(tool.name)}
-                    title="Add to core"
-                    ariaLabel={`Add ${tool.name} to core tools`}
-                  />
-                </div>
-              </div>
-            {/each}
-          {:else}
-            {#each CATEGORY_ORDER as category}
-              {#if availableToolsByCategory[category]?.length}
-                {@const info = getCategoryInfo(category)}
-                {@const categoryTools = availableToolsByCategory[category]}
-                <div class="category-group">
-                  <div class="category-label">
-                    <span class="category-name">{info.name}</span>
-                    <span class="category-count">{categoryTools.length}</span>
-                  </div>
-                  <div class="category-tools">
-                    {#each categoryTools as tool (tool.name)}
-                      <div class="tool-row" class:optional={tool.is_optional}>
-                        <div class="tool-info">
-                          <span class="tool-name">
-                            {tool.name}
-                            {#if tool.is_optional}
-                              <span class="optional-badge">optional</span>
-                            {/if}
-                            {#if isAdminOnlyTool(tool.name)}
-                              <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
-                            {/if}
-                          </span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <div class="tool-row-actions">
-                          <button
-                            class="row-edit-btn"
-                            onclick={() => openBuiltinEditor(tool.name)}
-                            type="button"
-                            title="Edit tool"
-                          >
-                            <Icon name="edit" size={14} />
-                          </button>
-                          <ToggleSwitch
-                            checked={false}
-                            onclick={() => toggleTool(tool.name)}
-                            title="Add to core"
-                            ariaLabel={`Add ${tool.name} to core tools`}
-                          />
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-
-            <!-- Categories not in CATEGORY_ORDER -->
-            {#each Object.keys(availableToolsByCategory) as category}
-              {#if !CATEGORY_ORDER.includes(category) && availableToolsByCategory[category]?.length}
-                {@const info = getCategoryInfo(category)}
-                {@const categoryTools = availableToolsByCategory[category]}
-                <div class="category-group">
-                  <div class="category-label">
-                    <span class="category-name">{info.name}</span>
-                    <span class="category-count">{categoryTools.length}</span>
-                  </div>
-                  <div class="category-tools">
-                    {#each categoryTools as tool (tool.name)}
-                      <div class="tool-row">
-                        <div class="tool-info">
-                          <span class="tool-name">{tool.name}</span>
-                          <span class="tool-desc">{tool.description}</span>
-                        </div>
-                        <div class="tool-row-actions">
-                          <button
-                            class="row-edit-btn"
-                            onclick={() => openBuiltinEditor(tool.name)}
-                            type="button"
-                            title="Edit tool"
-                          >
-                            <Icon name="edit" size={14} />
-                          </button>
-                          <ToggleSwitch
-                            checked={false}
-                            onclick={() => toggleTool(tool.name)}
-                            title="Add to core"
-                            ariaLabel={`Add ${tool.name} to core tools`}
-                          />
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-          {/if}
-        </div>
         {/if}
       </div>
     {/if}
@@ -1165,6 +865,37 @@
   {/if}
 </div>
 
+{#snippet builtinRow(gi: GroupedToolItem)}
+  {@const tool = gi.data as DefaultToolInfo}
+  {@const selected = selectedTools.has(tool.name)}
+  <div class="tool-info">
+    <span class="tool-name">
+      {tool.name}
+      {#if tool.is_optional}<span class="optional-badge">optional</span>{/if}
+      {#if isAdminOnlyTool(tool.name)}
+        <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+      {/if}
+    </span>
+    <span class="tool-desc">{tool.description}</span>
+  </div>
+  <div class="tool-row-actions">
+    <button
+      class="row-edit-btn"
+      onclick={() => openBuiltinEditor(tool.name)}
+      type="button"
+      title="Edit tool"
+    >
+      <Icon name="edit" size={14} />
+    </button>
+    <ToggleSwitch
+      checked={selected}
+      onclick={() => toggleTool(tool.name)}
+      title={selected ? 'Remove from core' : 'Add to core'}
+      ariaLabel={`${selected ? 'Remove' : 'Add'} ${tool.name} ${selected ? 'from' : 'to'} core tools`}
+    />
+  </div>
+{/snippet}
+
 {#if showWarning}
   <ToolCountWarning
     toolCount={coreCount}
@@ -1398,71 +1129,11 @@
     color: var(--text-muted);
   }
 
-  /* Tools list — sits inside .section-group card, so it inherits the outer border */
-  .tools-list {
-    max-height: 320px;
-    overflow-y: auto;
-  }
-
-  .category-group {
-    border-bottom: 1px solid var(--border-default);
-  }
-
-  .category-group:last-child {
-    border-bottom: none;
-  }
-
-  .category-label {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-xs) var(--spacing-md);
-    background: var(--bg-elevated-2);
-    font-size: var(--font-size-xs);
-  }
-
-  .category-label .category-name {
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-  }
-
-  .category-label .category-count {
-    color: var(--text-muted);
-    font-size: var(--font-size-xs);
-  }
-
-  .search-extras-group {
-    background: color-mix(in srgb, var(--accent-primary) 3%, transparent);
-  }
-
-  .search-extras-label {
-    padding: var(--spacing-xs) var(--spacing-md);
-    background: color-mix(in srgb, var(--accent-primary) 6%, transparent);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    color: var(--text-secondary);
-    border-bottom: 1px solid var(--border-default);
-  }
-
-  .tool-row {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: 6px var(--spacing-md) 6px calc(var(--spacing-md) + 8px);
-    border-bottom: 1px solid var(--border-subtle, var(--border-default));
-    transition: opacity var(--transition-fast);
-  }
-
-  .tool-row:last-child {
-    border-bottom: none;
-  }
-
-  .tool-row:not(.selected) {
-    opacity: 0.6;
+  /* Body inside a .section-group card: the readable category cards (rendered by
+     ToolGroupedList) sit here with a little inset. No inner scroller, so the
+     modal body is the only scroll surface. */
+  .tools-body {
+    padding: var(--spacing-sm);
   }
 
   .tool-info {

@@ -113,3 +113,57 @@ export function getCategoryInfo(category: string): ToolCategoryInfo {
     }
   );
 }
+
+// ── Integration functional sub-groups ────────────────────────────────
+// The Integrations category is the only one that nests a second level
+// (functional group -> service -> tools). The backend taxonomy
+// (Nymeria/nymeria/tools/integration_taxonomy.py) is the source of truth for
+// which group/service a tool belongs to and for its labels; the frontend owns
+// only the icon and display order, so they stay tied to the local Icon set.
+// `icon` values must be names defined in components/common/Icon.svelte.
+
+export interface ToolGroupInfo {
+  label: string;
+  icon: string;
+  order: number;
+}
+
+// Keyed by the backend group key. Generated to mirror integration_taxonomy.py;
+// keep keys in sync when the taxonomy is regenerated. A backend group key with
+// no entry here falls back to the backend-provided label, a generic icon, and a
+// trailing sort order, so a newly added group is never hidden.
+export const GROUP_INFO: Record<string, ToolGroupInfo> = {
+  utilities: { label: "Utilities & Reference", icon: "tool", order: 10 },
+  reference_data: { label: "Reference & Public Data", icon: "info", order: 20 },
+  developer_tools: { label: "Developer Tools", icon: "terminal", order: 30 },
+  cloud_infrastructure: { label: "Cloud Infrastructure & Storage", icon: "server", order: 40 },
+  monitoring_ops: { label: "Monitoring & Operations", icon: "bolt", order: 50 },
+  messaging_chat: { label: "Messaging & Chat", icon: "chat", order: 60 },
+  messaging_delivery: { label: "Messaging & Email Delivery", icon: "send", order: 70 },
+  notifications: { label: "Notifications", icon: "bell", order: 80 },
+  productivity: { label: "Productivity & Collaboration", icon: "folderOpen", order: 90 },
+  project_management: { label: "Project Management", icon: "check", order: 100 },
+  content_cms: { label: "Content & CMS", icon: "fileText", order: 110 },
+  social_publishing: { label: "Social & Publishing", icon: "users", order: 120 },
+  media_entertainment: { label: "Media & Entertainment", icon: "image", order: 130 },
+  crm_sales: { label: "CRM, Sales & Lead Enrichment", icon: "user", order: 140 },
+  marketing_email: { label: "Marketing & Email Automation", icon: "send", order: 150 },
+  support_helpdesk: { label: "Support & Helpdesk", icon: "info", order: 160 },
+  ecommerce_billing: { label: "E-commerce & Billing", icon: "copy", order: 170 },
+  databases_nocode: { label: "Databases & No-Code", icon: "folder", order: 180 },
+  events_webinars: { label: "Events & Webinars", icon: "calendar", order: 190 },
+  time_tracking_hr: { label: "Time Tracking & HR", icon: "clock", order: 200 },
+  personal_health: { label: "Personal Devices & Health", icon: "pin", order: 210 },
+  security_intel: { label: "Security & Intelligence", icon: "warning", order: 220 },
+  other: { label: "Other Integrations", icon: "tool", order: 999 },
+};
+
+export function getGroupInfo(group: string, fallbackLabel?: string): ToolGroupInfo {
+  return (
+    GROUP_INFO[group] || {
+      label: fallbackLabel || group,
+      icon: 'tool',
+      order: 999,
+    }
+  );
+}

@@ -38,6 +38,11 @@ class UnifiedToolResponse(BaseModel):
     configurable: bool = False
     live: bool = True
     globally_disabled: bool = False
+    # Two-level integration grouping (integration tools only; None otherwise).
+    group: str | None = None
+    group_label: str | None = None
+    service: str | None = None
+    service_label: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -83,6 +88,12 @@ def builtin_tool_to_unified(
     config_schema = tool_info.get("config_schema")
     configurable = config_schema is not None and len(config_schema) > 0
 
+    from ...tools.metadata import integration_grouping_fields
+
+    grouping = integration_grouping_fields(
+        tool_info["name"], tool_info.get("category", "general")
+    )
+
     return UnifiedToolResponse(
         id=tool_info["name"],
         name=tool_info["name"],
@@ -104,6 +115,10 @@ def builtin_tool_to_unified(
         tags=[],
         editable=False,
         configurable=configurable,
+        group=grouping["group"],
+        group_label=grouping["group_label"],
+        service=grouping["service"],
+        service_label=grouping["service_label"],
         created_at=None,
         updated_at=None,
     )

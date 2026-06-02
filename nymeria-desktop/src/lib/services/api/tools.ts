@@ -39,7 +39,11 @@ export class ToolsApi extends NotificationsApi {
         isDefault: Boolean(item.is_default),
         status: (item.status as string | null | undefined) ?? null,
         score: Number(item.score ?? 0),
-        enableHint: (item.enable_hint as string) || ''
+        enableHint: (item.enable_hint as string) || '',
+        group: (item.group as string | null | undefined) ?? null,
+        groupLabel: (item.group_label as string | null | undefined) ?? null,
+        service: (item.service as string | null | undefined) ?? null,
+        serviceLabel: (item.service_label as string | null | undefined) ?? null
       }))
     };
   }
@@ -341,6 +345,10 @@ export class ToolsApi extends NotificationsApi {
       mcpConfig: item.mcp_config as UnifiedTool['mcpConfig'],
       tags: (item.tags as string[]) || [],
       editable: item.editable as boolean,
+      group: (item.group as string | null | undefined) ?? null,
+      groupLabel: (item.group_label as string | null | undefined) ?? null,
+      service: (item.service as string | null | undefined) ?? null,
+      serviceLabel: (item.service_label as string | null | undefined) ?? null,
       createdAt: item.created_at as string | undefined,
       updatedAt: item.updated_at as string | undefined
     };
