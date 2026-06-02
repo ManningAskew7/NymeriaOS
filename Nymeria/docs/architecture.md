@@ -279,6 +279,19 @@ injected `spawn_sweeper` closure over the local agent); Docker runs it
 from a 30-minute API-side housekeeping task registered by
 `create_api_app` when the in-process ticker is disabled.
 
+Automatic dream scheduling (`nymeria/core/dreaming/scheduler.py`,
+`sweep_dreamable_threads`) follows the same runtime split: a periodic sweep
+(default 10 minutes) reads each dream-enabled thread's gate fields and the
+activity log, then fires `invoke_dream` for threads that pass all three gates
+(interval since last dream, user turns since last dream, current idle time) and
+are not mid-turn. It must run where the agent lives because `invoke_dream`
+dispatches the dream turn in-process: slim injects a `dream_sweeper` closure
+into the ticker; Docker runs it from an API-side heartbeat (the worker's ticker
+gets `dream_sweeper=None`). `invoke_dream` writes `last_dream_at` synchronously
+and holds a process-local single-flight slot per parent, so the interval gate
+self-serializes successive sweeps and a manual trigger cannot race a scheduled
+one.
+
 ---
 
 ### 4.1 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)

@@ -481,3 +481,167 @@ def test_idle_sweeper_deletes_temporary_dream_threads(stub_agent, monkeypatch):
 
     assert deleted == 1
     assert called == [(shadow_id, "u1")]
+
+
+# ---------------------------------------------------------------------------
+# _run_dream_cycle daemon body: SSE event emission + summary handling.
+#
+# invoke_dream's daemon dispatch is suppressed in the setup tests above. These
+# exercise the background body directly with a canned stream so we cover the
+# event contract frontends rely on (task_started/task_completed on the shadow,
+# dream_completed on the parent) without a real LLM runtime.
+# ---------------------------------------------------------------------------
+
+
+class _EventSink:
+    """Capture the three event-bus publishers the dream cycle uses."""
+
+    def __init__(self):
+        self.autonomous: list[dict[str, Any]] = []
+        self.sync: list[dict[str, Any]] = []
+        self.stream_chunks: list[dict[str, Any]] = []
+
+    def install(self, monkeypatch):
+        import nymeria.core.event_bus as bus
+
+        def _auto(event_type, thread_id, user_id, task_id, data):
+            self.autonomous.append(
+                {
+                    "event_type": event_type,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "task_id": task_id,
+                    "data": data,
+                }
+            )
+
+        def _sync(event_type, thread_id, user_id, data, origin_client_id=""):
+            self.sync.append(
+                {
+                    "event_type": event_type,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "data": data,
+                }
+            )
+
+        def _chunk(chunk, *, thread_id, user_id, task_id):
+            self.stream_chunks.append(
+                {"chunk": chunk, "thread_id": thread_id, "task_id": task_id}
+            )
+            return True
+
+        monkeypatch.setattr(bus, "publish_autonomous_event", _auto)
+        monkeypatch.setattr(bus, "publish_sync_event", _sync)
+        monkeypatch.setattr(bus, "publish_agent_stream_chunk", _chunk)
+        return self
+
+
+def _fake_stream(chunks, *, response_parts=None, iteration_limit_hit=False, raises=None):
+    """Build a stand-in for stream_bridge.stream_and_collect.
+
+    Replays ``chunks`` through ``on_chunk`` (so task_started fires on the first
+    non-queued chunk), then returns a StreamCollection — or raises if asked.
+    """
+    from nymeria.core.stream_bridge import StreamCollection
+
+    def _impl(agent, *, astream_kwargs, on_chunk=None, error_message_factory=None):
+        collection = StreamCollection()
+        collection.iteration_limit_hit = iteration_limit_hit
+        if raises is not None:
+            # Replay any chunks queued before the failure, then blow up.
+            for c in chunks:
+                if on_chunk is not None:
+                    on_chunk(c, collection)
+            raise raises
+        for c in chunks:
+            if on_chunk is not None:
+                on_chunk(c, collection)
+        if response_parts:
+            collection.response_parts = list(response_parts)
+        return collection
+
+    return _impl
+
+
+def _run_cycle(monkeypatch, stub_agent, fake_stream):
+    from nymeria.core.dreaming import invoke as invoke_mod
+    import nymeria.core.stream_bridge as bridge
+
+    monkeypatch.setattr(bridge, "stream_and_collect", fake_stream)
+    invoke_mod._run_dream_cycle(
+        agent=stub_agent,
+        shadow_thread_id="dream-parent-1-x",
+        parent_thread_id="parent-1",
+        user_id="u1",
+        initial_prompt="[Dream cycle starting]",
+        title="Dream: parent-1",
+    )
+
+
+def test_run_dream_cycle_emits_started_completed_and_dream_completed(
+    stub_agent, monkeypatch
+):
+    """Happy path: started + completed on shadow, dream_completed on parent."""
+    sink = _EventSink().install(monkeypatch)
+    fake = _fake_stream(
+        chunks=[
+            {"type": "queued"},  # must NOT trigger task_started
+            {"type": "thinking", "content": "looking at memory"},
+            {"type": "response", "content": "Pruned 2 stale facts."},
+        ],
+        response_parts=["Pruned 2 stale facts."],
+    )
+    _run_cycle(monkeypatch, stub_agent, fake)
+
+    started = [e for e in sink.autonomous if e["event_type"] == "task_started"]
+    completed = [e for e in sink.autonomous if e["event_type"] == "task_completed"]
+    assert len(started) == 1, sink.autonomous
+    # task_started must not fire on the "queued" chunk.
+    assert started[0]["data"]["trigger"] == "dream"
+    assert started[0]["data"]["parent_thread_id"] == "parent-1"
+    assert started[0]["thread_id"] == "dream-parent-1-x"
+
+    assert len(completed) == 1
+    assert completed[0]["data"].get("error") is not True
+    assert completed[0]["data"]["content"] == "Pruned 2 stale facts."
+    assert completed[0]["thread_id"] == "dream-parent-1-x"
+
+    dream_done = [e for e in sink.sync if e["event_type"] == "dream_completed"]
+    assert len(dream_done) == 1
+    assert dream_done[0]["thread_id"] == "parent-1"  # keyed to the PARENT
+    assert dream_done[0]["data"]["shadow_thread_id"] == "dream-parent-1-x"
+    assert dream_done[0]["data"]["summary"] == "Pruned 2 stale facts."
+
+
+def test_run_dream_cycle_marks_iteration_limit(stub_agent, monkeypatch):
+    """Hitting the iteration limit with no summary yields the sentinel text."""
+    sink = _EventSink().install(monkeypatch)
+    fake = _fake_stream(
+        chunks=[{"type": "thinking", "content": "..."}],
+        response_parts=None,
+        iteration_limit_hit=True,
+    )
+    _run_cycle(monkeypatch, stub_agent, fake)
+
+    completed = [e for e in sink.autonomous if e["event_type"] == "task_completed"]
+    assert len(completed) == 1
+    assert "iteration limit" in completed[0]["data"]["content"].lower()
+
+
+def test_run_dream_cycle_publishes_error_event_on_failure(stub_agent, monkeypatch):
+    """A stream failure surfaces as task_completed{error:True}, never raised."""
+    sink = _EventSink().install(monkeypatch)
+    fake = _fake_stream(
+        chunks=[{"type": "thinking", "content": "..."}],
+        raises=RuntimeError("provider exploded"),
+    )
+    # Must not raise out of the daemon body.
+    _run_cycle(monkeypatch, stub_agent, fake)
+
+    completed = [e for e in sink.autonomous if e["event_type"] == "task_completed"]
+    assert len(completed) == 1
+    assert completed[0]["data"]["error"] is True
+    assert "provider exploded" in completed[0]["data"]["error_message"]
+    # No dream_completed on the parent when the cycle failed.
+    assert not [e for e in sink.sync if e["event_type"] == "dream_completed"]

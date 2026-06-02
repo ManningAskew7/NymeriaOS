@@ -14,6 +14,12 @@ from .invoke import (
     DreamInvocationError,
     invoke_dream,
 )
+from .scheduler import (
+    DREAM_SWEEP_INTERVAL_SECONDS,
+    DreamDecision,
+    evaluate_dream_eligibility,
+    sweep_dreamable_threads,
+)
 
 __all__ = [
     "DEFAULT_DREAM_ENABLED_CORE_TOOLS",
@@ -21,4 +27,8 @@ __all__ = [
     "DEFAULT_DREAM_DISABLED_CORE_TOOLS",
     "DreamInvocationError",
     "invoke_dream",
+    "DREAM_SWEEP_INTERVAL_SECONDS",
+    "DreamDecision",
+    "evaluate_dream_eligibility",
+    "sweep_dreamable_threads",
 ]
