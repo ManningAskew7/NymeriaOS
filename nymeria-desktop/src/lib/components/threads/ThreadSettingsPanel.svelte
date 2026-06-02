@@ -428,11 +428,15 @@
   let showToolWarning = $state(false);
 
   // Tools tab transient UI state lives here (not in ToolsConfigTab) so the
-  // search query and group expand/collapse survive switching tabs, which
-  // unmounts/remounts the active tab body.
-  let toolSearch = $state('');
-  let toolsExpanded = $state<Set<string>>(new Set());
-  let toolsCollapsed = $state<Set<string>>(new Set());
+  // search query and group expand/collapse survive switching tabs. Native and
+  // MCP keep separate state so a query in one sub-tab does not carry over and
+  // filter the other (different vocabulary) down to nothing.
+  let toolSearchNative = $state('');
+  let toolSearchMcp = $state('');
+  let toolsExpandedNative = $state<Set<string>>(new Set());
+  let toolsExpandedMcp = $state<Set<string>>(new Set());
+  let toolsCollapsedNative = $state<Set<string>>(new Set());
+  let toolsCollapsedMcp = $state<Set<string>>(new Set());
 
   // Effective active tool count for this thread (default minus disabled, plus
   // optional enabled + live TTL'd) — drives the >25 tool warning shown on save.
@@ -1062,16 +1066,29 @@
                 bind:compactThresholdTokens
               />
             {:else if activeTab === 'tools-native' || activeTab === 'tools-mcp'}
-              <ToolsConfigTab
-                section={toolSection}
-                threadId={thread.id}
-                bind:disabledTools
-                bind:enabledTools
-                temporaryTools={threadConfig?.temporaryTools}
-                bind:query={toolSearch}
-                bind:expanded={toolsExpanded}
-                bind:collapsed={toolsCollapsed}
-              />
+              {#if toolSection === 'mcp'}
+                <ToolsConfigTab
+                  section="mcp"
+                  threadId={thread.id}
+                  bind:disabledTools
+                  bind:enabledTools
+                  temporaryTools={threadConfig?.temporaryTools}
+                  bind:query={toolSearchMcp}
+                  bind:expanded={toolsExpandedMcp}
+                  bind:collapsed={toolsCollapsedMcp}
+                />
+              {:else}
+                <ToolsConfigTab
+                  section="native"
+                  threadId={thread.id}
+                  bind:disabledTools
+                  bind:enabledTools
+                  temporaryTools={threadConfig?.temporaryTools}
+                  bind:query={toolSearchNative}
+                  bind:expanded={toolsExpandedNative}
+                  bind:collapsed={toolsCollapsedNative}
+                />
+              {/if}
             {:else if activeTab === 'skills'}
               <SkillsConfigTab
                 bind:threadEnabledSkills

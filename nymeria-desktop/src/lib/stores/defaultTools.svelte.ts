@@ -75,6 +75,15 @@ function createDefaultToolsStore() {
 
     resetLoaded() { loaded = false; },
 
+    // Force a fresh fetch after a failed load. The catch block above leaves
+    // `loaded = true` so consuming panels don't loop, which also means they
+    // won't auto-retry; this lets a "Retry" affordance recover without a reload.
+    async reload(userId?: string): Promise<void> {
+      loaded = false;
+      error = null;
+      await this.load(userId);
+    },
+
     async save(toolNames: string[], userId?: string): Promise<boolean> {
       saving = true;
       error = null;
