@@ -39,29 +39,36 @@
 <div class="tab-body">
   <ThreadSettingsSection
     title="Dreaming"
-    description="Background self-reflection for this thread. Dream turns run in a shadow thread and write only through the dream tool policy."
+    description="Lets this thread reflect on its own. When the conversation goes quiet, Nymeria wakes in a private shadow copy of this thread, re-reads the recent conversation and its memory, consolidates or prunes notes, and can schedule follow-up tasks. A dream never replies here and never interrupts you; it only updates memory and todos in the background."
   >
     <label class="toggle-row">
       <input type="checkbox" bind:checked={dreamEnabled} />
       <span class="toggle-label">Enable dreaming for this thread</span>
     </label>
+    <p class="section-note">
+      While enabled, a dream starts on its own once all three thresholds below are met. Nymeria checks roughly every 10 minutes, so a dream may begin a few minutes after the thread falls idle.
+    </p>
 
     <div class="grid-2">
       <div class="field-group">
         <label class="field-label" for="dream-min-interval">Min interval (hours)</label>
         <input id="dream-min-interval" class="field-input" type="number" min="1" max="168" step="1" bind:value={dreamMinIntervalHours} />
+        <span class="input-hint">Shortest gap between dreams. The clock starts at the last dream, so this caps how often a thread can dream (default 6).</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-min-idle">Min idle (minutes)</label>
         <input id="dream-min-idle" class="field-input" type="number" min="5" max="10080" step="5" bind:value={dreamMinIdleMinutes} />
+        <span class="input-hint">How long the thread must be quiet before a dream may start, so a live conversation is never disturbed. Minimum 5 (default 30).</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-min-turns">Min turns since last</label>
         <input id="dream-min-turns" class="field-input" type="number" min="1" max="10000" step="1" bind:value={dreamMinTurnsSinceLast} />
+        <span class="input-hint">How many of your messages must build up since the last dream, so there is enough new material to reflect on (default 10).</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-model">Dream model</label>
         <input id="dream-model" class="field-input" type="text" bind:value={dreamModel} placeholder="Default model" maxlength={120} />
+        <span class="input-hint">Model the dream turn runs on. Leave blank to use your global default model.</span>
       </div>
     </div>
 
@@ -83,6 +90,9 @@
         <span class="dream-status">{dreamStatus}</span>
       {/if}
     </div>
+    <p class="input-hint">
+      Run Dream triggers one dream right now and ignores the thresholds above (it still needs dreaming enabled and your changes saved first). Use it to preview what a dream does for this thread.
+    </p>
   </ThreadSettingsSection>
 </div>
 
@@ -106,6 +116,23 @@
     color: var(--text-muted);
     line-height: 1.45;
     margin: var(--spacing-md) 0 0;
+  }
+
+  /* Per-field help under an input. */
+  .input-hint {
+    display: block;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.45;
+    margin-top: var(--spacing-xs);
+  }
+
+  /* Explanatory paragraph under the enable toggle. */
+  .section-note {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0 0 var(--spacing-md);
   }
 
   .field-input {
