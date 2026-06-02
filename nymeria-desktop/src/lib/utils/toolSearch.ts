@@ -1,6 +1,7 @@
 export interface ToolSearchFields {
   name?: string;
   id?: string;
+  shortName?: string;
   description?: string;
   category?: string;
   tags?: string[];
@@ -17,10 +18,23 @@ export interface RankedTool<T> {
 
 const WORD_RE = /[a-z0-9]+/g;
 
+// Minimum score for a tool to count as a match. Kept low because the scoring
+// below is conservative: a real lexical or token match clears this comfortably,
+// while incidental bigram overlap does not.
+const SCORE_FLOOR = 0.3;
+
+// Relative weight per field. Name-like fields dominate; descriptions count for
+// less so a stray word in a long description never outranks a name hit.
+const WEIGHT_NAME = 1;
+const WEIGHT_CATEGORY = 0.85;
+const WEIGHT_TAGS = 0.85;
+const WEIGHT_DESCRIPTION = 0.6;
+
 export function defaultToolSearchFields(item: Record<string, unknown>): ToolSearchFields {
   return {
     name: stringValue(item.name),
     id: stringValue(item.id),
+    shortName: stringValue(item.shortName ?? item.short_name),
     description: stringValue(item.description),
     category: stringValue(item.category),
     tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
@@ -35,15 +49,20 @@ export function rankToolSearch<T>(
   getFields: ToolSearchFieldGetter<T> = (item) =>
     defaultToolSearchFields(item as Record<string, unknown>)
 ): RankedTool<T>[] {
-  const normalizedQuery = normalize(query);
-  if (!normalizedQuery) {
+  const queryJoined = joined(query);
+  const queryTokens = tokens(query);
+  if (!queryJoined && queryTokens.length === 0) {
     return items.map((item) => ({ item, score: 1 }));
   }
 
   return items
-    .map((item) => ({ item, score: scoreFields(getFields(item), normalizedQuery) }))
-    .filter((entry) => entry.score >= 0.34)
-    .sort((a, b) => b.score - a.score || toolName(getFields(a.item)).localeCompare(toolName(getFields(b.item))));
+    .map((item) => {
+      const fields = getFields(item);
+      return { item, fields, score: scoreFields(fields, queryJoined, queryTokens) };
+    })
+    .filter((entry) => entry.score >= SCORE_FLOOR)
+    .sort((a, b) => b.score - a.score || toolName(a.fields).localeCompare(toolName(b.fields)))
+    .map((entry) => ({ item: entry.item, score: entry.score }));
 }
 
 export function filterToolSearch<T>(
@@ -54,38 +73,92 @@ export function filterToolSearch<T>(
   return rankToolSearch(items, query, getFields).map((entry) => entry.item);
 }
 
-function scoreFields(fields: ToolSearchFields, query: string): number {
-  const name = normalize(fields.name);
-  const id = normalize(fields.id);
-  const category = normalize(fields.category);
-  const description = normalize(fields.description);
-  const tagText = normalize([...(fields.tags ?? []), fields.toolType, fields.implementationType].join(' '));
-  const snakeName = normalize(splitSnake(fields.name ?? fields.id ?? ''));
-  const haystacks = [name, id, snakeName, category, tagText, description].filter(Boolean);
-
+function scoreFields(fields: ToolSearchFields, queryJoined: string, queryTokens: string[]): number {
   let best = 0;
-  for (const haystack of haystacks) {
-    best = Math.max(best, scoreText(query, haystack));
-  }
+  const consider = (value: string | null | undefined, weight: number) => {
+    if (!value) return;
+    const quality = fieldQuality(value, queryJoined, queryTokens);
+    if (quality > 0) best = Math.max(best, quality * weight);
+  };
 
-  const queryTokens = tokens(query);
-  const combinedTokens = new Set(tokens(haystacks.join(' ')));
-  if (queryTokens.length > 0 && queryTokens.every((token) => combinedTokens.has(token))) {
-    best = Math.max(best, 0.78);
-  }
+  consider(fields.name, WEIGHT_NAME);
+  consider(fields.id, WEIGHT_NAME);
+  consider(fields.shortName, WEIGHT_NAME);
+  consider(fields.category, WEIGHT_CATEGORY);
+  consider(fields.description, WEIGHT_DESCRIPTION);
+
+  const tagText = [...(fields.tags ?? []), fields.toolType, fields.implementationType]
+    .filter(Boolean)
+    .join(' ');
+  consider(tagText, WEIGHT_TAGS);
 
   return best;
 }
 
-function scoreText(query: string, haystack: string): number {
+// Match quality of one field against the query, in [0, 1]. Combines a
+// contiguous lexical match (delimiter-insensitive) with an any-order token
+// match, taking whichever is stronger. Tokenizes the field once and reuses it
+// for both lanes.
+function fieldQuality(value: string, queryJoined: string, queryTokens: string[]): number {
+  const haystackTokens = tokens(value);
+  if (haystackTokens.length === 0) return 0;
+
+  // Fuzzy (typo / bigram) matching only makes sense for a single-word query.
+  // For multi-word queries the token lane below is the authority; letting the
+  // joined-form fuzzy paths fire would admit matches that ignore word
+  // boundaries (e.g. "discord calendar" bigram-matching "discord_send_message").
+  const allowFuzzy = queryTokens.length <= 1;
+  let best = scoreText(queryJoined, haystackTokens.join(''), allowFuzzy);
+  if (queryTokens.length > 0) {
+    best = Math.max(best, tokenScore(queryTokens, haystackTokens));
+  }
+  return best;
+}
+
+// Contiguous match on the delimiter-stripped form: exact > prefix > substring >
+// in-order subsequence, then (single-word queries only) whole-string typo >
+// bigram similarity.
+function scoreText(query: string, haystack: string, allowFuzzy: boolean): number {
   if (!query || !haystack) return 0;
   if (query === haystack) return 1;
-  if (haystack.startsWith(query)) return 0.92;
+  if (haystack.startsWith(query)) return 0.93;
   if (haystack.includes(query)) return 0.82;
   if (isSubsequence(query, haystack)) {
-    return Math.max(0.42, 0.74 - Math.max(0, haystack.length - query.length) / 80);
+    return Math.max(0.4, 0.68 - Math.max(0, haystack.length - query.length) / 80);
+  }
+  if (!allowFuzzy) return 0;
+  if (query.length >= 4) {
+    const dist = boundedLevenshtein(query, haystack, 2);
+    if (dist >= 0) return Math.max(0, 0.72 - dist * 0.12);
   }
   return diceCoefficient(query, haystack);
+}
+
+// Any-order word match: every query token must hit some field token. Returns 0
+// if any query token has no match (AND semantics), else the mean per-token
+// quality, scaled just under a perfect contiguous match.
+function tokenScore(queryTokens: string[], haystackTokens: string[]): number {
+  if (queryTokens.length === 0 || haystackTokens.length === 0) return 0;
+  let total = 0;
+  for (const qt of queryTokens) {
+    let bestForToken = 0;
+    for (const ht of haystackTokens) {
+      bestForToken = Math.max(bestForToken, tokenPairScore(qt, ht));
+      if (bestForToken === 1) break;
+    }
+    if (bestForToken === 0) return 0;
+    total += bestForToken;
+  }
+  return (total / queryTokens.length) * 0.96;
+}
+
+function tokenPairScore(query: string, token: string): number {
+  if (query === token) return 1;
+  if (token.startsWith(query)) return 0.9;
+  if (query.startsWith(token)) return 0.78;
+  if (query.length >= 3 && token.includes(query)) return 0.7;
+  if (query.length >= 4 && boundedLevenshtein(query, token, 1) === 1) return 0.66;
+  return 0;
 }
 
 function diceCoefficient(a: string, b: string): number {
@@ -124,16 +197,41 @@ function isSubsequence(needle: string, haystack: string): boolean {
   return false;
 }
 
-function normalize(value: unknown): string {
+// Levenshtein distance with an early bail-out: returns -1 as soon as the
+// distance is known to exceed `max`, so callers pay only for near-matches.
+function boundedLevenshtein(a: string, b: string, max: number): number {
+  const al = a.length;
+  const bl = b.length;
+  if (Math.abs(al - bl) > max) return -1;
+  let prev = new Array<number>(bl + 1);
+  let curr = new Array<number>(bl + 1);
+  for (let j = 0; j <= bl; j += 1) prev[j] = j;
+  for (let i = 1; i <= al; i += 1) {
+    curr[0] = i;
+    let rowMin = curr[0];
+    for (let j = 1; j <= bl; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      if (curr[j] < rowMin) rowMin = curr[j];
+    }
+    if (rowMin > max) return -1;
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
+  }
+  return prev[bl] <= max ? prev[bl] : -1;
+}
+
+// Delimiter-stripped, lowercased form for contiguous matching: "send_email" and
+// "sendEmail" both collapse to "sendemail".
+function joined(value: unknown): string {
   return tokens(String(value ?? '')).join('');
 }
 
+// Word tokens, splitting on camelCase boundaries and any non-alphanumeric run.
 function tokens(value: string): string[] {
-  return (splitSnake(value).toLowerCase().match(WORD_RE) ?? []).filter(Boolean);
-}
-
-function splitSnake(value: string): string {
-  return value.replace(/[_\-.]+/g, ' ');
+  const spaced = String(value ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return spaced.toLowerCase().match(WORD_RE) ?? [];
 }
 
 function stringValue(value: unknown): string {
@@ -141,5 +239,5 @@ function stringValue(value: unknown): string {
 }
 
 function toolName(fields: ToolSearchFields): string {
-  return fields.name || fields.id || '';
+  return fields.name || fields.id || fields.shortName || '';
 }

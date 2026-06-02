@@ -126,6 +126,15 @@ function createUnifiedToolsStore() {
     loaded = false;
   }
 
+  // Force a fresh fetch after a failed load. The catch block above leaves
+  // `loaded = true` so consuming panels don't loop, which also means they won't
+  // auto-retry; this lets a "Retry" affordance recover without an app reload.
+  async function reload(userId?: string): Promise<void> {
+    loaded = false;
+    error = null;
+    await loadTools(userId);
+  }
+
   async function setToolEnabled(
     toolId: string,
     enabled: boolean,
@@ -248,6 +257,7 @@ function createUnifiedToolsStore() {
     // Actions
     loadTools,
     resetLoaded,
+    reload,
     setToolEnabled,
     setToolDescription,
     setToolConfig,

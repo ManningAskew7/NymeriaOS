@@ -73,6 +73,20 @@
   const ready = $derived(defaultToolsStore.loaded && unifiedToolsStore.loaded);
   const loading = $derived(!ready);
 
+  // A failed catalog fetch leaves the stores `loaded` (so the panel effect does
+  // not loop), which means search would otherwise run over a shrunken universe
+  // with no recovery. Let the error state re-fetch both stores on demand.
+  let retrying = $state(false);
+  async function retryLoad() {
+    retrying = true;
+    try {
+      mcpServersStore.refresh();
+      await Promise.all([unifiedToolsStore.reload(), defaultToolsStore.reload()]);
+    } finally {
+      retrying = false;
+    }
+  }
+
   const mcpServersForThread = $derived.by(() => {
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
     return mcpServersStore.servers.map((server) => ({
@@ -151,9 +165,12 @@
 
   const searchFields = (item: ToolItem) => ({
     name: item.name,
+    shortName: item.shortName,
     description: item.description,
-    category: item.category,
-    tags: item.isMcp ? ['mcp', item.serverName ?? ''] : [],
+    // Search the human-readable category label (e.g. "Google Docs") and keep
+    // the raw key + MCP server name as tags, so both vocabularies match.
+    category: getCategoryInfo(item.category).name,
+    tags: item.isMcp ? ['mcp', item.serverName ?? '', item.category] : [item.category],
   });
 
   const filtered = $derived(filterToolSearch(allItems, query, searchFields));
@@ -166,7 +183,11 @@
   const mcpEnabledCount = $derived(enabledItems.filter((i) => i.isMcp).length);
   const mcpAvailCount = $derived(availableItems.filter((i) => i.isMcp).length);
 
-  function buildGroups(items: ToolItem[]) {
+  // When `ranked` (a search is active), `items` arrive ordered by relevance
+  // (best match first), so groups appear in order of their best-scoring item
+  // and items keep their score order within a group. With no query we fall back
+  // to the curated category order, A-Z within.
+  function buildGroups(items: ToolItem[], ranked: boolean) {
     const byCat = new Map<string, ToolItem[]>();
     const byServer = new Map<string, { id: string; name: string; enabled: boolean; items: ToolItem[] }>();
     for (const it of items) {
@@ -183,18 +204,29 @@
         byCat.set(it.category, arr);
       }
     }
+
+    const makeCat = (cat: string, arr: ToolItem[]) => ({
+      key: cat, title: getCategoryInfo(cat).name, icon: categoryIcon(cat),
+      items: ranked ? arr : sortItems(arr),
+    });
+
     const catGroups: { key: string; title: string; icon: string; items: ToolItem[] }[] = [];
-    const seen = new Set<string>();
-    for (const cat of CATEGORY_ORDER) {
-      const arr = byCat.get(cat);
-      if (arr?.length) { catGroups.push({ key: cat, title: getCategoryInfo(cat).name, icon: categoryIcon(cat), items: sortItems(arr) }); seen.add(cat); }
+    if (ranked) {
+      // Map insertion order is first-appearance order, i.e. best-match-first.
+      for (const [cat, arr] of byCat) if (arr.length) catGroups.push(makeCat(cat, arr));
+    } else {
+      const seen = new Set<string>();
+      for (const cat of CATEGORY_ORDER) {
+        const arr = byCat.get(cat);
+        if (arr?.length) { catGroups.push(makeCat(cat, arr)); seen.add(cat); }
+      }
+      for (const [cat, arr] of byCat) {
+        if (!seen.has(cat) && arr.length) catGroups.push(makeCat(cat, arr));
+      }
     }
-    for (const [cat, arr] of byCat) {
-      if (!seen.has(cat) && arr.length) catGroups.push({ key: cat, title: getCategoryInfo(cat).name, icon: categoryIcon(cat), items: sortItems(arr) });
-    }
-    const serverGroups = [...byServer.values()]
-      .map((g) => ({ ...g, items: sortItems(g.items) }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const serverList = [...byServer.values()].map((g) => ({ ...g, items: ranked ? g.items : sortItems(g.items) }));
+    const serverGroups = ranked ? serverList : serverList.sort((a, b) => a.name.localeCompare(b.name));
     return { catGroups, serverGroups };
   }
 
@@ -202,8 +234,8 @@
     return [...items].sort((a, b) => a.shortName.localeCompare(b.shortName));
   }
 
-  const enabledGroups = $derived(buildGroups(enabledItems));
-  const availableGroups = $derived(buildGroups(availableItems));
+  const enabledGroups = $derived(buildGroups(enabledItems, searchActive));
+  const availableGroups = $derived(buildGroups(availableItems, searchActive));
 
   // Installed MCP servers that discovered no tools still get a visible entry.
   const emptyMcpServers = $derived(mcpServersForThread.filter((s) => s.tools.length === 0));
@@ -250,20 +282,26 @@
 
   // Backend semantic-search fallback for names the local fuzzy ranker missed.
   let backendResults = $state<ToolSearchResult[]>([]);
+  let searching = $state(false);
   let searchDebounce: ReturnType<typeof setTimeout> | null = null;
   let searchGen = 0;
   $effect(() => {
     const q = query.trim();
     if (searchDebounce) { clearTimeout(searchDebounce); searchDebounce = null; }
-    if (q.length < 2) { backendResults = []; return; }
+    // Bump the generation up front so an in-flight fetch from a previous query
+    // is invalidated even on the clear / short-query path (no stale flash-back).
     const gen = ++searchGen;
+    if (q.length < 2) { backendResults = []; searching = false; return; }
+    searching = true;
     searchDebounce = setTimeout(async () => {
       try {
-        const resp = await api.searchTools({ query: q, threadId, topK: 20, includeStatus: false });
+        const resp = await api.searchTools({ query: q, threadId, topK: 30, includeStatus: false });
         if (gen !== searchGen) return;
         backendResults = resp.results;
       } catch {
         if (gen === searchGen) backendResults = [];
+      } finally {
+        if (gen === searchGen) searching = false;
       }
     }, 200);
     return () => {
@@ -274,25 +312,51 @@
     };
   });
 
-  // Native-only extras from backend search (MCP results are dropped here).
+  // Extras from backend semantic search for names the local ranker missed,
+  // split by source so each renders under its own "Available to add" section.
+  // Already-shown and already-enabled tools are excluded: they belong in the
+  // local list or the Enabled section, not in available extras.
   const backendExtras = $derived.by(() => {
-    if (!searchActive || backendResults.length === 0) return [] as ToolItem[];
+    const out = { native: [] as ToolItem[], mcp: [] as ToolItem[] };
+    if (!searchActive || backendResults.length === 0) return out;
     const shown = new Set(filtered.map((i) => i.name));
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    const out: ToolItem[] = [];
+    const serverNameById = new Map(mcpServersForThread.map((s) => [s.id, s.name]));
+    const discoveredMcpNames = new Set(mcpServersForThread.flatMap((s) => s.tools.map((t) => t.mcpName)));
     for (const r of backendResults) {
-      if (r.name.startsWith('mcp__') || r.toolType === 'mcp_server') continue;
-      if (shown.has(r.name)) continue;
-      out.push({
-        name: r.name,
-        shortName: r.name,
-        description: r.description,
-        category: r.category ?? 'general',
-        isMcp: false,
-        isDefault: coreSet.has(r.name),
-        isTemporary: false,
-        expiresAt: null,
-      });
+      if (shown.has(r.name) || enabledNameSet.has(r.name)) continue;
+      if (r.name.startsWith('mcp__') || r.toolType === 'mcp_server') {
+        const parts = r.name.split('__');
+        const serverId = parts[1] ?? '';
+        // Only surface MCP tools this thread's servers have actually discovered:
+        // the backend indexes the global MCP catalog, but a name absent from
+        // allItems would make the row vanish the moment it is toggled on.
+        if (!discoveredMcpNames.has(r.name)) continue;
+        out.mcp.push({
+          name: r.name,
+          shortName: parts.slice(2).join('__') || r.name,
+          description: r.description,
+          category: 'mcp_server',
+          isMcp: true,
+          serverId,
+          serverName: serverNameById.get(serverId) ?? serverId,
+          serverEnabled: true,
+          isDefault: coreSet.has(r.name),
+          isTemporary: false,
+          expiresAt: null,
+        });
+      } else {
+        out.native.push({
+          name: r.name,
+          shortName: r.name,
+          description: r.description,
+          category: r.category ?? 'general',
+          isMcp: false,
+          isDefault: coreSet.has(r.name),
+          isTemporary: false,
+          expiresAt: null,
+        });
+      }
     }
     return out;
   });
@@ -301,7 +365,12 @@
 
 <div class="tools-tab">
   {#if loadError}
-    <div class="tools-msg">{loadError}</div>
+    <div class="tools-msg">
+      <p>{loadError}</p>
+      <button class="retry-btn" type="button" onclick={retryLoad} disabled={retrying}>
+        {retrying ? 'Retrying...' : 'Retry'}
+      </button>
+    </div>
   {:else if loading}
     <div class="tools-msg">Loading tools...</div>
   {:else}
@@ -319,6 +388,9 @@
         </button>
       {/if}
     </div>
+    {#if searching}
+      <div class="search-status">Searching the full catalog...</div>
+    {/if}
 
     {#if section === 'native'}
       <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
@@ -333,14 +405,14 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={nativeAvailCount + backendExtras.length} description="Not enabled here. Toggle on to add for this thread only." flush>
-        {#if nativeAvailCount === 0 && backendExtras.length === 0}
+      <ThreadSettingsSection title="Available to add" count={nativeAvailCount + backendExtras.native.length} description="Not enabled here. Toggle on to add for this thread only." flush>
+        {#if nativeAvailCount === 0 && backendExtras.native.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No other native tools match your search.' : 'Every native tool is already enabled.'}
           </div>
         {:else}
-          {#if backendExtras.length > 0}
-            {@render toolGroup('avail:more', 'More from search', 'tool', backendExtras, false, true)}
+          {#if backendExtras.native.length > 0}
+            {@render toolGroup('avail:more', 'More from search', 'tool', backendExtras.native, false, true)}
           {/if}
           {#each availableGroups.catGroups as g (g.key)}
             {@render toolGroup(`avail:cat:${g.key}`, g.title, g.icon, g.items, false, false)}
@@ -360,8 +432,8 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={mcpAvailCount + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
-        {#if mcpAvailCount === 0 && (searchActive || emptyMcpServers.length === 0)}
+      <ThreadSettingsSection title="Available to add" count={mcpAvailCount + backendExtras.mcp.length + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
+        {#if mcpAvailCount === 0 && backendExtras.mcp.length === 0 && (searchActive || emptyMcpServers.length === 0)}
           <div class="tools-msg subtle">
             {#if searchActive}
               No other MCP tools match your search.
@@ -372,6 +444,9 @@
             {/if}
           </div>
         {:else}
+          {#if backendExtras.mcp.length > 0}
+            {@render toolGroup('avail:srv:more', 'More from search', 'server', backendExtras.mcp, false, true)}
+          {/if}
           {#each availableGroups.serverGroups as g (g.id)}
             {@render toolGroup(`avail:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, false)}
           {/each}
@@ -488,6 +563,25 @@
     font-size: var(--font-size-sm);
   }
   .tools-msg.subtle { font-size: var(--font-size-xs); }
+
+  .retry-btn {
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-xs) var(--spacing-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .retry-btn:hover:not(:disabled) { background: var(--bg-hover); }
+  .retry-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .search-status {
+    margin: calc(-1 * var(--spacing-xs)) 0 var(--spacing-md);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
 
   .tools-foot-hint {
     margin: var(--spacing-md) 0 0;
