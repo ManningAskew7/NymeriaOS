@@ -18,6 +18,12 @@
     defaultOpen?: boolean;
     /** Tighter top gap for list-heavy sections (tools). */
     flush?: boolean;
+    /**
+     * Open state. Bindable so a parent can hoist it (and have it survive this
+     * component being unmounted/remounted). Defaults from defaultOpen when
+     * collapsible; a non-collapsible section is always open.
+     */
+    open?: boolean;
     children: Snippet;
   }
 
@@ -28,11 +34,9 @@
     collapsible = false,
     defaultOpen = true,
     flush = false,
+    open = $bindable(collapsible ? defaultOpen : true),
     children,
   }: Props = $props();
-
-  // svelte-ignore state_referenced_locally — intentional one-time initialization
-  let open = $state(collapsible ? defaultOpen : true);
 </script>
 
 <section class="ts-section">

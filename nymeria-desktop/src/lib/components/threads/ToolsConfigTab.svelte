@@ -30,6 +30,10 @@
     query?: string;
     expanded?: Set<string>;
     collapsed?: Set<string>;
+    // Open/closed state of the two pools (Enabled / Available), hoisted like the
+    // rest so it survives the remount. Mirrors the global panel's Core/Available.
+    enabledOpen?: boolean;
+    availableOpen?: boolean;
   }
 
   let {
@@ -41,6 +45,8 @@
     query = $bindable(''),
     expanded = $bindable(new Set()),
     collapsed = $bindable(new Set()),
+    enabledOpen = $bindable(true),
+    availableOpen = $bindable(false),
   }: Props = $props();
 
   type ToolItem = {
@@ -365,7 +371,7 @@
     {/if}
 
     {#if section === 'native'}
-      <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabled.length} description="Native tools the agent can use in this thread." flush>
+      <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabled.length} description="Native tools the agent can use in this thread." flush collapsible bind:open={enabledOpen}>
         {#if nativeEnabled.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled native tools match your search.' : 'No native tools enabled for this thread.'}
@@ -375,7 +381,7 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={nativeAvail.length} description="Not enabled here. Toggle on to add for this thread only." flush>
+      <ThreadSettingsSection title="Available to add" count={nativeAvail.length} description="Not enabled here. Toggle on to add for this thread only." flush collapsible bind:open={availableOpen}>
         {#if nativeAvail.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No other native tools match your search.' : 'Every native tool is already enabled.'}
@@ -385,7 +391,7 @@
         {/if}
       </ThreadSettingsSection>
     {:else}
-      <ThreadSettingsSection title="Enabled for this thread" count={mcpEnabled.length} description="MCP server tools enabled in this thread." flush>
+      <ThreadSettingsSection title="Enabled for this thread" count={mcpEnabled.length} description="MCP server tools enabled in this thread." flush collapsible bind:open={enabledOpen}>
         {#if mcpEnabled.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled MCP tools match your search.' : 'No MCP tools enabled for this thread.'}
@@ -395,7 +401,7 @@
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={mcpAvail.length + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings -> MCP." flush>
+      <ThreadSettingsSection title="Available to add" count={mcpAvail.length + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings -> MCP." flush collapsible bind:open={availableOpen}>
         {#if mcpAvail.length === 0 && (searchActive || emptyMcpServers.length === 0)}
           <div class="tools-msg subtle">
             {#if searchActive}

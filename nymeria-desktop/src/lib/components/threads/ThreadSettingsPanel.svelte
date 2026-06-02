@@ -437,6 +437,13 @@
   let toolsExpandedMcp = $state<Set<string>>(new Set());
   let toolsCollapsedNative = $state<Set<string>>(new Set());
   let toolsCollapsedMcp = $state<Set<string>>(new Set());
+  // Enabled/Available pool open state, hoisted so collapsing one pool survives
+  // switching between the Native and MCP sub-tabs (Enabled open, Available
+  // closed by default, mirroring the global Tools panel).
+  let toolsEnabledOpenNative = $state(true);
+  let toolsAvailableOpenNative = $state(false);
+  let toolsEnabledOpenMcp = $state(true);
+  let toolsAvailableOpenMcp = $state(false);
 
   // Effective active tool count for this thread (default minus disabled, plus
   // optional enabled + live TTL'd) — drives the >25 tool warning shown on save.
@@ -1076,6 +1083,8 @@
                   bind:query={toolSearchMcp}
                   bind:expanded={toolsExpandedMcp}
                   bind:collapsed={toolsCollapsedMcp}
+                  bind:enabledOpen={toolsEnabledOpenMcp}
+                  bind:availableOpen={toolsAvailableOpenMcp}
                 />
               {:else}
                 <ToolsConfigTab
@@ -1087,6 +1096,8 @@
                   bind:query={toolSearchNative}
                   bind:expanded={toolsExpandedNative}
                   bind:collapsed={toolsCollapsedNative}
+                  bind:enabledOpen={toolsEnabledOpenNative}
+                  bind:availableOpen={toolsAvailableOpenNative}
                 />
               {/if}
             {:else if activeTab === 'skills'}
