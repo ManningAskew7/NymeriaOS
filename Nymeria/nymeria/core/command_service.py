@@ -901,7 +901,11 @@ class CommandBackendClient:
             OPTIONAL_TOOLS,
             filter_discoverable_optional_tool_names,
         )
-        from ..tools.metadata import MCP_SERVER_TOOL_METADATA, get_tool_metadata
+        from ..tools.metadata import (
+            MCP_SERVER_TOOL_METADATA,
+            get_tool_metadata,
+            integration_grouping_fields,
+        )
 
         target_user_id = self._checked_user_id(user_id)
         profile = self.agent.profile_manager.get_profile(target_user_id)
@@ -920,25 +924,29 @@ class CommandBackendClient:
         )
         for t in ALL_TOOLS:
             meta = get_tool_metadata(t.name)
+            category = meta.category.value if meta else "general"
             tools_out.append({
                 "name": t.name,
                 "description": t.description,
-                "category": meta.category.value if meta else "general",
+                "category": category,
                 "security_level": meta.security_level.value if meta else "moderate",
                 "is_optional": False,
                 "is_default": t.name in default_set,
+                **integration_grouping_fields(t.name, category),
             })
             seen.add(t.name)
         for name, tool in OPTIONAL_TOOLS.items():
             if name in visible_optional and name not in seen:
                 meta = get_tool_metadata(name)
+                category = meta.category.value if meta else "unknown"
                 tools_out.append({
                     "name": name,
                     "description": tool.description,
-                    "category": meta.category.value if meta else "unknown",
+                    "category": category,
                     "security_level": meta.security_level.value if meta else "moderate",
                     "is_optional": True,
                     "is_default": name in default_set,
+                    **integration_grouping_fields(name, category),
                 })
                 seen.add(name)
         for name, meta in MCP_SERVER_TOOL_METADATA.items():

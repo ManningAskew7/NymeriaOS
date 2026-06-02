@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
+# Thin re-export so callers reach the integration taxonomy through metadata.py
+# rather than importing the generated data module directly. The taxonomy module
+# imports nothing from this package, so this top-level import cannot cycle.
+from .integration_taxonomy import get_integration_grouping  # noqa: F401
+
 
 class ToolCategory(str, Enum):
     """Categories for grouping related tools."""
@@ -1307,3 +1312,36 @@ def get_all_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
     if tool_name in MCP_SERVER_TOOL_METADATA:
         return MCP_SERVER_TOOL_METADATA[tool_name]
     return CUSTOM_TOOL_METADATA.get(tool_name)
+
+
+_EMPTY_INTEGRATION_GROUPING: Dict[str, Optional[str]] = {
+    "group": None,
+    "group_label": None,
+    "service": None,
+    "service_label": None,
+}
+
+
+def integration_grouping_fields(
+    tool_name: str,
+    category: "ToolCategory | str | None",
+) -> Dict[str, Optional[str]]:
+    """Two-level grouping fields for a UI tool payload.
+
+    Returns ``{group, group_label, service, service_label}`` for an integration
+    tool (so the tool menus can nest functional group -> service -> tool), or all
+    ``None`` for every other category. Callers spread this into their payload
+    dict beside ``category``; non-integration tools stay single-level.
+    """
+    cat = category.value if isinstance(category, ToolCategory) else category
+    if cat != ToolCategory.INTEGRATIONS.value:
+        return dict(_EMPTY_INTEGRATION_GROUPING)
+    grouping = get_integration_grouping(tool_name)
+    if not grouping:
+        return dict(_EMPTY_INTEGRATION_GROUPING)
+    return {
+        "group": grouping["group"],
+        "group_label": grouping["group_label"],
+        "service": grouping["service"],
+        "service_label": grouping["service_label"],
+    }

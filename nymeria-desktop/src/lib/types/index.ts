@@ -513,6 +513,13 @@ export interface DefaultToolInfo {
   security_level: string;
   is_optional: boolean;
   is_default: boolean;
+  // Optional two-level integration grouping (integration tools only; null/absent
+  // for every other category). Emitted by the backend taxonomy and consumed by
+  // the shared grouped tool list. Snake_case to mirror this raw-passthrough type.
+  group?: string | null;
+  group_label?: string | null;
+  service?: string | null;
+  service_label?: string | null;
 }
 
 export interface DefaultToolsResponse {
@@ -520,6 +527,25 @@ export interface DefaultToolsResponse {
   default_tools: string[];
   available_tools: DefaultToolInfo[];
   callable_thread_count: number;
+}
+
+// Normalized row passed to the shared ToolGroupedList. Each panel maps its own
+// tool shape into this; `data` carries the original item back to the panel's
+// row snippet so panel-specific controls (toggles, badges, edit buttons) stay
+// in the panel while the component owns grouping/collapse/ordering.
+export interface GroupedToolItem<T = unknown> {
+  key: string;
+  label: string;
+  category: string;
+  group?: string | null;
+  groupLabel?: string | null;
+  service?: string | null;
+  serviceLabel?: string | null;
+  // MCP server dimension (used only in ToolGroupedList's 'server' mode).
+  serverId?: string;
+  serverName?: string;
+  serverEnabled?: boolean;
+  data: T;
 }
 
 export interface ThreadHistory {
@@ -1701,6 +1727,11 @@ export interface ToolSearchResult {
   status: string | null;
   score: number;
   enableHint: string;
+  // Optional two-level integration grouping (integration tools only).
+  group?: string | null;
+  groupLabel?: string | null;
+  service?: string | null;
+  serviceLabel?: string | null;
 }
 
 export interface ToolSearchResponse {
@@ -1742,6 +1773,11 @@ export interface UnifiedTool {
   };
   tags: string[];
   editable: boolean;
+  // Optional two-level integration grouping (integration tools only).
+  group?: string | null;
+  groupLabel?: string | null;
+  service?: string | null;
+  serviceLabel?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }

@@ -22,6 +22,11 @@ class ToolSearchResultResponse(BaseModel):
     status: Optional[str] = None
     score: float
     enable_hint: str
+    # Two-level integration grouping (integration tools only; None otherwise).
+    group: Optional[str] = None
+    group_label: Optional[str] = None
+    service: Optional[str] = None
+    service_label: Optional[str] = None
 
 
 class ToolSearchResponse(BaseModel):

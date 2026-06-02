@@ -2651,6 +2651,27 @@ tool objects. Descriptions come from the tool docstrings; `metadata.py` owns the
 policy fields that cannot be inferred from a docstring: category, security
 level, default-enabled state, and config schemas.
 
+### Integration sub-grouping
+
+The `integrations` category holds roughly 1,000 tools, so it carries a second
+level of structure for the tool menus: a functional **group** (level 1, e.g.
+`crm_sales`, `messaging_chat`) and a **service**/provider (level 2, e.g.
+`salesforce`, `aws_ses`). These come from `tools/integration_taxonomy.py`
+(`get_integration_grouping(tool_name)`, re-exported through `metadata.py`); the
+UI-facing builders spread `metadata.integration_grouping_fields(name, category)`
+into their payloads (`group`, `group_label`, `service`, `service_label`), null
+for every non-integration tool. `category` itself stays `integrations`, so
+security inference and plugin category overrides are unaffected.
+
+`service` is the longest underscore-delimited tool-name prefix in
+`SERVICE_REGISTRY` (so `aws_ses` wins over `aws`); a tool added before the
+registry is regenerated falls back to its first segment under the `other` group,
+so nothing is hidden. The file is a generated artifact (an agent swarm derives
+the service labels and group rollup, then a deterministic pass validates 100%
+coverage and prefix determinism). The frontend owns each group's icon and order
+in `nymeria-desktop/src/lib/utils/toolCategories.ts` (`GROUP_INFO`); keep it in
+sync with `GROUP_META` when regenerating.
+
 ### Security Levels
 
 | Level | Description |

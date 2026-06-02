@@ -179,7 +179,11 @@ def create_tools_router(
             OPTIONAL_TOOLS,
             filter_discoverable_optional_tool_names,
         )
-        from ...tools.metadata import MCP_SERVER_TOOL_METADATA, get_tool_metadata
+        from ...tools.metadata import (
+            MCP_SERVER_TOOL_METADATA,
+            get_tool_metadata,
+            integration_grouping_fields,
+        )
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
@@ -198,27 +202,31 @@ def create_tools_router(
         )
         for t in ALL_TOOLS:
             meta = get_tool_metadata(t.name)
+            category = meta.category.value if meta else "general"
             tools_out.append({
                 "name": t.name,
                 "description": t.description,
-                "category": meta.category.value if meta else "general",
+                "category": category,
                 "security_level": meta.security_level.value if meta else "moderate",
                 "is_optional": False,
                 "is_default": t.name in default_set,
+                **integration_grouping_fields(t.name, category),
             })
             seen.add(t.name)
         for name, t in OPTIONAL_TOOLS.items():
             if name in visible_optional and name not in seen:
                 meta = get_tool_metadata(name)
+                category = meta.category.value if meta else "unknown"
                 tools_out.append({
                     "name": name,
                     "description": t.description,
-                    "category": meta.category.value if meta else "unknown",
+                    "category": category,
                     "security_level": (
                         meta.security_level.value if meta else "moderate"
                     ),
                     "is_optional": True,
                     "is_default": name in default_set,
+                    **integration_grouping_fields(name, category),
                 })
                 seen.add(name)
 

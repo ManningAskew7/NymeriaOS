@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { slide } from 'svelte/transition';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
@@ -7,16 +6,17 @@
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { filterToolSearch } from '$lib/utils/toolSearch';
   import { computeEffectiveToolCounts, isMcpToolName, liveTemporaryToolNames } from '$lib/utils/toolCounts';
-  import { CATEGORY_ORDER, getCategoryInfo } from '$lib/utils/toolCategories';
-  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
-  import type { TemporaryToolEntry, ToolSearchResult } from '$lib/types';
+  import { getCategoryInfo } from '$lib/utils/toolCategories';
+  import type { GroupedToolItem, TemporaryToolEntry, ToolSearchResult } from '$lib/types';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
+  import ToolGroupedList from '$lib/components/tools/ToolGroupedList.svelte';
 
   /**
    * Per-thread Tools pane for a single source (native or mcp), chosen by the
    * `section` prop from the settings sidebar. Shows an "Enabled for this thread"
    * / "Available to add" split over the one scroll surface (the parent modal
-   * body). No core/optional framing.
+   * body). No core/optional framing. Grouping, nesting, collapse and
+   * relevance-ordered rendering are delegated to the shared ToolGroupedList.
    */
   interface Props {
     threadId: string;
@@ -48,6 +48,10 @@
     shortName: string;
     description: string;
     category: string;
+    group?: string | null;
+    groupLabel?: string | null;
+    service?: string | null;
+    serviceLabel?: string | null;
     isMcp: boolean;
     serverId?: string;
     serverName?: string;
@@ -56,16 +60,6 @@
     isTemporary: boolean;
     expiresAt?: string | null;
   };
-
-  // Map categories to icons that exist in the Icon set (CATEGORY_INFO uses
-  // several kebab-case Lucide names the local set doesn't define).
-  const CATEGORY_ICON: Record<string, string> = {
-    general: 'terminal', profile: 'user', notepad: 'pin', self_modify: 'edit',
-    todo: 'check', subagent: 'refresh', trigger: 'bolt', email: 'send',
-    browser: 'folder', image: 'image', calendar: 'calendar', google_docs: 'fileText',
-    integrations: 'server', skills: 'bolt', custom: 'tool', mcp_server: 'server',
-  };
-  const categoryIcon = (c: string) => CATEGORY_ICON[c] ?? 'tool';
 
   const searchActive = $derived(query.trim().length > 0);
 
@@ -111,15 +105,34 @@
     }).activeNames
   );
 
+  type Meta = {
+    description: string;
+    category: string;
+    group?: string | null;
+    groupLabel?: string | null;
+    service?: string | null;
+    serviceLabel?: string | null;
+  };
+
   const allItems = $derived.by(() => {
     const items: ToolItem[] = [];
     const coreSet = new Set(defaultToolsStore.defaultToolNames);
 
-    const meta = new Map<string, { description: string; category: string }>();
-    for (const t of defaultToolsStore.tools) meta.set(t.name, { description: t.description, category: t.category });
+    const meta = new Map<string, Meta>();
+    for (const t of defaultToolsStore.tools) {
+      meta.set(t.name, {
+        description: t.description, category: t.category,
+        group: t.group, groupLabel: t.group_label, service: t.service, serviceLabel: t.service_label,
+      });
+    }
     for (const t of unifiedToolsStore.tools) {
       const existing = meta.get(t.name);
-      if (!existing || !existing.description) meta.set(t.name, { description: t.description, category: t.category });
+      if (!existing || !existing.description) {
+        meta.set(t.name, {
+          description: t.description, category: t.category,
+          group: t.group, groupLabel: t.groupLabel, service: t.service, serviceLabel: t.serviceLabel,
+        });
+      }
     }
 
     const names = new Set<string>();
@@ -136,6 +149,10 @@
         shortName: name,
         description: m?.description ?? '',
         category: m?.category ?? 'general',
+        group: m?.group ?? null,
+        groupLabel: m?.groupLabel ?? null,
+        service: m?.service ?? null,
+        serviceLabel: m?.serviceLabel ?? null,
         isMcp: false,
         isDefault: coreSet.has(name),
         isTemporary: liveTempNames.has(name),
@@ -167,118 +184,18 @@
     name: item.name,
     shortName: item.shortName,
     description: item.description,
-    // Search the human-readable category label (e.g. "Google Docs") and keep
-    // the raw key + MCP server name as tags, so both vocabularies match.
+    // Search the human-readable category, functional group and service labels
+    // (e.g. "Google Docs", "CRM, Sales & Lead Enrichment", "Salesforce"), and
+    // keep the raw keys + MCP server name as tags, so all vocabularies match.
     category: getCategoryInfo(item.category).name,
-    tags: item.isMcp ? ['mcp', item.serverName ?? '', item.category] : [item.category],
+    tags: item.isMcp
+      ? ['mcp', item.serverName ?? '', item.category]
+      : [item.category, item.groupLabel ?? '', item.serviceLabel ?? ''],
   });
 
   const filtered = $derived(filterToolSearch(allItems, query, searchFields));
   const enabledItems = $derived(filtered.filter((i) => enabledNameSet.has(i.name)));
   const availableItems = $derived(filtered.filter((i) => !enabledNameSet.has(i.name)));
-
-  // Counts per source for the sub-tab badges + section headers.
-  const nativeEnabledCount = $derived(enabledItems.filter((i) => !i.isMcp).length);
-  const nativeAvailCount = $derived(availableItems.filter((i) => !i.isMcp).length);
-  const mcpEnabledCount = $derived(enabledItems.filter((i) => i.isMcp).length);
-  const mcpAvailCount = $derived(availableItems.filter((i) => i.isMcp).length);
-
-  // When `ranked` (a search is active), `items` arrive ordered by relevance
-  // (best match first), so groups appear in order of their best-scoring item
-  // and items keep their score order within a group. With no query we fall back
-  // to the curated category order, A-Z within.
-  function buildGroups(items: ToolItem[], ranked: boolean) {
-    const byCat = new Map<string, ToolItem[]>();
-    const byServer = new Map<string, { id: string; name: string; enabled: boolean; items: ToolItem[] }>();
-    for (const it of items) {
-      if (it.isMcp) {
-        let g = byServer.get(it.serverId!);
-        if (!g) {
-          g = { id: it.serverId!, name: it.serverName ?? it.serverId!, enabled: it.serverEnabled ?? true, items: [] };
-          byServer.set(it.serverId!, g);
-        }
-        g.items.push(it);
-      } else {
-        const arr = byCat.get(it.category) ?? [];
-        arr.push(it);
-        byCat.set(it.category, arr);
-      }
-    }
-
-    const makeCat = (cat: string, arr: ToolItem[]) => ({
-      key: cat, title: getCategoryInfo(cat).name, icon: categoryIcon(cat),
-      items: ranked ? arr : sortItems(arr),
-    });
-
-    const catGroups: { key: string; title: string; icon: string; items: ToolItem[] }[] = [];
-    if (ranked) {
-      // Map insertion order is first-appearance order, i.e. best-match-first.
-      for (const [cat, arr] of byCat) if (arr.length) catGroups.push(makeCat(cat, arr));
-    } else {
-      const seen = new Set<string>();
-      for (const cat of CATEGORY_ORDER) {
-        const arr = byCat.get(cat);
-        if (arr?.length) { catGroups.push(makeCat(cat, arr)); seen.add(cat); }
-      }
-      for (const [cat, arr] of byCat) {
-        if (!seen.has(cat) && arr.length) catGroups.push(makeCat(cat, arr));
-      }
-    }
-
-    const serverList = [...byServer.values()].map((g) => ({ ...g, items: ranked ? g.items : sortItems(g.items) }));
-    const serverGroups = ranked ? serverList : serverList.sort((a, b) => a.name.localeCompare(b.name));
-    return { catGroups, serverGroups };
-  }
-
-  function sortItems(items: ToolItem[]): ToolItem[] {
-    return [...items].sort((a, b) => a.shortName.localeCompare(b.shortName));
-  }
-
-  const enabledGroups = $derived(buildGroups(enabledItems, searchActive));
-  const availableGroups = $derived(buildGroups(availableItems, searchActive));
-
-  // Installed MCP servers that discovered no tools still get a visible entry.
-  const emptyMcpServers = $derived(mcpServersForThread.filter((s) => s.tools.length === 0));
-
-  function groupOpen(id: string, defaultOpen: boolean): boolean {
-    if (searchActive) return true;
-    if (collapsed.has(id)) return false;
-    if (expanded.has(id)) return true;
-    return defaultOpen;
-  }
-
-  function toggleGroup(id: string, defaultOpen: boolean) {
-    const open = groupOpen(id, defaultOpen);
-    const e = new Set(expanded);
-    const c = new Set(collapsed);
-    if (open) { c.add(id); e.delete(id); } else { e.add(id); c.delete(id); }
-    expanded = e;
-    collapsed = c;
-  }
-
-  // Toggle a tool on/off, routing through the same two sets the save path uses.
-  // "activeWithoutPin" tools (default or live-temporary) stay on without an
-  // enabledTools entry, so suppressing them needs a disabled override.
-  function setToolEnabled(item: ToolItem, on: boolean) {
-    const activeWithoutPin = item.isDefault || item.isTemporary;
-    const d = new Set(disabledTools);
-    const e = new Set(enabledTools);
-    if (on) {
-      d.delete(item.name);
-      if (!activeWithoutPin) e.add(item.name);
-    } else if (activeWithoutPin) {
-      // Don't drop an existing pin, so it survives a re-enable or TTL expiry.
-      d.add(item.name);
-    } else {
-      e.delete(item.name);
-    }
-    disabledTools = d;
-    enabledTools = e;
-  }
-
-  function toggleTool(item: ToolItem) {
-    setToolEnabled(item, !enabledNameSet.has(item.name));
-  }
 
   // Backend semantic-search fallback for names the local fuzzy ranker missed.
   let backendResults = $state<ToolSearchResult[]>([]);
@@ -313,9 +230,9 @@
   });
 
   // Extras from backend semantic search for names the local ranker missed,
-  // split by source so each renders under its own "Available to add" section.
-  // Already-shown and already-enabled tools are excluded: they belong in the
-  // local list or the Enabled section, not in available extras.
+  // split by source. They carry the backend grouping fields, so they fold into
+  // the right functional-group -> service sub-group rather than a flat bucket.
+  // Already-shown and already-enabled tools are excluded.
   const backendExtras = $derived.by(() => {
     const out = { native: [] as ToolItem[], mcp: [] as ToolItem[] };
     if (!searchActive || backendResults.length === 0) return out;
@@ -351,6 +268,10 @@
           shortName: r.name,
           description: r.description,
           category: r.category ?? 'general',
+          group: r.group ?? null,
+          groupLabel: r.groupLabel ?? null,
+          service: r.service ?? null,
+          serviceLabel: r.serviceLabel ?? null,
           isMcp: false,
           isDefault: coreSet.has(r.name),
           isTemporary: false,
@@ -361,6 +282,57 @@
     return out;
   });
 
+  function toGrouped(item: ToolItem): GroupedToolItem<ToolItem> {
+    return {
+      key: item.name,
+      label: item.shortName,
+      category: item.category,
+      group: item.group ?? null,
+      groupLabel: item.groupLabel ?? null,
+      service: item.service ?? null,
+      serviceLabel: item.serviceLabel ?? null,
+      serverId: item.serverId,
+      serverName: item.serverName,
+      serverEnabled: item.serverEnabled,
+      data: item,
+    };
+  }
+
+  // Normalized pools for the shared list. Available pools fold in the backend
+  // search extras so they group naturally; the relevance order is preserved.
+  const nativeEnabled = $derived(enabledItems.filter((i) => !i.isMcp).map(toGrouped));
+  const nativeAvail = $derived([...availableItems.filter((i) => !i.isMcp), ...backendExtras.native].map(toGrouped));
+  const mcpEnabled = $derived(enabledItems.filter((i) => i.isMcp).map(toGrouped));
+  const mcpAvail = $derived([...availableItems.filter((i) => i.isMcp), ...backendExtras.mcp].map(toGrouped));
+
+  // Installed MCP servers that discovered no tools still get a visible entry.
+  const emptyMcpServers = $derived(
+    mcpServersForThread.filter((s) => s.tools.length === 0).map((s) => ({ id: s.id, name: s.name, enabled: s.enabled }))
+  );
+
+  // Toggle a tool on/off, routing through the same two sets the save path uses.
+  // "activeWithoutPin" tools (default or live-temporary) stay on without an
+  // enabledTools entry, so suppressing them needs a disabled override.
+  function setToolEnabled(item: ToolItem, on: boolean) {
+    const activeWithoutPin = item.isDefault || item.isTemporary;
+    const d = new Set(disabledTools);
+    const e = new Set(enabledTools);
+    if (on) {
+      d.delete(item.name);
+      if (!activeWithoutPin) e.add(item.name);
+    } else if (activeWithoutPin) {
+      // Don't drop an existing pin, so it survives a re-enable or TTL expiry.
+      d.add(item.name);
+    } else {
+      e.delete(item.name);
+    }
+    disabledTools = d;
+    enabledTools = e;
+  }
+
+  function toggleTool(item: ToolItem) {
+    setToolEnabled(item, !enabledNameSet.has(item.name));
+  }
 </script>
 
 <div class="tools-tab">
@@ -393,47 +365,38 @@
     {/if}
 
     {#if section === 'native'}
-      <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
-        {#if nativeEnabledCount === 0}
+      <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabled.length} description="Native tools the agent can use in this thread." flush>
+        {#if nativeEnabled.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled native tools match your search.' : 'No native tools enabled for this thread.'}
           </div>
         {:else}
-          {#each enabledGroups.catGroups as g (g.key)}
-            {@render toolGroup(`enab:cat:${g.key}`, g.title, g.icon, g.items, false, true)}
-          {/each}
+          <ToolGroupedList items={nativeEnabled} {searchActive} poolKey="nat-enab" defaultOpenTopLevel bind:expanded bind:collapsed row={toolRow} />
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={nativeAvailCount + backendExtras.native.length} description="Not enabled here. Toggle on to add for this thread only." flush>
-        {#if nativeAvailCount === 0 && backendExtras.native.length === 0}
+      <ThreadSettingsSection title="Available to add" count={nativeAvail.length} description="Not enabled here. Toggle on to add for this thread only." flush>
+        {#if nativeAvail.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No other native tools match your search.' : 'Every native tool is already enabled.'}
           </div>
         {:else}
-          {#if backendExtras.native.length > 0}
-            {@render toolGroup('avail:more', 'More from search', 'tool', backendExtras.native, false, true)}
-          {/if}
-          {#each availableGroups.catGroups as g (g.key)}
-            {@render toolGroup(`avail:cat:${g.key}`, g.title, g.icon, g.items, false, false)}
-          {/each}
+          <ToolGroupedList items={nativeAvail} {searchActive} poolKey="nat-avail" bind:expanded bind:collapsed row={toolRow} />
         {/if}
       </ThreadSettingsSection>
     {:else}
-      <ThreadSettingsSection title="Enabled for this thread" count={mcpEnabledCount} description="MCP server tools enabled in this thread." flush>
-        {#if mcpEnabledCount === 0}
+      <ThreadSettingsSection title="Enabled for this thread" count={mcpEnabled.length} description="MCP server tools enabled in this thread." flush>
+        {#if mcpEnabled.length === 0}
           <div class="tools-msg subtle">
             {searchActive ? 'No enabled MCP tools match your search.' : 'No MCP tools enabled for this thread.'}
           </div>
         {:else}
-          {#each enabledGroups.serverGroups as g (g.id)}
-            {@render toolGroup(`enab:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, true)}
-          {/each}
+          <ToolGroupedList items={mcpEnabled} {searchActive} mode="server" poolKey="mcp-enab" defaultOpenTopLevel bind:expanded bind:collapsed row={toolRow} />
         {/if}
       </ThreadSettingsSection>
 
-      <ThreadSettingsSection title="Available to add" count={mcpAvailCount + backendExtras.mcp.length + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings → MCP." flush>
-        {#if mcpAvailCount === 0 && backendExtras.mcp.length === 0 && (searchActive || emptyMcpServers.length === 0)}
+      <ThreadSettingsSection title="Available to add" count={mcpAvail.length + (searchActive ? 0 : emptyMcpServers.length)} description="MCP tools not enabled here. Add or remove servers in Settings -> MCP." flush>
+        {#if mcpAvail.length === 0 && (searchActive || emptyMcpServers.length === 0)}
           <div class="tools-msg subtle">
             {#if searchActive}
               No other MCP tools match your search.
@@ -444,17 +407,7 @@
             {/if}
           </div>
         {:else}
-          {#if backendExtras.mcp.length > 0}
-            {@render toolGroup('avail:srv:more', 'More from search', 'server', backendExtras.mcp, false, true)}
-          {/if}
-          {#each availableGroups.serverGroups as g (g.id)}
-            {@render toolGroup(`avail:srv:${g.id}`, g.name, 'server', g.items, !g.enabled, false)}
-          {/each}
-          {#if !searchActive}
-            {#each emptyMcpServers as s (s.id)}
-              {@render toolGroup(`avail:srv:${s.id}`, s.name, 'server', [], !s.enabled, false)}
-            {/each}
-          {/if}
+          <ToolGroupedList items={mcpAvail} {searchActive} mode="server" poolKey="mcp-avail" emptyServers={emptyMcpServers} bind:expanded bind:collapsed row={toolRow} />
         {/if}
       </ThreadSettingsSection>
     {/if}
@@ -466,41 +419,18 @@
   {/if}
 </div>
 
-<!-- Collapsible group, renders rows only when open. -->
-{#snippet toolGroup(id: string, title: string, icon: string, items: ToolItem[], dormant: boolean, defaultOpen: boolean)}
-  {@const open = groupOpen(id, defaultOpen)}
-  <div class="group" class:dormant>
-    <button class="group-head" type="button" onclick={() => toggleGroup(id, defaultOpen)} aria-expanded={open}>
-      <span class="group-chevron" class:open><Icon name="chevronRight" size={14} /></span>
-      <Icon name={icon} size={13} />
-      <span class="group-name">{title}</span>
-      <span class="group-count">{items.length}</span>
-    </button>
-    {#if open}
-      <div class="group-body" transition:slide={DROPDOWN_TRANSITION}>
-        {#if items.length === 0}
-          <div class="empty-server">No tools discovered. Rediscover in Settings → MCP.</div>
-        {:else}
-          {#each items as item (item.name)}
-            {@render toolRow(item)}
-          {/each}
-        {/if}
-      </div>
-    {/if}
-  </div>
-{/snippet}
-
-{#snippet toolRow(item: ToolItem)}
+{#snippet toolRow(gi: GroupedToolItem)}
+  {@const item = gi.data as ToolItem}
   {@const enabled = enabledNameSet.has(item.name)}
   {@const dormant = item.isMcp && item.serverEnabled === false}
-  <div class="tool-row" class:dormant>
-    <div class="tool-info">
-      <span class="tool-name">
+  <div class="tt-row" class:dormant>
+    <div class="tt-info">
+      <span class="tt-name">
         {item.shortName}
-        {#if item.isTemporary}<span class="tool-tag" title="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
-        {#if dormant}<span class="tool-tag" title="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
+        {#if item.isTemporary}<span class="tt-tag" title="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
+        {#if dormant}<span class="tt-tag" title="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
       </span>
-      <span class="tool-desc">{item.description || 'No description'}</span>
+      <span class="tt-desc">{item.description || 'No description'}</span>
     </div>
     <ToggleSwitch
       checked={enabled}
@@ -590,70 +520,24 @@
     line-height: 1.5;
   }
 
-  .empty-server {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-xs);
-    font-style: italic;
-    color: var(--text-muted);
-  }
-
-  /* Collapsible group */
-  .group { border-top: 1px solid var(--border-subtle); }
-  .group:first-child { border-top: none; }
-  .group-head {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    text-align: left;
-  }
-  .group-head:hover { background: var(--bg-hover); }
-  .group-chevron {
-    display: inline-flex;
-    color: var(--text-muted);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
-  }
-  .group-chevron.open { transform: rotate(90deg); }
-  .group-head :global(svg) { color: var(--text-muted); }
-  .group-name {
+  /* Tool row inner content (the shared list owns the row wrapper + indent). */
+  .tt-row {
     flex: 1;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--text-primary);
-  }
-  .group-count {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    padding: 0 6px;
-    border-radius: var(--radius-full);
-    background: var(--bg-elevated-2);
-  }
-  .group.dormant .group-name { color: var(--text-muted); }
-
-  /* Tool row */
-  .tool-row {
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md) var(--spacing-sm) calc(var(--spacing-md) + 18px);
-    border-top: 1px solid var(--border-subtle);
   }
-  .tool-row:first-child { border-top: none; }
-  .tool-row.dormant { opacity: 0.55; }
+  .tt-row.dormant { opacity: 0.55; }
 
-  .tool-info {
+  .tt-info {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 1px;
   }
-  .tool-name {
+  .tt-name {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
@@ -664,14 +548,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .tool-desc {
+  .tt-desc {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .tool-tag {
+  .tt-tag {
     flex-shrink: 0;
     font-size: var(--font-size-3xs);
     font-weight: 600;

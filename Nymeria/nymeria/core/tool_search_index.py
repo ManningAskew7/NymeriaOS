@@ -82,6 +82,12 @@ class ToolSearchResult:
     status: Optional[str]
     score: float
     enable_hint: str
+    # Two-level integration grouping (integration tools only; None otherwise),
+    # so backend search extras land in the right sub-group in the tool menus.
+    group: Optional[str] = None
+    group_label: Optional[str] = None
+    service: Optional[str] = None
+    service_label: Optional[str] = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -94,6 +100,10 @@ class ToolSearchResult:
             "status": self.status,
             "score": round(self.score, 4),
             "enable_hint": self.enable_hint,
+            "group": self.group,
+            "group_label": self.group_label,
+            "service": self.service,
+            "service_label": self.service_label,
         }
 
 
@@ -625,6 +635,12 @@ class ToolSearchIndex:
             else:
                 status = "available"
 
+        grouping = None
+        if doc.category == "integrations":
+            from ..tools.metadata import get_integration_grouping
+
+            grouping = get_integration_grouping(doc.name)
+
         return ToolSearchResult(
             name=doc.name,
             description=doc.description,
@@ -635,6 +651,10 @@ class ToolSearchIndex:
             status=status,
             score=score,
             enable_hint=_enable_hint(doc.name, status, user_role),
+            group=grouping["group"] if grouping else None,
+            group_label=grouping["group_label"] if grouping else None,
+            service=grouping["service"] if grouping else None,
+            service_label=grouping["service_label"] if grouping else None,
         )
 
 

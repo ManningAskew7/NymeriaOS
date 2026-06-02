@@ -40,7 +40,7 @@ def create_user_tools_router(
             OPTIONAL_TOOLS,
             filter_discoverable_optional_tool_names,
         )
-        from ...tools.metadata import get_tool_metadata
+        from ...tools.metadata import get_tool_metadata, integration_grouping_fields
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
@@ -50,10 +50,11 @@ def create_user_tools_router(
         tools_list = []
         for t in ALL_TOOLS:
             meta = get_tool_metadata(t.name)
+            category = meta.category.value if meta else "general"
             tools_list.append({
                 "name": t.name,
                 "description": t.description,
-                "category": meta.category.value if meta else "general",
+                "category": category,
                 "security_level": meta.security_level.value if meta else "safe",
                 "enabled": t.name in dtt_set,
                 "enabled_reason": "default_thread_tools",
@@ -61,6 +62,7 @@ def create_user_tools_router(
                 "config_schema": meta.config_schema if meta else None,
                 "user_config": profile.tool_preferences.get_tool_config(t.name),
                 "globally_disabled": False,
+                **integration_grouping_fields(t.name, category),
             })
 
         visible_optional = filter_discoverable_optional_tool_names(
@@ -71,10 +73,11 @@ def create_user_tools_router(
             if name not in visible_optional:
                 continue
             meta = get_tool_metadata(name)
+            category = meta.category.value if meta else "unknown"
             tools_list.append({
                 "name": name,
                 "description": t.description,
-                "category": meta.category.value if meta else "unknown",
+                "category": category,
                 "security_level": meta.security_level.value if meta else "moderate",
                 "enabled": name in dtt_set,
                 "enabled_reason": "default_thread_tools",
@@ -82,6 +85,7 @@ def create_user_tools_router(
                 "config_schema": meta.config_schema if meta else None,
                 "user_config": profile.tool_preferences.get_tool_config(name),
                 "globally_disabled": False,
+                **integration_grouping_fields(name, category),
             })
 
         by_category: Dict[str, List[dict]] = {}
