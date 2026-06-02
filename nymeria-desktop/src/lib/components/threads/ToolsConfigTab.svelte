@@ -11,15 +11,17 @@
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import type { TemporaryToolEntry, ToolSearchResult } from '$lib/types';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
-  import ThreadSubTabs from './ThreadSubTabs.svelte';
 
   /**
-   * Per-thread Tools tab. Native and MCP tools live under inner sub-tabs; each
-   * shows an "Enabled for this thread" / "Available to add" split over the one
-   * scroll surface (the parent modal body). No core/optional framing.
+   * Per-thread Tools pane for a single source (native or mcp), chosen by the
+   * `section` prop from the settings sidebar. Shows an "Enabled for this thread"
+   * / "Available to add" split over the one scroll surface (the parent modal
+   * body). No core/optional framing.
    */
   interface Props {
     threadId: string;
+    /** Which tool source this pane renders. */
+    section?: 'native' | 'mcp';
     disabledTools: Set<string>;
     enabledTools: Set<string>;
     temporaryTools?: Record<string, TemporaryToolEntry> | null;
@@ -32,6 +34,7 @@
 
   let {
     threadId,
+    section = 'native',
     disabledTools = $bindable(),
     enabledTools = $bindable(),
     temporaryTools = null,
@@ -63,8 +66,6 @@
     integrations: 'server', skills: 'bolt', custom: 'tool', mcp_server: 'server',
   };
   const categoryIcon = (c: string) => CATEGORY_ICON[c] ?? 'tool';
-
-  let subTab = $state('native');
 
   const searchActive = $derived(query.trim().length > 0);
 
@@ -296,10 +297,6 @@
     return out;
   });
 
-  const SUBTABS = $derived([
-    { id: 'native', label: 'Native', count: nativeEnabledCount },
-    { id: 'mcp', label: 'MCP', count: mcpEnabledCount },
-  ]);
 </script>
 
 <div class="tools-tab">
@@ -308,8 +305,6 @@
   {:else if loading}
     <div class="tools-msg">Loading tools...</div>
   {:else}
-    <ThreadSubTabs tabs={SUBTABS} bind:active={subTab} ariaLabel="Tool source" />
-
     <div class="tools-search">
       <input
         type="text"
@@ -325,7 +320,7 @@
       {/if}
     </div>
 
-    {#if subTab === 'native'}
+    {#if section === 'native'}
       <ThreadSettingsSection title="Enabled for this thread" count={nativeEnabledCount} description="Native tools the agent can use in this thread." flush>
         {#if nativeEnabledCount === 0}
           <div class="tools-msg subtle">

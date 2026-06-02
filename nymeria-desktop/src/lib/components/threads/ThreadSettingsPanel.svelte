@@ -15,7 +15,7 @@
   import { ToolCountWarning } from '$lib/components/tools';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
-  import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
+  import { computeEffectiveToolCounts, isMcpToolName, liveTemporaryToolNames } from '$lib/utils/toolCounts';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     fromThreadDisplayProvider,
@@ -33,7 +33,18 @@
   import AgentConfigTab from './AgentConfigTab.svelte';
   import ConnectionsConfigTab from './ConnectionsConfigTab.svelte';
 
-  type ThreadSettingsTab = 'behavior' | 'model' | 'tools' | 'skills' | 'memory' | 'dreaming' | 'agent' | 'connections';
+  type ThreadSettingsTab =
+    | 'behavior'
+    | 'memory'
+    | 'model-provider'
+    | 'model-generation'
+    | 'model-context'
+    | 'tools-native'
+    | 'tools-mcp'
+    | 'skills'
+    | 'dreaming'
+    | 'agent'
+    | 'connections';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
@@ -41,24 +52,56 @@
   const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
   const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
 
-  const TABS: { id: ThreadSettingsTab; label: string }[] = [
-    { id: 'behavior', label: 'Behavior' },
-    { id: 'model', label: 'Model' },
-    { id: 'tools', label: 'Tools' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'memory', label: 'Memory' },
-    { id: 'dreaming', label: 'Dreaming' },
-    { id: 'agent', label: 'Agent' },
-    { id: 'connections', label: 'Connections' },
+  // Vertical sidebar nav, grouped in the global Settings panel's idiom. The old
+  // in-pane sub-tabs (Model: Provider/Generation/Context; Tools: Native/MCP) are
+  // promoted to first-class nav items here.
+  const NAV_GROUPS: { label: string; items: { id: ThreadSettingsTab; label: string; icon: string }[] }[] = [
+    {
+      label: 'Prompt',
+      items: [
+        { id: 'behavior', label: 'Behavior', icon: 'fileText' },
+        { id: 'memory', label: 'Memory', icon: 'pin' },
+      ],
+    },
+    {
+      label: 'Model',
+      items: [
+        { id: 'model-provider', label: 'Provider', icon: 'server' },
+        { id: 'model-generation', label: 'Generation', icon: 'settings' },
+        { id: 'model-context', label: 'Context', icon: 'sort' },
+      ],
+    },
+    {
+      label: 'Capabilities',
+      items: [
+        { id: 'tools-native', label: 'Native Tools', icon: 'tool' },
+        { id: 'tools-mcp', label: 'MCP Tools', icon: 'server' },
+        { id: 'skills', label: 'Skills', icon: 'bolt' },
+      ],
+    },
+    {
+      label: 'Autonomous',
+      items: [
+        { id: 'dreaming', label: 'Dreaming', icon: 'clock' },
+        { id: 'agent', label: 'Agent', icon: 'users' },
+        { id: 'connections', label: 'Connections', icon: 'bell' },
+      ],
+    },
   ];
 
-  // Map legacy / external initialTab values onto the new six-tab IA so existing
-  // callers (e.g. ThreadList's "configure as agent") keep deep-linking sanely.
+  // Map legacy / external initialTab values (incl. the previous eight-tab ids)
+  // onto the new sidebar IA so existing callers (e.g. ThreadList's "configure as
+  // agent") keep deep-linking sanely.
   function normalizeTab(tab: string | undefined): ThreadSettingsTab {
     switch (tab) {
-      case 'model': return 'model';
+      case 'model':
+      case 'model-provider': return 'model-provider';
+      case 'model-generation': return 'model-generation';
+      case 'model-context': return 'model-context';
       case 'tools':
-      case 'mcp': return 'tools';
+      case 'tools-native': return 'tools-native';
+      case 'mcp':
+      case 'tools-mcp': return 'tools-mcp';
       case 'skills': return 'skills';
       case 'memory':
       case 'notepad': return 'memory';
@@ -402,24 +445,62 @@
     }).totalActiveCount
   );
 
-  // Tab indicator helpers (muted dots/counts — accent is reserved for active state)
-  const toolOverrideCount = $derived(disabledTools.size + enabledTools.size);
+  // Per-nav-item "customized" indicators — a quiet dot on the sidebar item that
+  // carries an override (accent stays reserved for the active item). Model and
+  // Tools are split by section/source so the dot lands on the exact sub-item.
   const connectionsCount = $derived(chatAppBindings.length);
   const behaviorCustomized = $derived(
     Boolean(instructions.trim() || systemPrompt.trim() || injectTodosInPrompt || showAutonomousPrompts || showPromptMetadata)
   );
-  const modelCustomized = $derived(
+  const modelProviderCustomized = $derived(
     Boolean(
-      threadDisplayProvider || llmModel || llmTemperature || llmMaxTokens || llmContextLength ||
-      llmOllamaNumCtx || llmExtendedThinking !== 'default' || llmReasoningEffort ||
-      llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
-      llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
-      compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens
+      threadDisplayProvider || llmModel || llmBaseUrl || llmApiKey ||
+      llmProviderRoute !== 'default' || llmOpenAiApiMode !== 'default'
+    )
+  );
+  const modelGenerationCustomized = $derived(
+    Boolean(
+      llmTemperature || llmMaxTokens || llmExtendedThinking !== 'default' ||
+      llmReasoningEffort || llmUseModelDefaults !== 'default'
+    )
+  );
+  const modelContextCustomized = $derived(
+    Boolean(
+      llmContextLength || llmOllamaNumCtx || compactThresholdMode !== 'default' ||
+      compactThresholdPct || compactThresholdTokens
     )
   );
   const memoryCustomized = $derived(Boolean(String(memoryCharLimit ?? '').trim()));
+  const skillsCustomized = $derived(threadEnabledSkills.size + threadDisabledSkills.size > 0);
+  const toolOverrides = $derived([...disabledTools, ...enabledTools]);
+  const nativeToolsCustomized = $derived(toolOverrides.some((n) => !isMcpToolName(n)));
+  const mcpToolsCustomized = $derived(toolOverrides.some((n) => isMcpToolName(n)));
   const dreamingActive = $derived(dreamEnabled);
   const agentActive = $derived(isCallable);
+
+  const navCustomized: Record<ThreadSettingsTab, boolean> = $derived({
+    behavior: behaviorCustomized,
+    memory: memoryCustomized,
+    'model-provider': modelProviderCustomized,
+    'model-generation': modelGenerationCustomized,
+    'model-context': modelContextCustomized,
+    'tools-native': nativeToolsCustomized,
+    'tools-mcp': mcpToolsCustomized,
+    skills: skillsCustomized,
+    dreaming: dreamingActive,
+    agent: agentActive,
+    connections: connectionsCount > 0,
+  });
+
+  // Which content group is mounted. Switching sub-items within Model or Tools
+  // keeps the same component instance (no remount, no provider/model refetch).
+  const contentKey = $derived(
+    activeTab.startsWith('model-') ? 'model' : activeTab.startsWith('tools-') ? 'tools' : activeTab
+  );
+  const modelSection = $derived(
+    activeTab === 'model-generation' ? 'generation' : activeTab === 'model-context' ? 'context' : 'provider'
+  );
+  const toolSection = $derived(activeTab === 'tools-mcp' ? 'mcp' : 'native');
 
   const effectiveModelLabel = $derived(llmModel || serverSettingsStore.model || 'Global default');
   const modelInherited = $derived(!llmModel);
@@ -467,18 +548,6 @@
       console.warn('[ThreadSettingsPanel] Failed to load notepad:', err);
       notepadLoaded = true;
     });
-  });
-
-  // Per-thread skill resolution: (global ∪ enabled) − disabled
-  const resolvedActiveSkillNames = $derived.by(() => {
-    const seen = new Set<string>();
-    for (const n of skillsStore.enabledGlobal) {
-      if (!threadDisabledSkills.has(n)) seen.add(n);
-    }
-    for (const n of threadEnabledSkills) {
-      if (!threadDisabledSkills.has(n)) seen.add(n);
-    }
-    return seen;
   });
 
   function boundedInt(value: string | number, fallback: number, min: number, max: number): number {
@@ -900,20 +969,6 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
-
-  // WAI-ARIA tab keyboard contract: arrows move between tabs, Home/End jump.
-  function handleTabKeydown(e: KeyboardEvent) {
-    const idx = TABS.findIndex((t) => t.id === activeTab);
-    let next = idx;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % TABS.length;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + TABS.length) % TABS.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = TABS.length - 1;
-    else return;
-    e.preventDefault();
-    activeTab = TABS[next].id;
-    document.getElementById(`thread-tab-${TABS[next].id}`)?.focus();
-  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -945,124 +1000,114 @@
       <p class="scope-line">Overrides apply to this thread only. Unset fields inherit your global defaults.</p>
     </div>
 
-    <div class="tabs" role="tablist" aria-label="Thread settings sections">
-      {#each TABS as tab (tab.id)}
-        <button
-          class="tab"
-          class:active={activeTab === tab.id}
-          id={`thread-tab-${tab.id}`}
-          onclick={() => (activeTab = tab.id)}
-          onkeydown={handleTabKeydown}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === tab.id}
-          aria-controls="thread-settings-tabpanel"
-          tabindex={activeTab === tab.id ? 0 : -1}
-        >
-          <span class="tab-label">{tab.label}</span>
-          {#if tab.id === 'tools' && toolOverrideCount > 0}
-            <span class="tab-badge">{toolOverrideCount}</span>
-          {:else if tab.id === 'skills' && resolvedActiveSkillNames.size > 0}
-            <span class="tab-badge">{resolvedActiveSkillNames.size}</span>
-          {:else if tab.id === 'connections' && connectionsCount > 0}
-            <span class="tab-badge">{connectionsCount}</span>
-          {:else if (tab.id === 'behavior' && behaviorCustomized) || (tab.id === 'model' && modelCustomized) || (tab.id === 'memory' && memoryCustomized) || (tab.id === 'dreaming' && dreamingActive) || (tab.id === 'agent' && agentActive)}
-            <span class="tab-dot" aria-hidden="true"></span>
-          {/if}
-        </button>
-      {/each}
-    </div>
+    <div class="modal-body">
+      <aside class="settings-sidebar" aria-label="Thread settings sections">
+        {#each NAV_GROUPS as group (group.label)}
+          <div class="nav-group">
+            <span class="nav-group-label">{group.label}</span>
+            {#each group.items as item (item.id)}
+              <button
+                class="nav-item"
+                class:active={activeTab === item.id}
+                onclick={() => (activeTab = item.id)}
+                type="button"
+              >
+                <Icon name={item.icon} size={14} />
+                <span class="nav-item-label">{item.label}</span>
+                {#if navCustomized[item.id]}<span class="nav-dot" aria-hidden="true"></span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/each}
+      </aside>
 
-    <div
-      class="tab-content"
-      id="thread-settings-tabpanel"
-      role="tabpanel"
-      aria-labelledby={`thread-tab-${activeTab}`}
-      tabindex="0"
-    >
-      {#key activeTab}
-        <div class="tab-fade">
-          {#if activeTab === 'behavior'}
-            <BehaviorConfigTab
-              bind:instructions
-              bind:systemPrompt
-              bind:injectTodosInPrompt
-              bind:showAutonomousPrompts
-              bind:showPromptMetadata
-            />
-          {:else if activeTab === 'model'}
-            <ModelConfigTab
-              bind:threadDisplayProvider
-              bind:llmProvider
-              bind:llmModel
-              bind:llmBaseUrl
-              bind:llmApiKey
-              bind:llmTemperature
-              bind:llmMaxTokens
-              bind:llmContextLength
-              bind:llmOllamaNumCtx
-              bind:llmExtendedThinking
-              bind:llmReasoningEffort
-              bind:llmUseModelDefaults
-              bind:llmProviderRoute
-              bind:llmOpenAiApiMode
-              bind:compactThresholdMode
-              bind:compactThresholdPct
-              bind:compactThresholdTokens
-            />
-          {:else if activeTab === 'tools'}
-            <ToolsConfigTab
-              threadId={thread.id}
-              bind:disabledTools
-              bind:enabledTools
-              temporaryTools={threadConfig?.temporaryTools}
-              bind:query={toolSearch}
-              bind:expanded={toolsExpanded}
-              bind:collapsed={toolsCollapsed}
-            />
-          {:else if activeTab === 'skills'}
-            <SkillsConfigTab
-              bind:threadEnabledSkills
-              bind:threadDisabledSkills
-            />
-          {:else if activeTab === 'memory'}
-            <MemoryConfigTab
-              bind:notepad
-              {notepadLoaded}
-              {notepadCharLimit}
-              bind:memoryCharLimit
-              globalMemoryLimit={serverSettingsStore.memoryCharLimit}
-            />
-          {:else if activeTab === 'dreaming'}
-            <DreamingConfigTab
-              bind:dreamEnabled
-              bind:dreamMinIntervalHours
-              bind:dreamMinIdleMinutes
-              bind:dreamMinTurnsSinceLast
-              bind:dreamModel
-              lastDreamAt={threadConfig?.dreaming?.lastDreamAt}
-              {dreamRunning}
-              {dreamStatus}
-              {saving}
-              hasUnsavedChanges={hasChanges()}
-              onRunDream={handleRunDream}
-            />
-          {:else if activeTab === 'agent'}
-            <AgentConfigTab
-              bind:isCallable
-              bind:callableName
-              bind:callableDescription
-            />
-          {:else if activeTab === 'connections'}
-            <ConnectionsConfigTab
-              {thread}
-              bind:telegramAutonomousDelivery
-              bind:inAppNotificationLevel
-              bind:notificationProfile
-            />
-          {/if}
-        </div>
-      {/key}
+      <main class="settings-content">
+        {#key contentKey}
+          <div class="tab-fade">
+            {#if activeTab === 'behavior'}
+              <BehaviorConfigTab
+                bind:instructions
+                bind:systemPrompt
+                bind:injectTodosInPrompt
+                bind:showAutonomousPrompts
+                bind:showPromptMetadata
+              />
+            {:else if activeTab === 'memory'}
+              <MemoryConfigTab
+                bind:notepad
+                {notepadLoaded}
+                {notepadCharLimit}
+                bind:memoryCharLimit
+                globalMemoryLimit={serverSettingsStore.memoryCharLimit}
+              />
+            {:else if activeTab === 'model-provider' || activeTab === 'model-generation' || activeTab === 'model-context'}
+              <ModelConfigTab
+                section={modelSection}
+                bind:threadDisplayProvider
+                bind:llmProvider
+                bind:llmModel
+                bind:llmBaseUrl
+                bind:llmApiKey
+                bind:llmTemperature
+                bind:llmMaxTokens
+                bind:llmContextLength
+                bind:llmOllamaNumCtx
+                bind:llmExtendedThinking
+                bind:llmReasoningEffort
+                bind:llmUseModelDefaults
+                bind:llmProviderRoute
+                bind:llmOpenAiApiMode
+                bind:compactThresholdMode
+                bind:compactThresholdPct
+                bind:compactThresholdTokens
+              />
+            {:else if activeTab === 'tools-native' || activeTab === 'tools-mcp'}
+              <ToolsConfigTab
+                section={toolSection}
+                threadId={thread.id}
+                bind:disabledTools
+                bind:enabledTools
+                temporaryTools={threadConfig?.temporaryTools}
+                bind:query={toolSearch}
+                bind:expanded={toolsExpanded}
+                bind:collapsed={toolsCollapsed}
+              />
+            {:else if activeTab === 'skills'}
+              <SkillsConfigTab
+                bind:threadEnabledSkills
+                bind:threadDisabledSkills
+              />
+            {:else if activeTab === 'dreaming'}
+              <DreamingConfigTab
+                bind:dreamEnabled
+                bind:dreamMinIntervalHours
+                bind:dreamMinIdleMinutes
+                bind:dreamMinTurnsSinceLast
+                bind:dreamModel
+                lastDreamAt={threadConfig?.dreaming?.lastDreamAt}
+                {dreamRunning}
+                {dreamStatus}
+                {saving}
+                hasUnsavedChanges={hasChanges()}
+                onRunDream={handleRunDream}
+              />
+            {:else if activeTab === 'agent'}
+              <AgentConfigTab
+                bind:isCallable
+                bind:callableName
+                bind:callableDescription
+              />
+            {:else if activeTab === 'connections'}
+              <ConnectionsConfigTab
+                {thread}
+                bind:telegramAutonomousDelivery
+                bind:inAppNotificationLevel
+                bind:notificationProfile
+              />
+            {/if}
+          </div>
+        {/key}
+      </main>
     </div>
 
     {#if error}
@@ -1127,7 +1172,7 @@
     border-radius: var(--radius-lg);
     /* Grow with the window so maximising/fullscreen uses the space, but stay
        capped so forms don't stretch absurdly wide. */
-    width: min(1040px, 93vw);
+    width: min(1080px, 94vw);
     height: min(840px, 90vh);
     display: flex;
     flex-direction: column;
@@ -1229,94 +1274,105 @@
     line-height: 1.4;
   }
 
-  /* Top-tab strip — quiet text tabs with an accent underline on the active
-     tab. Distinct from the global Settings panel's left sidebar. */
-  .tabs {
+  /* Two-column body: a global-style vertical nav sidebar on the left, the
+     active section's content (the single scroll surface) on the right. */
+  .modal-body {
     display: flex;
-    flex-wrap: nowrap;
-    flex-shrink: 0;
-    gap: 2px;
-    padding: 0 var(--spacing-md);
-    background: var(--bg-elevated);
-    border-bottom: 1px solid var(--border-default);
+    flex: 1;
+    min-height: 0;
   }
 
-  .tab {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    flex: 1 1 0;
-    min-width: 0;
-    justify-content: center;
-    gap: 6px;
-    padding: 10px 8px;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
+  /* Sidebar mirrors the global Settings panel's nav idiom (grouped nav-items)
+     so the two menus share one navigation language; only the layout around it
+     differs (this panel keeps its thread header + Save/Reset footer). */
+  .settings-sidebar {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+    padding: var(--spacing-md) var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
+    border-right: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+    overflow-y: auto;
+  }
+
+  .nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nav-group-label {
+    font-size: var(--font-size-3xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
     color: var(--text-muted);
+    padding: 0 var(--spacing-sm) 4px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
     background: transparent;
     border: none;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
     cursor: pointer;
-    white-space: nowrap;
+    text-align: left;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .nav-item :global(svg) {
+    flex-shrink: 0;
+    color: var(--text-muted);
     transition: color var(--transition-fast);
   }
 
-  .tab-label {
+  .nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  .nav-item:hover :global(svg) {
+    color: var(--text-secondary);
+  }
+
+  .nav-item.active {
+    background: var(--bg-elevated-2);
+    color: var(--text-primary);
+  }
+  .nav-item.active :global(svg) {
+    color: var(--accent-primary);
+  }
+
+  .nav-item-label {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .tab::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px;
-    height: 2px;
-    background: transparent;
-    transition: background var(--transition-fast);
-  }
-
-  .tab:hover {
-    color: var(--text-primary);
-  }
-
-  .tab.active {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .tab.active::after {
-    background: var(--accent-primary);
-  }
-
-  .tab-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 5px;
-    font-size: var(--font-size-3xs);
-    font-weight: 600;
-    background: var(--bg-elevated-2);
-    color: var(--text-secondary);
-    border-radius: var(--radius-full);
-  }
-
-  .tab-dot {
+  .nav-dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
     background: var(--text-muted);
+    flex-shrink: 0;
   }
 
   /* No scrollbar-width here: that switches WebView2/Chromium to the standard
      (white) scrollbar and ignores the app's global ::-webkit-scrollbar theme.
-     Letting it inherit keeps the themed thin scrollbar. */
-  .tab-content {
+     Letting it inherit keeps the themed thin scrollbar. The tab bodies supply
+     their own padding, so the content column adds none. */
+  .settings-content {
     flex: 1;
+    min-width: 0;
     overflow-y: auto;
-    min-height: 0;
   }
 
   .tab-fade {
