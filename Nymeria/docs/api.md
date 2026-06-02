@@ -940,13 +940,16 @@ Manual compaction persists a visible `compaction_notice` immediately. When `summ
 ### Prune Thread Tool Returns
 
 ```http
-POST /threads/{thread_id}/prune
+POST /threads/{thread_id}/prune?mode=full
 Authorization: Bearer <token>
 ```
 
-Deterministically rewrites large tool-result messages in the active state to
-short placeholders without an LLM call. It preserves message IDs and
-tool-call IDs so existing assistant/tool linkage remains valid.
+Deterministically rewrites large tool-result messages in the active state
+without an LLM call. It preserves message IDs and tool-call IDs so existing
+assistant/tool linkage remains valid. The `mode` query param (default `full`)
+selects the rewrite: `full` replaces each result body with a short placeholder;
+`soft` keeps the first 500 characters and tags the truncation. The CLI exposes
+both as `/prune [soft|full]`.
 
 ---
 

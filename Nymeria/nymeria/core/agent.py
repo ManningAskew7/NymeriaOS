@@ -972,9 +972,11 @@ class NymeriaAgent:
         self,
         thread_id: str,
         user_id: str = "default",
+        *,
+        mode: str = "full",
     ) -> Dict[str, Any]:
         """Deterministically compress tool returns (/prune command)."""
-        return await self._prune.prune_now(thread_id, user_id)
+        return await self._prune.prune_now(thread_id, user_id, mode=mode)
 
     def _rehydrate_token_usage(self, thread_id: str) -> None:
         """Estimate token usage from checkpoint messages when tracker has no data."""
@@ -1209,6 +1211,22 @@ class NymeriaAgent:
             logger.debug(f"[ROUTE] Thread {thread_id}: sub-turn compaction check failed: {e}")
             return False
 
+    def _thread_skip_memory_seed(self, thread_id: str) -> bool:
+        """True for threads that inherit memory from a parent and so must not be
+        freshly seeded.
+
+        Dream shadow threads (``shadow_parent_id`` set) carry the parent's
+        seeded memory via their cloned checkpoint, and their memory tools
+        resolve to the parent anyway, so a fresh seed would only add a stale,
+        empty-looking duplicate. Branched threads are already covered by the
+        non-empty check in the seed methods (they carry copied messages).
+        """
+        try:
+            tc = self.thread_config_manager.get_config(thread_id)
+            return bool(tc is not None and tc.shadow_parent_id)
+        except Exception:
+            return False
+
     async def _seed_memory_init_if_empty(
         self, graph, config: dict, thread_id: str, user_id: str
     ) -> bool:
@@ -1223,6 +1241,9 @@ class NymeriaAgent:
         would bust the conversation prompt cache. Returns True if it seeded.
         """
         if thread_id in self._memory_seeded_threads:
+            return False
+        if self._thread_skip_memory_seed(thread_id):
+            self._memory_seeded_threads.add(thread_id)
             return False
         try:
             state = await graph.aget_state(config)
@@ -1256,6 +1277,9 @@ class NymeriaAgent:
         which all run through the synchronous ``chat()`` entry point.
         """
         if thread_id in self._memory_seeded_threads:
+            return False
+        if self._thread_skip_memory_seed(thread_id):
+            self._memory_seeded_threads.add(thread_id)
             return False
         try:
             state = graph.get_state(config)

@@ -815,10 +815,10 @@ class CommandBackendClient:
             "thread_id": thread_id,
         }
 
-    async def prune_thread(self, thread_id: str) -> dict:
+    async def prune_thread(self, thread_id: str, mode: str = "full") -> dict:
         """Deterministically compress tool returns in a thread (no LLM)."""
         self._require_thread_access(thread_id)
-        return await self.agent.prune_now(thread_id, self.user.id)
+        return await self.agent.prune_now(thread_id, self.user.id, mode=mode)
 
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         self._require_thread_access(thread_id)
@@ -2184,7 +2184,7 @@ class CommandService:
             "prune",
             description="Compress tool returns in the active thread (no LLM)",
             category="Thread",
-            usage="/prune",
+            usage="/prune [soft|full]",
             agent_allowed=False,
             requires_thread=True,
             mutates_state=True,
@@ -4816,7 +4816,14 @@ class _CommandExecutor:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        result = await self.api.prune_thread(self.thread_id)
+        mode = (args[0].lower() if args else "full")
+        if mode not in ("soft", "full"):
+            return (
+                f"[Error]: Unknown mode '{mode}'. Usage: /prune [soft|full] "
+                f"(soft truncates each tool result to 500 chars; full drops it "
+                f"to a placeholder. Default: full)."
+            )
+        result = await self.api.prune_thread(self.thread_id, mode=mode)
         if not result.get("success"):
             reason = result.get("reason", "unknown error")
             return f"[Error]: Could not prune: {reason}"
@@ -4832,7 +4839,10 @@ class _CommandExecutor:
                 )
             return "[Info]: Nothing to prune - no tool results found in this thread."
         word = "result" if pruned == 1 else "results"
-        return f"[Success]: Pruned {pruned} tool {word}, reclaimed {saved:,} chars."
+        return (
+            f"[Success]: Pruned {pruned} tool {word} ({mode}), "
+            f"reclaimed {saved:,} chars."
+        )
 
     async def _cmd_restart_api(self, args: list[str], rest: str) -> str:
         await self.api.restart_api()

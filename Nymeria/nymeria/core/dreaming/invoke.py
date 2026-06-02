@@ -377,6 +377,52 @@ def invoke_dream(
             _release_dream_slot(parent_thread_id)
 
 
+def _seed_shadow_from_parent(
+    agent: Any, parent_thread_id: str, shadow_thread_id: str
+) -> None:
+    """Copy the parent's conversation into the shadow, soft-pruning tool results.
+
+    The dream reflects on what actually happened on the parent thread, so we
+    fork the parent's full LangGraph checkpoint into the (empty) shadow via the
+    same row-level copy ``/branch`` uses, then soft-prune so bulky web/file tool
+    results are truncated to their gist (cheap, and rarely relevant to
+    reflection). Best-effort: on any failure the dream still runs and falls back
+    to reading memory in its orient phase, so a copy error never aborts a dream.
+
+    We deliberately do NOT compact (no LLM summary): the dream wants the real
+    dialogue. Size control is the soft-prune, not compaction.
+    """
+    try:
+        from ...config import get_settings
+        from ..agent_prune import build_pruned_replacements
+        from ..thread_branch import clone_thread_checkpoints
+
+        clone_thread_checkpoints(get_settings(), parent_thread_id, shadow_thread_id)
+
+        config = {"configurable": {"thread_id": shadow_thread_id}}
+        graph = agent._default_graph
+        state = graph.get_state(config)
+        messages = state.values.get("messages", []) if state else []
+        replacements, stats = build_pruned_replacements(messages, mode="soft")
+        if replacements:
+            graph.update_state(config, {"messages": replacements})
+        logger.info(
+            "dream seed: cloned parent %s -> shadow %s (%d msg(s), soft-pruned "
+            "%d tool result(s))",
+            parent_thread_id,
+            shadow_thread_id,
+            len(messages),
+            stats["pruned_count"],
+        )
+    except Exception:
+        logger.warning(
+            "dream seed: clone+prune failed for shadow %s; the dream will "
+            "reflect from memory only",
+            shadow_thread_id,
+            exc_info=True,
+        )
+
+
 def _run_dream_cycle(
     *,
     agent: Any,
@@ -412,6 +458,11 @@ def _run_dream_cycle(
     started_published = False
 
     try:
+        # Seed the shadow with the parent's conversation (forked + soft-pruned)
+        # before the dream turn runs, so the dream reflects on what actually
+        # happened. Best-effort; never raises.
+        _seed_shadow_from_parent(agent, parent_thread_id, shadow_thread_id)
+
         trigger_override = f'Dream("{parent_thread_id}")'
 
         def handle_chunk(chunk: Dict[str, Any], _collection) -> None:
