@@ -198,6 +198,24 @@ def sweep_dreamable_threads(agent: Any) -> int:
             if tc is None or tc.dreaming is None or not tc.dreaming.enabled:
                 continue
 
+            # Authoritative-owner guard. A thread can appear in more than one
+            # user's metadata store (shared/bot channels), so dream only under
+            # its real owner -- otherwise the dream's global-memory writes would
+            # land in whichever user the sweep visited first. A None owner means
+            # an unclaimed personal thread: dream under the enumerating user.
+            try:
+                owner = agent.accounts_repo.get_thread_owner(thread_id)
+            except Exception:  # noqa: BLE001
+                owner = None
+            if owner is not None and owner != user_id:
+                logger.debug(
+                    "dream sweep: skip %s (owned by %s, not %s)",
+                    thread_id,
+                    owner,
+                    user_id,
+                )
+                continue
+
             since = tc.dreaming.last_dream_at
             times = user_msgs.get(thread_id, [])
             if since is not None:
