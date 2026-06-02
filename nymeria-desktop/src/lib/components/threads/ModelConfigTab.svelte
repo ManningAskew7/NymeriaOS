@@ -4,7 +4,6 @@
   import { api } from '$lib/services/api.svelte';
   import type { LLMProviderSpec, ProviderRoute } from '$lib/types';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
-  import ThreadSubTabs from './ThreadSubTabs.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
@@ -21,6 +20,8 @@
   } from '$lib/utils/providerRoutes';
 
   interface Props {
+    /** Which model section this pane renders. */
+    section?: 'provider' | 'generation' | 'context';
     threadDisplayProvider: ThreadDisplayProvider;
     llmProvider: string;
     llmModel: string;
@@ -41,6 +42,7 @@
   }
 
   let {
+    section = 'provider',
     threadDisplayProvider = $bindable(),
     llmProvider = $bindable(),
     llmModel = $bindable(),
@@ -59,13 +61,6 @@
     compactThresholdPct = $bindable(),
     compactThresholdTokens = $bindable(),
   }: Props = $props();
-
-  let sub = $state('provider');
-  const SUBTABS = [
-    { id: 'provider', label: 'Provider' },
-    { id: 'generation', label: 'Generation' },
-    { id: 'context', label: 'Context' },
-  ];
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
   let providerCatalog = $state<LLMProviderSpec[]>([]);
@@ -125,9 +120,7 @@
 </script>
 
 <div class="tab-body">
-  <ThreadSubTabs tabs={SUBTABS} bind:active={sub} ariaLabel="Model settings" />
-
-  {#if sub === 'provider'}
+  {#if section === 'provider'}
     <div class="field-group">
       <label class="field-label" for="llm-provider">Provider</label>
       <ProviderSelect
@@ -245,7 +238,7 @@
         </div>
       {/if}
     </div>
-  {:else if sub === 'generation'}
+  {:else if section === 'generation'}
     <div class="grid-2">
       <div class="field-group">
         <label class="field-label" for="llm-use-defaults">Use model defaults</label>
@@ -281,7 +274,7 @@
         </select>
       </div>
     </div>
-  {:else}
+  {:else if section === 'context'}
     <div class="grid-2">
       <div class="field-group">
         <label class="field-label" for="llm-context-length">Context window tokens</label>
