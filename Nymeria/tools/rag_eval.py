@@ -2,10 +2,11 @@
 """Retrieval-quality evaluation harness for the native RAG memory index.
 
 Runs a set of ``query -> relevance predicate`` probes against a ``MemoryIndex``
-and reports hit-rate@k, precision@k, MRR, and nDCG@k. Its purpose is to make
-ranking changes (RRF vs weighted, recency, contextual retrieval, reranking,
-consolidation) measurable instead of asserted: capture a baseline, change one
-thing, re-run, compare.
+and reports hit-rate@k, precision@k, MRR, nDCG@k, distinct@k (how free the
+result set is of near-duplicates) and false_positive_rate (over no-answer
+probes). Its purpose is to make ranking changes (RRF vs weighted, recency,
+result dedup, contextual retrieval, reranking, consolidation) measurable instead
+of asserted: capture a baseline, change one thing, re-run, compare.
 
 Relevance is judged by PREDICATE, not by volatile chunk id, so a probe set
 survives reindexing, scrubbing and re-embedding. A result counts as relevant
@@ -17,6 +18,11 @@ are ignored):
     contains_all   result.content contains ALL of these substrings (ci)
     chunk_type     result.chunk_type equals this
     thread_id      result.thread_id equals this
+
+A probe may also set ``expect_empty: true`` to mark a no-answer query: the
+corpus holds nothing that should satisfy it. Such probes are excluded from the
+ranking metrics and instead feed ``false_positive_rate`` (any returned result
+that matches the predicates counts as a spurious hit; lower is better).
 
 A probe may also carry ``search`` kwargs (e.g. ``{"thread_id": "...", "since":
 "2026-05-01"}``) passed straight through to ``MemoryIndex.search`` so filter
@@ -53,7 +59,7 @@ from typing import Any, Dict, List, Optional
 # Allow running directly from Nymeria/ (script lives in Nymeria/tools/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nymeria.core.memory_index import MemoryIndex  # noqa: E402
+from nymeria.core.memory_index import DEDUP_THRESHOLD, MemoryIndex  # noqa: E402
 from nymeria.core.time_utils import utc_now  # noqa: E402
 
 
@@ -67,6 +73,11 @@ class Probe:
     contains_all: Optional[List[str]] = None
     chunk_type: Optional[str] = None
     thread_id: Optional[str] = None
+    # No-answer probe: the corpus has nothing that should satisfy this query.
+    # Excluded from hit_rate/MRR (it has no correct answer); instead it feeds
+    # false_positive_rate, where any returned result that matches the probe's
+    # predicates counts as a spurious "relevant" hit (lower is better).
+    expect_empty: bool = False
     search: Dict[str, Any] = field(default_factory=dict)
     note: str = ""
 
@@ -114,29 +125,75 @@ def _ndcg(rels: List[int], k: int) -> float:
     return dcg / idcg if idcg > 0 else 0.0
 
 
+def _distinct_ratio(results, threshold: float) -> float:
+    """Share of a result list that is NOT a near-duplicate of an earlier result.
+
+    1.0 means every returned result is distinct; lower means twins occupy slots.
+    An empty result list is vacuously fully-distinct (1.0). Uses the same
+    near-duplicate test the index applies when ``dedup`` is on, so this measures
+    redundancy independently of whether the search itself deduped.
+    """
+    if not results:
+        return 1.0
+    kept = []
+    for r in results:
+        if any(
+            MemoryIndex._is_near_duplicate(r.content, k.content, threshold)
+            for k in kept
+        ):
+            continue
+        kept.append(r)
+    return len(kept) / len(results)
+
+
 def evaluate(
     index: MemoryIndex,
     probes: List[Probe],
     user_id: str = "eval",
     k: int = 5,
     base_kwargs: Optional[Dict[str, Any]] = None,
+    distinct_threshold: float = DEDUP_THRESHOLD,
 ) -> Dict[str, Any]:
     """Run probes and return aggregate + per-query metrics.
 
     ``base_kwargs`` are search kwargs applied to every probe (e.g. a fusion or
     recency override for a config comparison); a probe's own ``search`` kwargs
     take precedence on conflict.
+
+    Ranking metrics (hit_rate, MRR, precision, nDCG) are averaged over the
+    answerable probes only. ``expect_empty`` (no-answer) probes feed
+    ``false_positive_rate`` instead. ``distinct_at_k`` (the share of returned
+    results that are not near-duplicates) is averaged over every probe.
     """
     base_kwargs = base_kwargs or {}
     hits = 0
     rr_total = 0.0
     p_total = 0.0
     ndcg_total = 0.0
+    fp_count = 0
+    n_empty = 0
+    distinct_total = 0.0
     per_query: List[Dict[str, Any]] = []
 
     for p in probes:
         kwargs = {**base_kwargs, **p.search}
         results = index.search(p.query, user_id, limit=k, **kwargs)
+        distinct = _distinct_ratio(results, distinct_threshold)
+        distinct_total += distinct
+
+        if p.expect_empty:
+            n_empty += 1
+            fp = 1 if any(result_is_relevant(r, p) for r in results) else 0
+            fp_count += fp
+            per_query.append({
+                "query": p.query,
+                "expect_empty": True,
+                "false_positive": bool(fp),
+                "distinct": round(distinct, 3),
+                "note": p.note,
+            })
+            continue
+
         rels = [1 if result_is_relevant(r, p) else 0 for r in results]
         rr = next((1.0 / rank for rank, r in enumerate(rels, 1) if r), 0.0)
         hit = 1 if any(rels) else 0
@@ -153,18 +210,23 @@ def evaluate(
             "rr": round(rr, 3),
             "p_at_k": round(precision, 3),
             "ndcg": round(ndcg, 3),
+            "distinct": round(distinct, 3),
             "ranks": [i for i, r in enumerate(rels, 1) if r],
             "note": p.note,
         })
 
-    n = len(probes) or 1
+    n_scored = sum(1 for p in probes if not p.expect_empty) or 1
+    n_all = len(probes) or 1
     return {
         "k": k,
         "n": len(probes),
-        "hit_rate": hits / n,
-        "mrr": rr_total / n,
-        "precision_at_k": p_total / n,
-        "ndcg_at_k": ndcg_total / n,
+        "n_empty": n_empty,
+        "hit_rate": hits / n_scored,
+        "mrr": rr_total / n_scored,
+        "precision_at_k": p_total / n_scored,
+        "ndcg_at_k": ndcg_total / n_scored,
+        "false_positive_rate": (fp_count / n_empty) if n_empty else 0.0,
+        "distinct_at_k": distinct_total / n_all,
         "per_query": per_query,
     }
 
@@ -217,6 +279,30 @@ def build_seeded(index: MemoryIndex, user_id: str = "eval") -> List[Probe]:
     A("project report meeting was cancelled", {}, "conversation", user_id,
       thread_id="t-rep", event_time=now - timedelta(days=1))
 
+    # Near-duplicate pair: two memory chunks whose prose cores differ only by a
+    # trailing token, so their token-set Jaccard clears the dedup threshold.
+    # Both survive ingest (distinct content hashes), but with result dedup ON
+    # the search collapses them to one (distinct_at_k -> 1.0); with dedup OFF
+    # both come back (distinct_at_k drops). Drives the dedup delta in --compare.
+    A("the garage door keypad code is four seven one two", {}, "memory", user_id)
+    A("the garage door keypad code is four seven one two now", {}, "memory", user_id)
+
+    # Multi-fact thread: several related turns under one thread, for scoped
+    # retrieval (a thread_id filter must still surface an in-scope match).
+    A("User: when is my flight\n\nAssistant: your flight to Tokyo departs June 12 at 9am",
+      {}, "conversation", user_id, thread_id="t-trip")
+    A("User: which hotel did I book\n\nAssistant: you booked the Shinjuku Granbell for four nights",
+      {}, "conversation", user_id, thread_id="t-trip")
+    A("User: what should I pack\n\nAssistant: bring a universal power adapter and a light jacket",
+      {}, "conversation", user_id, thread_id="t-trip")
+
+    # Vocabulary-mismatch chunk: the matching probe shares ZERO tokens with it,
+    # so BM25 cannot bridge the gap. In seeded (BM25-only) mode that probe
+    # MISSES on purpose, exposing the lexical ceiling; with real embeddings
+    # (live mode) the vector branch closes it. An honest "harder eval" signal.
+    A("User: I cannot stand spiders\n\nAssistant: understood, your arachnophobia is noted",
+      {}, "conversation", user_id, thread_id="t-fears")
+
     return [
         Probe("what colour do I like", contains_any=["teal"], chunk_type="memory",
               note="paraphrase + spelling (colour/color)"),
@@ -233,6 +319,16 @@ def build_seeded(index: MemoryIndex, user_id: str = "eval") -> List[Probe]:
               note="thread filter passthrough"),
         Probe("project report", contains_all=["final"], thread_id="t-rep",
               note="recency vs relevance (recency ON should hurt MRR here)"),
+        Probe("garage door code", contains_any=["garage door keypad"],
+              note="near-dup pair: dedup collapses the twin (distinct_at_k)"),
+        Probe("tokyo trip details", contains_any=["flight", "hotel", "tokyo", "shinjuku"],
+              thread_id="t-trip", search={"thread_id": "t-trip"},
+              note="multi-fact thread, scoped retrieval"),
+        Probe("creepy crawly insects terrify me", contains_any=["spider", "arachno"],
+              note="vocabulary mismatch; BM25-only seeded misses, vectors bridge it live"),
+        Probe("what is the airspeed of an unladen swallow", expect_empty=True,
+              contains_any=["swallow", "airspeed", "velocity"],
+              note="no-answer probe: nothing in the corpus; feeds false_positive_rate"),
     ]
 
 
@@ -244,11 +340,19 @@ def _print_metrics(name: str, m: Dict[str, Any], verbose: bool = False) -> None:
     print(f"  MRR:          {m['mrr']:.3f}")
     print(f"  precision@{m['k']}: {m['precision_at_k']:.3f}")
     print(f"  nDCG@{m['k']}:      {m['ndcg_at_k']:.3f}")
+    print(f"  distinct@{m['k']}:  {m['distinct_at_k']:.3f}  (higher = fewer near-dup results)")
+    if m.get("n_empty"):
+        print(f"  false_pos_rate: {m['false_positive_rate']:.3f}  "
+              f"(over {m['n_empty']} no-answer probe(s); lower is better)")
     if verbose:
         for row in m["per_query"]:
-            mark = "ok  " if row["hit"] else "MISS"
-            print(f"    [{mark}] rr={row['rr']:.2f} ndcg={row['ndcg']:.2f} "
-                  f"ranks={row['ranks']}  {row['query']}")
+            if row.get("expect_empty"):
+                mark = "FP  " if row["false_positive"] else "ok  "
+                print(f"    [{mark}] no-answer distinct={row['distinct']:.2f}  {row['query']}")
+            else:
+                mark = "ok  " if row["hit"] else "MISS"
+                print(f"    [{mark}] rr={row['rr']:.2f} ndcg={row['ndcg']:.2f} "
+                      f"distinct={row['distinct']:.2f} ranks={row['ranks']}  {row['query']}")
 
 
 def _open_index(db: Optional[str]) -> MemoryIndex:
@@ -288,9 +392,10 @@ def main() -> None:
 
     if args.compare:
         configs = {
-            "rrf+recency":    {"fusion": "rrf", "apply_recency": True},
-            "rrf, no recency": {"fusion": "rrf", "apply_recency": False},
-            "weighted+recency": {"fusion": "weighted", "apply_recency": True},
+            "rrf+recency+dedup": {"fusion": "rrf", "apply_recency": True, "dedup": True},
+            "rrf, dedup off":    {"fusion": "rrf", "apply_recency": True, "dedup": False},
+            "rrf, no recency":   {"fusion": "rrf", "apply_recency": False},
+            "weighted+recency":  {"fusion": "weighted", "apply_recency": True},
         }
         for name, m in compare_configs(index, probes, configs,
                                        user_id=args.user, k=args.k).items():

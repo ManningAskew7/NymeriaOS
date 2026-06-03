@@ -1268,6 +1268,18 @@ class Settings(BaseSettings):
         default=20,
         description="When rag_rerank_enabled, how many fused candidates to rerank before truncating to the requested limit",
     )
+    rag_dedup_enabled: bool = Field(
+        default=True,
+        description="Suppress near-duplicate rag_search results so twin chunks (overlapping windows, live-vs-flush copies) do not consume several of the top-k slots.",
+    )
+    rag_dedup_threshold: float = Field(
+        default=0.9,
+        description="Token-set Jaccard at/above which two rag_search results count as near-duplicates and the lower-scored one is dropped (1 = only identical prose collapses).",
+    )
+    rag_result_max_chars: int = Field(
+        default=1000,
+        description="Max characters of each rag_search result snippet before it is truncated and ellipsized.",
+    )
 
     # Gemini (document extraction for email attachments)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")
