@@ -894,9 +894,10 @@ def create_threads_router(
 
         from ...core.dreaming import DreamInvocationError, invoke_dream
 
+        # Only the explicit one-shot request model is an override here; when it
+        # is absent invoke_dream resolves the per-thread dream model, then the
+        # global dream-default model, then None.
         model_override = req.model
-        if not model_override and tc and tc.dreaming and tc.dreaming.model:
-            model_override = tc.dreaming.model
 
         try:
             shadow_thread_id, summary = await run_in_threadpool(

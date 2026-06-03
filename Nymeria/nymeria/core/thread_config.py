@@ -99,12 +99,17 @@ class DreamingConfig(BaseModel):
     Gating fields are layered cheapest-first; all of them must pass for a dream
     to fire. ``last_dream_at`` and ``last_dream_thread_id`` are bookkeeping
     fields the scheduler writes after a successful run.
+
+    The gating thresholds and ``model`` are per-thread overrides: when left
+    None the dream inherits the global default (``Settings.dream_default_*``),
+    resolved live at dream time. ``enabled`` is not inherited; dreaming stays
+    opt-in per thread and is off by default.
     """
 
     enabled: bool = False
-    min_interval_hours: int = Field(default=6, ge=1, le=168)
-    min_idle_minutes: int = Field(default=30, ge=5, le=10080)
-    min_turns_since_last: int = Field(default=10, ge=1, le=10000)
+    min_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+    min_idle_minutes: Optional[int] = Field(default=None, ge=5, le=10080)
+    min_turns_since_last: Optional[int] = Field(default=None, ge=1, le=10000)
     model: Optional[str] = None
     # Per-thread prompt overrides. When blank/None the dream falls back to the
     # global default (data-dir override or the shipped file). system_prompt

@@ -48,10 +48,6 @@
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
 
-  const DREAM_DEFAULT_MIN_INTERVAL_HOURS = 6;
-  const DREAM_DEFAULT_MIN_IDLE_MINUTES = 30;
-  const DREAM_DEFAULT_MIN_TURNS_SINCE_LAST = 10;
-
   // Vertical sidebar nav, grouped in the global Settings panel's idiom. The old
   // in-pane sub-tabs (Model: Provider/Generation/Context; Tools: Native/MCP) are
   // promoted to first-class nav items here.
@@ -392,16 +388,18 @@
     return threadConfig?.dreaming?.enabled ?? false;
   }
 
+  // Blank when the thread has no per-thread override: the field then inherits
+  // the global dreaming default (Settings, Dreaming), resolved at dream time.
   function getInitialDreamMinIntervalHours(): string {
-    return String(threadConfig?.dreaming?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
+    return threadConfig?.dreaming?.minIntervalHours != null ? String(threadConfig.dreaming.minIntervalHours) : '';
   }
 
   function getInitialDreamMinIdleMinutes(): string {
-    return String(threadConfig?.dreaming?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
+    return threadConfig?.dreaming?.minIdleMinutes != null ? String(threadConfig.dreaming.minIdleMinutes) : '';
   }
 
   function getInitialDreamMinTurnsSinceLast(): string {
-    return String(threadConfig?.dreaming?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    return threadConfig?.dreaming?.minTurnsSinceLast != null ? String(threadConfig.dreaming.minTurnsSinceLast) : '';
   }
 
   function getInitialDreamModel(): string {
@@ -575,6 +573,15 @@
     return Math.min(max, Math.max(min, parsed));
   }
 
+  // A blank dreaming threshold means "inherit the global default" -> null.
+  function optionalBoundedInt(value: string | number, min: number, max: number): number | null {
+    const raw = String(value ?? '').trim();
+    if (raw === '') return null;
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.min(max, Math.max(min, parsed));
+  }
+
   function dreamConfigNeedsSaving(): boolean {
     return Boolean(
       threadConfig?.dreaming ||
@@ -582,9 +589,9 @@
       dreamModel.trim() ||
       dreamSystemPrompt.trim() ||
       dreamKickoffPrompt.trim() ||
-      boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168) !== DREAM_DEFAULT_MIN_INTERVAL_HOURS ||
-      boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080) !== DREAM_DEFAULT_MIN_IDLE_MINUTES ||
-      boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000) !== DREAM_DEFAULT_MIN_TURNS_SINCE_LAST
+      dreamMinIntervalHours.trim() ||
+      dreamMinIdleMinutes.trim() ||
+      dreamMinTurnsSinceLast.trim()
     );
   }
 
@@ -681,9 +688,9 @@
 
     const origDream = threadConfig?.dreaming ?? null;
     const origDreamEnabled = origDream?.enabled ?? false;
-    const origDreamMinIntervalHours = String(origDream?.minIntervalHours ?? DREAM_DEFAULT_MIN_INTERVAL_HOURS);
-    const origDreamMinIdleMinutes = String(origDream?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
-    const origDreamMinTurnsSinceLast = String(origDream?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    const origDreamMinIntervalHours = origDream?.minIntervalHours != null ? String(origDream.minIntervalHours) : '';
+    const origDreamMinIdleMinutes = origDream?.minIdleMinutes != null ? String(origDream.minIdleMinutes) : '';
+    const origDreamMinTurnsSinceLast = origDream?.minTurnsSinceLast != null ? String(origDream.minTurnsSinceLast) : '';
     const origDreamModel = origDream?.model ?? '';
     const origDreamSystemPrompt = origDream?.systemPrompt ?? '';
     const origDreamKickoffPrompt = origDream?.kickoffPrompt ?? '';
@@ -832,9 +839,10 @@
       if (dreamConfigNeedsSaving()) {
         updates.dreaming = {
           enabled: dreamEnabled,
-          min_interval_hours: boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168),
-          min_idle_minutes: boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080),
-          min_turns_since_last: boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000),
+          // Blank fields -> null: inherit the global dreaming defaults.
+          min_interval_hours: optionalBoundedInt(dreamMinIntervalHours, 1, 168),
+          min_idle_minutes: optionalBoundedInt(dreamMinIdleMinutes, 5, 10080),
+          min_turns_since_last: optionalBoundedInt(dreamMinTurnsSinceLast, 1, 10000),
           model: dreamModel.trim() || null,
           system_prompt: dreamSystemPrompt.trim() || null,
           kickoff_prompt: dreamKickoffPrompt.trim() || null,
@@ -918,9 +926,9 @@
     notificationProfile = null;
     memoryCharLimit = '';
     dreamEnabled = false;
-    dreamMinIntervalHours = String(DREAM_DEFAULT_MIN_INTERVAL_HOURS);
-    dreamMinIdleMinutes = String(DREAM_DEFAULT_MIN_IDLE_MINUTES);
-    dreamMinTurnsSinceLast = String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
+    dreamMinIntervalHours = '';
+    dreamMinIdleMinutes = '';
+    dreamMinTurnsSinceLast = '';
     dreamModel = '';
     dreamSystemPrompt = '';
     dreamKickoffPrompt = '';

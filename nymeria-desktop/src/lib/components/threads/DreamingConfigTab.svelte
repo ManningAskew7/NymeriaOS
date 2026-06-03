@@ -56,23 +56,23 @@
     <div class="grid-2">
       <div class="field-group">
         <label class="field-label" for="dream-min-interval">Min interval (hours)</label>
-        <input id="dream-min-interval" class="field-input" type="number" min="1" max="168" step="1" bind:value={dreamMinIntervalHours} />
-        <span class="input-hint">Shortest gap between dreams. The clock starts at the last dream, so this caps how often a thread can dream (default 6).</span>
+        <input id="dream-min-interval" class="field-input" type="number" min="1" max="168" step="1" placeholder="Global default" bind:value={dreamMinIntervalHours} />
+        <span class="input-hint">Shortest gap between dreams. The clock starts at the last dream, so this caps how often a thread can dream. Leave blank to inherit the global default (Settings, Dreaming).</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-min-idle">Min idle (minutes)</label>
-        <input id="dream-min-idle" class="field-input" type="number" min="5" max="10080" step="5" bind:value={dreamMinIdleMinutes} />
-        <span class="input-hint">How long the thread must be quiet before a dream may start, so a live conversation is never disturbed. Minimum 5 (default 30).</span>
+        <input id="dream-min-idle" class="field-input" type="number" min="5" max="10080" step="5" placeholder="Global default" bind:value={dreamMinIdleMinutes} />
+        <span class="input-hint">How long the thread must be quiet before a dream may start, so a live conversation is never disturbed. Leave blank to inherit the global default.</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-min-turns">Min turns since last</label>
-        <input id="dream-min-turns" class="field-input" type="number" min="1" max="10000" step="1" bind:value={dreamMinTurnsSinceLast} />
-        <span class="input-hint">How many of your messages must build up since the last dream, so there is enough new material to reflect on (default 10).</span>
+        <input id="dream-min-turns" class="field-input" type="number" min="1" max="10000" step="1" placeholder="Global default" bind:value={dreamMinTurnsSinceLast} />
+        <span class="input-hint">How many of your messages must build up since the last dream, so there is enough new material to reflect on. Leave blank to inherit the global default.</span>
       </div>
       <div class="field-group">
         <label class="field-label" for="dream-model">Dream model</label>
-        <input id="dream-model" class="field-input" type="text" bind:value={dreamModel} placeholder="Default model" maxlength={120} />
-        <span class="input-hint">Model the dream turn runs on. Leave blank to use your global default model.</span>
+        <input id="dream-model" class="field-input" type="text" bind:value={dreamModel} placeholder="Global default" maxlength={120} />
+        <span class="input-hint">Model the dream turn runs on. Leave blank to inherit the global default (Settings, Dreaming).</span>
       </div>
     </div>
 
@@ -84,7 +84,7 @@
         bind:value={dreamSystemPrompt}
         rows="6"
         maxlength={50000}
-        placeholder="Leave blank to use the global default (Settings, Dream tab)"
+        placeholder="Leave blank to use the global default (Settings, Dreaming tab)"
         spellcheck="false"
       ></textarea>
       <span class="input-hint">Replaces the dream's whole system prompt (its role, cycle phases, and rules) for this thread only. Leave blank to use the global default.</span>
@@ -98,7 +98,7 @@
         bind:value={dreamKickoffPrompt}
         rows="6"
         maxlength={10000}
-        placeholder="Leave blank to use the global default (Settings, Dream tab)"
+        placeholder="Leave blank to use the global default (Settings, Dreaming tab)"
         spellcheck="false"
       ></textarea>
       <span class="input-hint">

@@ -177,6 +177,21 @@ def _resolve_dream_kickoff_template(dream_cfg: Any, settings: Any) -> str:
     return settings.load_dream_kickoff_prompt()
 
 
+def _resolve_dream_model(dream_cfg: Any, settings: Any) -> Optional[str]:
+    """Per-thread dream model if set, else the global dream-default model.
+
+    Returns None when neither is set, so the shadow inherits the parent's
+    effective llm_config (and ultimately the global LLM model).
+    """
+    override = getattr(dream_cfg, "model", None) if dream_cfg else None
+    if override and override.strip():
+        return override
+    default = getattr(settings, "dream_default_model", None)
+    if default and default.strip():
+        return default
+    return None
+
+
 def invoke_dream(
     agent: Any,
     parent_thread_id: str,
@@ -230,19 +245,31 @@ def invoke_dream(
         parent_slug = _slug_from_thread_id(parent_thread_id, max_len=24)
         shadow_thread_id = f"{DREAM_THREAD_ID_PREFIX}-{parent_slug}-{timestamp}-{rand}"
 
+        # Resolve global settings and the parent's dreaming config up front:
+        # both the LLM override and the prompts below layer per-thread values
+        # over global defaults.
+        from ...config import get_settings
+
+        settings = get_settings()
+        dream_cfg = parent_tc.dreaming
+
+        # Effective dream model. An explicit caller model_override (manual run)
+        # wins; otherwise resolve the per-thread dream model, then the global
+        # dream-default model, then None (inherit the parent's llm_config).
+        effective_model = model_override or _resolve_dream_model(dream_cfg, settings)
+
         # Build the shadow's LLM override. Default: inherit the parent's
-        # effective llm_config; allow the caller (manual trigger or scheduler)
-        # to override just the model.
+        # effective llm_config; override just the model when one is resolved.
         from ..thread_config import ThreadConfig, ThreadLLMConfig
 
         shadow_llm_config: Optional[ThreadLLMConfig] = None
         if parent_tc.llm_config is not None:
             shadow_llm_config = parent_tc.llm_config.model_copy(deep=True)
-        if model_override:
+        if effective_model:
             if shadow_llm_config is None:
-                shadow_llm_config = ThreadLLMConfig(model=model_override)
+                shadow_llm_config = ThreadLLMConfig(model=effective_model)
             else:
-                shadow_llm_config.model = model_override
+                shadow_llm_config.model = effective_model
 
         enabled_opt = list(
             enabled_optional_tools or DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS
@@ -252,10 +279,6 @@ def invoke_dream(
         # Load the dream system prompt — replaces soul.md entirely for this thread.
         # Precedence: per-thread override (parent_tc.dreaming.system_prompt) wins,
         # else the global default (data-dir override or shipped dream_prompt.md).
-        from ...config import get_settings
-
-        settings = get_settings()
-        dream_cfg = parent_tc.dreaming
         dream_system_prompt = _resolve_dream_system_prompt(dream_cfg, settings)
 
         try:
@@ -390,7 +413,7 @@ def invoke_dream(
             "parent_thread_id": parent_thread_id,
             "started_at": started_at.isoformat(),
             "model": (shadow_llm_config.model if shadow_llm_config else None)
-            or model_override
+            or effective_model
             or "(inherits global)",
             "enabled_optional_tools": list(enabled_opt),
             "disabled_core_tools": list(disabled_core),

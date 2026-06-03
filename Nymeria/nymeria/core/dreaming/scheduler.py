@@ -47,6 +47,50 @@ DREAM_SWEEP_INTERVAL_SECONDS = 600  # 10 minutes
 # while bounding work on a large log.
 _ACTIVITY_SCAN_LIMIT = 2000
 
+# Hardcoded gate fallbacks used only when no global settings are supplied (unit
+# tests). In production the sweep always passes Settings, whose defaults mirror
+# these values (see Settings.dream_default_* in config/settings.py).
+_FALLBACK_MIN_INTERVAL_HOURS = 6
+_FALLBACK_MIN_IDLE_MINUTES = 30
+_FALLBACK_MIN_TURNS_SINCE_LAST = 10
+
+
+def resolve_dreaming_thresholds(
+    dreaming: Any, settings: Any = None
+) -> Tuple[int, int, int]:
+    """Resolve (min_interval_hours, min_idle_minutes, min_turns_since_last).
+
+    A per-thread value wins when set; otherwise the matching global default
+    from ``settings`` applies; otherwise the hardcoded fallback. Pure, no I/O.
+    """
+
+    def pick(per_thread: Optional[int], settings_attr: str, fallback: int) -> int:
+        if per_thread is not None:
+            return per_thread
+        if settings is not None:
+            value = getattr(settings, settings_attr, None)
+            if value is not None:
+                return value
+        return fallback
+
+    return (
+        pick(
+            getattr(dreaming, "min_interval_hours", None),
+            "dream_default_min_interval_hours",
+            _FALLBACK_MIN_INTERVAL_HOURS,
+        ),
+        pick(
+            getattr(dreaming, "min_idle_minutes", None),
+            "dream_default_min_idle_minutes",
+            _FALLBACK_MIN_IDLE_MINUTES,
+        ),
+        pick(
+            getattr(dreaming, "min_turns_since_last", None),
+            "dream_default_min_turns_since_last",
+            _FALLBACK_MIN_TURNS_SINCE_LAST,
+        ),
+    )
+
 
 @dataclass
 class DreamDecision:
@@ -62,12 +106,14 @@ def evaluate_dream_eligibility(
     now: datetime,
     last_activity_at: Optional[datetime],
     user_turns_since_dream: int,
+    settings: Any = None,
 ) -> DreamDecision:
     """Pure gating decision for one thread. No I/O.
 
     Exposed separately from the sweep so the gate matrix can be unit-tested
     without an agent or activity log. Gates are cheapest-first; the first
-    failing gate short-circuits with its reason.
+    failing gate short-circuits with its reason. Per-thread thresholds left
+    None inherit ``settings`` global defaults via :func:`resolve_dreaming_thresholds`.
     """
     dreaming = getattr(tc, "dreaming", None)
     if dreaming is None or not dreaming.enabled:
@@ -75,29 +121,33 @@ def evaluate_dream_eligibility(
     if getattr(tc, "shadow_parent_id", None):
         return DreamDecision(False, "thread is a shadow")
 
+    min_interval_hours, min_idle_minutes, min_turns_since_last = (
+        resolve_dreaming_thresholds(dreaming, settings)
+    )
+
     # 1. interval since last dream
     if dreaming.last_dream_at is not None:
         elapsed_h = (now - dreaming.last_dream_at).total_seconds() / 3600.0
-        if elapsed_h < dreaming.min_interval_hours:
+        if elapsed_h < min_interval_hours:
             return DreamDecision(
                 False,
-                f"interval {elapsed_h:.1f}h < {dreaming.min_interval_hours}h",
+                f"interval {elapsed_h:.1f}h < {min_interval_hours}h",
             )
 
     # 2. enough new user turns to reflect on
-    if user_turns_since_dream < dreaming.min_turns_since_last:
+    if user_turns_since_dream < min_turns_since_last:
         return DreamDecision(
             False,
-            f"turns {user_turns_since_dream} < {dreaming.min_turns_since_last}",
+            f"turns {user_turns_since_dream} < {min_turns_since_last}",
         )
 
     # 3. thread quiet long enough right now
     if last_activity_at is None:
         return DreamDecision(False, "no recorded activity")
     idle_min = (now - last_activity_at).total_seconds() / 60.0
-    if idle_min < dreaming.min_idle_minutes:
+    if idle_min < min_idle_minutes:
         return DreamDecision(
-            False, f"idle {idle_min:.0f}m < {dreaming.min_idle_minutes}m"
+            False, f"idle {idle_min:.0f}m < {min_idle_minutes}m"
         )
 
     return DreamDecision(
@@ -171,6 +221,9 @@ def sweep_dreamable_threads(agent: Any) -> int:
         return 0
 
     now = utc_now()
+    # Global dreaming defaults that per-thread thresholds fall back to. The PATCH
+    # /settings handler keeps agent.settings current, so this reflects live edits.
+    settings = getattr(agent, "settings", None)
     fired = 0
     for path in sorted(metadata_dir.glob("*.json")):
         user_id = path.stem
@@ -228,6 +281,7 @@ def sweep_dreamable_threads(agent: Any) -> int:
                 now=now,
                 last_activity_at=last_activity.get(thread_id),
                 user_turns_since_dream=turns,
+                settings=settings,
             )
             if not decision.eligible:
                 logger.debug("dream sweep: skip %s (%s)", thread_id, decision.reason)
@@ -238,11 +292,12 @@ def sweep_dreamable_threads(agent: Any) -> int:
                 continue
 
             try:
+                # model_override left unset: invoke_dream resolves the per-thread
+                # dream model, then the global dream-default model, then None.
                 shadow_id, _summary = invoke_dream(
                     agent,
                     parent_thread_id=thread_id,
                     user_id=user_id,
-                    model_override=tc.dreaming.model,
                 )
                 fired += 1
                 logger.info(

@@ -2582,11 +2582,11 @@ Updates thread config. Key fields for callable threads:
 | `llm_temperature` | float | Override temperature |
 | `llm_config.openai_api_mode` | string | OpenAI-compatible API mode: `chat_completions` or `responses`. Use `responses` for CLIProxy Codex OAuth threads that need native Responses reasoning/tool blocks replayed from the checkpoint. |
 | `memory_char_limit` | int | Optional per-thread notepad character limit. Omit or clear to inherit the global `MEMORY_CHAR_LIMIT` default. |
-| `dreaming.enabled` | bool | Opt in to background self-reflection for this thread. Default `false`. |
-| `dreaming.min_interval_hours` | int | Minimum hours between scheduled dream runs. Default `6`. |
-| `dreaming.min_idle_minutes` | int | Minimum idle time before a scheduled dream can start. Default `30`. |
-| `dreaming.min_turns_since_last` | int | Minimum parent-thread turn count before the next scheduled dream. Default `10`. |
-| `dreaming.model` | string | Optional model override for dream turns. |
+| `dreaming.enabled` | bool | Opt in to background self-reflection for this thread. Default `false`. Not inherited: dreaming is always opt-in per thread. |
+| `dreaming.min_interval_hours` | int | Minimum hours between scheduled dream runs. Blank/omitted inherits the global default (`dream_default_min_interval_hours`, default `6`). |
+| `dreaming.min_idle_minutes` | int | Minimum idle time before a scheduled dream can start. Blank/omitted inherits the global default (`dream_default_min_idle_minutes`, default `30`). |
+| `dreaming.min_turns_since_last` | int | Minimum parent-thread turn count before the next scheduled dream. Blank/omitted inherits the global default (`dream_default_min_turns_since_last`, default `10`). |
+| `dreaming.model` | string | Optional model override for dream turns. Blank/omitted inherits the global default (`dream_default_model`), then the global active model. |
 | `dreaming.system_prompt` | string | Optional per-thread override of the dream system prompt. Blank/omitted falls back to the global default (`GET/PUT /settings/dream-prompts`). |
 | `dreaming.kickoff_prompt` | string | Optional per-thread override of the dream kickoff message (first message sent to the dreaming thread). Supports `{parent_thread_id}` and `{parent_instructions}` placeholders. Blank/omitted falls back to the global default. |
 
@@ -2611,7 +2611,7 @@ Request fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | string | Optional one-run model override. Defaults to `dreaming.model`, then the normal active model. |
+| `model` | string | Optional one-run model override. Defaults to `dreaming.model`, then the global `dream_default_model`, then the normal active model. |
 | `force` | bool | Bypass the `dreaming.enabled` opt-in check. Default `false`. |
 
 Response fields:

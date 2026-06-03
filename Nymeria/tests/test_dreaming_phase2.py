@@ -358,7 +358,12 @@ def test_sweep_skips_shadow_platform_threads(stub_agent, activity, capture_dream
     assert capture_dreams == []
 
 
-def test_sweep_passes_thread_dream_model(stub_agent, activity, capture_dreams):
+def test_sweep_defers_model_resolution_to_invoke(stub_agent, activity, capture_dreams):
+    """The sweep no longer pre-resolves the model; invoke_dream does.
+
+    It fires the dream without a model_override so invoke_dream can apply the
+    per-thread dream model, then the global dream-default model, then None.
+    """
     user = "u1"
     _register(
         stub_agent,
@@ -377,7 +382,77 @@ def test_sweep_passes_thread_dream_model(stub_agent, activity, capture_dreams):
     _seed_user_activity(activity, user, {"t-model": [45, 60]})
 
     assert sweep_dreamable_threads(stub_agent) == 1
-    assert capture_dreams[0][2] == "claude-haiku-4-5-20251001"
+    assert capture_dreams[0][0] == "t-model"
+    assert capture_dreams[0][2] is None
+
+
+def test_resolve_dream_model_precedence():
+    """Per-thread dream model wins, then the global dream default, then None."""
+    from types import SimpleNamespace
+
+    from nymeria.core.dreaming.invoke import _resolve_dream_model
+
+    glob = SimpleNamespace(dream_default_model="global-model")
+    assert _resolve_dream_model(DreamingConfig(model="thread-model"), glob) == "thread-model"
+    assert _resolve_dream_model(DreamingConfig(), glob) == "global-model"
+    assert _resolve_dream_model(DreamingConfig(), SimpleNamespace(dream_default_model=None)) is None
+    # Blank values are treated as unset at every level.
+    assert _resolve_dream_model(DreamingConfig(model="   "), SimpleNamespace(dream_default_model="  ")) is None
+
+
+def test_resolve_dreaming_thresholds_precedence():
+    """Per-thread threshold wins; else global default; else hardcoded fallback."""
+    from types import SimpleNamespace
+
+    from nymeria.core.dreaming.scheduler import resolve_dreaming_thresholds
+
+    # No settings -> hardcoded fallbacks (mirror Settings.dream_default_*).
+    assert resolve_dreaming_thresholds(DreamingConfig(), None) == (6, 30, 10)
+
+    glob = SimpleNamespace(
+        dream_default_min_interval_hours=12,
+        dream_default_min_idle_minutes=45,
+        dream_default_min_turns_since_last=3,
+    )
+    # All blank -> inherit globals.
+    assert resolve_dreaming_thresholds(DreamingConfig(), glob) == (12, 45, 3)
+    # Per-thread overrides win field-by-field.
+    cfg = DreamingConfig(min_interval_hours=2, min_turns_since_last=99)
+    assert resolve_dreaming_thresholds(cfg, glob) == (2, 45, 99)
+
+
+def test_gate_inherits_global_interval_when_thread_blank():
+    """A blank per-thread interval inherits the global default via settings."""
+    from types import SimpleNamespace
+
+    now = utc_now()
+    tc = _tc(min_turns_since_last=1, min_idle_minutes=5)  # interval left blank
+    assert tc.dreaming.min_interval_hours is None
+    tc.dreaming.last_dream_at = now - timedelta(hours=4)
+    glob = SimpleNamespace(
+        dream_default_min_interval_hours=6,
+        dream_default_min_idle_minutes=30,
+        dream_default_min_turns_since_last=10,
+    )
+    # 4h elapsed < global 6h -> blocked on the inherited interval.
+    blocked = evaluate_dream_eligibility(
+        tc,
+        now=now,
+        last_activity_at=now - timedelta(hours=1),
+        user_turns_since_dream=99,
+        settings=glob,
+    )
+    assert not blocked.eligible and "interval" in blocked.reason
+    # Shrink the global default and the same thread clears the interval gate.
+    glob.dream_default_min_interval_hours = 1
+    ok = evaluate_dream_eligibility(
+        tc,
+        now=now,
+        last_activity_at=now - timedelta(hours=1),
+        user_turns_since_dream=99,
+        settings=glob,
+    )
+    assert ok.eligible, ok.reason
 
 
 # ---------------------------------------------------------------------------
