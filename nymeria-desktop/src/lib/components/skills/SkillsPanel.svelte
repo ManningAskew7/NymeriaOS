@@ -329,8 +329,12 @@
 
   .chip {
     font-size: var(--font-size-xs);
-    padding: 1px 6px;
-    border-radius: var(--radius-md);
+    /* §3 un-pill: --radius-md (8px) on a ~16px-tall chip rendered as a true
+       pill (radius = half-height), which optically left-shifts the text.
+       Bumped vertical padding for breathing and dropped to --radius-sm so
+       the chip reads as a softened rectangle. */
+    padding: 2px var(--spacing-sm);
+    border-radius: var(--radius-sm);
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);

@@ -141,8 +141,11 @@
     font-weight: 600;
     color: var(--text-muted);
     background: var(--bg-elevated);
-    padding: 2px 6px;
-    border-radius: var(--radius-md);
+    /* §3 un-pill: --radius-md (8px) on a 16px chip rendered as a pill (8 = 16/2).
+       Bumped horizontal padding to var(--spacing-sm) and dropped radius to
+       --radius-sm so the chip reads as a softened rectangle, not a pill. */
+    padding: 2px var(--spacing-sm);
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border-subtle);
   }
 
