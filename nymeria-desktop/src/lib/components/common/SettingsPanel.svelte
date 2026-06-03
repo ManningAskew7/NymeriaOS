@@ -25,6 +25,7 @@
   import NotificationsPanel from '../notifications/NotificationsPanel.svelte';
   import CLIProxyPanel from './CLIProxyPanel.svelte';
   import SystemPromptEditor from './SystemPromptEditor.svelte';
+  import DreamPromptEditor from './DreamPromptEditor.svelte';
   import GlobalMemoryEditor from './GlobalMemoryEditor.svelte';
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import ProviderSelect from './ProviderSelect.svelte';
@@ -475,8 +476,8 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'persona' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
-  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'voice', 'proxy', 'users'];
+  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'dream', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -920,6 +921,16 @@
           >
             <Icon name="fileText" size={14} />
             <span>System Prompt</span>
+          </button>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'dream'}
+            onclick={() => (activeTab = 'dream')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="clock" size={14} />
+            <span>Dream</span>
           </button>
           <button
             class="nav-item"
@@ -1960,6 +1971,13 @@
   {#if activeTab === 'persona' && isAdmin}
     <div class="tab-content tab-tools-flex">
       <SystemPromptEditor />
+    </div>
+  {/if}
+
+  <!-- Dream Prompts Tab -->
+  {#if activeTab === 'dream' && isAdmin}
+    <div class="tab-content tab-tools-flex">
+      <DreamPromptEditor />
     </div>
   {/if}
 

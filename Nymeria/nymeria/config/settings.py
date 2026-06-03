@@ -1549,8 +1549,33 @@ class Settings(BaseSettings):
 
     @property
     def dream_prompt_path(self) -> Path:
-        """Get the path to the dream cycle system prompt."""
+        """Get the path to the packaged dream-cycle system prompt (shipped default)."""
         return PACKAGE_ROOT / "config" / "dream_prompt.md"
+
+    @property
+    def dream_prompt_override_path(self) -> Path:
+        """Path to the user-editable dream system-prompt override.
+
+        Mirrors system_prompt_override_path: lives in the writable data dir so the
+        packaged dream_prompt.md is never mutated. Non-empty override wins; deleting
+        it restores the shipped default. This is the global default that a thread's
+        per-thread DreamingConfig.system_prompt can in turn override.
+        """
+        return self.data_dir / "dream_prompt.md"
+
+    @property
+    def dream_kickoff_path(self) -> Path:
+        """Get the path to the packaged dream kickoff prompt (shipped default).
+
+        The kickoff is the first user message sent to the dreaming thread; it is a
+        template with {parent_thread_id} and {parent_instructions} placeholders.
+        """
+        return PACKAGE_ROOT / "config" / "dream_kickoff.md"
+
+    @property
+    def dream_kickoff_override_path(self) -> Path:
+        """Path to the user-editable dream kickoff override (data dir)."""
+        return self.data_dir / "dream_kickoff.md"
 
     @property
     def logs_dir(self) -> Path:
@@ -1620,13 +1645,49 @@ class Settings(BaseSettings):
         return "You are Nymeria, a helpful AI assistant."
 
     def load_dream_prompt(self) -> str:
-        """Load the dream-cycle system prompt. Returns a minimal fallback if absent."""
+        """Load the dream-cycle system prompt (global default).
+
+        Precedence: a non-empty data-dir override wins, otherwise the packaged
+        dream_prompt.md, otherwise a minimal fallback. A thread's per-thread
+        DreamingConfig.system_prompt (resolved in invoke_dream) overrides this.
+        """
+        override_path = self.dream_prompt_override_path
+        if override_path.exists():
+            override_text = override_path.read_text(encoding="utf-8").strip()
+            if override_text:
+                return override_text
         if self.dream_prompt_path.exists():
             return self.dream_prompt_path.read_text(encoding="utf-8")
         return (
             "You are in a dream cycle. Read the parent thread's memory and "
             "instructions, prune what's stale, tweak instructions if patterns "
             "have emerged, and schedule TODOs only when justified."
+        )
+
+    def load_dream_kickoff_prompt(self) -> str:
+        """Load the dream kickoff prompt template (global default).
+
+        Same precedence as load_dream_prompt: data-dir override, then the packaged
+        dream_kickoff.md, then a hardcoded fallback. The returned text is a template
+        with {parent_thread_id} and {parent_instructions} placeholders that
+        _build_initial_prompt substitutes. A thread's per-thread
+        DreamingConfig.kickoff_prompt (resolved in invoke_dream) overrides this.
+        """
+        override_path = self.dream_kickoff_override_path
+        if override_path.exists():
+            override_text = override_path.read_text(encoding="utf-8").strip()
+            if override_text:
+                return override_text
+        if self.dream_kickoff_path.exists():
+            return self.dream_kickoff_path.read_text(encoding="utf-8")
+        return (
+            "[Dream cycle starting]\n"
+            "parent_thread_id: {parent_thread_id}\n\n"
+            "Current parent instructions (verbatim, may be empty):\n"
+            "----- BEGIN INSTRUCTIONS -----\n"
+            "{parent_instructions}\n"
+            "----- END INSTRUCTIONS -----\n\n"
+            "Begin the cycle. Phase 1: orient. Read memory before acting."
         )
 
     def validate_runtime(self) -> Tuple[List[str], List[str]]:

@@ -518,3 +518,122 @@ def test_skip_memory_seed_false_for_unknown_thread(stub_agent):
     from nymeria.core.agent import NymeriaAgent
 
     assert NymeriaAgent._thread_skip_memory_seed(stub_agent, "never-seen") is False
+
+
+# ---------------------------------------------------------------------------
+# Editable dream prompts: kickoff templating + per-thread override precedence
+# ---------------------------------------------------------------------------
+
+
+def test_build_initial_prompt_substitutes_placeholders():
+    from nymeria.core.dreaming.invoke import _build_initial_prompt
+
+    out = _build_initial_prompt(
+        "thread-xyz",
+        "be terse",
+        template="id={parent_thread_id} :: ins={parent_instructions}",
+    )
+    assert out == "id=thread-xyz :: ins=be terse"
+
+
+def test_build_initial_prompt_instructions_with_braces_are_literal():
+    # Instruction text is user-authored and may contain braces; .replace (not
+    # .format) keeps them literal instead of raising KeyError.
+    from nymeria.core.dreaming.invoke import _build_initial_prompt
+
+    out = _build_initial_prompt(
+        "t1",
+        "use {curly} and {parent_thread_id} verbatim",
+        template="{parent_instructions}",
+    )
+    assert out == "use {curly} and {parent_thread_id} verbatim"
+
+
+def test_build_initial_prompt_default_template_fills_and_leaves_no_placeholders():
+    from nymeria.core.dreaming.invoke import _build_initial_prompt
+
+    out = _build_initial_prompt("t-default", None)
+    assert "parent_thread_id: t-default" in out
+    assert "{parent_thread_id}" not in out
+    assert "{parent_instructions}" not in out
+
+
+def test_resolve_dream_prompts_prefer_per_thread_override():
+    from nymeria.core.dreaming.invoke import (
+        _resolve_dream_kickoff_template,
+        _resolve_dream_system_prompt,
+    )
+
+    settings = SimpleNamespace(
+        load_dream_prompt=lambda: "GLOBAL_SYS",
+        load_dream_kickoff_prompt=lambda: "GLOBAL_KICK",
+    )
+    cfg = DreamingConfig(system_prompt="PER_THREAD_SYS", kickoff_prompt="PER_THREAD_KICK")
+    assert _resolve_dream_system_prompt(cfg, settings) == "PER_THREAD_SYS"
+    assert _resolve_dream_kickoff_template(cfg, settings) == "PER_THREAD_KICK"
+
+
+def test_resolve_dream_prompts_fall_back_to_global_when_blank_or_none():
+    from nymeria.core.dreaming.invoke import (
+        _resolve_dream_kickoff_template,
+        _resolve_dream_system_prompt,
+    )
+
+    settings = SimpleNamespace(
+        load_dream_prompt=lambda: "GLOBAL_SYS",
+        load_dream_kickoff_prompt=lambda: "GLOBAL_KICK",
+    )
+    # Blank-string override is treated as unset.
+    blank = DreamingConfig(system_prompt="   ", kickoff_prompt="")
+    assert _resolve_dream_system_prompt(blank, settings) == "GLOBAL_SYS"
+    assert _resolve_dream_kickoff_template(blank, settings) == "GLOBAL_KICK"
+    # No dreaming config at all.
+    assert _resolve_dream_system_prompt(None, settings) == "GLOBAL_SYS"
+    assert _resolve_dream_kickoff_template(None, settings) == "GLOBAL_KICK"
+
+
+def test_invoke_dream_applies_per_thread_prompt_overrides(stub_agent, monkeypatch):
+    """A parent's per-thread system/kickoff overrides reach the shadow config and
+    the kickoff message, taking precedence over the global default."""
+    from nymeria.core.dreaming.invoke import _release_dream_slot
+
+    spawned: List[dict] = []
+
+    class _RecordingThread:
+        def __init__(self, *args, **kwargs):
+            spawned.append(kwargs.get("kwargs", {}))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(
+        "nymeria.core.dreaming.invoke.threading.Thread", _RecordingThread
+    )
+
+    parent = "parent-prompt-override"
+    stub_agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=parent,
+            instructions="parent says be brief",
+            dreaming=DreamingConfig(
+                enabled=True,
+                system_prompt="CUSTOM DREAM SYSTEM PROMPT",
+                kickoff_prompt="KICK for {parent_thread_id} :: {parent_instructions}",
+            ),
+        )
+    )
+
+    try:
+        shadow_id, _ = invoke_dream(stub_agent, parent_thread_id=parent, user_id="u1")
+
+        # System prompt override is persisted onto the shadow's ThreadConfig.
+        shadow_tc = stub_agent.thread_config_manager.get_config(shadow_id)
+        assert shadow_tc is not None
+        assert shadow_tc.system_prompt == "CUSTOM DREAM SYSTEM PROMPT"
+
+        # Kickoff override is templated into the daemon's initial prompt.
+        assert spawned, "daemon thread was not constructed"
+        initial_prompt = spawned[-1]["initial_prompt"]
+        assert initial_prompt == "KICK for {} :: parent says be brief".format(parent)
+    finally:
+        _release_dream_slot(parent)

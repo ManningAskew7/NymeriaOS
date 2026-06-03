@@ -131,6 +131,8 @@ def _slug_from_thread_id(thread_id: str, max_len: int = 24) -> str:
 def _build_initial_prompt(
     parent_thread_id: str,
     current_instructions: Optional[str],
+    *,
+    template: Optional[str] = None,
 ) -> str:
     """Assemble the orient-phase payload the dream agent reads first.
 
@@ -138,21 +140,41 @@ def _build_initial_prompt(
     context: which thread we're dreaming for, plus a verbatim copy of the
     parent's current instructions (since the dream agent cannot see them
     by reading its own ``ThreadConfig``).
+
+    ``template`` is the kickoff template (per-thread or global default). When
+    omitted, the global default is loaded. The two placeholders
+    ``{parent_thread_id}`` and ``{parent_instructions}`` are substituted with
+    ``str.replace`` rather than ``str.format`` because the instructions text is
+    user-authored and may contain literal braces.
     """
     instructions_block = (
         current_instructions.strip()
         if current_instructions and current_instructions.strip()
-        else "(none — the parent has no per-thread instructions yet)"
+        else "(none, the parent has no per-thread instructions yet)"
     )
-    return (
-        "[Dream cycle starting]\n"
-        f"parent_thread_id: {parent_thread_id}\n\n"
-        "Current parent instructions (verbatim, may be empty):\n"
-        "----- BEGIN INSTRUCTIONS -----\n"
-        f"{instructions_block}\n"
-        "----- END INSTRUCTIONS -----\n\n"
-        "Begin the cycle. Phase 1: orient. Read memory before acting."
+    if template is None:
+        from ...config import get_settings
+
+        template = get_settings().load_dream_kickoff_prompt()
+    return template.replace("{parent_thread_id}", parent_thread_id).replace(
+        "{parent_instructions}", instructions_block
     )
+
+
+def _resolve_dream_system_prompt(dream_cfg: Any, settings: Any) -> str:
+    """Per-thread dream system prompt if set, else the global default."""
+    override = getattr(dream_cfg, "system_prompt", None) if dream_cfg else None
+    if override and override.strip():
+        return override
+    return settings.load_dream_prompt()
+
+
+def _resolve_dream_kickoff_template(dream_cfg: Any, settings: Any) -> str:
+    """Per-thread dream kickoff template if set, else the global default."""
+    override = getattr(dream_cfg, "kickoff_prompt", None) if dream_cfg else None
+    if override and override.strip():
+        return override
+    return settings.load_dream_kickoff_prompt()
 
 
 def invoke_dream(
@@ -228,10 +250,13 @@ def invoke_dream(
         disabled_core = list(disabled_core_tools or DEFAULT_DREAM_DISABLED_CORE_TOOLS)
 
         # Load the dream system prompt — replaces soul.md entirely for this thread.
+        # Precedence: per-thread override (parent_tc.dreaming.system_prompt) wins,
+        # else the global default (data-dir override or shipped dream_prompt.md).
         from ...config import get_settings
 
         settings = get_settings()
-        dream_system_prompt = settings.load_dream_prompt()
+        dream_cfg = parent_tc.dreaming
+        dream_system_prompt = _resolve_dream_system_prompt(dream_cfg, settings)
 
         try:
             shadow_tc = ThreadConfig(
@@ -317,8 +342,9 @@ def invoke_dream(
         else:
             agent.invalidate_thread_config_cache(parent_thread_id)
 
+        kickoff_template = _resolve_dream_kickoff_template(dream_cfg, settings)
         initial_prompt = _build_initial_prompt(
-            parent_thread_id, parent_tc.instructions
+            parent_thread_id, parent_tc.instructions, template=kickoff_template
         )
 
         try:

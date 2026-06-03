@@ -2587,6 +2587,8 @@ Updates thread config. Key fields for callable threads:
 | `dreaming.min_idle_minutes` | int | Minimum idle time before a scheduled dream can start. Default `30`. |
 | `dreaming.min_turns_since_last` | int | Minimum parent-thread turn count before the next scheduled dream. Default `10`. |
 | `dreaming.model` | string | Optional model override for dream turns. |
+| `dreaming.system_prompt` | string | Optional per-thread override of the dream system prompt. Blank/omitted falls back to the global default (`GET/PUT /settings/dream-prompts`). |
+| `dreaming.kickoff_prompt` | string | Optional per-thread override of the dream kickoff message (first message sent to the dreaming thread). Supports `{parent_thread_id}` and `{parent_instructions}` placeholders. Blank/omitted falls back to the global default. |
 
 **Callable thread naming:** A callable thread's sidebar title is derived from
 `callable_name`. Rename the callable tool binding by updating `callable_name`

@@ -67,6 +67,8 @@ export class ThreadConfigApi extends MCPApi {
         minIdleMinutes: data.dreaming.min_idle_minutes ?? 30,
         minTurnsSinceLast: data.dreaming.min_turns_since_last ?? 10,
         model: data.dreaming.model ?? null,
+        systemPrompt: data.dreaming.system_prompt ?? null,
+        kickoffPrompt: data.dreaming.kickoff_prompt ?? null,
         lastDreamAt: data.dreaming.last_dream_at ?? null,
         lastDreamThreadId: data.dreaming.last_dream_thread_id ?? null,
       } : null,

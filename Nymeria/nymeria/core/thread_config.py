@@ -106,6 +106,12 @@ class DreamingConfig(BaseModel):
     min_idle_minutes: int = Field(default=30, ge=5, le=10080)
     min_turns_since_last: int = Field(default=10, ge=1, le=10000)
     model: Optional[str] = None
+    # Per-thread prompt overrides. When blank/None the dream falls back to the
+    # global default (data-dir override or the shipped file). system_prompt
+    # replaces the dream's whole system prompt; kickoff_prompt is the first user
+    # message template ({parent_thread_id}, {parent_instructions} placeholders).
+    system_prompt: Optional[str] = Field(default=None, max_length=50000)
+    kickoff_prompt: Optional[str] = Field(default=None, max_length=10000)
     last_dream_at: Optional[datetime] = None
     last_dream_thread_id: Optional[str] = None
 

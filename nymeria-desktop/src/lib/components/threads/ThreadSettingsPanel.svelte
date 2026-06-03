@@ -407,6 +407,12 @@
   function getInitialDreamModel(): string {
     return threadConfig?.dreaming?.model ?? '';
   }
+  function getInitialDreamSystemPrompt(): string {
+    return threadConfig?.dreaming?.systemPrompt ?? '';
+  }
+  function getInitialDreamKickoffPrompt(): string {
+    return threadConfig?.dreaming?.kickoffPrompt ?? '';
+  }
 
   let injectTodosInPrompt = $state(getInitialInjectTodosInPrompt());
   let showAutonomousPrompts = $state(getInitialShowAutonomousPrompts());
@@ -420,6 +426,8 @@
   let dreamMinIdleMinutes = $state<string>(getInitialDreamMinIdleMinutes());
   let dreamMinTurnsSinceLast = $state<string>(getInitialDreamMinTurnsSinceLast());
   let dreamModel = $state(getInitialDreamModel());
+  let dreamSystemPrompt = $state(getInitialDreamSystemPrompt());
+  let dreamKickoffPrompt = $state(getInitialDreamKickoffPrompt());
   let dreamRunning = $state(false);
   let dreamStatus = $state('');
 
@@ -572,6 +580,8 @@
       threadConfig?.dreaming ||
       dreamEnabled ||
       dreamModel.trim() ||
+      dreamSystemPrompt.trim() ||
+      dreamKickoffPrompt.trim() ||
       boundedInt(dreamMinIntervalHours, DREAM_DEFAULT_MIN_INTERVAL_HOURS, 1, 168) !== DREAM_DEFAULT_MIN_INTERVAL_HOURS ||
       boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080) !== DREAM_DEFAULT_MIN_IDLE_MINUTES ||
       boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000) !== DREAM_DEFAULT_MIN_TURNS_SINCE_LAST
@@ -675,11 +685,15 @@
     const origDreamMinIdleMinutes = String(origDream?.minIdleMinutes ?? DREAM_DEFAULT_MIN_IDLE_MINUTES);
     const origDreamMinTurnsSinceLast = String(origDream?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
     const origDreamModel = origDream?.model ?? '';
+    const origDreamSystemPrompt = origDream?.systemPrompt ?? '';
+    const origDreamKickoffPrompt = origDream?.kickoffPrompt ?? '';
     if (dreamEnabled !== origDreamEnabled) return true;
     if (String(dreamMinIntervalHours ?? '').trim() !== origDreamMinIntervalHours) return true;
     if (String(dreamMinIdleMinutes ?? '').trim() !== origDreamMinIdleMinutes) return true;
     if (String(dreamMinTurnsSinceLast ?? '').trim() !== origDreamMinTurnsSinceLast) return true;
     if (dreamModel !== origDreamModel) return true;
+    if (dreamSystemPrompt !== origDreamSystemPrompt) return true;
+    if (dreamKickoffPrompt !== origDreamKickoffPrompt) return true;
 
     return false;
   }
@@ -822,6 +836,8 @@
           min_idle_minutes: boundedInt(dreamMinIdleMinutes, DREAM_DEFAULT_MIN_IDLE_MINUTES, 5, 10080),
           min_turns_since_last: boundedInt(dreamMinTurnsSinceLast, DREAM_DEFAULT_MIN_TURNS_SINCE_LAST, 1, 10000),
           model: dreamModel.trim() || null,
+          system_prompt: dreamSystemPrompt.trim() || null,
+          kickoff_prompt: dreamKickoffPrompt.trim() || null,
         };
       } else {
         updates.clear_dreaming = true;
@@ -906,6 +922,8 @@
     dreamMinIdleMinutes = String(DREAM_DEFAULT_MIN_IDLE_MINUTES);
     dreamMinTurnsSinceLast = String(DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
     dreamModel = '';
+    dreamSystemPrompt = '';
+    dreamKickoffPrompt = '';
     dreamStatus = '';
   }
 
@@ -1112,6 +1130,8 @@
                 bind:dreamMinIdleMinutes
                 bind:dreamMinTurnsSinceLast
                 bind:dreamModel
+                bind:dreamSystemPrompt
+                bind:dreamKickoffPrompt
                 lastDreamAt={threadConfig?.dreaming?.lastDreamAt}
                 {dreamRunning}
                 {dreamStatus}

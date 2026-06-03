@@ -3,6 +3,7 @@
 import logging
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -40,6 +41,9 @@ from ...core.llm_provider_utils import (
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
+    DreamPromptInfo,
+    DreamPromptsResponse,
+    DreamPromptsUpdate,
     LLMProviderSpecResponse,
     LLMProviderTestRequest,
     LLMProviderTestResponse,
@@ -1319,6 +1323,71 @@ def create_settings_router(
             override_path.unlink()
         get_agent_fn().reload_base_system_prompt()
         return _system_prompt_response()
+
+    def _dream_prompt_info(default_path: Path, override_path: Path, effective: str) -> DreamPromptInfo:
+        default_content = (
+            default_path.read_text(encoding="utf-8") if default_path.exists() else ""
+        )
+        is_override = bool(
+            override_path.exists()
+            and override_path.read_text(encoding="utf-8").strip()
+        )
+        return DreamPromptInfo(
+            content=effective,
+            default_content=default_content,
+            is_override=is_override,
+        )
+
+    def _dream_prompts_response() -> DreamPromptsResponse:
+        """Build the dream-prompt editor payload (system + kickoff) from disk."""
+        settings = get_settings_fn()
+        return DreamPromptsResponse(
+            system=_dream_prompt_info(
+                settings.dream_prompt_path,
+                settings.dream_prompt_override_path,
+                settings.load_dream_prompt(),
+            ),
+            kickoff=_dream_prompt_info(
+                settings.dream_kickoff_path,
+                settings.dream_kickoff_override_path,
+                settings.load_dream_kickoff_prompt(),
+            ),
+        )
+
+    def _write_dream_override(override_path: Path, content: Optional[str]) -> None:
+        """Write a non-blank override, or clear it when blank. None leaves it alone."""
+        if content is None:
+            return
+        text = content.strip()
+        if text:
+            override_path.parent.mkdir(parents=True, exist_ok=True)
+            override_path.write_text(text, encoding="utf-8")
+        elif override_path.exists():
+            override_path.unlink()
+
+    @router.get("/settings/dream-prompts", response_model=DreamPromptsResponse)
+    async def get_dream_prompts(
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ):
+        """Get the global dream prompts (system + kickoff), defaults, and override flags."""
+        return _dream_prompts_response()
+
+    @router.put("/settings/dream-prompts", response_model=DreamPromptsResponse)
+    async def update_dream_prompts(
+        request: DreamPromptsUpdate,
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Set or clear the global dream-prompt overrides.
+
+        Per field: a non-blank string writes the data-dir override, a blank string
+        clears it (resets to the shipped default), and an omitted field is left
+        untouched. No agent reload is needed: invoke_dream reads these fresh on every
+        dream cycle. The shipped package files are never modified.
+        """
+        _write_dream_override(settings.dream_prompt_override_path, request.system)
+        _write_dream_override(settings.dream_kickoff_override_path, request.kickoff)
+        return _dream_prompts_response()
 
     @router.post("/settings/llm/test", response_model=LLMProviderTestResponse)
     async def test_llm_provider_config(

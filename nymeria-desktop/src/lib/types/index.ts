@@ -243,6 +243,10 @@ export interface DreamingConfig {
   minIdleMinutes: number;
   minTurnsSinceLast: number;
   model?: string | null;
+  /** Per-thread override of the dream system prompt. Blank uses the global default. */
+  systemPrompt?: string | null;
+  /** Per-thread override of the dream kickoff message. Blank uses the global default. */
+  kickoffPrompt?: string | null;
   lastDreamAt?: string | null;
   lastDreamThreadId?: string | null;
 }
@@ -253,6 +257,8 @@ export interface DreamingConfigUpdateRequest {
   min_idle_minutes?: number | null;
   min_turns_since_last?: number | null;
   model?: string | null;
+  system_prompt?: string | null;
+  kickoff_prompt?: string | null;
 }
 
 /**
@@ -367,6 +373,22 @@ export interface SystemPromptInfo {
   defaultContent: string;
   /** True when a user override is active instead of the shipped default. */
   isOverride: boolean;
+}
+
+/** One global dream prompt (system or kickoff) for the editor. */
+export interface DreamPromptInfo {
+  /** Effective global default currently in use (override or shipped). */
+  content: string;
+  /** Shipped default, used for the reset action and comparison. */
+  defaultContent: string;
+  /** True when a data-dir override is active instead of the shipped default. */
+  isOverride: boolean;
+}
+
+/** Both global dream prompts (admin-only): the system prompt and the kickoff message. */
+export interface DreamPromptsInfo {
+  system: DreamPromptInfo;
+  kickoff: DreamPromptInfo;
 }
 
 /** A single structured global-memory record (profile.json entry). */
