@@ -139,6 +139,43 @@ class FakeSettings:
             return self.soul_path.read_text(encoding="utf-8")
         return "You are Nymeria, a helpful AI assistant."
 
+    @property
+    def dream_prompt_path(self) -> Path:
+        return self.data_dir / "dream_prompt_default.md"
+
+    @property
+    def dream_prompt_override_path(self) -> Path:
+        return self.data_dir / "dream_prompt.md"
+
+    @property
+    def dream_kickoff_path(self) -> Path:
+        return self.data_dir / "dream_kickoff_default.md"
+
+    @property
+    def dream_kickoff_override_path(self) -> Path:
+        return self.data_dir / "dream_kickoff.md"
+
+    def _load_with_override(self, default_path: Path, override_path: Path, fallback: str) -> str:
+        if override_path.exists():
+            text = override_path.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        if default_path.exists():
+            return default_path.read_text(encoding="utf-8")
+        return fallback
+
+    def load_dream_prompt(self) -> str:
+        return self._load_with_override(
+            self.dream_prompt_path, self.dream_prompt_override_path, "default-dream-sys"
+        )
+
+    def load_dream_kickoff_prompt(self) -> str:
+        return self._load_with_override(
+            self.dream_kickoff_path,
+            self.dream_kickoff_override_path,
+            "default-dream-kickoff",
+        )
+
 
 class FakeSettingsProvider:
     def __init__(self, settings: FakeSettings):
@@ -1062,3 +1099,54 @@ def test_get_env_var_reveals_with_explicit_flag(monkeypatch, tmp_path):
     )
     assert resp.status_code == 200
     assert resp.json()["value"] == "sk-secret-abcdef1234567890"
+
+
+def test_get_dream_prompts_returns_defaults_when_no_override(monkeypatch, tmp_path):
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    resp = client.get("/settings/dream-prompts", headers=_auth(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["system"]["is_override"] is False
+    assert body["kickoff"]["is_override"] is False
+    # Falls back to the loader's hardcoded default when no file is present.
+    assert body["system"]["content"] == "default-dream-sys"
+    assert body["kickoff"]["content"] == "default-dream-kickoff"
+
+
+def test_update_dream_prompts_writes_and_clears_overrides(monkeypatch, tmp_path):
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+
+    # Write the system override; leave kickoff untouched (omitted field).
+    resp = client.put(
+        "/settings/dream-prompts",
+        json={"system": "MY DREAM SYSTEM"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["system"]["content"] == "MY DREAM SYSTEM"
+    assert body["system"]["is_override"] is True
+    assert body["kickoff"]["is_override"] is False
+    assert provider.settings.dream_prompt_override_path.exists()
+
+    # Blank clears the override (resets to default).
+    resp = client.put(
+        "/settings/dream-prompts", json={"system": "  "}, headers=_auth(token)
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["system"]["is_override"] is False
+    assert body["system"]["content"] == "default-dream-sys"
+    assert not provider.settings.dream_prompt_override_path.exists()
+
+
+def test_dream_prompts_require_admin(monkeypatch, tmp_path):
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user(
+        "bob", "bob@example.com", "Bob", role="user"
+    )
+    user_token = agent.accounts_repo.issue_token("bob")
+
+    resp = client.get("/settings/dream-prompts", headers=_auth(user_token))
+    assert resp.status_code == 403

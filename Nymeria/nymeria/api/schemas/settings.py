@@ -55,6 +55,37 @@ class SystemPromptUpdate(BaseModel):
     content: str = Field(default="", max_length=100_000)
 
 
+class DreamPromptInfo(BaseModel):
+    """One dream prompt (system or kickoff) plus its shipped default and override flag."""
+
+    content: str = Field(..., description="Effective global default in use")
+    default_content: str = Field(
+        ..., description="Shipped default, shown for reset/compare"
+    )
+    is_override: bool = Field(
+        ..., description="True when a data-dir override is active (not the shipped file)"
+    )
+
+
+class DreamPromptsResponse(BaseModel):
+    """Both global dream prompts for the editor: the system prompt and the kickoff."""
+
+    system: DreamPromptInfo
+    kickoff: DreamPromptInfo
+
+
+class DreamPromptsUpdate(BaseModel):
+    """Update the global dream-prompt overrides.
+
+    Each field is optional; a provided blank string clears that override (resets to
+    the shipped default), a provided non-blank string writes it, and an omitted
+    field is left untouched.
+    """
+
+    system: Optional[str] = Field(default=None, max_length=50_000)
+    kickoff: Optional[str] = Field(default=None, max_length=10_000)
+
+
 class ServerSettingsResponse(BaseModel):
     """Response model for server settings."""
 

@@ -1,5 +1,7 @@
 import type {
   AvailableModel,
+  DreamPromptInfo,
+  DreamPromptsInfo,
   LLMProviderSpec,
   LLMProviderTestRequest,
   LLMProviderTestResponse,
@@ -113,6 +115,49 @@ export class SystemApi extends MemoryApi {
       throw new Error(await this._toastAndExtractError(response, 'Failed to reset system prompt'));
     }
     return this._normalizeSystemPrompt(await response.json());
+  }
+
+  private _normalizeDreamPromptInfo(data: Record<string, unknown>): DreamPromptInfo {
+    return {
+      content: (data.content as string) ?? '',
+      defaultContent: (data.default_content as string) ?? '',
+      isOverride: Boolean(data.is_override)
+    };
+  }
+
+  private _normalizeDreamPrompts(data: Record<string, unknown>): DreamPromptsInfo {
+    return {
+      system: this._normalizeDreamPromptInfo((data.system as Record<string, unknown>) ?? {}),
+      kickoff: this._normalizeDreamPromptInfo((data.kickoff as Record<string, unknown>) ?? {})
+    };
+  }
+
+  /** Get the global dream prompts (system + kickoff), defaults, and override status. */
+  async getDreamPrompts(): Promise<DreamPromptsInfo> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/dream-prompts`, {
+      headers: this.getHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load dream prompts'));
+    }
+    return this._normalizeDreamPrompts(await response.json());
+  }
+
+  /**
+   * Update the global dream-prompt overrides. Each field is optional: a non-blank
+   * string writes the override, a blank string clears it (resets to default), and
+   * an omitted field is left untouched.
+   */
+  async updateDreamPrompts(update: { system?: string; kickoff?: string }): Promise<DreamPromptsInfo> {
+    const response = await fetch(`${this.getBaseUrl()}/settings/dream-prompts`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(update)
+    });
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update dream prompts'));
+    }
+    return this._normalizeDreamPrompts(await response.json());
   }
 
   async testLLMProviderConfig(

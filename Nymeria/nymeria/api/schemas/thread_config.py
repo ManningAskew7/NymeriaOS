@@ -37,6 +37,8 @@ class DreamingConfigRequest(BaseModel):
     min_idle_minutes: int | None = Field(default=None, ge=5, le=10080)
     min_turns_since_last: int | None = Field(default=None, ge=1, le=10000)
     model: str | None = None
+    system_prompt: str | None = Field(default=None, max_length=50000)
+    kickoff_prompt: str | None = Field(default=None, max_length=10000)
 
 
 class ThreadConfigUpdateRequest(BaseModel):

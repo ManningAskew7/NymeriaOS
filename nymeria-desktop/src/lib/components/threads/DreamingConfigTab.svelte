@@ -11,6 +11,8 @@
     dreamMinIdleMinutes: string;
     dreamMinTurnsSinceLast: string;
     dreamModel: string;
+    dreamSystemPrompt: string;
+    dreamKickoffPrompt: string;
     lastDreamAt?: string | null;
     dreamRunning: boolean;
     dreamStatus: string;
@@ -25,6 +27,8 @@
     dreamMinIdleMinutes = $bindable(),
     dreamMinTurnsSinceLast = $bindable(),
     dreamModel = $bindable(),
+    dreamSystemPrompt = $bindable(),
+    dreamKickoffPrompt = $bindable(),
     lastDreamAt = null,
     dreamRunning,
     dreamStatus,
@@ -70,6 +74,36 @@
         <input id="dream-model" class="field-input" type="text" bind:value={dreamModel} placeholder="Default model" maxlength={120} />
         <span class="input-hint">Model the dream turn runs on. Leave blank to use your global default model.</span>
       </div>
+    </div>
+
+    <div class="prompt-group">
+      <label class="field-label" for="dream-system-prompt">Dream system prompt (override)</label>
+      <textarea
+        id="dream-system-prompt"
+        class="prompt-textarea"
+        bind:value={dreamSystemPrompt}
+        rows="6"
+        maxlength={50000}
+        placeholder="Leave blank to use the global default (Settings, Dream tab)"
+        spellcheck="false"
+      ></textarea>
+      <span class="input-hint">Replaces the dream's whole system prompt (its role, cycle phases, and rules) for this thread only. Leave blank to use the global default.</span>
+    </div>
+
+    <div class="prompt-group">
+      <label class="field-label" for="dream-kickoff-prompt">Dream kickoff message (override)</label>
+      <textarea
+        id="dream-kickoff-prompt"
+        class="prompt-textarea"
+        bind:value={dreamKickoffPrompt}
+        rows="6"
+        maxlength={10000}
+        placeholder="Leave blank to use the global default (Settings, Dream tab)"
+        spellcheck="false"
+      ></textarea>
+      <span class="input-hint">
+        The first message sent to the dreaming thread. Placeholders <code>{'{parent_thread_id}'}</code> and <code>{'{parent_instructions}'}</code> are filled in at dream time. Leave blank to use the global default.
+      </span>
     </div>
 
     {#if lastDreamAt}
@@ -156,6 +190,37 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--spacing-md);
+  }
+
+  .prompt-group {
+    margin-top: var(--spacing-md);
+  }
+
+  .prompt-textarea {
+    width: 100%;
+    padding: var(--spacing-sm);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+    resize: vertical;
+    min-height: 96px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: calc(var(--font-size-sm) - 1px);
+    line-height: 1.5;
+    transition: border-color var(--transition-fast);
+  }
+  .prompt-textarea:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+  }
+  .prompt-textarea::placeholder { color: var(--text-muted); }
+
+  .input-hint code {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: calc(var(--font-size-xs) - 0.5px);
+    color: var(--text-secondary, var(--text-primary));
   }
 
   .toggle-row {
