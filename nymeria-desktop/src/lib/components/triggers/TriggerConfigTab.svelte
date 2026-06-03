@@ -615,7 +615,8 @@
   .trigger-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    /* §3 chip-row gap — meta-tag chips (source + action) breathe at 8px. */
+    gap: var(--spacing-sm);
     padding-left: 20px;
   }
 

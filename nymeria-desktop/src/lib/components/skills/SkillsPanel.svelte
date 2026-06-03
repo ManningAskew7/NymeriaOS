@@ -3,6 +3,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import type { SkillMetadata, SkillScope } from '$lib/types';
   import SkillsMarketplacePanel from './SkillsMarketplacePanel.svelte';
+  import Icon from '$lib/components/common/Icon.svelte';
 
   let showMarketplace = $state(false);
   let expanded = $state<Record<string, boolean>>({});
@@ -121,9 +122,9 @@
                           <span class="skill-name">{skill.name}</span>
                           {#if skill.default_active}<span class="chip chip-default">default</span>{/if}
                           {#if skill.is_skill_kit}<span class="chip chip-kit">Skill Kit</span>{/if}
-                          {#if skill.has_scripts}<span class="chip">scripts</span>{/if}
-                          {#if skill.has_references}<span class="chip">references</span>{/if}
-                          {#if skill.has_assets}<span class="chip">assets</span>{/if}
+                          {#if skill.has_scripts}<span class="chip chip-cap"><Icon name="terminal" size={10} /><span>scripts</span></span>{/if}
+                          {#if skill.has_references}<span class="chip chip-cap"><Icon name="fileText" size={10} /><span>references</span></span>{/if}
+                          {#if skill.has_assets}<span class="chip chip-cap"><Icon name="folder" size={10} /><span>assets</span></span>{/if}
                           {#each skill.required_tools as toolName}
                             <span class="chip chip-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
                               {toolName}
@@ -333,6 +334,19 @@
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
+  }
+  /* Capability chips (scripts / references / assets) carry a small leading
+     Lucide icon so the three otherwise-identical pills read as distinct
+     categories at a glance — matches §3 differentiation guidance and the
+     colored-dot pattern already used by TriggerConfigTab.meta-tag. */
+  .chip-cap {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+  }
+  .chip-cap :global(svg) {
+    color: var(--text-secondary);
+    flex-shrink: 0;
   }
   .chip-tools {
     cursor: help;

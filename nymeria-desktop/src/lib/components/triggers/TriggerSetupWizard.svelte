@@ -875,7 +875,9 @@
 
   .category-tabs {
     display: flex;
-    gap: 4px;
+    /* §3 chip-row gap — keeps the filter pills from crowding edge-to-edge
+       and matches the canonical 8px chip-row spacing. */
+    gap: var(--spacing-sm);
     flex-wrap: wrap;
   }
 
