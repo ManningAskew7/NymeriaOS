@@ -964,7 +964,9 @@
     display: inline-block;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    padding: 1px 6px;
+    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
+       by 1px within the chip without changing total chip height. */
+    padding: 0 6px 2px;
     border-radius: var(--radius-md);
     text-transform: uppercase;
     letter-spacing: 0.5px;

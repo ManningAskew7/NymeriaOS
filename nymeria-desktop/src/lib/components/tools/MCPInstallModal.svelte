@@ -656,7 +656,9 @@ https://github.com/example/mcp-server`}
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px var(--spacing-sm);
+    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
+       by 1px within the chip without changing total chip height. */
+    padding: 3px var(--spacing-sm) 5px;
     background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.15);
     color: var(--accent-primary);
     border: 1px solid rgba(var(--accent-primary-rgb, 108, 159, 255), 0.3);
@@ -939,7 +941,9 @@ https://github.com/example/mcp-server`}
 
   .risk-pill {
     flex-shrink: 0;
-    padding: 3px var(--spacing-sm);
+    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
+       by 1px within the chip without changing total chip height. */
+    padding: 2px var(--spacing-sm) 4px;
     /* §3 — text chip uses --radius-sm, not full pill. */
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-subtle);
