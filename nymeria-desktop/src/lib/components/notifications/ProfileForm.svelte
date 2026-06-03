@@ -180,7 +180,8 @@
     color: var(--text-muted);
     background: var(--bg-elevated);
     padding: 1px 6px;
-    border-radius: 4px;
+    /* §3 — text chip uses --radius-sm token, not full pill. */
+    border-radius: var(--radius-sm);
   }
 
   .dest-disabled {
