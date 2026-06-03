@@ -182,7 +182,7 @@
     outline: none;
     resize: vertical;
     min-height: 280px;
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: calc(var(--font-size-sm) - 1px);
     line-height: 1.5;
     transition: border-color var(--transition-fast);

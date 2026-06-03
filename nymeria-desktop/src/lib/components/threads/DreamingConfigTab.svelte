@@ -206,7 +206,7 @@
     outline: none;
     resize: vertical;
     min-height: 96px;
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: calc(var(--font-size-sm) - 1px);
     line-height: 1.5;
     transition: border-color var(--transition-fast);
@@ -218,7 +218,7 @@
   .prompt-textarea::placeholder { color: var(--text-muted); }
 
   .input-hint code {
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: calc(var(--font-size-xs) - 0.5px);
     color: var(--text-secondary, var(--text-primary));
   }

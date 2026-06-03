@@ -300,7 +300,7 @@
   }
 
   .row-key {
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--accent-primary);
