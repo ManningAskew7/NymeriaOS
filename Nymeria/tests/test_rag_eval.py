@@ -7,6 +7,7 @@ under tools/ (not a package), so we add it to sys.path explicitly.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -110,6 +111,113 @@ def test_distinct_at_k_drops_when_dedup_disabled():
         # ratio 1.0) and surfaces both copies with dedup off (ratio < 1.0).
         assert on["distinct_at_k"] >= off["distinct_at_k"]
         assert off["distinct_at_k"] < 1.0
+
+
+# --- LongMemEval loader + session-grained gold -----------------------------
+
+_LME_FIXTURE = [
+    {
+        "question_id": "q1",
+        "question_type": "single-session-user",
+        "question": "what breed is my dog",
+        "answer": "a corgi named Biscuit",
+        "question_date": "2023/05/20 (Sat) 10:00",
+        "haystack_session_ids": ["s_gold", "s_distract"],
+        "haystack_dates": ["2023/05/01 (Mon) 09:00", "2023/05/10 (Wed) 14:00"],
+        "haystack_sessions": [
+            [
+                {"role": "user", "content": "my dog is a corgi named Biscuit",
+                 "has_answer": True},
+                {"role": "assistant", "content": "what a cute corgi"},
+            ],
+            [
+                {"role": "user", "content": "the weather in sydney is sunny today"},
+                {"role": "assistant", "content": "enjoy the sunshine"},
+            ],
+        ],
+        "answer_session_ids": ["s_gold"],
+    },
+    {
+        "question_id": "q2_abs",
+        "question_type": "single-session-user",
+        "question": "what is my bank account pin",
+        "answer": "no information available",
+        "question_date": "2023/06/01 (Thu) 12:00",
+        "haystack_session_ids": ["s_other"],
+        "haystack_dates": ["2023/05/15 (Mon) 08:00"],
+        "haystack_sessions": [
+            [
+                {"role": "user", "content": "lets talk about gardening tomatoes"},
+                {"role": "assistant", "content": "tomatoes need full sun"},
+            ],
+        ],
+        "answer_session_ids": [],
+    },
+]
+
+
+def test_native_dim_lookup():
+    assert rag_eval.native_dim("text-embedding-3-large") == 3072
+    assert rag_eval.native_dim("text-embedding-3-small") == 1536
+    assert rag_eval.native_dim("some-unknown-model") == 1536
+    assert rag_eval.native_dim(None) == 1536
+
+
+def test_parse_lme_date_strips_day_token():
+    d = rag_eval._parse_lme_date("2023/05/20 (Sat) 02:21")
+    assert d is not None and (d.year, d.month, d.day) == (2023, 5, 20)
+    assert rag_eval._parse_lme_date("not a date") is None
+    assert rag_eval._parse_lme_date(None) is None
+
+
+def test_probe_from_dict_parses_relevant_thread_ids():
+    p = rag_eval.Probe.from_dict({"query": "q", "relevant_thread_ids": ["a", "b"]})
+    assert p.relevant_thread_ids == ["a", "b"]
+
+
+def test_result_is_relevant_honours_relevant_thread_ids():
+    P = rag_eval.Probe
+    r = _result("anything", thread_id="s_gold")
+    assert rag_eval.result_is_relevant(r, P("q", relevant_thread_ids=["s_gold", "s2"]))
+    assert not rag_eval.result_is_relevant(r, P("q", relevant_thread_ids=["s_other"]))
+    # An empty gold set (abstention probes) matches nothing.
+    assert not rag_eval.result_is_relevant(r, P("q", relevant_thread_ids=[]))
+
+
+def test_load_longmemeval_indexes_haystack_and_builds_probes():
+    with TemporaryDirectory() as tmp:
+        data_path = Path(tmp) / "lme.json"
+        data_path.write_text(json.dumps(_LME_FIXTURE))
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.load_longmemeval(idx, str(data_path), user_id="eval")
+
+        # One probe per question; gold and abstention parsed correctly.
+        assert len(probes) == 2
+        assert probes[0].relevant_thread_ids == ["s_gold"]
+        assert probes[0].expect_empty is False
+        assert probes[1].expect_empty is True            # qid ends in _abs
+        assert probes[1].relevant_thread_ids == []
+
+        # Each haystack turn is indexed under its session id with the session
+        # date as event_time, so BM25 alone surfaces the gold session and the
+        # session-membership predicate scores it relevant.
+        results = idx.search(probes[0].query, "eval", limit=5)
+        gold = [r for r in results if r.thread_id == "s_gold"]
+        assert gold, "gold session should be retrievable for an answerable question"
+        assert gold[0].event_time is not None and gold[0].event_time.year == 2023
+        assert any(rag_eval.result_is_relevant(r, probes[0]) for r in results)
+
+
+def test_longmemeval_abstention_feeds_n_empty_not_hit_rate():
+    with TemporaryDirectory() as tmp:
+        data_path = Path(tmp) / "lme.json"
+        data_path.write_text(json.dumps(_LME_FIXTURE))
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.load_longmemeval(idx, str(data_path), user_id="eval")
+        m = rag_eval.evaluate(idx, probes, user_id="eval", k=5)
+        assert m["n"] == 2 and m["n_empty"] == 1
+        # No gold session for the abstention probe, so no spurious retrieval hit.
+        assert m["false_positive_rate"] == 0.0
 
 
 def test_compare_detects_recency_effect():
