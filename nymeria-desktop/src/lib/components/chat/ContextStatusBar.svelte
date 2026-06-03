@@ -106,7 +106,7 @@
 <style>
   .context-status-bar {
     position: relative;
-    font-size: 0.7rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-secondary);
     /* Transparent — the parent .input-section's sliding pseudo-element
        provides the surface colour. */
@@ -229,7 +229,7 @@
      read as continuous vertical strokes. */
   .model-name {
     font-family: var(--font-mono);
-    font-size: 0.65rem;
+    font-size: var(--font-size-3xs);
     opacity: 0.8;
     max-width: 200px;
     overflow: hidden;
@@ -244,13 +244,13 @@
 
   .token-count {
     font-family: var(--font-mono);
-    font-size: 0.65rem;
+    font-size: var(--font-size-3xs);
     transform: translateY(1px);
   }
 
   .usage {
     font-family: var(--font-mono);
-    font-size: 0.65rem;
+    font-size: var(--font-size-3xs);
     font-weight: 500;
     transform: translateY(1px);
   }

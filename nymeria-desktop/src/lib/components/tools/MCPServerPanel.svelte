@@ -530,7 +530,7 @@
 
   .panel-header h4 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
     color: var(--text-primary, #e0e0e0);
     display: flex;
     align-items: center;
@@ -565,7 +565,7 @@
 
   .loading-state {
     color: var(--text-muted, #777);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     padding: 1.5rem;
     text-align: center;
   }
@@ -581,12 +581,12 @@
 
   .empty-state p {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary, #999);
   }
 
   .empty-state span {
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
   }
 
   .servers-list {
@@ -620,7 +620,7 @@
     border: none;
     cursor: pointer;
     color: var(--text-primary, #e0e0e0);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     transition: background var(--transition-fast, 0.15s);
   }
 
@@ -670,12 +670,12 @@
   }
 
   .server-subtitle {
-    font-size: 0.72rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, #777);
   }
 
   .tool-badge {
-    font-size: 0.72rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-secondary, #999);
     background: var(--bg-base, #1a1a1a);
     padding: 0.1rem 0.5rem;
@@ -717,7 +717,7 @@
   }
 
   .updated-at {
-    font-size: 0.7rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, #777);
     white-space: nowrap;
   }
@@ -741,7 +741,7 @@
   .info-row {
     display: flex;
     gap: 0.5rem;
-    font-size: 0.82rem;
+    font-size: var(--font-size-sm);
     align-items: baseline;
   }
 
@@ -765,7 +765,7 @@
     gap: 0.4rem;
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm, 4px);
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     animation: fadeIn 0.2s ease;
   }
 
@@ -787,7 +787,7 @@
     border-radius: var(--radius-sm, 4px);
     background: color-mix(in srgb, var(--warning) 12%, transparent);
     color: var(--warning);
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
   }
 
   @keyframes fadeIn {
@@ -856,7 +856,7 @@
   }
 
   .tool-description {
-    font-size: 0.72rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, #777);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -864,7 +864,7 @@
   }
 
   .no-tools {
-    font-size: 0.82rem;
+    font-size: var(--font-size-sm);
     color: var(--text-muted, #777);
     padding: 0.5rem;
     text-align: center;
@@ -884,7 +884,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     color: var(--error, #ff6b6b);
     animation: fadeIn 0.2s ease;
   }

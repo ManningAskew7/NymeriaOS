@@ -682,7 +682,7 @@
   .callable-indicator {
     display: inline-flex;
     align-items: center;
-    font-size: 14.4px;
+    font-size: var(--font-size-sm);
     font-weight: 700;
     color: var(--accent-primary);
     line-height: 1;

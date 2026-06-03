@@ -2913,7 +2913,7 @@
   }
 
   .font-name {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
   }
@@ -2990,7 +2990,7 @@
   }
 
   .logo-stepper-label {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
   }
 
@@ -3030,7 +3030,7 @@
   .stepper-value {
     min-width: 48px;
     text-align: center;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-variant-numeric: tabular-nums;
     color: var(--text-primary);
   }
@@ -3268,7 +3268,7 @@
     background: var(--bg-elevated-2);
     border-radius: 6px;
     border: 1px solid var(--border-default);
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
     margin-bottom: 1rem;
   }
@@ -3286,7 +3286,7 @@
     background: none;
     border: none;
     color: var(--accent-primary);
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     padding: 0;
     margin-bottom: 1rem;

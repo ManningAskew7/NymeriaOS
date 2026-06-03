@@ -739,7 +739,7 @@
     gap: var(--spacing-sm);
     flex-shrink: 0;
     padding: var(--spacing-2xs) var(--spacing-sm);
-    font-size: 9.5px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -923,7 +923,7 @@
 
   .summary-label {
     flex-shrink: 0;
-    font-size: 9.5px;
+    font-size: var(--font-size-3xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -933,7 +933,7 @@
   .summary-value {
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: var(--font-size-2xs);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1066,7 +1066,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--spacing-xs);
-    font-size: 9.5px;
+    font-size: var(--font-size-3xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -1107,7 +1107,7 @@
     margin: 0;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: var(--font-size-2xs);
     overflow-wrap: anywhere;
     min-width: 0;
   }
@@ -1134,7 +1134,7 @@
   .cond-value {
     padding: var(--spacing-2xs) var(--spacing-xs);
     font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: var(--font-size-2xs);
     background: var(--bg-base);
     border: 1px solid var(--border-subtle, var(--border-default));
     border-radius: 3px;

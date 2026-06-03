@@ -269,7 +269,7 @@
   }
 
   .presets-label {
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #777);
   }
 
@@ -309,7 +309,7 @@
   }
 
   .field-label {
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary, #999);
     display: flex;
     align-items: center;
@@ -321,7 +321,7 @@
   }
 
   .auto-badge {
-    font-size: 0.65rem;
+    font-size: var(--font-size-3xs);
     padding: 0 0.3rem;
     border-radius: 3px;
     background: var(--accent-primary, #6c9fff);
@@ -336,7 +336,7 @@
     border-radius: var(--radius-sm, 4px);
     background: var(--bg-base, #1a1a1a);
     color: var(--text-primary, #e0e0e0);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     font-family: inherit;
     transition: border-color var(--transition-fast, 0.15s);
   }
@@ -352,12 +352,12 @@
   }
 
   .field-hint {
-    font-size: 0.72rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-muted, #777);
   }
 
   .field-error {
-    font-size: 0.72rem;
+    font-size: var(--font-size-2xs);
     color: var(--error, #ff6b6b);
   }
 
@@ -380,7 +380,7 @@
     border-radius: var(--radius-sm, 4px);
     background: var(--bg-base, #1a1a1a);
     color: var(--text-primary, #e0e0e0);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     font-family: var(--font-mono);
   }
 
@@ -414,7 +414,7 @@
     border-radius: var(--radius-sm, 4px);
     background: none;
     color: var(--text-muted, #777);
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     align-self: flex-start;
   }
@@ -429,7 +429,7 @@
     border-radius: var(--radius-sm, 4px);
     background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error, #ff6b6b);
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
   }
 
   .form-actions {
