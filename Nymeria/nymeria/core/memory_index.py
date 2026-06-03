@@ -6,6 +6,7 @@ Implements RAG (Retrieval Augmented Generation) for Nymeria by:
 - Sentence-aware chunking for optimal retrieval
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -61,6 +62,19 @@ DEFAULT_RECENCY_HALF_LIFE = 730.0
 # prose-only chunk is unaffected; a tool-dump-heavy chunk is gently demoted.
 TOOL_ACTIVITY_MARKER = "\n\nTools used:"
 PROSE_PRIORITY_WEIGHT = 0.4
+
+# Result-dedup threshold. Two results whose prose cores overlap by at least this
+# token-set Jaccard fraction are treated as near-duplicates, so the second is
+# skipped when selecting the final top-k. High (0.9) so only genuine twins
+# collapse, never merely topical neighbours.
+DEDUP_THRESHOLD = 0.9
+
+# Vector candidate floor for selective (thread/time-scoped) searches. The vec0
+# table carries no metadata columns, so the vector branch cannot filter in SQL;
+# it fetches the nearest-N by distance and the scope filter is applied at the
+# fetch step. On a narrow scope most of the nearest-N fall out of scope, so we
+# lift the vector LIMIT to this floor to keep enough in-scope vector candidates.
+VECTOR_FILTER_POOL = 200
 
 
 @dataclass
@@ -173,7 +187,8 @@ class MemoryIndex:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         event_time TIMESTAMP,
                         metadata TEXT DEFAULT '{}',
-                        context TEXT
+                        context TEXT,
+                        content_hash TEXT
                     )
                 """)
 
@@ -192,6 +207,20 @@ class MemoryIndex:
                     )
                 if "context" not in existing_cols:
                     cursor.execute("ALTER TABLE chunks ADD COLUMN context TEXT")
+                if "content_hash" not in existing_cols:
+                    cursor.execute("ALTER TABLE chunks ADD COLUMN content_hash TEXT")
+                    # Backfill the prose-core hash for historical rows so the
+                    # ingest dedup guard and the content_hash index cover them
+                    # too. The hash needs Python (sqlite has no equivalent), so
+                    # read id+content and UPDATE in one batched transaction.
+                    legacy = cursor.execute(
+                        "SELECT id, content FROM chunks WHERE content_hash IS NULL"
+                    ).fetchall()
+                    if legacy:
+                        cursor.executemany(
+                            "UPDATE chunks SET content_hash = ? WHERE id = ?",
+                            [(self._content_hash(r["content"]), r["id"]) for r in legacy],
+                        )
 
                 # Indexes for efficient querying
                 cursor.execute("""
@@ -211,6 +240,12 @@ class MemoryIndex:
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_chunks_user_type
                     ON chunks(user_id, chunk_type)
+                """)
+                # Backs the ingest dedup guard in add_chunk: locate an existing
+                # chunk with the same prose-core hash for this user/type fast.
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_chunks_content_hash
+                    ON chunks(user_id, chunk_type, content_hash)
                 """)
 
                 # FTS5 table for BM25 search
@@ -528,20 +563,24 @@ class MemoryIndex:
             try:
                 cursor = conn.cursor()
 
-                # Exact-duplicate guard. The same turn is indexed both live (at
-                # turn completion) and again when it is later flushed before a
-                # context trim, and a window can be re-flushed on successive
-                # trims, so identical chunks pile up. If the first chunk's exact
-                # content already exists for this user/type/thread, treat the
-                # whole add as a duplicate and skip it. Differing content (e.g. a
-                # turn that gained a "Tools used:" suffix) is not a duplicate.
+                # Duplicate guard keyed on the prose-core hash. The same turn is
+                # indexed both live (at turn completion) and again when it is
+                # later flushed before a context trim, and a window can be
+                # re-flushed on successive trims, so duplicates pile up. The live
+                # copy carries a templated "Tools used:" suffix the flushed copy
+                # lacks, so a byte-equality check missed that pair; hashing the
+                # prose core (text before the marker, whitespace-collapsed) makes
+                # the twins collide while still catching exact duplicates. If the
+                # first chunk's core hash already exists for this
+                # user/type/thread, treat the whole add as a duplicate and skip.
                 if text_chunks:
+                    first_hash = self._content_hash(text_chunks[0])
                     cursor.execute(
                         "SELECT 1 FROM chunks "
                         "WHERE user_id = ? AND chunk_type = ? "
                         "AND IFNULL(thread_id, '') = IFNULL(?, '') "
-                        "AND content = ? LIMIT 1",
-                        (user_id, chunk_type, thread_id, text_chunks[0]),
+                        "AND content_hash = ? LIMIT 1",
+                        (user_id, chunk_type, thread_id, first_hash),
                     )
                     if cursor.fetchone():
                         logger.debug(
@@ -562,8 +601,8 @@ class MemoryIndex:
 
                     # Insert into chunks table
                     cursor.execute("""
-                        INSERT INTO chunks (id, user_id, content, chunk_type, thread_id, event_time, metadata, context)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO chunks (id, user_id, content, chunk_type, thread_id, event_time, metadata, context, content_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         chunk_id,
                         user_id,
@@ -573,6 +612,7 @@ class MemoryIndex:
                         event_iso,
                         json.dumps(chunk_metadata),
                         context,
+                        self._content_hash(chunk_content),
                     ))
 
                     # Get embedding and store in vector table. When a contextual
@@ -643,6 +683,49 @@ class MemoryIndex:
         return (len(content) - idx) / len(content)
 
     @staticmethod
+    def _content_core(content: Optional[str]) -> str:
+        """Normalized prose core of a chunk for duplicate detection.
+
+        Takes the text before ``TOOL_ACTIVITY_MARKER`` (so a turn indexed live,
+        with its templated ``Tools used:`` suffix, matches the same turn flushed
+        later without it) and collapses all whitespace. Returns "" for empty
+        input.
+        """
+        if not content:
+            return ""
+        idx = content.find(TOOL_ACTIVITY_MARKER)
+        core = content[:idx] if idx >= 0 else content
+        return " ".join(core.split())
+
+    @classmethod
+    def _content_hash(cls, content: Optional[str]) -> str:
+        """Stable hash of a chunk's normalized prose core (see _content_core).
+
+        Used as the ingest-time duplicate key: byte-identical chunks and
+        live-vs-flush twins (same prose core, differing tool suffix) collide.
+        """
+        return hashlib.sha1(cls._content_core(content).encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _is_near_duplicate(
+        cls, a: Optional[str], b: Optional[str], threshold: float
+    ) -> bool:
+        """True when two chunks' prose cores overlap by >= threshold (Jaccard).
+
+        Token-set Jaccard over the normalized cores: ``|A & B| / |A | B|``. Pure
+        and embedding-free; used to collapse near-duplicate search results. Two
+        empty cores are treated as duplicates (both carry no prose signal).
+        """
+        ta = set(cls._content_core(a).split())
+        tb = set(cls._content_core(b).split())
+        if not ta and not tb:
+            return True
+        union = ta | tb
+        if not union:
+            return True
+        return len(ta & tb) / len(union) >= threshold
+
+    @staticmethod
     def _parse_ts(value: Any) -> Optional[datetime]:
         """Parse a stored timestamp (ISO string or datetime) to aware UTC."""
         if value is None:
@@ -672,6 +755,8 @@ class MemoryIndex:
         rrf_k: int = RRF_K,
         apply_prose_priority: bool = True,
         prose_priority_weight: float = PROSE_PRIORITY_WEIGHT,
+        dedup: bool = True,
+        dedup_threshold: float = DEDUP_THRESHOLD,
     ) -> List[ChunkResult]:
         """
         Hybrid search combining vector similarity and BM25 full-text search.
@@ -697,6 +782,10 @@ class MemoryIndex:
             rrf_k: RRF constant
             apply_prose_priority: Demote tool-text-heavy chunks below prose
             prose_priority_weight: Strength of the prose-priority demotion
+            dedup: Suppress near-duplicate results so twins do not consume
+                several of the top-k slots (greedy, highest-scored kept)
+            dedup_threshold: Token-set Jaccard at/above which two results are
+                treated as near-duplicates
 
         Returns:
             List of ChunkResult objects sorted by relevance
@@ -707,6 +796,16 @@ class MemoryIndex:
         now = ensure_aware_utc(now) if now else utc_now()
         half_lives = recency_half_lives or DEFAULT_RECENCY_HALF_LIVES
         candidate_pool = max(limit * 5, 30)
+        # The vector branch cannot filter in SQL (vec0 has no metadata columns),
+        # so on a selective thread/time scope most of its nearest-N fall out of
+        # scope at the fetch step. Lift the vector LIMIT to a floor in that case
+        # so enough in-scope vector candidates survive. chunk_types is excluded
+        # deliberately: the tool sets it on nearly every call, so it is not
+        # "selective" in the sense that would starve the vector branch.
+        selective = bool(thread_id or since is not None or until is not None)
+        vector_limit = (
+            max(candidate_pool, VECTOR_FILTER_POOL) if selective else candidate_pool
+        )
 
         # Shared filter fragment (user + optional type/thread/time) applied
         # wherever we read chunks, so both branches enforce the same scope.
@@ -748,7 +847,7 @@ class MemoryIndex:
                             WHERE embedding MATCH ?
                             ORDER BY distance
                             LIMIT ?
-                        """, (self._serialize_embedding(query_embedding), candidate_pool))
+                        """, (self._serialize_embedding(query_embedding), vector_limit))
                         vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
                     except sqlite3.OperationalError as e:
                         if "no such table: vec_chunks" not in str(e):
@@ -828,9 +927,29 @@ class MemoryIndex:
 
                     final_scores[cid] = base
 
-                ranked = sorted(
+                # Greedy near-duplicate-aware top-k. Walk the fully-scored
+                # candidates best-first and keep a result only if it is not a
+                # near-duplicate of one already kept, so overlapping-window
+                # chunks and live-vs-flush twins do not occupy several slots.
+                ordered = sorted(
                     final_scores, key=lambda c: final_scores[c], reverse=True
-                )[:limit]
+                )
+                if dedup:
+                    ranked: List[str] = []
+                    for cid in ordered:
+                        content = rows_by_id[cid].get('content')
+                        if any(
+                            self._is_near_duplicate(
+                                content, rows_by_id[kept].get('content'), dedup_threshold
+                            )
+                            for kept in ranked
+                        ):
+                            continue
+                        ranked.append(cid)
+                        if len(ranked) >= limit:
+                            break
+                else:
+                    ranked = ordered[:limit]
 
                 for cid in ranked:
                     row = rows_by_id[cid]

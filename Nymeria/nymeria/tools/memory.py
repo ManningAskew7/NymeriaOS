@@ -507,9 +507,10 @@ def rag_search(
     Returns:
         A "now:" anchor header plus numbered entries. Each entry shows
         [chunk_type], relative age + event time, a 0-1 relevance, the source
-        thread title + id (when applicable), and a content snippet (max 400
-        chars). "[No Results]: ..." when empty. "[RAG Disabled]: ..." if RAG is
-        off. Errors: "[Error]: <reason>".
+        thread title + id (when applicable), and a content snippet (truncated to
+        the configured budget, default 1000 chars). Near-duplicate results are
+        collapsed. "[No Results]: ..." when empty. "[RAG Disabled]: ..." if RAG
+        is off. Errors: "[Error]: <reason>".
     """
     logger.info(f"rag_search called: query={query[:50]}...")
 
@@ -552,9 +553,13 @@ def rag_search(
             rerank_top_n = settings.rag_rerank_top_n
             prose_priority = settings.rag_prose_priority_enabled
             prose_priority_weight = settings.rag_prose_priority_weight
+            dedup_enabled = settings.rag_dedup_enabled
+            dedup_threshold = settings.rag_dedup_threshold
+            result_max_chars = settings.rag_result_max_chars
         except Exception:
             fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", True, False, 20
             prose_priority, prose_priority_weight = True, 0.4
+            dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
 
         now = utc_now()
         search_limit = max(max_results, rerank_top_n) if rerank_enabled else max_results
@@ -571,6 +576,8 @@ def rag_search(
             now=now,
             apply_prose_priority=prose_priority,
             prose_priority_weight=prose_priority_weight,
+            dedup=dedup_enabled,
+            dedup_threshold=dedup_threshold,
         )
 
         # Optional LLM listwise rerank (off by default; adds latency + tokens).
@@ -626,8 +633,8 @@ def rag_search(
                 source = "saved memory (global)"
 
             content = result.content
-            if len(content) > 400:
-                content = content[:397] + "..."
+            if len(content) > result_max_chars:
+                content = content[:max(0, result_max_chars - 3)] + "..."
 
             lines.append(
                 f"{i}. {type_emoji} [{result.chunk_type}] "

@@ -70,9 +70,46 @@ def test_seeded_eval_metrics_present():
         idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
         probes = rag_eval.build_seeded(idx, user_id="eval")
         m = rag_eval.evaluate(idx, probes, user_id="eval", k=5)
-        for key in ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k"):
+        for key in ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k",
+                    "false_positive_rate", "distinct_at_k"):
             assert 0.0 <= m[key] <= 1.0
         assert m["n"] == len(probes)
+
+
+def test_probe_from_dict_parses_expect_empty():
+    p = rag_eval.Probe.from_dict({"query": "q", "expect_empty": True,
+                                  "contains_any": ["x"]})
+    assert p.expect_empty is True
+
+
+def test_expect_empty_feeds_false_positive_rate_not_hit_rate():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.build_seeded(idx, user_id="eval")
+        # The seeded set carries exactly one no-answer probe.
+        assert sum(1 for p in probes if p.expect_empty) == 1
+        m = rag_eval.evaluate(idx, probes, user_id="eval", k=5)
+        assert m["n_empty"] == 1
+        # No spurious "relevant" hit on the no-answer probe in seeded mode.
+        assert m["false_positive_rate"] == 0.0
+        # Ranking metrics average over answerable probes only; the no-answer
+        # probe is in the total but not the ranking denominator.
+        assert m["n"] == len(probes)
+        assert sum(1 for p in probes if not p.expect_empty) < len(probes)
+
+
+def test_distinct_at_k_drops_when_dedup_disabled():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.build_seeded(idx, user_id="eval")
+        on = rag_eval.evaluate(idx, probes, user_id="eval", k=5,
+                               base_kwargs={"dedup": True})
+        off = rag_eval.evaluate(idx, probes, user_id="eval", k=5,
+                                base_kwargs={"dedup": False})
+        # The seeded near-duplicate pair is collapsed with dedup on (distinct
+        # ratio 1.0) and surfaces both copies with dedup off (ratio < 1.0).
+        assert on["distinct_at_k"] >= off["distinct_at_k"]
+        assert off["distinct_at_k"] < 1.0
 
 
 def test_compare_detects_recency_effect():

@@ -31,10 +31,12 @@ def test_recency_ranks_recent_above_old():
     with TemporaryDirectory() as tmp:
         idx = _index(tmp)
         now = utc_now()
-        idx.add_chunk("budget planning notes", {}, "conversation", "u1",
-                      thread_id="t-old", event_time=now - timedelta(days=120))
-        idx.add_chunk("budget planning notes", {}, "conversation", "u1",
-                      thread_id="t-new", event_time=now - timedelta(days=1))
+        # Distinct wording per turn so result-dedup keeps both; the test is
+        # about recency ordering, not near-duplicate collapse.
+        idx.add_chunk("budget planning notes from the first review", {}, "conversation",
+                      "u1", thread_id="t-old", event_time=now - timedelta(days=120))
+        idx.add_chunk("budget planning notes from the latest review", {}, "conversation",
+                      "u1", thread_id="t-new", event_time=now - timedelta(days=1))
         res = idx.search("budget planning", "u1", chunk_types=["conversation"], now=now)
         assert [r.thread_id for r in res][0] == "t-new"
         # both still returned: recency down-ranks, never filters
@@ -100,11 +102,15 @@ def test_schema_migration_adds_columns_to_legacy_db():
         conn = sqlite3.connect(str(db))
         conn.row_factory = sqlite3.Row
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(chunks)")}
-        row = conn.execute("SELECT event_time, context FROM chunks WHERE id='x'").fetchone()
+        row = conn.execute(
+            "SELECT event_time, context, content_hash FROM chunks WHERE id='x'"
+        ).fetchone()
         conn.close()
-        assert "event_time" in cols and "context" in cols
+        assert "event_time" in cols and "context" in cols and "content_hash" in cols
         # event_time backfilled from created_at
         assert row["event_time"] == "2026-01-01T00:00:00+00:00"
+        # content_hash backfilled from the prose core of the legacy row
+        assert row["content_hash"] == MemoryIndex._content_hash("legacy row")
 
 
 # --- prose-priority (rank prose above tool-result text) --------------------
@@ -144,6 +150,32 @@ def test_tool_text_fraction():
     assert MemoryIndex._tool_text_fraction(None) == 0.0
     frac = MemoryIndex._tool_text_fraction("AB\n\nTools used:\nCD")
     assert 0.0 < frac < 1.0
+
+
+# --- dedup helpers (prose-core hash + near-duplicate) ----------------------
+
+def test_content_core_and_hash_ignore_tool_suffix():
+    from nymeria.core.memory_index import MemoryIndex
+    base = "User: hi\n\nAssistant: hello there"
+    with_suffix = base + "\n\nTools used:\n- ping() -> pong"
+    # Core strips the tool suffix and collapses whitespace.
+    assert MemoryIndex._content_core(with_suffix) == "User: hi Assistant: hello there"
+    assert MemoryIndex._content_core(None) == ""
+    # Same prose core -> same hash, with or without the tool suffix.
+    assert MemoryIndex._content_hash(base) == MemoryIndex._content_hash(with_suffix)
+    # Different prose -> different hash.
+    assert MemoryIndex._content_hash(base) != \
+        MemoryIndex._content_hash("User: hi\n\nAssistant: bye")
+
+
+def test_is_near_duplicate_jaccard():
+    from nymeria.core.memory_index import MemoryIndex
+    a = "the garage door keypad code is four seven one two"
+    b = a + " now"  # one extra token over ten -> Jaccard 10/11 ~= 0.909
+    assert MemoryIndex._is_near_duplicate(a, b, 0.9)
+    assert not MemoryIndex._is_near_duplicate(a, "a completely unrelated sentence", 0.9)
+    # The tool suffix is ignored, so a live/flush twin is a near-duplicate.
+    assert MemoryIndex._is_near_duplicate(a, a + "\n\nTools used:\n- x() -> y", 0.9)
 
 
 # --- FTS5 query sanitization -----------------------------------------------
@@ -191,15 +223,80 @@ def test_duplicate_chunk_is_skipped():
         assert len(res) == 1
 
 
-def test_non_duplicate_with_suffix_still_added():
+def test_live_vs_flush_twin_is_deduped_at_ingest():
     with TemporaryDirectory() as tmp:
         idx = _index(tmp)
-        idx.add_chunk("User: hi\n\nAssistant: hello", {},
-                      "conversation", "u1", thread_id="t1")
-        # Same turn but with a tool-activity suffix is genuinely different.
-        added = idx.add_chunk("User: hi\n\nAssistant: hello\n\nTools used:\n- x() -> y",
-                              {}, "conversation", "u1", thread_id="t1")
-        assert added  # not treated as a duplicate
+        # Live index at turn completion carries the templated tool suffix.
+        live = idx.add_chunk(
+            "User: hi\n\nAssistant: hello there\n\nTools used:\n- ping() -> pong",
+            {}, "conversation", "u1", thread_id="t1")
+        # The later pre-trim flush re-indexes the SAME turn without the suffix;
+        # same prose core, so it is recognized as a duplicate and skipped. (This
+        # is the live-vs-flush near-duplicate the byte-equality guard missed.)
+        flush = idx.add_chunk("User: hi\n\nAssistant: hello there", {},
+                              "conversation", "u1", thread_id="t1")
+        assert live and flush == []
+        # A genuinely different turn is still added.
+        assert idx.add_chunk("User: bye\n\nAssistant: see you later", {},
+                             "conversation", "u1", thread_id="t1")
+        # The richer (suffixed) live copy is the one that survives.
+        res = idx.search("hello there", "u1", chunk_types=["conversation"])
+        assert len(res) == 1 and "Tools used:" in res[0].content
+
+
+# --- result dedup (collapse near-duplicate results) ------------------------
+
+def test_result_dedup_collapses_near_duplicate_results():
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        # Two near-identical memory chunks (differ by a trailing token); both are
+        # stored at ingest (distinct content hashes), so only the result-side
+        # dedup can collapse them.
+        idx.add_chunk("the garage door keypad code is four seven one two",
+                      {}, "memory", "u1")
+        idx.add_chunk("the garage door keypad code is four seven one two now",
+                      {}, "memory", "u1")
+        on = idx.search("garage door keypad code", "u1", dedup=True)
+        off = idx.search("garage door keypad code", "u1", dedup=False)
+        assert len(on) == 1   # twin collapsed
+        assert len(off) == 2  # both returned when dedup is disabled
+
+
+# --- vector recall on a selective filter (over-fetch) ----------------------
+
+def test_thread_filter_recovers_far_vector_hit_via_overfetch():
+    from nymeria.core.memory_index import EMBEDDING_DIMENSIONS, VECTOR_FILTER_POOL
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "memory.db",
+                          embedding_provider="openai", embedding_api_key="test")
+        dim = EMBEDDING_DIMENSIONS
+
+        def emb(second):
+            v = [0.0] * dim
+            v[0], v[1] = 1.0, second
+            return v
+
+        query = "wombat telescope avocado"
+        target = "pelican harbor lantern"  # in-scope but far in vector space
+        embeds = {query: emb(0.0), target: emb(0.5)}
+        # More out-of-scope distractors than the small (limit*5) vector pool,
+        # all NEARER to the query than the target. Without over-fetch the
+        # in-scope target falls outside the pool and (sharing no query tokens)
+        # is never returned; over-fetch on the thread filter recovers it.
+        n_distractors = 40
+        for i in range(n_distractors):
+            c = f"distractor numero {i} lorem ipsum"
+            embeds[c] = emb(0.001 * (i + 1))
+        idx.embed_text = lambda text: embeds.get(text, emb(9.0))
+
+        for i in range(n_distractors):
+            idx.add_chunk(f"distractor numero {i} lorem ipsum", {}, "conversation",
+                          "u1", thread_id="t-other")
+        idx.add_chunk(target, {}, "conversation", "u1", thread_id="t-target")
+
+        assert VECTOR_FILTER_POOL > n_distractors  # pool must reach the target
+        res = idx.search(query, "u1", thread_id="t-target")
+        assert [r.content for r in res] == [target]
 
 
 # --- embedding backfill ----------------------------------------------------
@@ -358,6 +455,35 @@ def test_rag_search_output_has_now_and_provenance(monkeypatch):
     assert "from thread" in out
     assert "saved memory (global)" in out   # global memory provenance
     assert "ago" in out                     # humanized age
+
+
+def test_rag_search_snippet_extends_past_legacy_400_char_cap(monkeypatch):
+    from nymeria.tools import memory as mem
+
+    profile = types.SimpleNamespace(
+        opt_in=types.SimpleNamespace(rag_enabled=True),
+        get_rag_preferences=lambda: {
+            "include_conversations": True,
+            "include_memories": True,
+            "include_todos": True,
+        },
+    )
+    monkeypatch.setattr(mem, "_get_profile_manager",
+                        lambda: types.SimpleNamespace(get_profile=lambda uid: profile))
+
+    now = utc_now()
+    long_text = "word " * 400  # ~2000 chars, well past the old 400-char cap
+    fake = [ChunkResult(id="1", content=long_text, chunk_type="conversation",
+                        thread_id="t1", created_at=now, metadata={}, score=0.5,
+                        event_time=now)]
+    monkeypatch.setattr(mem, "_get_memory_index",
+                        lambda uid: types.SimpleNamespace(search=lambda **kw: fake))
+
+    out = mem.rag_search.func(query="x", config={"configurable": {"user_id": "u1"}})
+    # Snippet now extends to the ~1000-char default budget (was hard-capped at
+    # 400), then ellipsizes the remainder.
+    assert "..." in out                 # 2000 > 1000 -> truncated
+    assert out.count("word") > 150      # far more than the old 80-word (400ch) cap
 
 
 # --- recall@k / MRR eval over a seeded corpus ------------------------------
