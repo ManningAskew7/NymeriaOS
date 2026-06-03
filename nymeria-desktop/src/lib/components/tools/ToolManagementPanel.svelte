@@ -1535,11 +1535,6 @@
     flex-shrink: 0;
   }
 
-  .modal-header h3 {
-    margin: 0;
-    color: var(--text-primary);
-  }
-
   .modal-body {
     padding: var(--spacing-md);
     flex: 1 1 auto;

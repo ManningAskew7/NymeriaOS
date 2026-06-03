@@ -194,13 +194,6 @@
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .marketplace-header h3 {
-    margin: 0;
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
   .btn-close {
     background: transparent;
     border: none;

@@ -308,7 +308,4 @@
     gap: var(--spacing-sm);
   }
 
-  .success h4 {
-    margin: 0;
-  }
 </style>

@@ -100,12 +100,6 @@
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .modal-header h2 {
-    margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: 600;
-  }
-
   .close-btn {
     padding: var(--spacing-xs);
     color: var(--text-secondary);
