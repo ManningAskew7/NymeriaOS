@@ -111,8 +111,9 @@
   /* Typography — three families and an 8-step type scale.
      FAMILIES:
        --font-sans : body / UI text. Variable font (Geist, wght 100..900).
-                     User can swap to Inter, Outfit, DM Sans, Plus Jakarta
-                     Sans, or Manrope via the Settings font picker.
+                     User can swap to the system default, Inter, Outfit,
+                     DM Sans, Plus Jakarta Sans, or Manrope via the
+                     Settings font picker.
        --font-logo : display font used for the "Nymeria" wordmark in the
                      sidebar. User can swap to IBM Plex Sans, Archivo,
                      Albert Sans, Space Grotesk, Sora, Orbitron, Rajdhani,

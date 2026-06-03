@@ -230,7 +230,7 @@
     border-radius: var(--radius-md);
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-subtle);
-    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: calc(var(--font-size-sm) - 1px);
     line-height: 1.5;
     white-space: pre;
