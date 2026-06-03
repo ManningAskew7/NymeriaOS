@@ -660,7 +660,8 @@ https://github.com/example/mcp-server`}
     background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.15);
     color: var(--accent-primary);
     border: 1px solid rgba(var(--accent-primary-rgb, 108, 159, 255), 0.3);
-    border-radius: var(--radius-full, 9999px);
+    /* §3 — text chip uses --radius-sm, not full pill. */
+    border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     font-weight: 500;
     pointer-events: none;
@@ -939,11 +940,15 @@ https://github.com/example/mcp-server`}
   .risk-pill {
     flex-shrink: 0;
     padding: 3px var(--spacing-sm);
-    border-radius: var(--radius-full, 9999px);
+    /* §3 — text chip uses --radius-sm, not full pill. */
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border-subtle);
     font-size: var(--font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    /* §1 text-indent compensation — matches the 0.04em tracking so the
+       label (LOW / MED / HIGH) sits visually centered. */
+    text-indent: 0.04em;
   }
 
   .risk-low {

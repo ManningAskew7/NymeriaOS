@@ -368,7 +368,9 @@
   .status-pill,
   .owner-pill {
     padding: 2px 7px;
-    border-radius: var(--radius-full, 999px);
+    /* §3 — text chips use --radius-sm. Full pill is reserved for count
+       badges and dot indicators, not status / owner labels. */
+    border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     font-weight: 600;
   }
