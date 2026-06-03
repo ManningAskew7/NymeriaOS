@@ -23,7 +23,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
 | 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
 | 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
-| 10 | `rag_search` | Profile | SAFE | On | Semantic search over past conversations |
+| 10 | `rag_search` | Profile | SAFE | On | Hybrid memory search (RRF + recency) with time + thread provenance |
 | 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO  -  scheduled TODOs auto-wake the agent |
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |
 | 13 | `nym_todo_list` | TODO | SAFE | On | List TODO items |
@@ -660,19 +660,26 @@ personality_set(trait: str, value: str)
 
 ### rag_search
 
-Search past conversations and memories for relevant context using semantic vector search.
+Search your own memory (past conversations, saved memories, completed TODOs) using hybrid retrieval over the per-user `MemoryIndex` (sqlite-vec vectors + FTS5 BM25). This is the deliberate, agent-driven retrieval surface: the agent calls it when it needs recall. (Auto-injecting RAG chunks into hidden prompt context is not default behavior.)
 
 ```python
-rag_search(query: str, max_results: int = 5)
+rag_search(query: str, max_results: int = 5, thread_id: str | None = None,
+           since: str | None = None, until: str | None = None)
 ```
 
 **Parameters:**
-- `query` (`str`): What to search for
-- `max_results` (`int`, default `5`): Maximum results (clamped 1-10)
+- `query` (`str`): What to search for.
+- `max_results` (`int`, default `5`): Maximum results (clamped 1-10).
+- `thread_id` (`str`, optional): Restrict to a single source thread.
+- `since` / `until` (`str`, optional): ISO date/datetime bounds on event time, e.g. `"2026-05-01"` or `"2026-05-01T09:00:00"`.
 
-**Returns:** Formatted results with content type, relevance score, and content. Results filtered by user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`).
+**Ranking:** hybrid fusion is Reciprocal Rank Fusion (`settings.rag_fusion_method`, `rrf` default or legacy `weighted`). Two soft-multipliers refine the order after fusion, never filtering: a per-chunk_type recency factor (`settings.rag_recency_enabled`, default on) with deliberately long half-lives (memory 1825d, conversation 730d, todo 730d, tool 365d) so recency is only a faint tiebreaker; and a prose-priority factor (`settings.rag_prose_priority_enabled`, default on, strength `rag_prose_priority_weight` default 0.4) that demotes a chunk by the share of it that is templated tool-result text, so user/assistant prose ranks above tool output. The query text is sanitized into a safe FTS5 MATCH expression, so punctuation and operator words (apostrophes, `AND`/`OR`, quotes) no longer cause a silent empty result.
 
-When retrieved RAG chunks are included in hidden prompt context, they are marked as untrusted reference data and rendered as JSONL records rather than Markdown instructions.
+**Returns:** a `now:` anchor header plus numbered entries. Each entry shows `[chunk_type]`, a relative age and the event time, a 0-1 relevance, the source thread title + `thread_id` (saved memories show `saved memory (global)`), and a content snippet (max 400 chars). The `thread_id` lets the agent follow the source: call it if it is a bound callable thread, or open it by id. `[No Results]`, `[RAG Disabled]`, and `[Error]` cover the other cases. Results are filtered by the user's RAG preferences (`include_conversations`, `include_memories`, `include_todos`); **`include_memories` defaults to off** because saved memories are already loaded into the agent's context, so returning them here would be redundant (opt back in via RAG settings).
+
+**Tool-call results are indexed:** conversation-turn indexing embeds a templated summary of the turn's tool calls and results (`Tools used: ...`), with the raw results kept in chunk metadata, so prior tool activity is retrievable, not just user/assistant prose.
+
+**Optional quality boosts (off by default):** `settings.rag_contextual_enabled` prepends an LLM-written context blurb to each chunk before embedding (Anthropic contextual retrieval; one LLM call per chunk at ingest). `settings.rag_rerank_enabled` reranks the top `rag_rerank_top_n` fused candidates with an LLM listwise rerank before truncating to `max_results`. Both fall back to the non-LLM behavior on any error (`core/rag_quality.py`). Measure ranking changes with `tools/rag_eval.py`: predicate-based probes scored by hit_rate@k / MRR / precision@k / nDCG@k, with a seeded BM25-only mode (no key, CI-safe) and a live mode (`--db`/`--probes`) plus `--compare` for A/B-ing configs.
 
 **Indexing is automatic.** As of 2026-04, `opt_in.rag_enabled` defaults to `True` for new profiles, and existing profiles are migrated to `True` on first load (one-time, watermarked by `opt_in.rag_migrated`). Conversation turns are indexed in four places, in this order of frequency:
 

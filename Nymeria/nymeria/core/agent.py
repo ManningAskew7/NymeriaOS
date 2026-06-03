@@ -639,9 +639,12 @@ class NymeriaAgent:
         thread_id: str,
         user_message: str,
         ai_response: str,
+        messages=None,
     ) -> None:
         from .agent_prompt import index_conversation_turn
-        return index_conversation_turn(self, user_id, thread_id, user_message, ai_response)
+        return index_conversation_turn(
+            self, user_id, thread_id, user_message, ai_response, messages=messages
+        )
 
     # =========================================================================
     # Auto-Compact Methods
@@ -1758,12 +1761,14 @@ class NymeriaAgent:
                         response, _ = _extract_content_parts(msg.content)
                         break
 
-                # Index conversation turn in RAG (if enabled)
+                # Index conversation turn in RAG (if enabled), including this
+                # turn's tool activity extracted from the messages list.
                 self._index_conversation_turn(
                     user_id=user_id,
                     thread_id=thread_id,
                     user_message=message,
                     ai_response=response,
+                    messages=messages,
                 )
 
                 # Track token usage + USD cost.
@@ -2610,6 +2615,7 @@ class NymeriaAgent:
 
                 # Track token usage for auto-compact + USD cost.
                 # Get messages from state to extract usage metadata.
+                result_messages = []
                 try:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
@@ -2711,6 +2717,7 @@ class NymeriaAgent:
                         thread_id=thread_id,
                         user_message=message,
                         ai_response="".join(final_response_parts),
+                        messages=result_messages,
                     )
 
                 _elapsed = time.monotonic() - _stream_start
