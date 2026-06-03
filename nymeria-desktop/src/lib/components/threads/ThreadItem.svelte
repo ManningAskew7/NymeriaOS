@@ -576,9 +576,11 @@
     gap: 4px;
     padding: 3px;
     background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    /* §7 — floating hover-revealed actions bar: shadow alone defines
+       elevation; border would be redundant chrome. Tokenized to
+       --shadow-md (raw 0 2px 8px / 0.35 was in the popover tier). */
+    box-shadow: var(--shadow-md);
     z-index: 2;
   }
 
