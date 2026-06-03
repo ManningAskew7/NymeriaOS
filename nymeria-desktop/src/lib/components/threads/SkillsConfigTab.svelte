@@ -175,15 +175,17 @@
   .skills-thread-panel .skill-scope,
   .skills-thread-panel .skill-chip {
     font-size: var(--font-size-xs);
-    /* §3 un-pill: was `1px 6px` + `--radius-md` (8px) on a 16px chip = exact
-       pill, which optically left-shifts the text. Bumped vertical padding so
-       the text has breathing room, and dropped radius to --radius-sm so the
-       chip reads as a softened rectangle, not a pill. */
-    padding: 2px var(--spacing-sm);
-    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
+    /* Optical centering: lowercase text in a pill-shaped chip reads as
+       left-shifted because letters like 'g'/'b'/'p' carry visual weight on
+       the bottom-left, and pill curves absorb some of the right padding.
+       A small positive text-indent nudges the text into the optical center
+       without changing the chip's size or rounding. */
+    text-indent: 1px;
   }
   .skills-thread-panel .skill-chip {
     color: var(--accent-primary);
