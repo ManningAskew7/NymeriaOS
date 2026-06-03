@@ -57,12 +57,6 @@
     flex-shrink: 0;
   }
 
-  .wizard-header h3 {
-    margin: 0;
-    font-size: var(--font-size-md);
-    font-weight: 600;
-  }
-
   .close-btn {
     padding: var(--spacing-xs);
     color: var(--text-secondary);

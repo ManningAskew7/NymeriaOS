@@ -216,6 +216,44 @@ body {
   overflow: hidden;
 }
 
+/* Headings — global scale.
+   Establishes the size + weight ramp so the visual hierarchy is enforced
+   rather than reinvented per-component. Components MAY override per
+   instance (e.g. a hero h2 that needs to be larger), but the default is
+   consistent across the app.
+
+     h1 : 20px / 700  — page titles, hero/landing headings
+     h2 : 18px / 600  — panel titles, modal headers, top-level section
+     h3 : 16px / 600  — section / card / dialog body headers
+     h4 : 14px / 600  — minor labels, form section headers
+
+   Body sits at 16px / 350 (above). Every heading outweighs body by
+   ≥250 weight steps, so the hierarchy reads even when a heading is the
+   same pixel size as body (h3). Line-height is tighter than body's 1.5
+   so multi-line headings still read as a unit. The small negative
+   letter-spacing on h1 is a display-text tightening trick — at 20px+,
+   default tracking starts to feel airy. */
+h1, h2, h3, h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.3;
+}
+h1 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: var(--font-size-lg);
+}
+h3 {
+  font-size: var(--font-size-md);
+}
+h4 {
+  font-size: var(--font-size-sm);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

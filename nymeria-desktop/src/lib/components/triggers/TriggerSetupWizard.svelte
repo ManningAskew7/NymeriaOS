@@ -726,13 +726,6 @@
     border-bottom: 1px solid var(--glass-border);
   }
 
-  .wizard-header h2 {
-    margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
   .close-btn {
     display: flex;
     align-items: center;

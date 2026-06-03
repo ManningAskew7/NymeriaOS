@@ -366,12 +366,6 @@
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .card-header h3 {
-    margin: 0;
-    font-size: var(--font-size-md);
-    font-weight: 600;
-  }
-
   .card-body {
     padding: var(--spacing-md);
   }
