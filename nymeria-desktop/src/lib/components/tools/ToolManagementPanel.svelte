@@ -964,8 +964,11 @@
     display: inline-block;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    padding: 1px 6px;
-    border-radius: var(--radius-md);
+    /* §3 un-pill: --radius-md (8px) on a 12px chip is past pill (8 > 6).
+       Bumped vertical padding for breathing and dropped to --radius-sm so
+       the chip reads as a softened rectangle, not a pill. */
+    padding: 2px var(--spacing-sm);
+    border-radius: var(--radius-sm);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     text-indent: 0.5px;

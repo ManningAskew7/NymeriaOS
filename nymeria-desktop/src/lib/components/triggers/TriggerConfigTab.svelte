@@ -626,11 +626,15 @@
     justify-content: center;
     /* Gap matches horizontal padding so the leading dot has equal
        breathing on both sides of itself. */
-    gap: 5px;
-    padding: 1px 5px;
+    gap: 6px;
+    /* §3 un-pill: --radius-md (8px) on a 12px chip rendered as past-pill (8 > 6).
+       Bumped vertical padding for breathing and dropped radius to --radius-sm
+       so the chip reads as a softened rectangle, not a pill. Horizontal
+       padding bumped to 6px in lockstep with gap to preserve dot symmetry. */
+    padding: 2px 6px;
     font-size: var(--font-size-3xs);
     font-weight: 500;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     white-space: nowrap;
   }
 

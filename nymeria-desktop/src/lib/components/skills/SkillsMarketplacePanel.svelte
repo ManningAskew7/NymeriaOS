@@ -301,8 +301,11 @@
 
   .badge {
     font-size: var(--font-size-xs);
-    padding: 1px 6px;
-    border-radius: var(--radius-md);
+    /* §3 un-pill: --radius-md (8px) on a ~16px-tall chip rendered as a pill
+       (radius = half-height). Bumped vertical padding and dropped radius to
+       --radius-sm so the chip reads as a softened rectangle, not a pill. */
+    padding: 2px var(--spacing-sm);
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border-default);
     color: var(--text-muted);
   }
