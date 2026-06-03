@@ -122,6 +122,15 @@
                      alignment. Every monospace usage in the app should
                      reach for this token — never inline a `monospace`
                      stack. (Exception: RulerOverlay, dev-only tool.)
+       --font-heading : optional override for h1-h4. Defaults to
+                     var(--font-sans) so headings inherit the body font
+                     unless a distinct heading font is picked in
+                     Settings → Appearance (Sora, Albert Sans, Space
+                     Grotesk, Instrument Serif). The default — a single
+                     font system with the widened weight ramp below —
+                     is the more restrained choice; pairing a distinct
+                     heading font is the more characterful one per
+                     DESIGN.md §1.
 
      SIZE SCALE — pick by role, not by visual weight. The xs/sm/base
      tokens cover ~90% of UI text; 2xs/3xs exist specifically because
@@ -151,6 +160,7 @@
   --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-logo: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  --font-heading: var(--font-sans);
   --font-size-3xs: 0.625rem;
   --font-size-2xs: 0.6875rem;
   --font-size-xs: 0.75rem;
@@ -236,6 +246,7 @@ body {
 h1, h2, h3, h4 {
   margin: 0;
   color: var(--text-primary);
+  font-family: var(--font-heading);
   font-weight: 600;
   line-height: 1.3;
 }
