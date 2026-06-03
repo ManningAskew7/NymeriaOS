@@ -307,8 +307,12 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    /* §1 text-indent compensation — matches the 0.06em tracking so the
+       provider label sits visually centered, not left-weighted. */
+    text-indent: 0.06em;
     padding: 2px 8px;
-    border-radius: 4px;
+    /* §3 — text chip uses --radius-sm token, not full pill. */
+    border-radius: var(--radius-sm);
     color: var(--provider-color);
     border: 1px solid var(--provider-color);
     background: color-mix(in srgb, var(--provider-color) 12%, transparent);

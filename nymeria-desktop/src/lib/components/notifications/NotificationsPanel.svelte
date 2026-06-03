@@ -438,13 +438,16 @@
     color: var(--text-muted);
     background: var(--bg-base);
     padding: 1px 6px;
-    border-radius: 4px;
+    /* §3 — text chip uses --radius-sm token (4px) for consistency with the
+       rest of the chip system. Not a pill. */
+    border-radius: var(--radius-sm);
   }
 
   .status-pill {
     font-size: var(--font-size-xs);
     padding: 1px 6px;
-    border-radius: 4px;
+    /* §3 — text chip uses --radius-sm token, not full pill. */
+    border-radius: var(--radius-sm);
     background: var(--bg-base);
   }
 
