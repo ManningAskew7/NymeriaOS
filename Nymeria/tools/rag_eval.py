@@ -50,6 +50,14 @@ Modes:
         --embedding-model text-embedding-3-large --out runs/large.json
     python3 tools/rag_eval.py --compare-runs runs/small.json runs/large.json
 
+    # --retrieval-mode isolates one branch. ``all`` indexes once and scores the
+    # hybrid, vector-only and bm25-only branches, so a model A/B reads cleanest
+    # on the vector row (the embedding is the only signal there):
+    python3 tools/rag_eval.py --dataset longmemeval --data <oracle.json> \
+        --embedding-model text-embedding-3-small --retrieval-mode all \
+        --out runs/small.json
+    python3 tools/rag_eval.py --compare-runs runs/small.json runs/large.json
+
 The live corpus lives in the Docker ``nymeria_data`` volume and ``tools/`` is
 not bind-mounted, so to run live: ``docker cp`` this file (plus the probes JSON
 or dataset) into the container and run it there (the embedding key is in its env).
@@ -62,7 +70,9 @@ import json
 import logging
 import math
 import re
+import sqlite3
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -72,7 +82,11 @@ from typing import Any, Dict, List, Optional
 # Allow running directly from Nymeria/ (script lives in Nymeria/tools/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nymeria.core.memory_index import DEDUP_THRESHOLD, MemoryIndex  # noqa: E402
+from nymeria.core.memory_index import (  # noqa: E402
+    DEDUP_THRESHOLD,
+    ChunkResult,
+    MemoryIndex,
+)
 from nymeria.core.time_utils import utc_now  # noqa: E402
 
 
@@ -165,6 +179,124 @@ def _distinct_ratio(results, threshold: float) -> float:
     return len(kept) / len(results)
 
 
+# --- single-branch retrieval (decomposition) -------------------------------
+#
+# The production ``search`` fuses the vector and BM25 branches (RRF), then
+# applies recency, prose-priority and dedup. To attribute a result to one
+# signal (e.g. "which embedding model is best?"), these helpers run each branch
+# in isolation, with no fusion/recency/dedup, ranked exactly as production ranks
+# the branch: vector by ascending distance, BM25 by ascending bm25 score. They
+# return the same ``ChunkResult`` shape so ``result_is_relevant`` scores them
+# identically to a hybrid result.
+
+def _fetch_chunk_results(
+    index: MemoryIndex, conn: sqlite3.Connection, ids: List[str], user_id: str
+) -> List[ChunkResult]:
+    """Map retrieved chunk ids to ChunkResults, preserving retrieval order."""
+    if not ids:
+        return []
+    placeholders = ", ".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, content, chunk_type, thread_id, created_at, event_time, "
+        f"metadata, context FROM chunks WHERE id IN ({placeholders}) AND user_id = ?",
+        (*ids, user_id),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    out: List[ChunkResult] = []
+    for cid in ids:
+        row = by_id.get(cid)
+        if row is None:
+            continue
+        try:
+            metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+        except json.JSONDecodeError:
+            metadata = {}
+        created_at = index._parse_ts(row["created_at"])
+        out.append(ChunkResult(
+            id=row["id"],
+            content=row["content"],
+            chunk_type=row["chunk_type"],
+            thread_id=row["thread_id"],
+            created_at=created_at,
+            metadata=metadata,
+            score=1.0,
+            event_time=index._parse_ts(row["event_time"]) or created_at,
+            context=row["context"],
+        ))
+    return out
+
+
+def _retrieve_vector(
+    index: MemoryIndex, query: str, user_id: str, k: int
+) -> List[ChunkResult]:
+    """Pure vector KNN: the embedding branch alone (no BM25, fusion or recency).
+
+    A model A/B reads cleanest here, since the embedding is the only signal.
+    """
+    # embed_text swallows a 429 into None; retry a non-empty query (real provider
+    # only) so a transient rate limit is not mis-scored as a vector miss. A
+    # provider of "none" returns None structurally, so there is nothing to retry.
+    emb = index.embed_text(query)
+    if not emb and query.strip() and index.embedding_provider != "none":
+        delay = 2.0
+        for _ in range(3):
+            time.sleep(delay)
+            delay = min(delay * 2, 16.0)
+            emb = index.embed_text(query)
+            if emb:
+                break
+    if not emb:
+        return []
+    conn = index._get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ? "
+            "ORDER BY distance LIMIT ?",
+            (index._serialize_embedding(emb), k),
+        )
+        ids = [row["chunk_id"] for row in cur.fetchall()]
+        return _fetch_chunk_results(index, conn, ids, user_id)
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _retrieve_bm25(
+    index: MemoryIndex, query: str, user_id: str, k: int
+) -> List[ChunkResult]:
+    """Pure BM25 keyword retrieval: the lexical floor, no embeddings involved."""
+    fts_query = index._fts_match_query(query)
+    if not fts_query:
+        return []
+    conn = index._get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT c.id FROM chunks_fts fts JOIN chunks c ON c.rowid = fts.rowid "
+            "WHERE chunks_fts MATCH ? AND c.user_id = ? ORDER BY bm25(chunks_fts) LIMIT ?",
+            (fts_query, user_id, k),
+        )
+        ids = [row["id"] for row in cur.fetchall()]
+        return _fetch_chunk_results(index, conn, ids, user_id)
+    finally:
+        conn.close()
+
+
+RETRIEVAL_MODES = ("hybrid", "vector", "bm25")
+
+
+def _retrieve(
+    index: MemoryIndex, query: str, user_id: str, k: int,
+    mode: str, base_kwargs: Dict[str, Any],
+) -> List[ChunkResult]:
+    """Dispatch one probe to the requested retrieval branch."""
+    if mode == "vector":
+        return _retrieve_vector(index, query, user_id, k)
+    if mode == "bm25":
+        return _retrieve_bm25(index, query, user_id, k)
+    return index.search(query, user_id, limit=k, **base_kwargs)
+
+
 def evaluate(
     index: MemoryIndex,
     probes: List[Probe],
@@ -172,12 +304,15 @@ def evaluate(
     k: int = 5,
     base_kwargs: Optional[Dict[str, Any]] = None,
     distinct_threshold: float = DEDUP_THRESHOLD,
+    retrieval_mode: str = "hybrid",
 ) -> Dict[str, Any]:
     """Run probes and return aggregate + per-query metrics.
 
     ``base_kwargs`` are search kwargs applied to every probe (e.g. a fusion or
     recency override for a config comparison); a probe's own ``search`` kwargs
-    take precedence on conflict.
+    take precedence on conflict. ``retrieval_mode`` picks the branch: ``hybrid``
+    (production fused search), ``vector`` (embedding KNN alone) or ``bm25``
+    (keyword alone); the single-branch modes ignore ``base_kwargs`` knobs.
 
     Ranking metrics (hit_rate, MRR, precision, nDCG) are averaged over the
     answerable probes only. ``expect_empty`` (no-answer) probes feed
@@ -196,7 +331,7 @@ def evaluate(
 
     for p in probes:
         kwargs = {**base_kwargs, **p.search}
-        results = index.search(p.query, user_id, limit=k, **kwargs)
+        results = _retrieve(index, p.query, user_id, k, retrieval_mode, kwargs)
         distinct = _distinct_ratio(results, distinct_threshold)
         distinct_total += distinct
 
@@ -361,6 +496,11 @@ NATIVE_EMBEDDING_DIMS = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
+    "gemini-embedding-001": 3072,
+    "voyage-3-large": 1024,
+    "voyage-3.5": 1024,
+    "voyage-3.5-lite": 1024,
+    "embeddinggemma": 768,
 }
 
 
@@ -384,6 +524,113 @@ def _parse_lme_date(raw: Optional[str]) -> Optional[datetime]:
         except ValueError:
             continue
     return None
+
+
+# --- batched indexing ------------------------------------------------------
+#
+# Indexing a large haystack one embed-per-chunk (which is what add_chunk does)
+# is thousands of API calls and trips free-tier rate limits. These helpers
+# batch the vector backfill (~128 chunks/call). Unlike production's
+# ``_embed_texts``, they map results by RESPONSE ORDER, not ``item.index``, so
+# they tolerate OpenAI-compatible shims that leave ``index`` unset (Gemini's
+# endpoint returns ``index=None`` for the first item). Order preservation is
+# verified; a per-item fallback covers any batch that returns a mismatched count.
+
+def _is_transient(e: Exception) -> bool:
+    """A rate-limit / timeout / connection blip worth retrying (not a 400)."""
+    name = type(e).__name__
+    return ("RateLimit" in name or "Timeout" in name or "APIConnection" in name
+            or "429" in str(e))
+
+
+def _embed_call(client, payload, embed_kwargs, max_retries: int = 6):
+    """``embeddings.create`` with exponential backoff on transient errors.
+
+    A 429 must NOT silently drop a chunk's vector (that corrupts the vector
+    branch), so we wait and retry the same payload. Non-transient errors (e.g. a
+    400 batch-too-large) raise immediately so the caller can fall back.
+    """
+    delay = 2.0
+    for attempt in range(max_retries + 1):
+        try:
+            return client.embeddings.create(input=payload, **embed_kwargs)
+        except Exception as e:  # noqa: BLE001
+            if attempt >= max_retries or not _is_transient(e):
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+
+def _embed_texts_ordered(index: MemoryIndex, texts: List[str]) -> List[Optional[List[float]]]:
+    """Batch-embed ``texts``, mapping by position. Returns a list aligned to
+    ``texts`` (None only after retries are exhausted or the dimension is wrong).
+
+    Transient 429s back off and retry; a hard error (e.g. Gemini's 400 for an
+    over-large batch) drops to per-item, which itself retries each item."""
+    if not texts:
+        return []
+    client = index._get_openai_client()
+    inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
+    dim = index.embedding_dimensions
+
+    def _ok(emb: List[float]) -> Optional[List[float]]:
+        return emb if len(emb) == dim else None
+
+    try:
+        resp = _embed_call(client, inputs, index._embed_kwargs())
+        if len(resp.data) == len(inputs):
+            return [_ok(item.embedding) for item in resp.data]
+        print(f"  batch returned {len(resp.data)}/{len(inputs)}; per-item fallback",
+              flush=True)
+    except Exception as e:  # noqa: BLE001 - hard error -> per-item fallback
+        print(f"  batch embed failed ({type(e).__name__}); per-item fallback",
+              flush=True)
+
+    out: List[Optional[List[float]]] = []
+    for t in inputs:
+        try:
+            r = _embed_call(client, t, index._embed_kwargs())
+            out.append(_ok(r.data[0].embedding))
+        except Exception:  # noqa: BLE001
+            out.append(None)
+    return out
+
+
+def _batch_backfill(index: MemoryIndex, user_id: str, batch_size: int = 128) -> Dict[str, int]:
+    """Vector-backfill every chunk lacking an embedding, in batches.
+
+    Order-tolerant copy of ``MemoryIndex.backfill_embeddings`` (same select,
+    embed-text and insert), used after a deferred BM25-only load so a 5-model x
+    500-question sweep does not hammer the embedding APIs one call per turn.
+    """
+    conn = index._get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, content, context FROM chunks WHERE user_id = ? "
+            "AND id NOT IN (SELECT chunk_id FROM vec_chunks)",
+            (user_id,),
+        ).fetchall()
+        total = len(rows)
+        embedded = 0
+        for start in range(0, total, batch_size):
+            batch = rows[start:start + batch_size]
+            texts = [
+                (f"{r['context']}\n\n{r['content']}" if r["context"] else r["content"])
+                for r in batch
+            ]
+            for row, vec in zip(batch, _embed_texts_ordered(index, texts)):
+                if vec is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?, ?)",
+                    (row["id"], index._serialize_embedding(vec)),
+                )
+                embedded += 1
+            conn.commit()
+            print(f"  embedded {min(start + batch_size, total)}/{total}", flush=True)
+        return {"embedded": embedded, "total": total}
+    finally:
+        conn.close()
 
 
 def load_longmemeval(
@@ -522,6 +769,10 @@ def _open_index(
     return MemoryIndex(Path(tmp.name) / "rag_eval.db", **kwargs)
 
 
+_DUMP_KEYS = ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k",
+              "distinct_at_k", "false_positive_rate", "n", "n_empty")
+
+
 def _dump_run(
     path: str,
     *,
@@ -530,17 +781,45 @@ def _dump_run(
     embedding_dimensions: int,
     embedding_provider: str,
     metrics: Dict[str, Any],
+    retrieval_mode: str = "hybrid",
 ) -> None:
     """Write a run's config + headline metrics for later ``--compare-runs``."""
-    keys = ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k",
-            "distinct_at_k", "false_positive_rate", "n", "n_empty")
     payload = {
         "dataset": dataset,
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "embedding_provider": embedding_provider,
+        "retrieval_mode": retrieval_mode,
         "k": metrics["k"],
-        "metrics": {key: metrics[key] for key in keys},
+        "metrics": {key: metrics[key] for key in _DUMP_KEYS},
+    }
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2))
+    print(f"\nwrote {path}")
+
+
+def _dump_modes(
+    path: str,
+    *,
+    dataset: str,
+    embedding_model: Optional[str],
+    embedding_dimensions: int,
+    embedding_provider: str,
+    k: int,
+    mode_metrics: Dict[str, Dict[str, Any]],
+) -> None:
+    """Write one ``--retrieval-mode all`` run (all branches over one index)."""
+    payload = {
+        "dataset": dataset,
+        "embedding_model": embedding_model,
+        "embedding_dimensions": embedding_dimensions,
+        "embedding_provider": embedding_provider,
+        "k": k,
+        "modes": {
+            mode: {key: m[key] for key in _DUMP_KEYS}
+            for mode, m in mode_metrics.items()
+        },
     }
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -549,21 +828,36 @@ def _dump_run(
 
 
 def _print_run_comparison(paths: List[str]) -> None:
-    """Print a side-by-side table of dumped runs (one per embedding model)."""
-    print(f"\n{'model':<26}{'dim':>6}{'k':>4}{'hit':>8}{'mrr':>8}"
+    """Print a side-by-side table of dumped runs.
+
+    Handles both single-mode dumps (``--out``) and all-mode dumps
+    (``--retrieval-mode all --out``); the latter expands to one row per branch.
+    """
+    print(f"\n{'model [mode]':<34}{'dim':>6}{'k':>4}{'hit':>8}{'mrr':>8}"
           f"{'ndcg':>8}{'distinct':>10}{'fp':>7}")
-    print("-" * 77)
-    for p in paths:
-        d = json.loads(Path(p).read_text())
-        m = d.get("metrics", {})
-        print(f"{(d.get('embedding_model') or '?'):<26}"
-              f"{d.get('embedding_dimensions', '?'):>6}"
-              f"{d.get('k', '?'):>4}"
+    print("-" * 85)
+
+    def _row(label: str, dim, k, m: Dict[str, Any]) -> None:
+        print(f"{label:<34}{dim:>6}{k:>4}"
               f"{m.get('hit_rate', 0.0):>8.3f}"
               f"{m.get('mrr', 0.0):>8.3f}"
               f"{m.get('ndcg_at_k', 0.0):>8.3f}"
               f"{m.get('distinct_at_k', 0.0):>10.3f}"
               f"{m.get('false_positive_rate', 0.0):>7.3f}")
+
+    for p in paths:
+        d = json.loads(Path(p).read_text())
+        model = d.get("embedding_model") or "?"
+        dim = d.get("embedding_dimensions", "?")
+        k = d.get("k", "?")
+        if "modes" in d:
+            for mode in RETRIEVAL_MODES:
+                if mode in d["modes"]:
+                    _row(f"{model} [{mode}]", dim, k, d["modes"][mode])
+        else:
+            mode = d.get("retrieval_mode", "hybrid")
+            label = model if mode == "hybrid" else f"{model} [{mode}]"
+            _row(label, dim, k, d.get("metrics", {}))
 
 
 def main() -> None:
@@ -582,6 +876,11 @@ def main() -> None:
                     help="vector width; defaults to the model's native dim")
     ap.add_argument("--embedding-base-url", help="OpenAI-compatible embeddings base URL")
     ap.add_argument("--k", type=int, default=5, help="top-k cutoff")
+    ap.add_argument("--retrieval-mode", choices=[*RETRIEVAL_MODES, "all"],
+                    default="hybrid",
+                    help="retrieval branch: hybrid (default), vector (embedding "
+                         "KNN alone), bm25 (keyword alone), or all (one index, "
+                         "all three branches; isolates the embedding model)")
     ap.add_argument("--compare", action="store_true",
                     help="compare rrf/weighted x recency x dedup within one run")
     ap.add_argument("--out", help="dump headline metrics JSON for --compare-runs")
@@ -614,10 +913,21 @@ def main() -> None:
             embedding_dimensions=dim,
             embedding_base_url=args.embedding_base_url,
         )
+        provider = index.embedding_provider
         print(f"indexing LongMemEval haystack from {args.data} "
-              f"(model={index.embedding_model}, dim={index.embedding_dimensions}) ...")
+              f"(model={index.embedding_model}, dim={index.embedding_dimensions}, "
+              f"provider={provider}) ...")
+        # Defer vectors: load BM25-only (no per-chunk embed), then batch-backfill
+        # in ~128-chunk calls, so a multi-model sweep does not hit free-tier rate
+        # limits with thousands of one-at-a-time embed calls.
+        index.embedding_provider = "none"
         probes = load_longmemeval(index, args.data, user_id=args.user, limit=args.limit)
-        print(f"built {len(probes)} probes")
+        index.embedding_provider = provider
+        print(f"built {len(probes)} probes; haystack indexed (BM25)")
+        if provider != "none":
+            print("batch-embedding haystack vectors ...")
+            stats = _batch_backfill(index, args.user)
+            print(f"embedded {stats['embedded']}/{stats['total']} chunks")
     elif args.probes:
         index = _open_index(args.db)
         raw = json.loads(Path(args.probes).read_text())
@@ -640,9 +950,32 @@ def main() -> None:
         for name, m in results.items():
             _print_metrics(name, m, verbose=args.verbose)
         primary = next(iter(results.values()))
+    elif args.retrieval_mode == "all":
+        # One index, all three branches. Vector is the headline for a model A/B.
+        mode_metrics = {
+            mode: evaluate(index, probes, user_id=args.user, k=args.k,
+                           retrieval_mode=mode)
+            for mode in RETRIEVAL_MODES
+        }
+        for mode in RETRIEVAL_MODES:
+            _print_metrics(f"{args.dataset} [{mode}]", mode_metrics[mode],
+                           verbose=args.verbose)
+        if args.out:
+            _dump_modes(
+                args.out,
+                dataset=args.dataset,
+                embedding_model=index.embedding_model,
+                embedding_dimensions=index.embedding_dimensions,
+                embedding_provider=index.embedding_provider,
+                k=args.k,
+                mode_metrics=mode_metrics,
+            )
+        return
     else:
-        primary = evaluate(index, probes, user_id=args.user, k=args.k)
-        _print_metrics(args.dataset, primary, verbose=True)
+        primary = evaluate(index, probes, user_id=args.user, k=args.k,
+                           retrieval_mode=args.retrieval_mode)
+        _print_metrics(f"{args.dataset} [{args.retrieval_mode}]", primary,
+                       verbose=True)
 
     if args.out:
         _dump_run(
@@ -652,6 +985,7 @@ def main() -> None:
             embedding_dimensions=index.embedding_dimensions,
             embedding_provider=index.embedding_provider,
             metrics=primary,
+            retrieval_mode=args.retrieval_mode,
         )
 
 

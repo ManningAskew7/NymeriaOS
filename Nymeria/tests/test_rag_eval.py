@@ -113,6 +113,45 @@ def test_distinct_at_k_drops_when_dedup_disabled():
         assert off["distinct_at_k"] < 1.0
 
 
+# --- retrieval-mode decomposition (vector / bm25 in isolation) --------------
+
+def test_retrieval_mode_bm25_scores_seeded_corpus():
+    # BM25 alone needs no embeddings, so it retrieves on the lexically-aligned
+    # seeded probes even with provider="none".
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.build_seeded(idx, user_id="eval")
+        m = rag_eval.evaluate(idx, probes, user_id="eval", k=5,
+                              retrieval_mode="bm25")
+        assert m["hit_rate"] > 0.0
+        assert 0.0 <= m["mrr"] <= 1.0
+
+
+def test_retrieval_mode_vector_empty_without_embeddings():
+    # provider="none" stores no vectors, so the vector-only branch retrieves
+    # nothing (the model A/B path is a no-op until a real embedder is wired).
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.build_seeded(idx, user_id="eval")
+        m = rag_eval.evaluate(idx, probes, user_id="eval", k=5,
+                              retrieval_mode="vector")
+        assert m["hit_rate"] == 0.0
+
+
+def test_retrieve_bm25_preserves_thread_and_returns_chunkresults():
+    # The single-branch helper returns production-shaped ChunkResults with the
+    # source session preserved, so result_is_relevant scores them like a hybrid
+    # result (session-grained gold).
+    with TemporaryDirectory() as tmp:
+        data_path = Path(tmp) / "lme.json"
+        data_path.write_text(json.dumps(_LME_FIXTURE))
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        probes = rag_eval.load_longmemeval(idx, str(data_path), user_id="eval")
+        results = rag_eval._retrieve_bm25(idx, probes[0].query, "eval", 5)
+        assert results and all(isinstance(r, ChunkResult) for r in results)
+        assert any(r.thread_id == "s_gold" for r in results)
+
+
 # --- LongMemEval loader + session-grained gold -----------------------------
 
 _LME_FIXTURE = [
