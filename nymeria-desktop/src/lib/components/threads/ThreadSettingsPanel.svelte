@@ -1224,7 +1224,6 @@
   .modal-panel {
     position: relative;
     background: var(--bg-base);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
     /* Grow with the window so maximising/fullscreen uses the space, but stay
        capped so forms don't stretch absurdly wide. */
@@ -1232,7 +1231,9 @@
     height: min(840px, 90vh);
     display: flex;
     flex-direction: column;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+    /* §7 — floating modal panel: shadow alone defines elevation; border
+       would be redundant chrome. Tokenized to --shadow-xl. */
+    box-shadow: var(--shadow-xl);
     box-sizing: border-box;
     overflow: hidden;
   }

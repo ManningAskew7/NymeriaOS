@@ -176,14 +176,16 @@
   .marketplace-panel {
     position: relative;
     background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
     width: 90vw;
     max-width: 780px;
     max-height: 85vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    /* §7 — floating marketplace overlay: shadow alone defines elevation;
+       border would be redundant chrome. Tokenized to --shadow-xl
+       (matches the existing 0 20px 60px / 0.4 within rounding). */
+    box-shadow: var(--shadow-xl);
   }
 
   .marketplace-header {

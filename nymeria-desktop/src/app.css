@@ -45,11 +45,24 @@
        --shadow-sm  : hover-lifted list items (Thread, Todo, Tool cards on hover)
        --shadow-md  : floating chrome that sits ABOVE inline content
                       (dropdowns, popovers, autocomplete menus, tooltips)
-       --shadow-lg  : panel-level floats (right-edge sheets, drawers)
+       --shadow-lg  : panel-level floats (right-edge sheets, drawers,
+                      notification center, toasts)
        --shadow-xl  : full-screen overlays (modals, dialogs, lightboxes)
-     Static cards in normal flow should have NO shadow — only the bordered
-     surface treatment from --border-subtle. Shadow is reserved for things
-     that visually float. */
+
+     §7 / §9 surface-treatment policy (DESIGN.md):
+       - RESTING cards in page flow: use a border, NO shadow.
+       - FLOATING surfaces (dropdowns, popovers, tooltips, context menus,
+         toasts, notification panels, side drawers, modals): use shadow,
+         NO border. Shadow alone defines the elevation; an added border is
+         redundant chrome and reads as "AI-generated card".
+       - GLASS-backdrop modals (Modal.svelte, AuthPromptModal): keep the
+         hairline --glass-border alongside the shadow — it is edge
+         definition for the glass aesthetic against the blurred backdrop,
+         not redundant chrome.
+       - STICKY bars over scrolling content: shadow + optional top border
+         (separation cue) + optional backdrop-filter is acceptable.
+       - SEMANTIC colored borders (warning, error): keep the colored
+         border, drop the decorative shadow — the color carries meaning. */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 8px 20px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.45);

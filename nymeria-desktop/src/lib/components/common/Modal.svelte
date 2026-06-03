@@ -75,6 +75,10 @@
 
   .modal {
     position: relative;
+    /* §7 glass-surface exception — the hairline --glass-border is edge
+       definition for the glassmorphic surface against the blurred
+       backdrop, not redundant chrome. Together with --shadow-xl this is
+       the documented "rarely both" case for glass modals. */
     background: var(--glass-bg-strong);
     backdrop-filter: var(--glass-blur-strong);
     -webkit-backdrop-filter: var(--glass-blur-strong);

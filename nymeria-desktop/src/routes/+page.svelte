@@ -348,10 +348,11 @@
     max-width: 420px;
     text-align: center;
     background: var(--bg-elevated);
+    /* §7 — resting card on a blank crash page: border alone defines the
+       card, shadow would over-decorate a static surface. */
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
     padding: var(--spacing-xl);
-    box-shadow: var(--shadow-lg);
   }
 
   .app-crash-card h1 {

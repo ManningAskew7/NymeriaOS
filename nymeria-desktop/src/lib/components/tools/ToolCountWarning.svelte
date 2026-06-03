@@ -73,13 +73,19 @@
   .warning-panel {
     position: relative;
     background: var(--bg-elevated);
+    /* §7 "rarely both" exception — the colored warning border is
+       SEMANTIC (it signals severity, not decorative chrome) and the
+       shadow is FUNCTIONAL (this is a standalone floating modal with
+       its own backdrop, so it needs elevation). Each treatment serves
+       a different purpose; together they communicate "important and
+       floating". */
     border: 1px solid var(--warning);
     border-radius: var(--radius-lg);
     padding: var(--spacing-lg) var(--spacing-xl, 24px);
     max-width: 420px;
     width: 90vw;
     text-align: center;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-xl);
   }
 
   .warning-icon {

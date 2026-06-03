@@ -396,10 +396,11 @@
     margin: 0;
     padding: 4px 0;
     background: var(--bg-elevated-2, #1f1f2a);
-    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.18));
     border-radius: 6px;
     list-style: none;
     z-index: 50;
+    /* §7 — floating listbox: shadow alone defines elevation; border
+       would be redundant chrome. */
     box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
   }
 

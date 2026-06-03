@@ -1323,11 +1323,12 @@
     left: var(--spacing-xs);
     z-index: 999;
     background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
     padding: 4px;
     min-width: 120px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    /* §7 — floating dropdown: shadow alone defines elevation; border
+       would be redundant chrome. Tokenized to --shadow-md. */
+    box-shadow: var(--shadow-md);
   }
 
   .sort-option {

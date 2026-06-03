@@ -113,10 +113,13 @@
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
     background: var(--bg-elevated-2, var(--bg-elevated));
-    border: 1px solid var(--border-default);
-    border-left-width: 3px;
+    /* §7 — floating toast: shadow alone defines elevation; an all-around
+       border would be redundant chrome. The 3px left-edge stays because
+       it is SEMANTIC — the per-severity rules below override its color
+       to signal destructive / warning / info. */
+    border-left: 3px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    box-shadow: var(--shadow-lg);
     color: var(--text-primary);
     animation: toast-in 180ms ease-out both;
   }

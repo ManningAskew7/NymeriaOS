@@ -131,10 +131,11 @@
     justify-content: center;
     padding: 0;
     background: var(--bg-elevated-2);
-    border: 1px solid var(--border-default);
     border-radius: 50%;
     color: var(--text-secondary);
     cursor: pointer;
+    /* §7 — floating button: shadow alone defines elevation; border
+       would be redundant chrome on a small floating action button. */
     box-shadow: var(--shadow-md);
     opacity: 0;
     transform: translateY(8px);

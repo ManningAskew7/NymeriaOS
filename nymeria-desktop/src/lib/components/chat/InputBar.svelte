@@ -621,9 +621,10 @@
     max-height: 280px;
     overflow-y: auto;
     padding: var(--spacing-xs);
-    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
+    /* §7 — floating slash-command popover: shadow alone defines
+       elevation; border would be redundant chrome. */
     box-shadow: var(--shadow-lg);
   }
 
