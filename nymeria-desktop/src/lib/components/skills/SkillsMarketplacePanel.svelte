@@ -301,13 +301,14 @@
 
   .badge {
     font-size: var(--font-size-xs);
-    /* §3 un-pill: --radius-md (8px) on a ~16px-tall chip rendered as a pill
-       (radius = half-height). Bumped vertical padding and dropped radius to
-       --radius-sm so the chip reads as a softened rectangle, not a pill. */
-    padding: 2px var(--spacing-sm);
-    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
     color: var(--text-muted);
+    /* Optical centering: lowercase text in a pill-shaped chip reads as
+       left-shifted. A small positive text-indent nudges the text into the
+       optical center without changing the chip's size or rounding. */
+    text-indent: 1px;
   }
   .badge-installed {
     background: color-mix(in srgb, var(--accent-primary) 15%, transparent);

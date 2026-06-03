@@ -329,15 +329,16 @@
 
   .chip {
     font-size: var(--font-size-xs);
-    /* §3 un-pill: --radius-md (8px) on a ~16px-tall chip rendered as a true
-       pill (radius = half-height), which optically left-shifts the text.
-       Bumped vertical padding for breathing and dropped to --radius-sm so
-       the chip reads as a softened rectangle. */
-    padding: 2px var(--spacing-sm);
-    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
+    /* Optical centering: lowercase text in a pill-shaped chip reads as
+       left-shifted (lowercase glyph weight bottom-left + pill curves
+       absorbing right padding). A small positive text-indent nudges the
+       text into the optical center without changing chip size or rounding. */
+    text-indent: 1px;
   }
   /* Capability chips (scripts / references / assets) carry a small leading
      Lucide icon so the three otherwise-identical pills read as distinct
