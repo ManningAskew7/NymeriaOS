@@ -144,9 +144,12 @@
   .account-trigger {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
+    /* All four horizontal spaces match (16px = --spacing-md):
+       chip-left to avatar, avatar to text, text to caret, caret to
+       chip-right. Avatar and text both breathe equally on every side. */
+    gap: var(--spacing-md);
     width: 100%;
-    padding: 6px var(--spacing-md) 6px var(--spacing-lg);
+    padding: 6px var(--spacing-md);
     color: var(--text-secondary);
     border-radius: var(--radius-md);
     transition: all var(--transition-fast);
