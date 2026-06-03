@@ -54,11 +54,18 @@
     </button>
   </div>
 
-  {#if todosStore.loading && todosStore.todos.length === 0}
-    <div class="loading-state">
-      <span class="loading-text">Loading...</span>
-    </div>
-  {:else if todosStore.error}
+  <!-- No loading-state branch on purpose. When this feed is inside a
+       Collapsible, the Svelte slide transition measures the .content
+       height once at intro-start. If the initial render is the small
+       loading-state and the fetch resolves mid-slide, the rendered
+       state switches to the (taller) empty-state or todo list, but the
+       slide animates to the originally-measured height — the element
+       then snaps to its new natural height when the inline transition
+       styles clear at the end. Going straight to empty-state on the
+       initial render keeps the measured height stable. The brief
+       "No tasks" flash before real todos arrive is preferable to the
+       snap. -->
+  {#if todosStore.error}
     <div class="error-state">
       <p>{todosStore.error}</p>
       <button class="retry-btn" onclick={() => todosStore.fetch()}>
@@ -181,7 +188,6 @@
     transform: translateY(-1px);
   }
 
-  .loading-state,
   .error-state,
   .empty-state {
     text-align: center;
@@ -228,10 +234,6 @@
     background: color-mix(in srgb, var(--error) 15%, transparent);
     border-color: var(--error);
     color: var(--error);
-  }
-
-  .loading-text {
-    font-size: var(--font-size-sm);
   }
 
   .todo-group {

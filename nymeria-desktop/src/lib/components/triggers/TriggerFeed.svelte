@@ -70,11 +70,14 @@
     </button>
   </div>
 
-  {#if triggersStore.loading && filteredTriggers.length === 0}
-    <div class="loading-state">
-      <span class="loading-text">Loading...</span>
-    </div>
-  {:else if triggersStore.error}
+  <!-- No loading-state branch on purpose — same reason as TodoFeed.
+       The Svelte slide transition on the wrapping Collapsible measures
+       the .content height once at intro-start; if the initial render
+       were the small loading-state and the fetch resolves mid-slide,
+       the rendered state switches to the (taller) empty-state and the
+       element snaps when the slide's inline styles clear at the end.
+       Starting at empty-state keeps the measured height stable. -->
+  {#if triggersStore.error}
     <div class="error-state">
       <p>{triggersStore.error}</p>
       <button class="retry-btn" onclick={() => triggersStore.loadTriggers()} type="button">
@@ -190,7 +193,6 @@
     transform: translateY(-1px);
   }
 
-  .loading-state,
   .error-state,
   .empty-state {
     text-align: center;
@@ -237,10 +239,6 @@
     background: color-mix(in srgb, var(--error) 15%, transparent);
     border-color: var(--error);
     color: var(--error);
-  }
-
-  .loading-text {
-    font-size: var(--font-size-sm);
   }
 
   .trigger-group {
