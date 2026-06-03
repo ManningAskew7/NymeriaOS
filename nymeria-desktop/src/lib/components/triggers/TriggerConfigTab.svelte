@@ -265,8 +265,8 @@
               <span class="trigger-name">{trigger.name}</span>
             </div>
             <div class="trigger-meta">
-              <span class="meta-tag source">{sourceLabel(trigger.source_type)}</span>
-              <span class="meta-tag action">{actionLabel(trigger.action.type)}</span>
+              <span class="meta-tag source" data-source={trigger.source_type}>{sourceLabel(trigger.source_type)}</span>
+              <span class="meta-tag action" data-action={trigger.action.type}>{actionLabel(trigger.action.type)}</span>
               {#if trigger.fire_count > 0}
                 <span class="meta-detail">{trigger.fire_count} fires</span>
               {/if}
@@ -622,11 +622,26 @@
   .meta-tag {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    /* Gap matches horizontal padding so the leading dot has equal
+       breathing on both sides of itself. */
+    gap: 5px;
     padding: 1px 5px;
     font-size: var(--font-size-3xs);
     font-weight: 500;
     border-radius: var(--radius-md);
     white-space: nowrap;
+  }
+
+  /* Per-source / per-action leading dot — differentiates trigger rows at
+     a glance instead of two near-identical pills per trigger. */
+  .meta-tag::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: var(--chip-dot-color, var(--text-muted));
+    flex-shrink: 0;
   }
 
   .meta-tag.source {
@@ -638,6 +653,23 @@
     background: color-mix(in srgb, var(--text-muted) 15%, transparent);
     color: var(--text-muted);
   }
+
+  /* Source-type dot colors — kept aligned with .source-chip in
+     TriggerItem.svelte so the same source reads the same color across
+     both views. */
+  .meta-tag.source[data-source="webhook"] { --chip-dot-color: var(--warning, #fbbf24); }
+  .meta-tag.source[data-source="outlook_email"] { --chip-dot-color: var(--info, #818cf8); }
+  .meta-tag.source[data-source="rss"] { --chip-dot-color: #fb923c; }
+  .meta-tag.source[data-source="slack"] { --chip-dot-color: var(--success, #34d399); }
+  .meta-tag.source[data-source="teams"] { --chip-dot-color: #a78bfa; }
+  .meta-tag.source[data-source="http_poll"] { --chip-dot-color: var(--accent-primary); }
+
+  /* Action-type dot colors — semantic palette: prompt = primary accent
+     (Nymeria's core AI function), notify = warning (alert), todo =
+     success (concrete output). */
+  .meta-tag.action[data-action="agent_prompt"] { --chip-dot-color: var(--accent-primary); }
+  .meta-tag.action[data-action="notify"] { --chip-dot-color: var(--warning, #fbbf24); }
+  .meta-tag.action[data-action="create_todo"] { --chip-dot-color: var(--success, #34d399); }
 
   .meta-detail {
     font-size: var(--font-size-xs);
