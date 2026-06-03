@@ -310,9 +310,7 @@
     /* §1 text-indent compensation — matches the 0.06em tracking so the
        provider label sits visually centered, not left-weighted. */
     text-indent: 0.06em;
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 1px 8px 3px;
+    padding: 2px 8px;
     /* §3 — text chip uses --radius-sm token, not full pill. */
     border-radius: var(--radius-sm);
     color: var(--provider-color);

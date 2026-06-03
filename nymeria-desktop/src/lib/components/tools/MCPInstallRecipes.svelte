@@ -187,9 +187,7 @@
     text-indent: 0.08em;
     color: var(--accent-secondary);
     background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.1);
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 1px var(--spacing-sm) 3px;
+    padding: 2px var(--spacing-sm);
     /* §3 — text chips use --radius-sm, not full pill. Full pill is reserved
        for dot indicators and count badges; a label like STDIO / REGISTRY
        reads as a tag, not a pill. */
