@@ -557,7 +557,8 @@
   .steps {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--spacing-xs);
+    /* §3 chip-row gap — wizard step pills sit at 8px, not 4px. */
+    gap: var(--spacing-sm);
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: var(--spacing-md);
   }
