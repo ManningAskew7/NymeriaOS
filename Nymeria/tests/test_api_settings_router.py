@@ -69,6 +69,10 @@ class FakeSettings:
     watchdog_interval_minutes: int = 5
     todo_staleness_minutes: int = 20
     activity_retention_hours: int = 12
+    dream_default_min_interval_hours: int = 6
+    dream_default_min_idle_minutes: int = 30
+    dream_default_min_turns_since_last: int = 10
+    dream_default_model: str | None = None
     tts_provider: str = "none"
     tts_base_url: str | None = None
     tts_api_key: str | None = None

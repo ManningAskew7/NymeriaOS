@@ -129,6 +129,10 @@ class ServerSettingsResponse(BaseModel):
     watchdog_interval_minutes: int
     todo_staleness_minutes: int
     activity_retention_hours: int
+    dream_default_min_interval_hours: int = 6
+    dream_default_min_idle_minutes: int = 30
+    dream_default_min_turns_since_last: int = 10
+    dream_default_model: Optional[str] = None
     tts_provider: str = "none"
     tts_base_url: Optional[str] = None
     tts_model: str = "tts-1-hd"
@@ -732,6 +736,10 @@ class ServerSettingsUpdate(BaseModel):
     watchdog_interval_minutes: Optional[int] = None
     todo_staleness_minutes: Optional[int] = None
     activity_retention_hours: Optional[int] = None
+    dream_default_min_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+    dream_default_min_idle_minutes: Optional[int] = Field(default=None, ge=5, le=10080)
+    dream_default_min_turns_since_last: Optional[int] = Field(default=None, ge=1, le=10000)
+    dream_default_model: Optional[str] = None
     tts_provider: Optional[str] = None
     tts_base_url: Optional[str] = None
     tts_model: Optional[str] = None

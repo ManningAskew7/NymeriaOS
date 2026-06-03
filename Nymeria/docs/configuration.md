@@ -1567,6 +1567,10 @@ registry, and REST API.
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before the ticker removes completed TODOs from the active TODO JSON list (1-30) |
 | `ACTIVITY_RETENTION_HOURS` | `12` | Hours to retain activity log entries (1-168) |
+| `DREAM_DEFAULT_MIN_INTERVAL_HOURS` | `6` | Default shortest gap between dreams; a thread inherits this when its `dreaming.min_interval_hours` is blank (1-168) |
+| `DREAM_DEFAULT_MIN_IDLE_MINUTES` | `30` | Default idle time before a dream may start; inherited when `dreaming.min_idle_minutes` is blank (5-10080) |
+| `DREAM_DEFAULT_MIN_TURNS_SINCE_LAST` | `10` | Default new user turns required since the last dream; inherited when `dreaming.min_turns_since_last` is blank (1-10000) |
+| `DREAM_DEFAULT_MODEL` | - | Default model for dream turns; inherited when `dreaming.model` is blank, else the global active model is used |
 | `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
 | `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog without restarting. See also the file flag below. |

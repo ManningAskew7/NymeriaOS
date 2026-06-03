@@ -1403,6 +1403,32 @@ class Settings(BaseSettings):
         description="Hours to retain activity log entries (1-168)"
     )
 
+    # Dreaming defaults. Global fallbacks for the per-thread DreamingConfig
+    # gating fields: a thread that leaves a field blank inherits the value here,
+    # resolved live at dream time. Dreaming itself stays opt-in per thread.
+    dream_default_min_interval_hours: int = Field(
+        default=6,
+        ge=1,
+        le=168,
+        description="Default shortest gap between dreams when a thread does not override it"
+    )
+    dream_default_min_idle_minutes: int = Field(
+        default=30,
+        ge=5,
+        le=10080,
+        description="Default idle time before a dream may start when a thread does not override it"
+    )
+    dream_default_min_turns_since_last: int = Field(
+        default=10,
+        ge=1,
+        le=10000,
+        description="Default new user turns required since the last dream when a thread does not override it"
+    )
+    dream_default_model: Optional[str] = Field(
+        default=None,
+        description="Default model for dream turns when a thread does not override it (blank uses the global LLM model)"
+    )
+
     # Server Configuration
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)

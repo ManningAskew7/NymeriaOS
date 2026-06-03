@@ -1130,6 +1130,11 @@ export interface ServerSettings {
   watchdog_interval_minutes: number;
   todo_staleness_minutes: number;
   activity_retention_hours: number;
+  // Dreaming defaults (per-thread Dreaming settings inherit these when blank)
+  dream_default_min_interval_hours: number;
+  dream_default_min_idle_minutes: number;
+  dream_default_min_turns_since_last: number;
+  dream_default_model: string | null;
   // Voice settings
   tts_provider: string;
   tts_base_url: string | null;
@@ -1553,6 +1558,11 @@ export interface ServerSettingsUpdate {
   watchdog_interval_minutes?: number;
   todo_staleness_minutes?: number;
   activity_retention_hours?: number;
+  // Dreaming defaults
+  dream_default_min_interval_hours?: number;
+  dream_default_min_idle_minutes?: number;
+  dream_default_min_turns_since_last?: number;
+  dream_default_model?: string | null;
   // Voice settings
   tts_provider?: string;
   tts_base_url?: string | null;

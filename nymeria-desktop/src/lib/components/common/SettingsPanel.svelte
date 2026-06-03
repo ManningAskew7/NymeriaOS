@@ -112,6 +112,12 @@
   let watchdogIntervalMinutes = $state(5);
   let todoStalenessMinutes = $state(20);
 
+  // Dreaming defaults (global fallbacks a per-thread Dreaming tab overrides)
+  let dreamDefaultMinIntervalHours = $state(6);
+  let dreamDefaultMinIdleMinutes = $state(30);
+  let dreamDefaultMinTurnsSinceLast = $state(10);
+  let dreamDefaultModel = $state('');
+
   // Voice settings
   let ttsProvider = $state<string>('none');
   let ttsBaseUrl = $state('');
@@ -559,6 +565,11 @@
       watchdogEnabled = serverSettings.watchdog_enabled;
       watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
       todoStalenessMinutes = serverSettings.todo_staleness_minutes;
+      // Dreaming defaults
+      dreamDefaultMinIntervalHours = serverSettings.dream_default_min_interval_hours ?? 6;
+      dreamDefaultMinIdleMinutes = serverSettings.dream_default_min_idle_minutes ?? 30;
+      dreamDefaultMinTurnsSinceLast = serverSettings.dream_default_min_turns_since_last ?? 10;
+      dreamDefaultModel = serverSettings.dream_default_model ?? '';
       // Voice
       ttsProvider = serverSettings.tts_provider ?? 'none';
       ttsBaseUrl = serverSettings.tts_base_url ?? '';
@@ -746,6 +757,11 @@
         watchdog_enabled: watchdogEnabled,
         watchdog_interval_minutes: watchdogIntervalMinutes,
         todo_staleness_minutes: todoStalenessMinutes,
+        // Dreaming defaults (empty model string clears the override)
+        dream_default_min_interval_hours: dreamDefaultMinIntervalHours,
+        dream_default_min_idle_minutes: dreamDefaultMinIdleMinutes,
+        dream_default_min_turns_since_last: dreamDefaultMinTurnsSinceLast,
+        dream_default_model: dreamDefaultModel.trim(),
         // Voice
         tts_provider: ttsProvider,
         tts_base_url: ttsBaseUrl || null,
@@ -930,7 +946,7 @@
             type="button"
           >
             <Icon name="clock" size={14} />
-            <span>Dream</span>
+            <span>Dreaming</span>
           </button>
           <button
             class="nav-item"
@@ -1974,10 +1990,78 @@
     </div>
   {/if}
 
-  <!-- Dream Prompts Tab -->
+  <!-- Dreaming Tab -->
   {#if activeTab === 'dream' && isAdmin}
-    <div class="tab-content tab-tools-flex">
-      <DreamPromptEditor />
+    <div class="tab-content">
+      {#if loadingSettings}
+        <p class="loading">Loading settings...</p>
+      {:else}
+        <p class="hint" style="margin-bottom: var(--spacing-md);">
+          Global defaults for the background dreaming cycle. A thread's own Dreaming
+          tab overrides any of these for that thread; leave a thread's field blank to
+          inherit the value here. Dreaming itself is off by default and is turned on
+          per thread, not here.
+        </p>
+
+        <div class="field">
+          <label for="dream-default-interval">Min interval (hours)</label>
+          <input
+            id="dream-default-interval"
+            type="number"
+            min="1"
+            max="168"
+            step="1"
+            bind:value={dreamDefaultMinIntervalHours}
+          />
+          <p class="hint">Shortest gap between dreams for a thread that does not override it.</p>
+        </div>
+
+        <div class="field">
+          <label for="dream-default-idle">Min idle (minutes)</label>
+          <input
+            id="dream-default-idle"
+            type="number"
+            min="5"
+            max="10080"
+            step="5"
+            bind:value={dreamDefaultMinIdleMinutes}
+          />
+          <p class="hint">How long a thread must be quiet before a dream may start.</p>
+        </div>
+
+        <div class="field">
+          <label for="dream-default-turns">Min turns since last</label>
+          <input
+            id="dream-default-turns"
+            type="number"
+            min="1"
+            max="10000"
+            step="1"
+            bind:value={dreamDefaultMinTurnsSinceLast}
+          />
+          <p class="hint">New user turns required since the last dream before another may fire.</p>
+        </div>
+
+        <div class="field">
+          <label for="dream-default-model">Dream model</label>
+          <input
+            id="dream-default-model"
+            type="text"
+            bind:value={dreamDefaultModel}
+            placeholder="Global default model"
+            maxlength={120}
+          />
+          <p class="hint">Model dream turns run on. Leave blank to use the global default model.</p>
+        </div>
+
+        <div class="actions">
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save Dreaming Settings'}
+          </Button>
+        </div>
+
+        <DreamPromptEditor />
+      {/if}
     </div>
   {/if}
 

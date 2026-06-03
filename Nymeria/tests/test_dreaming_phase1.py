@@ -71,12 +71,14 @@ def stub_agent(tmp_path: Path) -> _StubAgent:
 
 
 def test_dreaming_config_default_is_off():
-    """A bare DreamingConfig defaults to enabled=False with sane gates."""
+    """A bare DreamingConfig is off, with gates left None to inherit globals."""
     cfg = DreamingConfig()
     assert cfg.enabled is False
-    assert cfg.min_interval_hours == 6
-    assert cfg.min_idle_minutes == 30
-    assert cfg.min_turns_since_last == 10
+    # Thresholds default to None: blank means "inherit the global dreaming
+    # default", resolved at dream time (see resolve_dreaming_thresholds).
+    assert cfg.min_interval_hours is None
+    assert cfg.min_idle_minutes is None
+    assert cfg.min_turns_since_last is None
     assert cfg.model is None
     assert cfg.last_dream_at is None
     assert cfg.last_dream_thread_id is None
