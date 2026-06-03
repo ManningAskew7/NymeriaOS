@@ -163,7 +163,7 @@
 
   .token-text {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
     user-select: all;
     word-break: break-all;

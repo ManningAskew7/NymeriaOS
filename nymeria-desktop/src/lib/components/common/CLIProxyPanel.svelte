@@ -224,7 +224,7 @@
 
   .field-label {
     display: block;
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
     margin-bottom: 0.5rem;
@@ -352,7 +352,7 @@
 
   .route-facts strong {
     color: var(--text-primary);
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     overflow-wrap: anywhere;
   }
@@ -375,7 +375,7 @@
   }
 
   .session-provider {
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
     text-transform: capitalize;
@@ -394,7 +394,7 @@
     gap: 0.5rem;
     padding: 0.75rem 1rem;
     border-radius: 6px;
-    font-size: 0.8125rem;
+    font-size: var(--font-size-sm);
     line-height: 1.4;
   }
 

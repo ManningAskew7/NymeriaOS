@@ -169,7 +169,7 @@
   }
 
   .summary-count {
-    font-size: 0.9rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
   }
 
@@ -202,7 +202,7 @@
   .panel-hint {
     margin: 0.65rem 0 0;
     color: var(--text-muted);
-    font-size: 0.82rem;
+    font-size: var(--font-size-sm);
     line-height: 1.4;
   }
 
@@ -228,7 +228,7 @@
     padding: 0.45rem 0.85rem;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-subtle);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     cursor: pointer;
   }
 
@@ -254,7 +254,7 @@
     bottom: 4rem;
     padding: 0.5rem 0.7rem;
     border-radius: var(--radius-sm);
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
   }

@@ -627,7 +627,7 @@ https://github.com/example/mcp-server`}
     border-radius: var(--radius-md);
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     line-height: 1.5;
     resize: vertical;
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
