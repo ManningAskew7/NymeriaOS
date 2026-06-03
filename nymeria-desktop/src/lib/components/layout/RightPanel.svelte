@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { Collapsible } from '$lib/components/common';
+  import { TALL_DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
@@ -121,8 +122,14 @@
       in:fade={{ duration: 120 }}
       out:fade={{ duration: 120 }}
     >
-      <!-- Tasks Section -->
-      <Collapsible title="Tasks" defaultOpen={true}>
+      <!-- Tasks Section
+           Uses TALL_DROPDOWN_TRANSITION (260ms) instead of the default
+           120ms because the Tasks feed body reveals non-trivial content
+           (Add Task button + empty state or many todo items at varying
+           heights). At 120ms the height-and-padding slide reflows the
+           sibling Triggers/Activity sections too fast to read as smooth;
+           260ms with the same cubicOut easing keeps the motion legible. -->
+      <Collapsible title="Tasks" defaultOpen={true} slideOptions={TALL_DROPDOWN_TRANSITION}>
         {#snippet header()}
           <span class="section-title">Tasks</span>
           {#if todosStore.todos.length > 0}
@@ -136,8 +143,8 @@
         {/if}
       </Collapsible>
 
-      <!-- Triggers Section -->
-      <Collapsible title="Triggers" defaultOpen={true}>
+      <!-- Triggers Section — same TALL slide rationale as Tasks above. -->
+      <Collapsible title="Triggers" defaultOpen={true} slideOptions={TALL_DROPDOWN_TRANSITION}>
         {#snippet header()}
           <span class="section-title">Triggers</span>
           {#if triggersStore.enabledCount > 0}
