@@ -1684,6 +1684,9 @@
     font-size: var(--font-size-xs, 11px);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    /* text-indent matches letter-spacing so the uppercase label sits
+       visually centered, not left-weighted from the trailing tracking. */
+    text-indent: 0.05em;
     color: var(--text-muted);
   }
 

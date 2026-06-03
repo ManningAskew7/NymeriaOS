@@ -182,10 +182,16 @@
     font-size: var(--font-size-3xs);
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    /* §1 text-indent compensation — matches the uppercase tracking so the
+       label sits visually centered rather than left-weighted. */
+    text-indent: 0.08em;
     color: var(--accent-secondary);
     background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.1);
     padding: 2px var(--spacing-sm);
-    border-radius: var(--radius-full, 9999px);
+    /* §3 — text chips use --radius-sm, not full pill. Full pill is reserved
+       for dot indicators and count badges; a label like STDIO / REGISTRY
+       reads as a tag, not a pill. */
+    border-radius: var(--radius-sm);
   }
 
   .recipe-card.registry .kind-tag {

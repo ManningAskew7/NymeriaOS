@@ -567,6 +567,10 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
+    /* Match the positive tracking with an equal text-indent so the chip
+       label sits visually centered — without this, the trailing space the
+       tracking adds after the last char makes the text read left-weighted. */
+    text-indent: 0.03em;
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
