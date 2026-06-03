@@ -182,6 +182,49 @@
     }
   }
 
+  // Heading font picker (testing-only, persisted in localStorage). Same
+  // pattern as the body font picker above but applies to h1–h4 elements via
+  // the --font-heading CSS variable. The default ("default") clears the
+  // override so headings inherit --font-sans — i.e. the single-font system
+  // with the widened weight ramp. The non-default options pair a distinct
+  // heading font with the body font per DESIGN.md §1.
+  const HEADING_FONT_STORAGE_KEY = 'nymeria_heading_font';
+  const headingFontOptions = [
+    { id: 'default', name: 'Default (matches body)', description: 'Single-font system — Geist for everything, widened weight ramp', stack: '' },
+    { id: 'sora', name: 'Sora', description: 'Clean geometric, contemporary feel', stack: `'Sora', ${SYSTEM_STACK}` },
+    { id: 'albert-sans', name: 'Albert Sans', description: 'Modern professional, subtle distinction from body', stack: `'Albert Sans', ${SYSTEM_STACK}` },
+    { id: 'space-grotesk', name: 'Space Grotesk', description: 'Slightly geometric, characterful', stack: `'Space Grotesk', ${SYSTEM_STACK}` },
+    { id: 'instrument-serif', name: 'Instrument Serif', description: 'Editorial serif — distinctive, italics available', stack: `'Instrument Serif', Georgia, serif` },
+  ];
+
+  function detectInitialHeadingFontId(): string {
+    if (typeof localStorage === 'undefined') return 'default';
+    const stored = localStorage.getItem(HEADING_FONT_STORAGE_KEY);
+    if (!stored) return 'default';
+    const match = headingFontOptions.find((opt) => opt.stack === stored);
+    return match?.id ?? 'default';
+  }
+
+  let selectedHeadingFontId = $state(detectInitialHeadingFontId());
+
+  function handleHeadingFontChange(id: string) {
+    const opt = headingFontOptions.find((o) => o.id === id);
+    if (!opt) return;
+    selectedHeadingFontId = id;
+    if (typeof document !== 'undefined') {
+      if (id === 'default') {
+        // Default — clear the override so headings inherit --font-sans
+        document.documentElement.style.removeProperty('--font-heading');
+      } else {
+        document.documentElement.style.setProperty('--font-heading', opt.stack);
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      if (id === 'default') localStorage.removeItem(HEADING_FONT_STORAGE_KEY);
+      else localStorage.setItem(HEADING_FONT_STORAGE_KEY, opt.stack);
+    }
+  }
+
   // Logo font picker (testing-only, persisted in localStorage). Same pattern
   // as the body font picker above but applies to the .logo element via the
   // --font-logo CSS variable. The default ("system") matches the original
@@ -1208,6 +1251,24 @@
             >
               <span class="font-sample" style="font-family: {opt.stack};">Aa Bb Cc</span>
               <span class="font-name" style="font-family: {opt.stack};">{opt.name}</span>
+              <span class="font-desc">{opt.description}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Heading font (testing)</span>
+        <p class="hint">Pair a distinct font with the body font for h1–h4 elements. The default — single-font system with widened weight ramp — is the more restrained choice; pairing adds visible personality per DESIGN.md §1.</p>
+        <div class="font-grid">
+          {#each headingFontOptions as opt}
+            <button
+              class="font-card"
+              class:selected={selectedHeadingFontId === opt.id}
+              onclick={() => handleHeadingFontChange(opt.id)}
+            >
+              <span class="font-sample" style="font-family: {opt.stack || 'var(--font-sans)'}; font-weight: 700;">Aa Bb Cc</span>
+              <span class="font-name" style="font-family: {opt.stack || 'var(--font-sans)'};">{opt.name}</span>
               <span class="font-desc">{opt.description}</span>
             </button>
           {/each}
