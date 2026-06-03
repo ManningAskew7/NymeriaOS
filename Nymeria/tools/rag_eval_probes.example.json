@@ -1,0 +1,11 @@
+[
+  {"query": "what is my favourite colour", "contains_any": ["teal"],
+   "note": "known-item: a result is relevant if its content contains any listed substring (case-insensitive)"},
+  {"query": "how do I start a business", "contains_any": ["asic", "abn", "register"],
+   "chunk_type": "conversation", "note": "predicates AND together; chunk_type narrows it"},
+  {"query": "company costs", "search": {"thread_id": "t-biz"}, "thread_id": "t-biz",
+   "contains_any": ["fee", "cost"],
+   "note": "search{} kwargs pass through to MemoryIndex.search (here a thread filter)"},
+  {"query": "what did we decide", "contains_all": ["final", "approved"],
+   "note": "contains_all requires every substring; relevant_ids:[...] also supported"}
+]

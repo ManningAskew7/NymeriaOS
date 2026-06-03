@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .time_utils import ensure_aware_utc, utc_now
 
@@ -31,6 +31,37 @@ CHARS_PER_TOKEN = 4  # Approximate
 EMBEDDING_DIMENSIONS = 1536  # text-embedding-3-small
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Reciprocal Rank Fusion constant. Higher values flatten the contribution of
+# rank position; 60 is the value from the original RRF paper and the common
+# default. RRF is rank-based, so it needs no score normalization and avoids the
+# unbounded-BM25 failure mode of a weighted sum.
+RRF_K = 60
+
+# Per-chunk_type half-life in days for the recency soft-multiplier applied after
+# fusion: score *= 0.5 ** (age_days / half_life). Older chunks are gently
+# down-ranked, never filtered. These are deliberately LONG (years) so recency is
+# only a faint tiebreaker, never enough to demote a clearly-better older match.
+# Measured on a real corpus: at 14-45 day half-lives recency cost ~19% MRR by
+# aging curated facts below recent chatter; at these values MRR recovers to ~1.0
+# while a 6-week chunk still decays only ~4% (see tools/rag_eval.py --compare).
+# Memories are long-lived facts; conversation/TODO next; tool activity shortest.
+DEFAULT_RECENCY_HALF_LIVES = {
+    "memory": 1825.0,
+    "conversation": 730.0,
+    "todo": 730.0,
+    "tool": 365.0,
+}
+DEFAULT_RECENCY_HALF_LIFE = 730.0
+
+# Prose-priority soft-multiplier. Conversation chunks embed the user/assistant
+# prose followed by a templated "Tools used:" section (see agent_prompt). Tool
+# output is useful but noisier and should not outrank the human/model prose, so
+# after fusion a chunk's score is multiplied by (1 - weight * tool_fraction),
+# where tool_fraction is the share of the chunk that is tool-result text. A
+# prose-only chunk is unaffected; a tool-dump-heavy chunk is gently demoted.
+TOOL_ACTIVITY_MARKER = "\n\nTools used:"
+PROSE_PRIORITY_WEIGHT = 0.4
+
 
 @dataclass
 class ChunkResult:
@@ -39,9 +70,14 @@ class ChunkResult:
     content: str
     chunk_type: str
     thread_id: Optional[str]
-    created_at: datetime
+    created_at: datetime  # ingest time (when this chunk was written to the index)
     metadata: Dict[str, Any]
     score: float
+    # Real-world time of the event the chunk records. Equals created_at for
+    # live-indexed turns; differs for back-dated re-indexing or consolidation.
+    event_time: Optional[datetime] = None
+    # Contextual-retrieval blurb prepended before embedding (see add_chunk).
+    context: Optional[str] = None
 
 
 class MemoryIndex:
@@ -122,7 +158,11 @@ class MemoryIndex:
             try:
                 cursor = conn.cursor()
 
-                # Main chunks table
+                # Main chunks table. ``created_at`` is ingest time; ``event_time``
+                # is the real-world time of the recorded event (bi-temporal-lite).
+                # ``context`` holds the contextual-retrieval blurb embedded with
+                # the chunk (nullable; populated only when contextual retrieval is
+                # enabled).
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS chunks (
                         id TEXT PRIMARY KEY,
@@ -131,9 +171,27 @@ class MemoryIndex:
                         chunk_type TEXT NOT NULL,
                         thread_id TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        metadata TEXT DEFAULT '{}'
+                        event_time TIMESTAMP,
+                        metadata TEXT DEFAULT '{}',
+                        context TEXT
                     )
                 """)
+
+                # Lazy column migration for pre-existing per-user DBs created
+                # before event_time/context existed. Add the columns if missing
+                # and backfill event_time from created_at so recency ranking and
+                # time filters work on historical chunks.
+                existing_cols = {
+                    row["name"]
+                    for row in cursor.execute("PRAGMA table_info(chunks)").fetchall()
+                }
+                if "event_time" not in existing_cols:
+                    cursor.execute("ALTER TABLE chunks ADD COLUMN event_time TIMESTAMP")
+                    cursor.execute(
+                        "UPDATE chunks SET event_time = created_at WHERE event_time IS NULL"
+                    )
+                if "context" not in existing_cols:
+                    cursor.execute("ALTER TABLE chunks ADD COLUMN context TEXT")
 
                 # Indexes for efficient querying
                 cursor.execute("""
@@ -147,6 +205,12 @@ class MemoryIndex:
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_chunks_thread
                     ON chunks(thread_id)
+                """)
+                # Narrows the exact-duplicate guard in add_chunk to one user's
+                # chunks of a given type before the content equality check.
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_chunks_user_type
+                    ON chunks(user_id, chunk_type)
                 """)
 
                 # FTS5 table for BM25 search
@@ -254,6 +318,96 @@ class MemoryIndex:
             logger.warning(f"Unknown embedding provider: {self.embedding_provider}")
             return None
 
+    def _embed_texts(self, texts: List[str]) -> List[Optional[List[float]]]:
+        """Embed a batch of texts in one API call.
+
+        Returns a list aligned to ``texts`` (None for any item that fails or has
+        the wrong dimension). Used by ``backfill_embeddings`` to re-embed a whole
+        corpus efficiently instead of one request per chunk.
+        """
+        if self.embedding_provider != "openai":
+            logger.warning(f"Unknown embedding provider: {self.embedding_provider}")
+            return [None] * len(texts)
+        if not texts:
+            return []
+        # OpenAI rejects empty strings in a batch; substitute a single space.
+        inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
+        out: List[Optional[List[float]]] = [None] * len(texts)
+        try:
+            client = self._get_openai_client()
+            response = client.embeddings.create(model=self.embedding_model, input=inputs)
+            for item in response.data:
+                emb = item.embedding
+                if len(emb) == EMBEDDING_DIMENSIONS:
+                    out[item.index] = emb
+                else:
+                    logger.error(
+                        "Embedding dimension mismatch: expected %s, got %s",
+                        EMBEDDING_DIMENSIONS, len(emb),
+                    )
+        except Exception as e:
+            logger.error(f"Batch embedding failed: {e}")
+        return out
+
+    def backfill_embeddings(
+        self,
+        user_id: str,
+        batch_size: int = 128,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, int]:
+        """Embed and store vectors for this user's chunks that lack them.
+
+        Use after enabling embeddings on a corpus indexed BM25-only, or when
+        switching embedding models. Additive: it never modifies chunk content,
+        only inserts into the vector table. Embeds ``context + content`` when a
+        contextual blurb is present (matching ``add_chunk``). Returns counts.
+        """
+        embedded = failed = 0
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.cursor()
+                try:
+                    rows = cursor.execute(
+                        "SELECT id, content, context FROM chunks "
+                        "WHERE user_id = ? "
+                        "AND id NOT IN (SELECT chunk_id FROM vec_chunks)",
+                        (user_id,),
+                    ).fetchall()
+                except sqlite3.OperationalError as e:
+                    if "no such table: vec_chunks" in str(e):
+                        logger.warning("Vector table unavailable; cannot backfill embeddings")
+                        return {"embedded": 0, "failed": 0, "total": 0}
+                    raise
+
+                total = len(rows)
+                for start in range(0, total, batch_size):
+                    batch = rows[start:start + batch_size]
+                    texts = [
+                        (f"{r['context']}\n\n{r['content']}" if r['context'] else r['content'])
+                        for r in batch
+                    ]
+                    vectors = self._embed_texts(texts)
+                    for row, vec in zip(batch, vectors):
+                        if vec is None:
+                            failed += 1
+                            continue
+                        try:
+                            cursor.execute(
+                                "INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?, ?)",
+                                (row['id'], self._serialize_embedding(vec)),
+                            )
+                            embedded += 1
+                        except sqlite3.OperationalError as e:
+                            logger.warning(f"Failed to store backfilled embedding: {e}")
+                            failed += 1
+                    conn.commit()
+                    if progress:
+                        progress(min(start + batch_size, total), total)
+                return {"embedded": embedded, "failed": failed, "total": total}
+            finally:
+                conn.close()
+
     def _serialize_embedding(self, embedding: List[float]) -> bytes:
         """Serialize embedding to bytes for sqlite-vec."""
         return struct.pack(f'{len(embedding)}f', *embedding)
@@ -339,6 +493,8 @@ class MemoryIndex:
         chunk_type: str,
         user_id: str,
         thread_id: Optional[str] = None,
+        event_time: Optional[datetime] = None,
+        context: Optional[str] = None,
     ) -> List[str]:
         """
         Embed and store a chunk (or multiple chunks if content is long).
@@ -349,12 +505,19 @@ class MemoryIndex:
             chunk_type: Type of chunk ('conversation', 'memory', 'todo')
             user_id: User ID for isolation
             thread_id: Optional thread ID for conversation chunks
+            event_time: Real-world time of the event. Defaults to ingest time.
+                Pass an earlier time when back-dating (e.g. re-indexing old turns).
+            context: Optional contextual-retrieval blurb. When provided it is
+                prepended to the text that gets embedded (not shown to the user),
+                situating the chunk for better recall.
 
         Returns:
             List of chunk IDs created
         """
         if not content or not content.strip():
             return []
+
+        event_iso = ensure_aware_utc(event_time or utc_now()).isoformat()
 
         # Split into chunks if necessary
         text_chunks = self._chunk_text(content)
@@ -364,6 +527,27 @@ class MemoryIndex:
             conn = self._get_connection()
             try:
                 cursor = conn.cursor()
+
+                # Exact-duplicate guard. The same turn is indexed both live (at
+                # turn completion) and again when it is later flushed before a
+                # context trim, and a window can be re-flushed on successive
+                # trims, so identical chunks pile up. If the first chunk's exact
+                # content already exists for this user/type/thread, treat the
+                # whole add as a duplicate and skip it. Differing content (e.g. a
+                # turn that gained a "Tools used:" suffix) is not a duplicate.
+                if text_chunks:
+                    cursor.execute(
+                        "SELECT 1 FROM chunks "
+                        "WHERE user_id = ? AND chunk_type = ? "
+                        "AND IFNULL(thread_id, '') = IFNULL(?, '') "
+                        "AND content = ? LIMIT 1",
+                        (user_id, chunk_type, thread_id, text_chunks[0]),
+                    )
+                    if cursor.fetchone():
+                        logger.debug(
+                            "Skipping duplicate %s chunk for user %s", chunk_type, user_id
+                        )
+                        return []
 
                 for i, chunk_content in enumerate(text_chunks):
                     # Generate unique ID
@@ -378,19 +562,25 @@ class MemoryIndex:
 
                     # Insert into chunks table
                     cursor.execute("""
-                        INSERT INTO chunks (id, user_id, content, chunk_type, thread_id, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO chunks (id, user_id, content, chunk_type, thread_id, event_time, metadata, context)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         chunk_id,
                         user_id,
                         chunk_content,
                         chunk_type,
                         thread_id,
+                        event_iso,
                         json.dumps(chunk_metadata),
+                        context,
                     ))
 
-                    # Get embedding and store in vector table
-                    embedding = self.embed_text(chunk_content)
+                    # Get embedding and store in vector table. When a contextual
+                    # blurb is present, embed context + content so the vector
+                    # captures the situating context (Anthropic contextual
+                    # retrieval); the stored ``content`` stays clean for display.
+                    embed_input = f"{context}\n\n{chunk_content}" if context else chunk_content
+                    embedding = self.embed_text(embed_input)
                     if embedding:
                         try:
                             cursor.execute("""
@@ -415,21 +605,98 @@ class MemoryIndex:
 
         return chunk_ids
 
+    @staticmethod
+    def _fts_match_query(query: str) -> Optional[str]:
+        """Build a safe FTS5 MATCH expression from arbitrary user text.
+
+        FTS5 treats characters like ``'``, ``"``, ``-``, ``*``, ``(`` ``)`` and
+        the bare words AND/OR/NOT/NEAR as query syntax. Passing raw natural
+        language (e.g. ``what is my pet's name``) raises ``fts5: syntax error``
+        and the whole BM25 branch silently returns nothing. We extract word
+        tokens, double-quote each as a literal term (so operator-words and
+        punctuation cannot be interpreted as syntax), and OR them so any term
+        may match; BM25 still ranks by term rarity and frequency. Returns None
+        when no usable token remains, so the caller can skip the BM25 branch.
+        """
+        if not query:
+            return None
+        tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+        # Drop single-character noise (e.g. the "s" left from "pet's") but keep
+        # lone digits, which can be meaningful (years, counts).
+        terms = [t for t in tokens if len(t) >= 2 or t.isdigit()]
+        if not terms:
+            return None
+        return " OR ".join(f'"{t}"' for t in terms)
+
+    @staticmethod
+    def _tool_text_fraction(content: Optional[str]) -> float:
+        """Share of a chunk that is templated tool-result text (0.0 - 1.0).
+
+        Keys on the ``Tools used:`` section appended by the turn indexer; a chunk
+        with no tool activity returns 0.0 (no penalty).
+        """
+        if not content:
+            return 0.0
+        idx = content.find(TOOL_ACTIVITY_MARKER)
+        if idx < 0:
+            return 0.0
+        return (len(content) - idx) / len(content)
+
+    @staticmethod
+    def _parse_ts(value: Any) -> Optional[datetime]:
+        """Parse a stored timestamp (ISO string or datetime) to aware UTC."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return ensure_aware_utc(value)
+        if isinstance(value, str):
+            try:
+                return ensure_aware_utc(datetime.fromisoformat(value))
+            except ValueError:
+                return None
+        return None
+
     def search(
         self,
         query: str,
         user_id: str,
         limit: int = 5,
         chunk_types: Optional[List[str]] = None,
+        thread_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        fusion: str = "rrf",
+        apply_recency: bool = True,
+        recency_half_lives: Optional[Dict[str, float]] = None,
+        now: Optional[datetime] = None,
+        rrf_k: int = RRF_K,
+        apply_prose_priority: bool = True,
+        prose_priority_weight: float = PROSE_PRIORITY_WEIGHT,
     ) -> List[ChunkResult]:
         """
         Hybrid search combining vector similarity and BM25 full-text search.
+
+        Fusion is Reciprocal Rank Fusion by default (rank-based, no tuning, no
+        score normalization). After fusion two soft-multipliers refine the
+        order without filtering: a per-chunk_type recency factor (gently
+        down-ranks older chunks) and a prose-priority factor (gently demotes
+        chunks dominated by tool-result text so human/model prose ranks first).
 
         Args:
             query: Search query text
             user_id: User ID to search within
             limit: Maximum results to return
             chunk_types: Optional filter for chunk types
+            thread_id: Optional filter to a single source thread
+            since: Optional lower bound on event_time (inclusive)
+            until: Optional upper bound on event_time (inclusive)
+            fusion: "rrf" (default) or "weighted" (legacy-style rank blend)
+            apply_recency: Apply the recency soft-multiplier after fusion
+            recency_half_lives: Per-chunk_type half-life (days) override
+            now: Reference time for recency (defaults to current UTC time)
+            rrf_k: RRF constant
+            apply_prose_priority: Demote tool-text-heavy chunks below prose
+            prose_priority_weight: Strength of the prose-priority demotion
 
         Returns:
             List of ChunkResult objects sorted by relevance
@@ -437,140 +704,153 @@ class MemoryIndex:
         if not query or not query.strip():
             return []
 
-        results = []
+        now = ensure_aware_utc(now) if now else utc_now()
+        half_lives = recency_half_lives or DEFAULT_RECENCY_HALF_LIVES
+        candidate_pool = max(limit * 5, 30)
+
+        # Shared filter fragment (user + optional type/thread/time) applied
+        # wherever we read chunks, so both branches enforce the same scope.
+        def _filters(alias):
+            clauses = [f"{alias}.user_id = ?"]
+            params: List[Any] = [user_id]
+            if chunk_types:
+                ph = ", ".join("?" for _ in chunk_types)
+                clauses.append(f"{alias}.chunk_type IN ({ph})")
+                params.extend(chunk_types)
+            if thread_id:
+                clauses.append(f"{alias}.thread_id = ?")
+                params.append(thread_id)
+            if since is not None:
+                clauses.append(f"COALESCE({alias}.event_time, {alias}.created_at) >= ?")
+                params.append(ensure_aware_utc(since).isoformat())
+            if until is not None:
+                clauses.append(f"COALESCE({alias}.event_time, {alias}.created_at) <= ?")
+                params.append(ensure_aware_utc(until).isoformat())
+            return " AND ".join(clauses), params
+
+        results: List[ChunkResult] = []
 
         with self._lock:
             conn = self._get_connection()
             try:
                 cursor = conn.cursor()
 
-                # Build type filter clause
-                type_filter = ""
-                type_params: List[Any] = []
-                if chunk_types:
-                    placeholders = ", ".join("?" for _ in chunk_types)
-                    type_filter = f"AND chunk_type IN ({placeholders})"
-                    type_params = list(chunk_types)
-
-                # Try vector search first
-                vector_results = {}
+                # Vector branch: candidate ids ranked by ascending distance.
+                # Filters are enforced at the fetch step below, so unfiltered
+                # vector candidates that fall outside scope drop out there.
+                vector_ids: List[str] = []
                 query_embedding = self.embed_text(query)
-
                 if query_embedding:
                     try:
-                        # Find similar vectors
                         cursor.execute("""
-                            SELECT chunk_id, distance
+                            SELECT chunk_id
                             FROM vec_chunks
                             WHERE embedding MATCH ?
                             ORDER BY distance
                             LIMIT ?
-                        """, (self._serialize_embedding(query_embedding), limit * 3))
-
-                        for row in cursor.fetchall():
-                            # Convert distance to similarity score (0-1, higher is better)
-                            # sqlite-vec returns L2 distance, so we invert it
-                            similarity = 1 / (1 + row['distance'])
-                            vector_results[row['chunk_id']] = similarity
-
+                        """, (self._serialize_embedding(query_embedding), candidate_pool))
+                        vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
                     except sqlite3.OperationalError as e:
                         if "no such table: vec_chunks" not in str(e):
                             logger.warning(f"Vector search failed: {e}")
 
-                # BM25 full-text search
-                bm25_results = {}
-                try:
-                    cursor.execute(f"""
-                        SELECT c.id, c.content, c.chunk_type, c.thread_id,
-                               c.created_at, c.metadata, bm25(chunks_fts) as score
-                        FROM chunks_fts fts
-                        JOIN chunks c ON c.rowid = fts.rowid
-                        WHERE chunks_fts MATCH ?
-                        AND c.user_id = ?
-                        {type_filter}
-                        ORDER BY score
-                        LIMIT ?
-                    """, (query, user_id, *type_params, limit * 3))
+                # BM25 branch: candidate ids ranked by ascending bm25 score,
+                # with filters applied in SQL. The query is sanitized into a
+                # safe FTS5 MATCH expression first; a query with no usable terms
+                # skips this branch entirely (vector search still runs).
+                bm25_ids: List[str] = []
+                fts_query = self._fts_match_query(query)
+                if fts_query:
+                    where_sql, where_params = _filters("c")
+                    try:
+                        cursor.execute(f"""
+                            SELECT c.id
+                            FROM chunks_fts fts
+                            JOIN chunks c ON c.rowid = fts.rowid
+                            WHERE chunks_fts MATCH ?
+                            AND {where_sql}
+                            ORDER BY bm25(chunks_fts)
+                            LIMIT ?
+                        """, (fts_query, *where_params, candidate_pool))
+                        bm25_ids = [row['id'] for row in cursor.fetchall()]
+                    except Exception as e:
+                        logger.warning(f"BM25 search failed: {e}")
 
-                    for row in cursor.fetchall():
-                        # BM25 scores are negative, lower is better
-                        # Normalize to 0-1 range (approximate)
-                        bm25_score = 1 / (1 - row['score']) if row['score'] < 0 else 0.5
-                        bm25_results[row['id']] = {
-                            'score': bm25_score,
-                            'row': dict(row),
-                        }
-                except Exception as e:
-                    logger.warning(f"BM25 search failed: {e}")
+                candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids]))
+                if not candidate_ids:
+                    return []
 
-                # Combine results with hybrid scoring
-                combined_scores = {}
+                # Fetch full rows for all candidates, enforcing filters uniformly.
+                placeholders = ", ".join("?" for _ in candidate_ids)
+                fetch_where, fetch_params = _filters("chunks")
+                cursor.execute(f"""
+                    SELECT id, content, chunk_type, thread_id, created_at,
+                           event_time, metadata, context
+                    FROM chunks
+                    WHERE id IN ({placeholders})
+                    AND {fetch_where}
+                """, (*candidate_ids, *fetch_params))
+                rows_by_id = {row['id']: dict(row) for row in cursor.fetchall()}
+                if not rows_by_id:
+                    return []
 
-                # Add vector results
-                for chunk_id, vec_score in vector_results.items():
-                    combined_scores[chunk_id] = vec_score * 0.7  # Weight vector higher
+                # Rank maps restricted to surviving (filtered) candidates.
+                vec_rank = {cid: i for i, cid in enumerate(
+                    [c for c in vector_ids if c in rows_by_id])}
+                bm_rank = {cid: i for i, cid in enumerate(
+                    [c for c in bm25_ids if c in rows_by_id])}
 
-                # Add BM25 results
-                for chunk_id, data in bm25_results.items():
-                    current = combined_scores.get(chunk_id, 0)
-                    combined_scores[chunk_id] = current + data['score'] * 0.3
+                final_scores: Dict[str, float] = {}
+                for cid, row in rows_by_id.items():
+                    if fusion == "weighted":
+                        base = 0.0
+                        if cid in vec_rank:
+                            base += 0.7 / (1 + vec_rank[cid])
+                        if cid in bm_rank:
+                            base += 0.3 / (1 + bm_rank[cid])
+                    else:  # rrf
+                        base = 0.0
+                        if cid in vec_rank:
+                            base += 1.0 / (rrf_k + vec_rank[cid] + 1)
+                        if cid in bm_rank:
+                            base += 1.0 / (rrf_k + bm_rank[cid] + 1)
 
-                # If no vector results, just use BM25
-                if not vector_results and bm25_results:
-                    for chunk_id, data in bm25_results.items():
-                        combined_scores[chunk_id] = data['score']
+                    if apply_recency:
+                        ev = (self._parse_ts(row.get('event_time'))
+                              or self._parse_ts(row.get('created_at')) or now)
+                        age_days = max(0.0, (now - ev).total_seconds() / 86400.0)
+                        hl = half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
+                        base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0
 
-                # Fetch full chunk data for top results
-                if combined_scores:
-                    sorted_ids = sorted(
-                        combined_scores.keys(),
-                        key=lambda x: combined_scores[x],
-                        reverse=True
-                    )[:limit]
+                    if apply_prose_priority and prose_priority_weight:
+                        frac = self._tool_text_fraction(row.get('content'))
+                        base *= 1.0 - prose_priority_weight * frac
 
-                    for chunk_id in sorted_ids:
-                        # Get from BM25 results if available, otherwise fetch
-                        if chunk_id in bm25_results:
-                            row = bm25_results[chunk_id]['row']
-                        else:
-                            cursor.execute(f"""
-                                SELECT id, content, chunk_type, thread_id, created_at, metadata
-                                FROM chunks
-                                WHERE id = ? AND user_id = ?
-                                {type_filter}
-                            """, (chunk_id, user_id, *type_params))
-                            row_data = cursor.fetchone()
-                            if not row_data:
-                                continue
-                            row = dict(row_data)
+                    final_scores[cid] = base
 
-                        # Parse metadata
-                        try:
-                            metadata = json.loads(row['metadata']) if row['metadata'] else {}
-                        except json.JSONDecodeError:
-                            metadata = {}
+                ranked = sorted(
+                    final_scores, key=lambda c: final_scores[c], reverse=True
+                )[:limit]
 
-                        # Parse created_at
-                        created_at = row['created_at']
-                        if isinstance(created_at, str):
-                            try:
-                                created_at = ensure_aware_utc(
-                                    datetime.fromisoformat(created_at)
-                                )
-                            except ValueError:
-                                created_at = utc_now()
-                        elif isinstance(created_at, datetime):
-                            created_at = ensure_aware_utc(created_at)
-
-                        results.append(ChunkResult(
-                            id=row['id'],
-                            content=row['content'],
-                            chunk_type=row['chunk_type'],
-                            thread_id=row['thread_id'],
-                            created_at=created_at,
-                            metadata=metadata,
-                            score=combined_scores[chunk_id],
-                        ))
+                for cid in ranked:
+                    row = rows_by_id[cid]
+                    try:
+                        metadata = json.loads(row['metadata']) if row['metadata'] else {}
+                    except json.JSONDecodeError:
+                        metadata = {}
+                    created_at = self._parse_ts(row.get('created_at')) or now
+                    event_time = self._parse_ts(row.get('event_time')) or created_at
+                    results.append(ChunkResult(
+                        id=row['id'],
+                        content=row['content'],
+                        chunk_type=row['chunk_type'],
+                        thread_id=row['thread_id'],
+                        created_at=created_at,
+                        metadata=metadata,
+                        score=final_scores[cid],
+                        event_time=event_time,
+                        context=row.get('context'),
+                    ))
 
             finally:
                 conn.close()

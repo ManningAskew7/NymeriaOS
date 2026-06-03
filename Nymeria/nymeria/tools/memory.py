@@ -20,11 +20,13 @@ different mental models and warrant lexically distinct tools.
 """
 
 import logging
+from datetime import datetime
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.user_profile import UserProfileManager
 from ..core.memory_index import MemoryIndex
 from ..core.memory_limits import (
@@ -417,25 +419,97 @@ def personality_set(
         return f"[Set]: I'll remember to '{value}' in future conversations."
 
 
+def _parse_when(value: Optional[str]):
+    """Parse an ISO date/datetime string to aware UTC, or None if unparseable."""
+    if not value or not value.strip():
+        return None
+    try:
+        return ensure_aware_utc(datetime.fromisoformat(value.strip()))
+    except ValueError:
+        return None
+
+
+def _humanize_age(delta_seconds: float) -> str:
+    """Render an age (seconds) as a short relative phrase the LLM reads easily."""
+    s = int(max(0, delta_seconds))
+    if s < 60:
+        return "just now"
+    m = s // 60
+    if m < 60:
+        return f"{m}m ago"
+    h = m // 60
+    if h < 24:
+        return f"{h}h ago"
+    d = h // 24
+    if d < 7:
+        return f"{d}d ago"
+    if d < 30:
+        return f"{d // 7}w ago"
+    if d < 365:
+        return f"{d // 30}mo ago"
+    return f"{d // 365}y ago"
+
+
+def _thread_title_resolver(user_id: str):
+    """Return a cached thread_id -> title lookup using the current agent."""
+    cache: dict = {}
+    try:
+        from ..core.agent import get_current_agent
+        agent = get_current_agent()
+    except Exception:
+        agent = None
+
+    def resolve(thread_id: Optional[str]) -> Optional[str]:
+        if not thread_id:
+            return None
+        if thread_id in cache:
+            return cache[thread_id]
+        title = None
+        try:
+            if agent is not None:
+                meta = agent.thread_metadata_manager.get_thread(user_id, thread_id)
+                if meta and meta.title:
+                    title = meta.title
+        except Exception:
+            title = None
+        cache[thread_id] = title
+        return title
+
+    return resolve
+
+
 @tool
 def rag_search(
     query: str,
     max_results: int = 5,
+    thread_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Search past conversations and memories for relevant context.
+    Search your own memory: past conversations, saved memories, and completed TODOs.
+
+    Results are ranked by hybrid relevance with a gentle recency bias. Each result
+    shows when it is from and which thread it came from, so you can reason about
+    freshness and, when useful, follow up on the source thread (call it if it is a
+    bound callable thread, or open it by id).
 
     Args:
-        query: What to search for
-        max_results: Max results (1-10, default 5)
+        query: What to search for.
+        max_results: Max results (1-10, default 5).
+        thread_id: Restrict the search to a single source thread.
+        since: Only chunks at or after this ISO time (e.g. "2026-05-01" or
+            "2026-05-01T09:00:00").
+        until: Only chunks at or before this ISO time.
 
     Returns:
-        "Found N relevant result(s):" header + numbered entries with
-        [chunk_type] tag, relevance score (0-1), and content snippet
-        (max 400 chars). "[No Results]: ..." when empty. "[RAG
-        Disabled]: ..." if RAG is off. Errors: "[Error]: <reason>".
+        A "now:" anchor header plus numbered entries. Each entry shows
+        [chunk_type], relative age + event time, a 0-1 relevance, the source
+        thread title + id (when applicable), and a content snippet (max 400
+        chars). "[No Results]: ..." when empty. "[RAG Disabled]: ..." if RAG is
+        off. Errors: "[Error]: <reason>".
     """
     logger.info(f"rag_search called: query={query[:50]}...")
 
@@ -459,7 +533,7 @@ def rag_search(
         chunk_types = []
         if rag_prefs.get("include_conversations", True):
             chunk_types.append("conversation")
-        if rag_prefs.get("include_memories", True):
+        if rag_prefs.get("include_memories", False):
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
@@ -469,17 +543,65 @@ def rag_search(
 
         max_results = max(1, min(10, max_results))
 
+        try:
+            from ..config import get_settings
+            settings = get_settings()
+            fusion = settings.rag_fusion_method
+            apply_recency = settings.rag_recency_enabled
+            rerank_enabled = settings.rag_rerank_enabled
+            rerank_top_n = settings.rag_rerank_top_n
+            prose_priority = settings.rag_prose_priority_enabled
+            prose_priority_weight = settings.rag_prose_priority_weight
+        except Exception:
+            fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", True, False, 20
+            prose_priority, prose_priority_weight = True, 0.4
+
+        now = utc_now()
+        search_limit = max(max_results, rerank_top_n) if rerank_enabled else max_results
         results = memory_index.search(
             query=query,
             user_id=user_id,
-            limit=max_results,
+            limit=search_limit,
             chunk_types=chunk_types,
+            thread_id=thread_id,
+            since=_parse_when(since),
+            until=_parse_when(until),
+            fusion=fusion,
+            apply_recency=apply_recency,
+            now=now,
+            apply_prose_priority=prose_priority,
+            prose_priority_weight=prose_priority_weight,
         )
+
+        # Optional LLM listwise rerank (off by default; adds latency + tokens).
+        if rerank_enabled and len(results) > 1:
+            try:
+                from ..core.agent import get_current_agent
+                from ..core.rag_quality import llm_rerank
+                agent = get_current_agent()
+                if agent is not None:
+                    results = llm_rerank(
+                        agent,
+                        get_effective_thread_id(config),
+                        query,
+                        results,
+                        top_n=rerank_top_n,
+                    )
+            except Exception as e:
+                logger.warning(f"rag_search rerank skipped: {e}")
+
+        results = results[:max_results]
 
         if not results:
             return f"[No Results]: No relevant context found for '{query}'."
 
-        lines = [f"Found {len(results)} relevant result(s) for '{query}':\n"]
+        resolve_title = _thread_title_resolver(user_id)
+        top_score = max((r.score for r in results), default=0.0) or 1.0
+
+        lines = [
+            f"Found {len(results)} relevant result(s) for '{query}' "
+            f"(now: {now.isoformat()}):\n"
+        ]
 
         for i, result in enumerate(results, 1):
             type_emoji = {
@@ -488,11 +610,30 @@ def rag_search(
                 'todo': '✅',
             }.get(result.chunk_type, '📝')
 
+            event_time = result.event_time or result.created_at
+            age = _humanize_age((now - event_time).total_seconds())
+            relevance = result.score / top_score
+
+            # Provenance: thread title + id for thread-scoped chunks; saved
+            # memories are global (no thread).
+            if result.thread_id:
+                title = resolve_title(result.thread_id)
+                if title:
+                    source = f'thread "{title}" ({result.thread_id})'
+                else:
+                    source = f"thread {result.thread_id}"
+            else:
+                source = "saved memory (global)"
+
             content = result.content
             if len(content) > 400:
                 content = content[:397] + "..."
 
-            lines.append(f"{i}. {type_emoji} [{result.chunk_type}] (relevance: {result.score:.2f})")
+            lines.append(
+                f"{i}. {type_emoji} [{result.chunk_type}] "
+                f"({age}, {event_time.isoformat()}, relevance {relevance:.2f})"
+            )
+            lines.append(f"   from {source}")
             lines.append(f"   {content}")
             lines.append("")
 
@@ -559,7 +700,7 @@ def rag_settings(
             f"- enabled: {profile.opt_in.rag_enabled}",
             f"- max_chunks: {rag_prefs.get('max_chunks', 5)}",
             f"- include_conversations: {rag_prefs.get('include_conversations', True)}",
-            f"- include_memories: {rag_prefs.get('include_memories', True)}",
+            f"- include_memories: {rag_prefs.get('include_memories', False)}",
             f"- include_todos: {rag_prefs.get('include_todos', True)}",
             f"- auto_flush: {rag_prefs.get('auto_flush', True)}",
         ]

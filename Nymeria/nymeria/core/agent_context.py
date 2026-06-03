@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 from .agent_history import (
     CONTEXT_PREFIX_PATTERN,
     build_message_timestamp_map,
+    extract_content_parts,
     format_conversation_history,
 )
 
@@ -422,10 +423,10 @@ def flush_memories_before_trim(
                 # Save previous turn if exists
                 if current_user_msg and current_ai_parts:
                     # Strip time context from user message
-                    user_content = current_user_msg.content if isinstance(current_user_msg.content, str) else str(current_user_msg.content)
+                    user_content, _ = extract_content_parts(current_user_msg.content)
                     user_content = CONTEXT_PREFIX_PATTERN.sub('', user_content)
 
-                    turn_content = f"User: {user_content}\n\nAssistant: {''.join(current_ai_parts)}"
+                    turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
                     memory_index.add_chunk(
                         content=turn_content,
                         metadata={
@@ -442,15 +443,19 @@ def flush_memories_before_trim(
                 current_ai_parts = []
 
             elif isinstance(msg, AIMessage):
-                if msg.content:
-                    current_ai_parts.append(msg.content if isinstance(msg.content, str) else str(msg.content))
+                # Extract only display text; drop tool_use / image / thinking
+                # blocks so structured-content dict reprs and base64 blobs never
+                # reach the index (str(msg.content) used to serialize them).
+                ai_text, _ = extract_content_parts(msg.content)
+                if ai_text and ai_text.strip():
+                    current_ai_parts.append(ai_text)
 
         # Don't forget the last turn
         if current_user_msg and current_ai_parts:
-            user_content = current_user_msg.content if isinstance(current_user_msg.content, str) else str(current_user_msg.content)
+            user_content, _ = extract_content_parts(current_user_msg.content)
             user_content = CONTEXT_PREFIX_PATTERN.sub('', user_content)
 
-            turn_content = f"User: {user_content}\n\nAssistant: {''.join(current_ai_parts)}"
+            turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
             memory_index.add_chunk(
                 content=turn_content,
                 metadata={

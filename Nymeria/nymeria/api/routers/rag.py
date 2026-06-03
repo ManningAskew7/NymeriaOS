@@ -44,7 +44,7 @@ def create_rag_router(
             "enabled": profile.opt_in.rag_enabled,
             "max_chunks": rag_prefs.get("max_chunks", 5),
             "include_conversations": rag_prefs.get("include_conversations", True),
-            "include_memories": rag_prefs.get("include_memories", True),
+            "include_memories": rag_prefs.get("include_memories", False),
             "include_todos": rag_prefs.get("include_todos", True),
             "auto_flush": rag_prefs.get("auto_flush", True),
         }
@@ -84,7 +84,7 @@ def create_rag_router(
                 "enabled": profile.opt_in.rag_enabled,
                 "max_chunks": rag_prefs.get("max_chunks", 5),
                 "include_conversations": rag_prefs.get("include_conversations", True),
-                "include_memories": rag_prefs.get("include_memories", True),
+                "include_memories": rag_prefs.get("include_memories", False),
                 "include_todos": rag_prefs.get("include_todos", True),
                 "auto_flush": rag_prefs.get("auto_flush", True),
             }
@@ -155,7 +155,7 @@ def create_rag_router(
         chunk_types: List[str] = []
         if rag_prefs.get("include_conversations", True):
             chunk_types.append("conversation")
-        if rag_prefs.get("include_memories", True):
+        if rag_prefs.get("include_memories", False):
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")

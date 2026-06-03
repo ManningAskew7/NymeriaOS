@@ -19,9 +19,10 @@ the same recursion-through-class pattern used by :mod:`agent_graph` and
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .memory_index import MemoryIndex
 from .prompts import (
@@ -352,7 +353,7 @@ def get_rag_context(
         chunk_types = []
         if rag_prefs.get("include_conversations", True):
             chunk_types.append("conversation")
-        if rag_prefs.get("include_memories", True):
+        if rag_prefs.get("include_memories", False):
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
@@ -377,21 +378,117 @@ def get_rag_context(
         return []
 
 
+_MAX_TOOL_ACTIVITY_ENTRIES = 12
+_MAX_TOOL_RESULT_EMBED_CHARS = 400
+_MAX_TOOL_RESULT_RAW_CHARS = 1000
+
+
+def _summarize_tool_args(args) -> str:
+    """Compactly render tool-call args as key=val, truncated for embedding."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    parts = []
+    for key, value in args.items():
+        sval = value if isinstance(value, str) else json.dumps(value, default=str)
+        if len(sval) > 80:
+            sval = sval[:77] + "..."
+        parts.append(f"{key}={sval}")
+    joined = ", ".join(parts)
+    if len(joined) > 200:
+        joined = joined[:197] + "..."
+    return joined
+
+
+def extract_turn_tool_activity(messages) -> List[dict]:
+    """Extract this turn's tool calls + results from a LangGraph messages list.
+
+    The "current turn" is everything after the last HumanMessage. Each entry is
+    ``{name, args, result}``. Returns ``[]`` when there is no tool activity.
+    """
+    if not messages:
+        return []
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            start = i
+            break
+    turn = messages[start:]
+
+    results_by_id: dict = {}
+    for m in turn:
+        if isinstance(m, ToolMessage):
+            # Extract display text only; structured tool results (lists of
+            # content blocks, image/binary parts) get reduced to their text so
+            # dict reprs and base64 never land in the embedded summary.
+            if isinstance(m.content, str):
+                content = m.content
+            else:
+                from .agent_history import extract_content_parts
+                content, _ = extract_content_parts(m.content)
+            results_by_id[getattr(m, "tool_call_id", None)] = content
+
+    activity: List[dict] = []
+    for m in turn:
+        if isinstance(m, AIMessage):
+            for tc in (getattr(m, "tool_calls", None) or []):
+                if isinstance(tc, dict):
+                    name, args, tcid = tc.get("name"), tc.get("args"), tc.get("id")
+                else:
+                    name = getattr(tc, "name", None)
+                    args = getattr(tc, "args", None)
+                    tcid = getattr(tc, "id", None)
+                if not name:
+                    continue
+                activity.append({
+                    "name": name,
+                    "args": args or {},
+                    "result": results_by_id.get(tcid, ""),
+                })
+    return activity
+
+
+def _build_tool_activity_section(activity: List[dict]):
+    """Return (embed_text_suffix, raw_metadata_list) for a turn's tool activity."""
+    if not activity:
+        return "", []
+    lines = ["", "Tools used:"]
+    raw = []
+    for a in activity[:_MAX_TOOL_ACTIVITY_ENTRIES]:
+        args_str = _summarize_tool_args(a.get("args"))
+        result = a.get("result") or ""
+        summary = " ".join(result.split())
+        if len(summary) > _MAX_TOOL_RESULT_EMBED_CHARS:
+            summary = summary[:_MAX_TOOL_RESULT_EMBED_CHARS - 3] + "..."
+        lines.append(f"- {a['name']}({args_str}) -> {summary}")
+        raw.append({
+            "name": a["name"],
+            "args": a.get("args", {}),
+            "result": result[:_MAX_TOOL_RESULT_RAW_CHARS],
+        })
+    return "\n" + "\n".join(lines), raw
+
+
 def index_conversation_turn(
     agent: "NymeriaAgent",
     user_id: str,
     thread_id: str,
     user_message: str,
     ai_response: str,
+    messages: Optional[List] = None,
 ) -> None:
     """
-    Index a conversation turn (user message + AI response) in RAG.
+    Index a conversation turn (user message + AI response + tool activity) in RAG.
 
     Args:
         user_id: User identifier
         thread_id: Thread identifier
         user_message: The user's message
         ai_response: The AI's response
+        messages: Optional LangGraph messages list for this turn. When provided,
+            the turn's tool calls + results are summarized into the embedded
+            chunk (and stored raw in metadata) so tool activity is retrievable.
     """
     memory_index = agent._get_memory_index(user_id)
     if not memory_index:
@@ -407,16 +504,38 @@ def index_conversation_turn(
         # Combine into a conversation turn for indexing
         turn_content = f"User: {user_message}\n\nAssistant: {ai_response}"
 
+        metadata: Dict[str, Any] = {
+            "role": "conversation_turn",
+            "has_user_message": True,
+            "has_ai_response": True,
+        }
+
+        activity = extract_turn_tool_activity(messages) if messages else []
+        if activity:
+            suffix, raw = _build_tool_activity_section(activity)
+            turn_content += suffix
+            metadata["tool_activity"] = raw
+            metadata["tool_names"] = [a["name"] for a in activity]
+
+        # Optional contextual-retrieval blurb (off by default; adds one LLM call).
+        context = None
+        try:
+            settings = getattr(agent, "settings", None)
+            if settings is not None and getattr(settings, "rag_contextual_enabled", False):
+                from .rag_quality import generate_contextual_blurb
+                context = generate_contextual_blurb(
+                    agent, thread_id, turn_content, "conversation"
+                )
+        except Exception as e:
+            logger.warning(f"Contextual blurb skipped: {e}")
+
         memory_index.add_chunk(
             content=turn_content,
-            metadata={
-                "role": "conversation_turn",
-                "has_user_message": True,
-                "has_ai_response": True,
-            },
+            metadata=metadata,
             chunk_type="conversation",
             user_id=user_id,
             thread_id=thread_id,
+            context=context,
         )
         logger.debug(f"Indexed conversation turn for user {user_id}, thread {thread_id}")
 

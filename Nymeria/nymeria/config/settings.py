@@ -1238,6 +1238,37 @@ class Settings(BaseSettings):
         description="1536-dimensional embedding model name for memory and skill semantic search",
     )
 
+    # RAG retrieval tuning (native memory index). Defaults preserve current
+    # behavior except the fusion upgrade to RRF, which is strictly more robust.
+    rag_fusion_method: str = Field(
+        default="rrf",
+        description="Hybrid fusion for rag_search: 'rrf' (rank-based, default) or 'weighted' (legacy rank blend)",
+    )
+    rag_recency_enabled: bool = Field(
+        default=True,
+        description="Apply a per-chunk_type recency soft-multiplier after fusion so older chunks are gently down-ranked (never filtered). Half-lives are years-long so this is only a faint tiebreaker.",
+    )
+    rag_prose_priority_enabled: bool = Field(
+        default=True,
+        description="Rank user/assistant prose above tool-result text: after fusion, demote a chunk by the share of it that is templated tool output.",
+    )
+    rag_prose_priority_weight: float = Field(
+        default=0.4,
+        description="Strength of the prose-priority demotion (0 = off, 1 = a 100%-tool chunk loses all score). Applied as score *= 1 - weight * tool_fraction.",
+    )
+    rag_contextual_enabled: bool = Field(
+        default=False,
+        description="Contextual Retrieval: prepend an LLM-written context blurb to each chunk before embedding. Big recall win but adds one LLM call per chunk at ingest, so off by default.",
+    )
+    rag_rerank_enabled: bool = Field(
+        default=False,
+        description="Rerank rag_search top-N with an LLM listwise rerank. Off by default (adds latency and tokens per search).",
+    )
+    rag_rerank_top_n: int = Field(
+        default=20,
+        description="When rag_rerank_enabled, how many fused candidates to rerank before truncating to the requested limit",
+    )
+
     # Gemini (document extraction for email attachments)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")
     gemini_extraction_model: str = Field(default="gemini-3-flash-preview", description="Gemini model for attachment text extraction")
