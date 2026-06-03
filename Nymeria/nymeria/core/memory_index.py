@@ -106,6 +106,7 @@ class MemoryIndex:
         embedding_model: Optional[str] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        embedding_dimensions: Optional[int] = None,
     ):
         """
         Initialize the memory index.
@@ -118,6 +119,14 @@ class MemoryIndex:
             embedding_model: Embedding model name
             chunk_size: Maximum tokens per chunk
             chunk_overlap: Token overlap between chunks
+            embedding_dimensions: Width of the vec0 vector column and the
+                accepted embedding length. Defaults to EMBEDDING_DIMENSIONS
+                (1536). Production omits it, so the live index keeps the 1536
+                slot and the embedding path is unchanged. The eval harness sets
+                it to a model's native width (each model in its own throwaway DB)
+                so models are benchmarked at their optimal configuration. When
+                explicit and the model is a text-embedding-3-* model, the OpenAI
+                ``dimensions`` param is sent so the model emits exactly that width.
         """
         self.db_path = Path(db_path)
         self.embedding_provider = embedding_provider
@@ -136,6 +145,10 @@ class MemoryIndex:
         self.embedding_api_key = embedding_api_key
         self.embedding_base_url = embedding_base_url
         self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
+        # Vector width. Defaults to the module constant so production is
+        # unchanged; the eval harness passes a model's native width per run.
+        self.embedding_dimensions = embedding_dimensions or EMBEDDING_DIMENSIONS
+        self._dimensions_explicit = embedding_dimensions is not None
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._lock = threading.RLock()
@@ -284,7 +297,7 @@ class MemoryIndex:
                     cursor.execute(f"""
                         CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                             chunk_id TEXT PRIMARY KEY,
-                            embedding FLOAT[{EMBEDDING_DIMENSIONS}]
+                            embedding FLOAT[{self.embedding_dimensions}]
                         )
                     """)
                     logger.debug("Vector table created/verified")
@@ -317,6 +330,20 @@ class MemoryIndex:
                 raise ImportError("openai package required for embeddings. Install with: pip install openai")
         return self._openai_client
 
+    def _embed_kwargs(self) -> Dict[str, Any]:
+        """Model-side kwargs for an OpenAI ``embeddings.create`` call.
+
+        When an explicit ``embedding_dimensions`` was requested and the model is
+        a text-embedding-3-* model (which supports Matryoshka truncation), pass
+        ``dimensions`` so the model emits exactly that width. Production builds
+        the index without ``embedding_dimensions``, so nothing extra is sent and
+        the live embedding path is unchanged.
+        """
+        kwargs: Dict[str, Any] = {"model": self.embedding_model}
+        if self._dimensions_explicit and "text-embedding-3" in (self.embedding_model or ""):
+            kwargs["dimensions"] = self.embedding_dimensions
+        return kwargs
+
     def embed_text(self, text: str) -> Optional[List[float]]:
         """
         Get embedding vector for text.
@@ -334,14 +361,14 @@ class MemoryIndex:
             try:
                 client = self._get_openai_client()
                 response = client.embeddings.create(
-                    model=self.embedding_model,
                     input=text[:8000],  # Truncate to model's limit
+                    **self._embed_kwargs(),
                 )
                 embedding = response.data[0].embedding
-                if len(embedding) != EMBEDDING_DIMENSIONS:
+                if len(embedding) != self.embedding_dimensions:
                     logger.error(
                         "Embedding dimension mismatch: expected %s, got %s",
-                        EMBEDDING_DIMENSIONS,
+                        self.embedding_dimensions,
                         len(embedding),
                     )
                     return None
@@ -370,15 +397,15 @@ class MemoryIndex:
         out: List[Optional[List[float]]] = [None] * len(texts)
         try:
             client = self._get_openai_client()
-            response = client.embeddings.create(model=self.embedding_model, input=inputs)
+            response = client.embeddings.create(input=inputs, **self._embed_kwargs())
             for item in response.data:
                 emb = item.embedding
-                if len(emb) == EMBEDDING_DIMENSIONS:
+                if len(emb) == self.embedding_dimensions:
                     out[item.index] = emb
                 else:
                     logger.error(
                         "Embedding dimension mismatch: expected %s, got %s",
-                        EMBEDDING_DIMENSIONS, len(emb),
+                        self.embedding_dimensions, len(emb),
                     )
         except Exception as e:
             logger.error(f"Batch embedding failed: {e}")

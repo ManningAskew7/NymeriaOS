@@ -519,3 +519,50 @@ def test_eval_recall_on_seeded_corpus():
         metrics = _evaluate(idx, probes, user_id="eval", k=3)
         assert metrics["recall_at_k"] == 1.0
         assert metrics["mrr"] >= 0.9
+
+
+# --- configurable embedding dimension (eval-harness model benchmarking) -----
+
+def test_embedding_dimensions_defaults_to_1536_and_is_not_explicit():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "m.db", embedding_provider="none")
+        # Production omits the param: 1536 slot, no dimensions= sent on embed.
+        assert idx.embedding_dimensions == 1536
+        assert idx._dimensions_explicit is False
+
+
+def test_embedding_dimensions_explicit_sets_vec0_width():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "m.db", embedding_provider="none",
+                          embedding_dimensions=384)
+        assert idx.embedding_dimensions == 384
+        assert idx._dimensions_explicit is True
+        # The vec0 virtual table is declared at the requested width, so a model's
+        # native dimension flows all the way into the storage schema.
+        with sqlite3.connect(idx.db_path) as conn:
+            sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'vec_chunks'"
+            ).fetchone()
+        # sqlite-vec may be unavailable in some envs; only assert when present.
+        if sql and sql[0]:
+            assert "FLOAT[384]" in sql[0]
+
+
+def test_embed_kwargs_sends_dimensions_only_for_v3_models_when_explicit():
+    with TemporaryDirectory() as tmp:
+        # Explicit dim + a text-embedding-3-* model: dimensions is sent so the
+        # model emits exactly that width (Matryoshka truncation / native).
+        large = MemoryIndex(Path(tmp) / "a.db", embedding_provider="none",
+                            embedding_model="text-embedding-3-large",
+                            embedding_dimensions=3072)
+        assert large._embed_kwargs() == {"model": "text-embedding-3-large",
+                                         "dimensions": 3072}
+        # Explicit dim but a model without Matryoshka support: never sent.
+        ada = MemoryIndex(Path(tmp) / "b.db", embedding_provider="none",
+                          embedding_model="text-embedding-ada-002",
+                          embedding_dimensions=1536)
+        assert ada._embed_kwargs() == {"model": "text-embedding-ada-002"}
+        # Production path (no explicit dim): nothing extra sent, even for 3-*.
+        prod = MemoryIndex(Path(tmp) / "c.db", embedding_provider="none",
+                           embedding_model="text-embedding-3-small")
+        assert prod._embed_kwargs() == {"model": "text-embedding-3-small"}

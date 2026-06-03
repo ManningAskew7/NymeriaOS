@@ -13,11 +13,12 @@ survives reindexing, scrubbing and re-embedding. A result counts as relevant
 when it satisfies every predicate the probe specifies (unspecified predicates
 are ignored):
 
-    relevant_ids   result.id is in this list
-    contains_any   result.content contains ANY of these substrings (ci)
-    contains_all   result.content contains ALL of these substrings (ci)
-    chunk_type     result.chunk_type equals this
-    thread_id      result.thread_id equals this
+    relevant_ids         result.id is in this list
+    contains_any         result.content contains ANY of these substrings (ci)
+    contains_all         result.content contains ALL of these substrings (ci)
+    chunk_type           result.chunk_type equals this
+    thread_id            result.thread_id equals this
+    relevant_thread_ids  result.thread_id is in this list (session-grained gold)
 
 A probe may also set ``expect_empty: true`` to mark a no-answer query: the
 corpus holds nothing that should satisfy it. Such probes are excluded from the
@@ -28,7 +29,7 @@ A probe may also carry ``search`` kwargs (e.g. ``{"thread_id": "...", "since":
 "2026-05-01"}``) passed straight through to ``MemoryIndex.search`` so filter
 behaviour can be evaluated too.
 
-Two modes:
+Modes:
 
     # Seeded synthetic corpus (no API key, deterministic, used by CI/tests):
     python3 tools/rag_eval.py
@@ -38,9 +39,20 @@ Two modes:
     python3 tools/rag_eval.py --db /data/users/default/memory.db \
         --user default --probes data/rag_eval_probes.default.json --compare
 
+    # LongMemEval: index the dataset's chat haystack and probe it (real key).
+    # Compare embedding models by running once per model and diffing the dumps;
+    # --embedding-dim defaults to the model's native width (its best config):
+    python3 tools/rag_eval.py --dataset longmemeval \
+        --data data/eval/longmemeval/longmemeval_oracle.json \
+        --embedding-model text-embedding-3-small --out runs/small.json
+    python3 tools/rag_eval.py --dataset longmemeval \
+        --data data/eval/longmemeval/longmemeval_oracle.json \
+        --embedding-model text-embedding-3-large --out runs/large.json
+    python3 tools/rag_eval.py --compare-runs runs/small.json runs/large.json
+
 The live corpus lives in the Docker ``nymeria_data`` volume and ``tools/`` is
-not bind-mounted, so to run live: ``docker cp`` this file plus the probes JSON
-into the container and run it there (the embedding key is already in its env).
+not bind-mounted, so to run live: ``docker cp`` this file (plus the probes JSON
+or dataset) into the container and run it there (the embedding key is in its env).
 """
 
 from __future__ import annotations
@@ -49,9 +61,10 @@ import argparse
 import json
 import logging
 import math
+import re
 import sys
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, List, Optional
@@ -73,6 +86,10 @@ class Probe:
     contains_all: Optional[List[str]] = None
     chunk_type: Optional[str] = None
     thread_id: Optional[str] = None
+    # Result is relevant when its source thread (session) is in this set. The
+    # natural gold signal for session-grained datasets like LongMemEval, where a
+    # question maps to one or more evidence sessions rather than a single thread.
+    relevant_thread_ids: Optional[List[str]] = None
     # No-answer probe: the corpus has nothing that should satisfy this query.
     # Excluded from hit_rate/MRR (it has no correct answer); instead it feeds
     # false_positive_rate, where any returned result that matches the probe's
@@ -104,11 +121,13 @@ def result_is_relevant(result, probe: Probe) -> bool:
         return False
     if probe.thread_id is not None and result.thread_id != probe.thread_id:
         return False
+    if probe.relevant_thread_ids is not None and result.thread_id not in probe.relevant_thread_ids:
+        return False
     # A probe with no predicate at all matches nothing (avoid silent all-hits).
     has_predicate = any(
         x is not None for x in (
             probe.relevant_ids, probe.contains_any, probe.contains_all,
-            probe.chunk_type, probe.thread_id,
+            probe.chunk_type, probe.thread_id, probe.relevant_thread_ids,
         )
     )
     return has_predicate
@@ -332,6 +351,122 @@ def build_seeded(index: MemoryIndex, user_id: str = "eval") -> List[Probe]:
     ]
 
 
+# --- LongMemEval dataset loader --------------------------------------------
+
+# Native embedding width per known model. The harness defaults --embedding-dim
+# to this so each model is benchmarked at its optimal configuration (3-large at
+# its full 3072, not truncated to fit a fixed slot). Unknown models fall back to
+# 1536; pass --embedding-dim to override.
+NATIVE_EMBEDDING_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
+
+
+def native_dim(model: Optional[str]) -> int:
+    """Native vector width for a model, defaulting to 1536 when unknown."""
+    return NATIVE_EMBEDDING_DIMS.get(model or "", 1536)
+
+
+def _parse_lme_date(raw: Optional[str]) -> Optional[datetime]:
+    """Parse a LongMemEval timestamp like ``2023/05/20 (Sat) 02:21``.
+
+    The ``(Day)`` token is stripped before parsing. Returns None on any format
+    we do not recognise, so the loader falls back to ingest time for that turn.
+    """
+    if not raw:
+        return None
+    cleaned = re.sub(r"\([^)]*\)", "", raw).strip()
+    for fmt in ("%Y/%m/%d %H:%M", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def load_longmemeval(
+    index: MemoryIndex,
+    data_path: str,
+    user_id: str = "eval",
+    limit: Optional[int] = None,
+) -> List[Probe]:
+    """Index a LongMemEval file's chat haystack and return one Probe per question.
+
+    LongMemEval (ICLR 2025, MIT) ships ``query -> evidence session`` gold, so it
+    maps onto the predicate harness with no schema change: every haystack turn is
+    indexed as a ``conversation`` chunk whose ``thread_id`` is its session id and
+    whose ``event_time`` is the session date (so the recency multiplier and the
+    since/until filters are genuinely exercised), and each question becomes a
+    Probe whose ``relevant_thread_ids`` are its ``answer_session_ids``.
+
+    Abstention in LongMemEval is a generation-side judgement: the oracle still
+    labels and includes evidence sessions for ``_abs`` questions, so retrieval is
+    not penalised for surfacing them. A question is treated as a no-answer
+    (``expect_empty``) probe only when its ``answer_session_ids`` is empty (no
+    evidence in the haystack); otherwise its labelled sessions are the gold and
+    it is scored like any answerable question. ``false_positive_rate`` therefore
+    stays meaningful for a genuine no-gold probe and is simply not exercised by an
+    oracle file where every question carries evidence.
+
+    Args:
+        index: target MemoryIndex (use a real embedding provider to benchmark the
+            vector branch; ``embedding_provider="none"`` only exercises BM25).
+        data_path: path to a longmemeval_*.json file.
+        user_id: user namespace to index under.
+        limit: cap the number of questions (for a cheap partial run).
+    """
+    entries = json.loads(Path(data_path).read_text())
+    if limit:
+        entries = entries[:limit]
+
+    probes: List[Probe] = []
+    for entry in entries:
+        qid = entry.get("question_id", "")
+        sessions = entry.get("haystack_sessions", []) or []
+        session_ids = entry.get("haystack_session_ids", []) or []
+        session_dates = entry.get("haystack_dates", []) or []
+
+        for s_idx, session in enumerate(sessions):
+            sid = session_ids[s_idx] if s_idx < len(session_ids) else f"{qid}-s{s_idx}"
+            event_time = _parse_lme_date(
+                session_dates[s_idx] if s_idx < len(session_dates) else None
+            )
+            for t_idx, turn in enumerate(session or []):
+                content = (turn.get("content") or "").strip()
+                if not content:
+                    continue
+                role = turn.get("role", "")
+                index.add_chunk(
+                    f"{role}: {content}" if role else content,
+                    {
+                        "session_id": sid,
+                        "role": role,
+                        "has_answer": bool(turn.get("has_answer")),
+                        "question_id": qid,
+                        "turn_index": t_idx,
+                    },
+                    "conversation",
+                    user_id,
+                    thread_id=sid,
+                    event_time=event_time,
+                )
+
+        gold = list(entry.get("answer_session_ids") or [])
+        # A no-answer probe is one with no evidence session in the haystack.
+        # _abs questions in the oracle still carry labelled gold sessions, so
+        # they are scored as answerable retrieval (abstention is judged at
+        # generation time, not here).
+        probes.append(Probe(
+            query=entry.get("question", ""),
+            relevant_thread_ids=gold,
+            expect_empty=not gold,
+            note=f"{entry.get('question_type', '?')} {qid}",
+        ))
+    return probes
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _print_metrics(name: str, m: Dict[str, Any], verbose: bool = False) -> None:
@@ -355,23 +490,103 @@ def _print_metrics(name: str, m: Dict[str, Any], verbose: bool = False) -> None:
                       f"distinct={row['distinct']:.2f} ranks={row['ranks']}  {row['query']}")
 
 
-def _open_index(db: Optional[str]) -> MemoryIndex:
+def _open_index(
+    db: Optional[str],
+    *,
+    embedding_provider: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    embedding_dimensions: Optional[int] = None,
+    embedding_base_url: Optional[str] = None,
+) -> MemoryIndex:
+    """Open or create a MemoryIndex for a run.
+
+    With ``db`` and no embedding overrides this is the live/production config
+    (model and key come from settings). A throwaway DB defaults to BM25-only
+    (``provider="none"``, no API key) unless a provider is given, which is how
+    the seeded and LongMemEval modes diverge.
+    """
+    kwargs: Dict[str, Any] = {}
+    if embedding_model is not None:
+        kwargs["embedding_model"] = embedding_model
+    if embedding_dimensions is not None:
+        kwargs["embedding_dimensions"] = embedding_dimensions
+    if embedding_base_url is not None:
+        kwargs["embedding_base_url"] = embedding_base_url
     if db:
-        return MemoryIndex(Path(db))
-    # Seeded mode uses a throwaway BM25-only index (no API key needed).
+        if embedding_provider is not None:
+            kwargs["embedding_provider"] = embedding_provider
+        return MemoryIndex(Path(db), **kwargs)
+    kwargs["embedding_provider"] = embedding_provider or "none"
     tmp = TemporaryDirectory()
     _open_index._tmp = tmp  # keep alive for the process lifetime
-    return MemoryIndex(Path(tmp.name) / "rag_eval.db", embedding_provider="none")
+    return MemoryIndex(Path(tmp.name) / "rag_eval.db", **kwargs)
+
+
+def _dump_run(
+    path: str,
+    *,
+    dataset: str,
+    embedding_model: Optional[str],
+    embedding_dimensions: int,
+    embedding_provider: str,
+    metrics: Dict[str, Any],
+) -> None:
+    """Write a run's config + headline metrics for later ``--compare-runs``."""
+    keys = ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k",
+            "distinct_at_k", "false_positive_rate", "n", "n_empty")
+    payload = {
+        "dataset": dataset,
+        "embedding_model": embedding_model,
+        "embedding_dimensions": embedding_dimensions,
+        "embedding_provider": embedding_provider,
+        "k": metrics["k"],
+        "metrics": {key: metrics[key] for key in keys},
+    }
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2))
+    print(f"\nwrote {path}")
+
+
+def _print_run_comparison(paths: List[str]) -> None:
+    """Print a side-by-side table of dumped runs (one per embedding model)."""
+    print(f"\n{'model':<26}{'dim':>6}{'k':>4}{'hit':>8}{'mrr':>8}"
+          f"{'ndcg':>8}{'distinct':>10}{'fp':>7}")
+    print("-" * 77)
+    for p in paths:
+        d = json.loads(Path(p).read_text())
+        m = d.get("metrics", {})
+        print(f"{(d.get('embedding_model') or '?'):<26}"
+              f"{d.get('embedding_dimensions', '?'):>6}"
+              f"{d.get('k', '?'):>4}"
+              f"{m.get('hit_rate', 0.0):>8.3f}"
+              f"{m.get('mrr', 0.0):>8.3f}"
+              f"{m.get('ndcg_at_k', 0.0):>8.3f}"
+              f"{m.get('distinct_at_k', 0.0):>10.3f}"
+              f"{m.get('false_positive_rate', 0.0):>7.3f}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="RAG retrieval-quality eval harness")
-    ap.add_argument("--db", help="Path to a per-user memory.db (live mode)")
+    ap.add_argument("--db", help="Path to a memory.db (live probes, or where to build a dataset index)")
     ap.add_argument("--user", default="eval", help="user_id to search within")
     ap.add_argument("--probes", help="Path to a probes JSON file (live mode)")
+    ap.add_argument("--dataset", choices=["seeded", "longmemeval"], default="seeded",
+                    help="probe source when --probes is not given")
+    ap.add_argument("--data", help="dataset file path (--dataset longmemeval)")
+    ap.add_argument("--limit", type=int, help="cap dataset questions (cheap partial run)")
+    ap.add_argument("--embedding-model", help="embedding model (default: from settings)")
+    ap.add_argument("--embedding-provider", default="openai",
+                    help="embedding provider for dataset runs (default openai)")
+    ap.add_argument("--embedding-dim", type=int,
+                    help="vector width; defaults to the model's native dim")
+    ap.add_argument("--embedding-base-url", help="OpenAI-compatible embeddings base URL")
     ap.add_argument("--k", type=int, default=5, help="top-k cutoff")
     ap.add_argument("--compare", action="store_true",
-                    help="compare rrf/weighted x recency on/off")
+                    help="compare rrf/weighted x recency x dedup within one run")
+    ap.add_argument("--out", help="dump headline metrics JSON for --compare-runs")
+    ap.add_argument("--compare-runs", nargs="+", metavar="FILE",
+                    help="print a side-by-side table of --out dumps and exit")
     ap.add_argument("-v", "--verbose", action="store_true", help="per-query detail")
     args = ap.parse_args()
 
@@ -379,15 +594,39 @@ def main() -> None:
     # quiet the index logger so eval output stays readable.
     logging.getLogger("nymeria.core.memory_index").setLevel(logging.ERROR)
 
-    index = _open_index(args.db)
+    # Pure reporting mode: diff previously-dumped runs, no indexing needed.
+    if args.compare_runs:
+        _print_run_comparison(args.compare_runs)
+        return
 
-    if args.probes:
+    dim = args.embedding_dim
+    if args.dataset == "longmemeval" and dim is None:
+        dim = native_dim(args.embedding_model)
+
+    if args.dataset == "longmemeval":
+        if not args.data:
+            ap.error("--dataset longmemeval requires --data <path>")
+            return
+        index = _open_index(
+            args.db,
+            embedding_provider=args.embedding_provider,
+            embedding_model=args.embedding_model,
+            embedding_dimensions=dim,
+            embedding_base_url=args.embedding_base_url,
+        )
+        print(f"indexing LongMemEval haystack from {args.data} "
+              f"(model={index.embedding_model}, dim={index.embedding_dimensions}) ...")
+        probes = load_longmemeval(index, args.data, user_id=args.user, limit=args.limit)
+        print(f"built {len(probes)} probes")
+    elif args.probes:
+        index = _open_index(args.db)
         raw = json.loads(Path(args.probes).read_text())
         probes = [Probe.from_dict(d) for d in raw]
     elif not args.db:
+        index = _open_index(None)
         probes = build_seeded(index, user_id=args.user)
     else:
-        ap.error("--db requires --probes (no synthetic corpus to seed a live DB)")
+        ap.error("--db requires --probes or --dataset (no synthetic corpus to seed a live DB)")
         return
 
     if args.compare:
@@ -397,12 +636,23 @@ def main() -> None:
             "rrf, no recency":   {"fusion": "rrf", "apply_recency": False},
             "weighted+recency":  {"fusion": "weighted", "apply_recency": True},
         }
-        for name, m in compare_configs(index, probes, configs,
-                                       user_id=args.user, k=args.k).items():
+        results = compare_configs(index, probes, configs, user_id=args.user, k=args.k)
+        for name, m in results.items():
             _print_metrics(name, m, verbose=args.verbose)
+        primary = next(iter(results.values()))
     else:
-        _print_metrics("eval", evaluate(index, probes, user_id=args.user, k=args.k),
-                       verbose=True)
+        primary = evaluate(index, probes, user_id=args.user, k=args.k)
+        _print_metrics(args.dataset, primary, verbose=True)
+
+    if args.out:
+        _dump_run(
+            args.out,
+            dataset=args.dataset,
+            embedding_model=index.embedding_model,
+            embedding_dimensions=index.embedding_dimensions,
+            embedding_provider=index.embedding_provider,
+            metrics=primary,
+        )
 
 
 if __name__ == "__main__":
