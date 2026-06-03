@@ -255,8 +255,10 @@
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.4);
     /* Matches RoleChip.size-xs for visual consistency between the
-       inline "admin" badge here and the role chip in menu-header. */
-    padding: 1px 6px;
+       inline "admin" badge here and the role chip in menu-header.
+       Asymmetric vertical: -1 top / +1 bottom shifts the text up by 1px
+       within the chip without changing total chip height. */
+    padding: 0 6px 2px;
     border-radius: var(--radius-sm);
   }
 </style>

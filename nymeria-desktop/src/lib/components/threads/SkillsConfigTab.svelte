@@ -175,7 +175,9 @@
   .skills-thread-panel .skill-scope,
   .skills-thread-panel .skill-chip {
     font-size: var(--font-size-xs);
-    padding: 1px 6px;
+    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
+       by 1px within the chip without changing total chip height. */
+    padding: 0 6px 2px;
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-muted);
