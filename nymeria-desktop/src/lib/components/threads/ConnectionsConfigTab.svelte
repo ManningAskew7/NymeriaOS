@@ -313,10 +313,13 @@
     z-index: 1100;
   }
   .chatapp-wizard-card {
+    /* §7 glass-surface exception — the hairline --glass-border IS edge
+       definition against the blurred .wizard-backdrop behind, not
+       redundant chrome. Shadow tokenized to --shadow-xl. */
     background: var(--glass-bg-strong);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
-    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-xl);
     overflow: hidden;
   }
 </style>

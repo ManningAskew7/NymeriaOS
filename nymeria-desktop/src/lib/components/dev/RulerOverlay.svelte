@@ -383,8 +383,9 @@
     position: absolute;
     width: 200px;
     background: var(--bg-elevated-2);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
+    /* §7 — floating dev panel: shadow alone defines elevation; border
+       would be redundant chrome. */
     box-shadow: var(--shadow-md);
     pointer-events: auto;
     color: var(--text-primary);

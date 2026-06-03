@@ -248,9 +248,11 @@
     right: 0;
     margin-bottom: var(--spacing-xs);
     background: var(--bg-elevated-2, var(--bg-elevated));
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    /* §7 — floating dropdown: shadow alone defines elevation; border
+       would be redundant chrome. Tokenized to --shadow-md (was a bespoke
+       0 12px 32px / 0.45) so dropdown elevation stays in sync. */
+    box-shadow: var(--shadow-md);
     z-index: 999;
     min-width: 280px;
     max-height: 380px;
@@ -435,9 +437,11 @@
     top: 100%;
     z-index: 1;
     background: var(--bg-elevated-2, var(--bg-elevated));
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+    /* §7 — floating context menu: shadow alone defines elevation; border
+       would be redundant chrome. Tokenized to --shadow-md (raw 0 8px 20px
+       was nearly identical to the token already). */
+    box-shadow: var(--shadow-md);
     padding: 4px;
     min-width: 140px;
   }

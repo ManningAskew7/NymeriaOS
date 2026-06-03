@@ -340,11 +340,12 @@
     position: fixed;
     z-index: 1000;
     background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
     padding: 4px;
     min-width: 140px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    /* §7 — floating context menu: shadow alone defines elevation;
+       border would be redundant chrome. Tokenized to --shadow-md. */
+    box-shadow: var(--shadow-md);
   }
 
   .context-item {

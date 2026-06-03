@@ -280,11 +280,12 @@
   .wizard-container {
     background: var(--bg-elevated);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--border-subtle);
     padding: var(--spacing-xl);
     max-width: 500px;
     width: 90%;
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    /* §7 — floating setup wizard: shadow alone defines elevation;
+       border would be redundant chrome. Tokenized to --shadow-xl. */
+    box-shadow: var(--shadow-xl);
   }
 
   .wizard-header {

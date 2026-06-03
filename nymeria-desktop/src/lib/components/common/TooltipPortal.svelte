@@ -165,8 +165,9 @@
     font-weight: 400;
     line-height: 1.3;
     white-space: nowrap;
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
+    /* §7 — floating tooltip: shadow alone defines elevation; border
+       would be redundant chrome. */
     box-shadow: var(--shadow-md);
     opacity: 0;
     transform: translateY(2px);

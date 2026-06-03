@@ -635,6 +635,12 @@
     position: fixed;
     z-index: 900;
     width: 440px;
+    /* §7 glass-surface exception — the hairline --glass-border is edge
+       definition for the glassmorphic surface against the blurred
+       backdrop, not redundant chrome. Together with the elevation
+       shadow this is the documented "rarely both" case for glass modals.
+       Outer shadow tokenized to --shadow-xl; inner highlight kept
+       (it's the glass top-edge reflection, not an elevation shadow). */
     background: var(--glass-bg-strong);
     backdrop-filter: var(--glass-blur-strong);
     -webkit-backdrop-filter: var(--glass-blur-strong);
@@ -642,7 +648,7 @@
     border-radius: var(--radius-lg);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.04),
-      0 24px 48px rgba(0, 0, 0, 0.45);
+      var(--shadow-xl);
     display: flex;
     flex-direction: column;
     max-height: min(720px, calc(100vh - 48px));

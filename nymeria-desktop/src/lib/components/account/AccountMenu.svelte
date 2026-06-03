@@ -143,11 +143,10 @@
     right: 0;
     margin-bottom: var(--spacing-xs);
     background: var(--bg-elevated-2, var(--bg-elevated));
-    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    /* Floating menu → --shadow-md per the canonical elevation scale in
-       app.css (was a bespoke 0 12px 32px). Keeps dropdown shadows in sync
-       across the app. */
+    /* §7 — floating popover: shadow alone defines elevation; an added
+       border is redundant chrome. Shadow tier --shadow-md per the
+       canonical elevation scale in app.css. */
     box-shadow: var(--shadow-md);
     z-index: 999;
     min-width: 240px;

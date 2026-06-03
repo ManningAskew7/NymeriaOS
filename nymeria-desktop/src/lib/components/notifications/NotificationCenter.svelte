@@ -105,8 +105,9 @@
     width: max(100%, 280px);
     max-width: calc(100vw - 24px);
     background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
+    /* §7 — floating popover: shadow alone defines elevation; border
+       would be redundant chrome. */
     box-shadow: var(--shadow-lg);
     max-height: min(400px, calc(100vh - 96px));
     display: flex;

@@ -181,9 +181,11 @@
     display: flex;
     flex-direction: column;
     background: var(--bg-elevated);
-    border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg, 12px);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+    /* §7 — floating panel overlay: shadow alone defines elevation;
+       border (hairline --glass-border on a solid background) would be
+       redundant chrome. Tokenized to --shadow-lg. */
+    box-shadow: var(--shadow-lg);
     animation: slideUp 0.2s ease-out;
   }
 
