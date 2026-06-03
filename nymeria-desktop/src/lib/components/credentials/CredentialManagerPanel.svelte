@@ -367,9 +367,7 @@
 
   .status-pill,
   .owner-pill {
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 1px 7px 3px;
+    padding: 2px 7px;
     /* §3 — text chips use --radius-sm. Full pill is reserved for count
        badges and dot indicators, not status / owner labels. */
     border-radius: var(--radius-sm);

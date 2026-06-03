@@ -141,9 +141,7 @@
     font-weight: 600;
     color: var(--text-muted);
     background: var(--bg-elevated);
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 1px 6px 3px;
+    padding: 2px 6px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
     /* Optical centering: numeric/short text in a pill-shaped chip reads as

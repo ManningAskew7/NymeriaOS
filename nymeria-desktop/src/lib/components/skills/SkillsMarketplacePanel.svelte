@@ -301,9 +301,7 @@
 
   .badge {
     font-size: var(--font-size-xs);
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 0 6px 2px;
+    padding: 1px 6px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
     color: var(--text-muted);

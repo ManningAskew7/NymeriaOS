@@ -505,9 +505,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     text-indent: 0.06em;
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 0 6px 2px;
+    padding: 1px 6px;
     /* §3 — text chip uses --radius-sm token, not full pill. */
     border-radius: var(--radius-sm);
   }

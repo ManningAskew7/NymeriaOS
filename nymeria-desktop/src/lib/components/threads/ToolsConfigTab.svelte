@@ -571,9 +571,7 @@
        label sits visually centered — without this, the trailing space the
        tracking adds after the last char makes the text read left-weighted. */
     text-indent: 0.03em;
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 0 5px 2px;
+    padding: 1px 5px;
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     background: var(--bg-elevated-2);

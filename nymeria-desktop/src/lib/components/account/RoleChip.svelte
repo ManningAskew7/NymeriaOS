@@ -26,10 +26,8 @@
     align-items: center;
     /* Canonical chip padding — every status/role badge in Nymeria should
        use this pair (--spacing-2xs / --spacing-sm) so chips read as the
-       same family across AccountMenu, UsersTab, TriggerItem, etc.
-       Asymmetric vertical: -1 top / +1 bottom shifts the text up by 1px
-       within the chip without changing total chip height. */
-    padding: 1px var(--spacing-sm) 3px;
+       same family across AccountMenu, UsersTab, TriggerItem, etc. */
+    padding: var(--spacing-2xs) var(--spacing-sm);
     font-size: var(--font-size-3xs);
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -46,10 +44,8 @@
   .role-chip.size-xs {
     /* Tighter than the canonical chip — used inline beside small text. The
        horizontal 6px is sub-token (under --spacing-sm 8px) because the
-       letterforms at 9px already feel compact.
-       Asymmetric vertical: -1 top / +1 bottom shifts the text up by 1px
-       within the chip without changing total chip height. */
-    padding: 0 6px 2px;
+       letterforms at 9px already feel compact. */
+    padding: 1px 6px;
     font-size: var(--font-size-3xs);
     letter-spacing: 0.06em;
     text-indent: 0.06em;

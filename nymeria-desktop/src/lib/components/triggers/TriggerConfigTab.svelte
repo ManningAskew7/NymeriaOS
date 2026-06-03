@@ -627,9 +627,7 @@
     /* Gap matches horizontal padding so the leading dot has equal
        breathing on both sides of itself. */
     gap: 5px;
-    /* Asymmetric vertical padding: -1 top / +1 bottom shifts the text up
-       by 1px within the chip without changing total chip height. */
-    padding: 0 5px 2px;
+    padding: 1px 5px;
     font-size: var(--font-size-3xs);
     font-weight: 500;
     border-radius: var(--radius-md);
