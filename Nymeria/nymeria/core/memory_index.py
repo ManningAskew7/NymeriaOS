@@ -64,6 +64,13 @@ DEFAULT_RECENCY_HALF_LIFE = 730.0
 TOOL_ACTIVITY_MARKER = "\n\nTools used:"
 PROSE_PRIORITY_WEIGHT = 0.4
 
+# Cap on distinct OR-terms in a single FTS5 MATCH expression. An unbounded union
+# (e.g. a multi-thousand-token code blob or a whole user turn) makes FTS5 scan
+# postings for every term across the entire table, costing seconds per query.
+# Normal queries fall well under this, so the cap is a no-op for them; it only
+# bounds pathological long queries. See _fts_match_query.
+FTS_MAX_TERMS = 60
+
 # Result-dedup threshold. Two results whose prose cores overlap by at least this
 # token-set Jaccard fraction are treated as near-duplicates, so the second is
 # skipped when selecting the final top-k. High (0.9) so only genuine twins
@@ -837,7 +844,21 @@ class MemoryIndex:
         terms = [t for t in tokens if len(t) >= 2 or t.isdigit()]
         if not terms:
             return None
-        return " OR ".join(f'"{t}"' for t in terms)
+        # Dedupe, preserving first-seen order: a repeated OR-term is redundant in
+        # FTS5 (matching and bm25 scoring are unchanged by it) but still costs a
+        # postings scan. seen[t] records first position for a deterministic cap.
+        seen: Dict[str, int] = {}
+        for t in terms:
+            if t not in seen:
+                seen[t] = len(seen)
+        unique = list(seen)
+        # Bound the union for pathological long queries. OR and bm25() are
+        # order-insensitive, so we keep the longest terms (a crude IDF proxy:
+        # long tokens are rarer and more discriminative; dropping common short
+        # words barely moves ranking), ties broken by first occurrence.
+        if len(unique) > FTS_MAX_TERMS:
+            unique = sorted(unique, key=lambda t: (-len(t), seen[t]))[:FTS_MAX_TERMS]
+        return " OR ".join(f'"{t}"' for t in unique)
 
     @staticmethod
     def _tool_text_fraction(content: Optional[str]) -> float:
