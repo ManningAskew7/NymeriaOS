@@ -10,7 +10,13 @@ import anthropic
 import httpx
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
@@ -25,6 +31,8 @@ from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
     _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
+    _flat_reasoning_content_replay_mode,
+    _looks_like_deepseek_base_url,
     _normalize_groq_responses_payload,
     _normalize_openai_base_url,
     _normalize_openrouter_responses_payload,
@@ -115,6 +123,18 @@ def _nvidia_config(**overrides) -> LLMConfig:
         "model": "deepseek-ai/deepseek-v4-pro",
         "api_key": "test-key",
         "base_url": "https://integrate.api.nvidia.com/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _deepseek_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "deepseek",
+        "model": "deepseek-reasoner",
+        "api_key": "test-key",
+        "base_url": "https://api.deepseek.com",
         "temperature": None,
     }
     values.update(overrides)
@@ -1329,6 +1349,71 @@ def test_aihubmix_chat_completions_replays_reasoning_details():
 
     assistant = payload["messages"][1]
     assert assistant["reasoning_details"] == details
+
+
+def test_deepseek_flat_reasoning_replay_mode():
+    assert _looks_like_deepseek_base_url("https://api.deepseek.com")
+    assert _flat_reasoning_content_replay_mode("https://api.deepseek.com") == (
+        "tool_calls_only"
+    )
+    # Not DeepSeek: no flat replay.
+    assert _flat_reasoning_content_replay_mode("https://api.openai.com/v1") is None
+    assert _flat_reasoning_content_replay_mode("https://openrouter.ai/api/v1") is None
+
+
+def test_deepseek_replays_reasoning_content_on_tool_call_turn():
+    llm = create_llm(_deepseek_config())
+
+    ai_with_tools = AIMessage(
+        content="",
+        additional_kwargs={"reasoning_content": "Let me look up the weather."},
+        tool_calls=[
+            {
+                "name": "get_weather",
+                "args": {"city": "Paris"},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_with_tools,
+        ToolMessage(content="Sunny, 20C", tool_call_id="call_1"),
+        HumanMessage(content="And London?"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["role"] == "assistant"
+    assert assistant["reasoning_content"] == "Let me look up the weather."
+
+
+def test_deepseek_strips_reasoning_content_on_non_tool_turn():
+    llm = create_llm(_deepseek_config())
+
+    ai_no_tools = AIMessage(
+        content="It is sunny.",
+        additional_kwargs={"reasoning_content": "Private chain of thought."},
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_no_tools,
+        HumanMessage(content="Thanks"),
+    ])
+
+    assistant = payload["messages"][1]
+    # deepseek-reasoner 400s if reasoning_content is present on a non-tool turn.
+    assert "reasoning_content" not in assistant
+
+
+def test_deepseek_has_no_responses_support():
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    spec = get_llm_provider_spec("deepseek")
+    assert spec is not None
+    assert spec.supports_responses is False
 
 
 def test_nvidia_and_vercel_advertise_responses_support():

@@ -155,6 +155,29 @@ def _supports_openrouter_style_reasoning_replay(base_url: Any) -> bool:
     )
 
 
+def _looks_like_deepseek_base_url(base_url: Any) -> bool:
+    """Return True for DeepSeek's direct API base URL."""
+    return "api.deepseek.com" in str(base_url or "").lower()
+
+
+def _flat_reasoning_content_replay_mode(base_url: Any) -> str | None:
+    """Return how to replay a flat `reasoning_content` string for a provider.
+
+    Some providers carry the prior chain of thought as a top-level
+    `reasoning_content` string on the assistant message (a different shape from
+    OpenRouter's `reasoning_details` array). Returns:
+      - "tool_calls_only": re-attach only on assistant turns that made tool
+        calls; strip it on non-tool turns. DeepSeek requires exactly this: V4
+        thinking mode 400s if reasoning_content is omitted on a tool-call turn,
+        and deepseek-reasoner 400s if it is present on a non-tool turn
+        (api-docs.deepseek.com/guides/thinking_mode; langchain #34436).
+      - None: provider does not use this shape.
+    """
+    if _looks_like_deepseek_base_url(base_url):
+        return "tool_calls_only"
+    return None
+
+
 def _stable_openrouter_responses_id(prefix: str, item: dict[str, Any], index: int) -> str:
     """Generate a deterministic OpenRouter Responses item id."""
     seed = dict(item)
@@ -840,37 +863,67 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         # message keys.
         if "messages" not in payload:
             return payload
-        if not _supports_openrouter_style_reasoning_replay(base_url):
+
+        # OpenRouter-style providers replay reasoning as `reasoning_details` /
+        # `reasoning` assistant-message fields.
+        if _supports_openrouter_style_reasoning_replay(base_url):
+            source_messages = self._convert_input(input_).to_messages()
+            for source, wire_message in zip(source_messages, payload["messages"]):
+                if (
+                    not isinstance(source, AIMessage)
+                    or wire_message.get("role") != "assistant"
+                ):
+                    continue
+
+                if "content" in wire_message:
+                    wire_message["content"] = (
+                        _strip_inline_thinking_from_responses_content(
+                            wire_message.get("content")
+                        )
+                    )
+
+                extras = source.additional_kwargs or {}
+                reasoning_details = extras.get("reasoning_details")
+                if reasoning_details:
+                    wire_message["reasoning_details"] = (
+                        _reasoning_details_for_payload(reasoning_details)
+                    )
+                    continue
+
+                reasoning = extras.get("reasoning") or extras.get(
+                    "reasoning_content"
+                )
+                if reasoning:
+                    wire_message["reasoning"] = reasoning
+
             return payload
 
-        source_messages = self._convert_input(input_).to_messages()
-        for source, wire_message in zip(source_messages, payload["messages"]):
-            if (
-                not isinstance(source, AIMessage)
-                or wire_message.get("role") != "assistant"
-            ):
-                continue
-
-            if "content" in wire_message:
-                wire_message["content"] = (
-                    _strip_inline_thinking_from_responses_content(
-                        wire_message.get("content")
-                    )
+        # (C) Flat `reasoning_content` replay (DeepSeek). The prior chain of
+        # thought rides back as a top-level string on the assistant message.
+        # Capture into additional_kwargs already happens on the way in
+        # (_convert_chunk_to_generation_chunk). "tool_calls_only" re-attaches on
+        # tool-call turns and strips otherwise, satisfying both DeepSeek rules.
+        flat_replay = _flat_reasoning_content_replay_mode(base_url)
+        if flat_replay is not None:
+            source_messages = self._convert_input(input_).to_messages()
+            for source, wire_message in zip(source_messages, payload["messages"]):
+                if (
+                    not isinstance(source, AIMessage)
+                    or wire_message.get("role") != "assistant"
+                ):
+                    continue
+                reasoning_content = (source.additional_kwargs or {}).get(
+                    "reasoning_content"
                 )
+                if flat_replay == "tool_calls_only" and not getattr(
+                    source, "tool_calls", None
+                ):
+                    wire_message.pop("reasoning_content", None)
+                    continue
+                if reasoning_content:
+                    wire_message["reasoning_content"] = reasoning_content
 
-            extras = source.additional_kwargs or {}
-            reasoning_details = extras.get("reasoning_details")
-            if reasoning_details:
-                wire_message["reasoning_details"] = (
-                    _reasoning_details_for_payload(reasoning_details)
-                )
-                continue
-
-            reasoning = extras.get("reasoning") or extras.get(
-                "reasoning_content"
-            )
-            if reasoning:
-                wire_message["reasoning"] = reasoning
+            return payload
 
         return payload
 
