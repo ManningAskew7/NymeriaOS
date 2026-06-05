@@ -1368,6 +1368,27 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         return _create_openai_llm(config)
     elif config.provider == "anthropic":
         return _create_anthropic_llm(config)
+    elif config.provider_route == "anthropic_messages" and provider_supports_route(
+        config.provider,
+        "anthropic_messages",
+    ):
+        # Route a gateway's Claude models through langchain-anthropic against the
+        # gateway's own /v1/messages endpoint (native thinking + signatures).
+        # Resolve the gateway's key/base_url the same way the openai_compat path
+        # does, so _create_anthropic_llm targets the gateway, not api.anthropic.com.
+        gateway_key = config.api_key or resolve_provider_api_key(config.provider)
+        if not gateway_key and not provider_requires_api_key(config.provider):
+            gateway_key = "not-needed"
+        resolved = dataclass_replace(
+            config,
+            api_key=gateway_key,
+            base_url=resolve_provider_base_url(
+                config.provider,
+                configured_base_url=config.base_url,
+                provider_route="anthropic_messages",
+            ),
+        )
+        return _create_anthropic_llm(resolved)
     elif config.provider_route == "openai_compat" and provider_supports_route(
         config.provider,
         "openai_compat",

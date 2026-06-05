@@ -37,8 +37,16 @@ ApiMode = str
 # endpoint advertise both routes in `supported_routes`; users can toggle the
 # route per thread or globally. Single-route providers hide the toggle in the
 # picker UI.
-ProviderRoute = Literal["native", "openai_compat"]
-_PROVIDER_ROUTE_VALUES: tuple[ProviderRoute, ...] = ("native", "openai_compat")
+#   anthropic_messages: route a gateway's Claude models through langchain-anthropic
+#     against the gateway's own /v1/messages endpoint, for native thinking +
+#     signature round-trip (gateways that drop the signature on their OpenAI-compat
+#     path; see anthropic_native_for_claude).
+ProviderRoute = Literal["native", "openai_compat", "anthropic_messages"]
+_PROVIDER_ROUTE_VALUES: tuple[ProviderRoute, ...] = (
+    "native",
+    "openai_compat",
+    "anthropic_messages",
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +92,20 @@ class LLMProviderSpec:
     # as None for single-route entries that already store their base URL in
     # default_base_url.
     openai_compat_base_url: str | None = None
+    # When True, the picker warns that this gateway's OpenAI-compatible path may
+    # drop Claude's signed thinking blocks and offers a one-click switch to the
+    # Anthropic-native route (provider=anthropic, same base URL / key). Set only
+    # for gateways that serve Claude AND lose the signature on their compat path
+    # (e.g. LiteLLM, whose /v1/messages endpoint handles thinking natively).
+    # Gateways that round-trip it via reasoning_details (OpenRouter, Vercel,
+    # AIHubMix) leave this False: their compat path is already signature-safe.
+    anthropic_native_for_claude: bool = False
+    # Base URL to use when route is "anthropic_messages": the gateway's Anthropic
+    # Messages endpoint root (the Anthropic SDK appends /v1/messages). Differs
+    # from the OpenAI base for most gateways (e.g. OpenCode .../zen, ZenMux
+    # .../api/anthropic). None means "reuse the configured/default base URL"
+    # (correct for proxies like LiteLLM whose root serves both surfaces).
+    anthropic_messages_base_url: str | None = None
 
     @property
     def verified(self) -> bool:
@@ -118,6 +140,8 @@ def _spec(
     supported_routes: Iterable[ProviderRoute] | None = None,
     default_route: ProviderRoute | None = None,
     openai_compat_base_url: str | None = None,
+    anthropic_native_for_claude: bool = False,
+    anthropic_messages_base_url: str | None = None,
 ) -> LLMProviderSpec:
     # Default route inference: native partner-package providers default to
     # ("native",), while generic OpenAI-compatible providers default to
@@ -156,6 +180,8 @@ def _spec(
         supported_routes=resolved_routes,
         default_route=default_route,
         openai_compat_base_url=openai_compat_base_url,
+        anthropic_native_for_claude=anthropic_native_for_claude,
+        anthropic_messages_base_url=anthropic_messages_base_url,
     )
 
 
@@ -634,6 +660,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("REQUESTY_API_KEY",),
         docs_url="https://docs.requesty.ai/",
         tier="gateway",
+        notes_for_user="For Claude models the Chat Completions path exposes reasoning as a plain reasoning_content string (signature dropped); set this thread's route to Anthropic Messages for native thinking via the gateway /v1/messages endpoint.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
+        anthropic_messages_base_url="https://router.requesty.ai",
     ),
     _spec(
         "poe",
@@ -642,6 +672,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("POE_API_KEY",),
         docs_url="https://developer.poe.com/server-bots/accessing-other-bots-on-poe",
         tier="gateway",
+        notes_for_user="Chat Completions exposes no reasoning for Claude (Poe scopes thinking to its Anthropic endpoint); set this thread's route to Anthropic Messages for native thinking. Only official Anthropic models are callable this way, not custom Poe bots.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
+        anthropic_messages_base_url="https://api.poe.com",
     ),
     _spec(
         "github-models",
@@ -699,6 +733,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://opencode.ai/docs",
         aliases=("opencode-zen", "zen"),
         tier="gateway",
+        notes_for_user="For Claude models the Chat Completions path exposes reasoning as a plain string (signature dropped); set this thread's route to Anthropic Messages for native thinking via the gateway /v1/messages endpoint.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
+        anthropic_messages_base_url="https://opencode.ai/zen",
     ),
     _spec(
         "opencode-go",
@@ -819,7 +857,9 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://docs.litellm.ai/docs/proxy/user_keys",
         requires_api_key=False,
         tier="gateway",
-        notes_for_user="Reasoning round-trips over Chat Completions: the normalized reasoning_content is echoed on tool-call turns and stripped on plain turns. Anthropic-backed models behind the proxy also emit a signed thinking_blocks array that an OpenAI-compatible client must replay separately (not yet wired); set the proxy modify_params for graceful fallback.",
+        notes_for_user="Reasoning round-trips over Chat Completions: the normalized reasoning_content is echoed on tool-call turns and stripped on plain turns. For Claude models, the Chat Completions path drops the signed thinking blocks; set this thread's route to Anthropic Messages to get native thinking via the proxy /v1/messages endpoint.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
     ),
     _spec(
         "tgi",
@@ -860,7 +900,17 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("dinference", "DInference", base_url="https://api.dinference.com/v1", env=("DINFERENCE_API_KEY",)),
     _spec("drun", "D.Run", base_url="https://chat.d.run/v1", env=("DRUN_API_KEY",)),
     _spec("evroc", "evroc", base_url="https://models.think.evroc.com/v1", env=("EVROC_API_KEY",)),
-    _spec("fastrouter", "FastRouter", base_url="https://go.fastrouter.ai/api/v1", env=("FASTROUTER_API_KEY",), tier="gateway"),
+    _spec(
+        "fastrouter",
+        "FastRouter",
+        base_url="https://go.fastrouter.ai/api/v1",
+        env=("FASTROUTER_API_KEY",),
+        tier="gateway",
+        notes_for_user="For Claude models the Chat Completions path exposes reasoning as a plain reasoning string (signature dropped); set this thread's route to Anthropic Messages for native thinking via the gateway /v1/messages endpoint.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
+        anthropic_messages_base_url="https://api.fastrouter.ai",
+    ),
     _spec("firepass", "Fireworks FirePass", base_url="https://api.fireworks.ai/inference/v1", env=("FIREPASS_API_KEY",)),
     _spec("friendli", "Friendli", base_url="https://api.friendli.ai/serverless/v1", env=("FRIENDLI_TOKEN",)),
     _spec("frogbot", "FrogBot", base_url="https://app.frogbot.ai/api/v1", env=("FROGBOT_API_KEY",)),
@@ -909,7 +959,17 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("xpersona", "Xpersona", base_url="https://xpersona.co/v1", env=("XPERSONA_API_KEY",)),
     _spec("zai-coding-plan", "Z.ai Coding Plan", base_url="https://api.z.ai/api/coding/paas/v4", env=("ZHIPU_API_KEY", "ZAI_API_KEY")),
     _spec("zhipuai-coding-plan", "Zhipu AI Coding Plan", base_url="https://open.bigmodel.cn/api/coding/paas/v4", env=("ZHIPU_API_KEY",)),
-    _spec("zenmux", "ZenMux", base_url="https://zenmux.ai/api/v1", env=("ZENMUX_API_KEY",), tier="gateway"),
+    _spec(
+        "zenmux",
+        "ZenMux",
+        base_url="https://zenmux.ai/api/v1",
+        env=("ZENMUX_API_KEY",),
+        tier="gateway",
+        notes_for_user="For Claude models the Chat Completions path exposes reasoning as a plain reasoning string (signature dropped); set this thread's route to Anthropic Messages for native thinking via the gateway /v1/messages endpoint.",
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_native_for_claude=True,
+        anthropic_messages_base_url="https://zenmux.ai/api/anthropic",
+    ),
 )
 
 
@@ -1223,6 +1283,8 @@ def resolve_provider_base_url(
     default_base_url = spec.default_base_url
     if route == "openai_compat" and spec.openai_compat_base_url:
         default_base_url = spec.openai_compat_base_url
+    elif route == "anthropic_messages" and spec.anthropic_messages_base_url:
+        default_base_url = spec.anthropic_messages_base_url
     base_url = env_base or (default_base_url if include_default else None)
     expanded = expand_env_templates(
         base_url,

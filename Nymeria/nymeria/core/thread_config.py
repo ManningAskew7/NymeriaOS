@@ -38,7 +38,7 @@ class ThreadLLMConfig(BaseModel):
     extended_thinking: Optional[bool] = None
     reasoning_effort: Optional[str] = None
     use_model_defaults: Optional[bool] = None
-    provider_route: Optional[Literal["native", "openai_compat"]] = None
+    provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     base_url: Optional[str] = None  # "" = direct API (no proxy), None = inherit global
     context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
@@ -62,7 +62,7 @@ class ActiveLLMFallback(BaseModel):
     hold_seconds: int = Field(default=7200, ge=0, le=604800)
     activated_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
-    provider_route: Optional[Literal["native", "openai_compat"]] = None
+    provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     reason: Optional[str] = None
     http_status: Optional[int] = None

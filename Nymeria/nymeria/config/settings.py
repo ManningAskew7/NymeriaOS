@@ -655,7 +655,7 @@ class Settings(BaseSettings):
         le=2_000_000,
         description="Ollama num_ctx override passed in extra_body.options.num_ctx"
     )
-    llm_provider_route: Optional[Literal["native", "openai_compat"]] = Field(
+    llm_provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = Field(
         default=None,
         description=(
             "Default provider adapter route when the selected provider supports "
