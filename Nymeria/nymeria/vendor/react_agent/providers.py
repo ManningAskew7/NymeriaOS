@@ -119,6 +119,16 @@ def _looks_like_openrouter_base_url(base_url: Any) -> bool:
     return "openrouter.ai" in str(base_url or "").lower()
 
 
+def _looks_like_groq_base_url(base_url: Any) -> bool:
+    """Return True for Groq OpenAI-compatible base URLs."""
+    return "api.groq.com" in str(base_url or "").lower()
+
+
+def _looks_like_sambanova_base_url(base_url: Any) -> bool:
+    """Return True for SambaNova Cloud base URLs."""
+    return "sambanova.ai" in str(base_url or "").lower()
+
+
 def _stable_openrouter_responses_id(prefix: str, item: dict[str, Any], index: int) -> str:
     """Generate a deterministic OpenRouter Responses item id."""
     seed = dict(item)
@@ -222,6 +232,42 @@ def _normalize_openrouter_responses_payload(payload: dict[str, Any]) -> dict[str
                     "fc_output", item, index
                 )
 
+    return payload
+
+
+def _normalize_groq_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a stock Responses payload to Groq's stateless /responses endpoint.
+
+    Groq's Responses API is beta and stateless-only: it does not persist
+    response state and documents `store` / `previous_response_id` as
+    unsupported. `store` defaults to false on Groq, so dropping the explicit
+    field keeps the same (stateless) behavior while avoiding an "unsupported
+    parameter" rejection. Groq accepts the nested `reasoning` object (effort)
+    as-is, so no reasoning rewrite is needed.
+    See https://console.groq.com/docs/responses-api
+    """
+    payload.pop("store", None)
+    payload.pop("previous_response_id", None)
+    return payload
+
+
+def _normalize_sambanova_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a stock Responses payload to SambaNova's /responses endpoint.
+
+    SambaNova's Responses API (GA) is stateless-only (history is replayed in
+    `input`; `previous_response_id` is unsupported) and controls reasoning depth
+    with a top-level `reasoning_effort` scalar rather than OpenAI's nested
+    `reasoning` object (whose `summary` field is unsupported). Flatten so a
+    configured reasoning effort is honored on the way out.
+    See https://docs.sambanova.ai/docs/en/features/responses
+    """
+    payload.pop("store", None)
+    payload.pop("previous_response_id", None)
+    reasoning = payload.pop("reasoning", None)
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort:
+            payload["reasoning_effort"] = effort
     return payload
 
 
@@ -742,6 +788,17 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         **kwargs: Any,
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        base_url = getattr(self, "openai_api_base", None)
+
+        # Provider-scoped Responses-payload normalization for endpoints whose
+        # /responses shape diverges from stock OpenAI. Responses payloads are
+        # identified by the `input` array (chat-completions payloads use
+        # `messages`). Each normalizer is a small, unit-tested pure function.
+        if "input" in payload:
+            if _looks_like_groq_base_url(base_url):
+                return _normalize_groq_responses_payload(payload)
+            if _looks_like_sambanova_base_url(base_url):
+                return _normalize_sambanova_responses_payload(payload)
 
         # OpenRouter documents assistant-message reasoning replay via
         # `message.reasoning` or `message.reasoning_details`. LangChain
@@ -749,9 +806,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         # OpenAI-compatible serializer drops those fields by default.
         # Keep this scoped to OpenRouter payloads so direct OpenAI/local
         # providers don't receive unknown message/history keys.
-        if not _looks_like_openrouter_base_url(
-            getattr(self, "openai_api_base", None)
-        ):
+        if not _looks_like_openrouter_base_url(base_url):
             return payload
 
         if "input" in payload:
