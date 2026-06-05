@@ -339,8 +339,9 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://api.fireworks.ai/inference/v1",
         env=("FIREWORKS_API_KEY",),
         default_model="accounts/fireworks/models/llama-v3p3-70b-instruct",
-        docs_url="https://docs.fireworks.ai/api-reference/post-chatcompletions",
+        docs_url="https://docs.fireworks.ai/guides/reasoning",
         aliases=("fireworks",),
+        notes_for_user="When reasoning is enabled, reasoning_content round-trips over Chat Completions via reasoning_history=preserved (Qwen3, GPT-OSS, Kimi, MiniMax reasoning models).",
     ),
     _spec(
         "perplexity",
@@ -406,6 +407,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="kimi-k2.5",
         docs_url="https://platform.kimi.ai/docs/api/overview",
         aliases=("moonshot", "kimi"),
+        notes_for_user="When reasoning is enabled, reasoning_content round-trips over Chat Completions via thinking.keep=all (Kimi K2 Thinking / K2.6).",
     ),
     _spec(
         "moonshotai-cn",

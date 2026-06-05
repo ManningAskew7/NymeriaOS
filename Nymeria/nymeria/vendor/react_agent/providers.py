@@ -171,10 +171,17 @@ def _flat_reasoning_content_replay_mode(base_url: Any) -> str | None:
         thinking mode 400s if reasoning_content is omitted on a tool-call turn,
         and deepseek-reasoner 400s if it is present on a non-tool turn
         (api-docs.deepseek.com/guides/thinking_mode; langchain #34436).
+      - "all": re-attach on every assistant turn that has reasoning_content.
+        Fireworks (`reasoning_history="preserved"`) and Moonshot/Kimi
+        (`thinking.keep="all"`) preserve reasoning across all turns once their
+        enable-toggle is set (applied in _create_openai_compatible_llm).
       - None: provider does not use this shape.
     """
     if _looks_like_deepseek_base_url(base_url):
         return "tool_calls_only"
+    base = str(base_url or "").lower()
+    if "fireworks.ai" in base or "moonshot.ai" in base or "moonshot.cn" in base:
+        return "all"
     return None
 
 
@@ -1560,6 +1567,36 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     return ChatOpenAIWithReasoning(**kwargs)
 
 
+def _apply_chat_reasoning_toggles(
+    kwargs: dict[str, Any], provider: str, config: LLMConfig
+) -> None:
+    """Set chat-completions reasoning params + per-provider passback toggles.
+
+    Called only when reasoning is requested and the provider is using Chat
+    Completions. These toggles tell the provider to retain and reuse prior-turn
+    reasoning so the flat `reasoning_content` replay in
+    `ChatOpenAIWithReasoning._get_request_payload` is honored. Providers not
+    listed here get no toggle (a no-op).
+    """
+    if provider in {"azure-openai", "xai"}:
+        if config.reasoning_effort is not None:
+            model_kwargs = dict(kwargs.get("model_kwargs") or {})
+            model_kwargs["reasoning_effort"] = config.reasoning_effort
+            kwargs["model_kwargs"] = model_kwargs
+    elif provider in {"fireworks-ai", "firepass"}:
+        # Fireworks: top-level `reasoning_history="preserved"` keeps prior-turn
+        # reasoning in context (docs.fireworks.ai/guides/reasoning).
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        model_kwargs["reasoning_history"] = "preserved"
+        if config.reasoning_effort is not None:
+            model_kwargs["reasoning_effort"] = config.reasoning_effort
+        kwargs["model_kwargs"] = model_kwargs
+    elif provider in {"moonshotai", "moonshotai-cn"}:
+        # Kimi: thinking.keep="all" enables thinking and preserves the chain of
+        # thought across turns (platform.kimi.ai K2 thinking guide).
+        _merge_extra_body(kwargs, {"thinking": {"type": "enabled", "keep": "all"}})
+
+
 def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
     """Create a non-OpenAI provider that speaks the OpenAI chat API shape."""
     provider = normalize_llm_provider(config.provider)
@@ -1610,31 +1647,34 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
     _merge_extra_body(kwargs, _local_llm_extra_body(config, base_url))
 
     api_mode = config.openai_api_mode or (spec.default_api_mode if spec else "chat_completions")
-    if api_mode == "responses":
-        if provider_supports_responses(provider):
-            kwargs["use_responses_api"] = True
-            kwargs["output_version"] = "responses/v1"
-            kwargs["store"] = False
-            if config.extended_thinking or config.reasoning_effort is not None:
-                reasoning_config = {"summary": "auto"}
-                if config.reasoning_effort is not None:
-                    reasoning_config["effort"] = config.reasoning_effort
-                elif config.extended_thinking:
-                    reasoning_config["effort"] = "medium"
-                kwargs["reasoning"] = reasoning_config
-            logger.info(
-                "[LLM] %s Responses API mode enabled for %s",
-                label,
-                config.model,
-            )
-        else:
+    uses_responses = api_mode == "responses" and provider_supports_responses(provider)
+    if uses_responses:
+        kwargs["use_responses_api"] = True
+        kwargs["output_version"] = "responses/v1"
+        kwargs["store"] = False
+        if config.extended_thinking or config.reasoning_effort is not None:
+            reasoning_config = {"summary": "auto"}
+            if config.reasoning_effort is not None:
+                reasoning_config["effort"] = config.reasoning_effort
+            elif config.extended_thinking:
+                reasoning_config["effort"] = "medium"
+            kwargs["reasoning"] = reasoning_config
+        logger.info(
+            "[LLM] %s Responses API mode enabled for %s",
+            label,
+            config.model,
+        )
+    else:
+        if api_mode == "responses":
             logger.info(
                 "[LLM] %s does not advertise Responses API support; using Chat Completions for %s",
                 label,
                 config.model,
             )
-    elif config.reasoning_effort is not None and provider in {"azure-openai", "xai"}:
-        kwargs["model_kwargs"] = {"reasoning_effort": config.reasoning_effort}
+        # Chat-completions reasoning params + per-provider multi-turn passback
+        # toggles, applied only when reasoning is requested.
+        if config.extended_thinking or config.reasoning_effort is not None:
+            _apply_chat_reasoning_toggles(kwargs, provider, config)
 
     model_kwargs = dict(kwargs.get("model_kwargs") or {})
     if config.top_k is not None:
