@@ -290,7 +290,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://api.groq.com/openai/v1",
         env=("GROQ_API_KEY",),
         default_model="llama-3.3-70b-versatile",
-        docs_url="https://console.groq.com/docs/openai",
+        docs_url="https://console.groq.com/docs/responses-api",
+        supports_responses=True,
+        default_api_mode="responses",
+        notes_for_user="Responses API (beta) is the default and round-trips reasoning on gpt-oss-20b/120b and qwen3-32b. Stateless: history is replayed each turn.",
     ),
     _spec(
         "deepseek",
@@ -360,7 +363,10 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         "SambaNova",
         base_url="https://api.sambanova.ai/v1",
         env=("SAMBANOVA_API_KEY",),
-        docs_url="https://docs.sambanova.ai/cloud/api-reference/endpoints/chat",
+        docs_url="https://docs.sambanova.ai/docs/en/features/responses",
+        supports_responses=True,
+        default_api_mode="responses",
+        notes_for_user="Responses API (GA) is the default and round-trips reasoning on gpt-oss-120b / MiniMax-M2.7. Stateless; avoid forcing tool_choice on gpt-oss-120b.",
     ),
     _spec(
         "nvidia",

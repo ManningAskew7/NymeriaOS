@@ -25,8 +25,10 @@ from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
     _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
+    _normalize_groq_responses_payload,
     _normalize_openai_base_url,
     _normalize_openrouter_responses_payload,
+    _normalize_sambanova_responses_payload,
     _should_disable_streaming_for_local_base_url,
     _wrap_cliproxy_context_management_event,
     create_llm,
@@ -52,6 +54,30 @@ def _openrouter_config(**overrides) -> LLMConfig:
         "model": "qwen/qwen3.6-flash",
         "api_key": "test-key",
         "base_url": "https://openrouter.ai/api/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _groq_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "api_key": "test-key",
+        "base_url": "https://api.groq.com/openai/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _sambanova_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "sambanova",
+        "model": "gpt-oss-120b",
+        "api_key": "test-key",
+        "base_url": "https://api.sambanova.ai/v1",
         "temperature": None,
     }
     values.update(overrides)
@@ -1081,6 +1107,90 @@ def test_streaming_heuristic_matches_cliproxy_hostname_not_path():
     assert _should_disable_streaming_for_local_base_url(
         "http://localhost:8080/cliproxy-alike/v1"
     )
+
+
+def test_groq_defaults_to_responses_and_strips_store():
+    llm = create_llm(_groq_config(extended_thinking=True, reasoning_effort="low"))
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "input" in payload
+    assert "messages" not in payload
+    # Groq's Responses API is stateless-only; the state fields are dropped.
+    assert "store" not in payload
+    assert "previous_response_id" not in payload
+    # Groq accepts the nested reasoning object as-is (effort honored).
+    assert payload["reasoning"] == {"summary": "auto", "effort": "low"}
+
+
+def test_sambanova_defaults_to_responses_and_flattens_reasoning():
+    llm = create_llm(
+        _sambanova_config(extended_thinking=True, reasoning_effort="high")
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "input" in payload
+    assert "messages" not in payload
+    assert "store" not in payload
+    # SambaNova takes a top-level reasoning_effort scalar, not the nested object.
+    assert "reasoning" not in payload
+    assert payload["reasoning_effort"] == "high"
+
+
+def test_groq_responses_normalizer_drops_state_fields_only():
+    payload = {
+        "input": [],
+        "store": False,
+        "previous_response_id": "resp_old",
+        "reasoning": {"summary": "auto", "effort": "low"},
+    }
+
+    normalized = _normalize_groq_responses_payload(payload)
+
+    assert "store" not in normalized
+    assert "previous_response_id" not in normalized
+    # Reasoning object is left intact for Groq.
+    assert normalized["reasoning"] == {"summary": "auto", "effort": "low"}
+
+
+def test_sambanova_responses_normalizer_flattens_effort():
+    payload = {
+        "input": [],
+        "store": False,
+        "reasoning": {"summary": "auto", "effort": "medium"},
+    }
+
+    normalized = _normalize_sambanova_responses_payload(payload)
+
+    assert "store" not in normalized
+    assert "reasoning" not in normalized
+    assert normalized["reasoning_effort"] == "medium"
+
+
+def test_sambanova_responses_normalizer_without_reasoning_is_noop_on_effort():
+    payload = {"input": [], "store": False}
+
+    normalized = _normalize_sambanova_responses_payload(payload)
+
+    assert "store" not in normalized
+    assert "reasoning_effort" not in normalized
+
+
+def test_groq_and_sambanova_advertise_responses_support():
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    for provider_id in ("groq", "sambanova"):
+        spec = get_llm_provider_spec(provider_id)
+        assert spec is not None, provider_id
+        assert spec.supports_responses is True, provider_id
+        assert spec.default_api_mode == "responses", provider_id
 
 
 def test_notes_for_user_flows_through_catalog_response():
