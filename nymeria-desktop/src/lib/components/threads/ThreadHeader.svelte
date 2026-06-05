@@ -610,7 +610,11 @@
     /* 2px left padding gives the first meta-part's dot room to render its 1px
        outer ring without being clipped by overflow:hidden. */
     padding-left: 2px;
-    transform: translate(1px, 1px);
+    /* translateY(2px) is an optical-centering nudge — the row's labels read as
+       sitting slightly high against the title text beside them otherwise.
+       Moves text AND dots together so their internal alignment is preserved
+       (the dots are anchored to the meta-part's vertical center via top:50%). */
+    transform: translate(1px, 2px);
   }
 
   .meta-part {
