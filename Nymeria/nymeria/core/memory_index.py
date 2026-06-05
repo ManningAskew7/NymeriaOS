@@ -9,13 +9,14 @@ Implements RAG (Retrieval Augmented Generation) for Nymeria by:
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import struct
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -75,6 +76,141 @@ DEDUP_THRESHOLD = 0.9
 # fetch step. On a narrow scope most of the nearest-N fall out of scope, so we
 # lift the vector LIMIT to this floor to keep enough in-scope vector candidates.
 VECTOR_FILTER_POOL = 200
+
+# Date/time anchor biasing. When a search supplies an anchor (a date/time the
+# agent inferred from "last April", "that report last week", etc.) retrieval is
+# softly biased toward it WITHOUT excluding strong matches from other times. Two
+# mechanisms: (1) a recall branch that fetches the chunks nearest in time to the
+# anchor and fuses them as a third RRF signal beside vector and BM25, so a
+# content-weak on-date chunk still enters the candidate pool; (2) a post-fusion
+# multiplier shaped as a flat plateau across the anchor interval with a Gaussian
+# falloff outside it, never dropping below ANCHOR_FLOOR so a strongly-relevant
+# far-off chunk keeps most of its score. The whole mechanism reads only
+# event_time, never embeddings, so it is unaffected by embedding-model swaps.
+DEFAULT_ANCHOR_WEIGHT = 0.5  # RRF weight of the recall branch (vs 1.0 for vec/bm25)
+ANCHOR_FLOOR = 0.4  # minimum kernel multiplier; "guide, not filter"
+ANCHOR_FETCH_N = 100  # recall-branch rows fetched per side of the interval
+
+# Softness (sigma, in days) of the Gaussian falloff OUTSIDE the anchor interval,
+# keyed by the precision of the supplied date. Coarser precision = looser bias.
+# The interval itself is a flat plateau (full score); sigma only shapes the edges.
+ANCHOR_EDGE_SIGMA_DAYS = {
+    "year": 60.0,
+    "month": 10.0,
+    "day": 3.0,
+    "hour": 0.5,
+    "minute": 0.25,
+    "second": 0.25,
+}
+
+
+@dataclass
+class AnchorSpec:
+    """A parsed date/time anchor: a granularity interval plus edge softness.
+
+    ``start``/``end`` bound the unit the agent named (the whole year/month/day),
+    forming a flat plateau where every chunk scores the same on time. Outside the
+    interval the score falls off with a Gaussian of width ``edge_sigma_days``.
+    """
+    start: datetime
+    end: datetime
+    edge_sigma_days: float
+
+
+# ISO 8601 at decreasing precision. Ordered most-specific first so the first
+# match wins. Fractional seconds / explicit offsets are handled by fromisoformat.
+_ISO_ANCHOR_RES = [
+    ("second", re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})")),
+    ("minute", re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$")),
+    ("hour", re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2})$")),
+    ("day", re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")),
+    ("month", re.compile(r"^(\d{4})-(\d{2})$")),
+    ("year", re.compile(r"^(\d{4})$")),
+]
+
+# Day-first local fallbacks: DD/MM/YYYY [HH:MM[:SS]] and the bare MM/YYYY month.
+_LOCAL_ANCHOR_RE = re.compile(
+    r"^(\d{1,2})/(\d{1,2})/(\d{4})"
+    r"(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$"
+)
+_LOCAL_MONTH_RE = re.compile(r"^(\d{1,2})/(\d{4})$")
+
+
+def _anchor_interval(
+    precision: str, year: int, month: int, day: int,
+    hour: int, minute: int, second: int,
+) -> Optional[AnchorSpec]:
+    """Build the [start, end] plateau for a precision and its components."""
+    try:
+        start = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if precision == "year":
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+    elif precision == "month":
+        nxt = (datetime(year + 1, 1, 1, tzinfo=timezone.utc) if month == 12
+               else datetime(year, month + 1, 1, tzinfo=timezone.utc))
+        end = nxt - timedelta(microseconds=1)
+    elif precision == "day":
+        end = start + timedelta(days=1) - timedelta(microseconds=1)
+    elif precision == "hour":
+        end = start + timedelta(hours=1) - timedelta(microseconds=1)
+    elif precision == "minute":
+        end = start + timedelta(minutes=1) - timedelta(microseconds=1)
+    else:  # second
+        end = start + timedelta(seconds=1) - timedelta(microseconds=1)
+    return AnchorSpec(start, end, ANCHOR_EDGE_SIGMA_DAYS[precision])
+
+
+def parse_anchor_string(value: Optional[str]) -> Optional[AnchorSpec]:
+    """Parse a date/time anchor into an :class:`AnchorSpec`, or None if unusable.
+
+    The precision of the input sets the spread: a bare year biases across the
+    whole year, ``YYYY-MM`` across the month, a full timestamp tightly around the
+    instant. Accepts ISO 8601 at any precision (the agent's primary contract) and
+    common day-first local forms (``15/04/2026``, ``15/04/2026 14:30``,
+    ``04/2026``). Returns None for empty or unparseable input.
+    """
+    if not value or not value.strip():
+        return None
+    text = value.strip()
+
+    for precision, rx in _ISO_ANCHOR_RES:
+        m = rx.match(text)
+        if not m:
+            continue
+        if precision in ("second", "minute", "hour"):
+            # Let fromisoformat absorb fractional seconds / offsets, then re-key
+            # to UTC; the interval is still anchored at the matched precision.
+            try:
+                dt = ensure_aware_utc(datetime.fromisoformat(text))
+            except ValueError:
+                g = [int(x) for x in m.groups()]
+                while len(g) < 6:
+                    g.append(0)
+                return _anchor_interval(precision, *g[:6])
+            return _anchor_interval(
+                precision, dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+            )
+        g = [int(x) for x in m.groups()]
+        while len(g) < 6:
+            g.append(1 if len(g) < 3 else 0)  # missing month/day -> 1, time -> 0
+        return _anchor_interval(precision, *g[:6])
+
+    m = _LOCAL_ANCHOR_RE.match(text)
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        hour = int(m.group(4)) if m.group(4) else 0
+        minute = int(m.group(5)) if m.group(5) else 0
+        second = int(m.group(6)) if m.group(6) else 0
+        precision = ("second" if m.group(6) else "minute" if m.group(4) else "day")
+        return _anchor_interval(precision, year, month, day, hour, minute, second)
+
+    m = _LOCAL_MONTH_RE.match(text)
+    if m:
+        return _anchor_interval("month", int(m.group(2)), int(m.group(1)), 1, 0, 0, 0)
+
+    return None
 
 
 @dataclass
@@ -259,6 +395,14 @@ class MemoryIndex:
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_chunks_content_hash
                     ON chunks(user_id, chunk_type, content_hash)
+                """)
+                # Backs the date-anchor recall branch in search(): two index-only
+                # range scans (event_time < / >= the anchor) find the chunks
+                # nearest in time. event_time is non-NULL everywhere after the
+                # lazy backfill below, so the branch reads it directly.
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_chunks_user_event_time
+                    ON chunks(user_id, event_time)
                 """)
 
                 # FTS5 table for BM25 search
@@ -773,8 +917,11 @@ class MemoryIndex:
         limit: int = 5,
         chunk_types: Optional[List[str]] = None,
         thread_id: Optional[str] = None,
-        since: Optional[datetime] = None,
-        until: Optional[datetime] = None,
+        anchor_start: Optional[datetime] = None,
+        anchor_end: Optional[datetime] = None,
+        anchor_edge_sigma_days: Optional[float] = None,
+        anchor_weight: float = DEFAULT_ANCHOR_WEIGHT,
+        anchor_floor: float = ANCHOR_FLOOR,
         fusion: str = "rrf",
         apply_recency: bool = True,
         recency_half_lives: Optional[Dict[str, float]] = None,
@@ -796,16 +943,32 @@ class MemoryIndex:
         down-ranks older chunks) and a prose-priority factor (gently demotes
         chunks dominated by tool-result text so human/model prose ranks first).
 
+        When an anchor interval is supplied (``anchor_start``/``anchor_end``,
+        typically from :func:`parse_anchor_string`), retrieval is softly biased
+        toward that date: a third recall branch fuses the chunks nearest in time
+        to the interval (so a content-weak on-date chunk still surfaces), and the
+        recency factor is replaced by a flat plateau across the interval with a
+        Gaussian falloff outside it, floored at ``anchor_floor`` so strong matches
+        from other times are never excluded. Anchor biasing reads only event_time
+        and is independent of the embedding model.
+
         Args:
             query: Search query text
             user_id: User ID to search within
             limit: Maximum results to return
             chunk_types: Optional filter for chunk types
             thread_id: Optional filter to a single source thread
-            since: Optional lower bound on event_time (inclusive)
-            until: Optional upper bound on event_time (inclusive)
+            anchor_start: Inclusive start of the anchor plateau (None disables
+                anchor biasing and falls back to recency)
+            anchor_end: Inclusive end of the anchor plateau
+            anchor_edge_sigma_days: Gaussian sigma (days) of the falloff outside
+                the plateau; from the anchor's precision
+            anchor_weight: RRF weight of the recall branch (default 0.5)
+            anchor_floor: Lower bound of the anchor multiplier (default 0.4); a
+                far-off chunk keeps at least this fraction of its fused score
             fusion: "rrf" (default) or "weighted" (legacy-style rank blend)
-            apply_recency: Apply the recency soft-multiplier after fusion
+            apply_recency: Apply the recency soft-multiplier after fusion (only
+                when no anchor is supplied)
             recency_half_lives: Per-chunk_type half-life (days) override
             now: Reference time for recency (defaults to current UTC time)
             rrf_k: RRF constant
@@ -827,20 +990,31 @@ class MemoryIndex:
 
         now = ensure_aware_utc(now) if now else utc_now()
         half_lives = recency_half_lives or DEFAULT_RECENCY_HALF_LIVES
+        # Narrowed, aware-UTC anchor bounds (None unless both were supplied), so
+        # every downstream use is unambiguously a datetime.
+        anchor_lo: Optional[datetime] = None
+        anchor_hi: Optional[datetime] = None
+        if anchor_start is not None and anchor_end is not None:
+            anchor_lo = ensure_aware_utc(anchor_start)
+            anchor_hi = ensure_aware_utc(anchor_end)
+        anchor_sigma = anchor_edge_sigma_days or 1.0
         candidate_pool = max(limit * 5, 30)
         # The vector branch cannot filter in SQL (vec0 has no metadata columns),
-        # so on a selective thread/time scope most of its nearest-N fall out of
-        # scope at the fetch step. Lift the vector LIMIT to a floor in that case
-        # so enough in-scope vector candidates survive. chunk_types is excluded
+        # so on a selective thread scope most of its nearest-N fall out of scope
+        # at the fetch step. Lift the vector LIMIT to a floor in that case so
+        # enough in-scope vector candidates survive. chunk_types is excluded
         # deliberately: the tool sets it on nearly every call, so it is not
-        # "selective" in the sense that would starve the vector branch.
-        selective = bool(thread_id or since is not None or until is not None)
+        # "selective" in the sense that would starve the vector branch. An anchor
+        # alone does not trigger the floor: its own recall branch already injects
+        # in-window candidates, which is what the floor would otherwise supply.
+        selective = bool(thread_id)
         vector_limit = (
             max(candidate_pool, VECTOR_FILTER_POOL) if selective else candidate_pool
         )
 
-        # Shared filter fragment (user + optional type/thread/time) applied
-        # wherever we read chunks, so both branches enforce the same scope.
+        # Shared filter fragment (user + optional type/thread) applied wherever we
+        # read chunks, so every branch enforces the same scope. Time is no longer
+        # a hard filter; the anchor biases softly instead.
         def _filters(alias):
             clauses = [f"{alias}.user_id = ?"]
             params: List[Any] = [user_id]
@@ -851,12 +1025,6 @@ class MemoryIndex:
             if thread_id:
                 clauses.append(f"{alias}.thread_id = ?")
                 params.append(thread_id)
-            if since is not None:
-                clauses.append(f"COALESCE({alias}.event_time, {alias}.created_at) >= ?")
-                params.append(ensure_aware_utc(since).isoformat())
-            if until is not None:
-                clauses.append(f"COALESCE({alias}.event_time, {alias}.created_at) <= ?")
-                params.append(ensure_aware_utc(until).isoformat())
             return " AND ".join(clauses), params
 
         results: List[ChunkResult] = []
@@ -907,7 +1075,52 @@ class MemoryIndex:
                     except Exception as e:
                         logger.warning(f"BM25 search failed: {e}")
 
-                candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids]))
+                # Anchor recall branch: the chunks nearest in time to the anchor
+                # interval, fused as a third signal so a content-weak on-date
+                # chunk still enters the pool. Two index-backed scans (before /
+                # at-or-after the interval start) reuse the scope filter but apply
+                # NO time WHERE bound; the split is a ranking device, not a
+                # filter. event_time is non-NULL everywhere (lazy backfill), so we
+                # read it directly to use idx_chunks_user_event_time.
+                anchor_ids: List[str] = []
+                if anchor_lo is not None and anchor_hi is not None:
+                    lo, hi = anchor_lo, anchor_hi
+                    where_sql, where_params = _filters("c")
+                    start_iso = lo.isoformat()
+                    rows: List[Dict[str, Any]] = []
+                    try:
+                        cursor.execute(f"""
+                            SELECT c.id, c.event_time AS et
+                            FROM chunks c
+                            WHERE {where_sql} AND c.event_time < ?
+                            ORDER BY c.event_time DESC
+                            LIMIT ?
+                        """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                        rows.extend(dict(r) for r in cursor.fetchall())
+                        cursor.execute(f"""
+                            SELECT c.id, c.event_time AS et
+                            FROM chunks c
+                            WHERE {where_sql} AND c.event_time >= ?
+                            ORDER BY c.event_time ASC
+                            LIMIT ?
+                        """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                        rows.extend(dict(r) for r in cursor.fetchall())
+                    except Exception as e:
+                        logger.warning(f"Anchor search failed: {e}")
+                    # Order by distance to the interval (0 inside the plateau).
+                    def _interval_distance(et_raw) -> float:
+                        ev = self._parse_ts(et_raw)
+                        if ev is None:
+                            return float("inf")
+                        if ev < lo:
+                            return (lo - ev).total_seconds()
+                        if ev > hi:
+                            return (ev - hi).total_seconds()
+                        return 0.0
+                    rows.sort(key=lambda r: _interval_distance(r.get('et')))
+                    anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+
+                candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids, *anchor_ids]))
                 if not candidate_ids:
                     return []
 
@@ -930,6 +1143,8 @@ class MemoryIndex:
                     [c for c in vector_ids if c in rows_by_id])}
                 bm_rank = {cid: i for i, cid in enumerate(
                     [c for c in bm25_ids if c in rows_by_id])}
+                anchor_rank = {cid: i for i, cid in enumerate(
+                    [c for c in anchor_ids if c in rows_by_id])}
 
                 final_scores: Dict[str, float] = {}
                 for cid, row in rows_by_id.items():
@@ -945,10 +1160,28 @@ class MemoryIndex:
                             base += vec_weight / (rrf_k + vec_rank[cid] + 1)
                         if cid in bm_rank:
                             base += bm25_weight / (rrf_k + bm_rank[cid] + 1)
+                    # Anchor recall branch contributes a third RRF term, so an
+                    # on-date chunk that vector and BM25 both miss gets a positive
+                    # floor instead of base 0 (which no multiplier could rescue).
+                    if cid in anchor_rank:
+                        base += anchor_weight / (rrf_k + anchor_rank[cid] + 1)
 
-                    if apply_recency:
-                        ev = (self._parse_ts(row.get('event_time'))
-                              or self._parse_ts(row.get('created_at')) or now)
+                    ev = (self._parse_ts(row.get('event_time'))
+                          or self._parse_ts(row.get('created_at')) or now)
+                    if anchor_lo is not None and anchor_hi is not None:
+                        # Flat plateau across the interval (every in-window chunk
+                        # scores the same on time), Gaussian falloff outside,
+                        # floored so a strong far match is never excluded.
+                        if anchor_lo <= ev <= anchor_hi:
+                            d_days = 0.0
+                        elif ev < anchor_lo:
+                            d_days = (anchor_lo - ev).total_seconds() / 86400.0
+                        else:
+                            d_days = (ev - anchor_hi).total_seconds() / 86400.0
+                        gauss = (math.exp(-0.5 * (d_days / anchor_sigma) ** 2)
+                                 if anchor_sigma > 0 else (1.0 if d_days == 0 else 0.0))
+                        base *= anchor_floor + (1.0 - anchor_floor) * gauss
+                    elif apply_recency:
                         age_days = max(0.0, (now - ev).total_seconds() / 86400.0)
                         hl = half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
                         base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0

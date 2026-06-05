@@ -1,7 +1,7 @@
 """Tests for the native RAG improvements:
 
 - RRF fusion + recency soft-multiplier ordering
-- thread_id / since / until filters
+- thread_id scope + date-anchor biasing (recall branch, plateau-Gaussian, floor)
 - event_time + context surfacing
 - lazy schema migration of legacy DBs
 - tool-call result embedding in conversation chunks
@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import sqlite3
 import types
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from nymeria.core.memory_index import ChunkResult, MemoryIndex
+from nymeria.core.memory_index import ChunkResult, MemoryIndex, parse_anchor_string
 from nymeria.core.time_utils import utc_now
 
 
@@ -52,7 +52,7 @@ def test_recency_can_be_disabled():
         assert res and res[0].content == "alpha doc"
 
 
-def test_thread_and_time_filters():
+def test_thread_filter_scopes_results():
     with TemporaryDirectory() as tmp:
         idx = _index(tmp)
         now = utc_now()
@@ -61,10 +61,139 @@ def test_thread_and_time_filters():
         idx.add_chunk("report draft two", {}, "conversation", "u1",
                       thread_id="t2", event_time=now - timedelta(days=200))
         assert [r.thread_id for r in idx.search("report", "u1", thread_id="t1")] == ["t1"]
-        since_res = idx.search("report", "u1", since=now - timedelta(days=30))
-        assert [r.thread_id for r in since_res] == ["t1"]
-        until_res = idx.search("report", "u1", until=now - timedelta(days=100))
-        assert [r.thread_id for r in until_res] == ["t2"]
+
+
+# --- memory_index: date-anchor biasing -------------------------------------
+
+def _anchor_kwargs(spec):
+    return dict(anchor_start=spec.start, anchor_end=spec.end,
+                anchor_edge_sigma_days=spec.edge_sigma_days)
+
+
+def test_anchor_biases_ordering_toward_date():
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        now = utc_now()
+        # Two report chunks both match the query lexically; the anchor should
+        # float the on-date one to the top without dropping the other.
+        idx.add_chunk("quarterly report figures", {}, "conversation", "u1",
+                      thread_id="t-april",
+                      event_time=datetime(2026, 4, 15, tzinfo=timezone.utc))
+        idx.add_chunk("quarterly report figures redux", {}, "conversation", "u1",
+                      thread_id="t-jan",
+                      event_time=datetime(2026, 1, 15, tzinfo=timezone.utc))
+        spec = parse_anchor_string("2026-04")
+        res = idx.search("quarterly report", "u1", chunk_types=["conversation"],
+                         now=now, **_anchor_kwargs(spec))
+        assert [r.thread_id for r in res][0] == "t-april"
+        assert {r.thread_id for r in res} == {"t-april", "t-jan"}  # neither excluded
+
+
+def test_anchor_surfaces_content_weak_on_date_chunk():
+    # The robust property: a chunk that shares no terms with the query (so the
+    # BM25 branch misses it, and the vector branch is off) is still surfaced by
+    # the time-anchor recall branch when it falls on the anchor date.
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        now = utc_now()
+        on_date = datetime(2026, 4, 15, tzinfo=timezone.utc)
+        idx.add_chunk("the picnic plans got rained out that afternoon", {},
+                      "conversation", "u1", thread_id="t-ondate", event_time=on_date)
+        # Without an anchor, nothing matches this query at all.
+        assert idx.search("quarterly budget forecast", "u1",
+                          chunk_types=["conversation"], now=now) == []
+        # With the anchor, the on-date chunk is recalled by the time branch.
+        spec = parse_anchor_string("2026-04-15")
+        res = idx.search("quarterly budget forecast", "u1",
+                         chunk_types=["conversation"], now=now, **_anchor_kwargs(spec))
+        assert any(r.thread_id == "t-ondate" for r in res)
+
+
+def test_anchor_multiplier_respects_floor():
+    # A strongly-matching chunk far from the anchor keeps at least `floor` of its
+    # fused score, so the date guides but never rules a strong match out.
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        now = utc_now()
+        far = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        idx.add_chunk("encryption key rotation runbook steps", {}, "conversation",
+                      "u1", thread_id="t-far", event_time=far)
+        spec = parse_anchor_string("2026-04")
+        floored = idx.search("encryption key rotation runbook", "u1",
+                             chunk_types=["conversation"], now=now,
+                             anchor_floor=0.4, **_anchor_kwargs(spec))
+        zeroed = idx.search("encryption key rotation runbook", "u1",
+                            chunk_types=["conversation"], now=now,
+                            anchor_floor=0.0, **_anchor_kwargs(spec))
+        s_floored = next(r.score for r in floored if r.thread_id == "t-far")
+        s_zeroed = next(r.score for r in zeroed if r.thread_id == "t-far")
+        assert s_floored > 0.0          # the floor keeps a real, non-zero score
+        assert s_floored > s_zeroed     # and lifts it above the no-floor case
+
+
+def test_anchor_precision_controls_spread():
+    # Coarser precision = looser bias. A chunk a few days outside a tight (minute)
+    # anchor is demoted; the same chunk inside a month-precision plateau is not.
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        now = utc_now()
+        idx.add_chunk("sprint retro action items", {}, "conversation", "u1",
+                      thread_id="t1",
+                      event_time=datetime(2026, 4, 20, tzinfo=timezone.utc))
+        wide = parse_anchor_string("2026-04")            # plateau spans April
+        narrow = parse_anchor_string("2026-04-15T09:00")  # tight, ~5 days off
+        sw = next(r.score for r in idx.search(
+            "sprint retro", "u1", chunk_types=["conversation"], now=now,
+            **_anchor_kwargs(wide)) if r.thread_id == "t1")
+        sn = next(r.score for r in idx.search(
+            "sprint retro", "u1", chunk_types=["conversation"], now=now,
+            **_anchor_kwargs(narrow)) if r.thread_id == "t1")
+        assert sw > sn
+
+
+def test_no_anchor_falls_back_to_now_recency():
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        now = utc_now()
+        idx.add_chunk("alpha review old", {}, "conversation", "u1",
+                      thread_id="t-old", event_time=now - timedelta(days=120))
+        idx.add_chunk("alpha review new", {}, "conversation", "u1",
+                      thread_id="t-new", event_time=now - timedelta(days=1))
+        # No anchor + recency on: recent ranks first, unchanged behavior.
+        res = idx.search("alpha review", "u1", chunk_types=["conversation"],
+                         apply_recency=True, now=now)
+        assert [r.thread_id for r in res][0] == "t-new"
+        # No anchor + recency off: both returned, the anchor path never engages.
+        res2 = idx.search("alpha review", "u1", chunk_types=["conversation"],
+                          apply_recency=False, now=now)
+        assert {r.thread_id for r in res2} == {"t-old", "t-new"}
+
+
+def test_parse_anchor_string_precision_and_intervals():
+    y = parse_anchor_string("2026")
+    assert y.start == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert (y.end.year, y.end.month, y.end.day) == (2026, 12, 31)
+    assert y.edge_sigma_days == 60.0
+    mo = parse_anchor_string("2026-04")
+    assert mo.start == datetime(2026, 4, 1, tzinfo=timezone.utc)
+    assert (mo.end.month, mo.end.day) == (4, 30) and mo.edge_sigma_days == 10.0
+    d = parse_anchor_string("2026-04-15")
+    assert d.start == datetime(2026, 4, 15, tzinfo=timezone.utc)
+    assert d.end.day == 15 and d.edge_sigma_days == 3.0
+    mi = parse_anchor_string("2026-04-15T14:30")
+    assert mi.start == datetime(2026, 4, 15, 14, 30, tzinfo=timezone.utc)
+    assert mi.edge_sigma_days == 0.25
+    # Day-first local fallbacks.
+    loc = parse_anchor_string("15/04/2026")
+    assert loc.start == datetime(2026, 4, 15, tzinfo=timezone.utc)
+    assert loc.edge_sigma_days == 3.0
+    locm = parse_anchor_string("04/2026")
+    assert locm.start == datetime(2026, 4, 1, tzinfo=timezone.utc)
+    assert locm.edge_sigma_days == 10.0
+    # Unusable input.
+    assert parse_anchor_string("not a date") is None
+    assert parse_anchor_string("") is None
+    assert parse_anchor_string(None) is None
 
 
 def test_event_time_and_context_surfaced():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -246,6 +247,10 @@ def test_load_longmemeval_indexes_haystack_and_builds_probes():
         assert gold[0].event_time is not None and gold[0].event_time.year == 2023
         assert any(rag_eval.result_is_relevant(r, probes[0]) for r in results)
 
+        # question_date is parsed into a day-precision anchor on each probe.
+        assert probes[0].anchor_time == "2023-05-20"
+        assert probes[1].anchor_time == "2023-06-01"
+
 
 def test_longmemeval_abstention_feeds_n_empty_not_hit_rate():
     with TemporaryDirectory() as tmp:
@@ -272,3 +277,33 @@ def test_compare_detects_recency_effect():
         # The recency-discriminating probe pushes a relevant chunk down when
         # recency is on, so MRR with recency must be strictly lower.
         assert out["rec_on"]["mrr"] < out["rec_off"]["mrr"]
+
+
+def test_compare_detects_anchor_effect():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "e.db", embedding_provider="none")
+        # The relevant chunk is on the anchor date but shares no terms with the
+        # query, so BM25 alone (provider="none") never retrieves it. A distractor
+        # that DOES match the query sits far from the anchor. Only the anchor
+        # recall branch can surface the relevant chunk.
+        idx.add_chunk("the team offsite was in the snowy mountains", {},
+                      "conversation", "eval", thread_id="s-rel",
+                      event_time=datetime(2026, 4, 15, tzinfo=timezone.utc))
+        idx.add_chunk("budget planning numbers spreadsheet", {},
+                      "conversation", "eval", thread_id="s-far",
+                      event_time=datetime(2025, 1, 1, tzinfo=timezone.utc))
+        probes = [rag_eval.Probe(
+            query="budget planning numbers",
+            contains_any=["offsite"],
+            anchor_time="2026-04-15",
+        )]
+        out = rag_eval.compare_configs(
+            idx, probes,
+            {"anchor on": {"fusion": "rrf", "apply_recency": False},
+             "anchor off": {"fusion": "rrf", "apply_recency": False, "anchor_off": True}},
+            user_id="eval", k=5,
+        )
+        # Anchor off never retrieves the relevant (content-weak) chunk; anchor on
+        # recalls it by date, so MRR is strictly higher.
+        assert out["anchor off"]["mrr"] == 0.0
+        assert out["anchor on"]["mrr"] > out["anchor off"]["mrr"]

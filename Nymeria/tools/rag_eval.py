@@ -25,9 +25,10 @@ corpus holds nothing that should satisfy it. Such probes are excluded from the
 ranking metrics and instead feed ``false_positive_rate`` (any returned result
 that matches the predicates counts as a spurious hit; lower is better).
 
-A probe may also carry ``search`` kwargs (e.g. ``{"thread_id": "...", "since":
-"2026-05-01"}``) passed straight through to ``MemoryIndex.search`` so filter
-behaviour can be evaluated too.
+A probe may also carry ``search`` kwargs (e.g. ``{"thread_id": "..."}``) passed
+straight through to ``MemoryIndex.search``, and an ``anchor_time`` (a date the
+question is "as of") that is parsed into the date-anchor search kwargs, so scope
+and time-bias behaviour can be evaluated too.
 
 Modes:
 
@@ -69,6 +70,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -86,6 +88,7 @@ from nymeria.core.memory_index import (  # noqa: E402
     DEDUP_THRESHOLD,
     ChunkResult,
     MemoryIndex,
+    parse_anchor_string,
 )
 from nymeria.core.time_utils import utc_now  # noqa: E402
 
@@ -110,6 +113,10 @@ class Probe:
     # predicates counts as a spurious "relevant" hit (lower is better).
     expect_empty: bool = False
     search: Dict[str, Any] = field(default_factory=dict)
+    # Date the question is asked "as of" (e.g. LongMemEval question_date). When
+    # set, it is parsed into anchor search kwargs so the date-anchor biasing is
+    # exercised, mirroring how the rag_search tool turns 'around' into an anchor.
+    anchor_time: Optional[str] = None
     note: str = ""
 
     @classmethod
@@ -297,6 +304,160 @@ def _retrieve(
     return index.search(query, user_id, limit=k, **base_kwargs)
 
 
+class CrossEncoderReranker:
+    """Second-stage cross-encoder reranker for the eval A/B.
+
+    Reorders a first-stage candidate pool by joint (query, passage) relevance,
+    the standard "lexical/dense recall, cross-encoder precision" pattern. Wraps a
+    sentence-transformers ``CrossEncoder`` on CPU; lazy-imports torch so the
+    no-rerank and seeded/CI paths never pull it in. Use this to measure whether a
+    reranker is worth packaging before wiring a real one into production
+    (``core/rag_quality.py`` today ships only an LLM listwise reranker).
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        max_length: int = 512,
+        backend: str = "torch",
+        onnx_file: Optional[str] = None,
+    ) -> None:
+        from sentence_transformers import CrossEncoder
+
+        self.model_name = model_name
+        kwargs: Dict[str, Any] = {}
+        if backend == "onnx":
+            kwargs["backend"] = "onnx"
+            if onnx_file:
+                # Pick a specific exported graph, e.g. onnx/model_quint8_avx2.onnx
+                # (the int8 build for an avx2-only CPU, our production target).
+                kwargs["model_kwargs"] = {"file_name": onnx_file}
+        self._model = CrossEncoder(
+            model_name, max_length=max_length, device="cpu", **kwargs
+        )
+
+    def rerank(self, query: str, results: List[ChunkResult]) -> List[ChunkResult]:
+        if len(results) < 2:
+            return results
+        pairs = [(query, r.content or "") for r in results]
+        scores = self._model.predict(
+            pairs, convert_to_numpy=True, show_progress_bar=False
+        )
+        order = sorted(
+            range(len(results)), key=lambda i: float(scores[i]), reverse=True
+        )
+        return [results[i] for i in order]
+
+
+class APIReranker:
+    """Managed rerank-API client for the eval A/B (Cohere, ZeroEntropy, Voyage,
+    Jina). Same contract as CrossEncoderReranker: reorder the first-stage pool by
+    the API's relevance scores. Raw HTTP (no vendor SDK); the key is read from the
+    provider's env var so it never lands in a file, log or run dump. 429/5xx back
+    off and retry.
+    """
+
+    PROVIDERS = {
+        # provider -> (endpoint, api-key env var)
+        "cohere": ("https://api.cohere.com/v2/rerank", "COHERE_API_KEY"),
+        "zeroentropy": ("https://api.zeroentropy.dev/v1/models/rerank",
+                        "ZEROENTROPY_API_KEY"),
+        "voyage": ("https://api.voyageai.com/v1/rerank", "VOYAGE_API_KEY"),
+        "jina": ("https://api.jina.ai/v1/rerank", "JINA_API_KEY"),
+    }
+
+    def __init__(self, provider: str, model: str, doc_max_chars: int = 2000,
+                 timeout: float = 60.0, min_interval: float = 0.0) -> None:
+        if provider not in self.PROVIDERS:
+            raise SystemExit(f"unknown --rerank-provider {provider}")
+        self.provider = provider
+        self.model = model
+        # Pace calls to honour a tight trial rate limit (e.g. Cohere trial =
+        # 10/min): sleep so consecutive calls are >= min_interval apart.
+        self.min_interval = min_interval
+        self._last_call = 0.0
+        self.url, env = self.PROVIDERS[provider]
+        key = os.environ.get(env)
+        if not key:
+            raise SystemExit(
+                f"set {env} in the environment to use --rerank-provider {provider}"
+            )
+        self._headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        self.doc_max_chars = doc_max_chars
+        self.timeout = timeout
+
+    def rerank(self, query: str, results: List[ChunkResult]) -> List[ChunkResult]:
+        if len(results) < 2:
+            return results
+        docs = [(r.content or "")[: self.doc_max_chars] for r in results]
+        payload = {
+            "model": self.model,
+            "query": query,
+            "documents": docs,
+            "top_n": len(docs),
+        }
+        if self.min_interval:
+            wait = self.min_interval - (time.monotonic() - self._last_call)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.monotonic()
+        order = self._post_with_retry(payload, len(docs))
+        return [results[i] for i in order]
+
+    def _post_with_retry(self, payload: Dict[str, Any], n: int) -> List[int]:
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(payload).encode()
+        delay = 2.0
+        for attempt in range(6):
+            try:
+                req = urllib.request.Request(
+                    self.url, data=data, headers=self._headers, method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode())
+                return self._parse_order(body, n)
+            except urllib.error.HTTPError as e:
+                retryable = e.code in (408, 429, 500, 502, 503, 529)
+                if retryable and attempt < 5:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
+                detail = e.read().decode()[:200] if hasattr(e, "read") else ""
+                raise SystemExit(f"{self.provider} rerank HTTP {e.code}: {detail}")
+            except (urllib.error.URLError, TimeoutError):
+                if attempt < 5:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
+                raise
+        return list(range(n))
+
+    @staticmethod
+    def _parse_order(body: Dict[str, Any], n: int) -> List[int]:
+        # Cohere/Jina/ZeroEntropy: {"results":[{"index","relevance_score"}...]}
+        # (already sorted desc). Voyage: {"data":[...]}. Be defensive: if entries
+        # carry a score but no index, argsort; always backfill missing indices.
+        items = body.get("results")
+        if items is None:
+            items = body.get("data", [])
+        if items and isinstance(items[0], dict) and "index" in items[0]:
+            order = [it["index"] for it in items]
+        elif items and isinstance(items[0], dict):
+            scored = [(i, it.get("relevance_score", it.get("score", 0.0)))
+                      for i, it in enumerate(items)]
+            order = [i for i, _ in sorted(scored, key=lambda x: x[1], reverse=True)]
+        else:
+            order = list(range(n))
+        seen = set(order)
+        order += [i for i in range(n) if i not in seen]
+        return order[:n]
+
+
 def evaluate(
     index: MemoryIndex,
     probes: List[Probe],
@@ -305,6 +466,8 @@ def evaluate(
     base_kwargs: Optional[Dict[str, Any]] = None,
     distinct_threshold: float = DEDUP_THRESHOLD,
     retrieval_mode: str = "hybrid",
+    reranker: Optional["CrossEncoderReranker"] = None,
+    rerank_pool: int = 30,
 ) -> Dict[str, Any]:
     """Run probes and return aggregate + per-query metrics.
 
@@ -331,7 +494,24 @@ def evaluate(
 
     for p in probes:
         kwargs = {**base_kwargs, **p.search}
-        results = _retrieve(index, p.query, user_id, k, retrieval_mode, kwargs)
+        # Turn the probe's question date into anchor kwargs (explicit search/
+        # base_kwargs anchor settings still win). base_kwargs may pass
+        # anchor_off=True to suppress it for an A/B comparison.
+        if p.anchor_time and not kwargs.pop("anchor_off", False):
+            spec = parse_anchor_string(p.anchor_time)
+            if spec is not None:
+                kwargs.setdefault("anchor_start", spec.start)
+                kwargs.setdefault("anchor_end", spec.end)
+                kwargs.setdefault("anchor_edge_sigma_days", spec.edge_sigma_days)
+        else:
+            kwargs.pop("anchor_off", None)
+        # When reranking, pull a wider first-stage pool so the cross-encoder can
+        # promote a relevant chunk from beyond the top-k before the k-cut.
+        retrieve_k = max(k, rerank_pool) if reranker is not None else k
+        results = _retrieve(index, p.query, user_id, retrieve_k, retrieval_mode, kwargs)
+        if reranker is not None:
+            results = reranker.rerank(p.query, results)
+        results = results[:k]
         distinct = _distinct_ratio(results, distinct_threshold)
         distinct_total += distinct
 
@@ -657,8 +837,9 @@ def load_longmemeval(
     maps onto the predicate harness with no schema change: every haystack turn is
     indexed as a ``conversation`` chunk whose ``thread_id`` is its session id and
     whose ``event_time`` is the session date (so the recency multiplier and the
-    since/until filters are genuinely exercised), and each question becomes a
-    Probe whose ``relevant_thread_ids`` are its ``answer_session_ids``.
+    date anchor are genuinely exercised), and each question becomes a Probe whose
+    ``relevant_thread_ids`` are its ``answer_session_ids`` and whose
+    ``anchor_time`` is its ``question_date``.
 
     Abstention in LongMemEval is a generation-side judgement: the oracle still
     labels and includes evidence sessions for ``_abs`` questions, so retrieval is
@@ -713,6 +894,15 @@ def load_longmemeval(
                 )
 
         gold = list(entry.get("answer_session_ids") or [])
+        # The question's "as of" date, anchored at day precision so the
+        # date-anchor path is exercised. Note this anchors on WHEN THE QUESTION
+        # IS ASKED, not the (often earlier) time its evidence is from, so on
+        # LongMemEval it mostly reproduces a bias toward the most recent
+        # sessions; the clean signal for the feature is a purpose-built probe
+        # whose anchor_time matches the time its evidence is from. Compare with
+        # --compare (the "anchor off" config passes anchor_off=True).
+        q_date = _parse_lme_date(entry.get("question_date"))
+        anchor_time = q_date.date().isoformat() if q_date else None
         # A no-answer probe is one with no evidence session in the haystack.
         # _abs questions in the oracle still carry labelled gold sessions, so
         # they are scored as answerable retrieval (abstention is judged at
@@ -721,6 +911,7 @@ def load_longmemeval(
             query=entry.get("question", ""),
             relevant_thread_ids=gold,
             expect_empty=not gold,
+            anchor_time=anchor_time,
             note=f"{entry.get('question_type', '?')} {qid}",
         ))
     return probes
@@ -794,6 +985,7 @@ def _dump_run(
     embedding_provider: str,
     metrics: Dict[str, Any],
     retrieval_mode: str = "hybrid",
+    rerank_model: Optional[str] = None,
 ) -> None:
     """Write a run's config + headline metrics for later ``--compare-runs``."""
     payload = {
@@ -802,6 +994,7 @@ def _dump_run(
         "embedding_dimensions": embedding_dimensions,
         "embedding_provider": embedding_provider,
         "retrieval_mode": retrieval_mode,
+        "rerank_model": rerank_model,
         "k": metrics["k"],
         "metrics": {key: metrics[key] for key in _DUMP_KEYS},
     }
@@ -820,6 +1013,7 @@ def _dump_modes(
     embedding_provider: str,
     k: int,
     mode_metrics: Dict[str, Dict[str, Any]],
+    rerank_model: Optional[str] = None,
 ) -> None:
     """Write one ``--retrieval-mode all`` run (all branches over one index)."""
     payload = {
@@ -827,6 +1021,7 @@ def _dump_modes(
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "embedding_provider": embedding_provider,
+        "rerank_model": rerank_model,
         "k": k,
         "modes": {
             mode: {key: m[key] for key in _DUMP_KEYS}
@@ -862,14 +1057,16 @@ def _print_run_comparison(paths: List[str]) -> None:
         model = d.get("embedding_model") or "?"
         dim = d.get("embedding_dimensions", "?")
         k = d.get("k", "?")
+        rr_model = d.get("rerank_model")
+        rr = f" +rr:{os.path.basename(rr_model)}" if rr_model else ""
         if "modes" in d:
             for mode in RETRIEVAL_MODES:
                 if mode in d["modes"]:
-                    _row(f"{model} [{mode}]", dim, k, d["modes"][mode])
+                    _row(f"{model} [{mode}]{rr}", dim, k, d["modes"][mode])
         else:
             mode = d.get("retrieval_mode", "hybrid")
             label = model if mode == "hybrid" else f"{model} [{mode}]"
-            _row(label, dim, k, d.get("metrics", {}))
+            _row(f"{label}{rr}", dim, k, d.get("metrics", {}))
 
 
 def main() -> None:
@@ -893,6 +1090,29 @@ def main() -> None:
                     help="retrieval branch: hybrid (default), vector (embedding "
                          "KNN alone), bm25 (keyword alone), or all (one index, "
                          "all three branches; isolates the embedding model)")
+    ap.add_argument("--rerank-model",
+                    help="cross-encoder model id to rerank the first-stage pool "
+                         "(sentence-transformers CrossEncoder, CPU); off when unset")
+    ap.add_argument("--rerank-pool", type=int, default=30,
+                    help="first-stage candidates fetched and reranked before the "
+                         "top-k cut (default 30)")
+    ap.add_argument("--rerank-max-len", type=int, default=512,
+                    help="cross-encoder max sequence length in tokens (default 512)")
+    ap.add_argument("--rerank-backend", choices=["torch", "onnx"], default="torch",
+                    help="reranker runtime: torch (default) or onnx (faster on CPU)")
+    ap.add_argument("--rerank-onnx-file",
+                    help="onnx graph to load when --rerank-backend onnx, e.g. "
+                         "onnx/model_quint8_avx2.onnx (int8 for avx2 CPUs)")
+    ap.add_argument("--rerank-provider",
+                    choices=["local", "cohere", "zeroentropy", "voyage", "jina"],
+                    default="local",
+                    help="reranker source: local cross-encoder (default) or a "
+                         "managed rerank API (key from <PROVIDER>_API_KEY env)")
+    ap.add_argument("--rerank-doc-max-chars", type=int, default=2000,
+                    help="truncate each candidate before an API rerank (cost/latency)")
+    ap.add_argument("--rerank-min-interval", type=float, default=0.0,
+                    help="min seconds between API rerank calls (pace a trial rate "
+                         "limit, e.g. 6.2 for Cohere trial's 10/min)")
     ap.add_argument("--compare", action="store_true",
                     help="compare rrf/weighted x recency x dedup within one run")
     ap.add_argument("--out", help="dump headline metrics JSON for --compare-runs")
@@ -941,7 +1161,16 @@ def main() -> None:
             stats = _batch_backfill(index, args.user)
             print(f"embedded {stats['embedded']}/{stats['total']} chunks")
     elif args.probes:
-        index = _open_index(args.db)
+        # Embedding overrides let a live-probes run query a db embedded by a
+        # non-default model (e.g. a locally re-embedded corpus for a model/rerank
+        # A/B). Defaults reproduce the previous settings-driven behaviour.
+        index = _open_index(
+            args.db,
+            embedding_provider=args.embedding_provider,
+            embedding_model=args.embedding_model,
+            embedding_dimensions=args.embedding_dim,
+            embedding_base_url=args.embedding_base_url,
+        )
         raw = json.loads(Path(args.probes).read_text())
         probes = [Probe.from_dict(d) for d in raw]
     elif not args.db:
@@ -951,12 +1180,38 @@ def main() -> None:
         ap.error("--db requires --probes or --dataset (no synthetic corpus to seed a live DB)")
         return
 
+    reranker = None
+    if args.rerank_model:
+        if args.rerank_provider == "local":
+            print(f"loading reranker {args.rerank_model} "
+                  f"(backend={args.rerank_backend}, max_len={args.rerank_max_len}) ...")
+            reranker = CrossEncoderReranker(
+                args.rerank_model,
+                max_length=args.rerank_max_len,
+                backend=args.rerank_backend,
+                onnx_file=args.rerank_onnx_file,
+            )
+        else:
+            print(f"using {args.rerank_provider} rerank API "
+                  f"(model={args.rerank_model}) ...")
+            reranker = APIReranker(
+                args.rerank_provider,
+                args.rerank_model,
+                doc_max_chars=args.rerank_doc_max_chars,
+                min_interval=args.rerank_min_interval,
+            )
+        print(f"reranking first-stage top-{args.rerank_pool} -> top-{args.k}")
+
     if args.compare:
         configs = {
             "rrf+recency+dedup": {"fusion": "rrf", "apply_recency": True, "dedup": True},
             "rrf, dedup off":    {"fusion": "rrf", "apply_recency": True, "dedup": False},
             "rrf, no recency":   {"fusion": "rrf", "apply_recency": False},
             "weighted+recency":  {"fusion": "weighted", "apply_recency": True},
+            # Date-anchor A/B: "on" applies each probe's anchor_time, "off"
+            # suppresses it. Meaningful only when probes carry anchor_time.
+            "anchor on":         {"fusion": "rrf", "apply_recency": False},
+            "anchor off":        {"fusion": "rrf", "apply_recency": False, "anchor_off": True},
         }
         results = compare_configs(index, probes, configs, user_id=args.user, k=args.k)
         for name, m in results.items():
@@ -966,7 +1221,8 @@ def main() -> None:
         # One index, all three branches. Vector is the headline for a model A/B.
         mode_metrics = {
             mode: evaluate(index, probes, user_id=args.user, k=args.k,
-                           retrieval_mode=mode)
+                           retrieval_mode=mode, reranker=reranker,
+                           rerank_pool=args.rerank_pool)
             for mode in RETRIEVAL_MODES
         }
         for mode in RETRIEVAL_MODES:
@@ -981,11 +1237,13 @@ def main() -> None:
                 embedding_provider=index.embedding_provider,
                 k=args.k,
                 mode_metrics=mode_metrics,
+                rerank_model=args.rerank_model,
             )
         return
     else:
         primary = evaluate(index, probes, user_id=args.user, k=args.k,
-                           retrieval_mode=args.retrieval_mode)
+                           retrieval_mode=args.retrieval_mode, reranker=reranker,
+                           rerank_pool=args.rerank_pool)
         _print_metrics(f"{args.dataset} [{args.retrieval_mode}]", primary,
                        verbose=True)
 
@@ -998,6 +1256,7 @@ def main() -> None:
             embedding_provider=index.embedding_provider,
             metrics=primary,
             retrieval_mode=args.retrieval_mode,
+            rerank_model=args.rerank_model,
         )
 
 
