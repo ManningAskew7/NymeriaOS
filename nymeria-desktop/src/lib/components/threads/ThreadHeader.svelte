@@ -610,10 +610,11 @@
     /* 2px left padding gives the first meta-part's dot room to render its 1px
        outer ring without being clipped by overflow:hidden. */
     padding-left: 2px;
-    /* translateY(2px) is an optical-centering nudge — the row's labels read as
-       sitting slightly high against the title text beside them otherwise.
-       Moves text AND dots together so their internal alignment is preserved
-       (the dots are anchored to the meta-part's vertical center via top:50%). */
+    /* translateY(2px) is an optical-centering nudge — the row's text labels
+       read as sitting slightly high against the title text beside them
+       otherwise. The dots ride with the row by default (they're anchored to
+       each meta-part with top:50%); to keep them at their original 1px Y the
+       ::before rule below subtracts 1px from its translateY. */
     transform: translate(1px, 2px);
   }
 
@@ -635,7 +636,11 @@
     height: 5px;
     border-radius: 50%;
     background: var(--dot-color);
-    transform: translateY(-50%);
+    /* -50% centers the dot on the meta-part. The extra -1px counter-shifts
+       it up by one pixel so it lands back at the dots' original Y position
+       — the .meta row above moves the labels down 2px for optical centering,
+       but the dots should sit one pixel higher than the text. */
+    transform: translateY(calc(-50% - 1px));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot-color) 35%, transparent);
     transition: box-shadow var(--transition-fast);
   }
