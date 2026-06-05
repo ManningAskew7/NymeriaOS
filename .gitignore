@@ -26,9 +26,10 @@ CLIProxyAPI-main/.env
 *.sqlite
 Nymeria/data/
 
-# === RAG eval outputs & local embedding model caches (regenerable) ===
+# === RAG eval outputs & local embedding/reranker model caches (regenerable) ===
 Nymeria/runs/
 Nymeria/local_int8/
+Nymeria/local_models/
 
 # === Python ===
 __pycache__/

@@ -134,10 +134,17 @@ def create_rag_router(
         user_id: str,
         q: str = Query(..., min_length=1, description="Search query"),
         max_results: int = Query(default=5, ge=1, le=10),
+        around: Optional[str] = Query(
+            default=None,
+            description="Date to softly bias results toward (ISO at any precision, e.g. 2026, 2026-04, 2026-04-15). Guides ranking only; strong matches from other times still appear.",
+        ),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Search a user's RAG index and return structured chunk results."""
         require_same_user_or_admin_fn(user, user_id)
+        from ...core.memory_index import parse_anchor_string
+        from ...config import get_settings
+
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
 
@@ -150,6 +157,16 @@ def create_rag_router(
         memory_index = agent._get_memory_index(user_id)
         if not memory_index:
             raise HTTPException(status_code=500, detail="Could not access memory index")
+
+        settings = get_settings()
+        anchor = (
+            parse_anchor_string(around)
+            if (around and settings.rag_anchor_enabled) else None
+        )
+        if around and settings.rag_anchor_enabled and anchor is None:
+            raise HTTPException(
+                status_code=400, detail=f"Could not read the date '{around}'."
+            )
 
         rag_prefs = profile.get_rag_preferences()
         chunk_types: List[str] = []
@@ -174,6 +191,11 @@ def create_rag_router(
             user_id=user_id,
             limit=max_results,
             chunk_types=chunk_types,
+            anchor_start=anchor.start if anchor else None,
+            anchor_end=anchor.end if anchor else None,
+            anchor_edge_sigma_days=anchor.edge_sigma_days if anchor else None,
+            anchor_weight=settings.rag_anchor_weight,
+            anchor_floor=settings.rag_anchor_floor,
         )
 
         return {

@@ -1282,6 +1282,18 @@ class Settings(BaseSettings):
         default=1000,
         description="Max characters of each rag_search result snippet before it is truncated and ellipsized.",
     )
+    rag_anchor_enabled: bool = Field(
+        default=True,
+        description="Honor the rag_search 'around' date anchor: softly bias retrieval toward a date the agent inferred from the user's phrasing, without excluding strong matches from other times. When off, 'around' is ignored.",
+    )
+    rag_anchor_weight: float = Field(
+        default=0.5,
+        description="RRF weight of the anchor recall branch relative to the vector/BM25 branches (1.0 each). Higher surfaces on-date chunks more strongly; 0.5 keeps the date a guide rather than a ruler.",
+    )
+    rag_anchor_floor: float = Field(
+        default=0.4,
+        description="Lower bound of the anchor time-multiplier (0 = a far-off chunk can be fully demoted, 1 = the anchor stops mattering). At 0.4 a strongly-relevant chunk far from the date keeps 40% of its fused score, so the date guides but never filters.",
+    )
 
     # Gemini (document extraction for email attachments)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key for document extraction")

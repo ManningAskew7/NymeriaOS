@@ -20,15 +20,14 @@ different mental models and warrant lexically distinct tools.
 """
 
 import logging
-from datetime import datetime
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from ..core.time_utils import ensure_aware_utc, utc_now
+from ..core.time_utils import utc_now
 from ..core.user_profile import UserProfileManager
-from ..core.memory_index import MemoryIndex
+from ..core.memory_index import MemoryIndex, parse_anchor_string
 from ..core.memory_limits import (
     get_global_memory_char_limit,
     validate_profile_memory_write,
@@ -419,16 +418,6 @@ def personality_set(
         return f"[Set]: I'll remember to '{value}' in future conversations."
 
 
-def _parse_when(value: Optional[str]):
-    """Parse an ISO date/datetime string to aware UTC, or None if unparseable."""
-    if not value or not value.strip():
-        return None
-    try:
-        return ensure_aware_utc(datetime.fromisoformat(value.strip()))
-    except ValueError:
-        return None
-
-
 def _humanize_age(delta_seconds: float) -> str:
     """Render an age (seconds) as a short relative phrase the LLM reads easily."""
     s = int(max(0, delta_seconds))
@@ -483,26 +472,29 @@ def rag_search(
     query: str,
     max_results: int = 5,
     thread_id: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
+    around: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
     Search your own memory: past conversations, saved memories, and completed TODOs.
 
-    Results are ranked by hybrid relevance with a gentle recency bias. Each result
-    shows when it is from and which thread it came from, so you can reason about
-    freshness and, when useful, follow up on the source thread (call it if it is a
-    bound callable thread, or open it by id).
+    Results are ranked by hybrid relevance. Each result shows when it is from and
+    which thread it came from, so you can reason about freshness and, when useful,
+    follow up on the source thread (call it if it is a bound callable thread, or
+    open it by id).
 
     Args:
         query: What to search for.
         max_results: Max results (1-10, default 5).
         thread_id: Restrict the search to a single source thread.
-        since: Only chunks at or after this ISO time (e.g. "2026-05-01" or
-            "2026-05-01T09:00:00").
-        until: Only chunks at or before this ISO time.
+        around: A date to softly bias results toward, for "that report from last
+            week" / "the algorithm we wrote last April". Compute it yourself from
+            the user's phrasing using the current date in context, and pass ISO at
+            the precision you are sure of: "2026" (a year), "2026-04" (a month),
+            "2026-04-15" or "2026-04-15T14:30" (a day/time). Coarser = looser
+            bias; everything inside the stated unit ranks the same on time. This
+            guides ranking only: strong matches from other times still appear.
 
     Returns:
         A "now:" anchor header plus numbered entries. Each entry shows
@@ -556,10 +548,19 @@ def rag_search(
             dedup_enabled = settings.rag_dedup_enabled
             dedup_threshold = settings.rag_dedup_threshold
             result_max_chars = settings.rag_result_max_chars
+            anchor_enabled = settings.rag_anchor_enabled
+            anchor_weight = settings.rag_anchor_weight
+            anchor_floor = settings.rag_anchor_floor
         except Exception:
             fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
             prose_priority, prose_priority_weight = True, 0.4
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
+            anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
+
+        # Parse the date anchor (None unless 'around' is set, valid, and enabled).
+        anchor = parse_anchor_string(around) if (around and anchor_enabled) else None
+        if around and anchor_enabled and anchor is None:
+            return f"[Error]: could not read the date '{around}' (try ISO, e.g. 2026-04)."
 
         now = utc_now()
         search_limit = max(max_results, rerank_top_n) if rerank_enabled else max_results
@@ -569,8 +570,11 @@ def rag_search(
             limit=search_limit,
             chunk_types=chunk_types,
             thread_id=thread_id,
-            since=_parse_when(since),
-            until=_parse_when(until),
+            anchor_start=anchor.start if anchor else None,
+            anchor_end=anchor.end if anchor else None,
+            anchor_edge_sigma_days=anchor.edge_sigma_days if anchor else None,
+            anchor_weight=anchor_weight,
+            anchor_floor=anchor_floor,
             fusion=fusion,
             apply_recency=apply_recency,
             now=now,
