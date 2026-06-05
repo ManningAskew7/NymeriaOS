@@ -189,6 +189,42 @@ def _baseten_config(**overrides) -> LLMConfig:
     return LLMConfig(**values)
 
 
+def _litellm_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "litellm",
+        "model": "deepseek-reasoner",
+        "api_key": "test-key",
+        "base_url": "http://localhost:4000",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _together_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "togetherai",
+        "model": "deepseek-ai/DeepSeek-V3.1",
+        "api_key": "test-key",
+        "base_url": "https://api.together.ai/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _novita_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "novita-ai",
+        "model": "deepseek/deepseek-r1",
+        "api_key": "test-key",
+        "base_url": "https://api.novita.ai/openai",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
 def _anthropic_config(**overrides) -> LLMConfig:
     values = {
         "provider": "anthropic",
@@ -1665,6 +1701,93 @@ def test_baseten_applies_no_enable_toggle():
     llm = create_llm(_baseten_config(extended_thinking=True))
 
     assert not (llm.extra_body or {}).get("enable_thinking")
+
+
+def test_gateways_use_tool_calls_only_replay():
+    # Multi-model gateways (LiteLLM, Together, Novita) normalize every backend
+    # to a flat reasoning_content string. tool_calls_only is the never-400
+    # default: it satisfies the DeepSeek/Qwen-backed models they proxy without
+    # erroring the "all"-style backends (which only lose the plain-turn echo).
+    for provider_id in ("litellm", "togetherai", "novita-ai"):
+        assert _flat_reasoning_content_replay_mode(provider_id) == "tool_calls_only", (
+            provider_id
+        )
+
+
+def test_together_captures_reasoning_field_as_reasoning_content():
+    # Together returns reasoning under `reasoning`, not `reasoning_content`;
+    # capture normalizes it so replay is uniform with DeepSeek/Novita.
+    llm = create_llm(_together_config())
+
+    chunk = {
+        "choices": [
+            {"delta": {"role": "assistant", "reasoning": "Compare 9.9 and 9.11."}}
+        ]
+    }
+
+    generation_chunk = llm._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, {})
+
+    assert (
+        generation_chunk.message.additional_kwargs["reasoning_content"]
+        == "Compare 9.9 and 9.11."
+    )
+
+
+def test_litellm_replays_reasoning_content_on_tool_call_turn():
+    llm = create_llm(_litellm_config())
+
+    ai_with_tools = AIMessage(
+        content="",
+        additional_kwargs={"reasoning_content": "Routing to the weather tool."},
+        tool_calls=[
+            {
+                "name": "get_weather",
+                "args": {"city": "Paris"},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_with_tools,
+        ToolMessage(content="Sunny, 20C", tool_call_id="call_1"),
+        HumanMessage(content="And London?"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["reasoning_content"] == "Routing to the weather tool."
+
+
+def test_novita_strips_reasoning_content_on_non_tool_turn():
+    llm = create_llm(_novita_config())
+
+    ai_no_tools = AIMessage(
+        content="It is sunny.",
+        additional_kwargs={"reasoning_content": "Private chain of thought."},
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_no_tools,
+        HumanMessage(content="Thanks"),
+    ])
+
+    # DeepSeek-backed models behind the gateway 400 if reasoning rides a plain turn.
+    assert "reasoning_content" not in payload["messages"][1]
+
+
+def test_gateways_apply_no_enable_toggle():
+    # Enablement behind a gateway is per-model, so the client sets no blanket
+    # toggle: only the passback replay is wired.
+    for config in (
+        _litellm_config(extended_thinking=True),
+        _together_config(extended_thinking=True),
+        _novita_config(extended_thinking=True),
+    ):
+        llm = create_llm(config)
+        assert not (llm.extra_body or {}).get("enable_thinking")
 
 
 def test_nymeria_provider_threaded_and_absent_from_request_payload():

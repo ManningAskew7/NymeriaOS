@@ -172,6 +172,16 @@ _FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER: dict[str, str] = {
     "alibaba-coding-plan-cn": "tool_calls_only",
     "qwen-oauth": "tool_calls_only",
     "baseten": "tool_calls_only",
+    # Multi-model gateways normalize every backend to a flat reasoning_content
+    # string. tool_calls_only is the never-400 default: it satisfies the
+    # DeepSeek/Qwen-backed models they proxy (which require the echo on a tool
+    # turn and 400 if it rides a plain turn), while "all"-style backends
+    # (Kimi/GLM-5 preserved) only lose the plain-turn echo, never error. Together
+    # returns reasoning as `reasoning` and LiteLLM/Novita as `reasoning_content`;
+    # capture normalizes both to reasoning_content, so replay is uniform.
+    "togetherai": "tool_calls_only",
+    "novita-ai": "tool_calls_only",
+    "litellm": "tool_calls_only",
     "fireworks-ai": "all",
     "firepass": "all",
     "moonshotai": "all",
