@@ -557,7 +557,7 @@ def rag_search(
             dedup_threshold = settings.rag_dedup_threshold
             result_max_chars = settings.rag_result_max_chars
         except Exception:
-            fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", True, False, 20
+            fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
             prose_priority, prose_priority_weight = True, 0.4
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
 
