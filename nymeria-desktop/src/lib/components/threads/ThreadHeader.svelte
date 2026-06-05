@@ -610,10 +610,10 @@
     /* 2px left padding gives the first meta-part's dot room to render its 1px
        outer ring without being clipped by overflow:hidden. */
     padding-left: 2px;
-    /* 1px downward nudge for optical centering against the title beside it.
+    /* 2px downward nudge for optical centering against the title beside it.
        Text labels and dots both sit at this Y (the ::before rule below just
        uses plain translateY(-50%), so dots ride with the row). */
-    transform: translate(1px, 1px);
+    transform: translate(1px, 2px);
   }
 
   .meta-part {
