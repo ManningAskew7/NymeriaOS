@@ -636,11 +636,11 @@
     height: 5px;
     border-radius: 50%;
     background: var(--dot-color);
-    /* -50% centers the dot on the meta-part. The extra -1px counter-shifts
-       it up by one pixel so it lands back at the dots' original Y position
-       — the .meta row above moves the labels down 2px for optical centering,
-       but the dots should sit one pixel higher than the text. */
-    transform: translateY(calc(-50% - 1px));
+    /* -50% centers the dot on the meta-part. The extra +1px pushes it down
+       one pixel past center so the dots sit slightly below the text's
+       optical centerline. Combined with the .meta row's translateY(2px),
+       the dots end up 3px below their pre-nudge position. */
+    transform: translateY(calc(-50% + 1px));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot-color) 35%, transparent);
     transition: box-shadow var(--transition-fast);
   }
