@@ -141,6 +141,8 @@ EXPECTED_ROUTES = [
     ('/scheduler/status', ('GET',)),
     ('/settings', ('GET',)),
     ('/settings', ('PATCH',)),
+    ('/settings/dream-prompts', ('GET',)),
+    ('/settings/dream-prompts', ('PUT',)),
     ('/settings/env', ('GET',)),
     ('/settings/env/{key}', ('GET',)),
     ('/settings/global-skills', ('GET',)),

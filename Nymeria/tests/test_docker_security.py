@@ -14,7 +14,19 @@ PERMITTED_CAP_ADD = {
     # without sysctl host tweaks or losing automatic Let's Encrypt
     # (which requires :80 for ACME HTTP-01).
     "caddy": {"NET_BIND_SERVICE"},
+    # searxng: its entrypoint starts as root, chowns /etc/searxng, then drops
+    # to an unprivileged uid. CHOWN + SETGID + SETUID are the minimum caps that
+    # privilege-drop path needs on top of the cap_drop ALL baseline. Matches the
+    # upstream searxng-docker posture.
+    "searxng": {"CHOWN", "SETGID", "SETUID"},
 }
+
+# Services whose entrypoint cannot run under no-new-privileges. searxng's
+# root -> unprivileged drop relies on its granted setuid/setgid caps, which
+# no-new-privileges can break; upstream searxng-docker omits it for the same
+# reason. cap_drop ALL plus the minimal cap_add above is the compensating
+# control. New entries must be reviewed.
+NO_NEW_PRIVILEGES_EXEMPT = {"searxng"}
 
 
 def _load_compose(filename: str) -> dict:
@@ -24,7 +36,13 @@ def _load_compose(filename: str) -> dict:
 
 def _assert_service_hardening(services: dict) -> None:
     for name, service in services.items():
-        assert service.get("security_opt") == EXPECTED_SECURITY_OPT, name
+        if name in NO_NEW_PRIVILEGES_EXEMPT:
+            assert not service.get("security_opt"), (
+                f"{name} is exempt from no-new-privileges and must leave "
+                "security_opt unset (see NO_NEW_PRIVILEGES_EXEMPT)"
+            )
+        else:
+            assert service.get("security_opt") == EXPECTED_SECURITY_OPT, name
         assert service.get("cap_drop") == EXPECTED_CAP_DROP, name
         cap_add = set(service.get("cap_add") or [])
         permitted = PERMITTED_CAP_ADD.get(name, set())

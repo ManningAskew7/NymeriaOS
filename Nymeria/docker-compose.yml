@@ -862,9 +862,11 @@ services:
   #   docker compose --profile search --env-file .env.docker up -d searxng
   # Internal-only: no host port is published; the API reaches it at
   # http://searxng:8080 on the edge network. JSON output (which the tool
-  # requires) is enabled in ./searxng/settings.yml. Pin a digest for production.
+  # requires) is enabled in ./searxng/settings.yml. Image is digest-pinned for
+  # reproducibility; bump by re-pulling searxng/searxng:latest and updating the
+  # @sha256 below (pinned 2026-06 from searxng/searxng:latest).
   searxng:
-    image: searxng/searxng:latest
+    image: searxng/searxng@sha256:35b089054ac9b4257976107e71673d9e30ac17c9b50bbf8b4783f2f6d1d1981f
     container_name: nymeria-searxng
     restart: unless-stopped
     profiles:
