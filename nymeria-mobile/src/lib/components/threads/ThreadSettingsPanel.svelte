@@ -28,6 +28,7 @@
     coerceProviderRoute,
     hasRouteChoice,
     providerRouteLabel,
+    providerSpecFor,
     supportedRoutesForProvider,
   } from '$lib/utils/providerRoutes';
   import { untrack } from 'svelte';
@@ -157,6 +158,31 @@
     if (!provider || provider === 'anthropic' || provider === 'bedrock') return false;
     if (hasRouteChoice(provider, providerCatalog)) return selectedRoute() === 'openai_compat';
     return provider !== 'google' && provider !== 'ollama';
+  }
+
+  function isClaudeModel(model: string): boolean {
+    const id = (model || '').toLowerCase();
+    return id.includes('claude') || id.startsWith('anthropic/');
+  }
+
+  // Gateways flagged anthropic_native_for_claude drop Claude's signed thinking on
+  // their OpenAI-compatible path; nudge toward the Anthropic Messages route when a
+  // Claude model is selected and that route is not already active.
+  function showAnthropicRouteNudge(): boolean {
+    const spec = providerSpecFor(providerCatalog, getEffectiveProvider());
+    return (
+      Boolean(spec?.anthropic_native_for_claude) &&
+      isClaudeModel(llmModel) &&
+      selectedRoute() !== 'anthropic_messages'
+    );
+  }
+
+  // Base URL + API key apply on the OpenAI-compatible path and on a gateway's
+  // Anthropic Messages route (both still target the gateway endpoint).
+  function supportsConnectionOverride(): boolean {
+    const provider = getEffectiveProvider();
+    if (!provider) return false;
+    return supportsApiMode(provider) || selectedRoute() === 'anthropic_messages';
   }
 
   $effect(() => {
@@ -1055,6 +1081,21 @@
           </div>
         {/if}
 
+        {#if showAnthropicRouteNudge()}
+          <div class="route-nudge">
+            <p class="route-nudge-text">
+              This gateway's OpenAI-compatible path drops Claude's reasoning (thinking) signatures, so multi-turn reasoning passback breaks. Switch this thread to the Anthropic Messages route for native thinking via the gateway's /v1/messages endpoint.
+            </p>
+            <button
+              type="button"
+              class="route-nudge-button"
+              onclick={() => (llmProviderRoute = 'anthropic_messages')}
+            >
+              Use Anthropic Messages route
+            </button>
+          </div>
+        {/if}
+
         {#if supportsApiMode()}
           <div class="setting-group">
             <label class="setting-label" for="llm-openai-api-mode">API Mode</label>
@@ -1067,7 +1108,7 @@
           </div>
         {/if}
 
-        {#if getEffectiveProvider() && supportsApiMode()}
+        {#if supportsConnectionOverride()}
           <div class="setting-group">
             <label class="setting-label" for="llm-base-url">API Base URL</label>
             <input
@@ -1817,6 +1858,28 @@
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     line-height: 1.4;
+  }
+
+  .route-nudge {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+  }
+  .route-nudge-text {
+    margin: 0 0 var(--spacing-sm) 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    line-height: 1.4;
+  }
+  .route-nudge-button {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
   }
 
   .char-count {

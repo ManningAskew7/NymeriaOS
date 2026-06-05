@@ -48,5 +48,6 @@ export function coerceProviderRoute(
 
 export function providerRouteLabel(route: ProviderRoute): string {
   if (route === 'openai_compat') return 'OpenAI-compatible API';
+  if (route === 'anthropic_messages') return 'Anthropic Messages (native thinking)';
   return 'Native package';
 }
