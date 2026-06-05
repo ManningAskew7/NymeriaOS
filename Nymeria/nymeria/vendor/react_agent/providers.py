@@ -129,6 +129,32 @@ def _looks_like_sambanova_base_url(base_url: Any) -> bool:
     return "sambanova.ai" in str(base_url or "").lower()
 
 
+def _looks_like_vercel_ai_gateway_base_url(base_url: Any) -> bool:
+    """Return True for the Vercel AI Gateway base URL (not v0.dev)."""
+    return "ai-gateway.vercel.sh" in str(base_url or "").lower()
+
+
+def _looks_like_aihubmix_base_url(base_url: Any) -> bool:
+    """Return True for AIHubMix gateway base URLs."""
+    return "aihubmix.com" in str(base_url or "").lower()
+
+
+def _supports_openrouter_style_reasoning_replay(base_url: Any) -> bool:
+    """Return True for providers that accept OpenRouter-style reasoning replay.
+
+    OpenRouter, Vercel AI Gateway, and AIHubMix all return and accept back the
+    same assistant-message `reasoning_details` / `reasoning` fields (signature-
+    preserving), so one chat-completions replay path serves all three. Other
+    OpenAI-compatible providers reject these unknown keys, so the replay stays
+    scoped to this set.
+    """
+    return (
+        _looks_like_openrouter_base_url(base_url)
+        or _looks_like_vercel_ai_gateway_base_url(base_url)
+        or _looks_like_aihubmix_base_url(base_url)
+    )
+
+
 def _stable_openrouter_responses_id(prefix: str, item: dict[str, Any], index: int) -> str:
     """Generate a deterministic OpenRouter Responses item id."""
     seed = dict(item)
@@ -790,29 +816,31 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         base_url = getattr(self, "openai_api_base", None)
 
-        # Provider-scoped Responses-payload normalization for endpoints whose
-        # /responses shape diverges from stock OpenAI. Responses payloads are
-        # identified by the `input` array (chat-completions payloads use
-        # `messages`). Each normalizer is a small, unit-tested pure function.
+        # (A) Provider-scoped Responses-payload normalization for endpoints
+        # whose /responses shape diverges from stock OpenAI. Responses payloads
+        # are identified by the `input` array (chat-completions use `messages`).
+        # Each normalizer is a small, unit-tested pure function. Providers not
+        # listed here (openai, nvidia, vercel, xai, azure) take the stock shape.
         if "input" in payload:
             if _looks_like_groq_base_url(base_url):
                 return _normalize_groq_responses_payload(payload)
             if _looks_like_sambanova_base_url(base_url):
                 return _normalize_sambanova_responses_payload(payload)
-
-        # OpenRouter documents assistant-message reasoning replay via
-        # `message.reasoning` or `message.reasoning_details`. LangChain
-        # stores provider-specific data in `additional_kwargs`, but its
-        # OpenAI-compatible serializer drops those fields by default.
-        # Keep this scoped to OpenRouter payloads so direct OpenAI/local
-        # providers don't receive unknown message/history keys.
-        if not _looks_like_openrouter_base_url(base_url):
+            if _looks_like_openrouter_base_url(base_url):
+                # OpenRouter's Responses beta requires item id/status fields that
+                # LangChain omits; other Responses providers do not.
+                return _normalize_openrouter_responses_payload(payload)
             return payload
 
-        if "input" in payload:
-            return _normalize_openrouter_responses_payload(payload)
-
+        # (B) Chat-completions reasoning replay. OpenRouter and OpenRouter-shaped
+        # gateways (Vercel AI Gateway, AIHubMix) document assistant-message
+        # reasoning replay via `message.reasoning_details` / `message.reasoning`.
+        # LangChain stores it in `additional_kwargs` but its serializer drops it.
+        # Keep this scoped so direct OpenAI/local providers don't receive unknown
+        # message keys.
         if "messages" not in payload:
+            return payload
+        if not _supports_openrouter_style_reasoning_replay(base_url):
             return payload
 
         source_messages = self._convert_input(input_).to_messages()

@@ -30,6 +30,7 @@ from nymeria.vendor.react_agent.providers import (
     _normalize_openrouter_responses_payload,
     _normalize_sambanova_responses_payload,
     _should_disable_streaming_for_local_base_url,
+    _supports_openrouter_style_reasoning_replay,
     _wrap_cliproxy_context_management_event,
     create_llm,
     create_llm_with_tools,
@@ -78,6 +79,42 @@ def _sambanova_config(**overrides) -> LLMConfig:
         "model": "gpt-oss-120b",
         "api_key": "test-key",
         "base_url": "https://api.sambanova.ai/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _vercel_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "vercel",
+        "model": "anthropic/claude-sonnet-4.5",
+        "api_key": "test-key",
+        "base_url": "https://ai-gateway.vercel.sh/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _aihubmix_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "aihubmix",
+        "model": "claude-sonnet-4-5",
+        "api_key": "test-key",
+        "base_url": "https://aihubmix.com/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _nvidia_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "nvidia",
+        "model": "deepseek-ai/deepseek-v4-pro",
+        "api_key": "test-key",
+        "base_url": "https://integrate.api.nvidia.com/v1",
         "temperature": None,
     }
     values.update(overrides)
@@ -1191,6 +1228,122 @@ def test_groq_and_sambanova_advertise_responses_support():
         assert spec is not None, provider_id
         assert spec.supports_responses is True, provider_id
         assert spec.default_api_mode == "responses", provider_id
+
+
+def test_openrouter_style_reasoning_replay_predicate():
+    assert _supports_openrouter_style_reasoning_replay("https://openrouter.ai/api/v1")
+    assert _supports_openrouter_style_reasoning_replay(
+        "https://ai-gateway.vercel.sh/v1"
+    )
+    assert _supports_openrouter_style_reasoning_replay("https://aihubmix.com/v1")
+    # Not OpenRouter-shaped: stock OpenAI, Groq, and Vercel's v0 (a different host).
+    assert not _supports_openrouter_style_reasoning_replay("https://api.openai.com/v1")
+    assert not _supports_openrouter_style_reasoning_replay(
+        "https://api.groq.com/openai/v1"
+    )
+    assert not _supports_openrouter_style_reasoning_replay("https://api.v0.dev/v1")
+
+
+def test_vercel_defaults_to_responses_payload():
+    llm = create_llm(_vercel_config())
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    # Vercel uses the stock OpenAI Responses shape (no provider normalizer).
+    assert "input" in payload
+    assert "messages" not in payload
+    assert payload["store"] is False
+
+
+def test_nvidia_defaults_to_responses_payload():
+    llm = create_llm(_nvidia_config())
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
+    assert "input" in payload
+    assert "messages" not in payload
+    assert payload["store"] is False
+
+
+def test_vercel_chat_completions_replays_reasoning_details():
+    llm = create_llm(
+        _vercel_config(
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+            reasoning_effort="low",
+        )
+    )
+    details = [
+        {
+            "type": "reasoning.text",
+            "text": "Prior thought",
+            "format": "unknown",
+            "index": 0,
+        }
+    ]
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        AIMessage(
+            content="Hello",
+            additional_kwargs={
+                "reasoning_content": "Prior thought",
+                "reasoning_details": details,
+            },
+        ),
+        HumanMessage(content="Again"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["reasoning_details"] == details
+
+
+def test_aihubmix_chat_completions_replays_reasoning_details():
+    llm = create_llm(_aihubmix_config(openai_api_mode="chat_completions"))
+    details = [
+        {
+            "type": "reasoning.text",
+            "text": "Prior thought",
+            "format": "unknown",
+            "index": 0,
+        }
+    ]
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Hi"),
+        AIMessage(
+            content="Hello",
+            additional_kwargs={
+                "reasoning_content": "Prior thought",
+                "reasoning_details": details,
+            },
+        ),
+        HumanMessage(content="Again"),
+    ])
+
+    assistant = payload["messages"][1]
+    assert assistant["reasoning_details"] == details
+
+
+def test_nvidia_and_vercel_advertise_responses_support():
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    for provider_id in ("nvidia", "vercel"):
+        spec = get_llm_provider_spec(provider_id)
+        assert spec is not None, provider_id
+        assert spec.supports_responses is True, provider_id
+        assert spec.default_api_mode == "responses", provider_id
+
+    # AIHubMix has no /responses; its passback is the chat reasoning_details path.
+    aihubmix = get_llm_provider_spec("aihubmix")
+    assert aihubmix is not None
+    assert aihubmix.supports_responses is False
 
 
 def test_notes_for_user_flows_through_catalog_response():
