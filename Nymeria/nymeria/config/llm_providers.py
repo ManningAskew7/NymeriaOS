@@ -304,7 +304,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://api-docs.deepseek.com/",
         aliases=("deep-seek",),
         notes="DeepSeek also accepts https://api.deepseek.com/v1 as a compatibility alias.",
-        notes_for_user="deepseek-reasoner and V4 thinking models return 400 on tool follow-ups when reasoning_content is not echoed (langchain issues #34166, #34436).",
+        notes_for_user="Reasoning round-trips over Chat Completions: reasoning_content is echoed back on tool-call turns (V4 thinking) and stripped on non-tool turns (deepseek-reasoner). Do not force tool_choice on V4 thinking (DeepSeek 400s; DeepSeek-V3#1376).",
     ),
     _spec(
         "mistral",
