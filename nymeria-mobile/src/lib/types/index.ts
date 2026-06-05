@@ -780,7 +780,7 @@ export interface AppConfig {
 // Server settings types
 export type LLMProvider = string;
 export type OpenAIApiMode = 'chat_completions' | 'responses';
-export type ProviderRoute = 'native' | 'openai_compat';
+export type ProviderRoute = 'native' | 'openai_compat' | 'anthropic_messages';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
 export type ProviderTier = 'native' | 'gateway' | 'unverified';
@@ -808,6 +808,10 @@ export interface LLMProviderSpec {
   supported_routes?: ProviderRoute[];
   default_route?: ProviderRoute;
   openai_compat_base_url?: string | null;
+  // True for gateways whose OpenAI-compatible path drops Claude's signed
+  // thinking; the picker offers a one-click switch to the anthropic_messages
+  // route when a Claude model is selected.
+  anthropic_native_for_claude?: boolean;
 }
 
 // Available model from provider (from GET /models/available)
