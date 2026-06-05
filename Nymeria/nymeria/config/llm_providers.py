@@ -435,6 +435,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="qwen-plus",
         docs_url="https://www.alibabacloud.com/help/model-studio/use-qwen-by-calling-api",
         aliases=("dashscope", "qwen", "modelstudio", "alibaba-cloud"),
+        notes_for_user="When reasoning is enabled, enable_thinking turns on Qwen3.x thinking and reasoning_content round-trips over Chat Completions on tool-call turns (stripped on plain turns; tool_choice stays auto/none while thinking).",
     ),
     _spec(
         "alibaba-cn",
@@ -443,6 +444,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
         default_model="qwen-plus",
         docs_url="https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+        notes_for_user="When reasoning is enabled, enable_thinking turns on Qwen3.x thinking and reasoning_content round-trips over Chat Completions on tool-call turns.",
     ),
     _spec(
         "alibaba-coding-plan",
@@ -454,6 +456,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://www.alibabacloud.com/help/en/model-studio/other-tools-coding-plan",
         notes="Coding Plan API keys are intended for interactive coding tools; use the dedicated Coding Plan key tier.",
         aliases=("alibaba-coding", "alibaba_coding", "dashscope-coding", "qwen-coding", "qwen-coding-plan"),
+        notes_for_user="When reasoning is enabled, enable_thinking turns on Qwen3.x thinking and reasoning_content round-trips over Chat Completions on tool-call turns.",
     ),
     _spec(
         "alibaba-coding-plan-cn",
@@ -464,6 +467,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="qwen3.5-plus",
         docs_url="https://help.aliyun.com/zh/model-studio/coding-plan",
         notes="China-region Coding Plan endpoint.",
+        notes_for_user="When reasoning is enabled, enable_thinking turns on Qwen3.x thinking and reasoning_content round-trips over Chat Completions on tool-call turns.",
     ),
     _spec(
         "qwen-oauth",
@@ -475,6 +479,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://docs.qwencloud.com/coding-plan/tools/cline",
         notes="Hermes reference provider for Qwen portal/OAuth flows. Prefer Alibaba Coding Plan for normal API-key setup.",
         aliases=("qwen-portal", "qwen-cli"),
+        notes_for_user="When reasoning is enabled, enable_thinking turns on Qwen3.x thinking and reasoning_content round-trips over Chat Completions on tool-call turns.",
     ),
     _spec(
         "zai",
@@ -835,7 +840,13 @@ _LONG_TAIL_SPECS: tuple[LLMProviderSpec, ...] = (
     _spec("ambient", "Ambient", base_url="https://api.ambient.xyz/v1", env=("AMBIENT_API_KEY",)),
     _spec("auriko", "Auriko", base_url="https://api.auriko.ai/v1", env=("AURIKO_API_KEY",)),
     _spec("bailing", "Bailing", base_url="https://api.tbox.cn/api/llm/v1", env=("BAILING_API_TOKEN",)),
-    _spec("baseten", "Baseten", base_url="https://inference.baseten.co/v1", env=("BASETEN_API_KEY",)),
+    _spec(
+        "baseten",
+        "Baseten",
+        base_url="https://inference.baseten.co/v1",
+        env=("BASETEN_API_KEY",),
+        notes_for_user="Reasoning round-trips over Chat Completions: reasoning_content is echoed back on tool-call turns (DeepSeek V4 / GPT-OSS 400 otherwise) and stripped on non-tool turns. Enabling thinking is per-model (reasoning_effort or chat_template_args); no blanket toggle is set.",
+    ),
     _spec("berget", "Berget.AI", base_url="https://api.berget.ai/v1", env=("BERGET_API_KEY",)),
     _spec("clarifai", "Clarifai", base_url="https://api.clarifai.com/v2/ext/openai/v1", env=("CLARIFAI_PAT",)),
     _spec("claudinio", "Claudinio", base_url="https://api.claudin.io/v1", env=("CLAUDINIO_API_KEY",)),
