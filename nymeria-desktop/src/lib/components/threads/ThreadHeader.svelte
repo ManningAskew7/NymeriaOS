@@ -562,14 +562,22 @@
 
   /* The meta row expands horizontally to the right, so the chevron tracks that
      axis: it points right when collapsed ("expand outward") and rotates to
-     point left when the row is open ("collapse it back"). */
+     point left when the row is open ("collapse it back").
+
+     translateY(2px) is an optical-centering nudge for the chevron only — the
+     button itself stays put. It must be respecified on the .open rule
+     because that rule sets a single `transform` and would otherwise drop the
+     translate when it adds the rotation. Translate listed first so the matrix
+     `translate * rotate` shifts the already-rotated glyph down 2px on screen
+     (the visual end state is identical for both directions of the chevron). */
   .meta-toggle :global(svg) {
     display: block;
+    transform: translateY(2px);
     transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .meta-toggle.open :global(svg) {
-    transform: rotate(180deg);
+    transform: translateY(2px) rotate(180deg);
   }
 
   /* The connected state stays neutral so this reads as a plain toggle; only a
