@@ -139,15 +139,59 @@ def _looks_like_aihubmix_base_url(base_url: Any) -> bool:
     return "aihubmix.com" in str(base_url or "").lower()
 
 
-def _supports_openrouter_style_reasoning_replay(base_url: Any) -> bool:
+# Reasoning-replay dispatch keys on the canonical Nymeria provider id (registry
+# key), threaded onto the chat model as `nymeria_provider`. The `_looks_like_*`
+# base-URL predicates are a frozen fallback for the providers wired before
+# id-threading and for wrappers built without an id (e.g. a direct unit test).
+# New providers go in these id maps only, never as new base-URL predicates: a
+# provider id is unambiguous where a base URL is not (the Alibaba/Qwen family
+# alone spans five hosts, one of which carries no `dashscope` substring at all).
+
+# Provider ids whose chat-completions reasoning replays in OpenRouter's
+# `reasoning_details` / `reasoning` shape (signature-preserving).
+_OPENROUTER_STYLE_REASONING_PROVIDERS = frozenset({"openrouter", "vercel", "aihubmix"})
+
+# Provider ids that carry prior reasoning as a flat top-level `reasoning_content`
+# string, mapped to how it must be replayed:
+#   "tool_calls_only": echo on tool-call turns, strip otherwise. The DeepSeek
+#     thinking-mode contract, shared by Alibaba/Qwen3.5 (reasoning leaks into
+#     content with </think> if omitted on a tool turn;
+#     alibabacloud.com/help/en/model-studio/deep-thinking) and Baseten-served
+#     thinking-by-default models (DeepSeek V4 / GPT-OSS 400 if omitted on a tool
+#     turn; baseten.co/library/deepseek-v3-2). Non-tool turns must strip it
+#     (deepseek-reasoner 400s; DashScope says drop it from plain history).
+#   "all": echo on every assistant turn with a captured trace. Fireworks
+#     (`reasoning_history="preserved"`) and Moonshot/Kimi (`thinking.keep="all"`)
+#     keep reasoning across all turns once their enable-toggle is set (applied in
+#     _apply_chat_reasoning_toggles).
+_FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER: dict[str, str] = {
+    "deepseek": "tool_calls_only",
+    "alibaba": "tool_calls_only",
+    "alibaba-cn": "tool_calls_only",
+    "alibaba-coding-plan": "tool_calls_only",
+    "alibaba-coding-plan-cn": "tool_calls_only",
+    "qwen-oauth": "tool_calls_only",
+    "baseten": "tool_calls_only",
+    "fireworks-ai": "all",
+    "firepass": "all",
+    "moonshotai": "all",
+    "moonshotai-cn": "all",
+}
+
+
+def _supports_openrouter_style_reasoning_replay(
+    provider: Any, base_url: Any = None
+) -> bool:
     """Return True for providers that accept OpenRouter-style reasoning replay.
 
     OpenRouter, Vercel AI Gateway, and AIHubMix all return and accept back the
     same assistant-message `reasoning_details` / `reasoning` fields (signature-
     preserving), so one chat-completions replay path serves all three. Other
     OpenAI-compatible providers reject these unknown keys, so the replay stays
-    scoped to this set.
+    scoped to this set. Keys on the provider id first, base URL as a fallback.
     """
+    if provider and str(provider) in _OPENROUTER_STYLE_REASONING_PROVIDERS:
+        return True
     return (
         _looks_like_openrouter_base_url(base_url)
         or _looks_like_vercel_ai_gateway_base_url(base_url)
@@ -160,23 +204,19 @@ def _looks_like_deepseek_base_url(base_url: Any) -> bool:
     return "api.deepseek.com" in str(base_url or "").lower()
 
 
-def _flat_reasoning_content_replay_mode(base_url: Any) -> str | None:
+def _flat_reasoning_content_replay_mode(
+    provider: Any, base_url: Any = None
+) -> str | None:
     """Return how to replay a flat `reasoning_content` string for a provider.
 
-    Some providers carry the prior chain of thought as a top-level
-    `reasoning_content` string on the assistant message (a different shape from
-    OpenRouter's `reasoning_details` array). Returns:
-      - "tool_calls_only": re-attach only on assistant turns that made tool
-        calls; strip it on non-tool turns. DeepSeek requires exactly this: V4
-        thinking mode 400s if reasoning_content is omitted on a tool-call turn,
-        and deepseek-reasoner 400s if it is present on a non-tool turn
-        (api-docs.deepseek.com/guides/thinking_mode; langchain #34436).
-      - "all": re-attach on every assistant turn that has reasoning_content.
-        Fireworks (`reasoning_history="preserved"`) and Moonshot/Kimi
-        (`thinking.keep="all"`) preserve reasoning across all turns once their
-        enable-toggle is set (applied in _create_openai_compatible_llm).
-      - None: provider does not use this shape.
+    See `_FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER` for the modes. Keys on the
+    provider id first; falls back to the base-URL predicates for the providers
+    wired before id-threading (DeepSeek / Fireworks / Moonshot).
     """
+    if provider:
+        mode = _FLAT_REASONING_CONTENT_REPLAY_BY_PROVIDER.get(str(provider))
+        if mode is not None:
+            return mode
     if _looks_like_deepseek_base_url(base_url):
         return "tool_calls_only"
     base = str(base_url or "").lower()
@@ -836,6 +876,15 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
     single code path.
     """
 
+    nymeria_provider: str | None = None
+    """Canonical Nymeria provider id (registry key) threaded from the factory.
+
+    Reasoning-replay dispatch keys on this first, falling back to base-URL
+    matching when unset (e.g. a wrapper constructed directly in a unit test).
+    It is internal bookkeeping only and never reaches the wire payload, which is
+    built from the stock OpenAI parameter set.
+    """
+
     def _get_request_payload(
         self,
         input_,
@@ -845,6 +894,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         base_url = getattr(self, "openai_api_base", None)
+        provider = getattr(self, "nymeria_provider", None)
 
         # (A) Provider-scoped Responses-payload normalization for endpoints
         # whose /responses shape diverges from stock OpenAI. Responses payloads
@@ -873,7 +923,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
 
         # OpenRouter-style providers replay reasoning as `reasoning_details` /
         # `reasoning` assistant-message fields.
-        if _supports_openrouter_style_reasoning_replay(base_url):
+        if _supports_openrouter_style_reasoning_replay(provider, base_url):
             source_messages = self._convert_input(input_).to_messages()
             for source, wire_message in zip(source_messages, payload["messages"]):
                 if (
@@ -905,12 +955,12 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
 
             return payload
 
-        # (C) Flat `reasoning_content` replay (DeepSeek). The prior chain of
-        # thought rides back as a top-level string on the assistant message.
-        # Capture into additional_kwargs already happens on the way in
-        # (_convert_chunk_to_generation_chunk). "tool_calls_only" re-attaches on
-        # tool-call turns and strips otherwise, satisfying both DeepSeek rules.
-        flat_replay = _flat_reasoning_content_replay_mode(base_url)
+        # (C) Flat `reasoning_content` replay (DeepSeek, Alibaba/Qwen, Baseten,
+        # Fireworks, Moonshot). The prior chain of thought rides back as a
+        # top-level string on the assistant message. Capture into
+        # additional_kwargs already happens on the way in
+        # (_convert_chunk_to_generation_chunk).
+        flat_replay = _flat_reasoning_content_replay_mode(provider, base_url)
         if flat_replay is not None:
             source_messages = self._convert_input(input_).to_messages()
             for source, wire_message in zip(source_messages, payload["messages"]):
@@ -922,10 +972,18 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                 reasoning_content = (source.additional_kwargs or {}).get(
                     "reasoning_content"
                 )
-                if flat_replay == "tool_calls_only" and not getattr(
-                    source, "tool_calls", None
-                ):
-                    wire_message.pop("reasoning_content", None)
+                if flat_replay == "tool_calls_only":
+                    if getattr(source, "tool_calls", None):
+                        # Thinking-mode contract (DeepSeek V4 / Qwen3.5 /
+                        # Baseten): reasoning_content MUST ride back on tool-call
+                        # turns or the provider 400s, or leaks </think> into
+                        # content. An empty string satisfies the constraint when
+                        # no trace was captured (e.g. pre-feature history).
+                        wire_message["reasoning_content"] = reasoning_content or ""
+                    else:
+                        # deepseek-reasoner 400s if it is present on a non-tool
+                        # turn; DashScope says drop it from plain history.
+                        wire_message.pop("reasoning_content", None)
                     continue
                 if reasoning_content:
                     wire_message["reasoning_content"] = reasoning_content
@@ -1493,6 +1551,10 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
         "model": config.model,
         "api_key": api_key,
         "max_retries": 0,
+        # Direct OpenAI and the CLIProxy Codex sidecar both ride this path;
+        # neither does flat reasoning_content replay, but tagging the id keeps
+        # dispatch off base-URL guesswork.
+        "nymeria_provider": "openai",
     }
 
     if config.temperature is not None:
@@ -1595,6 +1657,20 @@ def _apply_chat_reasoning_toggles(
         # Kimi: thinking.keep="all" enables thinking and preserves the chain of
         # thought across turns (platform.kimi.ai K2 thinking guide).
         _merge_extra_body(kwargs, {"thinking": {"type": "enabled", "keep": "all"}})
+    elif provider in {
+        "alibaba",
+        "alibaba-cn",
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn",
+        "qwen-oauth",
+    }:
+        # Alibaba/Qwen3.x: enable_thinking turns on the chain of thought on the
+        # OpenAI-compatible endpoint; reasoning_content then round-trips on
+        # tool-call turns via the "tool_calls_only" flat replay
+        # (alibabacloud.com/help/en/model-studio/deep-thinking). Baseten gets no
+        # blanket toggle: enablement there is per-model (reasoning_effort vs
+        # chat_template_args), so only its passback replay is wired.
+        _merge_extra_body(kwargs, {"enable_thinking": True})
 
 
 def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
@@ -1622,6 +1698,9 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
         "api_key": api_key,
         "base_url": _normalize_openai_base_url(base_url),
         "max_retries": 0,
+        # Canonical provider id drives reasoning-replay dispatch in
+        # ChatOpenAIWithReasoning (provider-first, base-URL fallback).
+        "nymeria_provider": provider,
     }
 
     if config.temperature is not None:

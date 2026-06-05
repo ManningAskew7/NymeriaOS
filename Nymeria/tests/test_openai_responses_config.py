@@ -165,6 +165,30 @@ def _moonshot_config(**overrides) -> LLMConfig:
     return LLMConfig(**values)
 
 
+def _alibaba_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "alibaba",
+        "model": "qwen3.5-plus",
+        "api_key": "test-key",
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _baseten_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "baseten",
+        "model": "deepseek-ai/DeepSeek-V4-Pro",
+        "api_key": "test-key",
+        "base_url": "https://inference.baseten.co/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
 def _anthropic_config(**overrides) -> LLMConfig:
     values = {
         "provider": "anthropic",
@@ -1275,17 +1299,26 @@ def test_groq_and_sambanova_advertise_responses_support():
 
 
 def test_openrouter_style_reasoning_replay_predicate():
-    assert _supports_openrouter_style_reasoning_replay("https://openrouter.ai/api/v1")
+    # Provider-id dispatch (primary path).
+    assert _supports_openrouter_style_reasoning_replay("openrouter")
+    assert _supports_openrouter_style_reasoning_replay("vercel")
+    assert _supports_openrouter_style_reasoning_replay("aihubmix")
+    assert not _supports_openrouter_style_reasoning_replay("openai")
+    assert not _supports_openrouter_style_reasoning_replay("groq")
+    # Base-URL fallback (wrapper built without an id).
+    assert _supports_openrouter_style_reasoning_replay(None, "https://openrouter.ai/api/v1")
     assert _supports_openrouter_style_reasoning_replay(
-        "https://ai-gateway.vercel.sh/v1"
+        None, "https://ai-gateway.vercel.sh/v1"
     )
-    assert _supports_openrouter_style_reasoning_replay("https://aihubmix.com/v1")
+    assert _supports_openrouter_style_reasoning_replay(None, "https://aihubmix.com/v1")
     # Not OpenRouter-shaped: stock OpenAI, Groq, and Vercel's v0 (a different host).
-    assert not _supports_openrouter_style_reasoning_replay("https://api.openai.com/v1")
     assert not _supports_openrouter_style_reasoning_replay(
-        "https://api.groq.com/openai/v1"
+        None, "https://api.openai.com/v1"
     )
-    assert not _supports_openrouter_style_reasoning_replay("https://api.v0.dev/v1")
+    assert not _supports_openrouter_style_reasoning_replay(
+        None, "https://api.groq.com/openai/v1"
+    )
+    assert not _supports_openrouter_style_reasoning_replay(None, "https://api.v0.dev/v1")
 
 
 def test_vercel_defaults_to_responses_payload():
@@ -1377,12 +1410,33 @@ def test_aihubmix_chat_completions_replays_reasoning_details():
 
 def test_deepseek_flat_reasoning_replay_mode():
     assert _looks_like_deepseek_base_url("https://api.deepseek.com")
-    assert _flat_reasoning_content_replay_mode("https://api.deepseek.com") == (
+    # Provider-id dispatch (primary path).
+    assert _flat_reasoning_content_replay_mode("deepseek") == "tool_calls_only"
+    assert _flat_reasoning_content_replay_mode("openai") is None
+    # Base-URL fallback for the providers wired before id-threading.
+    assert _flat_reasoning_content_replay_mode(None, "https://api.deepseek.com") == (
         "tool_calls_only"
     )
-    # Not DeepSeek: no flat replay.
-    assert _flat_reasoning_content_replay_mode("https://api.openai.com/v1") is None
-    assert _flat_reasoning_content_replay_mode("https://openrouter.ai/api/v1") is None
+    # Not a flat-replay provider: no replay.
+    assert _flat_reasoning_content_replay_mode(None, "https://api.openai.com/v1") is None
+    assert _flat_reasoning_content_replay_mode(None, "https://openrouter.ai/api/v1") is None
+
+
+def test_alibaba_qwen_and_baseten_use_tool_calls_only_replay():
+    # The Alibaba/Qwen family spans five hosts (one with no `dashscope`
+    # substring) and Baseten is one host serving many models; both dispatch on
+    # the provider id, not a base-URL guess.
+    for provider_id in (
+        "alibaba",
+        "alibaba-cn",
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn",
+        "qwen-oauth",
+        "baseten",
+    ):
+        assert _flat_reasoning_content_replay_mode(provider_id) == "tool_calls_only", (
+            provider_id
+        )
 
 
 def test_deepseek_replays_reasoning_content_on_tool_call_turn():
@@ -1441,11 +1495,16 @@ def test_deepseek_has_no_responses_support():
 
 
 def test_fireworks_and_moonshot_use_flat_replay_all():
+    # Provider-id dispatch (primary path).
+    assert _flat_reasoning_content_replay_mode("fireworks-ai") == "all"
+    assert _flat_reasoning_content_replay_mode("moonshotai") == "all"
+    assert _flat_reasoning_content_replay_mode("moonshotai-cn") == "all"
+    # Base-URL fallback.
     assert _flat_reasoning_content_replay_mode(
-        "https://api.fireworks.ai/inference/v1"
+        None, "https://api.fireworks.ai/inference/v1"
     ) == "all"
-    assert _flat_reasoning_content_replay_mode("https://api.moonshot.ai/v1") == "all"
-    assert _flat_reasoning_content_replay_mode("https://api.moonshot.cn/v1") == "all"
+    assert _flat_reasoning_content_replay_mode(None, "https://api.moonshot.ai/v1") == "all"
+    assert _flat_reasoning_content_replay_mode(None, "https://api.moonshot.cn/v1") == "all"
 
 
 def test_fireworks_sets_reasoning_history_when_reasoning_enabled():
@@ -1493,6 +1552,129 @@ def test_moonshot_sets_thinking_keep_all_when_reasoning_enabled():
     llm = create_llm(_moonshot_config(extended_thinking=True))
 
     assert llm.extra_body == {"thinking": {"type": "enabled", "keep": "all"}}
+
+
+def test_alibaba_replays_reasoning_content_on_tool_call_turn():
+    llm = create_llm(_alibaba_config())
+
+    ai_with_tools = AIMessage(
+        content="",
+        additional_kwargs={"reasoning_content": "Check the forecast."},
+        tool_calls=[
+            {
+                "name": "get_weather",
+                "args": {"city": "Paris"},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_with_tools,
+        ToolMessage(content="Sunny, 20C", tool_call_id="call_1"),
+        HumanMessage(content="And London?"),
+    ])
+
+    assistant = payload["messages"][1]
+    # Qwen3.5 leaks </think> into content if reasoning_content is dropped on a
+    # tool-call turn (alibabacloud.com/help/en/model-studio/deep-thinking).
+    assert assistant["reasoning_content"] == "Check the forecast."
+
+
+def test_alibaba_strips_reasoning_content_on_non_tool_turn():
+    llm = create_llm(_alibaba_config())
+
+    ai_no_tools = AIMessage(
+        content="It is sunny.",
+        additional_kwargs={"reasoning_content": "Private chain of thought."},
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Weather in Paris?"),
+        ai_no_tools,
+        HumanMessage(content="Thanks"),
+    ])
+
+    # DashScope multi-round guidance: keep only `content`, drop reasoning.
+    assert "reasoning_content" not in payload["messages"][1]
+
+
+def test_alibaba_sets_enable_thinking_when_reasoning_enabled():
+    llm = create_llm(_alibaba_config(extended_thinking=True))
+
+    assert llm.extra_body == {"enable_thinking": True}
+
+
+def test_alibaba_no_enable_thinking_without_reasoning():
+    llm = create_llm(_alibaba_config())
+
+    # The toggle is opt-in; plain chat must not force thinking on.
+    assert not (llm.extra_body or {}).get("enable_thinking")
+
+
+def test_baseten_replays_empty_reasoning_content_on_tool_turn_without_trace():
+    """Baseten thinking-by-default models 400 if a tool-call turn omits
+    reasoning_content; an empty string satisfies the constraint when no trace
+    was captured (baseten.co/library/deepseek-v3-2)."""
+    llm = create_llm(_baseten_config())
+
+    ai_tool_no_trace = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "lookup",
+                "args": {},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Q"),
+        ai_tool_no_trace,
+        ToolMessage(content="R", tool_call_id="call_1"),
+        HumanMessage(content="Q2"),
+    ])
+
+    assert payload["messages"][1]["reasoning_content"] == ""
+
+
+def test_baseten_strips_reasoning_content_on_non_tool_turn():
+    llm = create_llm(_baseten_config())
+
+    ai_no_tools = AIMessage(
+        content="Answer",
+        additional_kwargs={"reasoning_content": "trace"},
+    )
+
+    payload = llm._get_request_payload([
+        HumanMessage(content="Q"),
+        ai_no_tools,
+        HumanMessage(content="Q2"),
+    ])
+
+    assert "reasoning_content" not in payload["messages"][1]
+
+
+def test_baseten_applies_no_enable_toggle():
+    # Enablement on Baseten is per-model (reasoning_effort vs chat_template_args),
+    # so the client sets no blanket toggle: only the passback replay is wired.
+    llm = create_llm(_baseten_config(extended_thinking=True))
+
+    assert not (llm.extra_body or {}).get("enable_thinking")
+
+
+def test_nymeria_provider_threaded_and_absent_from_request_payload():
+    llm = create_llm(_alibaba_config())
+
+    assert llm.nymeria_provider == "alibaba"
+
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    # Internal bookkeeping must never reach the wire payload.
+    assert "nymeria_provider" not in payload
 
 
 def test_nvidia_and_vercel_advertise_responses_support():
