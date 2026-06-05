@@ -469,7 +469,7 @@
   }
 
   .row-menu-item.destructive:hover {
-    background: rgba(239, 68, 68, 0.12);
+    background: rgba(var(--error-rgb), 0.12);
   }
 
   .switcher-footer {

@@ -117,7 +117,12 @@
   }
 
   .btn-danger:hover:not(:disabled) {
-    background: #ef4444;
+    /* Was raw `#ef4444`, which ignored the active theme's error color
+       entirely — on the Light theme the resting --error is #dc2626, so
+       hover became LIGHTER than rest. Mix toward black to darken the
+       theme's own error color, which keeps the contrast direction correct
+       across every theme. */
+    background: color-mix(in srgb, var(--error) 88%, black);
   }
 
   /* States */

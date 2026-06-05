@@ -63,9 +63,14 @@
          (separation cue) + optional backdrop-filter is acceptable.
        - SEMANTIC colored borders (warning, error): keep the colored
          border, drop the decorative shadow — the color carries meaning. */
+  /* Static fallbacks match the Midnight (default dark) runtime overrides in
+     themes.ts so the first paint before the theme script runs stays in step
+     with the resolved theme — previously the md/lg values here drifted
+     larger than what themes.ts settled to, causing a brief one-frame
+     "heavy shadow" flash. */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 8px 20px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
   --shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.5);
 
   /* Spacing — 4px grid scale, used for ALL padding / margin / gap.
@@ -213,6 +218,17 @@
   /* Accent glow variants */
   --accent-glow-sm: 0 0 12px rgba(95, 184, 204, 0.15);
   --accent-glow-md: 0 0 20px rgba(95, 184, 204, 0.2);
+
+  /* Semantic RGB triplets — Midnight defaults (overridden per-theme in
+     themes.ts). Use these with rgba(var(--error-rgb), alpha) to make any
+     alpha-tinted error/warning/success surface track the active theme.
+     Without these, every tinted error background had to hardcode a literal
+     `rgba(239, 68, 68, …)`, which is why §2 audit found ~40 raw rgba uses
+     all repeating the same three semantic colors. */
+  --error-rgb: 248, 113, 113;   /* #f87171 */
+  --warning-rgb: 251, 191, 36;  /* #fbbf24 */
+  --success-rgb: 52, 211, 153;  /* #34d399 */
+  --info-rgb: 129, 140, 248;    /* #818cf8 */
 }
 
 /* Reset and base styles */

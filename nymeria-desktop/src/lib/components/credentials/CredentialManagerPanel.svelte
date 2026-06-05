@@ -271,15 +271,15 @@
   }
 
   .error-row {
-    color: var(--error, #f44336);
-    background: rgba(244, 67, 54, 0.1);
-    border: 1px solid rgba(244, 67, 54, 0.25);
+    color: var(--error);
+    background: rgba(var(--error-rgb), 0.1);
+    border: 1px solid rgba(var(--error-rgb), 0.25);
   }
 
   .pending-strip {
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.1);
-    border: 1px solid rgba(245, 158, 11, 0.25);
+    color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.1);
+    border: 1px solid rgba(var(--warning-rgb), 0.25);
   }
 
   .credential-form {
@@ -376,13 +376,13 @@
   }
 
   .status-pill {
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.12);
+    color: var(--success);
+    background: rgba(var(--success-rgb), 0.12);
   }
 
   .status-pending_setup {
-    color: #f59e0b;
-    background: rgba(245, 158, 11, 0.14);
+    color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.14);
   }
 
   .owner-pill {

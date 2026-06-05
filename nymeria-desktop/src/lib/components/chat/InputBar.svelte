@@ -735,7 +735,7 @@
     align-items: center;
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-sm);
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(var(--error-rgb), 0.1);
     color: var(--error);
     font-size: var(--font-size-sm);
     border-radius: var(--radius-md) var(--radius-md) 0 0;

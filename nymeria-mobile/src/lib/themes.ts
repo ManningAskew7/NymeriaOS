@@ -278,14 +278,21 @@ export function applyTheme(themeName: ThemeName): void {
   // Card shadows — the defaults in app.css use rgba(0,0,0,0.3-0.5) which is
   // appropriate for dark themes but creates a heavy dark edge on a paper
   // background. Light themes get softer, lower-opacity shadows.
+  //
+  // --shadow-xl was previously left at the static value from app.css
+  // (rgba(0,0,0,0.5)), which reads as a harsh 50% black edge on the
+  // warm-paper Light theme. Override it here so it stays in step with
+  // the rest of the ladder.
   if (light) {
     root.style.setProperty('--shadow-sm', '0 1px 2px rgba(0, 0, 0, 0.04)');
     root.style.setProperty('--shadow-md', '0 2px 6px rgba(0, 0, 0, 0.06)');
     root.style.setProperty('--shadow-lg', '0 8px 20px rgba(0, 0, 0, 0.08)');
+    root.style.setProperty('--shadow-xl', '0 20px 40px rgba(0, 0, 0, 0.12)');
   } else {
     root.style.setProperty('--shadow-sm', '0 1px 2px rgba(0, 0, 0, 0.3)');
     root.style.setProperty('--shadow-md', '0 4px 6px rgba(0, 0, 0, 0.4)');
     root.style.setProperty('--shadow-lg', '0 10px 15px rgba(0, 0, 0, 0.5)');
+    root.style.setProperty('--shadow-xl', '0 24px 48px rgba(0, 0, 0, 0.5)');
   }
 
   // Accent derived — RGB triplet and alpha variant used by many components
@@ -296,6 +303,20 @@ export function applyTheme(themeName: ThemeName): void {
   // Accent glow — derived from theme accent
   root.style.setProperty('--accent-glow-sm', `0 0 12px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
   root.style.setProperty('--accent-glow-md', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.2)`);
+
+  // Semantic RGB triplets — derived from theme semantic colors so any
+  // `rgba(var(--error-rgb), 0.15)` style alpha variant tracks the theme.
+  // Before this, every alpha-error / alpha-warning / alpha-success bg in
+  // the app hardcoded a literal `rgba(239, 68, 68, …)` triplet, which is
+  // why §2 audit found 40+ raw rgba uses with the same three colors.
+  const error = hexToRgb(colors.error);
+  const warning = hexToRgb(colors.warning);
+  const success = hexToRgb(colors.success);
+  const info = hexToRgb(colors.info);
+  root.style.setProperty('--error-rgb', `${error.r}, ${error.g}, ${error.b}`);
+  root.style.setProperty('--warning-rgb', `${warning.r}, ${warning.g}, ${warning.b}`);
+  root.style.setProperty('--success-rgb', `${success.r}, ${success.g}, ${success.b}`);
+  root.style.setProperty('--info-rgb', `${info.r}, ${info.g}, ${info.b}`);
 }
 
 /**
