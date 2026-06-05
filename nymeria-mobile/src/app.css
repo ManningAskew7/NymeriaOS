@@ -96,6 +96,15 @@
   --accent-primary-alpha: rgba(95, 184, 204, 0.15);
   --accent-glow-sm: 0 0 12px rgba(95, 184, 204, 0.15);
   --accent-glow-md: 0 0 20px rgba(95, 184, 204, 0.2);
+
+  /* Semantic RGB triplets — Midnight defaults (overridden per-theme in
+     themes.ts). Use with rgba(var(--error-rgb), alpha) so tinted error /
+     warning / success surfaces track the active theme instead of
+     hardcoding a fixed colour. */
+  --error-rgb: 248, 113, 113;   /* #f87171 */
+  --warning-rgb: 251, 191, 36;  /* #fbbf24 */
+  --success-rgb: 52, 211, 153;  /* #34d399 */
+  --info-rgb: 129, 140, 248;    /* #818cf8 */
 }
 
 /* Reset */

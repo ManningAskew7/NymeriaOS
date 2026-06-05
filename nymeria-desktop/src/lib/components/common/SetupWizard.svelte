@@ -447,12 +447,12 @@
   }
 
   .test-result.success {
-    background: rgba(52, 211, 153, 0.15);
+    background: rgba(var(--success-rgb), 0.15);
     color: var(--success);
   }
 
   .test-result.error {
-    background: rgba(248, 113, 113, 0.15);
+    background: rgba(var(--error-rgb), 0.15);
     color: var(--error);
   }
 

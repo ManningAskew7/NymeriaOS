@@ -238,7 +238,7 @@
   }
 
   .menu-item.destructive:hover {
-    background: rgba(239, 68, 68, 0.12);
+    background: rgba(var(--error-rgb), 0.12);
     color: var(--error);
   }
 
@@ -250,9 +250,9 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     text-indent: 0.06em;
-    color: var(--warning, #fbbf24);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.12);
+    border: 1px solid rgba(var(--warning-rgb), 0.4);
     /* Matches RoleChip.size-xs for visual consistency between the
        inline "admin" badge here and the role chip in menu-header. */
     padding: 1px 6px;

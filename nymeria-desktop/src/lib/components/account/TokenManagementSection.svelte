@@ -411,8 +411,8 @@
     align-items: center;
     gap: 8px;
     padding: 8px var(--spacing-sm);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: rgba(var(--error-rgb), 0.08);
+    border: 1px solid rgba(var(--error-rgb), 0.3);
     border-radius: var(--radius-sm);
     color: var(--error);
     font-size: var(--font-size-sm);
@@ -512,8 +512,8 @@
 
   .status-chip.revoked {
     color: var(--error);
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid rgba(239, 68, 68, 0.4);
+    background: rgba(var(--error-rgb), 0.12);
+    border: 1px solid rgba(var(--error-rgb), 0.4);
   }
 
   .row-secondary {
@@ -543,7 +543,7 @@
 
   .revoke-btn:hover:not(:disabled) {
     color: var(--error);
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(var(--error-rgb), 0.1);
   }
 
   .revoke-btn:disabled {

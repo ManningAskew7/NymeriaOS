@@ -2834,12 +2834,12 @@
   }
 
   .message.success {
-    background: rgba(52, 211, 153, 0.15);
+    background: rgba(var(--success-rgb), 0.15);
     color: var(--success);
   }
 
   .message.error {
-    background: rgba(248, 113, 113, 0.15);
+    background: rgba(var(--error-rgb), 0.15);
     color: var(--error);
   }
 
@@ -3277,8 +3277,8 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--success, #22c55e);
-    box-shadow: 0 0 6px var(--success, #22c55e);
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
     flex-shrink: 0;
   }
 
@@ -3376,8 +3376,8 @@
   }
 
   .conn-status-dot.connected {
-    background: var(--success, #22c55e);
-    box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+    background: var(--success);
+    box-shadow: 0 0 6px rgba(var(--success-rgb), 0.4);
   }
 
   .conn-info {

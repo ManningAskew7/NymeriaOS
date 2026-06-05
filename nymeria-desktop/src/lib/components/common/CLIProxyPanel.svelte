@@ -399,15 +399,15 @@
   }
 
   .message.success {
-    background: rgba(34, 197, 94, 0.12);
-    border: 1px solid rgba(34, 197, 94, 0.35);
-    color: var(--success, #22c55e);
+    background: rgba(var(--success-rgb), 0.12);
+    border: 1px solid rgba(var(--success-rgb), 0.35);
+    color: var(--success);
   }
 
   .message.error {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid var(--error, #ef4444);
-    color: var(--error, #ef4444);
+    background: rgba(var(--error-rgb), 0.1);
+    border: 1px solid var(--error);
+    color: var(--error);
   }
 
   @media (max-width: 840px) {

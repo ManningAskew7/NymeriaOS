@@ -52,9 +52,9 @@
   }
 
   .role-admin {
-    color: var(--warning, #fbbf24);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.12);
+    border: 1px solid rgba(var(--warning-rgb), 0.4);
   }
 
   .role-user {
