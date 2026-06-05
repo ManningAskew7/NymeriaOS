@@ -67,7 +67,7 @@ NymeriaOS threads don't just respond  -  they learn. Three interconnected system
 ### RAG (Nothing Gets Forgotten)
 - **Every conversation turn is indexed**  -  User message + AI response pairs embedded into per-user vector store after each turn
 - **Pre-compaction flush**  -  Before context is trimmed, all messages are defensively written to RAG
-- **Hybrid search**  -  sqlite-vec vector similarity (70%) + FTS5 BM25 (30%)
+- **Hybrid search**  -  Reciprocal Rank Fusion of sqlite-vec vector similarity + FTS5 BM25, with an optional date-anchor bias (the `rag_search` `around` argument)
 - **Three chunk types**: `conversation`, `memory`, `todo`  -  each toggleable
 - **Embedding**: OpenAI-compatible `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536 dims), BM25-only fallback if unavailable
 - **Sentence-aware chunking**: 400-token chunks with 80-token overlap
