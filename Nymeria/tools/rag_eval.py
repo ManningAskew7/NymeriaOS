@@ -233,6 +233,31 @@ def _fetch_chunk_results(
     return out
 
 
+def _embed_query(index: MemoryIndex, query: str) -> Optional[List[float]]:
+    """Embed a query, applying the query-side ``input_type`` when one is set.
+
+    Mirrors ``MemoryIndex.embed_text`` but, when the harness has configured an
+    input_type scheme (Voyage 'query', see ``_open_index``), passes it via the
+    OpenAI client's ``extra_body`` so a managed provider gets its asymmetric query
+    prompt. With no scheme it defers to ``embed_text``, so the default and local
+    paths are byte-for-byte unchanged and production memory_index is untouched.
+    """
+    it = getattr(index, "_eval_query_input_type", None)
+    if not it:
+        return index.embed_text(query)
+    if not query.strip() or index.embedding_provider != "openai":
+        return None
+    try:
+        client = index._get_openai_client()
+        kwargs = index._embed_kwargs()
+        kwargs["extra_body"] = {"input_type": it}
+        resp = client.embeddings.create(input=query[:8000], **kwargs)
+        emb = resp.data[0].embedding
+        return emb if len(emb) == index.embedding_dimensions else None
+    except Exception:  # noqa: BLE001 - caller retries a None
+        return None
+
+
 def _retrieve_vector(
     index: MemoryIndex, query: str, user_id: str, k: int
 ) -> List[ChunkResult]:
@@ -243,13 +268,13 @@ def _retrieve_vector(
     # embed_text swallows a 429 into None; retry a non-empty query (real provider
     # only) so a transient rate limit is not mis-scored as a vector miss. A
     # provider of "none" returns None structurally, so there is nothing to retry.
-    emb = index.embed_text(query)
+    emb = _embed_query(index, query)
     if not emb and query.strip() and index.embedding_provider != "none":
         delay = 2.0
         for _ in range(3):
             time.sleep(delay)
             delay = min(delay * 2, 16.0)
-            emb = index.embed_text(query)
+            emb = _embed_query(index, query)
             if emb:
                 break
     if not emb:
@@ -677,9 +702,14 @@ NATIVE_EMBEDDING_DIMS = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
     "gemini-embedding-001": 3072,
+    "gemini-embedding-2": 3072,
     "voyage-3-large": 1024,
     "voyage-3.5": 1024,
     "voyage-3.5-lite": 1024,
+    "voyage-4-large": 1024,
+    "voyage-4": 1024,
+    "voyage-4-lite": 1024,
+    "voyage-context-3": 1024,
     "embeddinggemma": 768,
     # Local CPU candidates served via tools/local_embed_server.py (the model name
     # is the HuggingFace id; dim is its native sentence-embedding width). Static
@@ -764,12 +794,18 @@ def _embed_texts_ordered(index: MemoryIndex, texts: List[str]) -> List[Optional[
     client = index._get_openai_client()
     inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
     dim = index.embedding_dimensions
+    # Document-side input_type (Voyage 'document'), when a scheme is configured,
+    # so the corpus is embedded with the provider's asymmetric document prompt.
+    embed_kwargs = index._embed_kwargs()
+    doc_it = getattr(index, "_eval_doc_input_type", None)
+    if doc_it:
+        embed_kwargs["extra_body"] = {"input_type": doc_it}
 
     def _ok(emb: List[float]) -> Optional[List[float]]:
         return emb if len(emb) == dim else None
 
     try:
-        resp = _embed_call(client, inputs, index._embed_kwargs())
+        resp = _embed_call(client, inputs, embed_kwargs)
         if len(resp.data) == len(inputs):
             return [_ok(item.embedding) for item in resp.data]
         print(f"  batch returned {len(resp.data)}/{len(inputs)}; per-item fallback",
@@ -781,7 +817,7 @@ def _embed_texts_ordered(index: MemoryIndex, texts: List[str]) -> List[Optional[
     out: List[Optional[List[float]]] = []
     for t in inputs:
         try:
-            r = _embed_call(client, t, index._embed_kwargs())
+            r = _embed_call(client, t, embed_kwargs)
             out.append(_ok(r.data[0].embedding))
         except Exception:  # noqa: BLE001
             out.append(None)
@@ -940,6 +976,29 @@ def _print_metrics(name: str, m: Dict[str, Any], verbose: bool = False) -> None:
                       f"distinct={row['distinct']:.2f} ranks={row['ranks']}  {row['query']}")
 
 
+# input_type scheme -> (query input_type, document input_type). Lets a managed
+# provider embed queries and documents with its asymmetric retrieval prompts,
+# which materially helps retrieval for Voyage/Gemini-class models and is the fair
+# config for a "best-in-class embeddings" headline (bge gets a query prompt too).
+_INPUT_TYPE_SCHEMES = {
+    "voyage": ("query", "document"),
+}
+
+
+def _apply_input_type(index: MemoryIndex, scheme: Optional[str]) -> MemoryIndex:
+    """Tag the index with the harness-only query/document input_type for ``scheme``.
+
+    Attributes are read by ``_embed_query`` (queries) and ``_embed_texts_ordered``
+    (documents); they exist only on the harness's throwaway index, so production
+    memory_index is never touched.
+    """
+    if scheme:
+        q, d = _INPUT_TYPE_SCHEMES.get(scheme, (scheme, scheme))
+        index._eval_query_input_type = q
+        index._eval_doc_input_type = d
+    return index
+
+
 def _open_index(
     db: Optional[str],
     *,
@@ -947,6 +1006,7 @@ def _open_index(
     embedding_model: Optional[str] = None,
     embedding_dimensions: Optional[int] = None,
     embedding_base_url: Optional[str] = None,
+    embedding_input_type: Optional[str] = None,
 ) -> MemoryIndex:
     """Open or create a MemoryIndex for a run.
 
@@ -965,11 +1025,13 @@ def _open_index(
     if db:
         if embedding_provider is not None:
             kwargs["embedding_provider"] = embedding_provider
-        return MemoryIndex(Path(db), **kwargs)
+        return _apply_input_type(MemoryIndex(Path(db), **kwargs), embedding_input_type)
     kwargs["embedding_provider"] = embedding_provider or "none"
     tmp = TemporaryDirectory()
     _open_index._tmp = tmp  # keep alive for the process lifetime
-    return MemoryIndex(Path(tmp.name) / "rag_eval.db", **kwargs)
+    return _apply_input_type(
+        MemoryIndex(Path(tmp.name) / "rag_eval.db", **kwargs), embedding_input_type
+    )
 
 
 _DUMP_KEYS = ("hit_rate", "mrr", "precision_at_k", "ndcg_at_k",
@@ -1084,6 +1146,10 @@ def main() -> None:
     ap.add_argument("--embedding-dim", type=int,
                     help="vector width; defaults to the model's native dim")
     ap.add_argument("--embedding-base-url", help="OpenAI-compatible embeddings base URL")
+    ap.add_argument("--embedding-input-type", choices=sorted(_INPUT_TYPE_SCHEMES),
+                    help="asymmetric query/document input_type scheme (e.g. voyage): "
+                         "embeds queries and documents with the provider's retrieval "
+                         "prompts via extra_body. Off (symmetric) when unset.")
     ap.add_argument("--k", type=int, default=5, help="top-k cutoff")
     ap.add_argument("--retrieval-mode", choices=[*RETRIEVAL_MODES, "all"],
                     default="hybrid",
@@ -1113,6 +1179,12 @@ def main() -> None:
     ap.add_argument("--rerank-min-interval", type=float, default=0.0,
                     help="min seconds between API rerank calls (pace a trial rate "
                          "limit, e.g. 6.2 for Cohere trial's 10/min)")
+    ap.add_argument("--vec-weight", type=float,
+                    help="RRF weight on the vector branch (hybrid only; default 1.0). "
+                         "Raise above --bm25-weight to bias fusion toward dense "
+                         "retrieval, e.g. for a strong embedding model.")
+    ap.add_argument("--bm25-weight", type=float,
+                    help="RRF weight on the BM25 branch (hybrid only; default 1.0)")
     ap.add_argument("--compare", action="store_true",
                     help="compare rrf/weighted x recency x dedup within one run")
     ap.add_argument("--out", help="dump headline metrics JSON for --compare-runs")
@@ -1144,6 +1216,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             embedding_dimensions=dim,
             embedding_base_url=args.embedding_base_url,
+            embedding_input_type=args.embedding_input_type,
         )
         provider = index.embedding_provider
         print(f"indexing LongMemEval haystack from {args.data} "
@@ -1170,6 +1243,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             embedding_dimensions=args.embedding_dim,
             embedding_base_url=args.embedding_base_url,
+            embedding_input_type=args.embedding_input_type,
         )
         raw = json.loads(Path(args.probes).read_text())
         probes = [Probe.from_dict(d) for d in raw]
@@ -1241,7 +1315,15 @@ def main() -> None:
             )
         return
     else:
+        # RRF branch weights bias the hybrid fusion (no effect on the single-branch
+        # vector/bm25 modes, which ignore base_kwargs).
+        base_kwargs: Dict[str, Any] = {}
+        if args.vec_weight is not None:
+            base_kwargs["vec_weight"] = args.vec_weight
+        if args.bm25_weight is not None:
+            base_kwargs["bm25_weight"] = args.bm25_weight
         primary = evaluate(index, probes, user_id=args.user, k=args.k,
+                           base_kwargs=base_kwargs or None,
                            retrieval_mode=args.retrieval_mode, reranker=reranker,
                            rerank_pool=args.rerank_pool)
         _print_metrics(f"{args.dataset} [{args.retrieval_mode}]", primary,
