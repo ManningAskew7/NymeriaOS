@@ -335,6 +335,14 @@ def test_fts_match_query_builder():
         '"what" OR "is" OR "my" OR "pet" OR "name"'  # lone "s" dropped
     assert MemoryIndex._fts_match_query("!!! ?") is None  # no usable terms
     assert MemoryIndex._fts_match_query("2026 q3") == '"2026" OR "q3"'
+    # Repeated terms collapse (a redundant OR-term in FTS5), order preserved.
+    assert MemoryIndex._fts_match_query("cat cat dog cat") == '"cat" OR "dog"'
+    # A pathological long query is capped to FTS_MAX_TERMS distinct OR-terms,
+    # keeping the longest (most discriminative) tokens; short queries are a no-op.
+    from nymeria.core.memory_index import FTS_MAX_TERMS
+    blob = " ".join(f"tok{i:04d}" for i in range(FTS_MAX_TERMS * 3))
+    expr = MemoryIndex._fts_match_query(blob)
+    assert expr.count(" OR ") == FTS_MAX_TERMS - 1  # exactly FTS_MAX_TERMS terms
 
 
 # --- exact-duplicate guard -------------------------------------------------
