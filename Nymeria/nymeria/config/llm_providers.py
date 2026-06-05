@@ -374,8 +374,11 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         base_url="https://integrate.api.nvidia.com/v1",
         env=("NVIDIA_API_KEY",),
         default_model="nvidia/nemotron-3-super-120b-a12b",
-        docs_url="https://docs.nvidia.com/nim/",
+        docs_url="https://docs.nvidia.com/nim/large-language-models/latest/reference/api-reference.html",
         aliases=("nim", "nvidia-nim", "build-nvidia"),
+        supports_responses=True,
+        default_api_mode="responses",
+        notes_for_user="Responses API (GA on the hosted endpoint) is the default and round-trips reasoning (Nemotron, DeepSeek, Qwen). Self-hosted NIM needs a recent version with /v1/responses.",
     ),
     _spec(
         "huggingface",
@@ -419,6 +422,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("AIHUBMIX_API_KEY",),
         docs_url="https://docs.aihubmix.com/en/index",
         notes="OpenAI-compatible routing gateway; https://api.aihubmix.com is the documented backup host.",
+        notes_for_user="Reasoning round-trips over Chat Completions via OpenRouter-style reasoning_details (signatures preserved); interleaved thinking auto-enables for Claude.",
         tier="gateway",
     ),
     _spec(
@@ -671,8 +675,11 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         "Vercel AI Gateway",
         base_url="https://ai-gateway.vercel.sh/v1",
         env=("AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"),
-        docs_url="https://vercel.com/docs/ai-gateway",
+        docs_url="https://vercel.com/docs/ai-gateway/sdks-and-apis/responses",
         aliases=("vercel-ai-gateway", "ai-gateway"),
+        supports_responses=True,
+        default_api_mode="responses",
+        notes_for_user="Defaults to the Responses API. Reasoning also round-trips over Chat Completions via OpenRouter-style reasoning_details (higher-confidence, signature-preserving) if you switch the thread to chat_completions.",
         tier="gateway",
     ),
     _spec(
