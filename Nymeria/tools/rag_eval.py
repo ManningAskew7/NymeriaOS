@@ -501,6 +501,18 @@ NATIVE_EMBEDDING_DIMS = {
     "voyage-3.5": 1024,
     "voyage-3.5-lite": 1024,
     "embeddinggemma": 768,
+    # Local CPU candidates served via tools/local_embed_server.py (the model name
+    # is the HuggingFace id; dim is its native sentence-embedding width). Static
+    # retrieval is Matryoshka-truncatable (1024 -> 256) via the server's
+    # --truncate-dim, in which case pass --embedding-dim 256 to match.
+    "ibm-granite/granite-embedding-small-english-r2": 384,
+    "ibm-granite/granite-embedding-english-r2": 768,
+    "BAAI/bge-small-en-v1.5": 384,
+    "Alibaba-NLP/gte-modernbert-base": 768,
+    "sentence-transformers/static-retrieval-mrl-en-v1": 1024,
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "intfloat/e5-small-v2": 384,
+    "intfloat/multilingual-e5-small": 384,
 }
 
 

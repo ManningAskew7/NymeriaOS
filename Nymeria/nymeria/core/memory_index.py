@@ -780,6 +780,8 @@ class MemoryIndex:
         recency_half_lives: Optional[Dict[str, float]] = None,
         now: Optional[datetime] = None,
         rrf_k: int = RRF_K,
+        vec_weight: float = 1.0,
+        bm25_weight: float = 1.0,
         apply_prose_priority: bool = True,
         prose_priority_weight: float = PROSE_PRIORITY_WEIGHT,
         dedup: bool = True,
@@ -807,6 +809,9 @@ class MemoryIndex:
             recency_half_lives: Per-chunk_type half-life (days) override
             now: Reference time for recency (defaults to current UTC time)
             rrf_k: RRF constant
+            vec_weight: RRF weight on the vector branch (default 1.0)
+            bm25_weight: RRF weight on the BM25 branch (default 1.0); raise it
+                above vec_weight to bias fusion toward lexical retrieval
             apply_prose_priority: Demote tool-text-heavy chunks below prose
             prose_priority_weight: Strength of the prose-priority demotion
             dedup: Suppress near-duplicate results so twins do not consume
@@ -937,9 +942,9 @@ class MemoryIndex:
                     else:  # rrf
                         base = 0.0
                         if cid in vec_rank:
-                            base += 1.0 / (rrf_k + vec_rank[cid] + 1)
+                            base += vec_weight / (rrf_k + vec_rank[cid] + 1)
                         if cid in bm_rank:
-                            base += 1.0 / (rrf_k + bm_rank[cid] + 1)
+                            base += bm25_weight / (rrf_k + bm_rank[cid] + 1)
 
                     if apply_recency:
                         ev = (self._parse_ts(row.get('event_time'))

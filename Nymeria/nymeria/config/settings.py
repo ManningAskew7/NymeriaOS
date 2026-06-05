@@ -1238,15 +1238,17 @@ class Settings(BaseSettings):
         description="1536-dimensional embedding model name for memory and skill semantic search",
     )
 
-    # RAG retrieval tuning (native memory index). Defaults preserve current
-    # behavior except the fusion upgrade to RRF, which is strictly more robust.
+    # RAG retrieval tuning (native memory index). Defaults track measured-best
+    # retrieval: fusion upgraded to RRF, and recency defaults OFF (the recency
+    # multiplier demoted older evidence and dragged hybrid below the BM25 floor in
+    # eval; turning it off was the single biggest ndcg/MRR lever, see rag_eval).
     rag_fusion_method: str = Field(
         default="rrf",
         description="Hybrid fusion for rag_search: 'rrf' (rank-based, default) or 'weighted' (legacy rank blend)",
     )
     rag_recency_enabled: bool = Field(
-        default=True,
-        description="Apply a per-chunk_type recency soft-multiplier after fusion so older chunks are gently down-ranked (never filtered). Half-lives are years-long so this is only a faint tiebreaker.",
+        default=False,
+        description="Apply a per-chunk_type recency soft-multiplier after fusion so older chunks are gently down-ranked (never filtered). Defaults OFF: eval showed it demotes older evidence and costs roughly 4% ndcg / 8% MRR on the real corpus (it dragged hybrid below the BM25 floor), and reconciliation already handles staleness.",
     )
     rag_prose_priority_enabled: bool = Field(
         default=True,
