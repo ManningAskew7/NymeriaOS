@@ -428,7 +428,7 @@ def _spill_to_file(body: str, url: str, extract: str, config) -> Optional[str]:
         try:
             target.chmod(0o600)
         except (PermissionError, OSError):
-            pass
+            pass  # best-effort tightening; the spill already succeeded
         return str(target)
     except Exception as e:  # noqa: BLE001 - spill is best-effort
         logger.debug("fetch spill failed for %s: %s", url, e)

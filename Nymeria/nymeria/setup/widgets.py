@@ -12,6 +12,7 @@ without a running app.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from rich.text import Text
@@ -21,6 +22,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -204,7 +207,7 @@ class SearchableList(Widget):
         try:
             self._input.focus(scroll_visible)
         except Exception:
-            pass
+            logger.debug("SearchableList focus failed", exc_info=True)
         return self
 
     # --- internals ----------------------------------------------------------
