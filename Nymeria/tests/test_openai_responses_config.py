@@ -141,6 +141,30 @@ def _deepseek_config(**overrides) -> LLMConfig:
     return LLMConfig(**values)
 
 
+def _fireworks_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "fireworks-ai",
+        "model": "accounts/fireworks/models/qwen3-235b-a22b",
+        "api_key": "test-key",
+        "base_url": "https://api.fireworks.ai/inference/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
+def _moonshot_config(**overrides) -> LLMConfig:
+    values = {
+        "provider": "moonshotai",
+        "model": "kimi-k2-thinking",
+        "api_key": "test-key",
+        "base_url": "https://api.moonshot.ai/v1",
+        "temperature": None,
+    }
+    values.update(overrides)
+    return LLMConfig(**values)
+
+
 def _anthropic_config(**overrides) -> LLMConfig:
     values = {
         "provider": "anthropic",
@@ -1414,6 +1438,61 @@ def test_deepseek_has_no_responses_support():
     spec = get_llm_provider_spec("deepseek")
     assert spec is not None
     assert spec.supports_responses is False
+
+
+def test_fireworks_and_moonshot_use_flat_replay_all():
+    assert _flat_reasoning_content_replay_mode(
+        "https://api.fireworks.ai/inference/v1"
+    ) == "all"
+    assert _flat_reasoning_content_replay_mode("https://api.moonshot.ai/v1") == "all"
+    assert _flat_reasoning_content_replay_mode("https://api.moonshot.cn/v1") == "all"
+
+
+def test_fireworks_sets_reasoning_history_when_reasoning_enabled():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Parameters .* should be specified explicitly",
+            category=UserWarning,
+        )
+        llm = create_llm(
+            _fireworks_config(extended_thinking=True, reasoning_effort="high")
+        )
+
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert payload.get("reasoning_history") == "preserved"
+    assert payload.get("reasoning_effort") == "high"
+
+
+def test_fireworks_no_reasoning_toggle_without_reasoning():
+    llm = create_llm(_fireworks_config())
+
+    payload = llm._get_request_payload([HumanMessage(content="Hi")])
+    assert "reasoning_history" not in payload
+
+
+def test_fireworks_replays_reasoning_content_unconditionally():
+    llm = create_llm(_fireworks_config(extended_thinking=True))
+
+    ai_no_tools = AIMessage(
+        content="Answer",
+        additional_kwargs={"reasoning_content": "prior thought"},
+    )
+    payload = llm._get_request_payload([
+        HumanMessage(content="Q1"),
+        ai_no_tools,
+        HumanMessage(content="Q2"),
+    ])
+
+    assistant = payload["messages"][1]
+    # "all" mode re-attaches even on a non-tool assistant turn.
+    assert assistant["reasoning_content"] == "prior thought"
+
+
+def test_moonshot_sets_thinking_keep_all_when_reasoning_enabled():
+    llm = create_llm(_moonshot_config(extended_thinking=True))
+
+    assert llm.extra_body == {"thinking": {"type": "enabled", "keep": "all"}}
 
 
 def test_nvidia_and_vercel_advertise_responses_support():
