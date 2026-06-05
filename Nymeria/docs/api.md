@@ -1530,7 +1530,8 @@ Authorization: Bearer <token>
 Returns Nymeria's provider registry: provider IDs, labels, default base URLs,
 API key env vars, aliases, Chat Completions support, Responses support, tier
 metadata, and route metadata (`supported_routes`, `default_route`,
-`openai_compat_base_url`). Desktop/mobile use this metadata for provider setup
+`openai_compat_base_url`, and `anthropic_native_for_claude` for gateways that
+expose the `anthropic_messages` route for Claude). Desktop/mobile use this metadata for provider setup
 and diagnostics; the authoritative implementation lives in
 `nymeria/config/llm_providers.py`.
 
@@ -1614,7 +1615,7 @@ Authorization: Bearer <admin-token>
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `llm_context_length` | int | 1000-2000000 | Manual context-window override for local endpoints or proxies that do not report context metadata |
 | `llm_ollama_num_ctx` | int | 1000-2000000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests |
-| `llm_provider_route` | string | `native`/`openai_compat` | Default adapter route for providers that support more than one route. `google` and `ollama` default to `native`; per-thread settings can override this. |
+| `llm_provider_route` | string | `native`/`openai_compat`/`anthropic_messages` | Default adapter route for providers that support more than one route. `google` and `ollama` default to `native`; the Claude-serving gateways (`litellm`, `opencode`, `zenmux`, `requesty`, `fastrouter`, `poe`) offer `anthropic_messages` and default to `openai_compat`; per-thread settings can override this. |
 | `openai_api_mode` | string | `responses`/`chat_completions` | Default OpenAI-compatible API mode. `responses` is honored only for registry providers that advertise Responses support; Chat Completions is the compatibility baseline. |
 | `openai_api_key` | string | - | Write-only OpenAI or OpenAI-compatible global API key |
 | `anthropic_api_key` | string | - | Write-only Anthropic global key. For Anthropic CLIProxy this is the local `cpx-*` gatekeeper key. |
@@ -2576,7 +2577,7 @@ Updates thread config. Key fields for callable threads:
 | `llm_config.api_key` | string | Per-thread provider API key. For CLIProxy sidecars, this is the local sidecar gatekeeper key, not an upstream OpenAI key. |
 | `llm_config.context_length` | int | Per-thread context-window override for local endpoints or proxies with missing metadata |
 | `llm_config.ollama_num_ctx` | int | Per-thread Ollama `options.num_ctx` override |
-| `llm_config.provider_route` | string | Per-thread adapter route override: `native` or `openai_compat`. Only applies to providers whose catalog row advertises multiple `supported_routes`. |
+| `llm_config.provider_route` | string | Per-thread adapter route override: `native`, `openai_compat`, or `anthropic_messages`. Only applies to providers whose catalog row advertises multiple `supported_routes` (`anthropic_messages` routes a gateway's Claude models through langchain-anthropic for native thinking). |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |

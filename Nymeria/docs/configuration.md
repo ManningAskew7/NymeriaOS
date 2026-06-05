@@ -51,7 +51,7 @@ These variables are deployment-wide server defaults, not per-user account prefer
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `LLM_PROVIDER` | Yes | `anthropic` | LLM provider ID. Native partner-package paths: `anthropic`, `openai`, `google` (Gemini via langchain-google-genai), `bedrock` (AWS via langchain-aws ChatBedrockConverse), `ollama` (native protocol via langchain-ollama). OpenAI-compatible IDs include `openrouter`, `xai`, `groq`, `deepseek`, `mistral`, `lmstudio`, plus the full registry of supported OpenAI-compatible providers. |
-| `LLM_PROVIDER_ROUTE` | No | provider default | Adapter route for providers with more than one supported path. Valid values: `native`, `openai_compat`. Today this is exposed for `google` and `ollama`; both default to `native`. Per-thread settings can override it. |
+| `LLM_PROVIDER_ROUTE` | No | provider default | Adapter route for providers with more than one supported path. Valid values: `native`, `openai_compat`, `anthropic_messages`. Exposed for `google` and `ollama` (`native`/`openai_compat`, default `native`) and for the Claude-serving gateways `litellm`, `opencode`, `zenmux`, `requesty`, `fastrouter`, `poe` (`openai_compat`/`anthropic_messages`, default `openai_compat`). Per-thread settings can override it. |
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model used by CLI `/fast`; when unset, `/fast` picks a provider-aware default |
 | `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend after primary retries are exhausted for a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry. CLI shortcut: `/fallback`. |
@@ -68,6 +68,10 @@ Three provider IDs route through dedicated `langchain-<provider>` packages inste
 | `ollama` | none (no API key) | Defaults to `langchain-ollama` against Ollama's native `/api/chat` protocol. Use this for reasoning round-trip on `qwen3` / `deepseek-r1` / `gpt-oss`. Set `LLM_PROVIDER_ROUTE=openai_compat` or a per-thread route override to use Ollama's `/v1/chat/completions` shim. See [`local-llm.md`](local-llm.md) for the full Ollama native vs OpenAI-compat split. |
 
 Existing thread configs storing `provider="google"` or `provider="ollama"` use the native route unless a global or per-thread `provider_route="openai_compat"` override is set. The old `ollama-native` provider id is accepted as an alias for `ollama` with the native route.
+
+#### Claude on gateways: the `anthropic_messages` route
+
+A gateway's OpenAI-compatible path corrupts Claude's signed extended-thinking blocks (any Anthropic/OpenAI format translation drops the signature), so multi-turn reasoning passback silently breaks for Claude models behind a gateway. Gateways that serve Claude and lose the signature on their compat path (`litellm`, `opencode`, `zenmux`, `requesty`, `fastrouter`, `poe`) advertise an `anthropic_messages` route in addition to `openai_compat` (default stays `openai_compat`). Setting `provider_route="anthropic_messages"` for one of these (global env or per-thread) routes the gateway's Claude traffic through `langchain-anthropic` against the gateway's own `/v1/messages` endpoint, restoring native thinking and signature round-trip. The gateway key and base URL are resolved through the normal provider env vars. Signature-safe gateways (`openrouter`, `vercel`, `aihubmix`) round-trip Claude reasoning via `reasoning_details` on the compat path and do not advertise the route.
 
 ### Advanced LLM Settings (Optional)
 
