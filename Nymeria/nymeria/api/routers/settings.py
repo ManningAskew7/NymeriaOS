@@ -1475,6 +1475,7 @@ def create_settings_router(
                 default_route=spec.default_route,
                 openai_compat_base_url=spec.openai_compat_base_url,
                 verified=spec.verified,
+                anthropic_native_for_claude=spec.anthropic_native_for_claude,
             )
             for spec in list_llm_provider_specs()
         ]

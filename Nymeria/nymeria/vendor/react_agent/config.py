@@ -17,7 +17,7 @@ class LLMFallbackConfig:
 
     model: str
     provider: Optional[str] = None
-    provider_route: Optional[Literal["native", "openai_compat"]] = None
+    provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     api_key: Optional[str] = field(default=None, repr=False)
     base_url: Optional[str] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
@@ -45,7 +45,7 @@ class LLMConfig:
     presence_penalty: Optional[float] = None  # Encourage new topics (-2.0 to 2.0)
     reasoning_effort: Optional[str] = None  # For reasoning models: "low", "medium", "high"
     extended_thinking: bool = False  # Enable extended thinking/reasoning tokens
-    provider_route: Optional[Literal["native", "openai_compat"]] = None
+    provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     # Adapter route for providers with both a native partner package and an
     # OpenAI-compatible shim. None = use the provider registry default.
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"

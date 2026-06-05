@@ -1867,3 +1867,143 @@ def test_notes_for_user_flows_through_catalog_response():
     assert payload["notes_for_user"] == deepseek_spec.notes_for_user
     assert payload["supported_routes"] == list(deepseek_spec.supported_routes)
     assert payload["default_route"] == deepseek_spec.default_route
+
+
+def test_anthropic_native_for_claude_flag_scoped_to_signature_dropping_gateways():
+    """LiteLLM's compat path drops Claude's signed thinking, so it opts into the
+    picker's 'switch to Anthropic' hint. Gateways that round-trip the signature
+    via reasoning_details (OpenRouter, Vercel, AIHubMix) must NOT set it, or the
+    UI would warn on signature-safe providers."""
+    from nymeria.api.schemas.settings import LLMProviderSpecResponse
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    litellm = get_llm_provider_spec("litellm")
+    assert litellm is not None
+    assert litellm.anthropic_native_for_claude is True
+
+    for provider_id in ("openrouter", "vercel", "aihubmix"):
+        spec = get_llm_provider_spec(provider_id)
+        assert spec is not None, provider_id
+        assert spec.anthropic_native_for_claude is False, provider_id
+
+    # The flag must survive the schema projection the catalog router uses.
+    response = LLMProviderSpecResponse(
+        id=litellm.id,
+        label=litellm.label,
+        api_format=litellm.api_format,
+        anthropic_native_for_claude=litellm.anthropic_native_for_claude,
+    )
+    assert response.anthropic_native_for_claude is True
+    # Defaults to False for providers that never set it.
+    assert (
+        LLMProviderSpecResponse(
+            id="x", label="x", api_format="openai_chat"
+        ).anthropic_native_for_claude
+        is False
+    )
+
+
+# Bucket-A gateways: serve Claude, drop its signature on the OpenAI-compat path,
+# expose a native /v1/messages endpoint. id -> confirmed Anthropic SDK base URL.
+_ANTHROPIC_MESSAGES_GATEWAYS = {
+    "litellm": None,  # proxy root serves both surfaces; reuse configured base
+    "opencode": "https://opencode.ai/zen",
+    "zenmux": "https://zenmux.ai/api/anthropic",
+    "requesty": "https://router.requesty.ai",
+    "fastrouter": "https://api.fastrouter.ai",
+    "poe": "https://api.poe.com",
+}
+
+
+def test_anthropic_messages_route_advertised_by_bucket_a_gateways():
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    for provider_id, base in _ANTHROPIC_MESSAGES_GATEWAYS.items():
+        spec = get_llm_provider_spec(provider_id)
+        assert spec is not None, provider_id
+        assert "anthropic_messages" in spec.supported_routes, provider_id
+        # Default stays openai_compat so existing behavior is unchanged; the
+        # Anthropic route is an explicit per-thread opt-in.
+        assert spec.default_route == "openai_compat", provider_id
+        assert spec.anthropic_native_for_claude is True, provider_id
+        assert spec.anthropic_messages_base_url == base, provider_id
+
+    # Signature-safe gateways must NOT advertise the route (they round-trip
+    # Claude reasoning via reasoning_details on the compat path already).
+    for provider_id in ("openrouter", "vercel", "aihubmix"):
+        spec = get_llm_provider_spec(provider_id)
+        assert spec is not None, provider_id
+        assert "anthropic_messages" not in spec.supported_routes, provider_id
+
+
+def test_anthropic_messages_base_url_resolves_per_gateway():
+    from nymeria.config.llm_providers import resolve_provider_base_url
+
+    # The Anthropic endpoint differs from the OpenAI base for most gateways.
+    assert (
+        resolve_provider_base_url("opencode", provider_route="anthropic_messages")
+        == "https://opencode.ai/zen"
+    )
+    assert (
+        resolve_provider_base_url("zenmux", provider_route="anthropic_messages")
+        == "https://zenmux.ai/api/anthropic"
+    )
+    # FastRouter's Anthropic endpoint is on a different host than its OpenAI base.
+    assert (
+        resolve_provider_base_url("fastrouter", provider_route="anthropic_messages")
+        == "https://api.fastrouter.ai"
+    )
+    # The openai_compat route still resolves the OpenAI base.
+    assert (
+        resolve_provider_base_url("opencode", provider_route="openai_compat")
+        == "https://opencode.ai/zen/v1"
+    )
+
+
+def test_anthropic_messages_route_dispatches_to_langchain_anthropic():
+    from langchain_anthropic import ChatAnthropic
+
+    # Hosted gateway: base URL resolves to the confirmed Anthropic endpoint root.
+    llm = create_llm(
+        LLMConfig(
+            provider="opencode",
+            model="claude-sonnet-4-5",
+            api_key="test-key",
+            base_url=None,
+            temperature=None,
+            provider_route="anthropic_messages",
+        )
+    )
+    assert isinstance(llm, ChatAnthropic)
+    assert not isinstance(llm, ChatOpenAIWithReasoning)
+    assert "opencode.ai/zen" in str(llm.anthropic_api_url)
+
+    # LiteLLM has requires_api_key=False: the no-key path must not raise and the
+    # proxy root (configured base) is reused for the Anthropic surface.
+    litellm = create_llm(
+        LLMConfig(
+            provider="litellm",
+            model="claude-opus-4-1",
+            api_key=None,
+            base_url="http://localhost:4000",
+            temperature=None,
+            provider_route="anthropic_messages",
+        )
+    )
+    assert isinstance(litellm, ChatAnthropic)
+    assert "localhost:4000" in str(litellm.anthropic_api_url)
+
+
+def test_gateway_openai_compat_route_still_uses_openai_adapter():
+    # Default route is unchanged: same gateway without the route override stays
+    # on the OpenAI-compatible reasoning adapter.
+    llm = create_llm(
+        LLMConfig(
+            provider="opencode",
+            model="claude-sonnet-4-5",
+            api_key="test-key",
+            base_url=None,
+            temperature=None,
+        )
+    )
+    assert isinstance(llm, ChatOpenAIWithReasoning)

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
-ProviderRoute = Literal["native", "openai_compat"]
+ProviderRoute = Literal["native", "openai_compat", "anthropic_messages"]
 ProviderTier = Literal["native", "gateway", "unverified"]
 
 
@@ -35,6 +35,7 @@ class LLMProviderSpecResponse(BaseModel):
     default_route: ProviderRoute = "native"
     openai_compat_base_url: Optional[str] = None
     verified: bool = False
+    anthropic_native_for_claude: bool = False
 
 
 class SystemPromptResponse(BaseModel):
