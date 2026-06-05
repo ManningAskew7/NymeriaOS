@@ -332,6 +332,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
         docs_url="https://docs.together.ai/docs/inference/openai-compatibility",
         aliases=("together", "together-ai"),
+        notes_for_user="When a reasoning model is selected, reasoning_content round-trips over Chat Completions on tool-call turns (Together returns it as reasoning and it is replayed as reasoning_content; stripped on plain turns). Enabling thinking is per-model; GLM-5 preserved thinking needs chat_template_kwargs clear_thinking=false.",
     ),
     _spec(
         "fireworks-ai",
@@ -586,6 +587,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         env=("NOVITA_API_KEY",),
         docs_url="https://novita.ai/docs/api-reference/model-api",
         aliases=("novita",),
+        notes_for_user="When a reasoning model is selected, reasoning_content round-trips over Chat Completions on tool-call turns (Novita does not auto-carry reasoning, so it is replayed from history; stripped on plain turns).",
     ),
     _spec(
         "siliconflow",
@@ -817,6 +819,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         docs_url="https://docs.litellm.ai/docs/proxy/user_keys",
         requires_api_key=False,
         tier="gateway",
+        notes_for_user="Reasoning round-trips over Chat Completions: the normalized reasoning_content is echoed on tool-call turns and stripped on plain turns. Anthropic-backed models behind the proxy also emit a signed thinking_blocks array that an OpenAI-compatible client must replay separately (not yet wired); set the proxy modify_params for graceful fallback.",
     ),
     _spec(
         "tgi",
