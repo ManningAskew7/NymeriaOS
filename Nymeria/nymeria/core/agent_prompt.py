@@ -556,6 +556,8 @@ def index_conversation_turn(
             user_id=user_id,
             thread_id=thread_id,
             context=context,
+            dedup_near=getattr(settings, "rag_ingest_dedup_enabled", True),
+            dedup_threshold=getattr(settings, "rag_ingest_dedup_threshold", 0.97),
         )
         logger.debug(f"Indexed conversation turn for user {user_id}, thread {thread_id}")
 

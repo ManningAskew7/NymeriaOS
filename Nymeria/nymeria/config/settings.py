@@ -1281,6 +1281,14 @@ class Settings(BaseSettings):
         default=0.9,
         description="Token-set Jaccard at/above which two rag_search results count as near-duplicates and the lower-scored one is dropped (1 = only identical prose collapses).",
     )
+    rag_ingest_dedup_enabled: bool = Field(
+        default=True,
+        description="At ingest, skip embedding a new conversation chunk when it is a near-duplicate (cosine >= rag_ingest_dedup_threshold) of an existing same-user conversation chunk, so paraphrased or re-embedded content (e.g. memory text echoed back into a turn) does not pile up near-duplicate chunks that crowd the first-stage pool. The exact prose-core hash guard always runs regardless; this is the semantic extension. Does not touch memory chunks (which upsert) or todo chunks.",
+    )
+    rag_ingest_dedup_threshold: float = Field(
+        default=0.97,
+        description="Cosine similarity at/above which a new conversation chunk is treated as a near-duplicate of an existing one and skipped at ingest (see rag_ingest_dedup_enabled). High by design (near-verbatim) so legitimately distinct turns about the same topic are not dropped.",
+    )
     rag_result_max_chars: int = Field(
         default=1000,
         description="Max characters of each rag_search result snippet before it is truncated and ellipsized.",
