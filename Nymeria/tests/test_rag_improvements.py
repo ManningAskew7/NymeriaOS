@@ -509,6 +509,74 @@ def test_index_conversation_turn_embeds_tool_activity():
         assert res[0].metadata.get("tool_names") == ["web_search_tavily"]
 
 
+def test_index_read_tool_results_excluded_from_embedding():
+    """rag_search / memory_read results are NOT re-embedded (would duplicate
+    chunks already in the index); new-content tools like web_search still are,
+    and the call name is kept in metadata for provenance."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from nymeria.core.agent_prompt import index_conversation_turn
+
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        agent = types.SimpleNamespace(
+            _get_memory_index=lambda uid: idx,
+            settings=types.SimpleNamespace(rag_contextual_enabled=False),
+        )
+        msgs = [
+            HumanMessage(content="look it up"),
+            AIMessage(content="", tool_calls=[
+                {"name": "rag_search", "args": {"query": "birthday"}, "id": "c1"},
+                {"name": "web_search_tavily", "args": {"query": "weather"}, "id": "c2"},
+            ]),
+            ToolMessage(content="RAGECHO already-indexed birthday June 1", tool_call_id="c1"),
+            ToolMessage(content="WEBNEW Sydney 21C sunny", tool_call_id="c2"),
+            AIMessage(content="Done looking."),
+        ]
+        index_conversation_turn(agent, "u1", "t1", "look it up", "Done looking.",
+                                messages=msgs)
+
+        res = idx.search("look it up", "u1", chunk_types=["conversation"])
+        assert res, "the turn's prose should still be indexed"
+        body = res[0].content
+        assert "RAGECHO" not in body, "rag_search result must not be re-embedded"
+        assert "rag_search" not in body, "the rag_search entry line is dropped entirely"
+        assert "WEBNEW" in body, "web_search (new content) should still embed"
+        assert "web_search_tavily" in body
+        # provenance: BOTH calls recorded in metadata, even the excluded one
+        assert res[0].metadata.get("tool_names") == ["rag_search", "web_search_tavily"]
+
+
+def test_index_read_only_turn_has_no_tool_suffix():
+    """A turn whose ONLY tool is rag_search embeds clean prose with no dangling
+    'Tools used:' header."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from nymeria.core.agent_prompt import index_conversation_turn
+
+    with TemporaryDirectory() as tmp:
+        idx = _index(tmp)
+        agent = types.SimpleNamespace(
+            _get_memory_index=lambda uid: idx,
+            settings=types.SimpleNamespace(rag_contextual_enabled=False),
+        )
+        msgs = [
+            HumanMessage(content="when is my dentist appt"),
+            AIMessage(content="", tool_calls=[
+                {"name": "rag_search", "args": {"query": "dentist"}, "id": "c1"}]),
+            ToolMessage(content="ONLYINDEXED dentist 2026-07-02 9am", tool_call_id="c1"),
+            AIMessage(content="July 2 at 9am."),
+        ]
+        index_conversation_turn(agent, "u1", "t1", "when is my dentist appt",
+                                "July 2 at 9am.", messages=msgs)
+
+        res = idx.search("dentist appt", "u1", chunk_types=["conversation"])
+        assert res
+        assert "Tools used:" not in res[0].content, "no empty tool suffix"
+        assert "ONLYINDEXED" not in res[0].content
+        assert res[0].metadata.get("tool_names") == ["rag_search"]
+
+
 # --- optional contextual / rerank helpers ----------------------------------
 
 class _FakeResp:
