@@ -49,6 +49,72 @@
         if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
       } catch (e) {}
     </script>
+    <script>
+      // Dev-only crash overlay. During `npm run tauri dev` (and `vite dev`) the
+      // app loads from http://localhost:1420; if a startup error escapes Svelte's
+      // <svelte:boundary> (a store module-init throw, a top-level script error, or
+      // an unhandled promise rejection) the screen would otherwise go blank with no
+      // clue why. This paints the error + stack on top of the blank page so it can
+      // be read or screenshotted directly. Gated to the Vite dev port so it never
+      // appears in a bundled release.
+      if (location.port === '1420') {
+        (function () {
+          var box;
+          function ensureBox() {
+            if (box) return box;
+            box = document.createElement('div');
+            box.id = '__nymeria_crash_overlay';
+            box.style.cssText = [
+              'position:fixed', 'inset:0', 'z-index:2147483647',
+              'background:#1a0d0d', 'color:#ffd7d7',
+              'font:12px/1.5 ui-monospace,Menlo,Consolas,monospace',
+              'padding:16px', 'overflow:auto', 'white-space:pre-wrap',
+              'word-break:break-word', 'user-select:text', '-webkit-user-select:text'
+            ].join(';');
+            var bar = document.createElement('div');
+            bar.style.cssText = 'position:sticky;top:0;display:flex;gap:8px;margin:-16px -16px 12px;padding:10px 16px;background:#2a1414;border-bottom:1px solid #4a2020';
+            var title = document.createElement('strong');
+            title.textContent = 'Startup error (dev overlay)';
+            title.style.cssText = 'flex:1;color:#ff9a9a;font-family:system-ui,sans-serif';
+            var btnCss = 'cursor:pointer;border:1px solid #6a3030;background:#3a1c1c;color:#ffd7d7;border-radius:4px;padding:3px 10px';
+            var copy = document.createElement('button');
+            copy.textContent = 'Copy'; copy.style.cssText = btnCss;
+            copy.onclick = function () { try { navigator.clipboard.writeText(box.dataset.log || ''); copy.textContent = 'Copied'; } catch (e) {} };
+            var hide = document.createElement('button');
+            hide.textContent = 'Hide'; hide.style.cssText = btnCss;
+            hide.onclick = function () { box.style.display = 'none'; };
+            bar.appendChild(title); bar.appendChild(copy); bar.appendChild(hide);
+            box.appendChild(bar);
+            (document.body || document.documentElement).appendChild(box);
+            box.dataset.log = '';
+            return box;
+          }
+          function add(text) {
+            var b = ensureBox();
+            b.style.display = 'block';
+            b.dataset.log += text + '\n\n';
+            var pre = document.createElement('div');
+            pre.textContent = text;
+            pre.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #3a1c1c';
+            b.appendChild(pre);
+            console.error('[crash-overlay]', text);
+          }
+          window.addEventListener('error', function (e) {
+            // Skip resource-load errors (failed <link>/<img>/<script>); keep real
+            // script exceptions, whose target is the window, not an element.
+            if (e.target && e.target.nodeType === 1) return;
+            var loc = e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : '';
+            var stack = e.error && e.error.stack ? e.error.stack : (e.message || String(e));
+            add('[error] ' + (e.message || '') + (loc ? '\n  at ' + loc : '') + '\n\n' + stack);
+          });
+          window.addEventListener('unhandledrejection', function (e) {
+            var r = e.reason;
+            var stack = r && r.stack ? r.stack : (typeof r === 'object' ? JSON.stringify(r) : String(r));
+            add('[unhandledrejection] ' + stack);
+          });
+        })();
+      }
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

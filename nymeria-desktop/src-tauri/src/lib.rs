@@ -56,6 +56,18 @@ pub fn run() {
             // Setup system tray
             tray::setup_tray(app)?;
 
+            // Dev only: open the WebView inspector in its own window on launch so a
+            // startup white-screen surfaces its console error instead of failing
+            // silently. Gated to debug builds (`tauri dev`); never ships in a
+            // release bundle.
+            #[cfg(debug_assertions)]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
             let app_handle = app.handle().clone();
 
             if let Some(pm_clone) = pm.clone() {
