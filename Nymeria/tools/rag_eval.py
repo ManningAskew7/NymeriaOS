@@ -422,8 +422,9 @@ class APIReranker:
             "model": self.model,
             "query": query,
             "documents": docs,
-            "top_n": len(docs),
         }
+        # Voyage's rerank API names this top_k; Cohere/Jina/ZeroEntropy use top_n.
+        payload["top_k" if self.provider == "voyage" else "top_n"] = len(docs)
         if self.min_interval:
             wait = self.min_interval - (time.monotonic() - self._last_call)
             if wait > 0:
