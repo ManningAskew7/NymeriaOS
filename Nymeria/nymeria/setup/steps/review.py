@@ -8,10 +8,19 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from ...config.llm_providers import get_llm_provider_spec
-from ...onboarding import HOSTING_CHOICES
+from ...onboarding import (
+    EXTERNAL_ACCESS_CHOICES,
+    HOSTING_CHOICES,
+    IMAGE_TIER_CHOICES,
+    PROVIDER_AUTH_METHOD_CHOICES,
+    SECURITY_PROFILE_CHOICES,
+    HostingOption,
+)
 from ..nav import Step
 from ..state import WizardState
 from .base import WizardStep
+from .core_tools import CORE_TOOLS
+from .placeholders import seeded_tool_names
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -31,6 +40,20 @@ def _summary_markup(state: WizardState) -> str:
 
     if state.hosting is not None:
         lines.append(f"[bold]Hosting[/bold]   {HOSTING_CHOICES[state.hosting].label}")
+    if state.image_tier is not None and state.hosting is HostingOption.DOCKER:
+        lines.append(
+            f"[bold]Image[/bold]     {IMAGE_TIER_CHOICES[state.image_tier].label}"
+        )
+    if state.security_profile is not None:
+        lines.append(
+            "[bold]Security[/bold]  "
+            f"{SECURITY_PROFILE_CHOICES[state.security_profile].label}"
+        )
+    if state.auth_method is not None:
+        lines.append(
+            "[bold]LLM auth[/bold]  "
+            f"{PROVIDER_AUTH_METHOD_CHOICES[state.auth_method].label}"
+        )
 
     spec = get_llm_provider_spec(state.provider)
     if spec is not None:
@@ -44,28 +67,34 @@ def _summary_markup(state: WizardState) -> str:
         if state.base_url:
             lines.append(f"[bold]Base URL[/bold]  {state.base_url}")
 
-    capabilities = [
-        ("Web search", state.extras.get("web_search")),
-        ("Embeddings", state.extras.get("embeddings")),
-        ("Image gen", state.extras.get("image_gen")),
+    # Tools: the always-on core set, plus the concrete family members seeded at
+    # init (web_search_* / fetch_url_* / image_gen_*) and the still-placeholder
+    # capabilities.
+    tool_lines: list[str] = [f"Core: {len(CORE_TOOLS)} always-on tools"]
+    seeded = seeded_tool_names(state)
+    if seeded:
+        # "Picked", not "Seeded": finalize does not yet write these to defaults.
+        tool_lines.append(f"Picked (not written to defaults yet): {', '.join(seeded)}")
+    placeholder_caps = [
+        ("RAG search", state.extras.get("rag_search")),
         ("TTS", state.extras.get("tts")),
         ("STT", state.extras.get("stt")),
         ("Agent settings", state.extras.get("agent_settings")),
     ]
-    chosen = [
-        f"{name}: {value}"
-        for name, value in capabilities
-        if value and value != "__skip__"
-    ]
-    if chosen:
-        lines.append("")
-        lines.append("[bold]Capabilities[/bold]")
-        for line in chosen:
-            lines.append(f"  {line}")
+    for name, value in placeholder_caps:
+        if value and value != "__skip__":
+            tool_lines.append(f"{name}: {value}")
+    lines.append("")
+    lines.append("[bold]Tools and capabilities[/bold]")
+    for line in tool_lines:
+        lines.append(f"  {line}")
 
-    if state.tools:
+    if state.external_access is not None:
         lines.append("")
-        lines.append(f"[bold]Tools[/bold]     {', '.join(state.tools)}")
+        lines.append(
+            "[bold]External[/bold]  "
+            f"{EXTERNAL_ACCESS_CHOICES[state.external_access].label}"
+        )
 
     if not lines:
         lines.append("Nothing selected yet.")

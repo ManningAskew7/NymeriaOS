@@ -24,7 +24,14 @@ from rich.console import Console
 from .._runtime_paths import default_user_project_root, find_project_root
 from ..config.llm_providers import LLMProviderSpec
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
-from ..onboarding import HostingOption, NextAction
+from ..onboarding import (
+    EXTERNAL_ACCESS_CHOICES,
+    IMAGE_TIER_CHOICES,
+    SECURITY_PROFILE_CHOICES,
+    ExternalAccess,
+    HostingOption,
+    NextAction,
+)
 from .providers import (
     LLMConnectionError,
     OPTIONAL_ENV_ORDER,
@@ -159,6 +166,7 @@ def finalize(
     console.print(f"[green]Data dir:[/green] {data_dir}")
     print_bootstrap_token_handoff(token_path, console)
     print_capability_summary(spec, optional_env, console)
+    print_deployment_summary(state, console)
 
     doctor_status = _maybe_run_doctor(
         state,
@@ -420,6 +428,49 @@ def print_capability_summary(
             console.print(f"  [yellow]--[/yellow] {name} ({hint})")
 
 
+def print_deployment_summary(state: WizardState, console: Console) -> None:
+    """Echo the deployment-shaping choices the installer cannot fully act on yet.
+
+    Image tier, security profile, and non-local external access are recorded by
+    the wizard but their automation (image building, the approval gate, tunnel
+    setup) is not built, so they are surfaced here rather than silently dropped.
+    """
+
+    rows: list[tuple[str, str, str]] = []
+    if state.image_tier is not None and state.hosting is HostingOption.DOCKER:
+        rows.append(
+            (
+                "Image tier",
+                IMAGE_TIER_CHOICES[state.image_tier].label,
+                "image building is not wired into setup yet",
+            )
+        )
+    if state.security_profile is not None:
+        rows.append(
+            (
+                "Security profile",
+                SECURITY_PROFILE_CHOICES[state.security_profile].label,
+                "enforcement is being built out",
+            )
+        )
+    if (
+        state.external_access is not None
+        and state.external_access is not ExternalAccess.LOCAL_ONLY
+    ):
+        rows.append(
+            (
+                "External access",
+                EXTERNAL_ACCESS_CHOICES[state.external_access].label,
+                "set up separately, see the remote-access doc",
+            )
+        )
+    if not rows:
+        return
+    console.print("\n[bold]Deployment choices[/bold] (recorded, not yet automated)")
+    for name, value, note in rows:
+        console.print(f"  {name}: {value} ({note})")
+
+
 # --- next action and doctor -------------------------------------------------
 
 
@@ -501,6 +552,7 @@ __all__ = [
     "print_bootstrap_token_handoff",
     "bootstrap_token_copy_command",
     "print_capability_summary",
+    "print_deployment_summary",
     "print_next_action",
     "run_doctor_for_root",
 ]

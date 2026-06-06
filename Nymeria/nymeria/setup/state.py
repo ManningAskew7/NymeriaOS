@@ -14,27 +14,50 @@ from pathlib import Path
 from typing import Any
 
 from ..config.llm_providers import LLMProviderSpec, get_llm_provider_spec
-from ..onboarding import HostingOption, NextAction
+from ..onboarding import (
+    ExternalAccess,
+    HostingOption,
+    ImageTier,
+    NextAction,
+    ProviderAuthMethod,
+    SecurityProfile,
+)
 
 
 @dataclass
 class WizardState:
-    # Step 1: hosting
+    # Deployment target: how to host the slim backend on this machine.
     hosting: HostingOption | None = None
 
-    # Step 2: provider + credentials
+    # Container image capability tier (only meaningful for container hosts).
+    # Placeholder: image generation is not wired into finalize yet.
+    image_tier: ImageTier | None = None
+
+    # First-run security posture. Recorded now; enforcement is built out later.
+    security_profile: SecurityProfile | None = None
+
+    # How the primary LLM is authenticated. Only the direct API-key path is wired;
+    # subscription OAuth via CLIProxy is deferred (the auth step gates it).
+    auth_method: ProviderAuthMethod = ProviderAuthMethod.API_KEY
+
+    # LLM provider + credentials (API-key path).
     provider: str | None = None
     api_key: str = ""
     model: str = ""
     base_url: str = ""
     api_mode: str = ""  # "", "responses", or "chat_completions"
 
+    # How the backend is reached from outside this machine. Placeholder: the
+    # wizard records the choice and finalize prints the matching guidance.
+    external_access: ExternalAccess | None = None
+
     # Optional capability keys (EMBEDDING/OPENAI/GEMINI/PERPLEXITY).
     optional_env: dict[str, str] = field(default_factory=dict)
 
-    # Placeholder steps store their selection here, keyed by step id.
+    # Capability/family steps store their selection here, keyed by step id.
+    # Multi-select families (web_search, fetch_url) store lists of concrete tool
+    # names; single-select placeholders store one value (or "__skip__").
     extras: dict[str, Any] = field(default_factory=dict)
-    tools: list[str] = field(default_factory=list)
 
     # Paths and post-setup behavior (driven by flags, not wizard screens yet).
     root: Path | None = None

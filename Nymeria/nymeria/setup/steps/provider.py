@@ -16,6 +16,7 @@ from textual.app import ComposeResult
 from textual.widgets import Input, RadioSet, Static
 
 from ...config.llm_providers import get_llm_provider_spec
+from ...onboarding import ProviderAuthMethod
 from ..nav import Step
 from ..providers import (
     grouped_provider_specs,
@@ -135,6 +136,12 @@ class ProviderStep(WizardStep):
         if not ok and prefix:
             self.show_error(f"That key should start with `{prefix}`.")
             return False
+        if self.state.provider != spec.id:
+            # Connection details belong to the previously chosen provider. On a
+            # switch, clear them so a back-nav that skips the (now inapplicable)
+            # connection step cannot leak a stale api_mode/base_url into config.
+            self.state.api_mode = ""
+            self.state.base_url = ""
         self.state.provider = spec.id
         self.state.api_key = api_key
         return True
@@ -194,7 +201,13 @@ def make_provider_step() -> Step:
             hint="type filter   down to list   enter next   ctrl+s skip   esc back",
         )
 
-    return Step(id="provider", applies=lambda _state: True, build=build)
+    def applies(state: WizardState) -> bool:
+        # Only the direct API-key path collects a provider here. The auth step
+        # gates the deferred OAuth methods, so this is true in practice today,
+        # but the predicate keeps the future OAuth branch correct.
+        return state.auth_method is ProviderAuthMethod.API_KEY
+
+    return Step(id="provider", applies=applies, build=build)
 
 
 def make_connection_step() -> Step:

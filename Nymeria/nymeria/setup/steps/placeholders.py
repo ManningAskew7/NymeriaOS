@@ -1,9 +1,13 @@
-"""Placeholder capability steps.
+"""Init-chosen tool-family steps and capability placeholders.
 
-The architecture (navigation, styling, store-into-state) is real; the option
-content is intentionally stubbed until each capability is designed for real.
-Single-select capabilities store into `state.extras[step_id]`; tool selection
-is multi-select and stores into `state.tools`.
+These follow Section B of `docs/private/core-toolset-plan.md`: at init the user
+seeds members of real tool families on top of the always-on core set. The
+`web_search_*`, `fetch_url_*`, and `image_gen_*` families are built, so they are
+real multi-selects over the actual registered tool names. The `rag_search_*`
+suite is not built yet (only a single `rag_search` exists today), so it stays a
+placeholder. Text-to-speech and speech-to-text are placeholders too. Selections
+are recorded on `WizardState`; wiring them into the per-user
+`default_thread_tools` is separate future work.
 """
 
 from __future__ import annotations
@@ -13,25 +17,117 @@ from ..state import WizardState
 from .base import Choice, multi_select_step, placeholder_step
 
 
+# Section B, built: the six registered web_search_* backends.
+_WEB_SEARCH_BACKENDS = [
+    Choice(
+        "web_search_perplexity",
+        "Perplexity",
+        "Synthesized answers; self-sufficient (needs no web fetch backend).",
+    ),
+    Choice("web_search_tavily", "Tavily", "Links and previews; pair with a web fetch backend."),
+    Choice("web_search_exa_ai", "Exa", "Links and previews; pair with a web fetch backend."),
+    Choice(
+        "web_search_firecrawl",
+        "Firecrawl",
+        "Links and previews; pair with a web fetch backend.",
+    ),
+    Choice("web_search_brave", "Brave Search", "Links and previews; pair with a web fetch backend."),
+    Choice("web_search_searxng", "SearXNG", "Self-hosted; pair with a web fetch backend."),
+]
+
+# Section B, built: the two registered fetch_url-family tools.
+_WEB_FETCH_BACKENDS = [
+    Choice(
+        "fetch_url_nymeria",
+        "Nymeria fetch",
+        "Built-in fetcher that distills a page with a configurable model.",
+    ),
+    Choice("jina_reader_fetch_url", "Jina Reader", "Hosted reader endpoint (key required)."),
+]
+
+# Section B, built: the five registered image_gen_* providers (mirrors the
+# web_search_* suite so users can pick and swap providers individually).
+_IMAGE_GEN_BACKENDS = [
+    Choice(
+        "image_gen_openai",
+        "OpenAI GPT Image",
+        "Top-ranked all-rounder: photorealism, prompt adherence, in-image text (key required).",
+    ),
+    Choice(
+        "image_gen_gemini",
+        "Google Gemini (Nano Banana Pro)",
+        "Best for in-image text, infographics/diagrams, and 4K output (key required).",
+    ),
+    Choice(
+        "image_gen_flux",
+        "Black Forest Labs FLUX.2",
+        "Flagship photorealism and multi-reference; async submit and poll (key required).",
+    ),
+    Choice(
+        "image_gen_replicate",
+        "Replicate (budget)",
+        "Low-cost host for FLUX.1 schnell or Z-Image Turbo; good for drafts (key required).",
+    ),
+    Choice(
+        "image_gen_fal",
+        "fal.ai (budget)",
+        "Fast low-cost host for Z-Image Turbo or FLUX.1 schnell (key required).",
+    ),
+]
+
+
+def _extras_list(step_id: str):
+    def get_initial(state: WizardState) -> list[str]:
+        return list(state.extras.get(step_id, []))
+
+    def store(state: WizardState, value: list[str]) -> None:
+        state.extras[step_id] = list(value)
+
+    return get_initial, store
+
+
 def make_web_search_step() -> Step:
-    return placeholder_step(
+    """Real multi-select over the built web_search_* backends (Section B)."""
+    get_initial, store = _extras_list("web_search")
+    return multi_select_step(
         step_id="web_search",
-        title="Web search",
-        note="Placeholder. Search provider options are not wired up yet.",
-        options=[
-            Choice("tavily", "Tavily", "Hosted search API (key required)."),
-            Choice("brave", "Brave Search", "Hosted search API (key required)."),
-            Choice("ddg", "DuckDuckGo", "No key required."),
-            Choice("searxng", "SearXNG", "Self-hosted search endpoint."),
-        ],
+        title="Web search backends",
+        note=(
+            "Pick the web search tools for your default toolset (all six are "
+            "built; recorded now, not written to your defaults yet). Every backend "
+            "except Perplexity returns links only, so add a web fetch backend next."
+        ),
+        choices=_WEB_SEARCH_BACKENDS,
+        get_initial=get_initial,
+        store=store,
     )
 
 
-def make_embeddings_step() -> Step:
+def make_fetch_url_step() -> Step:
+    """Real multi-select over the built fetch_url-family tools (Section B/C)."""
+    get_initial, store = _extras_list("fetch_url")
+    return multi_select_step(
+        step_id="fetch_url",
+        title="Web fetch backends",
+        note=(
+            "Pick the tools that read full page content from a URL. Web search "
+            "backends other than Perplexity return only links, so they need one of "
+            "these to be useful."
+        ),
+        choices=_WEB_FETCH_BACKENDS,
+        get_initial=get_initial,
+        store=store,
+    )
+
+
+def make_rag_search_step() -> Step:
     return placeholder_step(
-        step_id="embeddings",
-        title="Semantic memory / RAG embeddings",
-        note="Placeholder. Embedding model options are not wired up yet.",
+        step_id="rag_search",
+        title="Semantic memory / RAG search",
+        note=(
+            "Placeholder. A single rag_search tool exists today; the rag_search_* "
+            "multi-backend suite (one per embedding provider) is not built yet."
+        ),
         options=[
             Choice("openai-small", "OpenAI text-embedding-3-small", "Hosted, low cost."),
             Choice("openai-large", "OpenAI text-embedding-3-large", "Hosted, higher quality."),
@@ -41,15 +137,20 @@ def make_embeddings_step() -> Step:
 
 
 def make_image_gen_step() -> Step:
-    return placeholder_step(
+    """Real multi-select over the built image_gen_* providers (Section B)."""
+    get_initial, store = _extras_list("image_gen")
+    return multi_select_step(
         step_id="image_gen",
-        title="Image generation",
-        note="Placeholder. Image model options are not wired up yet.",
-        options=[
-            Choice("openai", "OpenAI gpt-image", "Hosted (key required)."),
-            Choice("fal", "FAL.ai", "Hosted (key required)."),
-            Choice("xai", "xAI Grok Imagine", "Hosted (key required)."),
-        ],
+        title="Image generation providers",
+        note=(
+            "Pick the image generation tools for your default toolset (all five "
+            "are built; recorded now, not written to your defaults yet). Each needs "
+            "its provider API key set. The budget hosts (Replicate, fal.ai) cost "
+            "far less than the flagship providers."
+        ),
+        choices=_IMAGE_GEN_BACKENDS,
+        get_initial=get_initial,
+        store=store,
     )
 
 
@@ -79,41 +180,28 @@ def make_stt_step() -> Step:
     )
 
 
-def make_tools_step() -> Step:
-    """Multi-select tool categories (boxy checkboxes); stored on state.tools."""
+def seeded_tool_names(state: WizardState) -> list[str]:
+    """Concrete tool names the init flow would seed from the built families.
 
-    choices = [
-        Choice("web", "Web search and scraping", ""),
-        Choice("files", "File operations", ""),
-        Choice("shell", "Terminal and processes", ""),
-        Choice("code", "Code execution", ""),
-        Choice("vision", "Vision", ""),
-        Choice("memory", "Memory and RAG", ""),
-        Choice("todos", "Task planning (TODOs)", ""),
-        Choice("triggers", "Triggers and scheduling", ""),
-    ]
-
-    def get_initial(state: WizardState) -> list[str]:
-        return list(state.tools)
-
-    def store(state: WizardState, value: list[str]) -> None:
-        state.tools = list(value)
-
-    return multi_select_step(
-        step_id="tools",
-        title="Tool selection",
-        note="Placeholder. The core tool list is still being decided.",
-        choices=choices,
-        get_initial=get_initial,
-        store=store,
-    )
+    Only the built `web_search_*`, `fetch_url_*`, and `image_gen_*` families
+    resolve to real tool names today; the placeholder families contribute nothing
+    until their suites land. Kept here so review and any future finalize wiring
+    share one source.
+    """
+    names: list[str] = []
+    for family in ("web_search", "fetch_url", "image_gen"):
+        value = state.extras.get(family)
+        if isinstance(value, list):
+            names.extend(str(item) for item in value)
+    return names
 
 
 __all__ = [
     "make_web_search_step",
-    "make_embeddings_step",
+    "make_fetch_url_step",
+    "make_rag_search_step",
     "make_image_gen_step",
     "make_tts_step",
     "make_stt_step",
-    "make_tools_step",
+    "seeded_tool_names",
 ]
