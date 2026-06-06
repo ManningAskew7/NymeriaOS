@@ -114,6 +114,17 @@ Set `LLM_PROVIDER_ROUTE=openai_compat` for the global default, or use the per-th
 
 **Use bartowski GGUFs** for tool calling. bartowski proactively fixes chat template bugs and uses imatrix quantization. Nearly every example in llama.cpp's `function-calling.md` uses bartowski GGUFs. Unsloth is the second choice (good for Qwen 3.5 specifically because they ship the template fixes). Qwen's official GGUFs sometimes have stale templates that cause llama.cpp to select the wrong parser.
 
+### RAG embeddings and rerankers (local, CPU)
+
+The chat models above generate; RAG (`rag_search`) also needs an embedding model and optionally a reranker. The recommended lite local CPU stack, established by an internal retrieval-quality eval on a blended 40k-chunk corpus:
+
+| Role | Model | Size | Notes |
+|------|-------|------|-------|
+| Embedding | **`ibm-granite/granite-embedding-small-english-r2`** | 47M, 384-d | Apache-2.0, 8192-token context, symmetric (no query prompt). Beats `BAAI/bge-small-en-v1.5` on retrieval and is a drop-in 384-d swap. Serve int8 ONNX behind an OpenAI-compatible embed server (ModernBERT is slow in torch on CPU). |
+| Reranker | **`cross-encoder/ettin-reranker-68m-v1`** (or `-32m-v1`) | 68M / 33M | Apache-2.0, 8192 ctx, int8 ONNX cross-encoder. Ettin-68m is the higher-quality pick (about +0.035 ndcg@5 over 32m); Ettin-32m is roughly 2.7x faster on CPU for tighter latency. |
+
+That is the free CPU-only default. If a hosted API is acceptable, premium embeddings plus reranker (e.g. Voyage `voyage-4-large` + `rerank-2.5`) still lead, most on structured/tool content.
+
 ---
 
 ## Technical notes
