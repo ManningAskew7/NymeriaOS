@@ -699,6 +699,36 @@ class MemoryIndex:
 
         return chunks
 
+    def _has_near_dup_chunk(self, cursor, user_id: str, chunk_type: str,
+                            embedding: List[float], threshold: float) -> bool:
+        """True when an existing same-(user, type) chunk is within `threshold`
+        cosine of `embedding`.
+
+        Embeddings are L2-normalized and vec0 ranks by L2 distance, so cosine T
+        maps to a distance bound sqrt(2*(1-T)). vec0 MATCH cannot filter on joined
+        columns, so scan the K nearest overall, then keep the closest one whose
+        chunk matches this user + type.
+        """
+        dist_bound = (2.0 * (1.0 - threshold)) ** 0.5
+        try:
+            rows = cursor.execute(
+                "SELECT chunk_id, distance FROM vec_chunks "
+                "WHERE embedding MATCH ? ORDER BY distance LIMIT 10",
+                (self._serialize_embedding(embedding),),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return False
+        if not rows:
+            return False
+        dist_by_id = {r["chunk_id"]: r["distance"] for r in rows}
+        placeholders = ",".join("?" * len(dist_by_id))
+        same = cursor.execute(
+            f"SELECT id FROM chunks WHERE id IN ({placeholders}) "
+            "AND user_id = ? AND chunk_type = ?",
+            (*dist_by_id.keys(), user_id, chunk_type),
+        ).fetchall()
+        return any(dist_by_id.get(r["id"], 9.9) <= dist_bound for r in same)
+
     def add_chunk(
         self,
         content: str,
@@ -708,6 +738,8 @@ class MemoryIndex:
         thread_id: Optional[str] = None,
         event_time: Optional[datetime] = None,
         context: Optional[str] = None,
+        dedup_near: bool = False,
+        dedup_threshold: float = 0.97,
     ) -> List[str]:
         """
         Embed and store a chunk (or multiple chunks if content is long).
@@ -723,6 +755,12 @@ class MemoryIndex:
             context: Optional contextual-retrieval blurb. When provided it is
                 prepended to the text that gets embedded (not shown to the user),
                 situating the chunk for better recall.
+            dedup_near: When True, skip the whole add if the first chunk is a
+                semantic near-duplicate (cosine >= dedup_threshold) of an
+                existing same-(user, type) chunk. Generalizes the exact prose-core
+                hash guard to paraphrased / re-embedded content. Callers opt in
+                (e.g. the conversation indexer); memory upserts and todos do not.
+            dedup_threshold: Cosine bound for dedup_near (default 0.97).
 
         Returns:
             List of chunk IDs created
@@ -766,6 +804,28 @@ class MemoryIndex:
                         )
                         return []
 
+                # Semantic near-duplicate guard (opt-in via dedup_near). The hash
+                # guard above only catches verbatim cores; this skips the add when
+                # the first chunk is near-identical (cosine >= dedup_threshold) to
+                # an existing same-(user, type) chunk, so paraphrased or
+                # re-embedded content (e.g. a rag_search result or memory text
+                # restated in a turn) does not accumulate near-duplicate chunks
+                # that crowd the first-stage pool. The embedding is reused for the
+                # first chunk's insert below, so this costs one extra vec KNN, not
+                # an extra embed.
+                first_embedding = None
+                if text_chunks and dedup_near:
+                    embed0 = (f"{context}\n\n{text_chunks[0]}"
+                              if context else text_chunks[0])
+                    first_embedding = self.embed_text(embed0)
+                    if first_embedding and self._has_near_dup_chunk(
+                            cursor, user_id, chunk_type, first_embedding,
+                            dedup_threshold):
+                        logger.debug(
+                            "Skipping near-duplicate %s chunk for user %s",
+                            chunk_type, user_id)
+                        return []
+
                 for i, chunk_content in enumerate(text_chunks):
                     # Generate unique ID
                     chunk_id = str(uuid.uuid4())
@@ -798,7 +858,8 @@ class MemoryIndex:
                     # captures the situating context (Anthropic contextual
                     # retrieval); the stored ``content`` stays clean for display.
                     embed_input = f"{context}\n\n{chunk_content}" if context else chunk_content
-                    embedding = self.embed_text(embed_input)
+                    embedding = (first_embedding if i == 0 and first_embedding is not None
+                                 else self.embed_text(embed_input))
                     if embedding:
                         try:
                             cursor.execute("""

@@ -577,6 +577,67 @@ def test_index_read_only_turn_has_no_tool_suffix():
         assert res[0].metadata.get("tool_names") == ["rag_search"]
 
 
+# --- ingest-time semantic dedup guard --------------------------------------
+
+def test_ingest_near_dup_guard_skips_semantic_duplicates():
+    """add_chunk(dedup_near=True) skips a new conversation chunk that is a
+    near-duplicate (cosine >= threshold) of an existing one, keeps distinct ones,
+    and is a no-op when not opted in."""
+    import math
+
+    from nymeria.core.memory_index import EMBEDDING_DIMENSIONS
+
+    def unit(x, y):  # a 2-D direction embedded as a unit vector in dim space
+        n = math.sqrt(x * x + y * y)
+        v = [0.0] * EMBEDDING_DIMENSIONS
+        v[0], v[1] = x / n, y / n
+        return v
+
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "m.db", embedding_provider="openai",
+                          embedding_api_key="test")
+        A = "the dentist appointment is on july 2 at 9am"
+        Ap = "dentist appointment july 2 9am reminder"   # cos~0.995 to A
+        B = "the weather in sydney is sunny and 21 degrees"  # cos~0.894 to A
+        embeds = {A: unit(1, 0.0), Ap: unit(1, 0.1), B: unit(1, 0.5)}
+        idx.embed_text = lambda t: embeds.get(t, unit(1, 9.0))
+
+        assert idx.add_chunk(A, {}, "conversation", "u1", dedup_near=True)
+        # near-duplicate of A -> skipped (cos ~0.995 >= 0.97)
+        assert idx.add_chunk(Ap, {}, "conversation", "u1", dedup_near=True) == []
+        # distinct -> indexed (cos ~0.894 < 0.97)
+        assert idx.add_chunk(B, {}, "conversation", "u1", dedup_near=True)
+        # opt-in only: without dedup_near the same near-dup is NOT skipped
+        assert idx.add_chunk(Ap, {}, "conversation", "u1")
+
+
+def test_ingest_near_dup_guard_is_type_scoped():
+    """The guard only collapses within the same chunk_type: a 'memory' chunk
+    near-identical to a 'conversation' chunk is still added (memory upserts on
+    its own path), so cross-type content is never silently dropped."""
+    import math
+
+    from nymeria.core.memory_index import EMBEDDING_DIMENSIONS
+
+    def unit(x, y):
+        n = math.sqrt(x * x + y * y)
+        v = [0.0] * EMBEDDING_DIMENSIONS
+        v[0], v[1] = x / n, y / n
+        return v
+
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "m.db", embedding_provider="openai",
+                          embedding_api_key="test")
+        conv = "birthday is june 1"
+        mem = "birthday: june 1"   # near-identical vector, different type
+        embeds = {conv: unit(1, 0.0), mem: unit(1, 0.05)}
+        idx.embed_text = lambda t: embeds.get(t, unit(1, 9.0))
+
+        assert idx.add_chunk(conv, {}, "conversation", "u1", dedup_near=True)
+        # same user, near-identical vector, but chunk_type='memory' -> not a dup
+        assert idx.add_chunk(mem, {"key": "birthday"}, "memory", "u1", dedup_near=True)
+
+
 # --- optional contextual / rerank helpers ----------------------------------
 
 class _FakeResp:
