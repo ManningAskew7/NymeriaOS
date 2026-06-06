@@ -43,6 +43,48 @@ class NextAction(StrEnum):
     CLI = "cli"
 
 
+class ImageTier(StrEnum):
+    """Which binaries are baked into a container image (first-run, container hosts).
+
+    Tool availability is a property of the image, not the runtime shape: the
+    roughly 1,250 optional tools are in-process Python and run on any base. Only a
+    small subset shells out to system binaries, so the image choice is three rungs
+    rather than a minimal-versus-Kali binary. Placeholder until image generation
+    is wired into finalize.
+    """
+
+    MINIMAL = "minimal"
+    STANDARD = "standard"
+    FULL = "full"
+
+
+class SecurityProfile(StrEnum):
+    """First-run security posture. Recorded now; enforcement is built out later.
+
+    Per-tool-call approval gating does not exist yet, so this is a design-forward
+    placeholder: the wizard captures the operator's intent so the future approval
+    gate, default-bound tools, and bash sandboxing can each read it as built.
+    """
+
+    SECURE = "secure"
+    STANDARD = "standard"
+    UNLEASHED = "unleashed"
+
+
+class ExternalAccess(StrEnum):
+    """How the backend is reached from outside this machine (first-run guidance).
+
+    The wizard cannot fully automate Tailscale or Cloudflare (both need
+    interactive browser auth), so this records the chosen path and finalize prints
+    the matching guidance. Placeholder until remote-access automation lands.
+    """
+
+    LOCAL_ONLY = "local_only"
+    TAILSCALE = "tailscale"
+    CLOUDFLARE = "cloudflare"
+    CHAT_BOTS = "chat_bots"
+
+
 @dataclass(frozen=True)
 class ProviderOption:
     name: str
@@ -178,6 +220,120 @@ NEXT_ACTION_CHOICES = {
         value=NextAction.CLI,
         label="Enter CLI chat command path",
         description="Launch or print the nymeria cli handoff command.",
+    ),
+}
+
+IMAGE_TIER_ORDER = (
+    ImageTier.MINIMAL,
+    ImageTier.STANDARD,
+    ImageTier.FULL,
+)
+
+IMAGE_TIER_CHOICES = {
+    ImageTier.MINIMAL: OnboardingChoice(
+        value=ImageTier.MINIMAL,
+        label="Minimal (Debian)",
+        description=(
+            "The roughly 1,250 in-process Python tools, no browser, security, or "
+            "CLI binaries. Smallest image and the safest default."
+        ),
+        recommended=True,
+    ),
+    ImageTier.STANDARD: OnboardingChoice(
+        value=ImageTier.STANDARD,
+        label="Standard (Debian plus browser, CLI, ffmpeg)",
+        description=(
+            "Adds Node, Chromium/Playwright, the Claude Code CLI, and ffmpeg for "
+            "full everyday capability including browser automation, without the "
+            "Kali heft."
+        ),
+    ),
+    ImageTier.FULL: OnboardingChoice(
+        value=ImageTier.FULL,
+        label="Full (Kali security toolchain)",
+        description=(
+            "Adds the pentest toolchain (nmap, sqlmap, hashcat, wordlists). "
+            "Heaviest at 2 to 3 GB, worth it only for security work."
+        ),
+        advanced=True,
+    ),
+}
+
+SECURITY_PROFILE_ORDER = (
+    SecurityProfile.SECURE,
+    SecurityProfile.STANDARD,
+    SecurityProfile.UNLEASHED,
+)
+
+SECURITY_PROFILE_CHOICES = {
+    SecurityProfile.SECURE: OnboardingChoice(
+        value=SecurityProfile.SECURE,
+        label="Secure",
+        description=(
+            "Dangerous tools disabled by default, medium-risk tools require "
+            "approval. Strictest posture. (Enforcement is being built out.)"
+        ),
+    ),
+    SecurityProfile.STANDARD: OnboardingChoice(
+        value=SecurityProfile.STANDARD,
+        label="Standard",
+        description=(
+            "Full toolset, approval prompts only for risky tools. Balanced "
+            "default. (Enforcement is being built out.)"
+        ),
+        recommended=True,
+    ),
+    SecurityProfile.UNLEASHED: OnboardingChoice(
+        value=SecurityProfile.UNLEASHED,
+        label="Unleashed",
+        description=(
+            "No approval gates, full autonomy, and the self-improve Skill Kit "
+            "bound by default. Use only inside a sandbox. (Enforcement is being "
+            "built out.)"
+        ),
+        advanced=True,
+    ),
+}
+
+EXTERNAL_ACCESS_ORDER = (
+    ExternalAccess.LOCAL_ONLY,
+    ExternalAccess.TAILSCALE,
+    ExternalAccess.CLOUDFLARE,
+    ExternalAccess.CHAT_BOTS,
+)
+
+EXTERNAL_ACCESS_CHOICES = {
+    ExternalAccess.LOCAL_ONLY: OnboardingChoice(
+        value=ExternalAccess.LOCAL_ONLY,
+        label="Local only",
+        description=(
+            "Reachable only from this machine. You can add remote access later."
+        ),
+        recommended=True,
+    ),
+    ExternalAccess.TAILSCALE: OnboardingChoice(
+        value=ExternalAccess.TAILSCALE,
+        label="Tailscale",
+        description=(
+            "Private mesh VPN: zero public exposure, automatic HTTPS, no domain. "
+            "Recommended for single-user remote access. (Set up separately.)"
+        ),
+    ),
+    ExternalAccess.CLOUDFLARE: OnboardingChoice(
+        value=ExternalAccess.CLOUDFLARE,
+        label="Cloudflare tunnel",
+        description=(
+            "Public hostname via a Cloudflare named or quick tunnel. Needs a "
+            "Cloudflare account and dashboard ingress. (Set up separately.)"
+        ),
+    ),
+    ExternalAccess.CHAT_BOTS: OnboardingChoice(
+        value=ExternalAccess.CHAT_BOTS,
+        label="Chat-app bots only",
+        description=(
+            "Reach Nymeria through Discord, Telegram, and other bots with no "
+            "inbound networking at all."
+        ),
     ),
 }
 

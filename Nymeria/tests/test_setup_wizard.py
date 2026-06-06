@@ -44,6 +44,119 @@ def test_parse_choice_rejects_retired_hosting_value():
         parse_choice(HostingOption, "venv", option_name="--hosting")
 
 
+def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
+    from nymeria.onboarding import (
+        EXTERNAL_ACCESS_CHOICES,
+        EXTERNAL_ACCESS_ORDER,
+        IMAGE_TIER_CHOICES,
+        IMAGE_TIER_ORDER,
+        SECURITY_PROFILE_CHOICES,
+        SECURITY_PROFILE_ORDER,
+        ExternalAccess,
+        ImageTier,
+        SecurityProfile,
+    )
+
+    for order, table, enum_type, recommended in (
+        (IMAGE_TIER_ORDER, IMAGE_TIER_CHOICES, ImageTier, ImageTier.MINIMAL),
+        (
+            SECURITY_PROFILE_ORDER,
+            SECURITY_PROFILE_CHOICES,
+            SecurityProfile,
+            SecurityProfile.STANDARD,
+        ),
+        (
+            EXTERNAL_ACCESS_ORDER,
+            EXTERNAL_ACCESS_CHOICES,
+            ExternalAccess,
+            ExternalAccess.LOCAL_ONLY,
+        ),
+    ):
+        assert set(order) == set(enum_type)  # every member is ordered
+        assert set(table) == set(enum_type)  # every member has a choice
+        flagged = [opt for opt in order if table[opt].recommended]
+        assert flagged == [recommended]  # exactly one, the expected default
+
+
+def test_core_tools_match_plan_section_a():
+    """The Core toolset screen pins the 12 literal tools from
+    core-toolset-plan.md Section A (the review screen prints len(CORE_TOOLS)).
+    """
+    from nymeria.setup.steps.core_tools import CORE_TOOLS
+
+    names = [name for name, _note in CORE_TOOLS]
+    assert len(CORE_TOOLS) == 12
+    assert names == [
+        "bash_execute",
+        "file_read",
+        "file_write",
+        "memory_add",
+        "memory_edit",
+        "memory_read",
+        "nym_todo",
+        "nym_todo_delete",
+        "nym_todo_list",
+        "notify",
+        "slash_command",
+        "spawn_thread",
+    ]
+
+
+def test_seeded_tool_names_unions_built_families_and_ignores_placeholders():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import seeded_tool_names
+
+    state = WizardState(
+        extras={
+            "web_search": ["web_search_tavily", "web_search_perplexity"],
+            "fetch_url": ["fetch_url_nymeria"],
+            "image_gen": ["image_gen_openai", "image_gen_fal"],
+            # Placeholder families and single-select capabilities must not leak in.
+            "rag_search": "openai-small",
+            "tts": "__skip__",
+        }
+    )
+    assert seeded_tool_names(state) == [
+        "web_search_tavily",
+        "web_search_perplexity",
+        "fetch_url_nymeria",
+        "image_gen_openai",
+        "image_gen_fal",
+    ]
+    assert seeded_tool_names(WizardState()) == []  # nothing chosen -> empty
+
+
+# --- environment detection --------------------------------------------------
+
+
+def test_recommend_hosting_prefers_container_on_windows_with_docker():
+    from nymeria.setup.environment import recommend_hosting
+
+    assert (
+        recommend_hosting(is_windows=True, has_docker=True) is HostingOption.DOCKER
+    )
+    assert (
+        recommend_hosting(is_windows=True, has_docker=False) is HostingOption.LOCAL
+    )
+    assert (
+        recommend_hosting(is_windows=False, has_docker=True) is HostingOption.LOCAL
+    )
+
+
+def test_detect_environment_returns_a_report(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: False)
+    report = env_mod.detect_environment()
+
+    assert report.docker_available is False
+    assert report.port_8000_free is False
+    assert report.recommended_hosting in tuple(HostingOption)
+    # A busy port is surfaced as a note rather than silently dropped.
+    assert any("8000" in note for note in report.notes)
+
+
 # --- pure navigation model --------------------------------------------------
 
 
@@ -93,6 +206,44 @@ def test_navigator_position_reflects_applicable_total():
     assert nav.position() == (1, 3)  # conditional step excluded from the total
     nav.advance()
     assert nav.position() == (2, 3)
+    nav.advance()  # crosses the skipped conditional step "c" and lands on "d"
+    assert nav.position() == (3, 3)  # the skip must not break the running count
+
+
+def test_default_flow_order_and_conditional_image_tier():
+    from nymeria.setup.nav import Navigator
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import build_default_steps
+
+    steps = build_default_steps()
+    ids = [step.id for step in steps]
+    assert ids[0] == "welcome"  # the plan's "detect environment" step comes first
+    assert ids[-1] == "review"
+    for required in (
+        "image_tier",
+        "security_profile",
+        "auth_method",
+        "external_access",
+        # core-toolset-plan structure: core set shown, then the family pickers.
+        "core_tools",
+        "web_search",
+        "fetch_url",
+        "rag_search",
+        "image_gen",
+    ):
+        assert required in ids
+    # The abstract category "tools" step was superseded by the family pickers.
+    assert "tools" not in ids
+
+    def applicable_ids(state: "WizardState") -> list[str]:
+        nav = Navigator(steps, state)
+        nav.start()
+        return [steps[i].id for i in nav.applicable_indices()]
+
+    # image_tier is a property of a container image, so it only applies to a
+    # container host.
+    assert "image_tier" not in applicable_ids(WizardState(hosting=HostingOption.LOCAL))
+    assert "image_tier" in applicable_ids(WizardState(hosting=HostingOption.DOCKER))
 
 
 # --- headless finalize ------------------------------------------------------
@@ -192,6 +343,120 @@ def test_noninteractive_writes_optional_capability_keys(monkeypatch, tmp_path):
     assert "OPENAI_API_KEY=sk-openai-test" in config
     assert "GEMINI_API_KEY=gemini-test" in config
     assert "PERPLEXITY_API_KEY=pplx-test" in config
+
+
+def test_noninteractive_records_deployment_choices_without_dead_config(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--security-profile", "secure",
+            "--external-access", "tailscale",
+            "--root", str(root),
+            "--non-interactive",
+            "--skip-llm-test",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert rc == 0
+    # The placeholder choices are surfaced to the operator...
+    assert "Deployment choices" in out
+    assert "Secure" in out
+    assert "Tailscale" in out
+    # ...but not written as config the backend would ignore.
+    assert "SECURITY_PROFILE" not in config
+    assert "EXTERNAL_ACCESS" not in config
+
+
+def _capture_console():
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    return Console(file=buf, width=100, force_terminal=False), buf
+
+
+def test_review_summary_markup_surfaces_collected_choices():
+    from nymeria.onboarding import (
+        ExternalAccess,
+        HostingOption,
+        ImageTier,
+        ProviderAuthMethod,
+        SecurityProfile,
+    )
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _summary_markup
+
+    state = WizardState(
+        hosting=HostingOption.DOCKER,
+        image_tier=ImageTier.STANDARD,
+        security_profile=SecurityProfile.SECURE,
+        auth_method=ProviderAuthMethod.API_KEY,
+        provider="anthropic",
+        model="claude-opus-4-8",
+        api_key="sk-ant-x",
+        external_access=ExternalAccess.TAILSCALE,
+        extras={
+            "web_search": ["web_search_perplexity"],
+            "agent_settings": "thorough",
+            "rag_search": "__skip__",
+        },
+    )
+    markup = _summary_markup(state)
+
+    assert "Hosting" in markup
+    assert "Image" in markup  # docker host -> image tier surfaces
+    assert "Security" in markup
+    assert "claude-opus-4-8" in markup
+    assert "Core: 12 always-on tools" in markup
+    assert "web_search_perplexity" in markup  # picked family member
+    assert "Agent settings: thorough" in markup
+    assert "RAG search" not in markup  # a skipped placeholder is not shown
+    assert "Tailscale" in markup
+
+
+def test_print_deployment_summary_suppresses_local_only_and_non_docker_image_tier():
+    from nymeria.onboarding import (
+        ExternalAccess,
+        HostingOption,
+        ImageTier,
+        SecurityProfile,
+    )
+    from nymeria.setup.finalize import print_deployment_summary
+    from nymeria.setup.state import WizardState
+
+    console, buf = _capture_console()
+    state = WizardState(
+        hosting=HostingOption.LOCAL,  # not a container host
+        image_tier=ImageTier.STANDARD,
+        security_profile=SecurityProfile.STANDARD,
+        external_access=ExternalAccess.LOCAL_ONLY,  # the recommended default
+    )
+    print_deployment_summary(state, console)
+    out = buf.getvalue()
+
+    assert "Image tier" not in out  # suppressed: image tier is container-only
+    assert "External access" not in out  # suppressed: local-only is the default
+    assert "Security profile: Standard" in out
+    assert "recorded, not yet automated" in out  # honest placeholder framing
+
+
+def test_print_deployment_summary_is_silent_without_recorded_choices():
+    from nymeria.setup.finalize import print_deployment_summary
+    from nymeria.setup.state import WizardState
+
+    console, buf = _capture_console()
+    print_deployment_summary(WizardState(), console)
+    assert buf.getvalue().strip() == ""
 
 
 def test_noninteractive_does_not_duplicate_primary_openai_key(monkeypatch, tmp_path):
@@ -359,6 +624,10 @@ def test_run_init_parser_accepts_new_flags():
             "init",
             "provider",
             "--hosting", "local",
+            "--auth-method", "api_key",
+            "--image-tier", "standard",
+            "--security-profile", "secure",
+            "--external-access", "tailscale",
             "--provider", "anthropic",
             "--model", "claude-test-model",
             "--api-key", "sk-ant-test-key",
@@ -375,6 +644,10 @@ def test_run_init_parser_accepts_new_flags():
     )
     assert args.section == "provider"
     assert args.hosting == "local"
+    assert args.auth_method == "api_key"
+    assert args.image_tier == "standard"
+    assert args.security_profile == "secure"
+    assert args.external_access == "tailscale"
     assert args.provider == "anthropic"
     assert args.base_url == "http://localhost:8317/v1"
     assert args.api_mode == "responses"
@@ -392,6 +665,33 @@ async def _no_models(*_args, **_kwargs):
     return []
 
 
+# Step indices in the default flow (welcome, hosting, image_tier, security,
+# auth, provider, connection, model, ...). image_tier (2) only applies to a
+# container host, so on the default local path the provider step is index 5.
+_HOSTING_STEP = 1
+_SECURITY_STEP = 3
+_AUTH_STEP = 4
+_PROVIDER_STEP = 5
+_CONNECTION_STEP = 6
+
+
+async def _advance_to_provider(pilot) -> None:
+    """Walk welcome -> hosting -> security -> auth on the default (local) path.
+
+    Accepts every default (local hosting, Standard security, Direct API key) and
+    leaves the provider picker focused. image_tier is skipped because the default
+    hosting is not a container.
+    """
+    await pilot.press("enter")  # welcome -> hosting
+    await pilot.pause()
+    await pilot.press("enter")  # accept default hosting (local) -> security
+    await pilot.pause()
+    await pilot.press("enter")  # accept default security profile -> auth method
+    await pilot.pause()
+    await pilot.press("enter")  # accept default auth (Direct API key) -> provider
+    await pilot.pause()
+
+
 def test_wizard_pilot_forward_back_and_provider(monkeypatch):
     from textual.widgets import Input
 
@@ -404,16 +704,26 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
         state = WizardState()
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
-            assert app.nav.current() == 0
+            assert app.nav.current() == 0  # welcome (environment detection)
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            assert app.nav.current() == _HOSTING_STEP
             await pilot.press("enter")  # accept default hosting (local), advance
             await pilot.pause()
             assert state.hosting is HostingOption.LOCAL
-            assert app.nav.current() == 1
+            # image_tier (index 2) is skipped for a non-container host.
+            assert app.nav.current() == _SECURITY_STEP
             await pilot.press("escape")  # back to hosting (does not exit)
             await pilot.pause()
-            assert app.nav.current() == 0
-            await pilot.press("enter")  # forward to provider (focus picker search)
+            assert app.nav.current() == _HOSTING_STEP
+            await pilot.press("enter")  # hosting -> security profile
             await pilot.pause()
+            await pilot.press("enter")  # accept default security -> auth method
+            await pilot.pause()
+            assert app.nav.current() == _AUTH_STEP
+            await pilot.press("enter")  # accept default auth (API key) -> provider
+            await pilot.pause()
+            assert app.nav.current() == _PROVIDER_STEP
             await pilot.press("enter")  # Enter in picker -> focus moves to key field
             await pilot.pause()
             app.screen.query_one("#api-key", Input).value = "sk-ant-xyz"
@@ -423,7 +733,7 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
             assert state.api_key == "sk-ant-xyz"
             # Anthropic has a fixed endpoint and no API-mode toggle, so the
             # connection step is skipped; the model step is next.
-            assert 2 not in app.nav.applicable_indices()
+            assert _CONNECTION_STEP not in app.nav.applicable_indices()
             await pilot.press("enter")  # model step: accept default model, advance
             await pilot.pause()
         return state
@@ -453,6 +763,8 @@ def test_wizard_pilot_arrow_keys_select_and_update_description():
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # welcome -> hosting (the radio screen)
             await pilot.pause()
             panel = app.screen.query_one("#choice-desc", Static)
             radio_set = app.screen.query_one(RadioSet)
@@ -490,6 +802,8 @@ def test_wizard_radio_renders_bare_circles_without_box():
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
             await pilot.pause()
+            await pilot.press("enter")  # welcome -> hosting (the radio screen)
+            await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
             assert buttons  # the hosting step is a single-select radio screen
             for button in buttons:
@@ -526,6 +840,8 @@ def test_wizard_radio_highlight_is_bold_brighten_no_bar():
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
             await pilot.pause()
+            await pilot.press("enter")  # welcome -> hosting (the radio screen)
+            await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
             selected = [b for b in buttons if b.has_class("-selected")]
             others = [b for b in buttons if not b.has_class("-selected")]
@@ -557,13 +873,14 @@ def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
 
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
-    from nymeria.setup.steps.placeholders import make_web_search_step
+    from nymeria.setup.steps.placeholders import make_tts_step
 
-    # web_search options, with the appended "Skip for now" row last (index 4).
+    # tts options (cartesia, openai, gemini, qwen3), with the appended "Skip for
+    # now" row last (index 4).
     skip_index = 4
 
     async def drive_enter_only() -> dict:
-        app = SetupWizardApp(WizardState(), steps=[make_web_search_step()])
+        app = SetupWizardApp(WizardState(), steps=[make_tts_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
             radio_set = app.screen.query_one(RadioSet)
@@ -577,7 +894,7 @@ def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
         return dict(app.state.extras)
 
     async def drive_down_then_enter() -> dict:
-        app = SetupWizardApp(WizardState(), steps=[make_web_search_step()])
+        app = SetupWizardApp(WizardState(), steps=[make_tts_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
             radio_set = app.screen.query_one(RadioSet)
@@ -588,8 +905,8 @@ def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
             await pilot.pause()
         return dict(app.state.extras)
 
-    assert asyncio.run(drive_enter_only()) == {"web_search": "__skip__"}
-    assert asyncio.run(drive_down_then_enter()) == {"web_search": "tavily"}
+    assert asyncio.run(drive_enter_only()) == {"tts": "__skip__"}
+    assert asyncio.run(drive_down_then_enter()) == {"tts": "cartesia"}
 
 
 def test_wizard_pilot_selects_non_default_provider(monkeypatch):
@@ -603,8 +920,7 @@ def test_wizard_pilot_selects_non_default_provider(monkeypatch):
     async def drive() -> SetupWizardApp:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # hosting -> provider (focus picker search)
-            await pilot.pause()
+            await _advance_to_provider(pilot)  # land on the provider picker
             await pilot.press(*"openrouter")  # filter the provider list
             await pilot.pause()
             await pilot.press("enter")  # Enter in picker -> focus key field
@@ -613,7 +929,7 @@ def test_wizard_pilot_selects_non_default_provider(monkeypatch):
             await pilot.press("enter")  # advance past provider -> connection step
             await pilot.pause()
             # OpenRouter supports API mode, so the connection step applies.
-            assert 2 in app.nav.applicable_indices()
+            assert _CONNECTION_STEP in app.nav.applicable_indices()
             await pilot.press("enter")  # connection: accept defaults, advance
             await pilot.pause()
             await pilot.press("enter")  # model step: accept default model, advance
@@ -646,8 +962,7 @@ def test_wizard_pilot_model_step_lists_and_selects(monkeypatch):
         state = WizardState()
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # hosting -> provider
-            await pilot.pause()
+            await _advance_to_provider(pilot)  # land on the provider picker
             await pilot.press("enter")  # picker -> focus key
             await pilot.pause()
             app.screen.query_one("#api-key", Input).value = "sk-ant-xyz"
@@ -671,14 +986,13 @@ def test_wizard_pilot_blank_key_requires_explicit_skip():
     async def drive() -> SetupWizardApp:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # hosting -> provider (focus picker search)
-            await pilot.pause()
+            await _advance_to_provider(pilot)  # land on the provider picker
             await pilot.press("enter")  # Enter in picker -> focus key field
             await pilot.pause()
-            assert app.nav.current() == 1  # Enter in picker does not advance
+            assert app.nav.current() == _PROVIDER_STEP  # picker enter does not advance
             await pilot.press("enter")  # blank key -> error, does not skip
             await pilot.pause()
-            assert app.nav.current() == 1
+            assert app.nav.current() == _PROVIDER_STEP
             assert app.state.provider is None
             await pilot.press("ctrl+s")  # explicit skip
             await pilot.pause()
@@ -686,7 +1000,7 @@ def test_wizard_pilot_blank_key_requires_explicit_skip():
 
     app = asyncio.run(drive())
     assert app.state.provider is None
-    assert app.nav.current() != 1  # advanced past the provider step
+    assert app.nav.current() != _PROVIDER_STEP  # advanced past the provider step
 
 
 def test_wizard_pilot_ctrl_s_skips_without_recording():
@@ -696,13 +1010,184 @@ def test_wizard_pilot_ctrl_s_skips_without_recording():
     async def drive() -> SetupWizardApp:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
             await pilot.press("ctrl+s")  # skip hosting without choosing
             await pilot.pause()
         return app
 
     app = asyncio.run(drive())
     assert app.state.hosting is None
-    assert app.nav.current() == 1
+    # Hosting unset means a non-container host, so image_tier is skipped and the
+    # security profile step is next.
+    assert app.nav.current() == _SECURITY_STEP
+
+
+def test_wizard_pilot_web_search_multiselect_seeds_real_backend():
+    """The web search step is a real multi-select over the built web_search_*
+    tool names (not abstract categories), and a pick is recorded as a concrete
+    tool name that the init flow would seed.
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_web_search_step, seeded_tool_names
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_web_search_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("space")  # toggle the first (highlighted) backend
+            await pilot.pause()
+            await pilot.press("enter")  # advance, storing the selection
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.extras["web_search"] == ["web_search_perplexity"]
+    assert seeded_tool_names(state) == ["web_search_perplexity"]
+
+
+def test_wizard_pilot_fetch_url_multiselect_seeds_real_backend():
+    """The web fetch step is a real multi-select over the built fetch_url-family
+    tool names, parallel to web search.
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_fetch_url_step, seeded_tool_names
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_fetch_url_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("space")  # toggle the first (highlighted) backend
+            await pilot.pause()
+            await pilot.press("enter")  # advance, storing the selection
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
+    assert seeded_tool_names(state) == ["fetch_url_nymeria"]
+
+
+def test_wizard_pilot_image_gen_multiselect_seeds_real_backend():
+    """The image generation step is a real multi-select over the built
+    image_gen_* provider tool names (parallel to web search / web fetch), and a
+    pick is recorded as a concrete tool name the init flow would seed.
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_image_gen_step, seeded_tool_names
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_image_gen_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("space")  # toggle the first (highlighted) provider
+            await pilot.pause()
+            await pilot.press("enter")  # advance, storing the selection
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.extras["image_gen"] == ["image_gen_openai"]
+    assert seeded_tool_names(state) == ["image_gen_openai"]
+
+
+def test_wizard_pilot_auth_skip_pins_api_key_even_on_oauth_row():
+    """Ctrl+S on the auth step must not leave a deferred OAuth value in state
+    (which would silently disable the provider/connection/model steps). It coerces
+    to the only wired method.
+    """
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.auth import make_auth_method_step
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_auth_method_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")  # highlight a deferred CLIProxy OAuth row
+            await pilot.pause()
+            await pilot.press("ctrl+s")  # skip must pin API key, not keep OAuth
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.auth_method is ProviderAuthMethod.API_KEY
+
+
+def test_wizard_pilot_provider_switch_clears_stale_connection_state():
+    """Switching providers clears api_mode/base_url, so a back-nav that skips the
+    now-inapplicable connection step cannot leak the old provider's connection
+    details into the written config.
+    """
+    from textual.widgets import Input
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.provider import make_provider_step
+
+    async def drive() -> WizardState:
+        # Stand in for a prior OpenRouter connection-step result, then switch.
+        state = WizardState(
+            provider="openrouter", api_mode="responses", base_url="http://x/v1"
+        )
+        app = SetupWizardApp(state, steps=[make_provider_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(*"anthropic")  # filter to a different provider
+            await pilot.pause()
+            await pilot.press("enter")  # picker enter -> focus key field
+            await pilot.pause()
+            app.screen.query_one("#api-key", Input).value = "sk-ant-x"
+            await pilot.press("enter")  # advance, committing the provider switch
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.provider == "anthropic"
+    assert state.api_mode == ""  # cleared on the switch
+    assert state.base_url == ""  # cleared on the switch
+
+
+def test_wizard_pilot_auth_step_blocks_deferred_oauth():
+    """The auth step shows subscription OAuth for orientation but refuses to
+    advance on it (the branch is deferred). Direct API key is accepted.
+    """
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    async def drive() -> SetupWizardApp:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            await pilot.press("enter")  # accept hosting -> security profile
+            await pilot.pause()
+            await pilot.press("enter")  # accept security profile -> auth method
+            await pilot.pause()
+            assert app.nav.current() == _AUTH_STEP
+            await pilot.press("down")  # highlight a deferred CLIProxy OAuth method
+            await pilot.pause()
+            await pilot.press("enter")  # gated: shows an error, does not advance
+            await pilot.pause()
+            assert app.nav.current() == _AUTH_STEP
+            await pilot.press("up")  # back to Direct API key
+            await pilot.pause()
+            await pilot.press("enter")  # accepted -> provider
+            await pilot.pause()
+        return app
+
+    app = asyncio.run(drive())
+    assert app.state.auth_method is ProviderAuthMethod.API_KEY
+    assert app.nav.current() == _PROVIDER_STEP
 
 
 def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
@@ -719,8 +1204,7 @@ def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # hosting -> provider (focus picker search)
-            await pilot.pause()
+            await _advance_to_provider(pilot)  # focus the provider picker search
             search = app.screen.query_one("#provider-search", Input)
             option_list = app.screen.query_one(PickerOptionList)
             first = option_list._first_selectable_index()
@@ -760,8 +1244,7 @@ def test_wizard_pilot_provider_picker_first_row_reveals_top_header():
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # hosting -> provider
-            await pilot.pause()
+            await _advance_to_provider(pilot)  # land on the provider picker
             option_list = app.screen.query_one(PickerOptionList)
             # The registry yields more providers than fit, so the list scrolls.
             assert option_list.option_count > 14

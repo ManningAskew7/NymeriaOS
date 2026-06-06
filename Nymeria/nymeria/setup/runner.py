@@ -15,8 +15,12 @@ from pathlib import Path
 from rich.console import Console
 
 from ..onboarding import (
+    ExternalAccess,
     HostingOption,
+    ImageTier,
     NextAction,
+    ProviderAuthMethod,
+    SecurityProfile,
     choice_values,
     parse_choice,
 )
@@ -64,6 +68,30 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         choices=choice_values(HostingOption),
         default=None,
         help="How to host the slim backend (local, service, docker)",
+    )
+    parser.add_argument(
+        "--auth-method",
+        choices=(ProviderAuthMethod.API_KEY.value,),
+        default=None,
+        help="LLM auth method. Only api_key is wired; CLIProxy OAuth is deferred",
+    )
+    parser.add_argument(
+        "--image-tier",
+        choices=choice_values(ImageTier),
+        default=None,
+        help="Container image capability tier for container hosts (placeholder)",
+    )
+    parser.add_argument(
+        "--security-profile",
+        choices=choice_values(SecurityProfile),
+        default=None,
+        help="First-run security posture (recorded; enforcement is built out later)",
+    )
+    parser.add_argument(
+        "--external-access",
+        choices=choice_values(ExternalAccess),
+        default=None,
+        help="How the backend is reached remotely (placeholder guidance)",
     )
     parser.add_argument(
         "--next-action",
@@ -134,6 +162,30 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     if getattr(args, "hosting", None):
         hosting = parse_choice(HostingOption, args.hosting, option_name="--hosting")
 
+    auth_method = ProviderAuthMethod.API_KEY
+    if getattr(args, "auth_method", None):
+        auth_method = parse_choice(
+            ProviderAuthMethod, args.auth_method, option_name="--auth-method"
+        )
+
+    image_tier = None
+    if getattr(args, "image_tier", None):
+        image_tier = parse_choice(
+            ImageTier, args.image_tier, option_name="--image-tier"
+        )
+
+    security_profile = None
+    if getattr(args, "security_profile", None):
+        security_profile = parse_choice(
+            SecurityProfile, args.security_profile, option_name="--security-profile"
+        )
+
+    external_access = None
+    if getattr(args, "external_access", None):
+        external_access = parse_choice(
+            ExternalAccess, args.external_access, option_name="--external-access"
+        )
+
     next_action = DEFAULT_NEXT_ACTION
     if getattr(args, "next_action", None):
         next_action = parse_choice(
@@ -145,6 +197,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
 
     return WizardState(
         hosting=hosting,
+        image_tier=image_tier,
+        security_profile=security_profile,
+        auth_method=auth_method,
+        external_access=external_access,
         provider=getattr(args, "provider", None),
         api_key=(getattr(args, "api_key", None) or "").strip(),
         model=(getattr(args, "model", None) or "").strip(),
