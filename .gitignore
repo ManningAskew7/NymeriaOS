@@ -11,6 +11,11 @@ google_credentials.json
 _prv_a-google-service-account.json
 **/google_credentials.json
 **/_prv_a-google-service-account.json
+google_oauth_credentials.json
+**/google_oauth_credentials.json
+# Ad-hoc local secrets / key dumps
+Keys.txt
+**/Keys.txt
 # Per-instance CLIProxy state — keep tracked files (source, compose, docs)
 # but exclude per-machine secrets, configs, and runtime data:
 CLIProxyAPI-main/auths/
