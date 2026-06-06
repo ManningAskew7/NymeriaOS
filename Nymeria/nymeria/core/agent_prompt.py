@@ -382,6 +382,20 @@ _MAX_TOOL_ACTIVITY_ENTRIES = 12
 _MAX_TOOL_RESULT_EMBED_CHARS = 400
 _MAX_TOOL_RESULT_RAW_CHARS = 1000
 
+# Tools whose results are pulled FROM the memory/RAG index. Embedding their
+# output would re-index content already in the corpus as near-duplicate chunks
+# (the index eating its own search results), so their entries are dropped from
+# the embedded turn summary. The call name still lands in metadata["tool_names"]
+# for provenance; only the duplicate content is excluded. Tools that bring in NEW
+# content (web_search, file_read, etc.) are kept. Prefix-match `rag_` (not a bare
+# "rag" substring, which would also hit e.g. "storage").
+_INDEX_READ_TOOL_NAMES = frozenset({"rag_search", "memory_read"})
+
+
+def _is_index_read_tool(name: str) -> bool:
+    """True for tools whose results are already in the RAG index (rag_*, memory_read)."""
+    return bool(name) and (name in _INDEX_READ_TOOL_NAMES or name.startswith("rag_"))
+
 
 def _summarize_tool_args(args) -> str:
     """Compactly render tool-call args as key=val, truncated for embedding."""
@@ -450,12 +464,18 @@ def extract_turn_tool_activity(messages) -> List[dict]:
 
 
 def _build_tool_activity_section(activity: List[dict]):
-    """Return (embed_text_suffix, raw_metadata_list) for a turn's tool activity."""
-    if not activity:
+    """Return (embed_text_suffix, raw_metadata_list) for a turn's tool activity.
+
+    Tools whose results come from the memory/RAG index (``_is_index_read_tool``)
+    are excluded so a ``rag_search`` result is never re-embedded as a
+    near-duplicate chunk; the call still appears in ``metadata["tool_names"]``.
+    """
+    embeddable = [a for a in activity if not _is_index_read_tool(a.get("name", ""))]
+    if not embeddable:
         return "", []
     lines = ["", "Tools used:"]
     raw = []
-    for a in activity[:_MAX_TOOL_ACTIVITY_ENTRIES]:
+    for a in embeddable[:_MAX_TOOL_ACTIVITY_ENTRIES]:
         args_str = _summarize_tool_args(a.get("args"))
         result = a.get("result") or ""
         summary = " ".join(result.split())
