@@ -75,9 +75,11 @@ class RichReplRenderer:
         width: int | None = None,
         theme: CLITheme | None = None,
         stream_rich_response_lines: bool = False,
+        download_base_url: str = "",
     ) -> None:
         self.state = state or create_initial_state()
         self.capabilities = capabilities
+        self._download_base_url = download_base_url
         self.theme = theme or DEFAULT_CLI_THEME
         self.width = _positive_width(width or getattr(capabilities, "width", 80))
         self.console = console or _make_console(
@@ -1056,6 +1058,7 @@ class RichReplRenderer:
         return TranscriptRenderOptions(
             verbose=self.transcript_verbose,
             ascii_only=self._ascii_only(),
+            base_url=self._download_base_url,
         )
 
     def _ascii_only(self) -> bool:

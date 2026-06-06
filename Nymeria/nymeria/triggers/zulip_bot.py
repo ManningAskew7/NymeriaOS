@@ -154,6 +154,9 @@ class ZulipClientProtocol(Protocol):
     async def send_message(self, *, message_type: str, to: str, content: str, topic: Optional[str] = None) -> Mapping[str, Any]:
         """Send a Zulip message."""
 
+    async def upload_file(self, *, filename: str, data: bytes, content_type: str) -> str:
+        """Upload a file and return its server uri."""
+
     async def close(self) -> None:
         """Close client resources."""
 
@@ -248,6 +251,21 @@ class ZulipHTTPClient:
         if topic:
             data["topic"] = topic
         return await self._request("POST", "/messages", data=data)
+
+    async def upload_file(self, *, filename: str, data: bytes, content_type: str) -> str:
+        """Upload a file to Zulip and return its server uri (e.g. /user_uploads/...)."""
+        response = await self._client.post(
+            f"{self.api_base_url}/user_uploads",
+            auth=(self.email, self.api_key),
+            files={"file": (filename, data, content_type or "application/octet-stream")},
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        uri = payload.get("uri") if isinstance(payload, Mapping) else ""
+        if not uri:
+            raise RuntimeError("Zulip upload did not return a uri")
+        return str(uri)
 
     async def _request(
         self,
@@ -677,6 +695,27 @@ class NymeriaZulipBot:
                 topic=target.topic,
             )
 
+    async def _send_workspace_attachment(self, target: ZulipReplyTarget, path: str) -> None:
+        """Download a generated workspace file, upload it to Zulip, and post a link."""
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+            return
+        raw_bytes, filename, content_type = result
+        try:
+            uri = await self.zulip.upload_file(
+                filename=filename, data=raw_bytes, content_type=content_type
+            )
+            await self.zulip.send_message(
+                message_type=target.message_type,
+                to=target.to,
+                content=f"[{filename}]({uri})",
+                topic=target.topic,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to upload Zulip workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+
     async def _refresh_bindings(self) -> None:
         try:
             entries = await self.api.list_chatapp_bindings(provider="zulip")
@@ -779,14 +818,14 @@ class _ZulipStreamHandler:
                 result_text = result_text[:797] + "..."
             await self._bot._send_text(self._target, f"**Result:**\n```\n{result_text}\n```")
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"
         await self._bot._send_text(self._target, f"Tool binding: `{names}` ({ttl})")
 
     async def on_workspace_artifact(self, path: str) -> None:
-        await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+        await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_error(self, content: str) -> None:
         await self._bot._send_text(self._target, f"Sorry, I encountered an error: {content}")

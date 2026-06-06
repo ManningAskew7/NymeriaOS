@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from rich.cells import cell_len
 
@@ -130,15 +131,29 @@ def format_result_preview(
     return truncate_cell_width(_stringify(result), coerce_width(limit))
 
 
+def workspace_download_url(base_url: str, path: str) -> str:
+    """Build the authenticated /workspace/download URL for a workspace path."""
+
+    return f"{base_url.rstrip('/')}/workspace/download?path={quote(path, safe='')}"
+
+
 def format_artifact_line(
     artifact: WorkspaceArtifact,
     *,
     width: int | None = None,
+    base_url: str = "",
 ) -> str:
-    """Render one workspace artifact as a bounded transcript line."""
+    """Render one workspace artifact as a bounded transcript line.
+
+    The CLI is a remote terminal that cannot read the backend filesystem, so for
+    image artifacts (when an API base_url is known) the label is the clickable
+    /workspace/download URL instead of the raw workspace path.
+    """
 
     selected_width = coerce_width(width)
     label = artifact.path or artifact.name or "workspace artifact"
+    if base_url and artifact.path and (artifact.mime_type or "").startswith("image/"):
+        label = workspace_download_url(base_url, artifact.path)
     details: list[str] = []
     if artifact.size_bytes is not None:
         details.append(format_size(artifact.size_bytes))

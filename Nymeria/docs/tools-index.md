@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1247 tools found.**
+**1251 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -527,7 +527,11 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `hunter_domain_search` | `nymeria/tools/enrichment_security_service_integrations.py` | Find email addresses associated with a domain through Hunter. |
 | `hunter_email_finder` | `nymeria/tools/enrichment_security_service_integrations.py` | Find a likely professional email address from name and domain. |
 | `hunter_email_verifier` | `nymeria/tools/enrichment_security_service_integrations.py` | Verify deliverability details for an email address through Hunter. |
-| `image_generate` | `nymeria/tools/image_generation.py` | Generate a new image from a text prompt and return it as a workspace artifact. |
+| `image_gen_fal` | `nymeria/tools/image_gen_integrations.py` | Generate an image cheaply via fal.ai (Z-Image Turbo or FLUX.1 schnell), a fast low-cost budget option. |
+| `image_gen_flux` | `nymeria/tools/image_gen_integrations.py` | Generate an image with Black Forest Labs FLUX.2, a flagship photorealism and multi-reference model. |
+| `image_gen_gemini` | `nymeria/tools/image_gen_integrations.py` | Generate an image with Google Gemini "Nano Banana Pro" (gemini-3-pro-image). |
+| `image_gen_openai` | `nymeria/tools/image_gen_integrations.py` | Generate an image with OpenAI GPT Image (gpt-image-2), the current top-ranked text-to-image model. |
+| `image_gen_replicate` | `nymeria/tools/image_gen_integrations.py` | Generate an image cheaply via Replicate (FLUX.1 schnell or Z-Image Turbo), a low-cost budget option. |
 | `install_mcp_server` | `nymeria/tools/search_mcp.py` | Compatibility wrapper for installing one MCP server. |
 | `install_skill` | `nymeria/tools/search_skills.py` | Install an Agent Skill from a marketplace onto disk. |
 | `intercom_archive_contact` | `nymeria/tools/support_service_integrations.py` | Archive an Intercom contact. |
@@ -913,7 +917,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `quickbooks_query` | `nymeria/tools/commerce_billing_service_integrations.py` | Run a QuickBooks Online read-only SQL-style query. |
 | `quickbooks_update_customer` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a QuickBooks Online customer using sparse update fields. |
 | `quickchart_create_url` | `nymeria/tools/public_info_integrations.py` | Create a QuickChart chart URL from labels and data arrays. |
-| `rag_search` | `nymeria/tools/memory.py` | Search past conversations and memories for relevant context. |
+| `rag_search` | `nymeria/tools/memory.py` | Search your own memory: past conversations, saved memories, and completed TODOs. |
 | `rag_settings` | `nymeria/tools/memory.py` | Configure RAG settings. Returns current settings after changes. |
 | `raindrop_create_bookmark` | `nymeria/tools/bookmark_link_service_integrations.py` | Create a Raindrop bookmark. |
 | `raindrop_delete_bookmark` | `nymeria/tools/bookmark_link_service_integrations.py` | Delete a Raindrop bookmark by ID. |

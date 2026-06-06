@@ -168,8 +168,14 @@ class MattermostClientProtocol(Protocol):
         channel_id: str,
         message: str,
         root_id: Optional[str] = None,
+        file_ids: Optional[list[str]] = None,
     ) -> Mapping[str, Any]:
         """Create a Mattermost post."""
+
+    async def upload_file(
+        self, *, channel_id: str, filename: str, data: bytes, content_type: str
+    ) -> str:
+        """Upload a file to a channel and return its file id."""
 
     def websocket_events(self) -> AsyncGenerator[Mapping[str, Any], None]:
         """Yield Mattermost WebSocket event frames."""
@@ -313,11 +319,37 @@ class MattermostHTTPClient:
         channel_id: str,
         message: str,
         root_id: Optional[str] = None,
+        file_ids: Optional[list[str]] = None,
     ) -> Mapping[str, Any]:
         body: dict[str, Any] = {"channel_id": channel_id, "message": message}
         if root_id:
             body["root_id"] = root_id
+        if file_ids:
+            body["file_ids"] = list(file_ids)
         return await self._request("POST", "/posts", json=body)
+
+    async def upload_file(
+        self, *, channel_id: str, filename: str, data: bytes, content_type: str
+    ) -> str:
+        """Upload a file to a channel and return its file id (for create_post)."""
+        response = await self._client.post(
+            f"{self.api_base_url}/files",
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json",
+            },
+            params={"channel_id": channel_id},
+            files={"files": (filename, data, content_type or "application/octet-stream")},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        infos = payload.get("file_infos") if isinstance(payload, Mapping) else None
+        file_id = ""
+        if isinstance(infos, list) and infos and isinstance(infos[0], Mapping):
+            file_id = str(infos[0].get("id") or "")
+        if not file_id:
+            raise RuntimeError("Mattermost upload did not return a file id")
+        return file_id
 
     async def websocket_events(self) -> AsyncGenerator[Mapping[str, Any], None]:
         seq = 1
@@ -747,6 +779,30 @@ class NymeriaMattermostBot:
             if index < len(chunks) - 1:
                 await asyncio.sleep(1.05)
 
+    async def _send_workspace_attachment(self, target: MattermostReplyTarget, path: str) -> None:
+        """Download a generated workspace file and upload it to Mattermost."""
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+            return
+        raw_bytes, filename, content_type = result
+        try:
+            file_id = await self.mattermost.upload_file(
+                channel_id=target.channel_id,
+                filename=filename,
+                data=raw_bytes,
+                content_type=content_type,
+            )
+            await self.mattermost.create_post(
+                channel_id=target.channel_id,
+                message=f"Generated file: {filename}",
+                root_id=target.root_id,
+                file_ids=[file_id],
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to upload Mattermost workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+
     async def _refresh_bindings(self) -> None:
         try:
             entries = await self.api.list_chatapp_bindings(provider="mattermost")
@@ -865,14 +921,14 @@ class _MattermostStreamHandler:
                 result_text = result_text[:797] + "..."
             await self._bot._send_text(self._target, f"**Result:**\n```\n{result_text}\n```")
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"
         await self._bot._send_text(self._target, f"Tool binding: `{names}` ({ttl})")
 
     async def on_workspace_artifact(self, path: str) -> None:
-        await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+        await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_error(self, content: str) -> None:
         await self._bot._send_text(self._target, f"Sorry, I encountered an error: {content}")

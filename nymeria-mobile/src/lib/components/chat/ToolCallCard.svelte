@@ -5,6 +5,7 @@
   import { getToolSummary } from '$lib/utils/toolSummary';
   import { configStore } from '$lib/stores/config.svelte';
   import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
+  import WorkspaceImage from './WorkspaceImage.svelte';
 
   interface Props {
     toolCall: ToolCall;
@@ -12,6 +13,12 @@
 
   let { toolCall }: Props = $props();
   let modalArtifact = $state<WorkspaceArtifact | null>(null);
+
+  // Image artifacts render inline below the card (always visible, even when the
+  // card is collapsed); non-image artifacts stay as chips inside the details.
+  let imageArtifacts = $derived(
+    (toolCall.artifacts ?? []).filter((a) => a.mimeType.startsWith('image/'))
+  );
 
   let summary = $derived(
     configStore.describeToolCalls
@@ -120,6 +127,14 @@
       {/if}
     </div>
   </Collapsible>
+
+  {#if imageArtifacts.length}
+    <div class="tool-call-images">
+      {#each imageArtifacts as artifact (artifact.path)}
+        <WorkspaceImage {artifact} onClick={() => { modalArtifact = artifact; }} />
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <WorkspaceArtifactModal artifact={modalArtifact} onClose={() => { modalArtifact = null; }} />
@@ -283,6 +298,15 @@
     gap: var(--spacing-md);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+  }
+
+  /* Inline generated images, shown directly beneath the tool call card. */
+  .tool-call-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border-top: 1px solid var(--glass-border);
   }
 
   .artifact-list {

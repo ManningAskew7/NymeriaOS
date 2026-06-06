@@ -180,6 +180,18 @@ class RocketChatClientProtocol(Protocol):
     async def post_message(self, *, room_id: str, text: str, thread_id: Optional[str] = None) -> Mapping[str, Any]:
         """Post a Rocket.Chat message."""
 
+    async def upload_file(
+        self,
+        *,
+        room_id: str,
+        filename: str,
+        data: bytes,
+        content_type: str,
+        msg: str = "",
+        thread_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Upload a file to a room (also posts it as a message)."""
+
     def websocket_events(self, room_ids: list[str]) -> AsyncGenerator[Mapping[str, Any], None]:
         """Yield realtime Rocket.Chat frames."""
         ...
@@ -313,6 +325,36 @@ class RocketChatHTTPClient:
         if thread_id:
             body["tmid"] = thread_id
         return await self._request("POST", "/chat.postMessage", json=body)
+
+    async def upload_file(
+        self,
+        *,
+        room_id: str,
+        filename: str,
+        data: bytes,
+        content_type: str,
+        msg: str = "",
+        thread_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Upload a file to a room (rooms.upload also posts it as a message)."""
+        form: dict[str, Any] = {}
+        if msg:
+            form["msg"] = msg
+        if thread_id:
+            form["tmid"] = thread_id
+        response = await self._client.post(
+            f"{self.api_base_url}/rooms.upload/{room_id}",
+            headers={
+                "X-Auth-Token": self.auth_token,
+                "X-User-Id": self.user_id,
+                "Accept": "application/json",
+            },
+            data=form,
+            files={"file": (filename, data, content_type or "application/octet-stream")},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, Mapping) else {}
 
     async def websocket_events(self, room_ids: list[str]) -> AsyncGenerator[Mapping[str, Any], None]:
         async with websockets.connect(_websocket_url(self.base_url), ping_interval=30, ping_timeout=30) as ws:
@@ -761,6 +803,25 @@ class NymeriaRocketChatBot:
                 thread_id=target.thread_id,
             )
 
+    async def _send_workspace_attachment(self, target: RocketChatReplyTarget, path: str) -> None:
+        """Download a generated workspace file and upload it to the Rocket.Chat room."""
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+            return
+        raw_bytes, filename, content_type = result
+        try:
+            await self.rocketchat.upload_file(
+                room_id=target.room_id,
+                filename=filename,
+                data=raw_bytes,
+                content_type=content_type,
+                thread_id=target.thread_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to upload Rocket.Chat workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+
     async def _refresh_bindings(self) -> None:
         try:
             entries = await self.api.list_chatapp_bindings(provider="rocketchat")
@@ -864,14 +925,14 @@ class _RocketChatStreamHandler:
                 result_text = result_text[:797] + "..."
             await self._bot._send_text(self._target, f"**Result:**\n```\n{result_text}\n```")
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"
         await self._bot._send_text(self._target, f"Tool binding: `{names}` ({ttl})")
 
     async def on_workspace_artifact(self, path: str) -> None:
-        await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+        await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_error(self, content: str) -> None:
         await self._bot._send_text(self._target, f"Sorry, I encountered an error: {content}")

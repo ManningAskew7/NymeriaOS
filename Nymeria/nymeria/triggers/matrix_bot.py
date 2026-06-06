@@ -189,6 +189,26 @@ class MatrixHTTPClient:
             json={},
         )
 
+    async def upload_media(self, *, data: bytes, filename: str, content_type: str) -> str:
+        """Upload bytes to the Matrix media repo and return the mxc:// URI."""
+        if not self.access_token:
+            raise RuntimeError("Matrix request requires an access token.")
+        response = await self._client.post(
+            f"{self.homeserver}/_matrix/media/v3/upload",
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": content_type or "application/octet-stream",
+            },
+            params={"filename": filename},
+            content=data,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        mxc = payload.get("content_uri") if isinstance(payload, Mapping) else ""
+        if not mxc:
+            raise RuntimeError("Matrix upload did not return a content_uri")
+        return str(mxc)
+
     async def _request(
         self,
         method: str,
@@ -583,6 +603,33 @@ class NymeriaMatrixBot:
                 }
             await self.matrix.send_message(target.room_id, body)
 
+    async def _send_workspace_attachment(self, target: MatrixReplyTarget, path: str) -> None:
+        """Download a generated workspace file, upload it, and send an m.image event."""
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: {path}")
+            return
+        raw_bytes, filename, content_type = result
+        try:
+            mxc = await self.matrix.upload_media(
+                data=raw_bytes, filename=filename, content_type=content_type
+            )
+            msgtype = "m.image" if (content_type or "").startswith("image/") else "m.file"
+            content: Dict[str, Any] = {
+                "msgtype": msgtype,
+                "body": filename,
+                "url": mxc,
+                "info": {"mimetype": content_type, "size": len(raw_bytes)},
+            }
+            if target.reply_to_event_id:
+                content["m.relates_to"] = {
+                    "m.in_reply_to": {"event_id": target.reply_to_event_id}
+                }
+            await self.matrix.send_message(target.room_id, content)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to upload Matrix workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: {path}")
+
     async def _refresh_bindings(self) -> None:
         try:
             entries = await self.api.list_chatapp_bindings(provider="matrix")
@@ -679,7 +726,7 @@ class _MatrixStreamHandler:
         attachments: List[str],
     ) -> None:
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: {path}")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"

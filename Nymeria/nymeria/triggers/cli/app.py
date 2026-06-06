@@ -1963,6 +1963,7 @@ class CLIApp:
             stream_rich_response_lines=bool(
                 getattr(self.runtime_config, "rich_scroll_region", False)
             ),
+            download_base_url=getattr(self._client, "base_url", "") or "",
         )
 
     async def _repl_loop_async(
