@@ -758,6 +758,29 @@ class NymeriaSlackBot:
             if index < len(chunks) - 1:
                 await asyncio.sleep(1.05)
 
+    async def _send_workspace_attachment(self, target: SlackReplyTarget, path: str) -> None:
+        """Download a generated workspace file and upload it to Slack."""
+        if not self._app:
+            return
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+            return
+        raw_bytes, filename, _content_type = result
+        try:
+            kwargs: Dict[str, Any] = {
+                "channel": target.channel_id,
+                "file": raw_bytes,
+                "filename": filename,
+                "title": filename,
+            }
+            if target.thread_ts:
+                kwargs["thread_ts"] = target.thread_ts
+            await self._app.client.files_upload_v2(**kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to upload Slack workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: `{path}`")
+
 
 class _SlackStreamHandler:
     """Render Nymeria SSE events into Slack messages."""
@@ -834,14 +857,14 @@ class _SlackStreamHandler:
                 result_text = result_text[:797] + "..."
             await self._bot._send_text(self._target, f"*Result:*\n```{result_text}```")
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"
         await self._bot._send_text(self._target, f"Tool binding: `{names}` ({ttl})")
 
     async def on_workspace_artifact(self, path: str) -> None:
-        await self._bot._send_text(self._target, f"Workspace artifact: `{path}`")
+        await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_error(self, content: str) -> None:
         await self._bot._send_text(self._target, f"Sorry, I encountered an error: {content}")

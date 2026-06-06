@@ -485,7 +485,7 @@ def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, api_
     ]
 
 
-def test_workspace_download_requires_admin_and_workspace_path(
+def test_workspace_download_scopes_non_admin_to_own_generated_images(
     tmp_path: Path,
     monkeypatch,
     api_client_builder,
@@ -496,6 +496,15 @@ def test_workspace_download_requires_admin_and_workspace_path(
     artifact.write_text("workspace data", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
+    # Per-user generated-image dirs mirror tools.image_generation.generated_image_dir.
+    alice_img_dir = workspace_dir / "image-generation" / "alice"
+    alice_img_dir.mkdir(parents=True)
+    alice_image = alice_img_dir / "gen.png"
+    alice_image.write_bytes(b"alice-image")
+    bob_img_dir = workspace_dir / "image-generation" / "bob"
+    bob_img_dir.mkdir(parents=True)
+    bob_image = bob_img_dir / "gen.png"
+    bob_image.write_bytes(b"bob-image")
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(workspace_dir))
 
     client, agent = _client(tmp_path, api_client_builder)
@@ -504,26 +513,20 @@ def test_workspace_download_requires_admin_and_workspace_path(
     user_token = agent.accounts_repo.issue_token("alice")
     admin_token = agent.accounts_repo.issue_token("admin")
 
-    user_response = client.get(
-        "/workspace/download",
-        headers=_auth(user_token),
-        params={"path": str(artifact)},
-    )
-    outside_response = client.get(
-        "/workspace/download",
-        headers=_auth(admin_token),
-        params={"path": str(outside)},
-    )
-    admin_response = client.get(
-        "/workspace/download",
-        headers=_auth(admin_token),
-        params={"path": str(artifact)},
-    )
+    def _get(token, path):
+        return client.get("/workspace/download", headers=_auth(token), params={"path": str(path)})
 
-    assert user_response.status_code == 403
-    assert outside_response.status_code == 403
-    assert admin_response.status_code == 200
-    assert admin_response.text == "workspace data"
+    # Non-admin: can read their own generated image, but not arbitrary workspace
+    # files nor another user's generated images.
+    assert _get(user_token, alice_image).status_code == 200
+    assert _get(user_token, alice_image).content == b"alice-image"
+    assert _get(user_token, artifact).status_code == 403
+    assert _get(user_token, bob_image).status_code == 403
+
+    # Admin: full workspace access; still blocked outside the workspace.
+    assert _get(admin_token, artifact).status_code == 200
+    assert _get(admin_token, artifact).text == "workspace data"
+    assert _get(admin_token, outside).status_code == 403
 
 
 def test_user_auth_contract_for_me_endpoint(tmp_path: Path, api_client_builder):

@@ -835,6 +835,7 @@ class FullScreenPromptToolkitShell:
                 self.capabilities,
                 verbose=self._transcript_verbose,
                 assistant_activity_label=activity_text,
+                base_url=getattr(self.client, "base_url", "") or "",
             ),
         )
         self._last_transcript_activity_text = activity_text
@@ -1027,11 +1028,13 @@ def _transcript_options(
     *,
     verbose: bool,
     assistant_activity_label: str = "",
+    base_url: str = "",
 ) -> TranscriptRenderOptions:
     return TranscriptRenderOptions(
         verbose=verbose,
         ascii_only=not bool(getattr(capabilities, "unicode_enabled", False)),
         assistant_activity_label=assistant_activity_label,
+        base_url=base_url,
     )
 
 

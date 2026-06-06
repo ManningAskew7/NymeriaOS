@@ -1,4 +1,10 @@
-"""Image generation tool backed by OpenAI GPT Image and Gemini Nano Banana."""
+"""Image generation helpers and per-provider byte producers.
+
+Holds the OpenAI GPT Image and Gemini (Nano Banana) byte producers plus the
+shared workspace-write / artifact-build helpers (``finalize_image``,
+``download_image_bytes``) used by every ``image_gen_<provider>`` tool in
+``image_gen_integrations.py``.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +15,10 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
 from ..core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
@@ -22,12 +27,9 @@ from ..core.http_policy import (
     HTTPPolicyViolation,
     httpx_request_with_policy,
 )
-from ..core.user_profile import UserProfileManager
 from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
-
-TOOL_NAME = "image_generate"
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "provider": "openai",
@@ -73,17 +75,6 @@ _GEMINI_MODELS_WITH_IMAGE_SIZE = {
     "gemini-3.1-flash-image-preview",
 }
 
-_profile_manager: UserProfileManager | None = None
-
-
-def _get_profile_manager() -> UserProfileManager:
-    global _profile_manager
-    if _profile_manager is None:
-        settings = get_settings()
-        _profile_manager = UserProfileManager(settings.data_dir)
-    return _profile_manager
-
-
 def _workspace_dir() -> Path:
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
 
@@ -99,16 +90,6 @@ def _safe_user_id(value: str) -> str:
     return _safe_slug(value, fallback="default", max_chars=64)
 
 
-def _resolve_config(user_id: str) -> dict[str, Any]:
-    config = dict(_DEFAULT_CONFIG)
-    try:
-        profile = _get_profile_manager().get_profile(user_id)
-        config.update(profile.tool_preferences.get_tool_config(TOOL_NAME))
-    except Exception as exc:
-        logger.warning("Failed to read %s config for user %s: %s", TOOL_NAME, user_id, exc)
-    return config
-
-
 def _choice(config: dict[str, Any], key: str, allowed: set[str]) -> str:
     value = str(config.get(key, _DEFAULT_CONFIG[key]) or _DEFAULT_CONFIG[key])
     if value not in allowed:
@@ -116,13 +97,13 @@ def _choice(config: dict[str, Any], key: str, allowed: set[str]) -> str:
     return value
 
 
-def _bool_config(config: dict[str, Any], key: str) -> bool:
-    value = config.get(key, _DEFAULT_CONFIG[key])
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off"}
-    return bool(value)
+def generated_image_dir(user_id: str) -> Path:
+    """Per-user workspace directory where generated images are written.
+
+    Single source of truth for the layout, reused by the workspace download
+    endpoint to scope non-admin users to their own generated images.
+    """
+    return _workspace_dir() / "image-generation" / _safe_user_id(user_id)
 
 
 def _write_image_file(
@@ -142,7 +123,7 @@ def _write_image_file(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     filename = f"{timestamp}-{slug}-{uuid4().hex[:8]}{extension}"
 
-    output_dir = _workspace_dir() / "image-generation" / _safe_user_id(user_id)
+    output_dir = generated_image_dir(user_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = (output_dir / filename).resolve()
 
@@ -164,6 +145,40 @@ def _gemini_key() -> str | None:
     return settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
 
 
+def download_image_bytes(
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    timeout: float = 120.0,
+) -> tuple[bytes, str]:
+    """Fetch image bytes from an http(s) URL or a ``data:`` URI.
+
+    Returns ``(raw_bytes, mime_type)``. HTTP fetches go through the SSRF egress
+    policy; the MIME type comes from the response Content-Type, falling back to
+    the URL extension. Used by providers that return a hosted/signed image URL
+    (Black Forest Labs, Replicate, fal.ai) rather than inline bytes.
+    """
+    if url.startswith("data:"):
+        header, _, encoded = url.partition(",")
+        mime_type = header[len("data:"):].split(";", 1)[0].strip() or "image/png"
+        return base64.b64decode(encoded), mime_type
+
+    try:
+        response, _redirect_chain, _policy = httpx_request_with_policy(
+            "GET",
+            url,
+            timeout=timeout,
+            follow_redirects=True,
+            headers=headers or {},
+        )
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as exc:
+        raise RuntimeError(f"Image URL blocked by HTTP egress policy: {exc}") from exc
+    response.raise_for_status()
+    content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip()
+    mime_type = content_type or mimetypes.guess_type(url)[0] or "image/png"
+    return response.content, mime_type
+
+
 def _read_openai_image_bytes(image_item: Any) -> bytes:
     b64_json = getattr(image_item, "b64_json", None)
     if not b64_json and isinstance(image_item, dict):
@@ -175,23 +190,16 @@ def _read_openai_image_bytes(image_item: Any) -> bytes:
     if not image_url and isinstance(image_item, dict):
         image_url = image_item.get("url")
     if isinstance(image_url, str) and image_url:
-        try:
-            response, _redirect_chain, _policy = httpx_request_with_policy(
-                "GET",
-                image_url,
-                timeout=120.0,
-                follow_redirects=True,
-            )
-        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as exc:
-            raise RuntimeError(f"OpenAI image URL blocked by HTTP egress policy: {exc}") from exc
-        response.raise_for_status()
-        return response.content
+        raw, _mime_type = download_image_bytes(image_url)
+        return raw
 
     raise RuntimeError("OpenAI returned no image bytes or image URL")
 
 
-def _generate_openai(prompt: str, config: dict[str, Any]) -> tuple[bytes, str, str]:
-    api_key = _openai_key()
+def _generate_openai(
+    prompt: str, config: dict[str, Any], *, api_key: Optional[str] = None
+) -> tuple[bytes, str, str]:
+    api_key = api_key or _openai_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
 
@@ -258,8 +266,10 @@ def _inline_data_bytes(inline_data: Any) -> tuple[bytes, str]:
     raise RuntimeError("Gemini returned image metadata without image bytes.")
 
 
-def _generate_gemini(prompt: str, config: dict[str, Any]) -> tuple[bytes, str, str]:
-    api_key = _gemini_key()
+def _generate_gemini(
+    prompt: str, config: dict[str, Any], *, api_key: Optional[str] = None
+) -> tuple[bytes, str, str]:
+    api_key = api_key or _gemini_key()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
@@ -325,54 +335,38 @@ def _native_artifact(
     }
 
 
-@tool(response_format="content_and_artifact")
-def image_generate(
+def finalize_image(
+    *,
+    raw: bytes,
+    mime_type: str,
+    provider: str,
+    model: str,
     prompt: str,
-    output_name: Optional[str] = None,
-    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    output_name: Optional[str],
+    config: Optional[RunnableConfig],
+    native_context_enabled: bool = True,
 ) -> tuple[str, dict[str, Any]]:
-    """Generate a new image from a text prompt and return it as a workspace artifact.
+    """Write image bytes to the workspace and build the (content, artifact) return.
 
-    Use this when the user asks Nymeria to create, design, render, illustrate,
-    or generate an image. Write the full final image prompt in `prompt`.
-    The generated file is saved in the workspace and attached to the chat.
-    Vision-capable chat models will also receive the generated image as native
-    image input on the next reasoning step.
+    Shared by every ``image_gen_<provider>`` tool: resolves the calling user from
+    the injected config, writes the file under the workspace, embeds an
+    ``[attach:<path>]`` marker so the image surfaces to the chat (and chat-platform
+    bots), and attaches the native-vision artifact so vision-capable models can
+    inspect the result on the next reasoning step. Raises on write failure; callers
+    wrap the call and return an ``[Error]: ...`` string.
 
-    Args:
-        prompt: Full image generation prompt. Include subject, style, layout,
-            text to render, composition, colors, and any important constraints.
-        output_name: Optional short filename hint without an extension.
-
-    Returns:
-        A summary with an attached generated image file.
+    Note: the native-vision replay path only re-feeds images up to 8 MB with a
+    png/jpeg/webp/gif MIME type (see core/generated_image_context.py). Larger 4K
+    outputs still attach to the chat but are not replayed to the model.
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     user_id = get_user_id(config)
-    tool_config = _resolve_config(user_id)
-    provider = _choice(tool_config, "provider", {"openai", "gemini"})
-    native_context_enabled = _bool_config(tool_config, "native_context_enabled")
-
-    try:
-        if provider == "openai":
-            raw, mime_type, model = _generate_openai(prompt, tool_config)
-        else:
-            raw, mime_type, model = _generate_gemini(prompt, tool_config)
-
-        path = _write_image_file(
-            user_id=user_id,
-            raw=raw,
-            mime_type=mime_type,
-            output_name=output_name,
-            prompt=prompt,
-        )
-    except Exception as exc:
-        logger.exception("Image generation failed via %s", provider)
-        return f"[Error]: Image generation failed via {provider}: {exc}", {}
-
+    path = _write_image_file(
+        user_id=user_id,
+        raw=raw,
+        mime_type=mime_type,
+        output_name=output_name,
+        prompt=prompt,
+    )
     content = (
         f"Generated image via {provider} ({model}) and saved it to {path}.\n"
         f"Prompt used: {prompt}\n"
@@ -387,6 +381,3 @@ def image_generate(
         native_context_enabled=native_context_enabled,
     )
     return content, artifact
-
-
-IMAGE_GENERATION_TOOLS = [image_generate]

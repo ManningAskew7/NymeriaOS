@@ -7,7 +7,6 @@ import pytest
 
 from nymeria.core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
 from nymeria.tools import image_generation
-from nymeria.tools.image_generation import image_generate
 
 
 def test_openai_adapter_decodes_b64_response(monkeypatch):
@@ -107,23 +106,14 @@ def test_gemini_adapter_reads_inline_image_data(monkeypatch):
     assert captured["contents"] == ["draw a banana"]
 
 
-def test_image_generate_returns_workspace_artifact_and_native_metadata(tmp_path, monkeypatch):
+def test_finalize_image_writes_workspace_artifact_and_native_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        image_generation,
-        "_resolve_config",
-        lambda _user_id: {
-            "provider": "openai",
-            "native_context_enabled": True,
-        },
-    )
-    monkeypatch.setattr(
-        image_generation,
-        "_generate_openai",
-        lambda prompt, config: (b"fake-image", "image/png", "gpt-image-2"),
-    )
 
-    content, artifact = image_generate.func(
+    content, artifact = image_generation.finalize_image(
+        raw=b"fake-image",
+        mime_type="image/png",
+        provider="openai",
+        model="gpt-image-2",
         prompt="A clean product icon",
         output_name="product icon",
         config={"configurable": {"user_id": "owner@example.com"}},
@@ -139,3 +129,13 @@ def test_image_generate_returns_workspace_artifact_and_native_metadata(tmp_path,
     assert len(files) == 1
     assert files[0].read_bytes() == b"fake-image"
     assert metadata["path"] == str(files[0])
+
+
+def test_download_image_bytes_decodes_data_uri():
+    import base64 as _b64
+
+    encoded = _b64.b64encode(b"data-uri-image").decode("ascii")
+    raw, mime_type = image_generation.download_image_bytes(f"data:image/webp;base64,{encoded}")
+
+    assert raw == b"data-uri-image"
+    assert mime_type == "image/webp"

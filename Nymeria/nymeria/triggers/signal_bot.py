@@ -9,6 +9,7 @@ Nymeria REST/SSE calls, while all conversation state remains in the API service.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -90,6 +91,11 @@ class SignalNymeriaAPI(Protocol):
     async def chat(self, message: str, thread_id: str, user_id: str) -> dict[str, Any]:
         ...
 
+    async def download_workspace_file(
+        self, file_path: str, user_id: Optional[str] = None
+    ) -> Optional[tuple]:
+        ...
+
     async def close(self) -> None:
         ...
 
@@ -101,6 +107,17 @@ class SignalClientProtocol(Protocol):
         ...
 
     async def send_text(self, target: "SignalReplyTarget", text: str) -> dict[str, Any]:
+        ...
+
+    async def send_attachment(
+        self,
+        target: "SignalReplyTarget",
+        *,
+        filename: str,
+        data: bytes,
+        content_type: str,
+        message: str = "",
+    ) -> dict[str, Any]:
         ...
 
     def stream_events(self, account: str) -> AsyncGenerator[Mapping[str, str], None]:
@@ -565,6 +582,30 @@ class SignalCliRestClient:
         result = await self.rpc("send", params)
         return result if isinstance(result, dict) else {}
 
+    async def send_attachment(
+        self,
+        target: SignalReplyTarget,
+        *,
+        filename: str,
+        data: bytes,
+        content_type: str,
+        message: str = "",
+    ) -> dict[str, Any]:
+        encoded = base64.b64encode(data).decode("ascii")
+        params: dict[str, Any] = {
+            "account": self.account,
+            "message": message,
+            "attachments": [f"data:{content_type or 'application/octet-stream'};base64,{encoded}"],
+        }
+        if target.group_id:
+            params["groupId"] = target.group_id
+        elif target.recipient:
+            params["recipient"] = [target.recipient]
+        else:
+            raise ValueError("Signal reply target requires a recipient or group ID")
+        result = await self.rpc("send", params)
+        return result if isinstance(result, dict) else {}
+
     async def stream_events(self, account: str) -> AsyncGenerator[Mapping[str, str], None]:
         url = f"{self.base_url}/api/v1/events?account={quote(account, safe='')}"
         async with self._client.stream(
@@ -910,6 +951,21 @@ class NymeriaSignalBot:
         for chunk in split_message(content, SIGNAL_TEXT_LIMIT):
             await self.signal.send_text(target, chunk)
 
+    async def _send_workspace_attachment(self, target: SignalReplyTarget, path: str) -> None:
+        """Download a generated workspace file and send it as a Signal attachment."""
+        result = await self.api.download_workspace_file(path)
+        if result is None:
+            await self._send_text(target, f"Workspace artifact: {path}")
+            return
+        raw_bytes, filename, content_type = result
+        try:
+            await self.signal.send_attachment(
+                target, filename=filename, data=raw_bytes, content_type=content_type
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send Signal workspace attachment %s: %s", path, e)
+            await self._send_text(target, f"Workspace artifact: {path}")
+
     async def _refresh_bindings(self) -> None:
         try:
             entries = await self.api.list_chatapp_bindings(provider="signal")
@@ -1014,7 +1070,7 @@ class _SignalStreamHandler:
         if self._bot.show_tool_events and result:
             await self._bot._send_text(self._target, f"Tool result: {result[:900]}")
         for path in attachments:
-            await self._bot._send_text(self._target, f"Workspace artifact: {path}")
+            await self._bot._send_workspace_attachment(self._target, path)
 
     async def on_tool_reload(self, tools: list[str], ttl: str) -> None:
         names = ", ".join(tools) if tools else "tools"

@@ -83,6 +83,8 @@ class TranscriptRenderOptions:
     ascii_only: bool = True
     include_artifacts: bool = True
     assistant_activity_label: str = ""
+    # API base URL used to build /workspace/download links for image artifacts.
+    base_url: str = ""
     tool_row_options: ToolRowRenderOptions = field(
         default_factory=lambda: ToolRowRenderOptions(show_duration=True)
     )
@@ -160,7 +162,11 @@ class TranscriptRenderer:
                     records,
                     tuple(
                         TranscriptLine(
-                            format_artifact_line(artifact, width=selected_width),
+                            format_artifact_line(
+                                artifact,
+                                width=selected_width,
+                                base_url=selected_options.base_url,
+                            ),
                             "artifact",
                         )
                         for artifact in orphan_artifacts
@@ -492,7 +498,10 @@ def _tool_lines(
     if options.include_artifacts:
         records.extend(
             TranscriptLine(
-                truncate_cell_width(f"{INDENT}{format_artifact_line(item, width=body_width)}", width),
+                truncate_cell_width(
+                    f"{INDENT}{format_artifact_line(item, width=body_width, base_url=options.base_url)}",
+                    width,
+                ),
                 "artifact",
             )
             for item in step.artifacts

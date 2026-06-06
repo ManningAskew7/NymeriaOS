@@ -162,7 +162,14 @@ from .watchdog_dispatch import watchdog_dispatch, watchdog_read_notepad, watchdo
 from .spawn_thread import spawn_thread, SPAWN_THREAD_TOOLS
 from .dream_tools import thread_instructions_set, DREAM_TOOLS
 from .goal_tools import GOAL_TOOLS
-from .image_generation import image_generate, IMAGE_GENERATION_TOOLS
+from .image_gen_integrations import (
+    image_gen_openai,
+    image_gen_gemini,
+    image_gen_flux,
+    image_gen_replicate,
+    image_gen_fal,
+    IMAGE_GEN_INTEGRATION_TOOLS,
+)
 from .utility_integrations import (
     calculator,
     wikipedia_search,
@@ -1387,7 +1394,7 @@ OPTIONAL_TOOLS = {t.name: t for t in (
     + SPAWN_THREAD_TOOLS
     + DREAM_TOOLS
     + GOAL_TOOLS
-    + IMAGE_GENERATION_TOOLS
+    + IMAGE_GEN_INTEGRATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
     + TRANSFORM_UTILITY_TOOLS
     + PUBLIC_INFO_TOOLS
@@ -1537,8 +1544,12 @@ __all__ = [
     "file_write",
     "file_edit",
     "FILE_EDIT_TOOLS",
-    "image_generate",
-    "IMAGE_GENERATION_TOOLS",
+    "image_gen_openai",
+    "image_gen_gemini",
+    "image_gen_flux",
+    "image_gen_replicate",
+    "image_gen_fal",
+    "IMAGE_GEN_INTEGRATION_TOOLS",
     "calculator",
     "wikipedia_search",
     "wolfram_alpha_query",

@@ -37,6 +37,12 @@ class FakeZulipClient:
         )
         return {"id": len(self.sent), "result": "success"}
 
+    async def upload_file(self, *, filename, data, content_type):
+        if not hasattr(self, "uploads"):
+            self.uploads = []
+        self.uploads.append({"filename": filename, "data": data, "content_type": content_type})
+        return f"/user_uploads/abc/{filename}"
+
     async def close(self):
         return None
 
@@ -72,6 +78,9 @@ class FakeAPI:
 
     async def chat(self, *args, **kwargs):  # pragma: no cover - fallback only.
         return {"response": "fallback", "tool_call_count": 0}
+
+    async def download_workspace_file(self, file_path, user_id=None):
+        return getattr(self, "workspace_files", {}).get(file_path)
 
     async def claim_platform_link_code(self, *, code, provider, platform_user_id):
         self.claimed_links.append(
@@ -350,3 +359,25 @@ def test_send_text_splits_large_zulip_messages():
 
     assert len(client.sent) == 2
     assert all(len(item["content"]) <= 4000 for item in client.sent)
+
+
+def test_zulip_workspace_attachment_uploads_and_links():
+    bot, api, client = make_bot()
+    api.workspace_files = {"/workspace/u/img.png": (b"img-bytes", "img.png", "image/png")}
+    target = ZulipReplyTarget(message_type="stream", to="general", topic="Ops")
+
+    asyncio.run(bot._send_workspace_attachment(target, "/workspace/u/img.png"))
+
+    assert getattr(client, "uploads", []) and client.uploads[0]["filename"] == "img.png"
+    assert any("/user_uploads/abc/img.png" in item["content"] for item in client.sent)
+
+
+def test_zulip_workspace_attachment_falls_back_to_text_when_missing():
+    bot, api, client = make_bot()
+    api.workspace_files = {}
+    target = ZulipReplyTarget(message_type="stream", to="general", topic="Ops")
+
+    asyncio.run(bot._send_workspace_attachment(target, "/workspace/u/missing.png"))
+
+    assert not getattr(client, "uploads", [])
+    assert any("Workspace artifact" in item["content"] for item in client.sent)

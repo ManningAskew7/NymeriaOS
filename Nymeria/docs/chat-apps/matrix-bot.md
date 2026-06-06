@@ -133,5 +133,5 @@ Other accepted messages are sent to Nymeria as chat turns.
 ## Limitations
 
 - Plaintext rooms only in v1.
-- Text messages only; media attachments are not downloaded yet.
+- Generated images are uploaded to the room as `m.image` events; inbound media attachments are not downloaded yet.
 - Auto-join has only `false`/`true` behavior. Use `false` unless the bot account is deployed in a trusted homeserver/workspace.

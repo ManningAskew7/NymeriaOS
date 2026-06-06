@@ -192,7 +192,7 @@ total).
 | **Outlook Email** | 13 | OAuth, auth reset, search (KQL), send, reply, forward, drafts, categories, attachments (PDF/DOCX/Excel) |
 | **Google Calendar** | 11 | OAuth, auth reset, events CRUD, RSVP, free/busy, colors |
 | **Triggers** | 6 | Create, list, update, delete, inspect, source catalog |
-| **Image Generation** | 1 | OpenAI GPT Image and Gemini Nano Banana prompt-to-image generation with workspace artifacts |
+| **Image Generation** | 5 | Per-provider prompt-to-image tools (OpenAI GPT Image, Gemini Nano Banana, Black Forest Labs FLUX, plus Replicate and fal.ai budget hosts) with workspace artifacts |
 | **Watchdog** | 4 | Activity feed, cross-thread dispatch, cross-thread notepad, TODO overview |
 | **Thread Spawning** | 1 | Dynamic callable thread creation with full config |
 | **Self-Modification** | 8 | (Legacy) Direct code editing with backups and validation |

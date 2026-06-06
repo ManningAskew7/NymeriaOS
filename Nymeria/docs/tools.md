@@ -84,22 +84,21 @@ Not loaded by default. Enable per-thread when the agent needs precise text edits
 |---|------|----------|----------|-------------|
 | 1 | `file_edit` | Core | MODERATE | Exact, all-or-nothing edits to existing text files |
 
-### Optional: Image Generation (1)
+### Optional: Image Generation (5)
 
-Not loaded by default. Enable per-thread, or promote to Core in the Desktop global Tools settings. The tool writes generated images under `NYMERIA_WORKSPACE_DIR/image-generation/`, returns a workspace artifact via `[attach:/path]`, and stores only small artifact metadata in chat history. On the next reasoning step, Nymeria hydrates recent generated images into native vision input for supported chat providers: Anthropic vision models and OpenAI/OpenRouter models using `OPENAI_API_MODE=responses`. Other provider modes still see the file path and artifact.
+One opt-in tool per provider (the `image_gen_*` suite), so users can search for and swap between providers individually. Not loaded by default. Enable per-thread, or promote to Core in the Desktop global Tools settings. Each tool writes generated images under `NYMERIA_WORKSPACE_DIR/image-generation/`, returns a workspace artifact via `[attach:/path]`, and stores only small artifact metadata in chat history. On the next reasoning step, Nymeria hydrates recent generated images into native vision input for supported chat providers: Anthropic vision models and OpenAI/OpenRouter models using `OPENAI_API_MODE=responses`. Other provider modes still see the file path and artifact. Native-vision replay is skipped for images over 8 MB or outside png/jpeg/webp/gif (large 4K outputs still attach to the chat).
 
-API keys follow the existing provider-key pattern: set `OPENAI_API_KEY` for OpenAI GPT Image models and `GEMINI_API_KEY` for Gemini/Nano Banana models. The Desktop edit dialog configures provider/model/output options, not secret storage.
+API keys resolve credential vault first, then settings, then env (the same pattern as the `web_search_*` suite): `OPENAI_API_KEY`, `GEMINI_API_KEY`, `BFL_API_KEY`, `REPLICATE_API_KEY` (or `REPLICATE_API_TOKEN`), and `FAL_API_KEY` (or `FAL_KEY`), or a vault credential bound to `native_tool:image_gen_<provider>`. Note: when `OPENAI_API_KEY` is a CLIProxy gatekeeper value (`cpx-*`), supply a genuine OpenAI key through the vault for `image_gen_openai`.
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
-| 1 | `image_generate` | Image | MODERATE | Generate a new image from a prompt using OpenAI `gpt-image-*` or Gemini Nano Banana models, attach it to the chat, and expose it to vision-capable follow-up reasoning |
+| 1 | `image_gen_openai` | Image | MODERATE | Flagship OpenAI GPT Image (`gpt-image-2`); best all-round prompt adherence and photorealism. Synchronous |
+| 2 | `image_gen_gemini` | Image | MODERATE | Google Gemini Nano Banana Pro (`gemini-3-pro-image`); best in-image text, infographics, and 4K. Synchronous |
+| 3 | `image_gen_flux` | Image | MODERATE | Black Forest Labs FLUX.2 flagship photorealism and multi-reference editing. Async submit + poll |
+| 4 | `image_gen_replicate` | Image | MODERATE | Budget host (FLUX.1 schnell or Z-Image Turbo) via Replicate, ~10-20x cheaper. Uses `Prefer: wait` + poll fallback |
+| 5 | `image_gen_fal` | Image | MODERATE | Budget host (Z-Image Turbo or FLUX.1 schnell) via fal.ai, fast and cheap. Synchronous endpoint |
 
-Configurable options:
-
-- `provider`: `openai` or `gemini`
-- OpenAI: `openai_model`, `openai_size`, `openai_quality`, `openai_output_format`, `openai_moderation`
-- Gemini: `gemini_model`, `gemini_aspect_ratio`, `gemini_image_size`
-- `native_context_enabled`: whether supported chat models should inspect generated images natively on the next LLM call
+Generation options are per-call tool arguments, not stored config: every tool takes `prompt` and `output_name`; `image_gen_openai` adds `size`/`quality`/`output_format`/`model`; `image_gen_gemini` adds `aspect_ratio`/`image_size`/`model`; `image_gen_flux`/`image_gen_replicate` add `aspect_ratio`/`model`/`seed`; `image_gen_fal` adds `image_size`/`model`/`seed`. The aggregator tools' `model` argument selects the hosted model (`flux-schnell` or `z-image-turbo`).
 
 ### Optional: Watchdog Tools (4)
 
