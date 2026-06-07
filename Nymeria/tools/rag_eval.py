@@ -92,6 +92,13 @@ from nymeria.core.memory_index import (  # noqa: E402
 )
 from nymeria.core.time_utils import utc_now  # noqa: E402
 
+# A browser User-Agent for managed APIs fronted by Cloudflare (Jina), which 403
+# (error 1010) on urllib's / the openai client's default UA. Harmless elsewhere.
+_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
 
 # --- probe model -----------------------------------------------------------
 
@@ -250,7 +257,8 @@ def _embed_query(index: MemoryIndex, query: str) -> Optional[List[float]]:
     try:
         client = index._get_openai_client()
         kwargs = index._embed_kwargs()
-        kwargs["extra_body"] = {"input_type": it}
+        param = getattr(index, "_eval_input_type_param", "input_type")
+        kwargs["extra_body"] = {param: it}
         resp = client.embeddings.create(input=query[:8000], **kwargs)
         emb = resp.data[0].embedding
         return emb if len(emb) == index.embedding_dimensions else None
@@ -411,6 +419,10 @@ class APIReranker:
         self._headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
+            # Jina sits behind Cloudflare, which 403s (error 1010) on the default
+            # urllib User-Agent; a browser UA is required there and harmless for
+            # Cohere/Voyage/ZeroEntropy.
+            "User-Agent": _BROWSER_UA,
         }
         self.doc_max_chars = doc_max_chars
         self.timeout = timeout
@@ -483,6 +495,104 @@ class APIReranker:
         seen = set(order)
         order += [i for i in range(n) if i not in seen]
         return order[:n]
+
+
+class CohereEmbedder:
+    """Native Cohere ``v2/embed`` client for the eval (Cohere embed-v4.0 is NOT
+    OpenAI-compatible, so it cannot go through ``MemoryIndex``'s OpenAI client).
+    Asymmetric: pass ``input_type`` ``search_query`` for queries and
+    ``search_document`` for the corpus. ``output_dimension`` truncates the
+    Matryoshka vector (1536 default/best, also 1024/512/256). Raw HTTP, key from
+    ``COHERE_API_KEY``, 429/5xx backoff. Returns vectors aligned to ``texts``
+    (None per text only after retries are exhausted)."""
+
+    URL = "https://api.cohere.com/v2/embed"
+    MAX_BATCH = 96  # Cohere v2/embed cap
+
+    def __init__(self, model: str = "embed-v4.0", dim: int = 1536,
+                 timeout: float = 120.0) -> None:
+        key = os.environ.get("COHERE_API_KEY")
+        if not key:
+            raise SystemExit("set COHERE_API_KEY to use CohereEmbedder")
+        self.model = model
+        self.dim = dim
+        self.timeout = timeout
+        self._headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": _BROWSER_UA,
+        }
+
+    def embed(self, texts: List[str], input_type: str) -> List[Optional[List[float]]]:
+        out: List[Optional[List[float]]] = []
+        for start in range(0, len(texts), self.MAX_BATCH):
+            batch = [(t[:8000] if t and t.strip() else " ")
+                     for t in texts[start:start + self.MAX_BATCH]]
+            vecs = self._post_with_retry({
+                "model": self.model,
+                "input_type": input_type,
+                "embedding_types": ["float"],
+                "output_dimension": self.dim,
+                "texts": batch,
+            }, len(batch))
+            out.extend(vecs)
+        return out
+
+    def embed_one(self, text: str, input_type: str) -> Optional[List[float]]:
+        return self.embed([text], input_type)[0]
+
+    def _post_with_retry(self, payload: Dict[str, Any], n: int) -> List[Optional[List[float]]]:
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(payload).encode()
+        delay = 2.0
+        for attempt in range(7):
+            try:
+                req = urllib.request.Request(
+                    self.URL, data=data, headers=self._headers, method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode())
+                floats = (body.get("embeddings") or {}).get("float") or []
+                vecs: List[Optional[List[float]]] = [
+                    (v if len(v) == self.dim else None) for v in floats
+                ]
+                vecs += [None] * (n - len(vecs))  # defensive: align to batch
+                return vecs[:n]
+            except urllib.error.HTTPError as e:
+                retryable = e.code in (408, 429, 500, 502, 503, 529)
+                if retryable and attempt < 6:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
+                detail = e.read().decode()[:200] if hasattr(e, "read") else ""
+                raise SystemExit(f"cohere embed HTTP {e.code}: {detail}")
+            except (urllib.error.URLError, TimeoutError):
+                if attempt < 6:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
+                raise
+        return [None] * n
+
+
+def _force_ua_client(index: MemoryIndex, ua: str = _BROWSER_UA) -> MemoryIndex:
+    """Pre-seed the index's OpenAI client with a browser User-Agent (harness-only).
+
+    Jina's OpenAI-compatible endpoint is behind Cloudflare, which 403s (error
+    1010) on the openai client's default UA. Building the client here (instead of
+    the lazy ``_get_openai_client``) injects ``default_headers`` without touching
+    production ``memory_index.py``. Requires ``embedding_api_key`` (EMBEDDING_API_KEY)
+    to be set."""
+    from openai import OpenAI
+
+    kwargs: Dict[str, Any] = {"api_key": index.embedding_api_key,
+                              "default_headers": {"User-Agent": ua}}
+    if index.embedding_base_url:
+        kwargs["base_url"] = index.embedding_base_url
+    index._openai_client = OpenAI(**kwargs)
+    return index
 
 
 def evaluate(
@@ -801,7 +911,8 @@ def _embed_texts_ordered(index: MemoryIndex, texts: List[str]) -> List[Optional[
     embed_kwargs = index._embed_kwargs()
     doc_it = getattr(index, "_eval_doc_input_type", None)
     if doc_it:
-        embed_kwargs["extra_body"] = {"input_type": doc_it}
+        param = getattr(index, "_eval_input_type_param", "input_type")
+        embed_kwargs["extra_body"] = {param: doc_it}
 
     def _ok(emb: List[float]) -> Optional[List[float]]:
         return emb if len(emb) == dim else None
@@ -978,12 +1089,15 @@ def _print_metrics(name: str, m: Dict[str, Any], verbose: bool = False) -> None:
                       f"distinct={row['distinct']:.2f} ranks={row['ranks']}  {row['query']}")
 
 
-# input_type scheme -> (query input_type, document input_type). Lets a managed
-# provider embed queries and documents with its asymmetric retrieval prompts,
-# which materially helps retrieval for Voyage/Gemini-class models and is the fair
-# config for a "best-in-class embeddings" headline (bge gets a query prompt too).
+# input_type scheme -> (extra_body param name, query value, document value). Lets
+# a managed provider embed queries and documents with its asymmetric retrieval
+# prompts, which materially helps retrieval for Voyage/Jina-class models and is the
+# fair config for a "best-in-class embeddings" headline. The param name differs by
+# vendor: Voyage uses input_type=query/document, Jina uses task=retrieval.query/
+# retrieval.passage (both over the OpenAI-compatible embeddings endpoint).
 _INPUT_TYPE_SCHEMES = {
-    "voyage": ("query", "document"),
+    "voyage": ("input_type", "query", "document"),
+    "jina": ("task", "retrieval.query", "retrieval.passage"),
 }
 
 
@@ -995,9 +1109,10 @@ def _apply_input_type(index: MemoryIndex, scheme: Optional[str]) -> MemoryIndex:
     memory_index is never touched.
     """
     if scheme:
-        q, d = _INPUT_TYPE_SCHEMES.get(scheme, (scheme, scheme))
+        param, q, d = _INPUT_TYPE_SCHEMES.get(scheme, ("input_type", scheme, scheme))
         index._eval_query_input_type = q
         index._eval_doc_input_type = d
+        index._eval_input_type_param = param
     return index
 
 
