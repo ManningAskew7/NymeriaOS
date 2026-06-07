@@ -15,12 +15,12 @@ from .hosting import make_hosting_step
 from .placeholders import (
     make_fetch_url_step,
     make_image_gen_step,
-    make_rag_search_step,
     make_stt_step,
     make_tts_step,
     make_web_search_step,
 )
 from .model import make_model_step
+from .rag import make_embedder_step, make_reranker_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
 from .welcome import make_welcome_step
@@ -54,7 +54,8 @@ def build_default_steps() -> list[Step]:
         make_core_tools_step(),
         make_web_search_step(),
         make_fetch_url_step(),
-        make_rag_search_step(),
+        make_embedder_step(),
+        make_reranker_step(),
         make_image_gen_step(),
         make_tts_step(),
         make_stt_step(),

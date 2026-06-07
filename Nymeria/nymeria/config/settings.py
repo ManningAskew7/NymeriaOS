@@ -1240,6 +1240,18 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         description="1536-dimensional embedding model name for memory and skill semantic search",
     )
+    embedding_provider: str = Field(
+        default="openai",
+        description="Embedding backend for the memory index: 'openai' (any OpenAI-compatible endpoint, including Voyage), 'cohere' (native v2/embed, e.g. embed-v4.0), 'gemini' (native batchEmbedContents, e.g. gemini-embedding-001), or 'local' (in-process sentence-transformers, e.g. granite, needs the optional local-rag extra). Defaults to 'openai' so existing deployments are unchanged.",
+    )
+    embedding_dimensions: Optional[int] = Field(
+        default=None,
+        description="Vector width for the memory index (the sqlite-vec vec0 column width and the accepted embedding length). None keeps the legacy 1536 slot. Set to a model's native or Matryoshka width (1024 for Cohere/Gemini/Voyage, 384 for granite). Changing this on an existing deployment requires re-embedding the memory DB (the vec0 width is fixed at table creation).",
+    )
+    embedding_input_type: Optional[str] = Field(
+        default=None,
+        description="Asymmetric query/document prompting scheme for OpenAI-compatible embedders. 'voyage' sends input_type=query for queries and input_type=document for ingested chunks (Voyage models). None for symmetric models (OpenAI text-embedding-3-*). Native cohere/gemini providers handle asymmetry internally and ignore this.",
+    )
 
     # RAG retrieval tuning (native memory index). Defaults track measured-best
     # retrieval: fusion upgraded to RRF, and recency defaults OFF (the recency
@@ -1272,6 +1284,30 @@ class Settings(BaseSettings):
     rag_rerank_top_n: int = Field(
         default=20,
         description="When rag_rerank_enabled, how many fused candidates to rerank before truncating to the requested limit",
+    )
+    rag_rerank_provider: str = Field(
+        default="llm",
+        description="Reranker backend used when rag_rerank_enabled. 'llm' (default): listwise rerank via the thread's own model, no extra key. 'voyage' / 'cohere' / 'zeroentropy': managed rerank API (needs rag_rerank_api_key and rag_rerank_model). 'local': a sentence-transformers cross-encoder (needs rag_rerank_model and the optional local-rerank extra; runs on CPU/GPU, fully private).",
+    )
+    rag_rerank_model: Optional[str] = Field(
+        default=None,
+        description="Model id for the managed or local reranker, e.g. 'rerank-2.5'/'rerank-2.5-lite' (Voyage), 'zerank-2' (ZeroEntropy), 'rerank-v3.5' (Cohere), or a cross-encoder id for 'local'. Ignored for the 'llm' provider.",
+    )
+    rag_rerank_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for the managed reranker (Voyage/Cohere/ZeroEntropy). May equal EMBEDDING_API_KEY when the same vendor powers both embedding and reranking (e.g. Voyage embed + Voyage rerank). Ignored for the 'llm' and 'local' providers.",
+    )
+    rag_rerank_local_onnx_file: Optional[str] = Field(
+        default=None,
+        description="Optional ONNX graph file for the 'local' cross-encoder reranker (e.g. 'onnx/model_quint8_avx2.onnx', the int8 build for an avx2-only CPU). None uses the default torch backend.",
+    )
+    rag_embed_tool_results: bool = Field(
+        default=True,
+        description="Embed tool-result content into the memory index as first-class 'tool' chunks (retrievable via rag_search) so the agent can recall what tools returned. On by default. Tool-heavy turns produce many near-identical payloads, so tool chunks are deduplicated hard at ingest (canonical-JSON exact hash plus the semantic near-duplicate guard).",
+    )
+    rag_tool_result_max_chars: int = Field(
+        default=2000,
+        description="Max characters of a tool result embedded as a 'tool' chunk before truncation. Larger than rag_result_max_chars because JSON payloads carry signal throughout, not just at the start.",
     )
     rag_dedup_enabled: bool = Field(
         default=True,

@@ -127,9 +127,17 @@ Set the API key for your chosen provider:
 | `OPENAI_API_KEY` | OpenAI | If using `openai` provider; optional otherwise for OpenAI image generation, STT, and OpenAI-backed tools |
 | `GEMINI_API_KEY` | Google Gemini | Optional; enables Gemini image generation, Gemini TTS, and Gemini attachment extraction |
 | `OPENROUTER_API_KEY` | OpenRouter | If using `openrouter` provider |
-| `EMBEDDING_API_KEY` | OpenAI-compatible embeddings | Optional; enables semantic memory/skill search. Keep separate from CLIProxy `OPENAI_API_KEY` values. |
-| `EMBEDDING_BASE_URL` | OpenAI-compatible embeddings | Optional custom `/v1` base URL for embeddings |
-| `EMBEDDING_MODEL` | OpenAI-compatible embeddings | Optional; defaults to `text-embedding-3-small`; must return 1536-dimensional vectors |
+| `EMBEDDING_API_KEY` | Memory embeddings | Optional; enables semantic memory/skill search. Holds the embedder's key for any cloud provider (OpenAI, Voyage, Cohere, Gemini). Keep separate from CLIProxy `OPENAI_API_KEY` values. Not needed for the `local` provider. |
+| `EMBEDDING_PROVIDER` | Memory embeddings | Embedding backend: `openai` (any OpenAI-compatible endpoint incl. Voyage; default), `cohere` (native embed-v4), `gemini` (native embedding-001), or `local` (in-process sentence-transformers, e.g. granite; needs the local-rag extra). |
+| `EMBEDDING_BASE_URL` | Memory embeddings | Optional custom `/v1` base URL for the `openai` provider (e.g. `https://api.voyageai.com/v1`, or a local embed shim) |
+| `EMBEDDING_MODEL` | Memory embeddings | Embedding model name; defaults to `text-embedding-3-small`. Its output width must match `EMBEDDING_DIMENSIONS`. |
+| `EMBEDDING_DIMENSIONS` | Memory embeddings | Vector width of the memory index. Blank keeps the legacy 1536 slot. Set to the model's native or Matryoshka width (1024 for Cohere/Gemini/Voyage, 384 for granite). Changing it on an existing deployment needs a re-embed (the vec0 width is fixed at table creation). |
+| `EMBEDDING_INPUT_TYPE` | Memory embeddings | Asymmetric query/document scheme for OpenAI-compatible embedders. `voyage` sends `input_type=query`/`document` for Voyage models. Blank for symmetric models; native cohere/gemini handle this internally. |
+| `RAG_EMBED_TOOL_RESULTS` | Memory embeddings | Embed tool-result content as retrievable `tool` chunks so the agent can recall what tools returned. On by default; tool chunks are hard-deduped at ingest (canonical-JSON hash plus the semantic guard). |
+| `RAG_RERANK_ENABLED` | Memory reranking | Rerank `rag_search` candidates before truncating to the requested count. Off by default (a reranker adds latency to each lookup). |
+| `RAG_RERANK_PROVIDER` | Memory reranking | Reranker backend when enabled: `llm` (the thread's own model, default, no extra key), `voyage`/`cohere`/`zeroentropy` (managed rerank API, needs `RAG_RERANK_API_KEY`), or `local` (sentence-transformers cross-encoder, e.g. Ettin; needs the local-rag extra). |
+| `RAG_RERANK_MODEL` | Memory reranking | Reranker model id, e.g. `rerank-2.5`/`rerank-2.5-lite` (Voyage), `zerank-2` (ZeroEntropy), or a cross-encoder id for `local`. Ignored for `llm`. |
+| `RAG_RERANK_API_KEY` | Memory reranking | Key for the managed reranker; may equal `EMBEDDING_API_KEY` when one vendor powers both (e.g. Voyage embed plus Voyage rerank). |
 | `PERPLEXITY_API_KEY` | Perplexity | Used by `web_search_perplexity` tool (credential vault preferred) |
 | `TAVILY_API_KEY` | Tavily | Used by `web_search_tavily` tool (credential vault preferred) |
 | `EXA_API_KEY` | Exa | Used by `web_search_exa_ai` tool (credential vault preferred) |

@@ -59,6 +59,11 @@ class WizardState:
     # names; single-select placeholders store one value (or "__skip__").
     extras: dict[str, Any] = field(default_factory=dict)
 
+    # RAG: chosen embedder/reranker catalog ids (see setup/rag_catalog.py). The
+    # API keys ride in optional_env (EMBEDDING_API_KEY / RAG_RERANK_API_KEY).
+    embedder: str | None = None
+    reranker: str | None = None
+
     # Paths and post-setup behavior (driven by flags, not wizard screens yet).
     root: Path | None = None
     data_dir: Path | None = None

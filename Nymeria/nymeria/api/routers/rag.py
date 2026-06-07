@@ -18,6 +18,7 @@ class RagSettingsUpdate(BaseModel):
     include_conversations: Optional[bool] = Field(default=None, description="Include conversation history")
     include_memories: Optional[bool] = Field(default=None, description="Include saved memories")
     include_todos: Optional[bool] = Field(default=None, description="Include TODO completions")
+    include_tools: Optional[bool] = Field(default=None, description="Include tool-result chunks")
     auto_flush: Optional[bool] = Field(default=None, description="Auto-flush on context trim")
 
 
@@ -46,6 +47,7 @@ def create_rag_router(
             "include_conversations": rag_prefs.get("include_conversations", True),
             "include_memories": rag_prefs.get("include_memories", False),
             "include_todos": rag_prefs.get("include_todos", True),
+            "include_tools": rag_prefs.get("include_tools", True),
             "auto_flush": rag_prefs.get("auto_flush", True),
         }
 
@@ -75,6 +77,9 @@ def create_rag_router(
             if settings_update.include_todos is not None:
                 profile.set_rag_preference("include_todos", settings_update.include_todos)
 
+            if settings_update.include_tools is not None:
+                profile.set_rag_preference("include_tools", settings_update.include_tools)
+
             if settings_update.auto_flush is not None:
                 profile.set_rag_preference("auto_flush", settings_update.auto_flush)
 
@@ -86,6 +91,7 @@ def create_rag_router(
                 "include_conversations": rag_prefs.get("include_conversations", True),
                 "include_memories": rag_prefs.get("include_memories", False),
                 "include_todos": rag_prefs.get("include_todos", True),
+                "include_tools": rag_prefs.get("include_tools", True),
                 "auto_flush": rag_prefs.get("auto_flush", True),
             }
 

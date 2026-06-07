@@ -120,22 +120,6 @@ def make_fetch_url_step() -> Step:
     )
 
 
-def make_rag_search_step() -> Step:
-    return placeholder_step(
-        step_id="rag_search",
-        title="Semantic memory / RAG search",
-        note=(
-            "Placeholder. A single rag_search tool exists today; the rag_search_* "
-            "multi-backend suite (one per embedding provider) is not built yet."
-        ),
-        options=[
-            Choice("openai-small", "OpenAI text-embedding-3-small", "Hosted, low cost."),
-            Choice("openai-large", "OpenAI text-embedding-3-large", "Hosted, higher quality."),
-            Choice("local", "Local embeddings", "Runs on this machine."),
-        ],
-    )
-
-
 def make_image_gen_step() -> Step:
     """Real multi-select over the built image_gen_* providers (Section B)."""
     get_initial, store = _extras_list("image_gen")
@@ -199,7 +183,6 @@ def seeded_tool_names(state: WizardState) -> list[str]:
 __all__ = [
     "make_web_search_step",
     "make_fetch_url_step",
-    "make_rag_search_step",
     "make_image_gen_step",
     "make_tts_step",
     "make_stt_step",

@@ -14,6 +14,7 @@ import re
 import sqlite3
 import struct
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,31 @@ CHARS_PER_TOKEN = 4  # Approximate
 # OpenAI embedding dimensions
 EMBEDDING_DIMENSIONS = 1536  # text-embedding-3-small
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+# Browser User-Agent for native embedding HTTP calls (Cohere). Some managed
+# endpoints sit behind a CDN that rejects a bare urllib User-Agent; a browser UA
+# is harmless for the providers that do not need it.
+_EMBED_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
+
+
+def _canonical_json(text: str) -> Optional[str]:
+    """Canonical (sorted-key, no-whitespace) form of a JSON document, or None if
+    ``text`` is not JSON. Lets two tool-result payloads that differ only in key
+    order or whitespace collapse to the same ingest dedup hash."""
+    s = text.strip()
+    if not s or s[0] not in "{[":
+        return None
+    try:
+        return json.dumps(json.loads(s), sort_keys=True, separators=(",", ":"))
+    except (ValueError, TypeError):
+        return None
+
+
+# Process-local cache of loaded local embedding models (model load is expensive).
+_LOCAL_EMBEDDERS: Dict[str, Any] = {}
 
 # Reciprocal Rank Fusion constant. Higher values flatten the contribution of
 # rank position; 60 is the value from the original RRF paper and the common
@@ -243,13 +269,14 @@ class MemoryIndex:
     def __init__(
         self,
         db_path: Path,
-        embedding_provider: str = "openai",
+        embedding_provider: Optional[str] = None,
         embedding_api_key: Optional[str] = None,
         embedding_base_url: Optional[str] = None,
         embedding_model: Optional[str] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         embedding_dimensions: Optional[int] = None,
+        embedding_input_type: Optional[str] = None,
     ):
         """
         Initialize the memory index.
@@ -272,8 +299,16 @@ class MemoryIndex:
                 ``dimensions`` param is sent so the model emits exactly that width.
         """
         self.db_path = Path(db_path)
-        self.embedding_provider = embedding_provider
-        if embedding_api_key is None or embedding_base_url is None or embedding_model is None:
+        # Track whether the dimension was explicitly requested (constructor arg or
+        # a non-None setting) before settings fill in the rest, so the OpenAI
+        # ``dimensions`` param is only sent when intended.
+        dims_explicit = embedding_dimensions is not None
+        needs_settings = (
+            embedding_api_key is None or embedding_base_url is None
+            or embedding_model is None or embedding_provider is None
+            or embedding_dimensions is None or embedding_input_type is None
+        )
+        if needs_settings:
             try:
                 from ..config import get_settings
                 settings = get_settings()
@@ -283,19 +318,29 @@ class MemoryIndex:
                     embedding_base_url = settings.embedding_base_url
                 if embedding_model is None:
                     embedding_model = settings.embedding_model
+                if embedding_provider is None:
+                    embedding_provider = settings.embedding_provider
+                if embedding_dimensions is None and settings.embedding_dimensions is not None:
+                    embedding_dimensions = settings.embedding_dimensions
+                    dims_explicit = True
+                if embedding_input_type is None:
+                    embedding_input_type = settings.embedding_input_type
             except Exception:
                 logger.warning("Failed to load settings for embedding config", exc_info=True)
+        self.embedding_provider = embedding_provider or "openai"
         self.embedding_api_key = embedding_api_key
         self.embedding_base_url = embedding_base_url
         self.embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
-        # Vector width. Defaults to the module constant so production is
-        # unchanged; the eval harness passes a model's native width per run.
+        self.embedding_input_type = embedding_input_type
+        # Vector width. Defaults to the module constant so production is unchanged;
+        # an explicit setting (or the eval harness) selects a model's native width.
         self.embedding_dimensions = embedding_dimensions or EMBEDDING_DIMENSIONS
-        self._dimensions_explicit = embedding_dimensions is not None
+        self._dimensions_explicit = dims_explicit
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._lock = threading.RLock()
         self._openai_client = None
+        self._dim_mismatch = False
 
         # Ensure directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,6 +503,22 @@ class MemoryIndex:
                     else:
                         raise
 
+                # Detect a dimension change on a pre-existing index: the vec0 width
+                # is fixed at creation, so a now-mismatched configured width would
+                # have new embeddings silently rejected. Surface it loudly instead.
+                self._dim_mismatch = False
+                stored_dim = self._stored_vec_dim(cursor)
+                if stored_dim is not None and stored_dim != self.embedding_dimensions:
+                    self._dim_mismatch = True
+                    logger.error(
+                        "Memory index %s holds %s-d vectors but is configured for "
+                        "%s-d (provider=%s, model=%s). New embeddings will be "
+                        "rejected; re-embed into a fresh index after a dimension "
+                        "change (delete the DB to rebuild, or backfill a new one).",
+                        self.db_path, stored_dim, self.embedding_dimensions,
+                        self.embedding_provider, self.embedding_model,
+                    )
+
                 conn.commit()
                 logger.info(f"Memory index initialized at {self.db_path}")
 
@@ -495,72 +556,268 @@ class MemoryIndex:
             kwargs["dimensions"] = self.embedding_dimensions
         return kwargs
 
-    def embed_text(self, text: str) -> Optional[List[float]]:
-        """
-        Get embedding vector for text.
+    def embed_text(self, text: str, input_type: str = "document") -> Optional[List[float]]:
+        """Get an embedding vector for ``text``.
 
-        Args:
-            text: Text to embed
-
-        Returns:
-            List of floats representing the embedding, or None if embedding fails
+        ``input_type`` is ``"query"`` for a search query or ``"document"`` for an
+        ingested chunk. It only matters for asymmetric providers (native cohere /
+        gemini, or an OpenAI-compatible model with ``embedding_input_type`` set,
+        e.g. Voyage); symmetric OpenAI models ignore it. Returns None on failure.
         """
         if not text.strip():
             return None
+        out = self._embed_batch([text], input_type)
+        return out[0] if out else None
 
-        if self.embedding_provider == "openai":
-            try:
-                client = self._get_openai_client()
-                response = client.embeddings.create(
-                    input=text[:8000],  # Truncate to model's limit
-                    **self._embed_kwargs(),
-                )
-                embedding = response.data[0].embedding
-                if len(embedding) != self.embedding_dimensions:
-                    logger.error(
-                        "Embedding dimension mismatch: expected %s, got %s",
-                        self.embedding_dimensions,
-                        len(embedding),
-                    )
-                    return None
-                return embedding
-            except Exception as e:
-                logger.error(f"Failed to get OpenAI embedding: {e}")
-                return None
-        else:
-            logger.warning(f"Unknown embedding provider: {self.embedding_provider}")
-            return None
-
-    def _embed_texts(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """Embed a batch of texts in one API call.
-
-        Returns a list aligned to ``texts`` (None for any item that fails or has
-        the wrong dimension). Used by ``backfill_embeddings`` to re-embed a whole
-        corpus efficiently instead of one request per chunk.
+    def _embed_texts(
+        self, texts: List[str], input_type: str = "document"
+    ) -> List[Optional[List[float]]]:
+        """Embed a batch of texts. Returns a list aligned to ``texts`` (None for
+        any item that fails or has the wrong dimension). Used by
+        ``backfill_embeddings`` to re-embed a whole corpus efficiently.
         """
-        if self.embedding_provider != "openai":
-            logger.warning(f"Unknown embedding provider: {self.embedding_provider}")
-            return [None] * len(texts)
         if not texts:
             return []
-        # OpenAI rejects empty strings in a batch; substitute a single space.
+        return self._embed_batch(texts, input_type)
+
+    def _embed_batch(
+        self, texts: List[str], input_type: str
+    ) -> List[Optional[List[float]]]:
+        """Provider dispatch for embedding a batch. ``input_type`` is ``"query"``
+        or ``"document"`` (honored only by asymmetric providers)."""
+        # Truncate to the model's limit; managed providers reject empty strings in
+        # a batch, so substitute a single space.
         inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
-        out: List[Optional[List[float]]] = [None] * len(texts)
+        provider = self.embedding_provider
+        if provider == "openai":
+            return self._embed_openai(inputs, input_type)
+        if provider == "cohere":
+            return self._embed_cohere(inputs, input_type)
+        if provider == "gemini":
+            return self._embed_gemini(inputs, input_type)
+        if provider == "local":
+            return self._embed_local(inputs)
+        logger.warning(f"Unknown embedding provider: {provider}")
+        return [None] * len(texts)
+
+    def _embed_openai(
+        self, inputs: List[str], input_type: str
+    ) -> List[Optional[List[float]]]:
+        """Embed via the OpenAI-compatible client (real OpenAI, Voyage, or a local
+        shim). Asymmetric models (``embedding_input_type`` set, e.g. Voyage) get an
+        ``input_type`` via ``extra_body``; symmetric models leave it unset."""
+        out: List[Optional[List[float]]] = [None] * len(inputs)
         try:
             client = self._get_openai_client()
-            response = client.embeddings.create(input=inputs, **self._embed_kwargs())
-            for item in response.data:
+            kwargs = self._embed_kwargs()
+            if self.embedding_input_type:
+                it = "query" if input_type == "query" else "document"
+                kwargs["extra_body"] = {"input_type": it}
+            response = client.embeddings.create(input=inputs, **kwargs)
+            # Map by item.index when present, else by response order (some
+            # OpenAI-compatible shims leave index unset).
+            for i, item in enumerate(response.data):
+                idx = getattr(item, "index", None)
+                if idx is None:
+                    idx = i
                 emb = item.embedding
                 if len(emb) == self.embedding_dimensions:
-                    out[item.index] = emb
+                    out[idx] = emb
                 else:
                     logger.error(
                         "Embedding dimension mismatch: expected %s, got %s",
                         self.embedding_dimensions, len(emb),
                     )
         except Exception as e:
-            logger.error(f"Batch embedding failed: {e}")
+            logger.error(f"Failed to get OpenAI embedding: {e}")
         return out
+
+    def _embed_cohere(
+        self, inputs: List[str], input_type: str
+    ) -> List[Optional[List[float]]]:
+        """Embed via native Cohere v2/embed (embed-v4.0 is not OpenAI-compatible).
+        Asymmetric via ``input_type`` search_query / search_document;
+        ``output_dimension`` truncates the Matryoshka vector to the index width."""
+        if not self.embedding_api_key:
+            logger.error("EMBEDDING_API_KEY not configured for cohere embeddings")
+            return [None] * len(inputs)
+        it = "search_query" if input_type == "query" else "search_document"
+        headers = {
+            "Authorization": f"Bearer {self.embedding_api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": _EMBED_UA,
+        }
+        out: List[Optional[List[float]]] = []
+        for start in range(0, len(inputs), 96):  # v2/embed batch cap
+            batch = inputs[start:start + 96]
+            payload = {
+                "model": self.embedding_model,
+                "input_type": it,
+                "embedding_types": ["float"],
+                "output_dimension": self.embedding_dimensions,
+                "texts": batch,
+            }
+            out.extend(self._native_embed_post(
+                "https://api.cohere.com/v2/embed", headers, payload,
+                len(batch), parse="cohere",
+            ))
+        return out
+
+    def _embed_gemini(
+        self, inputs: List[str], input_type: str
+    ) -> List[Optional[List[float]]]:
+        """Embed via native Gemini batchEmbedContents (gemini-embedding-001).
+        Asymmetric via ``taskType`` RETRIEVAL_QUERY / RETRIEVAL_DOCUMENT;
+        ``outputDimensionality`` truncates the Matryoshka vector. Gemini does NOT
+        re-normalize a truncated vector, so the response parser L2-normalizes it
+        (vec0 cosine assumes unit length)."""
+        if not self.embedding_api_key:
+            logger.error("EMBEDDING_API_KEY not configured for gemini embeddings")
+            return [None] * len(inputs)
+        tt = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
+        headers = {
+            "x-goog-api-key": self.embedding_api_key,
+            "Content-Type": "application/json",
+        }
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{self.embedding_model}:batchEmbedContents"
+        )
+        out: List[Optional[List[float]]] = []
+        for start in range(0, len(inputs), 100):  # batchEmbedContents cap
+            batch = inputs[start:start + 100]
+            reqs = [{
+                "model": f"models/{self.embedding_model}",
+                "content": {"parts": [{"text": t}]},
+                "taskType": tt,
+                "outputDimensionality": self.embedding_dimensions,
+            } for t in batch]
+            out.extend(self._native_embed_post(
+                url, headers, {"requests": reqs}, len(batch), parse="gemini",
+            ))
+        return out
+
+    def _embed_local(self, inputs: List[str]) -> List[Optional[List[float]]]:
+        """Embed in-process with a local sentence-transformers model (granite,
+        bge, ...). Fully private, no network. Lazy-imports sentence-transformers
+        so the dependency stays optional; vectors are L2-normalized for vec0
+        cosine. Symmetric (no query/document prompts), matching granite-r2."""
+        try:
+            model = self._get_local_embedder()
+        except Exception as e:
+            logger.error(
+                "local embedder unavailable (%s); install the local-rag extra: %s",
+                self.embedding_model, e,
+            )
+            return [None] * len(inputs)
+        out: List[Optional[List[float]]] = [None] * len(inputs)
+        try:
+            vecs = model.encode(
+                inputs, normalize_embeddings=True, convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+            for i, v in enumerate(vecs):
+                vec = [float(x) for x in v]
+                if len(vec) == self.embedding_dimensions:
+                    out[i] = vec
+                else:
+                    logger.error(
+                        "Embedding dimension mismatch: expected %s, got %s",
+                        self.embedding_dimensions, len(vec),
+                    )
+        except Exception as e:
+            logger.error(f"local embedding failed: {e}")
+        return out
+
+    def _get_local_embedder(self):
+        """Load (and process-cache) a local sentence-transformers model on CPU."""
+        encoder = _LOCAL_EMBEDDERS.get(self.embedding_model)
+        if encoder is None:
+            from sentence_transformers import SentenceTransformer  # optional dep
+            encoder = SentenceTransformer(self.embedding_model, device="cpu")
+            _LOCAL_EMBEDDERS[self.embedding_model] = encoder
+        return encoder
+
+    def _native_embed_post(
+        self, url: str, headers: Dict[str, str], payload: Dict[str, Any],
+        n: int, parse: str,
+    ) -> List[Optional[List[float]]]:
+        """POST a native embedding request with 429/5xx backoff and parse the
+        response into vectors aligned to the batch (None per failure). Never
+        raises: a hard failure returns Nones so ingest/search degrade, not crash.
+        """
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(payload).encode()
+        delay = 2.0
+        for attempt in range(6):
+            try:
+                req = urllib.request.Request(
+                    url, data=data, headers=headers, method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=120.0) as resp:
+                    body = json.loads(resp.read().decode())
+                vecs = self._parse_native_embeddings(body, parse)
+                cleaned: List[Optional[List[float]]] = [
+                    (v if v is not None and len(v) == self.embedding_dimensions else None)
+                    for v in vecs
+                ]
+                cleaned += [None] * (n - len(cleaned))  # defensive: align to batch
+                return cleaned[:n]
+            except urllib.error.HTTPError as e:
+                retryable = e.code in (408, 429, 500, 502, 503, 529)
+                if retryable and attempt < 5:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                detail = e.read().decode()[:200] if hasattr(e, "read") else ""
+                logger.error(f"{parse} embed HTTP {e.code}: {detail}")
+                return [None] * n
+            except (urllib.error.URLError, TimeoutError) as e:
+                if attempt < 5:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                logger.error(f"{parse} embed failed: {e}")
+                return [None] * n
+        return [None] * n
+
+    @staticmethod
+    def _parse_native_embeddings(
+        body: Dict[str, Any], parse: str
+    ) -> List[Optional[List[float]]]:
+        """Pull vectors out of a native provider response. Cohere returns
+        ``embeddings.float``; Gemini returns ``embeddings[].values`` which are
+        L2-normalized here because a truncated Gemini vector is not unit length."""
+        if parse == "cohere":
+            return (body.get("embeddings") or {}).get("float") or []
+        out: List[Optional[List[float]]] = []
+        for e in body.get("embeddings") or []:
+            v = e.get("values") or []
+            if not v:
+                out.append(None)
+                continue
+            norm = math.sqrt(sum(x * x for x in v))
+            out.append([x / norm for x in v] if norm > 0 else v)
+        return out
+
+    def _stored_vec_dim(self, cursor) -> Optional[int]:
+        """Width of the vectors already stored in vec_chunks, or None if the table
+        is empty or unavailable. Used to detect a dimension change on an existing
+        index (the vec0 width is fixed at creation)."""
+        try:
+            row = cursor.execute(
+                "SELECT embedding FROM vec_chunks LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row or row["embedding"] is None:
+            return None
+        blob = row["embedding"]
+        if isinstance(blob, (bytes, bytearray)):
+            return len(blob) // 4  # float32
+        return None
 
     def backfill_embeddings(
         self,
@@ -747,7 +1004,7 @@ class MemoryIndex:
         Args:
             content: Text content to index
             metadata: Additional metadata (key, todo_id, etc.)
-            chunk_type: Type of chunk ('conversation', 'memory', 'todo')
+            chunk_type: Type of chunk ('conversation', 'memory', 'todo', 'tool')
             user_id: User ID for isolation
             thread_id: Optional thread ID for conversation chunks
             event_time: Real-world time of the event. Defaults to ingest time.
@@ -791,13 +1048,23 @@ class MemoryIndex:
                 # user/type/thread, treat the whole add as a duplicate and skip.
                 if text_chunks:
                     first_hash = self._content_hash(text_chunks[0])
-                    cursor.execute(
-                        "SELECT 1 FROM chunks "
-                        "WHERE user_id = ? AND chunk_type = ? "
-                        "AND IFNULL(thread_id, '') = IFNULL(?, '') "
-                        "AND content_hash = ? LIMIT 1",
-                        (user_id, chunk_type, thread_id, first_hash),
-                    )
+                    if chunk_type == "tool":
+                        # Tool outputs repeat across threads (same call, same
+                        # payload), so dedup per-user cross-thread, not per-thread.
+                        cursor.execute(
+                            "SELECT 1 FROM chunks "
+                            "WHERE user_id = ? AND chunk_type = ? "
+                            "AND content_hash = ? LIMIT 1",
+                            (user_id, chunk_type, first_hash),
+                        )
+                    else:
+                        cursor.execute(
+                            "SELECT 1 FROM chunks "
+                            "WHERE user_id = ? AND chunk_type = ? "
+                            "AND IFNULL(thread_id, '') = IFNULL(?, '') "
+                            "AND content_hash = ? LIMIT 1",
+                            (user_id, chunk_type, thread_id, first_hash),
+                        )
                     if cursor.fetchone():
                         logger.debug(
                             "Skipping duplicate %s chunk for user %s", chunk_type, user_id
@@ -860,7 +1127,10 @@ class MemoryIndex:
                     embed_input = f"{context}\n\n{chunk_content}" if context else chunk_content
                     embedding = (first_embedding if i == 0 and first_embedding is not None
                                  else self.embed_text(embed_input))
-                    if embedding:
+                    # Skip the vector insert on a width mismatch: the vec would be
+                    # the configured width, not the table's, so vec0 would reject it
+                    # per chunk. _init_db already logged the mismatch once loudly.
+                    if embedding and not self._dim_mismatch:
                         try:
                             cursor.execute("""
                                 INSERT INTO vec_chunks (chunk_id, embedding)
@@ -948,6 +1218,12 @@ class MemoryIndex:
             return ""
         idx = content.find(TOOL_ACTIVITY_MARKER)
         core = content[:idx] if idx >= 0 else content
+        # Canonicalize a JSON payload (e.g. a tool result) so key-order and
+        # whitespace variants of the same data dedup to one chunk; fall back to
+        # whitespace-collapsed prose otherwise.
+        canon = _canonical_json(core)
+        if canon is not None:
+            return canon
         return " ".join(core.split())
 
     @classmethod
@@ -1120,7 +1396,7 @@ class MemoryIndex:
                 # Filters are enforced at the fetch step below, so unfiltered
                 # vector candidates that fall outside scope drop out there.
                 vector_ids: List[str] = []
-                query_embedding = self.embed_text(query)
+                query_embedding = self.embed_text(query, input_type="query")
                 if query_embedding:
                     try:
                         cursor.execute("""

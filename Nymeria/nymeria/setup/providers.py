@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # to the primary provider, so the registry change leaves this untouched.
 OPTIONAL_ENV_ORDER = (
     "EMBEDDING_API_KEY",
+    "RAG_RERANK_API_KEY",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "PERPLEXITY_API_KEY",

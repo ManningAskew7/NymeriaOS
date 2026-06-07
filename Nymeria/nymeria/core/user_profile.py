@@ -174,6 +174,7 @@ DEFAULT_RAG_PREFERENCES = {
     "include_conversations": True, # Include past conversation snippets
     "include_memories": False,     # Exclude saved memories: they are already loaded into the agent's context, so returning them via rag_search is redundant (opt back in to override)
     "include_todos": True,         # Include completed TODO outcomes
+    "include_tools": True,         # Include tool-result chunks (embedded by default)
     "auto_flush": True,            # Enable pre-compaction memory flush
 }
 
