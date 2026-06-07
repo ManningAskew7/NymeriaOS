@@ -20,6 +20,8 @@ class RagSettingsUpdate(BaseModel):
     include_todos: Optional[bool] = Field(default=None, description="Include TODO completions")
     include_tools: Optional[bool] = Field(default=None, description="Include tool-result chunks")
     auto_flush: Optional[bool] = Field(default=None, description="Auto-flush on context trim")
+    retrieval_mode: Optional[str] = Field(default=None, description="Per-user override: 'hybrid' or 'vector'")
+    rerank_enabled: Optional[bool] = Field(default=None, description="Per-user override: rerank this user's rag_search results")
 
 
 def create_rag_router(
@@ -39,7 +41,9 @@ def create_rag_router(
         require_same_user_or_admin_fn(user, user_id)
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
+        from ...config import get_settings
         rag_prefs = profile.get_rag_preferences()
+        settings = get_settings()
 
         return {
             "enabled": profile.opt_in.rag_enabled,
@@ -49,6 +53,8 @@ def create_rag_router(
             "include_todos": rag_prefs.get("include_todos", True),
             "include_tools": rag_prefs.get("include_tools", True),
             "auto_flush": rag_prefs.get("auto_flush", True),
+            "retrieval_mode": rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
+            "rerank_enabled": rag_prefs.get("rerank_enabled", settings.rag_rerank_enabled),
         }
 
     @router.put("/users/{user_id}/rag/settings")
@@ -83,7 +89,15 @@ def create_rag_router(
             if settings_update.auto_flush is not None:
                 profile.set_rag_preference("auto_flush", settings_update.auto_flush)
 
+            if settings_update.retrieval_mode is not None:
+                profile.set_rag_preference("retrieval_mode", settings_update.retrieval_mode)
+
+            if settings_update.rerank_enabled is not None:
+                profile.set_rag_preference("rerank_enabled", settings_update.rerank_enabled)
+
+            from ...config import get_settings
             rag_prefs = profile.get_rag_preferences()
+            settings = get_settings()
             return {
                 "status": "ok",
                 "enabled": profile.opt_in.rag_enabled,
@@ -93,6 +107,8 @@ def create_rag_router(
                 "include_todos": rag_prefs.get("include_todos", True),
                 "include_tools": rag_prefs.get("include_tools", True),
                 "auto_flush": rag_prefs.get("auto_flush", True),
+                "retrieval_mode": rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
+                "rerank_enabled": rag_prefs.get("rerank_enabled", settings.rag_rerank_enabled),
             }
 
     @router.get("/users/{user_id}/rag/stats")
@@ -199,7 +215,7 @@ def create_rag_router(
             user_id=user_id,
             limit=max_results,
             chunk_types=chunk_types,
-            retrieval_mode=settings.rag_retrieval_mode,
+            retrieval_mode=rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
             anchor_start=anchor.start if anchor else None,
             anchor_end=anchor.end if anchor else None,
             anchor_edge_sigma_days=anchor.edge_sigma_days if anchor else None,

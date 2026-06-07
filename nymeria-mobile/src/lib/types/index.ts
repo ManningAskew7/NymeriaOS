@@ -848,6 +848,32 @@ export interface ModelMetadata {
   default_frequency_penalty: number | null;
 }
 
+// Per-user RAG settings (GET/PUT /users/{id}/rag/settings), distinct from the
+// server-wide RAG engine config in ServerSettings.
+export interface RagUserSettings {
+  enabled: boolean;
+  max_chunks: number;
+  include_conversations: boolean;
+  include_memories: boolean;
+  include_todos: boolean;
+  include_tools: boolean;
+  auto_flush: boolean;
+  retrieval_mode: string;
+  rerank_enabled: boolean;
+}
+
+export interface RagUserSettingsUpdate {
+  enabled?: boolean;
+  max_chunks?: number;
+  include_conversations?: boolean;
+  include_memories?: boolean;
+  include_todos?: boolean;
+  include_tools?: boolean;
+  auto_flush?: boolean;
+  retrieval_mode?: string;
+  rerank_enabled?: boolean;
+}
+
 export interface ServerSettings {
   llm_provider: LLMProvider;
   llm_model: string;

@@ -112,15 +112,27 @@
   let watchdogIntervalMinutes = $state(5);
   let todoStalenessMinutes = $state(20);
 
-  // RAG / semantic memory (global)
+  // RAG engine (server-wide, admin)
   let embeddingProvider = $state<string>('openai');
   let embeddingModel = $state<string>('text-embedding-3-small');
   let embeddingDimensions = $state<number | null | undefined>(null);
-  let ragRetrievalMode = $state<string>('hybrid');
   let ragEmbedToolResults = $state(true);
-  let ragRerankEnabled = $state(false);
   let ragRerankProvider = $state<string>('llm');
   let ragRerankModel = $state<string>('');
+  // RAG (per-user) — loaded/saved via the per-user /users/{id}/rag/settings API
+  let ragEnabled = $state(true);
+  let ragMaxChunks = $state(5);
+  let ragIncludeConversations = $state(true);
+  let ragIncludeMemories = $state(false);
+  let ragIncludeTodos = $state(true);
+  let ragIncludeTools = $state(true);
+  let ragAutoFlush = $state(true);
+  let ragRetrievalMode = $state<string>('hybrid');
+  let ragRerankEnabled = $state(false);
+  let ragUserLoading = $state(false);
+  let ragUserSaving = $state(false);
+  let ragUserMessage = $state('');
+  let ragUserLoaded = $state(false);
 
   // Dreaming defaults (global fallbacks a per-thread Dreaming tab overrides)
   let dreamDefaultMinIntervalHours = $state(6);
@@ -536,7 +548,7 @@
 
   // UI state
   type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'rag' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
-  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'rag', 'persona', 'dream', 'voice', 'proxy', 'users'];
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'dream', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -639,9 +651,7 @@
       embeddingProvider = serverSettings.embedding_provider ?? 'openai';
       embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
       embeddingDimensions = serverSettings.embedding_dimensions;
-      ragRetrievalMode = serverSettings.rag_retrieval_mode ?? 'hybrid';
       ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
-      ragRerankEnabled = serverSettings.rag_rerank_enabled ?? false;
       ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
       ragRerankModel = serverSettings.rag_rerank_model ?? '';
     } catch (e) {
@@ -655,6 +665,36 @@
   $effect(() => {
     if (configStore.isConfigured && !serverSettings && !loadingSettings) {
       loadServerSettings();
+    }
+  });
+
+  // Per-user RAG settings, loaded lazily when the RAG tab is first opened.
+  async function loadRagUserSettings() {
+    const uid = configStore.identity?.id;
+    if (!uid || !configStore.isConfigured) return;
+    ragUserLoading = true;
+    try {
+      const s = await api.getRagSettings(uid);
+      ragEnabled = s.enabled;
+      ragMaxChunks = s.max_chunks;
+      ragIncludeConversations = s.include_conversations;
+      ragIncludeMemories = s.include_memories;
+      ragIncludeTodos = s.include_todos;
+      ragIncludeTools = s.include_tools;
+      ragAutoFlush = s.auto_flush;
+      ragRetrievalMode = s.retrieval_mode;
+      ragRerankEnabled = s.rerank_enabled;
+      ragUserLoaded = true;
+    } catch (e) {
+      console.error('Failed to load RAG settings:', e);
+    } finally {
+      ragUserLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (activeTab === 'rag' && !ragUserLoaded && !ragUserLoading) {
+      loadRagUserSettings();
     }
   });
 
@@ -836,13 +876,11 @@
         stt_model: sttModel,
         stt_language: sttLanguage || null,
         voice_default_thread_id: voiceDefaultThreadId || null,
-        // RAG / semantic memory
+        // RAG engine (server-wide; per-user toggles live in the per-user API)
         embedding_provider: embeddingProvider,
         embedding_model: embeddingModel,
         embedding_dimensions: optionalNumberUpdate(embeddingDimensions, serverSettings?.embedding_dimensions),
-        rag_retrieval_mode: ragRetrievalMode,
         rag_embed_tool_results: ragEmbedToolResults,
-        rag_rerank_enabled: ragRerankEnabled,
         rag_rerank_provider: ragRerankProvider,
         rag_rerank_model: ragRerankModel.trim() || null,
       });
@@ -857,6 +895,31 @@
       testMessage = e instanceof Error ? e.message : 'Failed to save settings';
     } finally {
       savingSettings = false;
+    }
+  }
+
+  async function handleSaveRagUserSettings() {
+    const uid = configStore.identity?.id;
+    if (!uid) return;
+    ragUserSaving = true;
+    ragUserMessage = '';
+    try {
+      await api.updateRagSettings(uid, {
+        enabled: ragEnabled,
+        max_chunks: ragMaxChunks,
+        include_conversations: ragIncludeConversations,
+        include_memories: ragIncludeMemories,
+        include_todos: ragIncludeTodos,
+        include_tools: ragIncludeTools,
+        auto_flush: ragAutoFlush,
+        retrieval_mode: ragRetrievalMode,
+        rerank_enabled: ragRerankEnabled,
+      });
+      ragUserMessage = 'RAG settings saved!';
+    } catch (e) {
+      ragUserMessage = e instanceof Error ? e.message : 'Failed to save RAG settings';
+    } finally {
+      ragUserSaving = false;
     }
   }
 
@@ -946,6 +1009,15 @@
         </button>
         <button
           class="nav-item"
+          class:active={activeTab === 'rag'}
+          onclick={() => (activeTab = 'rag')}
+          type="button"
+        >
+          <Icon name="bolt" size={14} />
+          <span>RAG</span>
+        </button>
+        <button
+          class="nav-item"
           class:active={activeTab === 'mcp'}
           onclick={() => (activeTab = 'mcp')}
           disabled={!serverSettings}
@@ -998,16 +1070,6 @@
           >
             <Icon name="cog" size={14} />
             <span>Agent</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'rag'}
-            onclick={() => (activeTab = 'rag')}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="bolt" size={14} />
-            <span>RAG</span>
           </button>
           <button
             class="nav-item"
@@ -2082,13 +2144,19 @@
     </div>
   {/if}
 
-  <!-- RAG Tab -->
-  {#if activeTab === 'rag' && isAdmin}
+  <!-- RAG Tab (per-user for everyone; an admin-only engine section below) -->
+  {#if activeTab === 'rag'}
     <div class="tab-content">
-      {#if loadingSettings}
-        <p class="loading">Loading settings...</p>
+      <div class="section-heading">My RAG (this account)</div>
+      {#if ragUserLoading}
+        <p class="loading">Loading RAG settings...</p>
       {:else}
-        <div class="section-heading">Retrieval</div>
+        <div class="field checkbox-field">
+          <input id="rag-enabled" type="checkbox" bind:checked={ragEnabled} />
+          <label for="rag-enabled">Enable semantic memory (RAG)</label>
+          <p class="hint">Let the agent search your own past conversations, tool results, and notes</p>
+        </div>
+
         <div class="field">
           <label for="rag-retrieval-mode">Retrieval mode</label>
           <select id="rag-retrieval-mode" bind:value={ragRetrievalMode}>
@@ -2097,7 +2165,7 @@
           </select>
           <p class="hint">
             {#if ragRetrievalMode === 'hybrid'}
-              Robust default. If the embedder underperforms or is misconfigured, BM25 still salvages the ranking so RAG stays useful.
+              Robust default. If the embedder underperforms, BM25 still salvages the ranking so RAG stays useful.
             {:else}
               Vector-only. Typically scores a little higher with a strong embedder, but returns nothing if embeddings fail.
             {/if}
@@ -2105,18 +2173,76 @@
         </div>
 
         <div class="field checkbox-field">
-          <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
-          <label for="rag-embed-tools">Embed tool results</label>
-          <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+          <input id="rag-rerank-enabled" type="checkbox" bind:checked={ragRerankEnabled} />
+          <label for="rag-rerank-enabled">Use reranker</label>
+          <p class="hint">Reorder results for accuracy (adds latency; uses the server's configured reranker)</p>
         </div>
 
-        <div class="section-heading">Reranker</div>
+        <div class="section-heading">Content searched</div>
         <div class="field checkbox-field">
-          <input id="rag-rerank-enabled" type="checkbox" bind:checked={ragRerankEnabled} />
-          <label for="rag-rerank-enabled">Enable reranker</label>
-          <p class="hint">Reorders results for accuracy (adds latency per lookup)</p>
+          <input id="rag-inc-conv" type="checkbox" bind:checked={ragIncludeConversations} />
+          <label for="rag-inc-conv">Conversations</label>
         </div>
-        {#if ragRerankEnabled}
+        <div class="field checkbox-field">
+          <input id="rag-inc-mem" type="checkbox" bind:checked={ragIncludeMemories} />
+          <label for="rag-inc-mem">Saved memories</label>
+        </div>
+        <div class="field checkbox-field">
+          <input id="rag-inc-todo" type="checkbox" bind:checked={ragIncludeTodos} />
+          <label for="rag-inc-todo">Completed TODOs</label>
+        </div>
+        <div class="field checkbox-field">
+          <input id="rag-inc-tool" type="checkbox" bind:checked={ragIncludeTools} />
+          <label for="rag-inc-tool">Tool results</label>
+        </div>
+        <div class="field">
+          <label for="rag-max-chunks">Max results per search: {ragMaxChunks}</label>
+          <input id="rag-max-chunks" type="range" min="1" max="10" step="1" bind:value={ragMaxChunks} />
+        </div>
+        <div class="field checkbox-field">
+          <input id="rag-auto-flush" type="checkbox" bind:checked={ragAutoFlush} />
+          <label for="rag-auto-flush">Auto-flush before context trims</label>
+          <p class="hint">Preserve important context to memory before the window is trimmed</p>
+        </div>
+
+        <div class="actions">
+          <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
+            {ragUserSaving ? 'Saving...' : 'Save My RAG Settings'}
+          </Button>
+          {#if ragUserMessage}
+            <span class="hint">{ragUserMessage}</span>
+          {/if}
+        </div>
+      {/if}
+
+      {#if isAdmin}
+        <div class="section-heading">RAG engine (server-wide)</div>
+        {#if loadingSettings}
+          <p class="loading">Loading settings...</p>
+        {:else}
+          <div class="field checkbox-field">
+            <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
+            <label for="rag-embed-tools">Embed tool results</label>
+            <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+          </div>
+          <div class="field">
+            <label for="rag-embed-provider">Embedding provider</label>
+            <select id="rag-embed-provider" bind:value={embeddingProvider}>
+              <option value="openai">OpenAI-compatible (incl. Voyage)</option>
+              <option value="cohere">Cohere (native)</option>
+              <option value="gemini">Gemini (native)</option>
+              <option value="local">Local (on-device)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="rag-embed-model">Embedding model</label>
+            <input id="rag-embed-model" type="text" bind:value={embeddingModel} />
+          </div>
+          <div class="field">
+            <label for="rag-embed-dims">Embedding dimensions</label>
+            <input id="rag-embed-dims" type="number" step="1" bind:value={embeddingDimensions} />
+            <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a server restart, and a dimension change needs `nymeria reembed`.</p>
+          </div>
           <div class="field">
             <label for="rag-rerank-provider">Reranker provider</label>
             <select id="rag-rerank-provider" bind:value={ragRerankProvider}>
@@ -2126,47 +2252,20 @@
               <option value="zeroentropy">ZeroEntropy</option>
               <option value="local">Local cross-encoder</option>
             </select>
-            <p class="hint">Managed providers need a reranker API key (RAG_RERANK_API_KEY); 'local' needs the local-rag extra.</p>
+            <p class="hint">The engine each user's "Use reranker" toggle drives. Managed providers need a reranker API key; 'local' needs the local-rag extra.</p>
           </div>
-          {#if ragRerankProvider !== 'llm' && ragRerankProvider !== 'local'}
+          {#if ragRerankProvider !== 'llm'}
             <div class="field">
               <label for="rag-rerank-model">Reranker model</label>
               <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
             </div>
           {/if}
-          {#if ragRerankProvider === 'local'}
-            <div class="field">
-              <label for="rag-rerank-model">Cross-encoder model</label>
-              <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. cross-encoder/ettin-reranker-68m-v1" />
-            </div>
-          {/if}
+          <div class="actions">
+            <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
+              {savingSettings ? 'Saving...' : 'Save RAG Engine'}
+            </Button>
+          </div>
         {/if}
-
-        <div class="section-heading">Embedding model</div>
-        <div class="field">
-          <label for="rag-embed-provider">Embedding provider</label>
-          <select id="rag-embed-provider" bind:value={embeddingProvider}>
-            <option value="openai">OpenAI-compatible (incl. Voyage)</option>
-            <option value="cohere">Cohere (native)</option>
-            <option value="gemini">Gemini (native)</option>
-            <option value="local">Local (on-device)</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="rag-embed-model">Embedding model</label>
-          <input id="rag-embed-model" type="text" bind:value={embeddingModel} />
-        </div>
-        <div class="field">
-          <label for="rag-embed-dims">Embedding dimensions</label>
-          <input id="rag-embed-dims" type="number" step="1" bind:value={embeddingDimensions} />
-          <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a server restart, and a dimension change needs `nymeria reembed`.</p>
-        </div>
-
-        <div class="actions">
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save RAG Settings'}
-          </Button>
-        </div>
       {/if}
     </div>
   {/if}
