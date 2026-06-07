@@ -577,6 +577,90 @@ class CohereEmbedder:
         return [None] * n
 
 
+class GeminiEmbedder:
+    """Native Gemini ``batchEmbedContents`` client for the eval (gemini-embedding-001
+    is asymmetric and, when truncated, un-normalized, so the OpenAI-compat path is
+    unsuitable). Asymmetric: ``taskType`` ``RETRIEVAL_QUERY`` for queries,
+    ``RETRIEVAL_DOCUMENT`` for the corpus. ``outputDimensionality`` truncates the
+    Matryoshka vector; Gemini does NOT re-normalize a truncated vector (norm ~0.6 at
+    1024), so we L2-normalize here because vec0 cosine assumes unit length. Raw HTTP,
+    key from ``GEMINI_API_KEY`` sent as the ``x-goog-api-key`` header (never in a URL
+    or log), 429/5xx backoff. Returns vectors aligned to ``texts`` (None per text
+    only after retries are exhausted)."""
+
+    URL = ("https://generativelanguage.googleapis.com/v1beta/"
+           "models/gemini-embedding-001:batchEmbedContents")
+    MAX_BATCH = 100  # batchEmbedContents request cap
+
+    def __init__(self, model: str = "gemini-embedding-001", dim: int = 1024,
+                 timeout: float = 120.0) -> None:
+        key = os.environ.get("GEMINI_API_KEY")
+        if not key:
+            raise SystemExit("set GEMINI_API_KEY to use GeminiEmbedder")
+        self.model = model
+        self.dim = dim
+        self.timeout = timeout
+        self._headers = {
+            "x-goog-api-key": key,
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _unit(v: List[float]) -> List[float]:
+        n = math.sqrt(sum(x * x for x in v))
+        return [x / n for x in v] if n > 0 else v
+
+    def embed(self, texts: List[str], task_type: str) -> List[Optional[List[float]]]:
+        out: List[Optional[List[float]]] = []
+        for start in range(0, len(texts), self.MAX_BATCH):
+            batch = [(t[:8000] if t and t.strip() else " ")
+                     for t in texts[start:start + self.MAX_BATCH]]
+            reqs = [{"model": f"models/{self.model}",
+                     "content": {"parts": [{"text": t}]},
+                     "taskType": task_type,
+                     "outputDimensionality": self.dim} for t in batch]
+            out.extend(self._post_with_retry({"requests": reqs}, len(batch)))
+        return out
+
+    def embed_one(self, text: str, task_type: str) -> Optional[List[float]]:
+        return self.embed([text], task_type)[0]
+
+    def _post_with_retry(self, payload: Dict[str, Any], n: int) -> List[Optional[List[float]]]:
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(payload).encode()
+        delay = 2.0
+        for attempt in range(7):
+            try:
+                req = urllib.request.Request(
+                    self.URL, data=data, headers=self._headers, method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode())
+                vecs: List[Optional[List[float]]] = []
+                for e in body.get("embeddings") or []:
+                    v = e.get("values") or []
+                    vecs.append(self._unit(v) if len(v) == self.dim else None)
+                vecs += [None] * (n - len(vecs))  # defensive: align to batch
+                return vecs[:n]
+            except urllib.error.HTTPError as e:
+                retryable = e.code in (408, 429, 500, 502, 503, 529)
+                if retryable and attempt < 6:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                detail = e.read().decode()[:200] if hasattr(e, "read") else ""
+                raise SystemExit(f"gemini embed HTTP {e.code}: {detail}")
+            except (urllib.error.URLError, TimeoutError):
+                if attempt < 6:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                raise
+        return [None] * n
+
+
 def _force_ua_client(index: MemoryIndex, ua: str = _BROWSER_UA) -> MemoryIndex:
     """Pre-seed the index's OpenAI client with a browser User-Agent (harness-only).
 
