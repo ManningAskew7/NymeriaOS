@@ -876,7 +876,7 @@ The LLM naturally uses these memories without explicit retrieval.
 
 ### RAG (Semantic Conversation Recall)
 
-`MemoryIndex` (`core/memory_index.py`) provides per-user semantic search over indexed conversation turns, profile memories, and completed TODO outcomes. Storage is per-user SQLite at `data/users/{user_id}/memory.db` using sqlite-vec (1536-dim vectors via the OpenAI-compatible `EMBEDDING_MODEL`, default `text-embedding-3-small`) plus FTS5 for hybrid BM25 + vector retrieval.
+`MemoryIndex` (`core/memory_index.py`) provides per-user semantic search over indexed conversation turns, profile memories, completed TODO outcomes, and tool results. Storage is per-user SQLite at `data/users/{user_id}/memory.db` using sqlite-vec plus FTS5. The embedder is configurable: `EMBEDDING_PROVIDER` is `openai` (any OpenAI-compatible endpoint incl. Voyage), native `cohere`/`gemini`, or in-process `local` (sentence-transformers); `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` default to `text-embedding-3-small` at 1536 dims. Every read and write is scoped by `user_id` on top of the separate per-user DB, so one user's agent can never retrieve another user's chunks. Changing the embedder or its dimensions needs a re-embed (`nymeria reembed`).
 
 Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defaults to `True`; existing profiles are migrated once via the `opt_in.rag_migrated` watermark). Four hook points keep the index in sync with thread state:
 
@@ -888,6 +888,8 @@ Conversation indexing is **automatic** as of 2026-04 (`opt_in.rag_enabled` defau
 | Delete cleanup | During the full `DELETE /threads/{id}` cascade | `MemoryIndex.delete_by_thread` plus thread-bound resource cleanup |
 
 Agents query the index via the `rag_search` tool. When retrieved chunks are inserted into hidden prompt context, they are marked as untrusted reference data and rendered as JSONL records so stored conversation text is not interpreted as new instructions. Users can opt out at any time via the RAG settings API or frontend settings UI; the migration watermark prevents re-flipping.
+
+Retrieval runs in one of two modes (`RAG_RETRIEVAL_MODE`, per-user overridable): `hybrid` (BM25 + vector, the robust default, so a weak or misconfigured embedder still returns useful results) or `vector` (vector-only, slightly higher quality with a strong embedder but empty if embeddings fail). An optional reranker (`RAG_RERANK_PROVIDER`: the thread LLM, a managed API such as Voyage/Cohere/ZeroEntropy, or a local cross-encoder) reorders the candidates before truncation; it is off by default since it adds latency. Tool results are embedded by default (`RAG_EMBED_TOOL_RESULTS`) as their own retrievable chunks and hard-deduped at ingest. RAG is per-user: each account controls its own enable flag, content types, retrieval mode, reranker on/off, and result count via Settings > RAG, the per-user RAG settings API, or the `rag_settings` tool, while the embedder and reranker engine are server-wide admin settings.
 
 ---
 
