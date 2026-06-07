@@ -220,3 +220,29 @@ def test_write_config_emits_rag_env_and_keys(tmp_path):
         "RAG_RERANK_API_KEY=voy-key",
     ):
         assert expected in text, expected
+
+
+def test_rebuild_vectors_reembeds_at_new_width(monkeypatch):
+    pytest.importorskip("sqlite_vec")
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "m.db"
+        idx4 = MemoryIndex(path, embedding_provider="none", embedding_dimensions=4)
+        monkeypatch.setattr(
+            idx4, "embed_text", lambda text, input_type="document": [0.1, 0.2, 0.3, 0.4]
+        )
+        idx4.add_chunk("alpha", {}, "memory", "u1")
+        idx4.add_chunk("beta", {}, "memory", "u1")
+
+        # Reopen configured for a different width: mismatch flagged.
+        idx8 = MemoryIndex(path, embedding_provider="none", embedding_dimensions=8)
+        if idx8._stored_vec_dim(idx8._get_connection().cursor()) is None:
+            pytest.skip("vec0 not available to store vectors")
+        assert idx8._dim_mismatch
+        monkeypatch.setattr(
+            idx8, "_embed_texts",
+            lambda texts, input_type="document": [[0.0] * 8 for _ in texts],
+        )
+        result = idx8.rebuild_vectors()
+        assert idx8._dim_mismatch is False
+        assert result["total"] == 2 and result["embedded"] == 2
+        assert idx8._stored_vec_dim(idx8._get_connection().cursor()) == 8
