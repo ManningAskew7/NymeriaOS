@@ -1433,7 +1433,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, and `llm_fallback_hold_seconds`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, and `llm_fallback_hold_seconds`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -2835,20 +2835,22 @@ GET /users/{user_id}/rag/settings
 Authorization: Bearer <token>
 ```
 
-**Response:**
+**Response:** (flat object; these are this user's own RAG settings)
 ```json
 {
-  "user_id": "default",
-  "rag_enabled": true,
-  "preferences": {
-    "max_chunks": 5,
-    "include_conversations": true,
-    "include_memories": true,
-    "include_todos": true,
-    "auto_flush": true
-  }
+  "enabled": true,
+  "max_chunks": 5,
+  "include_conversations": true,
+  "include_memories": false,
+  "include_todos": true,
+  "include_tools": true,
+  "auto_flush": true,
+  "retrieval_mode": "hybrid",
+  "rerank_enabled": false
 }
 ```
+
+`retrieval_mode` (`hybrid` or `vector`) and `rerank_enabled` are per-user overrides of the server defaults (`RAG_RETRIEVAL_MODE` / `RAG_RERANK_ENABLED`); the rest are per-user content preferences. The shared embedder and reranker engine are admin-only server settings (see PATCH /settings).
 
 ---
 
@@ -2860,19 +2862,22 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:**
+**Request Body:** (all fields optional; only the ones sent are changed)
 ```json
 {
-  "rag_enabled": true,
+  "enabled": true,
   "max_chunks": 5,
   "include_conversations": true,
-  "include_memories": true,
+  "include_memories": false,
   "include_todos": false,
-  "auto_flush": true
+  "include_tools": true,
+  "auto_flush": true,
+  "retrieval_mode": "vector",
+  "rerank_enabled": true
 }
 ```
 
-**Response:** Updated settings object
+**Response:** Updated settings object (same shape as GET)
 
 ---
 

@@ -67,9 +67,10 @@ NymeriaOS threads don't just respond  -  they learn. Three interconnected system
 ### RAG (Nothing Gets Forgotten)
 - **Every conversation turn is indexed**  -  User message + AI response pairs embedded into per-user vector store after each turn
 - **Pre-compaction flush**  -  Before context is trimmed, all messages are defensively written to RAG
-- **Hybrid search**  -  Reciprocal Rank Fusion of sqlite-vec vector similarity + FTS5 BM25, with an optional date-anchor bias (the `rag_search` `around` argument)
-- **Three chunk types**: `conversation`, `memory`, `todo`  -  each toggleable
-- **Embedding**: OpenAI-compatible `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536 dims), BM25-only fallback if unavailable
+- **Hybrid or vector-only retrieval**  -  Reciprocal Rank Fusion of sqlite-vec vector similarity + FTS5 BM25 (hybrid, the robust default) or vector-only, chosen per user; optional date-anchor bias (the `rag_search` `around` argument)
+- **Optional reranker**  -  LLM listwise, a managed API (Voyage / Cohere / ZeroEntropy), or a local cross-encoder; off by default, toggled per user
+- **Four chunk types**: `conversation`, `memory`, `todo`, `tool`  -  each toggleable per user; tool results are embedded by default
+- **Embedding (configurable)**: `EMBEDDING_PROVIDER` openai-compatible (incl. Voyage), native Cohere/Gemini, or in-process local; `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` (default `text-embedding-3-small`, 1536 dims), BM25-only fallback if unavailable
 - **Sentence-aware chunking**: 400-token chunks with 80-token overlap
 - **Per-user isolation**: Separate vector stores per user
 - **Search tool**: `rag_search` lets the agent query past context on demand
