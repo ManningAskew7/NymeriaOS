@@ -576,6 +576,62 @@ def run_doctor(args: argparse.Namespace) -> int:
     return start_doctor(args)
 
 
+def _reembed_progress(done: int, total: int) -> None:
+    print(f"  {done}/{total} chunks", end="\r", flush=True)
+
+
+def run_reembed(args: argparse.Namespace) -> int:
+    """Re-embed memory indexes after an embedding model/provider/dimension change.
+
+    The vec0 vector width is fixed at table creation, so changing
+    EMBEDDING_DIMENSIONS (or switching to a model with a different native width)
+    requires dropping and rebuilding each user's vector table. This rebuilds with
+    the currently-configured embedder and re-embeds every chunk; BM25 search keeps
+    working throughout. Run it after editing the embedding settings in config.env.
+    """
+    from nymeria.config import get_settings
+    from nymeria.core.memory_index import MemoryIndex
+
+    settings = get_settings()
+    users_dir = settings.data_dir / "users"
+    if getattr(args, "user", None):
+        targets = [(args.user, users_dir / args.user / "memory.db")]
+    elif users_dir.exists():
+        targets = [
+            (path.name, path / "memory.db")
+            for path in sorted(users_dir.iterdir())
+            if (path / "memory.db").exists()
+        ]
+    else:
+        targets = []
+    targets = [(name, db) for name, db in targets if db.exists()]
+    if not targets:
+        print(f"No memory indexes found under {users_dir}.")
+        return 0
+
+    dim = settings.embedding_dimensions or 1536
+    print(
+        f"Re-embedding {len(targets)} memory index(es) with "
+        f"provider={settings.embedding_provider}, model={settings.embedding_model}, "
+        f"dim={dim}."
+    )
+    failed_any = False
+    for name, db in targets:
+        print(f"- {name}")
+        result = MemoryIndex(db).rebuild_vectors(progress=_reembed_progress)
+        print(
+            f"  embedded {result['embedded']}/{result['total']} "
+            f"(failed {result['failed']})" + " " * 12
+        )
+        failed_any = failed_any or bool(result["failed"])
+    print(
+        "Re-embed complete."
+        if not failed_any
+        else "Re-embed finished with failures (see above)."
+    )
+    return 1 if failed_any else 0
+
+
 def run_worker(args: argparse.Namespace) -> None:
     """
     Run the worker (scheduler-only thin client for Docker deployments).
@@ -1601,6 +1657,17 @@ Examples:
         help="Skip the live provider connection check",
     )
 
+    # Re-embed subcommand
+    reembed_parser = subparsers.add_parser(
+        "reembed",
+        help="Re-embed memory indexes after an embedding model/dimension change",
+    )
+    reembed_parser.add_argument(
+        "--user",
+        default=None,
+        help="Re-embed only this user's memory index (default: all users)",
+    )
+
     # Discord bot subcommand
     discord_parser = subparsers.add_parser(
         "discord-bot",
@@ -1814,6 +1881,8 @@ def main() -> None:
         sys.exit(run_init(args))
     elif args.command == "doctor":
         sys.exit(run_doctor(args))
+    elif args.command == "reembed":
+        sys.exit(run_reembed(args))
     elif args.command == "discord-bot":
         run_discord_bot(args)
     elif args.command == "telegram-bot":

@@ -114,6 +114,13 @@ browser = [
 firebase = [
   "firebase-admin>=6.0.0",
 ]
+# Local, on-device RAG: the in-process embedder (e.g. granite) and cross-encoder
+# reranker (e.g. Ettin) run via sentence-transformers (which pulls torch). Needed
+# only for EMBEDDING_PROVIDER=local and RAG_RERANK_PROVIDER=local. The int8 ONNX
+# reranker path (RAG_RERANK_LOCAL_ONNX_FILE) additionally needs optimum[onnxruntime].
+local-rag = [
+  "sentence-transformers>=3.0.0",
+]
 # Chat-platform bots. Install only the platforms you use, e.g.
 # pip install "nymeriaos[discord]" or "nymeriaos[bots]" for all of them.
 discord = [
@@ -163,6 +170,8 @@ all = [
   "playwright",
   "beautifulsoup4",
   "firebase-admin>=6.0.0",
+  # local on-device RAG (embedder + reranker)
+  "sentence-transformers>=3.0.0",
   # bots
   "discord.py>=2.3.0",
   "python-telegram-bot[rate-limiter]>=22.0",

@@ -878,6 +878,57 @@ class MemoryIndex:
             finally:
                 conn.close()
 
+    def rebuild_vectors(
+        self,
+        batch_size: int = 128,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, int]:
+        """Drop the vector table, recreate it at the current embedding width, then
+        re-embed every chunk in this DB (all users).
+
+        Use after changing the embedding model, provider, or dimensions: the vec0
+        width is fixed at table creation, so a dimension change needs a rebuild
+        rather than a backfill. Chunk content rows and the FTS index are left
+        untouched (BM25 search keeps working throughout). Returns summed counts.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS vec_chunks")
+                    cursor.execute(f"""
+                        CREATE VIRTUAL TABLE vec_chunks USING vec0(
+                            chunk_id TEXT PRIMARY KEY,
+                            embedding FLOAT[{self.embedding_dimensions}]
+                        )
+                    """)
+                    conn.commit()
+                except sqlite3.OperationalError as e:
+                    if "no such module: vec0" in str(e):
+                        logger.warning("sqlite-vec unavailable; cannot rebuild vectors")
+                        return {"embedded": 0, "failed": 0, "total": 0}
+                    raise
+                user_ids = [
+                    row["user_id"]
+                    for row in cursor.execute(
+                        "SELECT DISTINCT user_id FROM chunks"
+                    ).fetchall()
+                ]
+            finally:
+                conn.close()
+        # The table now matches the configured width, so clear the guard so the
+        # backfill inserts vectors instead of skipping them.
+        self._dim_mismatch = False
+        totals = {"embedded": 0, "failed": 0, "total": 0}
+        for user_id in user_ids:
+            result = self.backfill_embeddings(
+                user_id, batch_size=batch_size, progress=progress
+            )
+            for key in totals:
+                totals[key] += result.get(key, 0)
+        return totals
+
     def _serialize_embedding(self, embedding: List[float]) -> bytes:
         """Serialize embedding to bytes for sqlite-vec."""
         return struct.pack(f'{len(embedding)}f', *embedding)
