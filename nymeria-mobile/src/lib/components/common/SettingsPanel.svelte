@@ -33,7 +33,7 @@
 
   type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'rag' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
   type TabConfig = { id: Tab; label: string; disabled: boolean };
-  const adminServerTabs: Tab[] = ['llm', 'agent', 'rag', 'voice', 'users'];
+  const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
   // Tier-grouped picker options sourced from the live provider catalog.
   // Mobile has no synthetic display providers (no anthropic_proxy /
   // anthropic_direct / openai_custom variants like desktop), so the helper
@@ -54,13 +54,13 @@
     if (isAdmin) {
       tabs.push(
         { id: 'llm', label: 'Provider', disabled: !serverSettings },
-        { id: 'agent', label: 'Agent', disabled: !serverSettings },
-        { id: 'rag', label: 'RAG', disabled: !serverSettings }
+        { id: 'agent', label: 'Agent', disabled: !serverSettings }
       );
     }
 
     tabs.push(
       { id: 'tools', label: 'Tools', disabled: !serverSettings },
+      { id: 'rag', label: 'RAG', disabled: false },
       { id: 'mcp', label: 'MCP', disabled: !serverSettings },
       { id: 'credentials', label: 'Connections', disabled: !serverSettings }
     );
@@ -147,15 +147,27 @@
   let sttLanguage = $state('');
   let voiceDefaultThreadId = $state('');
 
-  // RAG / semantic memory (global)
+  // RAG engine (server-wide, admin)
   let embeddingProvider = $state('openai');
   let embeddingModel = $state('text-embedding-3-small');
   let embeddingDimensions = $state<number | null>(null);
-  let ragRetrievalMode = $state('hybrid');
   let ragEmbedToolResults = $state(true);
-  let ragRerankEnabled = $state(false);
   let ragRerankProvider = $state('llm');
   let ragRerankModel = $state('');
+  // RAG (per-user) — via the per-user /users/{id}/rag/settings API
+  let ragEnabled = $state(true);
+  let ragMaxChunks = $state(5);
+  let ragIncludeConversations = $state(true);
+  let ragIncludeMemories = $state(false);
+  let ragIncludeTodos = $state(true);
+  let ragIncludeTools = $state(true);
+  let ragAutoFlush = $state(true);
+  let ragRetrievalMode = $state('hybrid');
+  let ragRerankEnabled = $state(false);
+  let ragUserLoading = $state(false);
+  let ragUserSaving = $state(false);
+  let ragUserMessage = $state('');
+  let ragUserLoaded = $state(false);
 
   // Theme
   let selectedTheme = $state<ThemeName>(configStore.theme);
@@ -247,9 +259,7 @@
       embeddingProvider = serverSettings.embedding_provider ?? 'openai';
       embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
       embeddingDimensions = serverSettings.embedding_dimensions;
-      ragRetrievalMode = serverSettings.rag_retrieval_mode ?? 'hybrid';
       ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
-      ragRerankEnabled = serverSettings.rag_rerank_enabled ?? false;
       ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
       ragRerankModel = serverSettings.rag_rerank_model ?? '';
       if (serverSettings.llm_provider === 'openrouter') {
@@ -265,6 +275,35 @@
   $effect(() => {
     if (open && configStore.isConfigured && !serverSettings && !loadingSettings) {
       loadServerSettings();
+    }
+  });
+
+  async function loadRagUserSettings() {
+    const uid = configStore.identity?.id;
+    if (!uid || !configStore.isConfigured) return;
+    ragUserLoading = true;
+    try {
+      const s = await api.getRagSettings(uid);
+      ragEnabled = s.enabled;
+      ragMaxChunks = s.max_chunks;
+      ragIncludeConversations = s.include_conversations;
+      ragIncludeMemories = s.include_memories;
+      ragIncludeTodos = s.include_todos;
+      ragIncludeTools = s.include_tools;
+      ragAutoFlush = s.auto_flush;
+      ragRetrievalMode = s.retrieval_mode;
+      ragRerankEnabled = s.rerank_enabled;
+      ragUserLoaded = true;
+    } catch (e) {
+      console.error('Failed to load RAG settings:', e);
+    } finally {
+      ragUserLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (open && activeTab === 'rag' && !ragUserLoaded && !ragUserLoading) {
+      loadRagUserSettings();
     }
   });
 
@@ -367,9 +406,7 @@
         embedding_provider: embeddingProvider,
         embedding_model: embeddingModel,
         embedding_dimensions: embeddingDimensions ?? null,
-        rag_retrieval_mode: ragRetrievalMode,
         rag_embed_tool_results: ragEmbedToolResults,
-        rag_rerank_enabled: ragRerankEnabled,
         rag_rerank_provider: ragRerankProvider,
         rag_rerank_model: ragRerankModel.trim() || null,
       });
@@ -383,6 +420,31 @@
       testMessage = e instanceof Error ? e.message : 'Failed to save';
     } finally {
       savingSettings = false;
+    }
+  }
+
+  async function handleSaveRagUserSettings() {
+    const uid = configStore.identity?.id;
+    if (!uid) return;
+    ragUserSaving = true;
+    ragUserMessage = '';
+    try {
+      await api.updateRagSettings(uid, {
+        enabled: ragEnabled,
+        max_chunks: ragMaxChunks,
+        include_conversations: ragIncludeConversations,
+        include_memories: ragIncludeMemories,
+        include_todos: ragIncludeTodos,
+        include_tools: ragIncludeTools,
+        auto_flush: ragAutoFlush,
+        retrieval_mode: ragRetrievalMode,
+        rerank_enabled: ragRerankEnabled,
+      });
+      ragUserMessage = 'RAG settings saved!';
+    } catch (e) {
+      ragUserMessage = e instanceof Error ? e.message : 'Failed to save RAG settings';
+    } finally {
+      ragUserSaving = false;
     }
   }
 
@@ -922,10 +984,19 @@
           </Button>
         {/if}
 
-      {:else if activeTab === 'rag' && isAdmin}
-        {#if loadingSettings}
-          <p class="loading">Loading settings...</p>
+      {:else if activeTab === 'rag'}
+        <h3 class="section-heading">My RAG (this account)</h3>
+        {#if ragUserLoading}
+          <p class="loading">Loading RAG settings...</p>
         {:else}
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragEnabled} />
+              <span>Enable semantic memory (RAG)</span>
+            </label>
+            <p class="hint">Let the agent search your own past conversations, tool results, and notes</p>
+          </div>
+
           <div class="setting-group">
             <label class="setting-label">Retrieval mode</label>
             <select class="setting-input" bind:value={ragRetrievalMode}>
@@ -943,20 +1014,85 @@
 
           <div class="setting-group">
             <label class="setting-toggle">
-              <input type="checkbox" bind:checked={ragEmbedToolResults} />
-              <span>Embed tool results</span>
+              <input type="checkbox" bind:checked={ragRerankEnabled} />
+              <span>Use reranker</span>
             </label>
-            <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+            <p class="hint">Reorder results for accuracy (adds latency; uses the server's configured reranker)</p>
           </div>
 
           <div class="setting-group">
             <label class="setting-toggle">
-              <input type="checkbox" bind:checked={ragRerankEnabled} />
-              <span>Enable reranker</span>
+              <input type="checkbox" bind:checked={ragIncludeConversations} />
+              <span>Search conversations</span>
             </label>
-            <p class="hint">Reorders results for accuracy (adds latency per lookup)</p>
           </div>
-          {#if ragRerankEnabled}
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragIncludeMemories} />
+              <span>Search saved memories</span>
+            </label>
+          </div>
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragIncludeTodos} />
+              <span>Search completed TODOs</span>
+            </label>
+          </div>
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragIncludeTools} />
+              <span>Search tool results</span>
+            </label>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">Max results per search: {ragMaxChunks}</label>
+            <input type="range" min="1" max="10" step="1" bind:value={ragMaxChunks} />
+          </div>
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragAutoFlush} />
+              <span>Auto-flush before context trims</span>
+            </label>
+          </div>
+
+          <Button onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
+            {ragUserSaving ? 'Saving...' : 'Save My RAG Settings'}
+          </Button>
+          {#if ragUserMessage}
+            <p class="hint">{ragUserMessage}</p>
+          {/if}
+        {/if}
+
+        {#if isAdmin}
+          <h3 class="section-heading">RAG engine (server-wide)</h3>
+          {#if loadingSettings}
+            <p class="loading">Loading settings...</p>
+          {:else}
+            <div class="setting-group">
+              <label class="setting-toggle">
+                <input type="checkbox" bind:checked={ragEmbedToolResults} />
+                <span>Embed tool results</span>
+              </label>
+              <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+            </div>
+            <div class="setting-group">
+              <label class="setting-label">Embedding provider</label>
+              <select class="setting-input" bind:value={embeddingProvider}>
+                <option value="openai">OpenAI-compatible (incl. Voyage)</option>
+                <option value="cohere">Cohere (native)</option>
+                <option value="gemini">Gemini (native)</option>
+                <option value="local">Local (on-device)</option>
+              </select>
+            </div>
+            <div class="setting-group">
+              <label class="setting-label">Embedding model</label>
+              <input class="setting-input" type="text" bind:value={embeddingModel} />
+            </div>
+            <div class="setting-group">
+              <label class="setting-label">Embedding dimensions</label>
+              <input class="setting-input" type="number" step="1" bind:value={embeddingDimensions} />
+              <p class="hint">Vector width. Blank keeps 1536. Changing the embedder needs a restart, and a dimension change needs `nymeria reembed`.</p>
+            </div>
             <div class="setting-group">
               <label class="setting-label">Reranker provider</label>
               <select class="setting-input" bind:value={ragRerankProvider}>
@@ -966,7 +1102,7 @@
                 <option value="zeroentropy">ZeroEntropy</option>
                 <option value="local">Local cross-encoder</option>
               </select>
-              <p class="hint">Managed providers need a reranker API key; 'local' needs the local-rag extra.</p>
+              <p class="hint">The engine each user's "Use reranker" toggle drives. Managed providers need a key; 'local' needs the local-rag extra.</p>
             </div>
             {#if ragRerankProvider !== 'llm'}
               <div class="setting-group">
@@ -974,30 +1110,10 @@
                 <input class="setting-input" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
               </div>
             {/if}
+            <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
+              {savingSettings ? 'Saving...' : 'Save RAG Engine'}
+            </Button>
           {/if}
-
-          <div class="setting-group">
-            <label class="setting-label">Embedding provider</label>
-            <select class="setting-input" bind:value={embeddingProvider}>
-              <option value="openai">OpenAI-compatible (incl. Voyage)</option>
-              <option value="cohere">Cohere (native)</option>
-              <option value="gemini">Gemini (native)</option>
-              <option value="local">Local (on-device)</option>
-            </select>
-          </div>
-          <div class="setting-group">
-            <label class="setting-label">Embedding model</label>
-            <input class="setting-input" type="text" bind:value={embeddingModel} />
-          </div>
-          <div class="setting-group">
-            <label class="setting-label">Embedding dimensions</label>
-            <input class="setting-input" type="number" step="1" bind:value={embeddingDimensions} />
-            <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a restart, and a dimension change needs `nymeria reembed`.</p>
-          </div>
-
-          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save RAG Settings'}
-          </Button>
         {/if}
 
       <!-- Tools Tab -->

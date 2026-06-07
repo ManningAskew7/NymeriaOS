@@ -371,6 +371,8 @@ def get_rag_context(
             retrieval_mode = get_settings().rag_retrieval_mode
         except Exception:
             pass
+        if rag_prefs.get("retrieval_mode"):
+            retrieval_mode = rag_prefs["retrieval_mode"]
         results = memory_index.search(
             query=query,
             user_id=user_id,

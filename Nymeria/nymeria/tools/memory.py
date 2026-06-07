@@ -566,6 +566,12 @@ def rag_search(
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
             anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
 
+        # Per-user overrides of the server retrieval defaults (RAG is per-user).
+        if rag_prefs.get("retrieval_mode"):
+            retrieval_mode = rag_prefs["retrieval_mode"]
+        if rag_prefs.get("rerank_enabled") is not None:
+            rerank_enabled = rag_prefs["rerank_enabled"]
+
         # Parse the date anchor (None unless 'around' is set, valid, and enabled).
         anchor = parse_anchor_string(around) if (around and anchor_enabled) else None
         if around and anchor_enabled and anchor is None:
@@ -690,6 +696,8 @@ def rag_settings(
     include_todos: Optional[bool] = None,
     include_tools: Optional[bool] = None,
     auto_flush: Optional[bool] = None,
+    retrieval_mode: Optional[str] = None,
+    rerank_enabled: Optional[bool] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -704,6 +712,8 @@ def rag_settings(
         include_todos: Include completed TODOs
         include_tools: Include tool-result chunks
         auto_flush: Preserve context before window trims
+        retrieval_mode: 'hybrid' (BM25 + vector) or 'vector' (vector-only)
+        rerank_enabled: Rerank your rag_search results (adds latency)
     """
     logger.info("rag_settings called")
 
@@ -734,6 +744,12 @@ def rag_settings(
         if auto_flush is not None:
             profile.set_rag_preference("auto_flush", auto_flush)
 
+        if retrieval_mode is not None:
+            profile.set_rag_preference("retrieval_mode", retrieval_mode)
+
+        if rerank_enabled is not None:
+            profile.set_rag_preference("rerank_enabled", rerank_enabled)
+
         rag_prefs = profile.get_rag_preferences()
         status = "enabled" if profile.opt_in.rag_enabled else "disabled"
 
@@ -746,6 +762,8 @@ def rag_settings(
             f"- include_todos: {rag_prefs.get('include_todos', True)}",
             f"- include_tools: {rag_prefs.get('include_tools', True)}",
             f"- auto_flush: {rag_prefs.get('auto_flush', True)}",
+            f"- retrieval_mode: {rag_prefs.get('retrieval_mode') or '(server default)'}",
+            f"- rerank_enabled: {rag_prefs.get('rerank_enabled', '(server default)')}",
         ]
 
         if profile.opt_in.rag_enabled:

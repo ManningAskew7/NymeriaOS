@@ -8,6 +8,8 @@ import type {
   LLMProviderTestSuiteRequest,
   LLMProviderTestSuiteResponse,
   ModelMetadata,
+  RagUserSettings,
+  RagUserSettingsUpdate,
   ServerSettings,
   ServerSettingsUpdate,
   SystemPromptInfo
@@ -70,6 +72,35 @@ export class SystemApi extends MemoryApi {
       throw new Error(await this._toastAndExtractError(response, 'Failed to update settings'));
     }
 
+    return response.json();
+  }
+
+  async getRagSettings(userId: string): Promise<RagUserSettings> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/users/${encodeURIComponent(userId)}/rag/settings`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async updateRagSettings(
+    userId: string,
+    updates: RagUserSettingsUpdate
+  ): Promise<RagUserSettings & { status: string }> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/users/${encodeURIComponent(userId)}/rag/settings`,
+      {
+        method: 'PUT',
+        headers: this.getHeaders(),
+        body: JSON.stringify(updates)
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to update RAG settings'));
+    }
     return response.json();
   }
 
