@@ -2710,15 +2710,17 @@ class NymeriaAgent:
                     self.trim_context_window(thread_id, user_id=user_id)
 
                 # Index conversation turn in RAG (if enabled). This runs after
-                # auto-compact so streamed resume output is included too.
-                if final_response_parts:
-                    self._index_conversation_turn(
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        user_message=message,
-                        ai_response="".join(final_response_parts),
-                        messages=result_messages,
-                    )
+                # auto-compact so streamed resume output is included too. Called
+                # unconditionally so a tool-only turn with no final text still has
+                # its tool results indexed; index_conversation_turn self-skips the
+                # conversation chunk when there is no response prose.
+                self._index_conversation_turn(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    user_message=message,
+                    ai_response="".join(final_response_parts),
+                    messages=result_messages,
+                )
 
                 _elapsed = time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")

@@ -530,6 +530,8 @@ def rag_search(
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
+        if rag_prefs.get("include_tools", True):
+            chunk_types.append("tool")
 
         if not chunk_types:
             return "[Info]: All content types are disabled in RAG settings."
@@ -543,6 +545,10 @@ def rag_search(
             apply_recency = settings.rag_recency_enabled
             rerank_enabled = settings.rag_rerank_enabled
             rerank_top_n = settings.rag_rerank_top_n
+            rerank_provider = settings.rag_rerank_provider
+            rerank_model = settings.rag_rerank_model
+            rerank_api_key = settings.rag_rerank_api_key
+            rerank_local_onnx = settings.rag_rerank_local_onnx_file
             prose_priority = settings.rag_prose_priority_enabled
             prose_priority_weight = settings.rag_prose_priority_weight
             dedup_enabled = settings.rag_dedup_enabled
@@ -553,6 +559,7 @@ def rag_search(
             anchor_floor = settings.rag_anchor_floor
         except Exception:
             fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
+            rerank_provider, rerank_model, rerank_api_key, rerank_local_onnx = "llm", None, None, None
             prose_priority, prose_priority_weight = True, 0.4
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
             anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
@@ -584,20 +591,36 @@ def rag_search(
             dedup_threshold=dedup_threshold,
         )
 
-        # Optional LLM listwise rerank (off by default; adds latency + tokens).
+        # Optional rerank of the fused candidates (off by default; adds latency).
+        # rag_rerank_provider selects the backend: 'llm' (the thread's own model),
+        # a managed rerank API (voyage/cohere/zeroentropy), or a local
+        # cross-encoder. Any failure falls back to the fused order.
         if rerank_enabled and len(results) > 1:
             try:
-                from ..core.agent import get_current_agent
-                from ..core.rag_quality import llm_rerank
-                agent = get_current_agent()
-                if agent is not None:
-                    results = llm_rerank(
-                        agent,
-                        get_effective_thread_id(config),
-                        query,
-                        results,
-                        top_n=rerank_top_n,
+                if rerank_provider in ("voyage", "cohere", "zeroentropy"):
+                    from ..core.rag_quality import api_rerank
+                    results = api_rerank(
+                        rerank_provider, rerank_model, rerank_api_key,
+                        query, results, top_n=rerank_top_n,
                     )
+                elif rerank_provider == "local":
+                    from ..core.rag_quality import local_rerank
+                    results = local_rerank(
+                        rerank_model, query, results,
+                        top_n=rerank_top_n, onnx_file=rerank_local_onnx,
+                    )
+                else:  # 'llm' (default) or unknown -> listwise LLM rerank
+                    from ..core.agent import get_current_agent
+                    from ..core.rag_quality import llm_rerank
+                    agent = get_current_agent()
+                    if agent is not None:
+                        results = llm_rerank(
+                            agent,
+                            get_effective_thread_id(config),
+                            query,
+                            results,
+                            top_n=rerank_top_n,
+                        )
             except Exception as e:
                 logger.warning(f"rag_search rerank skipped: {e}")
 
@@ -662,6 +685,7 @@ def rag_settings(
     include_conversations: Optional[bool] = None,
     include_memories: Optional[bool] = None,
     include_todos: Optional[bool] = None,
+    include_tools: Optional[bool] = None,
     auto_flush: Optional[bool] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
@@ -675,6 +699,7 @@ def rag_settings(
         include_conversations: Include past conversations
         include_memories: Include saved memories
         include_todos: Include completed TODOs
+        include_tools: Include tool-result chunks
         auto_flush: Preserve context before window trims
     """
     logger.info("rag_settings called")
@@ -700,6 +725,9 @@ def rag_settings(
         if include_todos is not None:
             profile.set_rag_preference("include_todos", include_todos)
 
+        if include_tools is not None:
+            profile.set_rag_preference("include_tools", include_tools)
+
         if auto_flush is not None:
             profile.set_rag_preference("auto_flush", auto_flush)
 
@@ -713,6 +741,7 @@ def rag_settings(
             f"- include_conversations: {rag_prefs.get('include_conversations', True)}",
             f"- include_memories: {rag_prefs.get('include_memories', False)}",
             f"- include_todos: {rag_prefs.get('include_todos', True)}",
+            f"- include_tools: {rag_prefs.get('include_tools', True)}",
             f"- auto_flush: {rag_prefs.get('auto_flush', True)}",
         ]
 

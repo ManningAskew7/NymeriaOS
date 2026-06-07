@@ -357,6 +357,8 @@ def get_rag_context(
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
+        if rag_prefs.get("include_tools", True):
+            chunk_types.append("tool")
 
         if not chunk_types:
             return []
@@ -490,6 +492,60 @@ def _build_tool_activity_section(activity: List[dict]):
     return "\n" + "\n".join(lines), raw
 
 
+def index_tool_results(
+    agent: "NymeriaAgent",
+    user_id: str,
+    thread_id: str,
+    activity: List[dict],
+) -> None:
+    """Index each significant tool result from a turn as its own retrievable
+    ``tool`` chunk, so the agent can recall what tools actually returned.
+
+    Index-read tools (``rag_*``, ``memory_read``) are skipped so the index never
+    re-eats its own search results. Gated by ``settings.rag_embed_tool_results``
+    (on by default). Tool calls repeat (same call, same payload), so each chunk is
+    hard-deduped at ingest: the canonical-JSON exact hash collapses byte/format
+    twins cross-thread, and the semantic guard collapses near-identical payloads.
+    """
+    settings = getattr(agent, "settings", None)
+    if settings is None or not getattr(settings, "rag_embed_tool_results", True):
+        return
+    memory_index = agent._get_memory_index(user_id)
+    if not memory_index:
+        return
+    max_chars = getattr(settings, "rag_tool_result_max_chars", 2000)
+    dedup_near = getattr(settings, "rag_ingest_dedup_enabled", True)
+    dedup_threshold = getattr(settings, "rag_ingest_dedup_threshold", 0.97)
+    for a in activity:
+        name = a.get("name", "")
+        if not name or _is_index_read_tool(name):
+            continue
+        result = (a.get("result") or "").strip()
+        if not result:
+            continue
+        args_str = _summarize_tool_args(a.get("args"))
+        # Put the (truncated) result first so it is the dedup core; the tool
+        # identity rides after the marker, included in the embedding but excluded
+        # from the dedup hash (the same payload dedups regardless of caller).
+        content = f"{result[:max_chars]}\n\nTools used:\n- {name}({args_str})"
+        try:
+            memory_index.add_chunk(
+                content=content,
+                metadata={
+                    "role": "tool_result",
+                    "tool_name": name,
+                    "tool_args": a.get("args", {}),
+                },
+                chunk_type="tool",
+                user_id=user_id,
+                thread_id=thread_id,
+                dedup_near=dedup_near,
+                dedup_threshold=dedup_threshold,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to index tool result ({name}): {e}")
+
+
 def index_conversation_turn(
     agent: "NymeriaAgent",
     user_id: str,
@@ -514,6 +570,16 @@ def index_conversation_turn(
     if not memory_index:
         return
 
+    # Index this turn's tool results as their own retrievable 'tool' chunks,
+    # independent of the conversation chunk so tool-only / autonomous turns are
+    # still captured. Gated and hard-deduped inside index_tool_results.
+    activity = extract_turn_tool_activity(messages) if messages else []
+    if activity:
+        try:
+            index_tool_results(agent, user_id, thread_id, activity)
+        except Exception as e:
+            logger.warning(f"Failed to index tool results: {e}")
+
     # Skip empty turns (would store "User: \n\nAssistant: " noise).
     if not (user_message and user_message.strip()):
         return
@@ -530,7 +596,6 @@ def index_conversation_turn(
             "has_ai_response": True,
         }
 
-        activity = extract_turn_tool_activity(messages) if messages else []
         if activity:
             suffix, raw = _build_tool_activity_section(activity)
             turn_content += suffix

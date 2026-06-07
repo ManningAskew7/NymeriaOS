@@ -17,6 +17,7 @@ from ...onboarding import (
     HostingOption,
 )
 from ..nav import Step
+from ..rag_catalog import get_embedder, get_reranker
 from ..state import WizardState
 from .base import WizardStep
 from .core_tools import CORE_TOOLS
@@ -76,7 +77,6 @@ def _summary_markup(state: WizardState) -> str:
         # "Picked", not "Seeded": finalize does not yet write these to defaults.
         tool_lines.append(f"Picked (not written to defaults yet): {', '.join(seeded)}")
     placeholder_caps = [
-        ("RAG search", state.extras.get("rag_search")),
         ("TTS", state.extras.get("tts")),
         ("STT", state.extras.get("stt")),
         ("Agent settings", state.extras.get("agent_settings")),
@@ -88,6 +88,15 @@ def _summary_markup(state: WizardState) -> str:
     lines.append("[bold]Tools and capabilities[/bold]")
     for line in tool_lines:
         lines.append(f"  {line}")
+
+    emb = get_embedder(state.embedder)
+    if emb is not None:
+        rer = get_reranker(state.reranker)
+        lines.append("")
+        lines.append("[bold]Semantic memory (RAG)[/bold]")
+        lines.append(f"  Embedder: {emb.label}")
+        if rer is not None:
+            lines.append(f"  Reranker: {rer.label}")
 
     if state.external_access is not None:
         lines.append("")

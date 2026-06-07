@@ -123,7 +123,9 @@ The chat models above generate; RAG (`rag_search`) also needs an embedding model
 | Embedding | **`ibm-granite/granite-embedding-small-english-r2`** | 47M, 384-d | Apache-2.0, 8192-token context, symmetric (no query prompt). Beats `BAAI/bge-small-en-v1.5` on retrieval and is a drop-in 384-d swap. Serve int8 ONNX behind an OpenAI-compatible embed server (ModernBERT is slow in torch on CPU). |
 | Reranker | **`cross-encoder/ettin-reranker-68m-v1`** (or `-32m-v1`) | 68M / 33M | Apache-2.0, 8192 ctx, int8 ONNX cross-encoder. Ettin-68m is the higher-quality pick (about +0.035 ndcg@5 over 32m); Ettin-32m is roughly 2.7x faster on CPU for tighter latency. |
 
-That is the free CPU-only default. If a hosted API is acceptable, premium embeddings plus reranker (e.g. Voyage `voyage-4-large` + `rerank-2.5`) still lead, most on structured/tool content.
+That is the free CPU-only default. If a hosted API is acceptable, premium embeddings plus reranker (e.g. Cohere `embed-v4` + Voyage `rerank-2.5`) still lead, most on structured/tool content; the best value tier is Gemini `embedding-001` (free tier) + Voyage `rerank-2.5-lite`.
+
+**Wiring it in.** `nymeria init` configures all of this in two steps: pick an embedder (premium Cohere, value Gemini, or local granite) and a reranker (Voyage, ZeroEntropy zerank-2, local Ettin, or none), and it writes the matching `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` and `RAG_RERANK_*` env vars (see the configuration doc). The `local` embedder (granite) and reranker (Ettin) run in-process via sentence-transformers, so they need no API key and no separate embed server; install the optional local-rag extra to enable them. The reranker step reuses the embedding key automatically when one vendor powers both (e.g. Voyage embed plus Voyage rerank).
 
 ---
 

@@ -228,10 +228,12 @@ def test_default_flow_order_and_conditional_image_tier():
         "core_tools",
         "web_search",
         "fetch_url",
-        "rag_search",
+        "embedder",
+        "reranker",
         "image_gen",
     ):
         assert required in ids
+    assert "rag_search" not in ids  # retired: replaced by embedder + reranker
     # The abstract category "tools" step was superseded by the family pickers.
     assert "tools" not in ids
 

@@ -38,6 +38,7 @@ from .providers import (
     check_llm_connection_for_spec,
     valid_key_format_for_spec,
 )
+from .rag_catalog import rag_env_for_state
 from .state import WizardState
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
@@ -165,7 +166,7 @@ def finalize(
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
     print_bootstrap_token_handoff(token_path, console)
-    print_capability_summary(spec, optional_env, console)
+    print_capability_summary(spec, optional_env, console, extra_env=extra_env)
     print_deployment_summary(state, console)
 
     doctor_status = _maybe_run_doctor(
@@ -270,6 +271,9 @@ def _resolve_extra_env(state: WizardState) -> dict[str, str]:
         extra["LLM_BASE_URL"] = state.base_url.strip()
     if state.api_mode:
         extra["OPENAI_API_MODE"] = state.api_mode.strip()
+    # Embedder/reranker choices -> EMBEDDING_* / RAG_RERANK_* env vars (the API
+    # keys ride in optional_env). Empty when no embedder was chosen.
+    extra.update(rag_env_for_state(state))
     return extra
 
 
@@ -385,6 +389,7 @@ def print_capability_summary(
     spec: LLMProviderSpec | None,
     optional_env: Mapping[str, str],
     console: Console,
+    extra_env: Mapping[str, str] | None = None,
 ) -> None:
     """Show which capabilities are ready and which env var unblocks each.
 
@@ -400,8 +405,9 @@ def print_capability_summary(
         ("Primary LLM", spec is not None, "set a provider with nymeria init"),
         (
             "Semantic memory / RAG",
-            bool(optional_env.get("EMBEDDING_API_KEY")),
-            "set EMBEDDING_API_KEY",
+            bool((extra_env or {}).get("EMBEDDING_PROVIDER"))
+            or bool(optional_env.get("EMBEDDING_API_KEY")),
+            "choose an embedder in nymeria init",
         ),
         (
             "OpenAI image / speech tools",

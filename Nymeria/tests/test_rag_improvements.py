@@ -424,7 +424,7 @@ def test_thread_filter_recovers_far_vector_hit_via_overfetch():
         for i in range(n_distractors):
             c = f"distractor numero {i} lorem ipsum"
             embeds[c] = emb(0.001 * (i + 1))
-        idx.embed_text = lambda text: embeds.get(text, emb(9.0))
+        idx.embed_text = lambda text, input_type="document": embeds.get(text, emb(9.0))
 
         for i in range(n_distractors):
             idx.add_chunk(f"distractor numero {i} lorem ipsum", {}, "conversation",
@@ -600,7 +600,7 @@ def test_ingest_near_dup_guard_skips_semantic_duplicates():
         Ap = "dentist appointment july 2 9am reminder"   # cos~0.995 to A
         B = "the weather in sydney is sunny and 21 degrees"  # cos~0.894 to A
         embeds = {A: unit(1, 0.0), Ap: unit(1, 0.1), B: unit(1, 0.5)}
-        idx.embed_text = lambda t: embeds.get(t, unit(1, 9.0))
+        idx.embed_text = lambda t, input_type="document": embeds.get(t, unit(1, 9.0))
 
         assert idx.add_chunk(A, {}, "conversation", "u1", dedup_near=True)
         # near-duplicate of A -> skipped (cos ~0.995 >= 0.97)
@@ -631,7 +631,7 @@ def test_ingest_near_dup_guard_is_type_scoped():
         conv = "birthday is june 1"
         mem = "birthday: june 1"   # near-identical vector, different type
         embeds = {conv: unit(1, 0.0), mem: unit(1, 0.05)}
-        idx.embed_text = lambda t: embeds.get(t, unit(1, 9.0))
+        idx.embed_text = lambda t, input_type="document": embeds.get(t, unit(1, 9.0))
 
         assert idx.add_chunk(conv, {}, "conversation", "u1", dedup_near=True)
         # same user, near-identical vector, but chunk_type='memory' -> not a dup
