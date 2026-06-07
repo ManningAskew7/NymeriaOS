@@ -112,6 +112,16 @@
   let watchdogIntervalMinutes = $state(5);
   let todoStalenessMinutes = $state(20);
 
+  // RAG / semantic memory (global)
+  let embeddingProvider = $state<string>('openai');
+  let embeddingModel = $state<string>('text-embedding-3-small');
+  let embeddingDimensions = $state<number | null | undefined>(null);
+  let ragRetrievalMode = $state<string>('hybrid');
+  let ragEmbedToolResults = $state(true);
+  let ragRerankEnabled = $state(false);
+  let ragRerankProvider = $state<string>('llm');
+  let ragRerankModel = $state<string>('');
+
   // Dreaming defaults (global fallbacks a per-thread Dreaming tab overrides)
   let dreamDefaultMinIntervalHours = $state(6);
   let dreamDefaultMinIdleMinutes = $state(30);
@@ -525,8 +535,8 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
-  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'dream', 'voice', 'proxy', 'users'];
+  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'rag' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'rag', 'persona', 'dream', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -625,6 +635,15 @@
       sttModel = serverSettings.stt_model ?? 'gpt-4o-mini-transcribe';
       sttLanguage = serverSettings.stt_language ?? '';
       voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
+      // RAG / semantic memory
+      embeddingProvider = serverSettings.embedding_provider ?? 'openai';
+      embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
+      embeddingDimensions = serverSettings.embedding_dimensions;
+      ragRetrievalMode = serverSettings.rag_retrieval_mode ?? 'hybrid';
+      ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
+      ragRerankEnabled = serverSettings.rag_rerank_enabled ?? false;
+      ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
+      ragRerankModel = serverSettings.rag_rerank_model ?? '';
     } catch (e) {
       console.error('Failed to load server settings:', e);
     } finally {
@@ -817,6 +836,15 @@
         stt_model: sttModel,
         stt_language: sttLanguage || null,
         voice_default_thread_id: voiceDefaultThreadId || null,
+        // RAG / semantic memory
+        embedding_provider: embeddingProvider,
+        embedding_model: embeddingModel,
+        embedding_dimensions: optionalNumberUpdate(embeddingDimensions, serverSettings?.embedding_dimensions),
+        rag_retrieval_mode: ragRetrievalMode,
+        rag_embed_tool_results: ragEmbedToolResults,
+        rag_rerank_enabled: ragRerankEnabled,
+        rag_rerank_provider: ragRerankProvider,
+        rag_rerank_model: ragRerankModel.trim() || null,
       });
 
       testStatus = 'success';
@@ -970,6 +998,16 @@
           >
             <Icon name="cog" size={14} />
             <span>Agent</span>
+          </button>
+          <button
+            class="nav-item"
+            class:active={activeTab === 'rag'}
+            onclick={() => (activeTab = 'rag')}
+            disabled={!serverSettings}
+            type="button"
+          >
+            <Icon name="bolt" size={14} />
+            <span>RAG</span>
           </button>
           <button
             class="nav-item"
@@ -2038,6 +2076,95 @@
         <div class="actions">
           <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Agent Settings'}
+          </Button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- RAG Tab -->
+  {#if activeTab === 'rag' && isAdmin}
+    <div class="tab-content">
+      {#if loadingSettings}
+        <p class="loading">Loading settings...</p>
+      {:else}
+        <div class="section-heading">Retrieval</div>
+        <div class="field">
+          <label for="rag-retrieval-mode">Retrieval mode</label>
+          <select id="rag-retrieval-mode" bind:value={ragRetrievalMode}>
+            <option value="hybrid">Hybrid (BM25 + vector)</option>
+            <option value="vector">Vector-only</option>
+          </select>
+          <p class="hint">
+            {#if ragRetrievalMode === 'hybrid'}
+              Robust default. If the embedder underperforms or is misconfigured, BM25 still salvages the ranking so RAG stays useful.
+            {:else}
+              Vector-only. Typically scores a little higher with a strong embedder, but returns nothing if embeddings fail.
+            {/if}
+          </p>
+        </div>
+
+        <div class="field checkbox-field">
+          <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
+          <label for="rag-embed-tools">Embed tool results</label>
+          <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+        </div>
+
+        <div class="section-heading">Reranker</div>
+        <div class="field checkbox-field">
+          <input id="rag-rerank-enabled" type="checkbox" bind:checked={ragRerankEnabled} />
+          <label for="rag-rerank-enabled">Enable reranker</label>
+          <p class="hint">Reorders results for accuracy (adds latency per lookup)</p>
+        </div>
+        {#if ragRerankEnabled}
+          <div class="field">
+            <label for="rag-rerank-provider">Reranker provider</label>
+            <select id="rag-rerank-provider" bind:value={ragRerankProvider}>
+              <option value="llm">LLM (thread model)</option>
+              <option value="voyage">Voyage</option>
+              <option value="cohere">Cohere</option>
+              <option value="zeroentropy">ZeroEntropy</option>
+              <option value="local">Local cross-encoder</option>
+            </select>
+            <p class="hint">Managed providers need a reranker API key (RAG_RERANK_API_KEY); 'local' needs the local-rag extra.</p>
+          </div>
+          {#if ragRerankProvider !== 'llm' && ragRerankProvider !== 'local'}
+            <div class="field">
+              <label for="rag-rerank-model">Reranker model</label>
+              <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
+            </div>
+          {/if}
+          {#if ragRerankProvider === 'local'}
+            <div class="field">
+              <label for="rag-rerank-model">Cross-encoder model</label>
+              <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. cross-encoder/ettin-reranker-68m-v1" />
+            </div>
+          {/if}
+        {/if}
+
+        <div class="section-heading">Embedding model</div>
+        <div class="field">
+          <label for="rag-embed-provider">Embedding provider</label>
+          <select id="rag-embed-provider" bind:value={embeddingProvider}>
+            <option value="openai">OpenAI-compatible (incl. Voyage)</option>
+            <option value="cohere">Cohere (native)</option>
+            <option value="gemini">Gemini (native)</option>
+            <option value="local">Local (on-device)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="rag-embed-model">Embedding model</label>
+          <input id="rag-embed-model" type="text" bind:value={embeddingModel} />
+        </div>
+        <div class="field">
+          <label for="rag-embed-dims">Embedding dimensions</label>
+          <input id="rag-embed-dims" type="number" step="1" bind:value={embeddingDimensions} />
+          <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a server restart, and a dimension change needs `nymeria reembed`.</p>
+        </div>
+
+        <div class="actions">
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save RAG Settings'}
           </Button>
         </div>
       {/if}

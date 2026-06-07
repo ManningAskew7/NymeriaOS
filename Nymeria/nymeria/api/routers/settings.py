@@ -63,6 +63,8 @@ _CLEARABLE_NULL_SETTINGS = {
     "llm_context_length",
     "llm_ollama_num_ctx",
     "llm_provider_route",
+    "embedding_dimensions",
+    "rag_rerank_model",
 }
 
 
@@ -690,6 +692,14 @@ def _env_mapping() -> dict[str, str]:
         "embedding_api_key": "EMBEDDING_API_KEY",
         "embedding_base_url": "EMBEDDING_BASE_URL",
         "embedding_model": "EMBEDDING_MODEL",
+        "embedding_provider": "EMBEDDING_PROVIDER",
+        "embedding_dimensions": "EMBEDDING_DIMENSIONS",
+        "rag_retrieval_mode": "RAG_RETRIEVAL_MODE",
+        "rag_embed_tool_results": "RAG_EMBED_TOOL_RESULTS",
+        "rag_rerank_enabled": "RAG_RERANK_ENABLED",
+        "rag_rerank_provider": "RAG_RERANK_PROVIDER",
+        "rag_rerank_model": "RAG_RERANK_MODEL",
+        "rag_rerank_api_key": "RAG_RERANK_API_KEY",
         "gemini_api_key": "GEMINI_API_KEY",
         "gemini_extraction_model": "GEMINI_EXTRACTION_MODEL",
         "user_timezone": "USER_TIMEZONE",
@@ -720,6 +730,11 @@ def _restart_required_keys() -> set[str]:
         "discord_webhook_url",
         "telegram_bot_token",
         "telegram_default_chat_id",
+        # The embedder is baked into each cached MemoryIndex at construction, and a
+        # dimension change also needs `nymeria reembed`, so these need a restart.
+        "embedding_provider",
+        "embedding_model",
+        "embedding_dimensions",
     }
 
 
@@ -1270,6 +1285,14 @@ def create_settings_router(
             stt_model=settings.stt_model,
             stt_language=settings.stt_language,
             voice_default_thread_id=settings.voice_default_thread_id,
+            embedding_provider=settings.embedding_provider,
+            embedding_model=settings.embedding_model,
+            embedding_dimensions=settings.embedding_dimensions,
+            rag_retrieval_mode=settings.rag_retrieval_mode,
+            rag_embed_tool_results=settings.rag_embed_tool_results,
+            rag_rerank_enabled=settings.rag_rerank_enabled,
+            rag_rerank_provider=settings.rag_rerank_provider,
+            rag_rerank_model=settings.rag_rerank_model,
         )
 
     def _system_prompt_response() -> SystemPromptResponse:

@@ -63,6 +63,8 @@ class WizardState:
     # API keys ride in optional_env (EMBEDDING_API_KEY / RAG_RERANK_API_KEY).
     embedder: str | None = None
     reranker: str | None = None
+    # RAG retrieval mode: "hybrid" (BM25 + vector, default) or "vector".
+    rag_retrieval_mode: str = "hybrid"
 
     # Paths and post-setup behavior (driven by flags, not wizard screens yet).
     root: Path | None = None

@@ -365,11 +365,18 @@ def get_rag_context(
 
         # Search for relevant context
         max_chunks = rag_prefs.get("max_chunks", 5)
+        retrieval_mode = "hybrid"
+        try:
+            from ..config import get_settings
+            retrieval_mode = get_settings().rag_retrieval_mode
+        except Exception:
+            pass
         results = memory_index.search(
             query=query,
             user_id=user_id,
             limit=max_chunks,
             chunk_types=chunk_types,
+            retrieval_mode=retrieval_mode,
         )
 
         logger.debug(f"RAG search found {len(results)} results for user {user_id}")

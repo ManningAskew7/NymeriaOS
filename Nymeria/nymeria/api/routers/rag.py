@@ -182,6 +182,8 @@ def create_rag_router(
             chunk_types.append("memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
+        if rag_prefs.get("include_tools", True):
+            chunk_types.append("tool")
 
         if not chunk_types:
             return {
@@ -197,6 +199,7 @@ def create_rag_router(
             user_id=user_id,
             limit=max_results,
             chunk_types=chunk_types,
+            retrieval_mode=settings.rag_retrieval_mode,
             anchor_start=anchor.start if anchor else None,
             anchor_end=anchor.end if anchor else None,
             anchor_edge_sigma_days=anchor.edge_sigma_days if anchor else None,

@@ -542,6 +542,7 @@ def rag_search(
             from ..config import get_settings
             settings = get_settings()
             fusion = settings.rag_fusion_method
+            retrieval_mode = settings.rag_retrieval_mode
             apply_recency = settings.rag_recency_enabled
             rerank_enabled = settings.rag_rerank_enabled
             rerank_top_n = settings.rag_rerank_top_n
@@ -559,6 +560,7 @@ def rag_search(
             anchor_floor = settings.rag_anchor_floor
         except Exception:
             fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
+            retrieval_mode = "hybrid"
             rerank_provider, rerank_model, rerank_api_key, rerank_local_onnx = "llm", None, None, None
             prose_priority, prose_priority_weight = True, 0.4
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
@@ -583,6 +585,7 @@ def rag_search(
             anchor_weight=anchor_weight,
             anchor_floor=anchor_floor,
             fusion=fusion,
+            retrieval_mode=retrieval_mode,
             apply_recency=apply_recency,
             now=now,
             apply_prose_priority=prose_priority,

@@ -31,9 +31,9 @@
 
   let { open, onClose, initialTab }: Props = $props();
 
-  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
+  type Tab = 'connection' | 'appearance' | 'llm' | 'agent' | 'rag' | 'tools' | 'mcp' | 'credentials' | 'voice' | 'account' | 'users';
   type TabConfig = { id: Tab; label: string; disabled: boolean };
-  const adminServerTabs: Tab[] = ['llm', 'agent', 'voice', 'users'];
+  const adminServerTabs: Tab[] = ['llm', 'agent', 'rag', 'voice', 'users'];
   // Tier-grouped picker options sourced from the live provider catalog.
   // Mobile has no synthetic display providers (no anthropic_proxy /
   // anthropic_direct / openai_custom variants like desktop), so the helper
@@ -54,7 +54,8 @@
     if (isAdmin) {
       tabs.push(
         { id: 'llm', label: 'Provider', disabled: !serverSettings },
-        { id: 'agent', label: 'Agent', disabled: !serverSettings }
+        { id: 'agent', label: 'Agent', disabled: !serverSettings },
+        { id: 'rag', label: 'RAG', disabled: !serverSettings }
       );
     }
 
@@ -146,6 +147,16 @@
   let sttLanguage = $state('');
   let voiceDefaultThreadId = $state('');
 
+  // RAG / semantic memory (global)
+  let embeddingProvider = $state('openai');
+  let embeddingModel = $state('text-embedding-3-small');
+  let embeddingDimensions = $state<number | null>(null);
+  let ragRetrievalMode = $state('hybrid');
+  let ragEmbedToolResults = $state(true);
+  let ragRerankEnabled = $state(false);
+  let ragRerankProvider = $state('llm');
+  let ragRerankModel = $state('');
+
   // Theme
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
@@ -233,6 +244,14 @@
       sttModel = serverSettings.stt_model ?? 'gpt-4o-mini-transcribe';
       sttLanguage = serverSettings.stt_language ?? '';
       voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
+      embeddingProvider = serverSettings.embedding_provider ?? 'openai';
+      embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
+      embeddingDimensions = serverSettings.embedding_dimensions;
+      ragRetrievalMode = serverSettings.rag_retrieval_mode ?? 'hybrid';
+      ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
+      ragRerankEnabled = serverSettings.rag_rerank_enabled ?? false;
+      ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
+      ragRerankModel = serverSettings.rag_rerank_model ?? '';
       if (serverSettings.llm_provider === 'openrouter') {
         modelsStore.loadModels();
       }
@@ -345,6 +364,14 @@
         stt_model: sttModel,
         stt_language: sttLanguage || null,
         voice_default_thread_id: voiceDefaultThreadId || null,
+        embedding_provider: embeddingProvider,
+        embedding_model: embeddingModel,
+        embedding_dimensions: embeddingDimensions ?? null,
+        rag_retrieval_mode: ragRetrievalMode,
+        rag_embed_tool_results: ragEmbedToolResults,
+        rag_rerank_enabled: ragRerankEnabled,
+        rag_rerank_provider: ragRerankProvider,
+        rag_rerank_model: ragRerankModel.trim() || null,
       });
       testStatus = 'success';
       testMessage = result.restart_required
@@ -892,6 +919,84 @@
 
           <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Agent Settings'}
+          </Button>
+        {/if}
+
+      {:else if activeTab === 'rag' && isAdmin}
+        {#if loadingSettings}
+          <p class="loading">Loading settings...</p>
+        {:else}
+          <div class="setting-group">
+            <label class="setting-label">Retrieval mode</label>
+            <select class="setting-input" bind:value={ragRetrievalMode}>
+              <option value="hybrid">Hybrid (BM25 + vector)</option>
+              <option value="vector">Vector-only</option>
+            </select>
+            <p class="hint">
+              {#if ragRetrievalMode === 'hybrid'}
+                Robust default. If the embedder underperforms, BM25 still salvages the ranking so RAG stays useful.
+              {:else}
+                Vector-only: typically higher scores with a strong embedder, but nothing if embeddings fail.
+              {/if}
+            </p>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragEmbedToolResults} />
+              <span>Embed tool results</span>
+            </label>
+            <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-toggle">
+              <input type="checkbox" bind:checked={ragRerankEnabled} />
+              <span>Enable reranker</span>
+            </label>
+            <p class="hint">Reorders results for accuracy (adds latency per lookup)</p>
+          </div>
+          {#if ragRerankEnabled}
+            <div class="setting-group">
+              <label class="setting-label">Reranker provider</label>
+              <select class="setting-input" bind:value={ragRerankProvider}>
+                <option value="llm">LLM (thread model)</option>
+                <option value="voyage">Voyage</option>
+                <option value="cohere">Cohere</option>
+                <option value="zeroentropy">ZeroEntropy</option>
+                <option value="local">Local cross-encoder</option>
+              </select>
+              <p class="hint">Managed providers need a reranker API key; 'local' needs the local-rag extra.</p>
+            </div>
+            {#if ragRerankProvider !== 'llm'}
+              <div class="setting-group">
+                <label class="setting-label">Reranker model</label>
+                <input class="setting-input" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
+              </div>
+            {/if}
+          {/if}
+
+          <div class="setting-group">
+            <label class="setting-label">Embedding provider</label>
+            <select class="setting-input" bind:value={embeddingProvider}>
+              <option value="openai">OpenAI-compatible (incl. Voyage)</option>
+              <option value="cohere">Cohere (native)</option>
+              <option value="gemini">Gemini (native)</option>
+              <option value="local">Local (on-device)</option>
+            </select>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">Embedding model</label>
+            <input class="setting-input" type="text" bind:value={embeddingModel} />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">Embedding dimensions</label>
+            <input class="setting-input" type="number" step="1" bind:value={embeddingDimensions} />
+            <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a restart, and a dimension change needs `nymeria reembed`.</p>
+          </div>
+
+          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save RAG Settings'}
           </Button>
         {/if}
 

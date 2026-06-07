@@ -242,6 +242,10 @@ def rag_env_for_state(state: "WizardState") -> dict[str, str]:
             env["EMBEDDING_BASE_URL"] = emb.base_url
         if emb.input_type:
             env["EMBEDDING_INPUT_TYPE"] = emb.input_type
+        # Only emit the retrieval mode when it differs from the hybrid default,
+        # keeping config.env minimal.
+        if getattr(state, "rag_retrieval_mode", "hybrid") == "vector":
+            env["RAG_RETRIEVAL_MODE"] = "vector"
     rer = get_reranker(state.reranker)
     if rer is not None and rer.provider != "none":
         env["RAG_RERANK_ENABLED"] = "true"
