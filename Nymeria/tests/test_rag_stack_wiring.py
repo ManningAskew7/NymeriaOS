@@ -38,6 +38,7 @@ def test_rag_settings_defaults_preserve_existing_behavior():
     assert s.rag_rerank_provider == "llm"
     assert s.rag_rerank_model is None
     assert s.rag_rerank_api_key is None
+    assert s.rag_retrieval_mode == "hybrid"
     # The one intentional new default-on behavior: tool results are embedded.
     assert s.rag_embed_tool_results is True
 
@@ -246,3 +247,30 @@ def test_rebuild_vectors_reembeds_at_new_width(monkeypatch):
         assert idx8._dim_mismatch is False
         assert result["total"] == 2 and result["embedded"] == 2
         assert idx8._stored_vec_dim(idx8._get_connection().cursor()) == 8
+
+
+def test_vector_only_mode_skips_bm25():
+    with TemporaryDirectory() as tmp:
+        idx = MemoryIndex(Path(tmp) / "m.db", embedding_provider="none")
+        idx.add_chunk(
+            "the quick brown fox jumps over the lazy dog", {}, "conversation", "u1"
+        )
+        # Hybrid (default): BM25 finds it even with no vectors stored.
+        assert idx.search("quick brown fox", "u1", chunk_types=["conversation"])
+        # Vector-only: BM25 branch skipped and no vectors -> nothing.
+        assert (
+            idx.search(
+                "quick brown fox", "u1", chunk_types=["conversation"],
+                retrieval_mode="vector",
+            )
+            == []
+        )
+
+
+def test_rag_env_emits_retrieval_mode_only_when_vector():
+    vec = WizardState()
+    vec.embedder, vec.rag_retrieval_mode = "local-granite", "vector"
+    assert rag_env_for_state(vec)["RAG_RETRIEVAL_MODE"] == "vector"
+    hybrid = WizardState()
+    hybrid.embedder = "local-granite"  # default hybrid
+    assert "RAG_RETRIEVAL_MODE" not in rag_env_for_state(hybrid)

@@ -97,6 +97,8 @@ def _summary_markup(state: WizardState) -> str:
         lines.append(f"  Embedder: {emb.label}")
         if rer is not None:
             lines.append(f"  Reranker: {rer.label}")
+        mode = "vector-only" if state.rag_retrieval_mode == "vector" else "hybrid (BM25 + vector)"
+        lines.append(f"  Retrieval: {mode}")
 
     if state.external_access is not None:
         lines.append("")

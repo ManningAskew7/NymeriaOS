@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
-from textual.widgets import Input, RadioSet, Static
+from textual.widgets import Checkbox, Input, RadioSet, Static
 
 from ..nav import Step
 from ..rag_catalog import (
@@ -78,6 +78,13 @@ class EmbedderStep(WizardStep):
             id="rag-key",
         )
         yield Static("", id="key-status")
+        yield Static("Retrieval", classes="field-label")
+        yield Checkbox(
+            "Hybrid search (BM25 + vector). Uncheck for vector-only: typically "
+            "higher scores, but no BM25 failsafe if the embedder underperforms.",
+            value=(self.state.rag_retrieval_mode != "vector"),
+            id="hybrid-search",
+        )
 
     def on_mount(self) -> None:
         self.query_one(SelectingRadioSet).focus()
@@ -134,6 +141,8 @@ class EmbedderStep(WizardStep):
         else:
             # Local embedder needs no key; drop any stale one from a prior choice.
             self.state.optional_env.pop("EMBEDDING_API_KEY", None)
+        hybrid = self.query_one("#hybrid-search", Checkbox).value
+        self.state.rag_retrieval_mode = "hybrid" if hybrid else "vector"
         return True
 
 

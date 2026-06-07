@@ -1261,6 +1261,10 @@ class Settings(BaseSettings):
         default="rrf",
         description="Hybrid fusion for rag_search: 'rrf' (rank-based, default) or 'weighted' (legacy rank blend)",
     )
+    rag_retrieval_mode: str = Field(
+        default="hybrid",
+        description="Retrieval mode for rag_search: 'hybrid' (BM25 + vector, default) or 'vector' (vector-only). Hybrid is the robust default: if the embedder underperforms or is misconfigured, BM25 still salvages the ranking so RAG stays useful. Vector-only typically scores a little higher with a strong embedder, but returns nothing if embeddings fail.",
+    )
     rag_recency_enabled: bool = Field(
         default=False,
         description="Apply a per-chunk_type recency soft-multiplier after fusion so older chunks are gently down-ranked (never filtered). Defaults OFF: eval showed it demotes older evidence and costs roughly 4% ndcg / 8% MRR on the real corpus (it dragged hybrid below the BM25 floor), and reconciliation already handles staleness.",

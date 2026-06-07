@@ -1338,6 +1338,7 @@ class MemoryIndex:
         rrf_k: int = RRF_K,
         vec_weight: float = 1.0,
         bm25_weight: float = 1.0,
+        retrieval_mode: str = "hybrid",
         apply_prose_priority: bool = True,
         prose_priority_weight: float = PROSE_PRIORITY_WEIGHT,
         dedup: bool = True,
@@ -1384,6 +1385,9 @@ class MemoryIndex:
             vec_weight: RRF weight on the vector branch (default 1.0)
             bm25_weight: RRF weight on the BM25 branch (default 1.0); raise it
                 above vec_weight to bias fusion toward lexical retrieval
+            retrieval_mode: "hybrid" (default, BM25 + vector) or "vector"
+                (vector-only; the BM25 branch is skipped). Hybrid keeps lexical
+                retrieval as a failsafe when embeddings underperform or fail.
             apply_prose_priority: Demote tool-text-heavy chunks below prose
             prose_priority_weight: Strength of the prose-priority demotion
             dedup: Suppress near-duplicate results so twins do not consume
@@ -1467,7 +1471,12 @@ class MemoryIndex:
                 # safe FTS5 MATCH expression first; a query with no usable terms
                 # skips this branch entirely (vector search still runs).
                 bm25_ids: List[str] = []
-                fts_query = self._fts_match_query(query)
+                # Vector-only mode skips the BM25 branch entirely; hybrid (default)
+                # keeps it as a lexical signal and a failsafe when embeddings fail.
+                fts_query = (
+                    self._fts_match_query(query)
+                    if retrieval_mode != "vector" else None
+                )
                 if fts_query:
                     where_sql, where_params = _filters("c")
                     try:

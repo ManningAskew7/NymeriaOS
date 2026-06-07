@@ -896,6 +896,15 @@ export interface ServerSettings {
   stt_model: string;
   stt_language: string | null;
   voice_default_thread_id: string | null;
+  // RAG / semantic memory
+  embedding_provider: string;
+  embedding_model: string;
+  embedding_dimensions: number | null;
+  rag_retrieval_mode: string;
+  rag_embed_tool_results: boolean;
+  rag_rerank_enabled: boolean;
+  rag_rerank_provider: string;
+  rag_rerank_model: string | null;
 }
 
 export interface ServerSettingsUpdate {
@@ -923,6 +932,15 @@ export interface ServerSettingsUpdate {
   openai_api_key?: string | null;
   openrouter_api_key?: string | null;
   embedding_api_key?: string | null;
+  embedding_provider?: string;
+  embedding_model?: string;
+  embedding_dimensions?: number | null;
+  rag_retrieval_mode?: string;
+  rag_embed_tool_results?: boolean;
+  rag_rerank_enabled?: boolean;
+  rag_rerank_provider?: string;
+  rag_rerank_model?: string | null;
+  rag_rerank_api_key?: string | null;
   gemini_api_key?: string | null;
   perplexity_api_key?: string | null;
   wolfram_alpha_app_id?: string | null;

@@ -145,6 +145,15 @@ class ServerSettingsResponse(BaseModel):
     stt_model: str = "gpt-4o-mini-transcribe"
     stt_language: Optional[str] = None
     voice_default_thread_id: Optional[str] = None
+    # RAG / semantic memory (see config/settings.py and the desktop RAG tab).
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: Optional[int] = None
+    rag_retrieval_mode: str = "hybrid"
+    rag_embed_tool_results: bool = True
+    rag_rerank_enabled: bool = False
+    rag_rerank_provider: str = "llm"
+    rag_rerank_model: Optional[str] = None
 
 
 class ServerSettingsUpdate(BaseModel):
@@ -179,6 +188,15 @@ class ServerSettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     embedding_api_key: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_dimensions: Optional[int] = None
+    rag_retrieval_mode: Optional[str] = None
+    rag_embed_tool_results: Optional[bool] = None
+    rag_rerank_enabled: Optional[bool] = None
+    rag_rerank_provider: Optional[str] = None
+    rag_rerank_model: Optional[str] = None
+    rag_rerank_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     perplexity_api_key: Optional[str] = None
     wolfram_alpha_app_id: Optional[str] = None
