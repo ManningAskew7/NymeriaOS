@@ -346,6 +346,7 @@ class CrossEncoderReranker:
         max_length: int = 512,
         backend: str = "torch",
         onnx_file: Optional[str] = None,
+        device: str = "cpu",
     ) -> None:
         from sentence_transformers import CrossEncoder
 
@@ -358,7 +359,7 @@ class CrossEncoderReranker:
                 # (the int8 build for an avx2-only CPU, our production target).
                 kwargs["model_kwargs"] = {"file_name": onnx_file}
         self._model = CrossEncoder(
-            model_name, max_length=max_length, device="cpu", **kwargs
+            model_name, max_length=max_length, device=device, **kwargs
         )
 
     def rerank(self, query: str, results: List[ChunkResult]) -> List[ChunkResult]:

@@ -109,6 +109,8 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--trust-remote-code", action="store_true",
                     help="needed by some custom-architecture repos (e.g. GTE)")
+    ap.add_argument("--device", default="cpu",
+                    help="torch device for query embedding: cpu (default) or cuda")
     ap.add_argument("--backend", default="torch", choices=["torch", "onnx", "openvino"],
                     help="onnx gives ModernBERT (Granite R2 / GTE) a large CPU speedup; "
                          "auto-exports model.onnx on first load")
@@ -123,7 +125,7 @@ def main() -> None:
     from sentence_transformers import SentenceTransformer
     model_kwargs = {"file_name": args.onnx_file} if (args.backend == "onnx" and args.onnx_file) else {}
     model = SentenceTransformer(
-        args.model, device="cpu", backend=args.backend,
+        args.model, device=args.device, backend=args.backend,
         trust_remote_code=args.trust_remote_code, model_kwargs=model_kwargs)
     if args.max_seq:
         model.max_seq_length = args.max_seq
