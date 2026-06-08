@@ -40,7 +40,7 @@ from .providers import (
     check_llm_connection_for_spec,
     valid_key_format_for_spec,
 )
-from .rag_catalog import rag_env_for_state
+from .rag_catalog import apply_quickstart_rag, rag_env_for_state
 from .state import WizardState
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
@@ -64,6 +64,19 @@ def finalize(
     overwrite_confirmed: bool = False,
 ) -> int:
     """Validate the collected state, write config, and bootstrap the admin."""
+
+    # Out-of-the-box RAG: if nothing RAG-related was configured (no embedder chosen
+    # and no embedding key supplied), equip the free, private local stack
+    # (granite + Ettin) so semantic memory works with no API key and no cost. This
+    # covers the interactive embedder skip (which already applies it for an
+    # accurate review screen, making this a no-op then), a future quick path, and
+    # an unattended --non-interactive run that named no embedder. A bare
+    # --embedding-api-key with no embedder is respected as an intent to use the
+    # keyed OpenAI default, so it is left untouched. Degrades to BM25 until the
+    # optional local-rag extra is installed, at which point vectors light up with
+    # no reconfigure (the vec0 width is already sized for granite).
+    if state.embedder is None and not state.optional_env.get("EMBEDDING_API_KEY"):
+        apply_quickstart_rag(state)
 
     spec = state.provider_spec()
     api_key = state.api_key.strip()

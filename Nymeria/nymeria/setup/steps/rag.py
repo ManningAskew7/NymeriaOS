@@ -12,6 +12,12 @@ field, and (embedder) the Hybrid / Vector-only retrieval choice; Space selects t
 focused option; Enter locks it in and, when a chosen cloud model/reranker has an
 empty key, focuses that key field with an error, else advances. Key-field
 visibility and the description follow the SELECTED model / FOCUSED option.
+
+Skipping the embedder (Ctrl+S) does not leave RAG unconfigured: it equips the free,
+private local stack (granite + Ettin) via ``apply_quickstart_rag`` so the user gets
+working, no-key, no-cost semantic memory out of the box, and marks the state so the
+reranker screen is skipped too. Skipping only the reranker (after picking an
+embedder) is a deliberate "embedder yes, reranker no" and leaves rerank off.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from ..rag_catalog import (
     TIER_LABELS,
     EmbedderOption,
     RerankerOption,
+    apply_quickstart_rag,
     get_embedder,
     get_reranker,
     recommended_reranker_for,
@@ -81,7 +88,8 @@ class EmbedderStep(FormStep):
                 "rag_search embeds your conversations, tool results, and notes for "
                 "recall. Premium = best quality, Value = best per dollar, Local = "
                 "free and private. Arrow through the fields, Space to pick, Enter to "
-                "confirm. Ctrl+S skips RAG setup."
+                "confirm. Ctrl+S skips with the free local stack (granite + Ettin), "
+                "no key, no cost."
             ),
         )
         self._options: list[EmbedderOption] = list(EMBEDDERS)
@@ -115,6 +123,14 @@ class EmbedderStep(FormStep):
             "quality but relies entirely on the embedder.",
             id="retrieval-help",
         )
+
+    def action_skip(self) -> None:
+        """Skip RAG setup but still equip working memory: apply the free, private
+        local stack (granite + Ettin) so the user gets no-key, no-cost semantic
+        memory out of the box, and skip the reranker screen too."""
+        self.show_error("")
+        apply_quickstart_rag(self.state)
+        self._wizard.advance()
 
     def _model_buttons(self) -> list[RadioButton]:
         return list(self.query_one("#model-group").query(RadioButton))
@@ -181,6 +197,9 @@ class EmbedderStep(FormStep):
             )
             return False
         self.state.embedder = opt.id
+        # An explicit pick is not the auto-default, so re-enable the reranker step
+        # (a prior Ctrl+S skip would have set this and gated the reranker off).
+        self.state.rag_quickstarted = False
         if opt.requires_key:
             self.state.optional_env["EMBEDDING_API_KEY"] = key
         else:
@@ -335,10 +354,11 @@ def make_embedder_step() -> Step:
 
 
 def make_reranker_step() -> Step:
-    """Reranker picker; only shown once an embedder has been chosen."""
+    """Reranker picker; shown once an embedder is explicitly chosen, but not when
+    the local stack was auto-equipped by skipping RAG (that skip skips both)."""
     return Step(
         id="reranker",
-        applies=lambda state: state.embedder is not None,
+        applies=lambda state: state.embedder is not None and not state.rag_quickstarted,
         build=lambda wizard, number, total: RerankerStep(wizard, number, total),
     )
 

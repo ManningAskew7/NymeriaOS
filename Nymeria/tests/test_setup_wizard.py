@@ -411,6 +411,37 @@ def test_noninteractive_writes_config_and_bootstrap_token(monkeypatch, tmp_path,
     assert calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
 
 
+def test_noninteractive_defaults_to_free_local_rag_when_no_embedder_chosen(
+    monkeypatch, tmp_path
+):
+    # A run that names no embedder (the wizard RAG steps skipped, or a headless
+    # run) still gets working out-of-the-box semantic memory: the free, private
+    # local stack (granite + Ettin), no API key required.
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--non-interactive",
+        ]
+    )
+
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert rc == 0
+    assert "EMBEDDING_PROVIDER=local" in config
+    assert "EMBEDDING_MODEL=ibm-granite/granite-embedding-small-english-r2" in config
+    assert "EMBEDDING_DIMENSIONS=384" in config
+    assert "RAG_RERANK_ENABLED=true" in config
+    assert "RAG_RERANK_PROVIDER=local" in config
+    # Nothing paid is implied: no embedding/rerank API key is written.
+    assert "EMBEDDING_API_KEY=" not in config
+    assert "RAG_RERANK_API_KEY=" not in config
+
+
 def test_noninteractive_writes_base_url_and_api_mode(monkeypatch, tmp_path):
     _stub_llm(monkeypatch)
     root = tmp_path / "runtime"
