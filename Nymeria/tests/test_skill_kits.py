@@ -72,16 +72,12 @@ metadata:
 Use bash_execute and memory_clear_all.
 """
 
-SELF_IMPROVE_REQUIRED_TOOLS = [
+TOOL_MANAGEMENT_REQUIRED_TOOLS = [
     "tool_search",
     "tool_manage",
-    "manage_mcp",
-    "skill_manage",
+    "tool_create",
     "api_discover",
     "http_request",
-    "tool_create",
-    "skill_write",
-    "skill_edit",
 ]
 
 
@@ -170,30 +166,30 @@ def test_skill_kit_binding_writes_ttl_and_source_reload_metadata(tmp_path: Path)
     assert agent._pending_tool_reload["thread-a"]["skill_name"] == "hello-kit"
 
 
-def test_self_improve_required_tools_bind_for_non_admin(tmp_path: Path):
+def test_tool_management_required_tools_bind_for_non_admin(tmp_path: Path):
     agent = _FakeAgent(tmp_path, role="user")
     set_current_agent(agent)
     try:
         result = bind_tools_for_thread(
-            SELF_IMPROVE_REQUIRED_TOOLS,
+            TOOL_MANAGEMENT_REQUIRED_TOOLS,
             "",
             "thread-a",
             "user-a",
             ttl="2h",
             strict=True,
             source="skill_kit",
-            skill_name="self-improve",
+            skill_name="tool-management",
         )
     finally:
         set_current_agent(None)
 
     assert result.ok is True
-    assert result.reload_tools == sorted(SELF_IMPROVE_REQUIRED_TOOLS)
+    assert result.reload_tools == sorted(TOOL_MANAGEMENT_REQUIRED_TOOLS)
     tc = agent.thread_config_manager.get_config("thread-a")
     assert tc is not None
-    assert set(SELF_IMPROVE_REQUIRED_TOOLS).issubset(tc.temporary_tools)
+    assert set(TOOL_MANAGEMENT_REQUIRED_TOOLS).issubset(tc.temporary_tools)
     assert agent._pending_tool_reload["thread-a"]["source"] == "skill_kit"
-    assert agent._pending_tool_reload["thread-a"]["skill_name"] == "self-improve"
+    assert agent._pending_tool_reload["thread-a"]["skill_name"] == "tool-management"
 
 
 def test_tool_search_is_search_only_and_tool_manage_manages_bindings(tmp_path: Path):
@@ -655,3 +651,42 @@ def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
     tc = agent.thread_config_manager.get_config("thread-a")
     assert tc is not None
     assert tc.temporary_tools == {}
+
+
+def _bundled_skills_dir() -> Path:
+    import nymeria
+
+    return Path(nymeria.__file__).resolve().parent / "skills_bundled"
+
+
+def test_bundled_capability_kits_expose_exact_required_tools():
+    """The shipped capability kits must declare the exact tools they bind.
+
+    Binding is strict, so a typo'd or missing name would fail kit activation at
+    runtime. This pins the contract the self-improve split established.
+    """
+    expected = {
+        "tool-management": [
+            "tool_search", "tool_manage", "tool_create", "api_discover", "http_request",
+        ],
+        "skill-management": ["skill_manage", "skill_write", "skill_edit"],
+        "mcp-management": ["manage_mcp"],
+        "credential-management": [
+            "auth_inspect", "auth_cleanup", "auth_bindings", "request_credential",
+        ],
+    }
+    bundled = _bundled_skills_dir()
+    for name, tools in expected.items():
+        skill = load_skill_directory(bundled / name, "bundled")
+        assert skill is not None, f"missing bundled kit {name}"
+        assert skill.is_skill_kit is True
+        assert skill.required_tools == tools
+        assert skill.tool_ttl == "2h"
+
+
+def test_self_improve_is_text_only_guidance_skill():
+    """After the split, self-improve binds no tools (it routes to the kits)."""
+    skill = load_skill_directory(_bundled_skills_dir() / "self-improve", "bundled")
+    assert skill is not None
+    assert skill.required_tools == []
+    assert skill.is_skill_kit is False

@@ -147,6 +147,27 @@ def test_default_thread_tools_unions_core_seed_with_picks():
     assert default_thread_tools_for_state(WizardState()) == core
 
 
+def test_selected_global_skills_leads_with_self_improve_and_appends_picks():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_seed import selected_global_skills_for_state
+
+    # Explicit picks: self-improve first, then the chosen kits, order-preserving.
+    state = WizardState(extras={"skill_kits": ["mcp-management", "tool-management"]})
+    assert selected_global_skills_for_state(state) == [
+        "self-improve",
+        "mcp-management",
+        "tool-management",
+    ]
+    # No picks recorded (step skipped): default to self-improve plus all kits.
+    assert selected_global_skills_for_state(WizardState()) == [
+        "self-improve",
+        "tool-management",
+        "skill-management",
+        "mcp-management",
+        "credential-management",
+    ]
+
+
 def test_required_backend_credentials_handles_url_keyless_and_primary_key():
     from nymeria.setup.state import WizardState
     from nymeria.setup.tool_keys import required_backend_credentials
@@ -301,7 +322,7 @@ def test_default_flow_order_and_conditional_image_tier():
         "auth_method",
         "external_access",
         # core-toolset-plan structure: core set shown, then the family pickers,
-        # the keys those backends need, then the skill-kit placeholder.
+        # the keys those backends need, then the default skill-kit selection.
         "core_tools",
         "web_search",
         "fetch_url",
@@ -455,6 +476,8 @@ def test_noninteractive_writes_backend_keys_and_seeds_default_tools(monkeypatch,
             "--fetch-url", "fetch_url_nymeria",
             "--image-gen", "image_gen_gemini",
             "--gemini-api-key", "gemini-secret",
+            "--skill-kit", "tool-management",
+            "--skill-kit", "mcp-management",
             "--root", str(root),
             "--non-interactive",
         ]
@@ -475,6 +498,13 @@ def test_noninteractive_writes_backend_keys_and_seeds_default_tools(monkeypatch,
     assert "fetch_url_nymeria" in default_tools
     # ...alongside the always-on core seed.
     assert "bash_execute" in default_tools and "memory_read" in default_tools
+    # The chosen capability kits seed enabled_global_skills, always led by the
+    # self-improve guidance skill.
+    assert profile["enabled_global_skills"] == [
+        "self-improve",
+        "tool-management",
+        "mcp-management",
+    ]
 
 
 def test_init_does_not_clobber_existing_profile(monkeypatch, tmp_path):
@@ -1315,30 +1345,31 @@ def test_wizard_pilot_backend_keys_step_collects_key():
     assert state.optional_env["TAVILY_API_KEY"] == "tav-secret"
 
 
-def test_wizard_pilot_skill_kits_is_placeholder_recording_to_extras():
-    """The skill-kits step is a placeholder single-select recording to extras
-    (it seeds no enabled_global_skills yet, since the kits are unbuilt).
+def test_wizard_pilot_skill_kits_multiselect_defaults_all_on_and_records_list():
+    """The skill-kits step is a real multi-select: all kits are checked by default
+    and the chosen kit names are recorded as a list in extras.
     """
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
-    from nymeria.setup.steps.placeholders import make_skill_kits_step
+    from nymeria.setup.steps.placeholders import make_skill_kits_step, seeded_global_skills
 
     async def drive() -> WizardState:
         state = WizardState()
         app = SetupWizardApp(state, steps=[make_skill_kits_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("up")  # from the default "Skip for now" to a real kit
-            await pilot.pause()
-            await pilot.press("enter")
+            await pilot.press("enter")  # accept the all-checked default
             await pilot.pause()
         return state
 
     state = asyncio.run(drive())
-    # A planned-kit id was recorded; nothing is wired into enabled_global_skills.
-    assert state.extras["skill_kits"] in {
-        "credential-management", "tool-management", "skill-management", "mcp-management",
-    }
+    assert state.extras["skill_kits"] == [
+        "tool-management",
+        "skill-management",
+        "mcp-management",
+        "credential-management",
+    ]
+    assert seeded_global_skills(state) == state.extras["skill_kits"]
 
 
 def test_wizard_pilot_embedder_enter_jumps_to_empty_key_then_advances():

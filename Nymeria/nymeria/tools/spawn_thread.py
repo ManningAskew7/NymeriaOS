@@ -493,7 +493,7 @@ def spawn_thread(
             is known (e.g. ["memory_clear_all", "browser_navigate"]). Use
             tool_queries first; this only when semantic search misses or
             you want surgical control. Names can be discovered with
-            Skill(name="self-improve") + tool_search(query="...").
+            Skill(name="tool-management") + tool_search(query="...").
         tool_categories: Category names (e.g. ["email", "browser"]) to
             bulk-enable every optional tool in that category. Merged with
             optional_tools and tool_queries results.

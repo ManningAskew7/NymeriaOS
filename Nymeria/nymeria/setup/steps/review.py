@@ -23,7 +23,7 @@ from ..state import WizardState
 from ..tool_keys import BACKEND_KEY_SPECS
 from ..tool_seed import default_thread_tools_for_state
 from .base import WizardStep
-from .placeholders import seeded_tool_names, unmet_fetch_dependency
+from .placeholders import seeded_global_skills, seeded_tool_names, unmet_fetch_dependency
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -92,8 +92,10 @@ def _summary_markup(state: WizardState) -> str:
             "[yellow]Heads up: a non-Perplexity search backend is selected with no "
             "fetch backend; results will be links only.[/yellow]"
         )
+    kits = seeded_global_skills(state)
+    if kits:
+        tool_lines.append(f"Skill kits: {', '.join(kits)} (self-improve stays on)")
     placeholder_caps = [
-        ("Skill kits", state.extras.get("skill_kits")),
         ("TTS", state.extras.get("tts")),
         ("STT", state.extras.get("stt")),
         ("Agent settings", state.extras.get("agent_settings")),

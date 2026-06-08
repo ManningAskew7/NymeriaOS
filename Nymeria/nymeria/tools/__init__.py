@@ -1432,7 +1432,9 @@ OPTIONAL_TOOLS = {t.name: t for t in (
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
-# self-improve Skill Kit. They should not live in profile default_thread_tools.
+# capability kits (tool-management, skill-management, mcp-management; the
+# credential tools stay core). They should not live in profile
+# default_thread_tools.
 CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
     t.name
     for t in (

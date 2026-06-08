@@ -3333,8 +3333,10 @@ Returns available tool categories.
 }
 ```
 
-Capability-expansion categories are optional by default; the bundled
-`self-improve` Skill Kit binds the consolidated facades when needed.
+Capability-expansion categories are optional by default; the bundled,
+default-on `tool-management`, `skill-management`, and `mcp-management` Skill Kits
+bind the consolidated facades when activated, and `self-improve` is text-only
+guidance that routes to them.
 
 ---
 

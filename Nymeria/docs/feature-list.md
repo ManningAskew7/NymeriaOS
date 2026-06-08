@@ -96,12 +96,12 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 - New threads inherit this personalized baseline automatically
 - Core tools always available; optional tools curated per user preference
 
-### Runtime Capability Expansion (`self-improve`)
-- **Search**  -  `tool_search` finds tools by keyword/category after `self-improve` loads
-- **Manage**  -  `tool_manage` activates, disables, prunes, and inspects optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`)
-- **MCP**  -  `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
-- **Skills**  -  `skill_manage` lists, searches, installs, enables, disables, prunes, and inspects Agent Skills
-- **Skills/Skill Kits**  -  `skill_write` writes full SKILL.md packages, `skill_edit` edits existing SKILL.md metadata/body/tool bindings, and `tool_create` publishes reusable HTTP or Python helper tools
+### Runtime Capability Expansion (`self-improve` + focused kits)
+- **Guidance**  -  `self-improve` is a text-only guidance skill (binds no tools) holding the operating philosophy and a router to the four focused, default-on management kits below
+- **Search/Build** (`tool-management` kit)  -  `tool_search` finds tools by keyword/category, `tool_manage` activates, disables, prunes, and inspects optional tools per-thread with flexible TTL (`Nm`, `Nh`, `Nd`, `Nw`, or `never`), `tool_create` publishes reusable HTTP or Python helper tools, and `api_discover`/`http_request` probe and call documented API endpoints
+- **MCP** (`mcp-management` kit)  -  `manage_mcp` searches, previews, installs, inspects, and same-turn enables discovered MCP tools
+- **Skills/Skill Kits** (`skill-management` kit)  -  `skill_manage` lists, searches, installs, enables, disables, prunes, and inspects Agent Skills; `skill_write` writes full SKILL.md packages; `skill_edit` edits existing SKILL.md metadata/body/tool bindings
+- **Credentials** (`credential-management` kit)  -  guidance over the core `auth_inspect`, `auth_cleanup`, `auth_bindings`, and `request_credential` tools
 
 ### In-Turn Hot-Loading
 - **Mid-stream graph rebuild**  -  Enable a tool and use it in the same turn (up to 3 reloads per turn)
@@ -178,7 +178,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Credentials** | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` |
-| **Capability Expansion** | Default path is `Skill(name="self-improve")`; it binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when needed |
+| **Capability Expansion** | `Skill(name="self-improve")` is text-only guidance (binds no tools) and routes to four default-on kits that bind their tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (the core `auth_*`/`request_credential` tools) |
 
 The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
 `ALL_TOOLS` and roughly 1,260 optional tools in `OPTIONAL_TOOLS` (the exact

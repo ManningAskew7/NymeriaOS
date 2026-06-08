@@ -270,20 +270,23 @@ def _resolve_optional_env(
 def seed_bootstrap_profile(
     data_dir: Path, state: WizardState, console: Console
 ) -> None:
-    """Seed the bootstrap admin's ``default_thread_tools`` from the init picks.
+    """Seed the bootstrap admin's defaults from the init picks.
 
     Writes ``data/users/default/profile.json`` with an explicit
     ``default_thread_tools`` (the core seed plus the chosen ``web_search_*`` /
-    ``fetch_url_*`` / ``image_gen_*`` backends) so a new thread inherits the
-    picked tools by default. Only when no profile exists yet, so re-running init
-    never clobbers a customized profile. ``enabled_global_skills`` is left to the
-    backend's lazy ``self-improve`` default. Best-effort: a failure here never
+    ``fetch_url_*`` / ``image_gen_*`` backends) and ``enabled_global_skills`` (the
+    self-improve guidance skill plus the chosen capability kits) so a new thread
+    inherits the picks by default. Only when no profile exists yet, so re-running
+    init never clobbers a customized profile. Best-effort: a failure here never
     aborts init (config.env and the bootstrap token are already written).
     """
 
     from ..core.accounts import BOOTSTRAP_USER_ID
     from ..core.user_profile import UserProfileManager
-    from .tool_seed import default_thread_tools_for_state
+    from .tool_seed import (
+        default_thread_tools_for_state,
+        selected_global_skills_for_state,
+    )
 
     try:
         manager = UserProfileManager(data_dir)
@@ -292,10 +295,16 @@ def seed_bootstrap_profile(
         profile = manager.get_profile(BOOTSTRAP_USER_ID)
         tools = default_thread_tools_for_state(state)
         profile.tool_preferences.default_thread_tools = tools
+        skills = selected_global_skills_for_state(state)
+        profile.enabled_global_skills = skills
         manager.save_profile(profile)
         console.print(
             f"[green]Default thread tools:[/green] {len(tools)} seeded "
             "(core set + your picks)"
+        )
+        console.print(
+            f"[green]Default skill kits:[/green] {len(skills)} enabled "
+            "(self-improve + your picks)"
         )
     except Exception as exc:  # pragma: no cover - best-effort seeding
         console.print(

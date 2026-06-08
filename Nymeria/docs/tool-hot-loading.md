@@ -9,7 +9,7 @@ LangGraph binds tools to the LLM at graph compilation time via `llm.bind_tools()
 This breaks the autonomous "search, enable, use" flow:
 
 ```
-Skill("self-improve")       → binds capability expansion tools
+Skill("tool-management")    → binds tool_search/tool_manage and friends
 tool_search("pdf")          → finds pdf_view, pdf_edit, pdf_write
 tool_manage(enable, [...])  → persists to thread config
 pdf_write(...)              → fails: not bound to the LLM
@@ -25,7 +25,7 @@ Tool hot-loading does the same thing:
 User: "convert report.docx to PDF"
   │
   ├─ Graph invocation #1 (no pdf_* tools bound)
-  │    ├─ tool_call: Skill(name="self-improve")
+  │    ├─ tool_call: Skill(name="tool-management")
   │    ├─ tool_call: tool_search(query="pdf")
   │    ├─ tool_result: pdf_view, pdf_edit, pdf_write found
   │    ├─ tool_call: tool_manage(action="enable", tools=["pdf_write"])

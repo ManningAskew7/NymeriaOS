@@ -55,8 +55,9 @@ class WizardState:
     optional_env: dict[str, str] = field(default_factory=dict)
 
     # Capability/family steps store their selection here, keyed by step id.
-    # Multi-select families (web_search, fetch_url) store lists of concrete tool
-    # names; single-select placeholders store one value (or "__skip__").
+    # Multi-select families (web_search, fetch_url, skill_kits) store lists (of
+    # concrete tool names, or kit names for skill_kits); single-select
+    # placeholders store one value (or "__skip__").
     extras: dict[str, Any] = field(default_factory=dict)
 
     # RAG: chosen embedder/reranker catalog ids (see setup/rag_catalog.py). The
