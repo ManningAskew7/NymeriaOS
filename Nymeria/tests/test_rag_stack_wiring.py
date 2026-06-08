@@ -171,7 +171,11 @@ def test_quickstart_equips_local_stack_without_keys():
     apply_quickstart_rag(s)
     env = rag_env_for_state(s)
     assert env["EMBEDDING_PROVIDER"] == "local"
+    assert env["EMBEDDING_MODEL"] == "ibm-granite/granite-embedding-small-english-r2"
+    assert env["EMBEDDING_DIMENSIONS"] == "384"
+    assert env["RAG_RERANK_ENABLED"] == "true"
     assert env["RAG_RERANK_PROVIDER"] == "local"
+    assert s.rag_quickstarted is True  # marks the auto-default for reranker gating
     assert "EMBEDDING_API_KEY" not in s.optional_env
     assert "RAG_RERANK_API_KEY" not in s.optional_env
 
@@ -189,6 +193,12 @@ def test_wizard_includes_rag_steps_and_reranker_is_gated_on_embedder():
     chosen = WizardState()
     chosen.embedder = "local-granite"
     assert reranker.applies(chosen) is True
+
+    # A RAG skip auto-equips the local stack and gates the reranker screen off so
+    # skipping the embedder skips both screens.
+    skipped = WizardState()
+    apply_quickstart_rag(skipped)
+    assert reranker.applies(skipped) is False
 
 
 def test_write_config_emits_rag_env_and_keys(tmp_path):

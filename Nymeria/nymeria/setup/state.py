@@ -66,6 +66,11 @@ class WizardState:
     reranker: str | None = None
     # RAG retrieval mode: "hybrid" (BM25 + vector, default) or "vector".
     rag_retrieval_mode: str = "hybrid"
+    # True once the free local stack (granite + Ettin) was auto-equipped because
+    # the user skipped RAG setup (or a quick path applied it), as opposed to an
+    # explicit catalog pick. Gates the reranker step off so a skip skips both
+    # screens, and lets finalize tell a default apart from a deliberate choice.
+    rag_quickstarted: bool = False
 
     # Paths and post-setup behavior (driven by flags, not wizard screens yet).
     root: Path | None = None

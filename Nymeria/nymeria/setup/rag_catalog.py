@@ -454,12 +454,17 @@ def rag_env_for_state(state: "WizardState") -> dict[str, str]:
 def apply_quickstart_rag(state: "WizardState") -> None:
     """Equip the free, private local RAG stack (granite + Ettin) silently.
 
-    For the quickstart/express path: the user gets working semantic memory
-    without choosing an embedder or reranker or seeing what powers it. Clears any
-    cloud keys so nothing paid is implied.
+    For the skip / quickstart / express path: the user gets working semantic
+    memory without choosing an embedder or reranker or seeing what powers it.
+    Clears any cloud keys so nothing paid is implied, and marks the state so the
+    reranker step is skipped too (a RAG skip skips both screens). The local stack
+    needs the optional local-rag extra to produce vectors; without it hybrid
+    search still serves BM25, and the vec0 width is already sized for granite so
+    installing the extra later lights up vectors with no reconfigure.
     """
     state.embedder = QUICKSTART_EMBEDDER
     state.reranker = QUICKSTART_RERANKER
+    state.rag_quickstarted = True
     state.optional_env.pop("EMBEDDING_API_KEY", None)
     state.optional_env.pop("RAG_RERANK_API_KEY", None)
 
