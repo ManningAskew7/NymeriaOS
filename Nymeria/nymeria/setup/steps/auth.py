@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from textual.widgets import RadioSet
-
 from ...onboarding import (
     PROVIDER_AUTH_METHOD_CHOICES,
     PROVIDER_AUTH_METHOD_ORDER,
@@ -20,7 +18,7 @@ from ...onboarding import (
 )
 from ..nav import Step
 from ..state import WizardState
-from .base import Choice, SingleSelectStep, commit_radio_highlight
+from .base import Choice, SingleSelectStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -47,12 +45,21 @@ class AuthMethodStep(SingleSelectStep):
     """Single-select that accepts only the wired API-key path for now."""
 
     def collect(self) -> bool:
-        idx = commit_radio_highlight(self.query_one(RadioSet))
-        if idx is None or idx < 0 or idx >= len(self._choices):
+        buttons = self._buttons()
+        sel = next((i for i, b in enumerate(buttons) if b.value), None)
+        if sel is None or sel >= len(self._choices):
             self.show_error("Select an option, then press Enter.")
             return False
-        value = self._choices[idx].value
+        value = self._choices[sel].value
         if value is not ProviderAuthMethod.API_KEY:
+            # Web-form validation: focus the only valid option and explain.
+            api_idx = next(
+                (i for i, c in enumerate(self._choices)
+                 if c.value is ProviderAuthMethod.API_KEY),
+                None,
+            )
+            if api_idx is not None and api_idx < len(buttons):
+                buttons[api_idx].focus()
             self.show_error(
                 "Subscription OAuth via CLIProxy is not available in the installer "
                 "yet. Choose Direct API key to continue."

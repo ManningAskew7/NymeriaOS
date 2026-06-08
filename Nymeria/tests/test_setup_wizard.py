@@ -126,6 +126,82 @@ def test_seeded_tool_names_unions_built_families_and_ignores_placeholders():
     assert seeded_tool_names(WizardState()) == []  # nothing chosen -> empty
 
 
+def test_default_thread_tools_unions_core_seed_with_picks():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_seed import core_seed_tool_names, default_thread_tools_for_state
+
+    core = core_seed_tool_names()
+    assert core and "bash_execute" in core and "memory_read" in core
+    state = WizardState(
+        extras={
+            "web_search": ["web_search_tavily"],
+            "image_gen": ["image_gen_gemini"],
+        }
+    )
+    result = default_thread_tools_for_state(state)
+    # Core comes first, then the picks; deduped and order-preserving.
+    assert result[: len(core)] == core
+    assert result[len(core):] == ["web_search_tavily", "image_gen_gemini"]
+    assert len(result) == len(set(result))  # no duplicates
+    # No picks -> exactly the core seed.
+    assert default_thread_tools_for_state(WizardState()) == core
+
+
+def test_required_backend_credentials_handles_url_keyless_and_primary_key():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_keys import required_backend_credentials
+
+    # SearXNG is a URL (not required as a secret); fetch_url_nymeria needs nothing;
+    # Tavily/OpenAI are required keys.
+    state = WizardState(
+        extras={
+            "web_search": ["web_search_tavily", "web_search_searxng"],
+            "fetch_url": ["fetch_url_nymeria", "jina_reader_fetch_url"],
+            "image_gen": ["image_gen_openai"],
+        }
+    )
+    by_env = {spec.env_var: spec for spec in required_backend_credentials(state)}
+    assert "FETCH" not in "".join(by_env)  # fetch_url_nymeria contributes no key
+    assert by_env["TAVILY_API_KEY"].required is True
+    assert by_env["SEARXNG_BASE_URL"].kind == "url" and not by_env["SEARXNG_BASE_URL"].required
+    assert by_env["JINA_API_KEY"].kind == "optional_key" and not by_env["JINA_API_KEY"].required
+    assert "OPENAI_API_KEY" in by_env
+
+    # When OpenAI is the primary provider, its key already covers image_gen_openai.
+    primary = WizardState(
+        provider="openai",
+        api_key="sk-test",
+        extras={"image_gen": ["image_gen_openai", "image_gen_fal"]},
+    )
+    needed = {spec.env_var for spec in required_backend_credentials(primary)}
+    assert "OPENAI_API_KEY" not in needed
+    assert "FAL_API_KEY" in needed
+
+
+def test_fetch_dependency_nudge_predicates():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import (
+        has_nonperplexity_search,
+        unmet_fetch_dependency,
+    )
+
+    # Perplexity is self-sufficient: no nudge.
+    perplexity = WizardState(extras={"web_search": ["web_search_perplexity"]})
+    assert has_nonperplexity_search(perplexity) is False
+    assert unmet_fetch_dependency(perplexity) is False
+
+    # A link-only backend with no fetch backend: unmet dependency.
+    tavily = WizardState(extras={"web_search": ["web_search_tavily"]})
+    assert has_nonperplexity_search(tavily) is True
+    assert unmet_fetch_dependency(tavily) is True
+
+    # Same, but a fetch backend was picked: satisfied.
+    satisfied = WizardState(
+        extras={"web_search": ["web_search_tavily"], "fetch_url": ["fetch_url_nymeria"]}
+    )
+    assert unmet_fetch_dependency(satisfied) is False
+
+
 # --- environment detection --------------------------------------------------
 
 
@@ -224,18 +300,23 @@ def test_default_flow_order_and_conditional_image_tier():
         "security_profile",
         "auth_method",
         "external_access",
-        # core-toolset-plan structure: core set shown, then the family pickers.
+        # core-toolset-plan structure: core set shown, then the family pickers,
+        # the keys those backends need, then the skill-kit placeholder.
         "core_tools",
         "web_search",
         "fetch_url",
         "embedder",
         "reranker",
         "image_gen",
+        "backend_keys",
+        "skill_kits",
     ):
         assert required in ids
     assert "rag_search" not in ids  # retired: replaced by embedder + reranker
     # The abstract category "tools" step was superseded by the family pickers.
     assert "tools" not in ids
+    # backend_keys must come after all three family pickers so it sees them all.
+    assert ids.index("backend_keys") > ids.index("image_gen")
 
     def applicable_ids(state: "WizardState") -> list[str]:
         nav = Navigator(steps, state)
@@ -246,6 +327,17 @@ def test_default_flow_order_and_conditional_image_tier():
     # container host.
     assert "image_tier" not in applicable_ids(WizardState(hosting=HostingOption.LOCAL))
     assert "image_tier" in applicable_ids(WizardState(hosting=HostingOption.DOCKER))
+
+    # backend_keys is conditional: it appears only when a selected backend needs a
+    # credential that has not already been provided.
+    assert "backend_keys" not in applicable_ids(WizardState())
+    assert "backend_keys" in applicable_ids(
+        WizardState(extras={"web_search": ["web_search_tavily"]})
+    )
+    # A keyless pick (fetch_url_nymeria) does not trigger the step.
+    assert "backend_keys" not in applicable_ids(
+        WizardState(extras={"fetch_url": ["fetch_url_nymeria"]})
+    )
 
 
 # --- headless finalize ------------------------------------------------------
@@ -347,6 +439,82 @@ def test_noninteractive_writes_optional_capability_keys(monkeypatch, tmp_path):
     assert "PERPLEXITY_API_KEY=pplx-test" in config
 
 
+def test_noninteractive_writes_backend_keys_and_seeds_default_tools(monkeypatch, tmp_path):
+    import json
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--web-search", "web_search_tavily",
+            "--tavily-api-key", "tav-secret",
+            "--fetch-url", "fetch_url_nymeria",
+            "--image-gen", "image_gen_gemini",
+            "--gemini-api-key", "gemini-secret",
+            "--root", str(root),
+            "--non-interactive",
+        ]
+    )
+
+    assert rc == 0
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert "TAVILY_API_KEY=tav-secret" in config
+    assert "GEMINI_API_KEY=gemini-secret" in config
+
+    profile_path = root / "data" / "users" / "default" / "profile.json"
+    assert profile_path.exists()
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    default_tools = profile["tool_preferences"]["default_thread_tools"]
+    # Picked optional backends are promoted into the default thread tools...
+    assert "web_search_tavily" in default_tools
+    assert "image_gen_gemini" in default_tools
+    assert "fetch_url_nymeria" in default_tools
+    # ...alongside the always-on core seed.
+    assert "bash_execute" in default_tools and "memory_read" in default_tools
+
+
+def test_init_does_not_clobber_existing_profile(monkeypatch, tmp_path):
+    import json
+
+    from nymeria.core.user_profile import UserProfileManager
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    data_dir = root / "data"
+
+    # First run seeds the profile with a Tavily pick.
+    assert setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+            "--root", str(root), "--non-interactive",
+        ]
+    ) == 0
+
+    # Simulate the user customizing their defaults afterward.
+    manager = UserProfileManager(data_dir)
+    profile = manager.get_profile("default")
+    profile.tool_preferences.default_thread_tools = ["bash_execute"]
+    manager.save_profile(profile)
+
+    # Re-running init must not overwrite the customized profile.
+    assert setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--web-search", "web_search_brave", "--brave-api-key", "k2",
+            "--root", str(root), "--non-interactive", "--force",
+        ]
+    ) == 0
+    after = json.loads(
+        (data_dir / "users" / "default" / "profile.json").read_text(encoding="utf-8")
+    )
+    assert after["tool_preferences"]["default_thread_tools"] == ["bash_execute"]
+
+
 def test_noninteractive_records_deployment_choices_without_dead_config(
     monkeypatch, tmp_path, capsys
 ):
@@ -419,7 +587,7 @@ def test_review_summary_markup_surfaces_collected_choices():
     assert "Image" in markup  # docker host -> image tier surfaces
     assert "Security" in markup
     assert "claude-opus-4-8" in markup
-    assert "Core: 12 always-on tools" in markup
+    assert "Default thread tools:" in markup  # core seed + picks, now written
     assert "web_search_perplexity" in markup  # picked family member
     assert "Agent settings: thorough" in markup
     assert "RAG search" not in markup  # a skipped placeholder is not shown
@@ -659,6 +827,28 @@ def test_run_init_parser_accepts_new_flags():
     assert args.full_doctor is True
 
 
+def test_run_init_parser_accepts_backend_key_and_family_flags():
+    from nymeria.setup.runner import _build_state, build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--tavily-api-key", "tav", "--searxng-base-url", "https://sx.example",
+            "--fal-api-key", "fal", "--bfl-api-key", "bfl",
+            "--web-search", "web_search_tavily", "--web-search", "web_search_searxng",
+            "--image-gen", "image_gen_fal",
+        ]
+    )
+    state = _build_state(args)
+    assert state.optional_env["TAVILY_API_KEY"] == "tav"
+    assert state.optional_env["SEARXNG_BASE_URL"] == "https://sx.example"
+    assert state.optional_env["FAL_API_KEY"] == "fal"
+    assert state.optional_env["BFL_API_KEY"] == "bfl"
+    # Repeatable family flags accumulate into state.extras as concrete tool names.
+    assert state.extras["web_search"] == ["web_search_tavily", "web_search_searxng"]
+    assert state.extras["image_gen"] == ["image_gen_fal"]
+
+
 # --- interactive Textual wizard (Pilot) -------------------------------------
 
 
@@ -744,20 +934,17 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
     assert state.model == "claude-sonnet-4-6"  # provider default model filled in
 
 
-def test_wizard_pilot_arrow_keys_select_and_update_description():
-    """Arrow keys move the highlight, the pressed dot follows it, and the
-    per-option description tracks it. No separate Space/Enter is needed to commit
-    a choice (the highlight *is* the selection).
-
-    Regression: the stock RadioSet posts `Changed` only when the pressed button
-    changes (Space/Enter/click), so arrow navigation left both the dot and the
-    description frozen. `SelectingRadioSet` presses whatever the cursor lands on.
+def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
+    """Arrow keys move focus (and the per-option description) WITHOUT changing the
+    selection; Space selects the focused option. The selection dot only moves on
+    Space (or Enter), not on arrow navigation.
     """
-    from textual.widgets import RadioSet, Static
+    from textual.widgets import Static
 
     from nymeria.onboarding import HOSTING_CHOICES, HOSTING_ORDER
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import CircleRadioButton
 
     def desc_for(index: int) -> str:
         return HOSTING_CHOICES[HOSTING_ORDER[index]].description
@@ -768,24 +955,27 @@ def test_wizard_pilot_arrow_keys_select_and_update_description():
             await pilot.pause()
             await pilot.press("enter")  # welcome -> hosting (the radio screen)
             await pilot.pause()
-            panel = app.screen.query_one("#choice-desc", Static)
-            radio_set = app.screen.query_one(RadioSet)
+            scr = app.screen
+            panel = scr.query_one("#choice-desc", Static)
+            buttons = list(scr.query(CircleRadioButton))
 
-            def assert_at(index: int) -> None:
-                # The dot follows the highlight, and the description matches.
-                assert radio_set.pressed_index == index
-                assert str(panel.render()) == desc_for(index)
+            # Default selection + focus + description all sit on index 0 (LOCAL).
+            assert buttons[0].value is True
+            assert scr.focused is buttons[0]
+            assert str(panel.render()) == desc_for(0)
 
-            assert_at(0)  # default LOCAL on entry
             await pilot.press("down")
             await pilot.pause()
-            assert_at(1)
-            await pilot.press("down")
+            # Focus + description moved, but the selection did NOT.
+            assert scr.focused is buttons[1]
+            assert str(panel.render()) == desc_for(1)
+            assert buttons[0].value is True and buttons[1].value is False
+
+            await pilot.press("space")
             await pilot.pause()
-            assert_at(2)
-            await pilot.press("up")
-            await pilot.pause()
-            assert_at(1)
+            # Space selects the focused option; the old default is cleared.
+            assert buttons[1].value is True and buttons[0].value is False
+            assert not app.completed  # selecting does not advance
 
     asyncio.run(drive())
 
@@ -822,14 +1012,9 @@ def test_wizard_radio_renders_bare_circles_without_box():
     asyncio.run(drive())
 
 
-def test_wizard_radio_highlight_is_bold_brighten_no_bar():
-    """The highlighted option is marked by bold + brighter text alone, with no
-    background bar.
-
-    The filled white circle (the dot follows the highlight) already pins the
-    current row, so the selection reads from the text weight/brightness rather
-    than a tinted bar. This asserts no row carries a background, and the selected
-    label is both bold and brighter than the non-selected labels.
+def test_wizard_radio_focused_label_is_bold_and_bright_no_bar():
+    """The highlight is the FOCUSED option, marked by bold + brighter text alone,
+    with no background bar (the filled white circle pins the selection).
     """
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
@@ -845,36 +1030,36 @@ def test_wizard_radio_highlight_is_bold_brighten_no_bar():
             await pilot.press("enter")  # welcome -> hosting (the radio screen)
             await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
-            selected = [b for b in buttons if b.has_class("-selected")]
-            others = [b for b in buttons if not b.has_class("-selected")]
-            assert len(selected) == 1  # exactly the highlighted row
-            assert others  # and there are unselected rows to contrast against
+            focused = app.screen.focused
+            assert focused in buttons  # the highlight is the focused option
+            others = [b for b in buttons if b is not focused]
+            assert others
 
             # No row paints a background: there is no selection bar.
             assert all(b.styles.background.a == 0 for b in buttons)
 
-            sel_label = selected[0].get_visual_style("toggle--label")
-            assert sel_label.bold is True  # the selected row is bold...
-            # ...and brighter than every unselected label, which stay un-bold.
-            sel_luma = luma(sel_label.foreground)
+            foc_label = focused.get_visual_style("toggle--label")
+            assert foc_label.bold is True  # the focused row is bold...
+            # ...and brighter than every unfocused label, which stay un-bold.
+            foc_luma = luma(foc_label.foreground)
             for other in others:
                 other_label = other.get_visual_style("toggle--label")
                 assert other_label.bold is not True
-                assert sel_luma >= luma(other_label.foreground)
+                assert foc_luma >= luma(other_label.foreground)
 
     asyncio.run(drive())
 
 
-def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
+def test_wizard_pilot_placeholder_default_preserved_and_enter_locks_focus():
     """A placeholder step's stored default is the trailing "Skip" row. Entering
-    the step must keep that default (the dot must not jump to the first row), and
-    pressing Enter without moving must record "Skip", not the first option.
-    Arrow keys then move the highlight and the dot together.
+    keeps that default selected and focused; Enter without moving records "Skip".
+    Arrowing moves focus (not selection); Enter then locks the focused option in.
     """
-    from textual.widgets import RadioSet, Static
+    from textual.widgets import Static
 
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import CircleRadioButton
     from nymeria.setup.steps.placeholders import make_tts_step
 
     # tts options (cartesia, openai, gemini, qwen3), with the appended "Skip for
@@ -885,11 +1070,12 @@ def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
         app = SetupWizardApp(WizardState(), steps=[make_tts_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
-            radio_set = app.screen.query_one(RadioSet)
-            panel = app.screen.query_one("#choice-desc", Static)
-            # On entry the cursor, the dot, and the description all sit on the
-            # stored default ("Skip"), not the first row.
-            assert radio_set.pressed_index == skip_index
+            scr = app.screen
+            buttons = list(scr.query(CircleRadioButton))
+            panel = scr.query_one("#choice-desc", Static)
+            # Selection, focus, and description all sit on the stored default.
+            assert buttons[skip_index].value is True
+            assert scr.focused is buttons[skip_index]
             assert str(panel.render()) == "Configure this later."
             await pilot.press("enter")  # commit without moving
             await pilot.pause()
@@ -899,11 +1085,13 @@ def test_wizard_pilot_preserves_non_first_default_and_follows_highlight():
         app = SetupWizardApp(WizardState(), steps=[make_tts_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
-            radio_set = app.screen.query_one(RadioSet)
-            await pilot.press("down")  # Skip is last, so down wraps to the first
+            scr = app.screen
+            buttons = list(scr.query(CircleRadioButton))
+            await pilot.press("down")  # Skip is last, so focus_next wraps to first
             await pilot.pause()
-            assert radio_set.pressed_index == 0  # dot followed the highlight
-            await pilot.press("enter")
+            assert scr.focused is buttons[0]  # focus moved...
+            assert buttons[skip_index].value is True  # ...but selection did not
+            await pilot.press("enter")  # Enter locks the focused option in + advances
             await pilot.pause()
         return dict(app.state.extras)
 
@@ -1099,6 +1287,184 @@ def test_wizard_pilot_image_gen_multiselect_seeds_real_backend():
     assert seeded_tool_names(state) == ["image_gen_openai"]
 
 
+def test_wizard_pilot_backend_keys_step_collects_key():
+    """The backend-keys step renders one input per selected backend and writes
+    the value into optional_env under the canonical env var.
+    """
+    from textual.widgets import Input
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.backend_keys import make_backend_keys_step
+
+    async def drive() -> WizardState:
+        state = WizardState(extras={"web_search": ["web_search_tavily"]})
+        app = SetupWizardApp(state, steps=[make_backend_keys_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.query_one("#backend-key-tavily_api_key", Input).value = "tav-secret"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.optional_env["TAVILY_API_KEY"] == "tav-secret"
+
+
+def test_wizard_pilot_skill_kits_is_placeholder_recording_to_extras():
+    """The skill-kits step is a placeholder single-select recording to extras
+    (it seeds no enabled_global_skills yet, since the kits are unbuilt).
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.placeholders import make_skill_kits_step
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_skill_kits_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("up")  # from the default "Skip for now" to a real kit
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    # A planned-kit id was recorded; nothing is wired into enabled_global_skills.
+    assert state.extras["skill_kits"] in {
+        "credential-management", "tool-management", "skill-management", "mcp-management",
+    }
+
+
+def test_wizard_pilot_embedder_enter_jumps_to_empty_key_then_advances():
+    """Enter on a cloud model with no key does not advance: it locks the model in,
+    focuses the empty key field, and shows an error. Filling it and pressing Enter
+    advances (retrieval keeps its Hybrid default, which Enter skips).
+    """
+    from textual.widgets import Input, Static
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.rag import make_embedder_step
+
+    async def drive():
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_embedder_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scr = app.screen
+            await pilot.press("enter")  # default premium-cohere needs a key
+            await pilot.pause()
+            key_input = scr.query_one("#rag-key", Input)
+            assert key_input.has_focus  # jumped to the missing field
+            assert not app.completed  # did not advance
+            assert str(scr.query_one("#wizard-error", Static).render())
+            key_input.value = "test-key"
+            await pilot.press("enter")  # key filled -> nothing else required -> advance
+            await pilot.pause()
+        return state, app
+
+    state, app = asyncio.run(drive())
+    assert app.completed
+    assert state.embedder == "premium-cohere"
+    assert state.optional_env["EMBEDDING_API_KEY"] == "test-key"
+    assert state.rag_retrieval_mode == "hybrid"  # default kept (Enter skipped it)
+
+
+def test_wizard_pilot_embedder_local_hides_key_and_enter_advances():
+    """Selecting the local (keyless) embedder hides the key field; Enter then needs
+    no key and advances.
+    """
+    from textual.widgets import Input, RadioButton
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.rag import make_embedder_step
+
+    async def drive():
+        state = WizardState()
+        app = SetupWizardApp(state, steps=[make_embedder_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scr = app.screen
+            models = list(scr.query_one("#model-group").query(RadioButton))
+            await pilot.press("down", "down", "down")  # premium,value,value,local
+            await pilot.pause()
+            assert scr.focused is models[3]  # local-granite
+            await pilot.press("space")  # select local
+            await pilot.pause()
+            assert not scr.query_one("#rag-key", Input).display  # key hidden
+            await pilot.press("enter")  # local needs no key -> advance
+            await pilot.pause()
+        return state, app
+
+    state, app = asyncio.run(drive())
+    assert app.completed
+    assert state.embedder == "local-granite"
+    assert "EMBEDDING_API_KEY" not in state.optional_env
+    assert state.rag_retrieval_mode == "hybrid"
+
+
+def test_wizard_pilot_embedder_arrows_cross_fields_both_ways():
+    """The core 'change your mind' fix: arrows move from the model list into the
+    key field and the retrieval group, and back UP from the key field to the model
+    list (focus is never trapped in one control).
+    """
+    from textual.widgets import Input, RadioButton
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.rag import make_embedder_step
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState(), steps=[make_embedder_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scr = app.screen
+            models = list(scr.query_one("#model-group").query(RadioButton))
+            retrieval = list(scr.query_one("#retrieval-group").query(RadioButton))
+            key_input = scr.query_one("#rag-key", Input)
+            assert scr.focused is models[0]
+            # Down through the 4 model options lands on the key field.
+            for _ in range(4):
+                await pilot.press("down")
+                await pilot.pause()
+            assert scr.focused is key_input
+            await pilot.press("down")  # into the retrieval group
+            await pilot.pause()
+            assert scr.focused is retrieval[0]
+            # Back up: retrieval -> key -> the last model option.
+            await pilot.press("up")
+            await pilot.pause()
+            assert scr.focused is key_input
+            await pilot.press("up")
+            await pilot.pause()
+            assert scr.focused is models[-1]
+
+    asyncio.run(drive())
+
+
+def test_wizard_pilot_reranker_none_advances_without_key():
+    """The default 'No reranker' option needs no key, so Enter advances directly."""
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.rag import make_reranker_step
+
+    async def drive() -> WizardState:
+        state = WizardState(embedder="local-granite")
+        app = SetupWizardApp(state, steps=[make_reranker_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # "No reranker" -> advance (no key prompt)
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.reranker == "none"
+
+
 def test_wizard_pilot_auth_skip_pins_api_key_even_on_oauth_row():
     """Ctrl+S on the auth step must not leave a deferred OAuth value in state
     (which would silently disable the provider/connection/model steps). It coerces
@@ -1176,14 +1542,12 @@ def test_wizard_pilot_auth_step_blocks_deferred_oauth():
             await pilot.press("enter")  # accept security profile -> auth method
             await pilot.pause()
             assert app.nav.current() == _AUTH_STEP
-            await pilot.press("down")  # highlight a deferred CLIProxy OAuth method
+            await pilot.press("down")  # focus a deferred CLIProxy OAuth method
             await pilot.pause()
-            await pilot.press("enter")  # gated: shows an error, does not advance
+            await pilot.press("enter")  # gated: error, focus returns to API key, stay
             await pilot.pause()
             assert app.nav.current() == _AUTH_STEP
-            await pilot.press("up")  # back to Direct API key
-            await pilot.pause()
-            await pilot.press("enter")  # accepted -> provider
+            await pilot.press("enter")  # focus is now Direct API key -> accepted
             await pilot.pause()
         return app
 

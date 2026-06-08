@@ -35,6 +35,23 @@ _OPTIONAL_KEY_FLAGS = (
     ("openai_api_key", "OPENAI_API_KEY"),
     ("gemini_api_key", "GEMINI_API_KEY"),
     ("perplexity_api_key", "PERPLEXITY_API_KEY"),
+    # Backend credentials for the web_search / fetch_url / image_gen families.
+    ("tavily_api_key", "TAVILY_API_KEY"),
+    ("exa_api_key", "EXA_API_KEY"),
+    ("firecrawl_api_key", "FIRECRAWL_API_KEY"),
+    ("brave_api_key", "BRAVE_API_KEY"),
+    ("searxng_base_url", "SEARXNG_BASE_URL"),
+    ("jina_api_key", "JINA_API_KEY"),
+    ("bfl_api_key", "BFL_API_KEY"),
+    ("replicate_api_key", "REPLICATE_API_KEY"),
+    ("fal_api_key", "FAL_API_KEY"),
+)
+
+# CLI flag -> state.extras family key, for seeding tool families non-interactively.
+_FAMILY_FLAGS = (
+    ("web_search", "web_search"),
+    ("fetch_url", "fetch_url"),
+    ("image_gen", "image_gen"),
 )
 
 
@@ -103,6 +120,30 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--openai-api-key", default=None)
     parser.add_argument("--gemini-api-key", default=None)
     parser.add_argument("--perplexity-api-key", default=None)
+    # Backend credentials for the selected tool families.
+    parser.add_argument("--tavily-api-key", default=None)
+    parser.add_argument("--exa-api-key", default=None)
+    parser.add_argument("--firecrawl-api-key", default=None)
+    parser.add_argument("--brave-api-key", default=None)
+    parser.add_argument("--searxng-base-url", default=None)
+    parser.add_argument("--jina-api-key", default=None)
+    parser.add_argument("--bfl-api-key", default=None)
+    parser.add_argument("--replicate-api-key", default=None)
+    parser.add_argument("--fal-api-key", default=None)
+    # Seed tool families non-interactively (repeatable), e.g.
+    # --web-search web_search_tavily --image-gen image_gen_gemini.
+    parser.add_argument(
+        "--web-search", action="append", default=None, metavar="TOOL",
+        help="Seed a web_search_* backend into the default tools (repeatable)",
+    )
+    parser.add_argument(
+        "--fetch-url", action="append", default=None, metavar="TOOL",
+        help="Seed a fetch_url backend into the default tools (repeatable)",
+    )
+    parser.add_argument(
+        "--image-gen", action="append", default=None, metavar="TOOL",
+        help="Seed an image_gen_* backend into the default tools (repeatable)",
+    )
     parser.add_argument(
         "--root",
         default=None,
@@ -158,6 +199,12 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         if value:
             optional_env[env_var] = value.strip()
 
+    extras: dict[str, object] = {}
+    for attr, family in _FAMILY_FLAGS:
+        value = getattr(args, attr, None)
+        if value:
+            extras[family] = [str(item) for item in value]
+
     hosting = None
     if getattr(args, "hosting", None):
         hosting = parse_choice(HostingOption, args.hosting, option_name="--hosting")
@@ -207,6 +254,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         base_url=(getattr(args, "base_url", None) or "").strip(),
         api_mode=(getattr(args, "api_mode", None) or ""),
         optional_env=optional_env,
+        extras=extras,
         root=root,
         data_dir=data_dir,
         next_action=next_action,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..nav import Step
 from .agent_settings import make_agent_settings_step
 from .auth import make_auth_method_step
+from .backend_keys import make_backend_keys_step
 from .core_tools import make_core_tools_step
 from .deployment import (
     make_external_access_step,
@@ -15,6 +16,7 @@ from .hosting import make_hosting_step
 from .placeholders import (
     make_fetch_url_step,
     make_image_gen_step,
+    make_skill_kits_step,
     make_stt_step,
     make_tts_step,
     make_web_search_step,
@@ -50,13 +52,16 @@ def build_default_steps() -> list[Step]:
         make_connection_step(),
         make_model_step(),
         # Tool families seeded on top of the always-on core set (core-toolset
-        # plan, Sections A-C), then the remaining capability placeholders.
+        # plan, Sections A-C), the keys those backends need, then the remaining
+        # capability placeholders.
         make_core_tools_step(),
         make_web_search_step(),
         make_fetch_url_step(),
         make_embedder_step(),
         make_reranker_step(),
         make_image_gen_step(),
+        make_backend_keys_step(),
+        make_skill_kits_step(),
         make_tts_step(),
         make_stt_step(),
         make_agent_settings_step(),

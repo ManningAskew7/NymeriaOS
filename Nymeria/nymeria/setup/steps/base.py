@@ -1,9 +1,18 @@
 """Base wizard screen and reusable single/multi-select step screens.
 
-Every step is a Textual `Screen`. The base wires the shared chrome (title, step
-counter, note, error slot, hint bar) and the navigation keys: Enter advances,
-Esc goes back one step (not exit), Ctrl+Q quits with a confirm. Concrete steps
-override `compose_body()` and `collect()`.
+Keyboard model (a web form): on a `FormStep`, the arrow keys move focus across
+every element of the step top to bottom (option groups AND input fields, never
+trapped in one control); Space selects the focused option (single-select picks
+one, multi-select toggles independently); Enter locks the highlighted option in
+and advances, or, when a required field is still empty, focuses that field and
+shows an error. Concrete steps override `compose_body()` and `collect()`.
+
+Single-select option groups are individual `CircleRadioButton`s inside a
+`Vertical(classes="radio-group")` so each is independently focusable and
+exclusivity is enforced per group (Textual's stock `RadioSet` captures the arrow
+keys internally, which would trap focus). Multi-select steps keep Textual's
+`SelectionList` (already arrow-to-highlight / space-to-toggle) and stay on the
+plain `WizardStep` so the list keeps its internal arrow navigation.
 """
 
 from __future__ import annotations
@@ -13,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import RadioButton, RadioSet, SelectionList, Static
@@ -36,9 +45,8 @@ class Choice:
 def commit_radio_highlight(radio_set: RadioSet) -> int:
     """Press the highlighted radio so the dot matches the cursor, return its index.
 
-    Arrow keys move the RadioSet highlight (`_selected`) but only Space presses
-    it; the wizard advances on Enter, so we commit the highlight here so a single
-    Enter both selects the highlighted option and moves on. Falls back to the
+    Used by the connection step's api-mode `SelectingRadioSet` (the wizard
+    advances on Enter, so the highlight is committed here). Falls back to the
     already-pressed index if the highlight cannot be read.
     """
 
@@ -52,6 +60,54 @@ def commit_radio_highlight(radio_set: RadioSet) -> int:
     return radio_set.pressed_index
 
 
+class SelectingRadioSet(RadioSet):
+    """A `RadioSet` whose pressed dot follows the highlight cursor.
+
+    Retained for the connection step's api-mode picker (a self-contained
+    `RadioSet`); the single-select STEPS now use individual `CircleRadioButton`s
+    in a `.radio-group` instead (see `FormStep`).
+    """
+
+    def align_cursor_to_selection(self) -> None:
+        if self.pressed_index >= 0:
+            self._selected = self.pressed_index
+
+    def _follow_highlight(self) -> None:
+        index = self._selected
+        if index is None or not self.is_mounted:
+            return
+        if 0 <= index < len(self._nodes):
+            button = self._nodes[index]
+            if isinstance(button, RadioButton) and not button.value:
+                button.value = True
+
+    def action_next_button(self) -> None:
+        super().action_next_button()
+        self._follow_highlight()
+
+    def action_previous_button(self) -> None:
+        super().action_previous_button()
+        self._follow_highlight()
+
+
+class CircleRadioButton(RadioButton):
+    """A `RadioButton` drawn as a bare circle, with no filled indicator box.
+
+    Renders only the circle glyph (outline when off, filled when on); the
+    `toggle--button` component style (theme.tcss) keeps it white over a
+    transparent background, so the circle shows with no blue box. Subclasses
+    `RadioButton`, so it stays focusable and `query(RadioButton)` still finds it.
+    """
+
+    _GLYPH_ON = "●"  # filled circle
+    _GLYPH_OFF = "○"  # outline circle
+
+    @property
+    def _button(self) -> Content:
+        glyph = self._GLYPH_ON if self.value else self._GLYPH_OFF
+        return Content.assemble((glyph, self.get_visual_style("toggle--button")))
+
+
 class WizardStep(Screen):
     """Shared chrome and navigation for every wizard step."""
 
@@ -62,7 +118,7 @@ class WizardStep(Screen):
         Binding("ctrl+q", "quit_wizard", "Quit", priority=True),
     ]
 
-    DEFAULT_HINT = "up/down move   enter next   esc back   ctrl+s skip   ctrl+q quit"
+    DEFAULT_HINT = "up/down move   space select   enter next   esc back   ctrl+s skip   ctrl+q quit"
 
     def __init__(
         self,
@@ -93,9 +149,13 @@ class WizardStep(Screen):
         yield Static(f"Step {self._number} of {self._total}", id="wizard-step")
         if self._note:
             yield Static(self._note, id="wizard-note")
-        with VerticalScroll(id="wizard-body"):
+        # can_focus=False keeps the scroll container out of the arrow-key focus
+        # chain (so focus moves option->option, not onto the body); focusing a
+        # child still auto-scrolls it into view.
+        with VerticalScroll(id="wizard-body", can_focus=False):
             yield from self.compose_body()
         yield Static("", id="wizard-error")
+        yield Static("", id="wizard-scroll-hint")
         yield Static(self._hint, id="wizard-hint")
 
     def compose_body(self) -> ComposeResult:
@@ -107,6 +167,27 @@ class WizardStep(Screen):
 
     def show_error(self, message: str) -> None:
         self.query_one("#wizard-error", Static).update(message)
+
+    # --- scroll affordance --------------------------------------------------
+
+    def on_resize(self, _event: object) -> None:
+        self._update_scroll_hint()
+
+    def _update_scroll_hint(self) -> None:
+        """Show a 'more above / more below' cue when the body overflows."""
+        try:
+            body = self.query_one("#wizard-body", VerticalScroll)
+            hint = self.query_one("#wizard-scroll-hint", Static)
+        except Exception:
+            return
+        parts: list[str] = []
+        if body.scroll_y > 0.5:
+            parts.append("▲ more above")
+        if body.scroll_y < body.max_scroll_y - 0.5:
+            parts.append("▼ more below")
+        hint.update(f"[#fcd34d]{'    '.join(parts)}[/#fcd34d]" if parts else "")
+
+    # --- navigation ---------------------------------------------------------
 
     def action_next(self) -> None:
         self.show_error("")
@@ -125,75 +206,95 @@ class WizardStep(Screen):
         self._wizard.request_quit()
 
 
-class CircleRadioButton(RadioButton):
-    """A `RadioButton` drawn as a bare circle, with no filled indicator box.
+class FormStep(WizardStep):
+    """A step whose body is a vertical form: arrows move focus across every
+    element, Space selects the focused option, Enter locks it in then validates.
 
-    Stock Textual frames the radio glyph in `BUTTON_LEFT`/`BUTTON_RIGHT`
-    half-blocks painted in the panel colour, so each option shows a blue-grey box
-    around the dot. This renders only the circle itself: an outline glyph when off
-    and a filled glyph when on. The `toggle--button` component style (see
-    theme.tcss) keeps it white over the list background, so the circles stay
-    visible with no box, in focused and blurred states alike. It subclasses
-    `RadioButton`, so the `RadioSet`/`query(RadioButton)` machinery still finds
-    it.
+    Subclasses lay out `Vertical(classes="radio-group")` blocks of
+    `CircleRadioButton`s and/or `Input`s, implement `collect()` (focusing the
+    offending field + showing an error when something required is missing), and
+    may override `_sync_description()` / `_on_single_select()` hooks.
     """
 
-    _GLYPH_ON = "●"  # filled circle
-    _GLYPH_OFF = "○"  # outline circle
+    BINDINGS = [
+        Binding("down", "field_next", "Next field", priority=True),
+        Binding("up", "field_prev", "Prev field", priority=True),
+    ]
 
-    @property
-    def _button(self) -> Content:
-        glyph = self._GLYPH_ON if self.value else self._GLYPH_OFF
-        return Content.assemble((glyph, self.get_visual_style("toggle--button")))
+    def action_field_next(self) -> None:
+        self.focus_next()
+        self._refresh_focus_view()
 
+    def action_field_prev(self) -> None:
+        self.focus_previous()
+        self._refresh_focus_view()
 
-class SelectingRadioSet(RadioSet):
-    """A `RadioSet` whose pressed dot follows the highlight cursor.
+    def on_descendant_focus(self, event: object) -> None:
+        self._refresh_focus_view(getattr(event, "widget", None))
 
-    The stock `RadioSet` keeps two states: a highlight cursor moved by the arrow
-    keys (`_selected`) and a pressed dot changed only by Space, Enter, or a mouse
-    click. That is select-then-confirm behaviour. The wizard wants the highlight
-    to *be* the selection, so this subclass presses whichever option the cursor
-    lands on as it moves. Pressing fires the stock `RadioSet.Changed`, which the
-    step handles to keep its description in sync, so no extra message type is
-    needed.
+    def _refresh_focus_view(self, focused: object | None = None) -> None:
+        self._update_scroll_hint()
+        self._sync_description(focused if focused is not None else self.focused)
 
-    The press is gated on `is_mounted`, so it never fires during the base's own
-    mount-time cursor setup (`_on_mount` calls `action_next_button` to park the
-    cursor). The base leaves the cursor on the first row even when the pressed
-    dot is a later one, e.g. the trailing "Skip" row on placeholder steps, so the
-    step calls `align_cursor_to_selection` after mount to put them in agreement.
-    """
+    def _sync_description(self, focused: object) -> None:
+        """Hook: update a per-option description from the focused option."""
+        return
 
-    def align_cursor_to_selection(self) -> None:
-        """Move the highlight cursor onto the already-pressed dot. Call after mount.
+    # --- single-select exclusivity ------------------------------------------
 
-        Assigning `_selected` only moves the cursor (no press, no `Changed`); the
-        dot is already on the stored default from the `value=True` button, so this
-        just makes the highlight match it without disturbing the selection.
-        """
-        if self.pressed_index >= 0:
-            self._selected = self.pressed_index
+    @staticmethod
+    def _radio_group(button: RadioButton):
+        for ancestor in button.ancestors:
+            has_class = getattr(ancestor, "has_class", None)
+            if has_class is not None and ancestor.has_class("radio-group"):
+                return ancestor
+        return None
 
-    def _follow_highlight(self) -> None:
-        index = self._selected
-        if index is None or not self.is_mounted:
+    def on_radio_button_changed(self, event: object) -> None:
+        button = getattr(event, "radio_button", None)
+        if button is None:
             return
-        if 0 <= index < len(self._nodes):
-            button = self._nodes[index]
-            if isinstance(button, RadioButton) and not button.value:
-                button.value = True
+        group = self._radio_group(button)
+        if group is None:
+            return
+        if getattr(event, "value", False):
+            for other in group.query(RadioButton):
+                if other is not button and other.value:
+                    other.value = False
+            self._on_single_select(group, button)
+        elif not any(b.value for b in group.query(RadioButton)):
+            # Single-select cannot end up empty: re-select the one just cleared.
+            button.value = True
 
-    def action_next_button(self) -> None:
-        super().action_next_button()
-        self._follow_highlight()
+    def _on_single_select(self, group: object, button: RadioButton) -> None:
+        """Hook: react to a single-select choice (e.g. show/hide a key field)."""
+        return
 
-    def action_previous_button(self) -> None:
-        super().action_previous_button()
-        self._follow_highlight()
+    def _lock_focused_option(self) -> None:
+        """Enter 'locks in the highlighted one': select the focused radio option.
+
+        Clears siblings synchronously (not via the async `Changed` handler) so a
+        `collect()` in the same Enter sees exactly one selected button.
+        """
+        focused = self.focused
+        if not isinstance(focused, RadioButton):
+            return
+        group = self._radio_group(focused)
+        if group is None:
+            return
+        for button in group.query(RadioButton):
+            want = button is focused
+            if button.value != want:
+                button.value = want
+
+    def action_next(self) -> None:
+        self.show_error("")
+        self._lock_focused_option()
+        if self.collect():
+            self._wizard.advance()
 
 
-class SingleSelectStep(WizardStep):
+class SingleSelectStep(FormStep):
     """A radio-button choice that stores one value into state."""
 
     def __init__(
@@ -216,55 +317,56 @@ class SingleSelectStep(WizardStep):
         self._get_initial = get_initial
         self._store = store
 
-    def compose_body(self) -> ComposeResult:
+    def _initial_index(self) -> int:
         initial = self._get_initial(self.state)
-        buttons = [
-            CircleRadioButton(choice.label, value=(choice.value == initial))
-            for choice in self._choices
-        ]
-        if initial is None and buttons:
-            buttons[0] = CircleRadioButton(self._choices[0].label, value=True)
-        yield SelectingRadioSet(*buttons)
+        for i, choice in enumerate(self._choices):
+            if choice.value == initial:
+                return i
+        return 0
+
+    def compose_body(self) -> ComposeResult:
+        sel = self._initial_index()
+        with Vertical(classes="radio-group"):
+            for i, choice in enumerate(self._choices):
+                yield CircleRadioButton(choice.label, value=(i == sel))
         yield Static("", id="choice-desc")
 
+    def _buttons(self) -> list[RadioButton]:
+        return list(self.query_one(".radio-group").query(RadioButton))
+
     def on_mount(self) -> None:
-        self.query_one(SelectingRadioSet).focus()
-        # Align the highlight with the stored default and seed the description
-        # once the mount settles. call_after_refresh runs after the base RadioSet
-        # has parked its cursor, so the alignment is not undone.
-        self.call_after_refresh(self._sync_on_entry)
+        buttons = self._buttons()
+        if buttons:
+            selected = next((b for b in buttons if b.value), buttons[0])
+            selected.focus()
+        self.call_after_refresh(self._refresh_focus_view)
 
-    def _sync_on_entry(self) -> None:
-        radio_set = self.query_one(SelectingRadioSet)
-        radio_set.align_cursor_to_selection()
-        idx = getattr(radio_set, "_selected", None)
-        if not isinstance(idx, int) or idx < 0:
-            idx = radio_set.pressed_index
-        if 0 <= idx < len(self._choices):
-            self._set_description(idx)
-
-    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
-        # The dot follows the highlight (SelectingRadioSet), so this fires on
-        # every arrow move as well as on Space/click, keeping the description live.
-        self._set_description(event.index)
-
-    def _set_description(self, index: int) -> None:
-        if 0 <= index < len(self._choices):
-            self.query_one("#choice-desc", Static).update(
-                self._choices[index].description
-            )
+    def _sync_description(self, focused: object) -> None:
+        buttons = self._buttons()
+        if focused in buttons:
+            i = buttons.index(focused)  # type: ignore[arg-type]
+            if 0 <= i < len(self._choices):
+                self.query_one("#choice-desc", Static).update(
+                    self._choices[i].description
+                )
 
     def collect(self) -> bool:
-        idx = commit_radio_highlight(self.query_one(RadioSet))
-        if idx is None or idx < 0 or idx >= len(self._choices):
+        buttons = self._buttons()
+        sel = next((i for i, b in enumerate(buttons) if b.value), None)
+        if sel is None or sel >= len(self._choices):
             self.show_error("Select an option, then press Enter.")
             return False
-        self._store(self.state, self._choices[idx].value)
+        self._store(self.state, self._choices[sel].value)
         return True
 
 
 class MultiSelectStep(WizardStep):
-    """A checkbox list that stores a list of selected values into state."""
+    """A checkbox list that stores a list of selected values into state.
+
+    Stays on `SelectionList` (and plain `WizardStep`, not `FormStep`) so the list
+    keeps its own arrow navigation; it is a single field, so cross-field focus
+    movement is not needed. Space toggles, Enter advances.
+    """
 
     def __init__(
         self,
@@ -278,6 +380,7 @@ class MultiSelectStep(WizardStep):
         get_initial: Callable[["WizardState"], list[Any]],
         store: Callable[["WizardState", list[Any]], None],
         note: str = "",
+        warning_fn: Callable[["WizardState"], str | None] | None = None,
     ) -> None:
         super().__init__(
             wizard,
@@ -291,8 +394,14 @@ class MultiSelectStep(WizardStep):
         self._choices = choices
         self._get_initial = get_initial
         self._store = store
+        self._warning_fn = warning_fn
 
     def compose_body(self) -> ComposeResult:
+        # Non-blocking nudge (e.g. "this search backend needs a fetch backend"),
+        # computed from prior steps' state. Shown above the list; never vetoes.
+        warning = self._warning_fn(self.state) if self._warning_fn else None
+        if warning:
+            yield Static(f"[yellow]{warning}[/yellow]", id="multi-warning")
         selected = set(self._get_initial(self.state) or [])
         selections = [
             Selection(choice.label, choice.value, choice.value in selected)
@@ -346,6 +455,7 @@ def multi_select_step(
     store: Callable[["WizardState", list[Any]], None],
     note: str = "",
     applies: Callable[["WizardState"], bool] = lambda _state: True,
+    warning_fn: Callable[["WizardState"], str | None] | None = None,
 ) -> Step:
     def build(wizard: "SetupWizardApp", number: int, total: int) -> Screen:
         return MultiSelectStep(
@@ -358,6 +468,7 @@ def multi_select_step(
             get_initial=get_initial,
             store=store,
             note=note,
+            warning_fn=warning_fn,
         )
 
     return Step(id=step_id, applies=applies, build=build)
@@ -398,8 +509,10 @@ def placeholder_step(
 __all__ = [
     "Choice",
     "WizardStep",
+    "FormStep",
     "CircleRadioButton",
     "SelectingRadioSet",
+    "commit_radio_highlight",
     "SingleSelectStep",
     "MultiSelectStep",
     "single_select_step",

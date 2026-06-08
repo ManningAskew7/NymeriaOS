@@ -86,6 +86,37 @@ def _extras_list(step_id: str):
     return get_initial, store
 
 
+# Section C dependency: every web_search backend except Perplexity returns only
+# links, so it needs a fetch_url backend to be useful.
+_SELF_SUFFICIENT_SEARCH = "web_search_perplexity"
+
+
+def has_nonperplexity_search(state: WizardState) -> bool:
+    """True when a link-only (non-Perplexity) web_search backend is selected."""
+    selected = state.extras.get("web_search")
+    if not isinstance(selected, list):
+        return False
+    return any(name != _SELF_SUFFICIENT_SEARCH for name in selected)
+
+
+def unmet_fetch_dependency(state: WizardState) -> bool:
+    """True when a link-only search backend is selected but no fetch backend is."""
+    if not has_nonperplexity_search(state):
+        return False
+    fetch = state.extras.get("fetch_url")
+    return not (isinstance(fetch, list) and len(fetch) > 0)
+
+
+def _fetch_url_warning(state: WizardState) -> str | None:
+    if has_nonperplexity_search(state):
+        return (
+            "You picked a search backend that returns only links (everything "
+            "except Perplexity). Pick a web fetch backend below so search results "
+            "are readable."
+        )
+    return None
+
+
 def make_web_search_step() -> Step:
     """Real multi-select over the built web_search_* backends (Section B)."""
     get_initial, store = _extras_list("web_search")
@@ -117,6 +148,7 @@ def make_fetch_url_step() -> Step:
         choices=_WEB_FETCH_BACKENDS,
         get_initial=get_initial,
         store=store,
+        warning_fn=_fetch_url_warning,
     )
 
 
@@ -164,6 +196,48 @@ def make_stt_step() -> Step:
     )
 
 
+def make_skill_kits_step() -> Step:
+    """Placeholder: default Skill Kits to enable for every thread.
+
+    The curated default-on kits (credential/tool/skill/mcp-management) are not
+    built yet (see `docs/private/core-toolset-plan.md` Section D), so this records
+    nothing and seeds no `enabled_global_skills`; the existing lazy `self-improve`
+    default stands. Becomes a real multi-select that seeds `enabled_global_skills`
+    once those kits ship.
+    """
+    return placeholder_step(
+        step_id="skill_kits",
+        title="Default skill kits",
+        note=(
+            "Placeholder. These kits are not built yet, so nothing is enabled here "
+            "(self-improve stays on by default). You can manage skills later in the "
+            "settings UI."
+        ),
+        options=[
+            Choice(
+                "credential-management",
+                "Credential management",
+                "Connect, inspect, and clean up service credentials (coming soon).",
+            ),
+            Choice(
+                "tool-management",
+                "Tool management",
+                "Find, enable, and build tools, including HTTP/API-backed ones (coming soon).",
+            ),
+            Choice(
+                "skill-management",
+                "Skill management",
+                "Find, install, create, and edit Skills and Skill Kits (coming soon).",
+            ),
+            Choice(
+                "mcp-management",
+                "MCP management",
+                "Find, install, test, and manage MCP servers (coming soon).",
+            ),
+        ],
+    )
+
+
 def seeded_tool_names(state: WizardState) -> list[str]:
     """Concrete tool names the init flow would seed from the built families.
 
@@ -186,5 +260,8 @@ __all__ = [
     "make_image_gen_step",
     "make_tts_step",
     "make_stt_step",
+    "make_skill_kits_step",
     "seeded_tool_names",
+    "has_nonperplexity_search",
+    "unmet_fetch_dependency",
 ]

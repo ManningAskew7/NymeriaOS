@@ -26,6 +26,16 @@ Screen {
 #wizard-body {
     height: 1fr;
     padding: 0 2;
+    /* A readable scrollbar: a visibly darker track with a lighter thumb, so it
+       reads as a scrollbar (not an indistinct block) and signals that the step
+       scrolls. The thumb brightens on hover/drag. */
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #2a3140;
+    scrollbar-background-hover: #2a3140;
+    scrollbar-background-active: #2a3140;
+    scrollbar-color: #5b6675;
+    scrollbar-color-hover: #bbddfb;
+    scrollbar-color-active: #bbddfb;
 }
 
 #choice-desc {
@@ -35,6 +45,12 @@ Screen {
 
 #wizard-error {
     color: #fca5a5;
+    height: auto;
+    padding: 0 2;
+}
+
+#wizard-scroll-hint {
+    color: #fcd34d;
     height: auto;
     padding: 0 2;
 }
@@ -51,16 +67,44 @@ Screen {
 }
 
 RadioSet,
-SelectionList {
+SelectionList,
+.radio-group {
     width: 1fr;
+    height: auto;
     background: #151a24;
     border: round #3a4251;
     padding: 0 1;
 }
 
 RadioSet:focus,
-SelectionList:focus {
+SelectionList:focus,
+.radio-group:focus-within {
     border: round #bbddfb;
+}
+
+/* Standalone radio buttons in a .radio-group render as a PLAIN list (no
+   per-option box): strip the default ToggleButton border/background and the
+   focus block-cursor, so the rows sit cleanly inside the group's single box.
+   The focused (cursor) option is marked by bold + brighter text alone, and the
+   filled white circle pins which option is selected. */
+.radio-group > RadioButton {
+    border: none;
+    background: transparent;
+    background-tint: black 0%;
+    padding: 0 1;
+    width: 1fr;
+}
+
+.radio-group > RadioButton:focus {
+    border: none;
+    background: transparent;
+    background-tint: black 0%;
+}
+
+.radio-group > RadioButton:focus > .toggle--label {
+    color: #ffffff !important;
+    background: transparent !important;
+    text-style: bold !important;
 }
 
 /* The radio indicator is a bare circle (CircleRadioButton renders the glyph),
