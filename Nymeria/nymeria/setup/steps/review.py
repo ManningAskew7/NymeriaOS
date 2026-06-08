@@ -19,9 +19,10 @@ from ...onboarding import (
 from ..nav import Step
 from ..rag_catalog import get_embedder, get_reranker
 from ..state import WizardState
+from ..tool_keys import BACKEND_KEY_SPECS
+from ..tool_seed import default_thread_tools_for_state
 from .base import WizardStep
-from .core_tools import CORE_TOOLS
-from .placeholders import seeded_tool_names
+from .placeholders import seeded_tool_names, unmet_fetch_dependency
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -68,15 +69,30 @@ def _summary_markup(state: WizardState) -> str:
         if state.base_url:
             lines.append(f"[bold]Base URL[/bold]  {state.base_url}")
 
-    # Tools: the always-on core set, plus the concrete family members seeded at
-    # init (web_search_* / fetch_url_* / image_gen_*) and the still-placeholder
-    # capabilities.
-    tool_lines: list[str] = [f"Core: {len(CORE_TOOLS)} always-on tools"]
+    # Tools: the always-on core set plus the concrete family members seeded at
+    # init (web_search_* / fetch_url_* / image_gen_*), written to the bootstrap
+    # admin's default_thread_tools, with the still-placeholder capabilities below.
+    total_default = len(default_thread_tools_for_state(state))
+    tool_lines: list[str] = [
+        f"Default thread tools: {total_default} (core set + your picks)"
+    ]
     seeded = seeded_tool_names(state)
     if seeded:
-        # "Picked", not "Seeded": finalize does not yet write these to defaults.
-        tool_lines.append(f"Picked (not written to defaults yet): {', '.join(seeded)}")
+        tool_lines.append(f"Picked backends: {', '.join(seeded)}")
+    collected_keys = [
+        spec.env_var
+        for spec in BACKEND_KEY_SPECS.values()
+        if state.optional_env.get(spec.env_var)
+    ]
+    if collected_keys:
+        tool_lines.append(f"Backend keys set: {', '.join(sorted(set(collected_keys)))}")
+    if unmet_fetch_dependency(state):
+        tool_lines.append(
+            "[yellow]Heads up: a non-Perplexity search backend is selected with no "
+            "fetch backend; results will be links only.[/yellow]"
+        )
     placeholder_caps = [
+        ("Skill kits", state.extras.get("skill_kits")),
         ("TTS", state.extras.get("tts")),
         ("STT", state.extras.get("stt")),
         ("Agent settings", state.extras.get("agent_settings")),

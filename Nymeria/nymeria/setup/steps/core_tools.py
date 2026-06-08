@@ -1,10 +1,12 @@
-"""Core toolset step (informational): the literal tools every thread receives.
+"""Core toolset step (informational): the always-on tools every thread receives.
 
-Section A of `docs/private/core-toolset-plan.md`: these tools ship in every
-default thread and are not chosen at init. This screen shows them for
-orientation; the following family steps are where the user seeds the init-chosen
-tools on top. Wiring init selections into the per-user `default_thread_tools` is
-separate future work, so nothing is stored here.
+These tools ship in every default thread and are not chosen at init. This screen
+shows them for orientation; the following family steps seed the init-chosen tools
+on top, and finalize writes the whole set (core plus picks) into the bootstrap
+admin's `default_thread_tools`. The displayed list is the REAL seed
+(`tool_seed.core_seed_tool_names`, i.e. `ALL_TOOLS` minus capability-expansion),
+which is what finalize writes; `CORE_TOOLS` below is the aspirational 12-tool
+target from `docs/private/core-toolset-plan.md` Section A (core-slimming unbuilt).
 """
 
 from __future__ import annotations
@@ -39,17 +41,21 @@ CORE_TOOLS: tuple[tuple[str, str], ...] = (
 
 
 def _core_tools_markup() -> str:
+    from ..tool_seed import core_seed_tool_names
+
+    notes = dict(CORE_TOOLS)
     lines = [
-        "[bold]Planned core toolset[/bold] (the target default for every thread):",
+        "[bold]Core toolset[/bold] (always on for every new thread):",
         "",
     ]
-    for name, note in CORE_TOOLS:
+    for name in core_seed_tool_names():
+        note = notes.get(name, "")
         suffix = f"  [#8a93a3]{note}[/#8a93a3]" if note else ""
         lines.append(f"  [#bbddfb]{name}[/#bbddfb]{suffix}")
     lines.append("")
     lines.append(
         "Next you pick which web search, web fetch, RAG, and image tools to add "
-        "on top. Init does not write these into your defaults yet."
+        "on top. These core tools plus your picks become your default toolset."
     )
     return "\n".join(lines)
 
@@ -61,7 +67,7 @@ class CoreToolsStep(WizardStep):
         yield Static(_core_tools_markup())
 
     def collect(self) -> bool:
-        # Core tools are seeded automatically; nothing to record here.
+        # Core tools are seeded automatically by finalize; nothing to record here.
         return True
 
 
@@ -74,8 +80,8 @@ def make_core_tools_step() -> Step:
             step_id="core_tools",
             title="Core toolset",
             note=(
-                "The planned default tools for every thread. The next steps add "
-                "optional tool families on top."
+                "The always-on tools every thread receives. The next steps add "
+                "optional tool families on top of these."
             ),
             hint="enter next   esc back   ctrl+q quit",
         )

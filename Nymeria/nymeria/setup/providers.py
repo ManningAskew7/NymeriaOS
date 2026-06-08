@@ -26,12 +26,25 @@ logger = logging.getLogger(__name__)
 
 # Optional capability keys offered by the capability steps / CLI flags. Unrelated
 # to the primary provider, so the registry change leaves this untouched.
+# write_config only emits keys listed here, so every backend credential the
+# wizard can collect must appear in this tuple. The web-search/fetch/image keys
+# map to settings fields (uppercased) read by their tools; SEARXNG_BASE_URL is a
+# base URL rather than a secret. See setup/tool_keys.py for the tool mapping.
 OPTIONAL_ENV_ORDER = (
     "EMBEDDING_API_KEY",
     "RAG_RERANK_API_KEY",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "PERPLEXITY_API_KEY",
+    "TAVILY_API_KEY",
+    "EXA_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "BRAVE_API_KEY",
+    "SEARXNG_BASE_URL",
+    "JINA_API_KEY",
+    "BFL_API_KEY",
+    "REPLICATE_API_KEY",
+    "FAL_API_KEY",
 )
 
 # Tier grouping, mirroring how nymeria-desktop's buildProviderGroups() orders

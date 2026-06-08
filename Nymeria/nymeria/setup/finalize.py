@@ -165,6 +165,7 @@ def finalize(
 
     console.print(f"[green]Config:[/green] {config_path}")
     console.print(f"[green]Data dir:[/green] {data_dir}")
+    seed_bootstrap_profile(data_dir, state, console)
     print_bootstrap_token_handoff(token_path, console)
     print_capability_summary(spec, optional_env, console, extra_env=extra_env)
     print_deployment_summary(state, console)
@@ -263,6 +264,43 @@ def _resolve_optional_env(
         # The primary key already writes OPENAI_API_KEY; never duplicate it.
         optional_env.pop("OPENAI_API_KEY", None)
     return optional_env
+
+
+def seed_bootstrap_profile(
+    data_dir: Path, state: WizardState, console: Console
+) -> None:
+    """Seed the bootstrap admin's ``default_thread_tools`` from the init picks.
+
+    Writes ``data/users/default/profile.json`` with an explicit
+    ``default_thread_tools`` (the core seed plus the chosen ``web_search_*`` /
+    ``fetch_url_*`` / ``image_gen_*`` backends) so a new thread inherits the
+    picked tools by default. Only when no profile exists yet, so re-running init
+    never clobbers a customized profile. ``enabled_global_skills`` is left to the
+    backend's lazy ``self-improve`` default. Best-effort: a failure here never
+    aborts init (config.env and the bootstrap token are already written).
+    """
+
+    from ..core.accounts import BOOTSTRAP_USER_ID
+    from ..core.user_profile import UserProfileManager
+    from .tool_seed import default_thread_tools_for_state
+
+    try:
+        manager = UserProfileManager(data_dir)
+        if manager._get_profile_path(BOOTSTRAP_USER_ID).exists():
+            return  # existing profile: do not overwrite the user's customizations
+        profile = manager.get_profile(BOOTSTRAP_USER_ID)
+        tools = default_thread_tools_for_state(state)
+        profile.tool_preferences.default_thread_tools = tools
+        manager.save_profile(profile)
+        console.print(
+            f"[green]Default thread tools:[/green] {len(tools)} seeded "
+            "(core set + your picks)"
+        )
+    except Exception as exc:  # pragma: no cover - best-effort seeding
+        console.print(
+            f"[yellow]Could not seed default thread tools ({exc}). "
+            "Set them later in settings.[/yellow]"
+        )
 
 
 def _resolve_extra_env(state: WizardState) -> dict[str, str]:
@@ -401,6 +439,15 @@ def print_capability_summary(
     openai_ready = (
         spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
     ) or bool(optional_env.get("OPENAI_API_KEY"))
+    search_ready = bool(optional_env.get("PERPLEXITY_API_KEY")) or any(
+        optional_env.get(env)
+        for env in ("TAVILY_API_KEY", "EXA_API_KEY", "FIRECRAWL_API_KEY",
+                    "BRAVE_API_KEY", "SEARXNG_BASE_URL")
+    )
+    image_ready = openai_ready or any(
+        optional_env.get(env)
+        for env in ("GEMINI_API_KEY", "BFL_API_KEY", "REPLICATE_API_KEY", "FAL_API_KEY")
+    )
     rows = [
         ("Primary LLM", spec is not None, "set a provider with nymeria init"),
         (
@@ -410,19 +457,19 @@ def print_capability_summary(
             "choose an embedder in nymeria init",
         ),
         (
-            "OpenAI image / speech tools",
-            openai_ready,
-            "set OPENAI_API_KEY",
+            "Web search backends",
+            search_ready,
+            "add a search backend key in nymeria init",
+        ),
+        (
+            "Image generation",
+            image_ready,
+            "add an image provider key in nymeria init",
         ),
         (
             "Gemini media tools",
             bool(optional_env.get("GEMINI_API_KEY")),
             "set GEMINI_API_KEY",
-        ),
-        (
-            "Perplexity web search",
-            bool(optional_env.get("PERPLEXITY_API_KEY")),
-            "set PERPLEXITY_API_KEY",
         ),
     ]
     ready = sum(1 for _name, ok, _hint in rows if ok)
@@ -550,6 +597,7 @@ __all__ = [
     "BootstrapTokenCopyCommand",
     "finalize",
     "write_config",
+    "seed_bootstrap_profile",
     "resolve_root",
     "resolve_data_dir",
     "default_init_root",
