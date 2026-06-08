@@ -79,12 +79,6 @@
     animation: none;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   .startup-title {
     font-size: 1.5rem;
     font-weight: 600;

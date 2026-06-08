@@ -439,8 +439,4 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
   }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
 </style>

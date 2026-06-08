@@ -241,7 +241,7 @@
 {#if view === 'list'}
   <!-- List View -->
   <div class="trigger-list-header">
-    <p class="field-hint" style="margin: 0;">
+    <p class="field-hint">
       Automate actions when events occur (new emails, webhooks, etc.).
     </p>
     <button class="btn btn-primary btn-sm" onclick={openCreate} type="button">

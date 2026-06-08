@@ -855,10 +855,6 @@ https://github.com/example/mcp-server`}
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
   .progress-panel h3 {
     margin: 0;
     font-size: var(--font-size-lg);
@@ -1078,8 +1074,11 @@ https://github.com/example/mcp-server`}
     line-height: 1.3;
   }
 
-  .field-error {
-    color: var(--error, #f44336) !important;
+  /* §10 — was `color: ... !important` to beat `.config-field small`
+     (specificity 0,1,1). Anchor to the same selector chain instead
+     (0,2,1) so we win on specificity without escalating to !important. */
+  .config-field small.field-error {
+    color: var(--error, #f44336);
   }
 
   .confirm-box {
