@@ -50,6 +50,33 @@ def test_cliproxy_gatekeeper_key_does_not_hit_embeddings():
     assert response.warning and "CLIProxy gatekeeper" in response.warning
 
 
+def test_embedding_client_uses_bounded_timeout_and_no_retries():
+    """A slow/unreachable embeddings endpoint must fail fast and degrade to
+    keyword search instead of stalling the agent turn for the SDK default
+    (~600s x 2 retries). Guards against regressing the client construction.
+    """
+    import openai
+
+    from nymeria.core.tool_search_index import EMBED_REQUEST_TIMEOUT_SECONDS
+
+    captured: dict[str, object] = {}
+
+    class _RecordingClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    original = openai.OpenAI
+    openai.OpenAI = _RecordingClient
+    try:
+        index = ToolSearchIndex(openai_api_key="sk-real-looking-key")
+        index._get_openai()
+    finally:
+        openai.OpenAI = original
+
+    assert captured["timeout"] == EMBED_REQUEST_TIMEOUT_SECONDS
+    assert captured["max_retries"] == 0
+
+
 def test_fuzzy_fallback_handles_typo():
     index = ToolSearchIndex(openai_api_key=None)
 

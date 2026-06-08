@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 ToolSearchMode = Literal["semantic", "bm25", "fuzzy", "substring"]
 EMBEDDING_DIMENSIONS = 1536
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+# Tool search embeds a single short query, so the call should fail fast and let
+# _embed() degrade to keyword ranking rather than stall the agent turn. The
+# OpenAI SDK otherwise defaults to a 600s timeout with 2 retries, so a hung
+# socket can block for minutes.
+EMBED_REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -548,7 +553,11 @@ class ToolSearchIndex:
                 raise RuntimeError("EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key")
             from openai import OpenAI
 
-            kwargs: dict[str, Any] = {"api_key": self._openai_key}
+            kwargs: dict[str, Any] = {
+                "api_key": self._openai_key,
+                "timeout": EMBED_REQUEST_TIMEOUT_SECONDS,
+                "max_retries": 0,
+            }
             if self._openai_base_url:
                 kwargs["base_url"] = self._openai_base_url
             self._openai_client = OpenAI(**kwargs)
