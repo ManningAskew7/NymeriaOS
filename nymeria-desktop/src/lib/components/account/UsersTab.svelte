@@ -639,7 +639,7 @@
   .filter-input:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(34, 211, 238, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.15));
   }
 
   .error-banner {
@@ -781,7 +781,7 @@
 
   .status-chip.you-chip {
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha, rgba(34, 211, 238, 0.12));
+    background: var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.12));
     border: 1px solid var(--accent-primary);
   }
 
@@ -922,7 +922,7 @@
   .form-row select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(34, 211, 238, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.15));
   }
 
   .row-actions {

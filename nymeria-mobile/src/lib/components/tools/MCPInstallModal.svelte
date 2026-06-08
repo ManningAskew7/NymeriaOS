@@ -378,9 +378,9 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
   }
 
   .error-banner {
-    border: 1px solid rgba(244, 67, 54, 0.35);
-    color: #f44336;
-    background: rgba(244, 67, 54, 0.08);
+    border: 1px solid rgba(var(--error-rgb), 0.35);
+    color: var(--error);
+    background: rgba(var(--error-rgb), 0.08);
   }
 
   .action-row {

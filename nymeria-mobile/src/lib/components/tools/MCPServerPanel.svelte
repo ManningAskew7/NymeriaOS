@@ -53,10 +53,10 @@
   }
 
   function getStatusColor(server: MCPServer): string {
-    if (server.installStatus === 'failed') return '#f44336';
+    if (server.installStatus === 'failed') return 'var(--error)';
     if (server.installStatus === 'needs_config' || server.installStatus === 'draft') return '#f59e0b';
-    if (server.installStatus === 'disabled') return 'var(--text-secondary, #555)';
-    if (!server.enabled) return 'var(--text-secondary, #555)';
+    if (server.installStatus === 'disabled') return 'var(--text-secondary)';
+    if (!server.enabled) return 'var(--text-secondary)';
     if (server.discoveredTools.length === 0) return '#f59e0b';
     return '#22c55e';
   }
@@ -545,13 +545,13 @@
   }
 
   .test-ok {
-    background: rgba(34, 197, 94, 0.12);
+    background: rgba(var(--success-rgb), 0.12);
     color: #22c55e;
   }
 
   .test-fail {
-    background: rgba(244, 67, 54, 0.12);
-    color: #f44336;
+    background: rgba(var(--error-rgb), 0.12);
+    color: var(--error);
   }
 
   .tools-section {
@@ -630,12 +630,12 @@
   }
 
   .action-btn.danger {
-    color: var(--error, #ff6b6b);
+    color: var(--error);
   }
 
   .confirm-text {
     font-size: 0.8rem;
-    color: var(--error, #ff6b6b);
+    color: var(--error);
     display: flex;
     align-items: center;
   }

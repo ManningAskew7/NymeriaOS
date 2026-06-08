@@ -114,16 +114,16 @@
   }
 
   .toast.destructive {
-    border-left-color: var(--error, #ef4444);
+    border-left-color: var(--error);
   }
   .toast.destructive :global(svg) {
-    color: var(--error, #ef4444);
+    color: var(--error);
   }
   .toast.warning {
-    border-left-color: var(--warning, #fbbf24);
+    border-left-color: var(--warning);
   }
   .toast.warning :global(svg) {
-    color: var(--warning, #fbbf24);
+    color: var(--warning);
   }
   .toast.info {
     border-left-color: var(--accent-primary);

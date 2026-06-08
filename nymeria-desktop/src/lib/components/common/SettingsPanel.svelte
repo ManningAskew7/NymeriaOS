@@ -3668,7 +3668,7 @@
   }
 
   .conn-action-btn.danger:hover {
-    color: var(--error, #ef4444);
+    color: var(--error);
   }
 
   .save-input-row {

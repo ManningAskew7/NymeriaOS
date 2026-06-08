@@ -58,7 +58,7 @@
   }
 
   .status-dot.checking {
-    background: var(--warning, #f59e0b);
+    background: var(--warning);
     animation: pulse 1s ease-in-out infinite;
   }
 

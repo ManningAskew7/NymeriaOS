@@ -268,7 +268,7 @@
   }
 
   .has-error input {
-    border-color: var(--error, #ff6b6b);
+    border-color: var(--error);
   }
 
   .field-hint {
@@ -281,7 +281,7 @@
 
   .field-error {
     font-size: 0.72rem;
-    color: var(--error, #ff6b6b);
+    color: var(--error);
   }
 
   .args-list {
@@ -333,8 +333,8 @@
   .form-error {
     padding: 0.4rem 0.6rem;
     border-radius: 4px;
-    background: rgba(244, 67, 54, 0.1);
-    color: var(--error, #ff6b6b);
+    background: rgba(var(--error-rgb), 0.1);
+    color: var(--error);
     font-size: 0.8rem;
   }
 

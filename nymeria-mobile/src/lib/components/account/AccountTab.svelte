@@ -294,7 +294,7 @@
     align-items: center;
     gap: 4px;
     font-size: 11px;
-    color: var(--success, #22c55e);
+    color: var(--success);
     font-weight: 500;
   }
 

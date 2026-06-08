@@ -228,8 +228,8 @@
     align-items: center;
     gap: 8px;
     padding: 10px var(--spacing-sm);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: rgba(var(--error-rgb), 0.08);
+    border: 1px solid rgba(var(--error-rgb), 0.3);
     border-radius: var(--radius-sm);
     color: var(--error);
     font-size: var(--font-size-sm);
@@ -315,7 +315,7 @@
 
   .row-unlink:active {
     color: var(--error);
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(var(--error-rgb), 0.1);
   }
 
   .row-unlink:disabled {

@@ -763,10 +763,10 @@
     flex-shrink: 0;
   }
 
-  .source-chip[data-source="webhook"] { --chip-dot-color: var(--warning, #fbbf24); }
-  .source-chip[data-source="outlook_email"] { --chip-dot-color: var(--info, #818cf8); }
+  .source-chip[data-source="webhook"] { --chip-dot-color: var(--warning); }
+  .source-chip[data-source="outlook_email"] { --chip-dot-color: var(--info); }
   .source-chip[data-source="rss"] { --chip-dot-color: #fb923c; }
-  .source-chip[data-source="slack"] { --chip-dot-color: var(--success, #34d399); }
+  .source-chip[data-source="slack"] { --chip-dot-color: var(--success); }
   .source-chip[data-source="teams"] { --chip-dot-color: #a78bfa; }
   .source-chip[data-source="http_poll"] { --chip-dot-color: var(--accent-primary); }
 

@@ -114,7 +114,7 @@
   }
 
   .btn-danger:active:not(:disabled) {
-    background: #ef4444;
+    background: var(--error);
   }
 
   /* States */

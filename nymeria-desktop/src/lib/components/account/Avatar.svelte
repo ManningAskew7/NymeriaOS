@@ -90,12 +90,12 @@
   }
 
   .avatar.state-disabled {
-    box-shadow: 0 0 0 2px var(--error, #ef4444);
+    box-shadow: 0 0 0 2px var(--error);
     opacity: 0.85;
   }
 
   .avatar.state-unverified {
-    box-shadow: 0 0 0 1px var(--text-muted, #6b7280);
+    box-shadow: 0 0 0 1px var(--text-muted);
     filter: grayscale(0.4);
   }
 

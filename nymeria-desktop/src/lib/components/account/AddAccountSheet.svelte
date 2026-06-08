@@ -245,7 +245,7 @@
   .field input:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(34, 211, 238, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.15));
   }
 
   .field input:disabled {
@@ -296,7 +296,7 @@
     background: var(--bg-elevated);
     border: 1px solid var(--accent-primary);
     border-radius: var(--radius-md);
-    box-shadow: 0 0 0 3px var(--accent-primary-alpha, rgba(34, 211, 238, 0.08));
+    box-shadow: 0 0 0 3px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.08));
   }
 
   .preview-row {

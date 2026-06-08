@@ -479,8 +479,8 @@
     align-items: center;
     gap: 8px;
     padding: 10px var(--spacing-sm);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: rgba(var(--error-rgb), 0.08);
+    border: 1px solid rgba(var(--error-rgb), 0.3);
     border-radius: var(--radius-sm);
     color: var(--error);
     font-size: var(--font-size-sm);
@@ -587,13 +587,13 @@
 
   .status-chip.disabled-chip {
     color: var(--error);
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid rgba(239, 68, 68, 0.4);
+    background: rgba(var(--error-rgb), 0.12);
+    border: 1px solid rgba(var(--error-rgb), 0.4);
   }
 
   .status-chip.you-chip {
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha, rgba(34, 211, 238, 0.12));
+    background: var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.12));
     border: 1px solid var(--accent-primary);
   }
 

@@ -247,7 +247,7 @@
   }
 
   .hint.warning {
-    color: var(--warning, #f59e0b);
+    color: var(--warning);
   }
 
   .status-row {
@@ -264,8 +264,8 @@
   }
 
   .status-dot.running {
-    background: var(--success, #22c55e);
-    box-shadow: 0 0 6px var(--success, #22c55e);
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
   }
 
   .status-dot.stopped {

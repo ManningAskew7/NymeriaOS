@@ -531,7 +531,7 @@
   .panel-header h4 {
     margin: 0;
     font-size: var(--font-size-base);
-    color: var(--text-primary, #e0e0e0);
+    color: var(--text-primary);
     display: flex;
     align-items: center;
     gap: 0.4rem;
@@ -559,12 +559,12 @@
   .panel-hint {
     margin: 0 0 0.75rem 0;
     font-size: 0.78rem;
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     line-height: 1.4;
   }
 
   .loading-state {
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     font-size: var(--font-size-sm);
     padding: 1.5rem;
     text-align: center;
@@ -576,13 +576,13 @@
     align-items: center;
     gap: 0.3rem;
     padding: 2rem 1rem;
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
   }
 
   .empty-state p {
     margin: 0;
     font-size: var(--font-size-sm);
-    color: var(--text-secondary, #999);
+    color: var(--text-secondary);
   }
 
   .empty-state span {
@@ -596,7 +596,7 @@
   }
 
   .server-card {
-    border: 1px solid var(--border-default, #3a3a3a);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-lg, 8px);
     overflow: hidden;
     transition: border-color var(--transition-fast, 0.15s);
@@ -616,16 +616,16 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.6rem 0.8rem;
-    background: var(--bg-elevated, #2a2a2a);
+    background: var(--bg-elevated);
     border: none;
     cursor: pointer;
-    color: var(--text-primary, #e0e0e0);
+    color: var(--text-primary);
     font-size: var(--font-size-sm);
     transition: background var(--transition-fast, 0.15s);
   }
 
   .server-header:hover {
-    background: var(--bg-hover, #333);
+    background: var(--bg-hover);
   }
 
   .server-summary {
@@ -644,7 +644,7 @@
   }
 
   .server-summary:focus-visible {
-    outline: 2px solid var(--accent-primary, #6c9fff);
+    outline: 2px solid var(--accent-primary);
     outline-offset: 2px;
     border-radius: var(--radius-sm, 4px);
   }
@@ -671,13 +671,13 @@
 
   .server-subtitle {
     font-size: var(--font-size-2xs);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
   }
 
   .tool-badge {
     font-size: var(--font-size-2xs);
-    color: var(--text-secondary, #999);
-    background: var(--bg-base, #1a1a1a);
+    color: var(--text-secondary);
+    background: var(--bg-base);
     padding: 0.1rem 0.5rem;
     border-radius: 10px;
     white-space: nowrap;
@@ -689,7 +689,7 @@
     letter-spacing: 0.04em;
     padding: 0.12rem 0.45rem;
     border-radius: 10px;
-    border: 1px solid var(--border-subtle, #2a2a2a);
+    border: 1px solid var(--border-subtle);
     white-space: nowrap;
   }
 
@@ -712,24 +712,24 @@
   }
 
   .status-disabled {
-    color: var(--text-muted, #777);
-    background: var(--bg-base, #1a1a1a);
+    color: var(--text-muted);
+    background: var(--bg-base);
   }
 
   .updated-at {
     font-size: var(--font-size-2xs);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     white-space: nowrap;
   }
 
   /* Server body */
   .server-body {
     padding: 0.8rem;
-    background: var(--bg-base, #1a1a1a);
+    background: var(--bg-base);
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    border-top: 1px solid var(--border-subtle, #2a2a2a);
+    border-top: 1px solid var(--border-subtle);
   }
 
   .server-info-section {
@@ -746,14 +746,14 @@
   }
 
   .info-label {
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     flex-shrink: 0;
     min-width: 70px;
   }
 
   .info-row code {
     font-size: 0.78rem;
-    background: var(--bg-elevated, #2a2a2a);
+    background: var(--bg-elevated);
     padding: 0.15rem 0.4rem;
     border-radius: 3px;
     word-break: break-all;
@@ -804,7 +804,7 @@
   .tools-heading {
     font-size: 0.78rem;
     font-weight: 600;
-    color: var(--text-secondary, #999);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -821,16 +821,16 @@
     gap: 0.5rem;
     padding: 0.35rem 0.5rem;
     border-radius: var(--radius-sm, 4px);
-    background: var(--bg-elevated, #2a2a2a);
+    background: var(--bg-elevated);
     transition: background var(--transition-fast, 0.15s);
   }
 
   .tool-row:hover {
-    background: var(--bg-hover, #333);
+    background: var(--bg-hover);
   }
 
   .tool-row.tool-enabled {
-    border-left: 2px solid var(--accent-primary, #6c9fff);
+    border-left: 2px solid var(--accent-primary);
   }
 
   .tool-row.tool-row-dormant {
@@ -848,7 +848,7 @@
 
   .tool-display-name {
     font-size: 0.78rem;
-    color: var(--accent-primary, #6c9fff);
+    color: var(--accent-primary);
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -857,7 +857,7 @@
 
   .tool-description {
     font-size: var(--font-size-2xs);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -865,7 +865,7 @@
 
   .no-tools {
     font-size: var(--font-size-sm);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     padding: 0.5rem;
     text-align: center;
     font-style: italic;
@@ -877,7 +877,7 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     padding-top: 0.25rem;
-    border-top: 1px solid var(--border-subtle, #2a2a2a);
+    border-top: 1px solid var(--border-subtle);
   }
 
   .confirm-delete {
@@ -885,7 +885,7 @@
     align-items: center;
     gap: 0.4rem;
     font-size: var(--font-size-xs);
-    color: var(--error, #ff6b6b);
+    color: var(--error);
     animation: fadeIn 0.2s ease;
   }
 
