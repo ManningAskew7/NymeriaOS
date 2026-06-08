@@ -13,8 +13,10 @@ import os
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -179,8 +181,7 @@ def finalize(
     if doctor_status != 0:
         return doctor_status
 
-    print_next_action(state, console)
-    return 0
+    return run_next_action(state, console, root=root)
 
 
 # --- config writing ---------------------------------------------------------
@@ -557,6 +558,124 @@ def _start_command_for_hosting(hosting: HostingOption | None) -> str:
     return "nymeria slim"
 
 
+# --- opt-in start -----------------------------------------------------------
+
+
+def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
+    """Hand off after config is written.
+
+    When the user opted in (``NextAction.START_API_OPEN_FRONTEND``) on a local or
+    Docker host, actually launch the backend; otherwise just print the start
+    command (the default). Returns the process exit code, which is non-zero only
+    when a foreground local start exits non-zero. A failed auto-start falls back
+    to printing the manual command and returns 0 (config was written fine).
+    """
+
+    if state.next_action is NextAction.START_API_OPEN_FRONTEND:
+        if state.hosting is HostingOption.DOCKER:
+            return _start_now_docker(console, root=root)
+        if state.hosting is HostingOption.LOCAL:
+            return _start_now_local(console, root=root)
+    print_next_action(state, console)
+    return 0
+
+
+def _start_now_docker(console: Console, *, root: Path) -> int:
+    command = "docker compose -f docker-compose.single.yml up -d"
+    console.print("\nStarting Nymeria (single-container Docker)...")
+    _print_command(console, command)
+    try:
+        result = subprocess.run(shlex.split(command), cwd=str(root))
+    except (OSError, ValueError) as exc:
+        console.print(
+            f"[yellow]Could not start Docker automatically ({exc}). "
+            "Run it yourself:[/yellow]"
+        )
+        _print_command(console, command)
+        _print_start_token_reminder(console)
+        return 0
+    if result.returncode != 0:
+        console.print(
+            "[yellow]The container did not start cleanly. Check the output above, "
+            "or run it yourself:[/yellow]"
+        )
+        _print_command(console, command)
+        _print_start_token_reminder(console)
+        return 0
+    if wait_for_health(console=console):
+        console.print("[green]Nymeria is up.[/green]")
+    else:
+        console.print(
+            "[yellow]Started, but the health check has not passed yet. It may "
+            "still be coming up; check "
+            "`docker compose -f docker-compose.single.yml logs -f`.[/yellow]"
+        )
+    _print_start_token_reminder(console)
+    return 0
+
+
+def _start_now_local(console: Console, *, root: Path) -> int:
+    console.print("\nStarting Nymeria in the foreground (Ctrl+C to stop).")
+    console.print(
+        "Once it is up, open http://localhost:8000 and paste the bootstrap token "
+        "shown above."
+    )
+    # Re-invoke this same entry point with the `slim` subcommand so it works from
+    # both a source checkout (`python3 run.py init`) and an installed console
+    # script (`nymeria init`). Run in the runtime root so slim finds config.env.
+    script = os.path.abspath(sys.argv[0])
+    command = [sys.executable, script, "slim"]
+    env = dict(os.environ)
+    env["NYMERIA_PROJECT_ROOT"] = str(root)
+    try:
+        result = subprocess.run(command, cwd=str(root), env=env)
+    except KeyboardInterrupt:
+        return 0
+    except OSError as exc:
+        console.print(
+            f"[yellow]Could not launch the slim backend automatically ({exc}). "
+            "Start it yourself:[/yellow]"
+        )
+        _print_command(console, "nymeria slim")
+        return 0
+    return result.returncode
+
+
+def wait_for_health(
+    *,
+    console: Console,
+    url: str = "http://localhost:8000/health",
+    timeout: float = 40.0,
+    interval: float = 1.0,
+) -> bool:
+    """Poll the API health endpoint until it answers 2xx or the timeout lapses."""
+
+    import urllib.error
+    import urllib.request
+
+    console.print("Waiting for the backend to become healthy...")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:  # noqa: S310
+                if 200 <= getattr(resp, "status", 200) < 300:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(interval)
+    return False
+
+
+def _print_start_token_reminder(console: Console) -> None:
+    console.print(
+        "Open http://localhost:8000 and paste the bootstrap token shown above."
+    )
+    console.print(
+        "\nRe-run setup anytime with `nymeria init`. Check health with "
+        "`nymeria doctor`."
+    )
+
+
 def _maybe_run_doctor(
     state: WizardState,
     *,
@@ -608,5 +727,7 @@ __all__ = [
     "print_capability_summary",
     "print_deployment_summary",
     "print_next_action",
+    "run_next_action",
+    "wait_for_health",
     "run_doctor_for_root",
 ]

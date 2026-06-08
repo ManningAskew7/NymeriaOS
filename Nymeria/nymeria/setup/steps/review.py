@@ -15,6 +15,7 @@ from ...onboarding import (
     PROVIDER_AUTH_METHOD_CHOICES,
     SECURITY_PROFILE_CHOICES,
     HostingOption,
+    NextAction,
 )
 from ..nav import Step
 from ..rag_catalog import get_embedder, get_reranker
@@ -122,6 +123,18 @@ def _summary_markup(state: WizardState) -> str:
             "[bold]External[/bold]  "
             f"{EXTERNAL_ACCESS_CHOICES[state.external_access].label}"
         )
+
+    # Post-setup handoff (set by the start-now step or the --start/--next-action
+    # flags). Surfaced so the final Enter's effect is no surprise.
+    if state.hosting is not None:
+        if state.next_action is NextAction.START_API_OPEN_FRONTEND:
+            nxt = "start the backend now"
+        elif state.next_action is NextAction.CLI:
+            nxt = "enter the CLI chat"
+        else:
+            nxt = "print the start command"
+        lines.append("")
+        lines.append(f"[bold]Next[/bold]      {nxt}")
 
     if not lines:
         lines.append("Nothing selected yet.")

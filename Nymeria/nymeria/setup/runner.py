@@ -116,6 +116,14 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Post-setup handoff action",
     )
+    parser.add_argument(
+        "--start",
+        action="store_true",
+        help=(
+            "After writing config, start the backend now (docker: detached + "
+            "health wait; local: foreground). Default just prints the command."
+        ),
+    )
     parser.add_argument("--embedding-api-key", default=None)
     parser.add_argument("--openai-api-key", default=None)
     parser.add_argument("--gemini-api-key", default=None)
@@ -234,10 +242,20 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         )
 
     next_action = DEFAULT_NEXT_ACTION
+    explicit_next_action = False
     if getattr(args, "next_action", None):
         next_action = parse_choice(
             NextAction, args.next_action, option_name="--next-action"
         )
+        explicit_next_action = True
+    if getattr(args, "start", False):
+        # --start is the convenience opt-in; it wins over --next-action.
+        next_action = NextAction.START_API_OPEN_FRONTEND
+        explicit_next_action = True
+    if explicit_next_action:
+        # Pre-select the start-now step to the flag's value in interactive runs;
+        # harmless in the non-interactive path (the step never renders there).
+        extras["start_now"] = next_action
 
     root = Path(args.root) if getattr(args, "root", None) else None
     data_dir = Path(args.data_dir) if getattr(args, "data_dir", None) else None
