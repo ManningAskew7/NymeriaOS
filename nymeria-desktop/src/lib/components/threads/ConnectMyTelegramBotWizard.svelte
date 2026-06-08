@@ -302,6 +302,9 @@
   .field-label-inline {
     font-weight: 500;
     font-size: var(--font-size-sm);
+    /* §4 — labels recede behind the input value (which is --text-primary),
+       so the eye finds the answer before the question. */
+    color: var(--text-secondary);
   }
 
   .token-input {

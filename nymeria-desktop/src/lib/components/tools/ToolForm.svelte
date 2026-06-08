@@ -509,7 +509,9 @@
 
   label {
     font-weight: 500;
-    color: var(--text-primary);
+    /* §4 — labels recede behind the input value (which is --text-primary),
+       so the eye finds the answer before the question. */
+    color: var(--text-secondary);
     font-size: var(--font-size-sm);
   }
 
