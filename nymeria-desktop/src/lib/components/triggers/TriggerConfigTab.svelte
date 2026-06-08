@@ -759,6 +759,9 @@
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin: 0 0 var(--spacing-xs) 0;
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
 
   .required {

@@ -83,6 +83,9 @@
     color: var(--text-muted);
     line-height: 1.45;
     margin-top: var(--spacing-xs);
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
 
   .field-input,

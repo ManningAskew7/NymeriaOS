@@ -1006,6 +1006,9 @@
   .field-hint {
     font-size: 11px;
     color: var(--text-muted);
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
 
   .checkbox-label {

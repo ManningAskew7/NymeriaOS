@@ -274,6 +274,9 @@
   .field-hint {
     font-size: 0.72rem;
     color: var(--text-secondary);
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
 
   .field-error {

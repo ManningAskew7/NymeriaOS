@@ -128,6 +128,9 @@
     color: var(--text-muted);
     line-height: 1.5;
     margin: 0 0 var(--spacing-md) 0;
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
   .field-hint.indented { margin-left: 28px; }
   .field-hint.last { margin-bottom: 0; }
