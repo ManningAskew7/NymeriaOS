@@ -882,6 +882,9 @@
     color: var(--text-muted);
     font-size: var(--font-size-sm);
     line-height: 1.5;
+    /* §5 — multi-line section explanations capped to 70ch so the prose
+       stays readable on wide panel layouts. */
+    max-width: 70ch;
   }
 
   .form-grid {

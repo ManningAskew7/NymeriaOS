@@ -766,6 +766,9 @@
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     line-height: 1.5;
+    /* §5 — multi-paragraph credential explanations capped to 70ch so the
+       prose stays readable on wide modal layouts. */
+    max-width: 70ch;
   }
 
   .description :global(p) {

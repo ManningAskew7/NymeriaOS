@@ -213,6 +213,9 @@
     color: var(--text-muted);
     line-height: 1.5;
     margin: 0;
+    /* §5 — reading text capped to 60ch so multi-line hints stay readable
+       on wide displays instead of stretching the full panel width. */
+    max-width: 60ch;
   }
 
   .cap-note { color: var(--warning, #f59e0b); }
