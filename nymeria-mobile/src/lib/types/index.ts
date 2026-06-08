@@ -1567,7 +1567,9 @@ export interface UnifiedTool {
   category: ToolCategory | string;
   securityLevel: ToolSecurityLevel;
   enabled: boolean;
-  enabledReason: 'default' | 'user_override' | 'category_disabled' | 'globally_disabled';
+  // Backend currently always emits the literal "default_thread_tools" here;
+  // informational only, not branched on by the UI.
+  enabledReason: string;
   toolType: ToolType;
   implementationType: ToolImplementationType | null;
   configSchema?: Record<string, unknown>;
