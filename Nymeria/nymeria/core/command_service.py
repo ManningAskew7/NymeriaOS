@@ -900,6 +900,7 @@ class CommandBackendClient:
             SEED_TOOLS,
             CATALOG_TOOLS,
             filter_discoverable_catalog_tool_names,
+            resolve_default_tool_names,
         )
         from ..tools.metadata import (
             MCP_SERVER_TOOL_METADATA,
@@ -910,11 +911,7 @@ class CommandBackendClient:
         target_user_id = self._checked_user_id(user_id)
         profile = self.agent.profile_manager.get_profile(target_user_id)
         prefs = profile.tool_preferences
-        default_set = (
-            set(prefs.default_thread_tools)
-            if prefs.default_thread_tools is not None
-            else {t.name for t in SEED_TOOLS}
-        )
+        default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
 
         tools_out = []
         seen = set()

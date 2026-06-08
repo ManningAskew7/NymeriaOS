@@ -78,17 +78,14 @@ def create_tools_router(
             SEED_TOOLS,
             CATALOG_TOOLS,
             filter_discoverable_catalog_tool_names,
+            resolve_default_tool_names,
         )
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
         default_tools = profile.tool_preferences.default_thread_tools
 
-        core_set = (
-            set(default_tools)
-            if default_tools is not None
-            else {t.name for t in SEED_TOOLS}
-        )
+        core_set = set(resolve_default_tool_names(default_tools))
         visible_optional = filter_discoverable_catalog_tool_names(
             CATALOG_TOOLS.keys(),
             user.role,
@@ -113,7 +110,7 @@ def create_tools_router(
     ):
         """Return callable threads actually available to a caller thread."""
         require_thread_access_fn(user, thread_id, claim=False)
-        from ...tools import SEED_TOOLS, CATALOG_TOOLS
+        from ...tools import resolve_default_tool_names, static_tool_catalog
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
@@ -125,14 +122,9 @@ def create_tools_router(
             else None
         )
 
-        all_tools_dict = {t.name: t for t in SEED_TOOLS}
-        all_tools_dict.update(CATALOG_TOOLS)
+        all_tools_dict = static_tool_catalog()
         default_tools = profile.tool_preferences.default_thread_tools
-        core_names = (
-            default_tools
-            if default_tools is not None
-            else [t.name for t in SEED_TOOLS]
-        )
+        core_names = resolve_default_tool_names(default_tools)
         existing_names = {name for name in core_names if name in all_tools_dict}
         if default_tools is not None:
             existing_names.update(
@@ -178,6 +170,7 @@ def create_tools_router(
             SEED_TOOLS,
             CATALOG_TOOLS,
             filter_discoverable_catalog_tool_names,
+            resolve_default_tool_names,
         )
         from ...tools.metadata import (
             MCP_SERVER_TOOL_METADATA,
@@ -189,10 +182,7 @@ def create_tools_router(
         profile = agent.profile_manager.get_profile(user_id)
         prefs = profile.tool_preferences
 
-        if prefs.default_thread_tools is not None:
-            default_set = set(prefs.default_thread_tools)
-        else:
-            default_set = {t.name for t in SEED_TOOLS}
+        default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
 
         tools_out = []
         seen = set()
@@ -321,12 +311,12 @@ def create_tools_router(
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Reset default tools to all core tools."""
-        from ...tools import SEED_TOOLS
+        """Reset default tools to the built-in seed set (SEED_TOOLS)."""
+        from ...tools import seed_tool_names
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = [t.name for t in SEED_TOOLS]
+        profile.tool_preferences.default_thread_tools = seed_tool_names()
         agent.profile_manager.save_profile(profile)
 
         agent._rebuild_default_graphs()

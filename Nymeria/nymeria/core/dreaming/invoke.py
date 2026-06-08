@@ -71,9 +71,11 @@ DEFAULT_DREAM_ENABLED_CORE_TOOLS: tuple[str, ...] = (
     "nym_todo_list",
 )
 
-# Optional tools the dream cycle gets access to in addition to the always-on
-# core set. These let the dream propose skill suggestions, manage skills, and
-# write to the parent's instructions field.
+# Catalog tools the dream cycle gets access to in addition to its fixed core
+# allowlist (DEFAULT_DREAM_ENABLED_CORE_TOOLS above). A dream shadow thread uses
+# this strict allowlist, NOT the user's default_thread_tools. These let the dream
+# propose skill suggestions, manage skills, and write to the parent's
+# instructions field.
 DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS: tuple[str, ...] = (
     "thread_instructions_set",
     "skill_write",

@@ -266,7 +266,7 @@ live_temp = self._resolve_temporary_tools(tc)
 extra_names = (set(tc.enabled_tools) | live_temp) - disabled
 ```
 
-Tools are looked up in `ALL_TOOLS`, then `OPTIONAL_TOOLS`, then the tool registry (for MCP/custom tools).
+Tools are looked up in `SEED_TOOLS`, then `CATALOG_TOOLS`, then the tool registry (for MCP/custom tools).
 
 ### TTL Eviction: `_resolve_temporary_tools()`  -  `core/agent.py`
 

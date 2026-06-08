@@ -573,10 +573,9 @@ def bind_tools_for_thread(
             continue
 
         # (2) part of the thread's default-bound set — no write needed,
-        #     adding to enabled_tools would be redundant clutter. (Note:
-        #     this bucket is NOT the same as the "core" used by the
-        #     disable guard below — that protects SEED_TOOLS hardcoded
-        #     essentials, a broader concept than default-bound.)
+        #     adding to enabled_tools would be redundant clutter. (This is the
+        #     same default-bound set the disable guard below protects, so
+        #     enable and disable agree on what "default" means for the thread.)
         if in_default:
             already_default.append(name)
             continue
@@ -797,7 +796,7 @@ def _enable(
 
 def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     from ..core.agent import get_current_agent
-    from . import SEED_TOOLS, CATALOG_TOOLS
+    from . import CATALOG_TOOLS, resolve_default_tool_names
 
     agent = get_current_agent()
     if agent is None:
@@ -814,31 +813,45 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     if not valid:
         return f"[Error]: No valid tools to disable. Unknown: {', '.join(invalid)}"
 
-    # Guard against accidental core-tool lockout. Disabling bash_execute,
-    # file_read, tool_search, etc. can cripple the thread. Require an
-    # explicit force=True opt-in — but still proceed with the non-core
-    # subset (partial success), so mixed batches like disable([core, opt])
-    # don't have their non-core portion blocked just because a core name
-    # snuck in. The agent can retry the refused core subset with force=True.
-    core_names = {t.name for t in SEED_TOOLS}
-    core_targets = [n for n in valid if n in core_names]
-    non_core_targets = [n for n in valid if n not in core_names]
+    # Guard against accidental lockout from the thread's default tools.
+    # Disabling bash_execute, file_read, tool_search, etc. can cripple the
+    # thread. Require an explicit force=True opt-in, but still proceed with
+    # the rest (partial success), so mixed batches don't have their unguarded
+    # portion blocked just because a protected name snuck in. The agent can
+    # retry the refused subset with force=True.
+    #
+    # The protected set is the thread's ACTUAL default-bound tools (the owner's
+    # default_thread_tools, or the seed set when uninitialized): the same
+    # source graph-build uses, not the raw SEED_TOOLS list. Using SEED_TOOLS
+    # would over-protect seed tools the user demoted out of their defaults (not
+    # even bound to the thread) and under-protect optional tools the user
+    # promoted in and now relies on.
+    try:
+        owner_id = agent.accounts_repo.get_thread_owner(thread_id) or "default"
+        owner_default = (
+            agent.profile_manager.get_profile(owner_id).tool_preferences.default_thread_tools
+        )
+    except Exception:
+        owner_default = None
+    protected_names = set(resolve_default_tool_names(owner_default))
+    protected_targets = [n for n in valid if n in protected_names]
+    other_targets = [n for n in valid if n not in protected_names]
 
-    if core_targets and not force:
-        refused_core = core_targets
-        targets = non_core_targets
+    if protected_targets and not force:
+        refused_protected = protected_targets
+        targets = other_targets
     else:
-        refused_core = []
+        refused_protected = []
         targets = valid
 
-    # All targets were core with no force — nothing left to do.
+    # All targets were protected with no force, nothing left to do.
     if not targets:
         return (
-            f"[Error]: Refusing to disable core tool(s) without force=True: "
-            f"{', '.join(sorted(refused_core))}.\n"
-            "These tools are foundational to this thread (shell access, file "
-            "I/O, memory, tool discovery, etc.) and disabling them can "
-            "severely limit the agent's ability to recover.\n"
+            f"[Error]: Refusing to disable default tool(s) without force=True: "
+            f"{', '.join(sorted(refused_protected))}.\n"
+            "These are the thread's default tools (shell access, file I/O, "
+            "memory, tool discovery, etc.) and disabling them can severely "
+            "limit the agent's ability to recover.\n"
             "If you're certain, retry with force=True."
         )
 
@@ -863,18 +876,18 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
 
     agent.invalidate_thread_config_cache(thread_id)
 
-    forced_core = [n for n in targets if n in core_names]
+    forced_protected = [n for n in targets if n in protected_names]
     lines = [f"[Success]: Disabled {len(targets)} tool(s): {', '.join(sorted(targets))}"]
-    if forced_core:
+    if forced_protected:
         lines.append(
-            f"[Warning]: {len(forced_core)} CORE tool(s) disabled (force=True): "
-            f"{', '.join(sorted(forced_core))}. "
+            f"[Warning]: {len(forced_protected)} default tool(s) disabled (force=True): "
+            f"{', '.join(sorted(forced_protected))}. "
             "Re-enable with tool_manage(action=\"enable\", ...) if you need them."
         )
-    if refused_core:
+    if refused_protected:
         lines.append(
-            f"[Refused]: {len(refused_core)} core tool(s) not disabled "
-            f"(force=False): {', '.join(sorted(refused_core))}. "
+            f"[Refused]: {len(refused_protected)} default tool(s) not disabled "
+            f"(force=False): {', '.join(sorted(refused_protected))}. "
             "Retry just this subset with force=True if disabling them is "
             "actually what you want."
         )

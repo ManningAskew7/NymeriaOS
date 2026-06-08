@@ -5,6 +5,30 @@ Callable threads replace the old sub-agent system. Any thread can become
 a callable tool with its own system prompt, LLM config, and tool set.
 
 Callable thread tools are added per-graph in _build_graph_with_prompt(), not globally.
+
+Tool classification (read this before reasoning about "core" vs "optional"):
+
+- ``SEED_TOOLS`` (~18) is the code-level set that SEEDS each user's editable
+  ``default_thread_tools`` on first run (``NymeriaAgent._migrate_tool_preferences``).
+  It is NOT "all tools" and NOT a runtime guarantee: a user can demote a seed
+  tool out of their defaults, and any thread can disable it.
+- ``CATALOG_TOOLS`` (~1,250) is the bindable catalog. A catalog tool is not
+  off-by-default in any fixed sense: it binds per-thread (``enabled_tools``) or
+  by being promoted into a user's ``default_thread_tools``.
+- What a thread actually gets is decided in
+  ``core/agent_graph.select_tools_for_graph``:
+  ``(default_thread_tools or SEED_TOOLS) | enabled_tools | temporary_tools``
+  minus ``disabled_tools`` and role gates. ``default_thread_tools`` is the
+  runtime authority; these two lists are the code-level defaults/catalog behind it.
+- Use ``resolve_default_tool_names(default_thread_tools)`` for the default-name
+  fallback and ``static_tool_catalog()`` for the merged name->tool lookup, rather
+  than re-deriving either inline.
+- The ``*_TOOL_NAMES`` frozensets (capability-expansion, admin-only,
+  developer-only) are name overlays applied at bind time, not separate tiers.
+
+Adding a tool: ``@tool`` it, then place it in ``SEED_TOOLS`` (on by default for
+everyone, and auto-synced into every existing user's defaults on reload) or in a
+``CATALOG_TOOLS`` group (opt-in). Prefer the catalog unless it must always be on.
 """
 
 from .bash import bash_execute
@@ -1362,8 +1386,11 @@ _PRV_TOOLS_A = (
     + _PRV_TOOLS_A5
 )
 
-# Optional tools — available for per-thread enabling but NOT loaded by default.
-# Maps tool name -> tool object. Users enable these via thread config UI.
+# CATALOG_TOOLS: the bindable tool catalog (name -> tool object). Bound per
+# thread when named in a thread's enabled_tools, or when promoted into a user's
+# default_thread_tools. These objects are bound by name directly at graph-build
+# (agent_graph.select_tools_for_graph / static_tool_catalog), NOT registered in
+# the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
 CATALOG_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
@@ -1511,7 +1538,10 @@ def filter_admin_only_tools(
     blocked = names & ADMIN_ONLY_TOOL_NAMES
     return names - blocked, blocked
 
-# All available tools
+# SEED_TOOLS: the code-level seed for each user's default_thread_tools (see the
+# module docstring). On by default for everyone, but NOT "all tools" and NOT a
+# runtime guarantee: a user can demote any of these out of their defaults and
+# any thread can disable them.
 SEED_TOOLS = [
     # Core system tools
     bash_execute,
@@ -1539,6 +1569,44 @@ SEED_TOOLS = [
     auth_bindings,
     request_credential,
 ]
+
+
+def seed_tool_names() -> list[str]:
+    """Names of the seed tools (``SEED_TOOLS``).
+
+    ``SEED_TOOLS`` is the code-level set that seeds each user's editable
+    ``default_thread_tools``; it is the fallback for an uninitialized profile,
+    not a runtime guarantee. Returns a fresh list each call.
+    """
+    return [t.name for t in SEED_TOOLS]
+
+
+def resolve_default_tool_names(default_thread_tools) -> list[str]:
+    """The default tool names for a profile.
+
+    Returns the user's saved ``default_thread_tools`` when set, else the seed
+    names as the fallback for an uninitialized profile. This is the single
+    canonical form of the ``... if default_thread_tools is not None else
+    [t.name for t in SEED_TOOLS]`` pattern that was duplicated across the graph
+    builder, the API routers, and the CLI; callers needing a set wrap the
+    result. Behavior-identical to that pattern.
+    """
+    return default_thread_tools if default_thread_tools is not None else seed_tool_names()
+
+
+def static_tool_catalog() -> dict:
+    """Name -> tool for every statically defined tool (seed + catalog).
+
+    The single canonical merge of ``SEED_TOOLS`` and ``CATALOG_TOOLS`` used to
+    bind a tool object by name at graph-build time. The two sets are disjoint,
+    so merge order does not matter. Does NOT include callable-thread, custom, or
+    MCP tools, which are resolved separately from the tool registry. Returns a
+    fresh dict each call.
+    """
+    catalog = {t.name: t for t in SEED_TOOLS}
+    catalog.update(CATALOG_TOOLS)
+    return catalog
+
 
 __all__ = [
     "bash_execute",
@@ -2706,6 +2774,9 @@ __all__ = [
     "filter_developer_only_tools",
     "filter_discoverable_catalog_tool_names",
     "SEED_TOOLS",
+    "seed_tool_names",
+    "resolve_default_tool_names",
+    "static_tool_catalog",
     "hello_test",
     "GOOGLE_DOCS_TOOLS",
     "GOOGLE_SHEETS_TOOLS",

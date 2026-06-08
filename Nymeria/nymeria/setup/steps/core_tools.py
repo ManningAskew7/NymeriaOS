@@ -1,6 +1,7 @@
-"""Core toolset step (informational): the always-on tools every thread receives.
+"""Core toolset step (informational): the tools every new thread receives by default.
 
-These tools ship in every default thread and are not chosen at init. This screen
+These tools seed every new thread's default set and are not chosen at init (the
+user can later demote them). This screen
 shows them for orientation; the following family steps seed the init-chosen tools
 on top, and finalize writes the whole set (core plus picks) into the bootstrap
 admin's `default_thread_tools`. The displayed list is the REAL seed
@@ -45,7 +46,7 @@ def _core_tools_markup() -> str:
 
     notes = dict(CORE_TOOLSET_TARGET)
     lines = [
-        "[bold]Core toolset[/bold] (always on for every new thread):",
+        "[bold]Core toolset[/bold] (on by default in every new thread):",
         "",
     ]
     for name in core_seed_tool_names():
@@ -61,7 +62,7 @@ def _core_tools_markup() -> str:
 
 
 class CoreToolsStep(WizardStep):
-    """Informational: the always-on core tools, before the family pickers."""
+    """Informational: the default (seed) core tools, before the family pickers."""
 
     def compose_body(self) -> ComposeResult:
         yield Static(_core_tools_markup())
@@ -80,8 +81,8 @@ def make_core_tools_step() -> Step:
             step_id="core_tools",
             title="Core toolset",
             note=(
-                "The always-on tools every thread receives. The next steps add "
-                "optional tool families on top of these."
+                "The tools every new thread receives by default. The next steps "
+                "add optional tool families on top of these."
             ),
             hint="enter next   esc back   ctrl+q quit",
         )

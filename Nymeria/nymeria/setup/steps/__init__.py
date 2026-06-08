@@ -71,7 +71,7 @@ def build_default_steps() -> list[Step]:
         make_provider_step(),
         make_connection_step(),
         make_model_step(),
-        # Tool families seeded on top of the always-on core set (core-toolset
+        # Tool families seeded on top of the default (seed) core set (core-toolset
         # plan, Sections A-C), the keys those backends need, then the remaining
         # capability placeholders.
         make_core_tools_step(),

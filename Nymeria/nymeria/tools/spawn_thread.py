@@ -730,16 +730,24 @@ def spawn_thread(
 
     disabled_list: List[str] = []
     if disabled_tools:
-        core_tool_names = {t.name for t in SEED_TOOLS}
+        # disabled_tools is authoritative subtraction at graph-build and can
+        # target ANY bound tool, seed or catalog (optional) or dynamic, not just
+        # seed tools. Mirror the optional_tools validation above: accept any
+        # known tool name and warn only for genuinely unknown ones (the old code
+        # checked SEED_TOOLS alone, mislabeling valid optional names as
+        # "unknown core tool(s)").
+        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
         unknown_disabled: List[str] = []
         for name in disabled_tools:
-            if name in core_tool_names:
+            if name in all_known or (
+                agent.tool_registry and agent.tool_registry.get_tool(name)
+            ):
                 disabled_list.append(name)
             else:
                 unknown_disabled.append(name)
         if unknown_disabled:
             warnings.append(
-                f"unknown core tool(s) to disable: {', '.join(unknown_disabled)}"
+                f"unknown tool(s) to disable: {', '.join(unknown_disabled)}"
             )
 
     if not include_core_tools:

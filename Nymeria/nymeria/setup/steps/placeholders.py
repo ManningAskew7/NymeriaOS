@@ -1,7 +1,7 @@
 """Init-chosen tool-family steps and capability placeholders.
 
 These follow Section B of `docs/private/core-toolset-plan.md`: at init the user
-seeds members of real tool families on top of the always-on core set. The
+seeds members of real tool families on top of the default (seed) core set. The
 `web_search_*`, `fetch_url_*`, and `image_gen_*` families are built, so they are
 real multi-selects over the actual registered tool names, and the picks are
 written to the bootstrap admin's `default_thread_tools` at finalize (via

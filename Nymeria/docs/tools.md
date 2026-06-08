@@ -1,6 +1,6 @@
 # Nymeria Tools Reference
 
-Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic callable thread tools** (one per callable thread), and a large set of **optional tools** available for per-thread enabling. The code-owned registry has 19 core tools in `ALL_TOOLS` and roughly 1,260 optional tools in `OPTIONAL_TOOLS` (the count drifts as integrations land; regenerate `tools-index.md` for the live total).
+Nymeria has a three-tier tool system: **seed tools** (the code-level default for new threads), **dynamic callable thread tools** (one per callable thread), and a large **catalog** of optional tools available for per-thread enabling. The code-owned registry has ~18 seed tools in `SEED_TOOLS` and roughly 1,260 catalog tools in `CATALOG_TOOLS` (the count drifts as integrations land; regenerate `tools-index.md` for the live total). What a thread actually loads is its user's editable `default_thread_tools` (seeded from `SEED_TOOLS` on first run) plus per-thread `enabled_tools`/`temporary_tools`, minus `disabled_tools`. So a seed tool is on by default but can be demoted out of the defaults or disabled per thread, and a catalog tool can be promoted into the defaults; `SEED_TOOLS` is the seed, not a runtime guarantee.
 
 ## Summary Table
 
@@ -34,11 +34,11 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 | 18 | `auth_bindings` | Credentials | MODERATE | On | Bind or unbind credentials to runtime targets |
 | 19 | `request_credential` | Credentials | SAFE | On | Ask the user to provide a missing credential through a frontend prompt |
 
-> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
+> **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `SEED_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
-> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill/Skill Kit authoring are no longer default tools. The bundled `self-improve` skill is a text-only guidance skill (it binds no tools); it holds the capability-expansion operating philosophy plus a router to four focused, default-on Skill Kits that each bind their tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential`, which are core/always-on tools, so this kit is mainly guidance).
+> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill/Skill Kit authoring are no longer default tools. The bundled `self-improve` skill is a text-only guidance skill (it binds no tools); it holds the capability-expansion operating philosophy plus a router to four focused, default-on Skill Kits that each bind their tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential`, which are in the default seed, so this kit is mainly guidance).
 
-> **Note:** `bash_execute` is a core tool for personal-assistant effectiveness and relies on the backend deployment boundary for sandboxing. `claude_code`, `reload_all`, and `self_modify_rollback` live in `OPTIONAL_TOOLS` and are admin-only optional tools. See `nymeria/tools/__init__.py` for the canonical lists.
+> **Note:** `bash_execute` is a core tool for personal-assistant effectiveness and relies on the backend deployment boundary for sandboxing. `claude_code`, `reload_all`, and `self_modify_rollback` live in `CATALOG_TOOLS` and are admin-only optional tools. See `nymeria/tools/__init__.py` for the canonical lists.
 
 > **Tool output guard:** After any tool executes, Nymeria truncates oversized `ToolMessage` content before it is stored in thread history. `TOOL_OUTPUT_MAX_CHARS` defaults to `100000`; larger outputs keep the first ~75k and last ~25k characters with a marker showing the original and omitted sizes.
 
@@ -129,7 +129,7 @@ Four knobs sit on top of the raw thread config to make spawning fast and intentf
 
 - `tool_queries: List[str]`: free-text intents (e.g. `["research", "browser automation"]`) resolved via the semantic tool search index. The top matches for each query are merged into the child's enabled tools. Faster than enumerating exact tool names; mix freely with `optional_tools` and `tool_categories`.
 - `tool_query_top_k: int = 8`: max matches kept per query before deduping across queries.
-- `include_core_tools: bool = True`: when `False`, the child skips `ALL_TOOLS` and gets only the explicitly resolved/selected set. Useful for focused sub-agents that should not have memory writes, sub-spawning, file IO, or other broad capabilities.
+- `include_core_tools: bool = True`: when `False`, the child skips `SEED_TOOLS` and gets only the explicitly resolved/selected set. Useful for focused sub-agents that should not have memory writes, sub-spawning, file IO, or other broad capabilities.
 - `ttl_hours: Optional[int] = None`: single TTL knob. `None` is a permanent thread; any positive integer marks the thread temporary so the worker ticker auto-deletes it after that many hours without activity. Activity is refreshed on each turn and each callable invocation.
 
 `instructions` (system-prompt text appended to soul.md) and `prompt` (initial message dispatched to the child and blocked on) are unchanged. The return preamble includes a `[Resolved tools]: name (score <- "query"), ...` line when `tool_queries` was used so the parent can verify what was actually attached.
@@ -271,7 +271,7 @@ file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: b
 
 ### ~~file_list~~ (removed)
 
-**Deprecated.** Removed from `ALL_TOOLS` and `TOOL_METADATA`. For trusted maintenance threads, an admin may enable `bash_execute` and use shell listing commands instead.
+**Deprecated.** Removed from `SEED_TOOLS` and `TOOL_METADATA`. For trusted maintenance threads, an admin may enable `bash_execute` and use shell listing commands instead.
 
 ---
 
@@ -525,7 +525,7 @@ consult(question: str, context: Optional[str] = None, model: Optional[str] = Non
 
 ### claude_code (Optional, admin-only)
 
-Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default**  -  lives in `OPTIONAL_TOOLS` and is gated by `ADMIN_ONLY_OPTIONAL_TOOL_NAMES` (only admins may enable it).
+Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default**  -  lives in `CATALOG_TOOLS` and is gated by `ADMIN_ONLY_TOOL_NAMES` (only admins may enable it).
 
 ```python
 claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
@@ -1548,7 +1548,7 @@ tool_manage(
 
 **Actions:**
 - `enable`  -  Enable tools by name (`tools`) or by category (`category`). In `astream()` (REST/SSE and sync-worker bridge callers) and `chat()` (MCP final-string path), this triggers an in-turn graph rebuild so the tools are callable in the very next step of the same user message.
-- `disable`  -  Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses core tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: non-core names are disabled, core names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive  -  it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. "Core" here is the hardcoded `ALL_TOOLS` set, which is a **superset** of what the `already_default` classifier bucket calls default-bound (user profile's `default_thread_tools` curates a subset of `ALL_TOOLS`).
+- `disable`  -  Disable tools for the thread (`tools`). Takes effect on the next agent step. Refuses the thread's default tools (`file_read`, `file_write`, etc.) unless `force=True`. Mixed batches partially succeed: unguarded names are disabled, protected names are listed under `[Refused]` with a hint to retry that subset with `force=True`. Disable is non-destructive  -  it only appends to `disabled_tools`; entries in `enabled_tools` / `temporary_tools` are preserved, so a subsequent `enable` restores the tool's original permanent/TTL state. The protected set is the thread's actual default-bound set (the user profile's `default_thread_tools`, or `SEED_TOOLS` when uninitialized)  -  the same source graph-build and the `already_default` enable bucket use, so enable and disable agree on what "default" means for the thread.
 - `prune`  -  Conservatively clean current-thread binding clutter. Removes expired temporary tools, missing/unavailable tool names, default-bound tools redundantly listed in `enabled_tools`, and recorded-stale permanent enablements whose last use is older than `stale_after_days`. Bindings with no recorded usage are left intact.
 - `list_categories`  -  List all tool categories with tool counts.
 - `status` / `inspect`  -  Show currently enabled/disabled tools for this thread, with TTL remaining per entry.
@@ -1563,9 +1563,9 @@ tool_manage(
 - `min_enabled_age_days` (`int`): For `prune`, minimum thread config age before stale-use pruning. Default `7`.
 - `dry_run` (`bool`): For `prune`, report proposed changes without saving.
 
-**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order  -  (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS  -  the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set  -  `ALL_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
+**Enable response buckets:** every input tool is classified in exactly one bucket, checked in this priority order  -  (1) `Un-disabled` (was in `disabled_tools`, now removed; if the tool has a preserved `enabled_tools` or `temporary_tools` entry, it is restored AS-IS  -  the requested `ttl` does NOT apply, so a batch-level TTL can't silently promote/demote an unrelated tool; a fresh entry is only written when there is no preserved state and no default binding), (2) `Already permanent` (in `tc.enabled_tools`; TTL requests are rejected, no demotion), (3) `Already bound (default set)` (in the thread's default-bound set  -  `SEED_TOOLS` or the user-profile-level `default_thread_tools` override; already callable, no write), (4) `TTL refreshed` (in `tc.temporary_tools`; `expires_at` pushed out), (5) `Promoted to permanent` (in `tc.temporary_tools`, `ttl="never"` or `ttl="permanent"` → moved to `tc.enabled_tools`), (6) `Newly loaded` (none of the above; written fresh to `enabled_tools` or `temporary_tools` depending on `ttl`).
 
-The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in ALL_TOOLS}`). Tools that live in `ALL_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. Note: the bucket is called `Already bound (default set)`  -  not "core"  -  to avoid conflating it with the `disable` guard's "core" protection, which uses the broader `ALL_TOOLS` list.
+The classifier sources its default-bound set from the same place as graph-build (`agent._build_graph_with_prompt`: `profile.tool_preferences.default_thread_tools` if set, else `{t.name for t in SEED_TOOLS}`, via the `resolve_default_tool_names` helper). Tools that live in `SEED_TOOLS` but are excluded from the user's `default_thread_tools` list are correctly treated as optional (priority-6 newly-loaded) rather than already-bound. The `disable` guard protects this same default-bound set, so enable and disable agree on what is "default" for the thread.
 
 **`disabled_tools` is authoritative in graph-build.** The graph-build pipeline is: start with the default-bound set, filter out `disabled_tools`, then add extras from `enabled_tools ∪ live_temporary_tools`  -  BUT extras are also filtered by `disabled_tools` before merging. So a tool listed in both `enabled_tools` and `disabled_tools` is unbound (disable wins). This lets `disable` be non-destructive: it only appends to `disabled_tools` and leaves `enabled_tools` / `temporary_tools` alone. An `enable` on that same tool just removes it from `disabled_tools`; the preserved permanent/TTL entry comes back automatically. Without this rule, `disable` would have to destructively mutate `enabled_tools` to actually disable an overlapping tool, and a disable→enable round-trip would silently strip the permanent badge.
 
@@ -1672,7 +1672,7 @@ reload_all()
 
 **Returns:** Count of reloaded tools and trigger sources.
 
-**Availability:** Present in `RUNTIME_ADMIN_TOOLS` / optional tooling, not in the always-loaded core `ALL_TOOLS` list.
+**Availability:** Present in `RUNTIME_ADMIN_TOOLS` / catalog tooling, not in the `SEED_TOOLS` default seed.
 
 **Important:** Due to how LangGraph works, newly created tools are not available in the same conversation turn. They work on the next user message.
 
@@ -1693,7 +1693,7 @@ self_modify_rollback(file_path: str)
 
 **Security:** **SENSITIVE**  -  disabled by default. Requires explicit opt-in via user tool preferences or per-thread config.
 
-**Availability:** This is not an always-loaded core tool. It is surfaced through self-modify or optional tool paths.
+**Availability:** This is not a default seed tool. It is surfaced through self-modify or optional tool paths.
 
 ---
 
@@ -1701,7 +1701,7 @@ self_modify_rollback(file_path: str)
 
 Event-driven automation  -  triggers fire agent prompts or actions in response to external events. These complement recurring TODOs, which handle time-based work.
 
-> **Note:** Trigger tools are **not loaded by default** for the main agent. They are available in `OPTIONAL_TOOLS` for per-thread enabling, and are always available to SelfModifyAgent.
+> **Note:** Trigger tools are **not loaded by default** for the main agent. They are available in `CATALOG_TOOLS` for per-thread enabling, and are always available to SelfModifyAgent.
 
 ### trigger_config
 
@@ -1809,7 +1809,7 @@ trigger_info(action="sources")
 
 Gives the agent a single dispatch tool that invokes the same user-facing slash commands exposed by the Discord and Telegram bots  -  so the agent can inspect and change its own backend (LLM model, tool set, memories, TODOs, env vars, notepad) without dedicated per-setting tools bloating the tool list.
 
-> **Note:** Not loaded by default. Lives in `OPTIONAL_TOOLS`  -  enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
+> **Note:** Not loaded by default. Lives in `CATALOG_TOOLS`  -  enable per-thread via thread config UI or `PATCH /threads/{id}/config {"enabled_tools": ["slash_command"]}`.
 
 ### slash_command
 
@@ -2448,7 +2448,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
-1. `OPTIONAL_TOOLS` in `tools/__init__.py` maps tool names to tool objects
+1. `CATALOG_TOOLS` in `tools/__init__.py` maps tool names to tool objects
 2. Per-thread config has an `enabled_tools` list (tool names)
 3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
@@ -2461,9 +2461,9 @@ tool in `disabled_tools`. The desktop UI preserves those disabled overrides even
 when a tool is not currently in the default set, so a thread-specific opt-out
 continues to apply if the tool is promoted later.
 
-The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread. Tool discovery is role-filtered; `hello_test` remains in `OPTIONAL_TOOLS` for admin/test validation but is hidden from non-admin search/listing surfaces and rejected by non-admin enable paths.
+The desktop/mobile Thread Settings UI mirrors this split: the Tools tab shows non-MCP tools from `default_thread_tools` plus non-MCP optional tools, while the MCP tab shows MCP-discovered tools. Default MCP tools can be disabled per thread; non-default MCP tools can be enabled per thread. Tool discovery is role-filtered; `hello_test` remains in `CATALOG_TOOLS` for admin/test validation but is hidden from non-admin search/listing surfaces and rejected by non-admin enable paths.
 
-**Important:** `OPTIONAL_TOOLS` currently includes more than just integrations. It also contains admin-only tools like `claude_code`, `reload_all`, and `self_modify_rollback`.
+**Important:** `CATALOG_TOOLS` currently includes more than just integrations. It also contains admin-only tools like `claude_code`, `reload_all`, and `self_modify_rollback`.
 
 ---
 
@@ -2551,7 +2551,7 @@ Logs and last errors are saved with secret redaction so failed installs can be
 inspected and retried.
 
 Discovered MCP tools are dynamic registry tools internally named
-`mcp__<server_id>__<tool_name>`. They are not entries in `OPTIONAL_TOOLS`.
+`mcp__<server_id>__<tool_name>`. They are not entries in `CATALOG_TOOLS`.
 Management surfaces should show readable labels like `<server name> / <tool>`
 or the raw MCP tool name, and reserve the internal `mcp__...` identifier for
 saved tool bindings, registry metadata, and troubleshooting.
@@ -2692,8 +2692,8 @@ sync with `GROUP_META` when regenerating.
 | **MODERATE** | Mutates external/local state or performs broader actions |
 | **SENSITIVE** | Code/runtime mutation or similarly high-risk behavior |
 
-Default availability is separate from security level: tools in `ALL_TOOLS` are
-enabled for new threads by default, and tools in `OPTIONAL_TOOLS` are opt-in by
+Default availability is separate from security level: tools in `SEED_TOOLS` are
+enabled for new threads by default, and tools in `CATALOG_TOOLS` are opt-in by
 default even when they are classified `SAFE`.
 
 ### Tools by Security Level
@@ -2740,7 +2740,7 @@ def my_tool(param: str) -> str:
 # nymeria/tools/__init__.py
 from .my_tool import my_tool
 
-ALL_TOOLS = [
+SEED_TOOLS = [
     # ... existing tools
     my_tool,
 ]
@@ -2750,7 +2750,7 @@ ALL_TOOLS = [
 
 The tool is available on next startup, or call `reload_all()` for hot-reload.
 Metadata is generated automatically from the registered tool object, so adding a
-tool to `ALL_TOOLS` or `OPTIONAL_TOOLS` is enough to get a metadata entry.
+tool to `SEED_TOOLS` or `CATALOG_TOOLS` is enough to get a metadata entry.
 Use clear docstrings: the first paragraph becomes the discovery description.
 
 ---
