@@ -752,6 +752,118 @@ def test_rag_search_snippet_extends_past_legacy_400_char_cap(monkeypatch):
     assert out.count("word") > 150      # far more than the old 80-word (400ch) cap
 
 
+# --- retrieval-stack diagnostics footer ------------------------------------
+
+def _rag_search_profile():
+    return types.SimpleNamespace(
+        opt_in=types.SimpleNamespace(rag_enabled=True),
+        get_rag_preferences=lambda: {
+            "include_conversations": True,
+            "include_memories": True,
+            "include_todos": True,
+        },
+    )
+
+
+def test_rag_search_footer_reports_live_embedder_and_pool(monkeypatch):
+    from nymeria.tools import memory as mem
+
+    monkeypatch.setattr(mem, "_get_profile_manager",
+                        lambda: types.SimpleNamespace(get_profile=lambda uid: _rag_search_profile()))
+
+    now = utc_now()
+    fake = [ChunkResult(id="1", content="budget talk", chunk_type="conversation",
+                        thread_id="t1", created_at=now, metadata={}, score=0.5,
+                        event_time=now)]
+    index = types.SimpleNamespace(
+        search=lambda **kw: fake,
+        _last_search_diag={
+            "retrieval_mode": "hybrid",
+            "embedding_provider": "local",
+            "embedding_model": "granite-small-r2",
+            "embedding_dimensions": 384,
+            "vector_used": True,
+            "vector_candidates": 7,
+            "bm25_used": True,
+            "bm25_candidates": 3,
+        },
+    )
+    monkeypatch.setattr(mem, "_get_memory_index", lambda uid: index)
+
+    out = mem.rag_search.func(query="budget", config={"configurable": {"user_id": "u1"}})
+    assert "[retrieval]" in out
+    assert "embedded by local:granite-small-r2@384d" in out
+    assert "vector live, 7 cand" in out
+    assert "pool depth" in out
+    assert "rerank off" in out  # rag_rerank_enabled defaults False
+
+
+def test_rag_search_footer_flags_bm25_fallback_when_vector_unavailable(monkeypatch):
+    from nymeria.tools import memory as mem
+
+    monkeypatch.setattr(mem, "_get_profile_manager",
+                        lambda: types.SimpleNamespace(get_profile=lambda uid: _rag_search_profile()))
+
+    now = utc_now()
+    fake = [ChunkResult(id="1", content="budget talk", chunk_type="conversation",
+                        thread_id="t1", created_at=now, metadata={}, score=0.5,
+                        event_time=now)]
+    index = types.SimpleNamespace(
+        search=lambda **kw: fake,
+        _last_search_diag={
+            "retrieval_mode": "hybrid",
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dimensions": 1536,
+            "vector_used": False,        # query embed failed/unavailable
+            "vector_candidates": 0,
+            "bm25_used": True,
+            "bm25_candidates": 1,
+        },
+    )
+    monkeypatch.setattr(mem, "_get_memory_index", lambda uid: index)
+
+    out = mem.rag_search.func(query="budget", config={"configurable": {"user_id": "u1"}})
+    assert "BM25 lexical only" in out
+
+
+def test_do_rerank_with_status_flags_misconfig_and_detects_reorder(monkeypatch):
+    from nymeria.tools import memory as mem
+
+    results = [types.SimpleNamespace(id="1"), types.SimpleNamespace(id="2"),
+               types.SimpleNamespace(id="3")]
+
+    # Managed provider with no api key -> misconfigured, order untouched.
+    status, out = mem._do_rerank_with_status(
+        config={}, query="q", results=results, provider="voyage",
+        model="rerank-2.5", api_key=None, onnx_file=None, top_n=20)
+    assert "misconfigured" in status and "api_key" in status
+    assert out is results
+
+    # Local provider with no model -> misconfigured.
+    status, _ = mem._do_rerank_with_status(
+        config={}, query="q", results=results, provider="local",
+        model=None, api_key=None, onnx_file=None, top_n=20)
+    assert "misconfigured" in status and "model" in status
+
+    # A reranker that reorders is reported as applied (reordered).
+    monkeypatch.setattr("nymeria.core.rag_quality.api_rerank",
+                        lambda *a, **k: list(reversed(results)))
+    status, out = mem._do_rerank_with_status(
+        config={}, query="q", results=results, provider="voyage",
+        model="rerank-2.5", api_key="key", onnx_file=None, top_n=20)
+    assert status == "applied (reordered)"
+    assert [r.id for r in out] == ["3", "2", "1"]
+
+    # A reranker that keeps the order is reported as ran (no reorder).
+    monkeypatch.setattr("nymeria.core.rag_quality.api_rerank",
+                        lambda *a, **k: list(results))
+    status, _ = mem._do_rerank_with_status(
+        config={}, query="q", results=results, provider="voyage",
+        model="rerank-2.5", api_key="key", onnx_file=None, top_n=20)
+    assert status == "ran (no reorder)"
+
+
 # --- recall@k / MRR eval over a seeded corpus ------------------------------
 
 def _evaluate(index, probes, user_id="eval", k=5):

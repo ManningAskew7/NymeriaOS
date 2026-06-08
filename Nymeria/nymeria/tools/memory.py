@@ -467,6 +467,118 @@ def _thread_title_resolver(user_id: str):
     return resolve
 
 
+_MANAGED_RERANKERS = ("voyage", "cohere", "zeroentropy")
+
+
+def _do_rerank_with_status(
+    config,
+    query: str,
+    results: list,
+    provider: str,
+    model: Optional[str],
+    api_key: Optional[str],
+    onnx_file: Optional[str],
+    top_n: int,
+) -> tuple:
+    """Run the configured reranker and report what actually happened.
+
+    Returns ``(status, results)``. ``status`` is a short human string the footer
+    surfaces so a configured reranker can be confirmed live (or caught silently
+    falling back) in testing: "applied (reordered)", "ran (no reorder)",
+    "misconfigured (...)", or "error, kept fused order (...)". Any failure keeps
+    the input order, matching the tool's degrade-not-break contract.
+    """
+    # Catch silent misconfiguration up front so it reads as misconfigured rather
+    # than a no-op "ran" (the rerank helpers just log and return input unchanged).
+    if provider in _MANAGED_RERANKERS and (not model or not api_key):
+        missing = " + ".join(
+            m for m, ok in (("model", model), ("api_key", api_key)) if not ok
+        )
+        return (f"misconfigured ({provider}: missing {missing})", results)
+    if provider == "local" and not model:
+        return ("misconfigured (local: missing model)", results)
+
+    before = [r.id for r in results]
+    try:
+        if provider in _MANAGED_RERANKERS:
+            from ..core.rag_quality import api_rerank
+            reranked = api_rerank(
+                provider, model, api_key, query, results, top_n=top_n,
+            )
+        elif provider == "local":
+            from ..core.rag_quality import local_rerank
+            reranked = local_rerank(
+                model, query, results, top_n=top_n, onnx_file=onnx_file,
+            )
+        else:  # 'llm' (default) or unknown -> listwise LLM rerank
+            from ..core.agent import get_current_agent
+            from ..core.rag_quality import llm_rerank
+            agent = get_current_agent()
+            if agent is None:
+                return ("skipped (no agent for llm rerank)", results)
+            reranked = llm_rerank(
+                agent, get_effective_thread_id(config), query, results, top_n=top_n,
+            )
+    except Exception as e:
+        logger.warning(f"rag_search rerank skipped: {e}")
+        return (f"error, kept fused order ({type(e).__name__})", results)
+
+    changed = [r.id for r in reranked] != before
+    return ("applied (reordered)" if changed else "ran (no reorder)", reranked)
+
+
+def _format_retrieval_footer(
+    *,
+    diag: Optional[dict],
+    emb_provider: str,
+    emb_model: str,
+    emb_dims: Optional[int],
+    retrieval_mode: str,
+    rerank_enabled: bool,
+    rerank_provider: str,
+    rerank_model: Optional[str],
+    rerank_status: str,
+    rerank_top_n: int,
+    retrieved: int,
+    returned: int,
+    search_limit: int,
+) -> str:
+    """One compact provenance line confirming the live retrieval stack: which
+    embedder produced the query vector (and whether the vector branch actually
+    ran vs degraded to BM25), which reranker applied, and the pool depth."""
+    # Prefer the index's own runtime view (what really ran) over configured values.
+    provider = (diag or {}).get("embedding_provider", emb_provider)
+    model = (diag or {}).get("embedding_model", emb_model)
+    dims = (diag or {}).get("embedding_dimensions", emb_dims)
+    mode = (diag or {}).get("retrieval_mode", retrieval_mode)
+    dim_str = f"@{dims}d" if dims else ""
+
+    if diag is None:
+        vec_state = "vector status unknown"
+    elif diag.get("vector_used"):
+        vec_state = f"vector live, {diag.get('vector_candidates', 0)} cand"
+    elif mode == "vector":
+        vec_state = "vector-only but query embed FAILED -> no vector hits"
+    else:
+        vec_state = "vector unavailable -> BM25 lexical only"
+
+    if rerank_enabled:
+        rr = rerank_provider + (f":{rerank_model}" if rerank_model else "")
+        rr_desc = f"reranked by {rr} [{rerank_status}]"
+    else:
+        rr_desc = "rerank off"
+
+    pool = f"pool depth {retrieved} retrieved"
+    if rerank_enabled:
+        pool += f" -> rerank top {rerank_top_n}"
+    pool += f" -> {returned} returned (limit {search_limit})"
+
+    return (
+        f"[retrieval] mode={mode} | embedded by {provider}:{model}{dim_str} "
+        f"({vec_state}) | {rr_desc} | {pool}"
+    )
+
+
 @tool
 def rag_search(
     query: str,
@@ -501,8 +613,12 @@ def rag_search(
         [chunk_type], relative age + event time, a 0-1 relevance, the source
         thread title + id (when applicable), and a content snippet (truncated to
         the configured budget, default 1000 chars). Near-duplicate results are
-        collapsed. "[No Results]: ..." when empty. "[RAG Disabled]: ..." if RAG
-        is off. Errors: "[Error]: <reason>".
+        collapsed. A trailing "[retrieval]" line reports the live stack (which
+        embedder produced the query vector and whether the vector branch ran vs
+        degraded to BM25, which reranker applied, and the pool depth) so the
+        configured embedder/reranker can be confirmed working. "[No Results]:
+        ..." when empty. "[RAG Disabled]: ..." if RAG is off. Errors: "[Error]:
+        <reason>".
     """
     logger.info(f"rag_search called: query={query[:50]}...")
 
@@ -558,6 +674,9 @@ def rag_search(
             anchor_enabled = settings.rag_anchor_enabled
             anchor_weight = settings.rag_anchor_weight
             anchor_floor = settings.rag_anchor_floor
+            emb_provider = settings.embedding_provider
+            emb_model = settings.embedding_model
+            emb_dims = settings.embedding_dimensions
         except Exception:
             fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
             retrieval_mode = "hybrid"
@@ -565,6 +684,7 @@ def rag_search(
             prose_priority, prose_priority_weight = True, 0.4
             dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
             anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
+            emb_provider, emb_model, emb_dims = "openai", "text-embedding-3-small", None
 
         # Per-user overrides of the server retrieval defaults (RAG is per-user).
         if rag_prefs.get("retrieval_mode"):
@@ -600,38 +720,25 @@ def rag_search(
             dedup_threshold=dedup_threshold,
         )
 
+        # Pool actually retrieved (fused candidates) before rerank + truncation.
+        retrieved_count = len(results)
+
         # Optional rerank of the fused candidates (off by default; adds latency).
         # rag_rerank_provider selects the backend: 'llm' (the thread's own model),
         # a managed rerank API (voyage/cohere/zeroentropy), or a local
-        # cross-encoder. Any failure falls back to the fused order.
-        if rerank_enabled and len(results) > 1:
-            try:
-                if rerank_provider in ("voyage", "cohere", "zeroentropy"):
-                    from ..core.rag_quality import api_rerank
-                    results = api_rerank(
-                        rerank_provider, rerank_model, rerank_api_key,
-                        query, results, top_n=rerank_top_n,
-                    )
-                elif rerank_provider == "local":
-                    from ..core.rag_quality import local_rerank
-                    results = local_rerank(
-                        rerank_model, query, results,
-                        top_n=rerank_top_n, onnx_file=rerank_local_onnx,
-                    )
-                else:  # 'llm' (default) or unknown -> listwise LLM rerank
-                    from ..core.agent import get_current_agent
-                    from ..core.rag_quality import llm_rerank
-                    agent = get_current_agent()
-                    if agent is not None:
-                        results = llm_rerank(
-                            agent,
-                            get_effective_thread_id(config),
-                            query,
-                            results,
-                            top_n=rerank_top_n,
-                        )
-            except Exception as e:
-                logger.warning(f"rag_search rerank skipped: {e}")
+        # cross-encoder. Any failure falls back to the fused order. rerank_status
+        # records what actually happened so the footer can confirm it in testing.
+        rerank_status = "off"
+        if rerank_enabled:
+            if len(results) <= 1:
+                rerank_status = "skipped (<=1 candidate)"
+            else:
+                rerank_status = _do_rerank_with_status(
+                    config, query, results, rerank_provider, rerank_model,
+                    rerank_api_key, rerank_local_onnx, rerank_top_n,
+                )
+                results = rerank_status[1]
+                rerank_status = rerank_status[0]
 
         results = results[:max_results]
 
@@ -679,6 +786,22 @@ def rag_search(
             lines.append(f"   from {source}")
             lines.append(f"   {content}")
             lines.append("")
+
+        lines.append(_format_retrieval_footer(
+            diag=getattr(memory_index, "_last_search_diag", None),
+            emb_provider=emb_provider,
+            emb_model=emb_model,
+            emb_dims=emb_dims,
+            retrieval_mode=retrieval_mode,
+            rerank_enabled=rerank_enabled,
+            rerank_provider=rerank_provider,
+            rerank_model=rerank_model,
+            rerank_status=rerank_status,
+            rerank_top_n=rerank_top_n,
+            retrieved=retrieved_count,
+            returned=len(results),
+            search_limit=search_limit,
+        ))
 
         return "\n".join(lines)
 
