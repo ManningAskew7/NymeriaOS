@@ -1703,6 +1703,19 @@
     border-radius: 50%;
     background: var(--accent-primary);
     cursor: pointer;
+    transition: box-shadow 120ms ease;
+  }
+
+  /* §6 — slider thumb glow on keyboard focus. Mobile sliders are usually
+     touched, not focused, so :focus-visible avoids triggering on iOS's
+     sticky-hover after touch — the ring only appears for an external
+     keyboard user. Desktop SettingsPanel has the same pattern. */
+  input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+
+  input[type="range"]:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 18%, transparent);
   }
 
   input[type="number"] {

@@ -1175,11 +1175,21 @@
     font-weight: 600;
     font-size: var(--font-size-sm);
     cursor: pointer;
-    transition: opacity var(--transition-fast);
+    transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
   }
 
-  .report-submit:hover {
-    opacity: 0.9;
+  /* §6 — hover used to dim opacity, which is the rule's textbook
+     "not just opacity changes" case. Match the canonical Button.svelte
+     primary pattern: darker bg + subtle lift + accent glow. */
+  .report-submit:hover:not(:disabled) {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--accent-glow-sm);
+  }
+
+  .report-submit:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: none;
   }
 
   .report-submit:disabled {
