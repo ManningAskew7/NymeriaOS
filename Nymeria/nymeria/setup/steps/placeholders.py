@@ -196,45 +196,63 @@ def make_stt_step() -> Step:
     )
 
 
-def make_skill_kits_step() -> Step:
-    """Placeholder: default Skill Kits to enable for every thread.
+# Section D, built: the bundled, default-on capability kits that the agent loads
+# on demand. self-improve (the text-only guidance skill) stays on separately and
+# is not a toggle here.
+_SKILL_KITS = [
+    Choice(
+        "tool-management",
+        "Tool management",
+        "Find, enable, and build tools, including HTTP/API-backed ones.",
+    ),
+    Choice(
+        "skill-management",
+        "Skill management",
+        "Find, install, create, and edit Skills and Skill Kits.",
+    ),
+    Choice(
+        "mcp-management",
+        "MCP management",
+        "Find, install, test, and manage MCP servers.",
+    ),
+    Choice(
+        "credential-management",
+        "Credential management",
+        "Request, inspect, and clean up service credentials and connections.",
+    ),
+]
 
-    The curated default-on kits (credential/tool/skill/mcp-management) are not
-    built yet (see `docs/private/core-toolset-plan.md` Section D), so this records
-    nothing and seeds no `enabled_global_skills`; the existing lazy `self-improve`
-    default stands. Becomes a real multi-select that seeds `enabled_global_skills`
-    once those kits ship.
+_SKILL_KIT_IDS = [choice.value for choice in _SKILL_KITS]
+
+
+def make_skill_kits_step() -> Step:
+    """Real multi-select over the bundled, default-on capability kits (Section D).
+
+    Seeds the chosen kit names into the bootstrap admin's `enabled_global_skills`
+    (see `finalize.seed_bootstrap_profile`). Each kit only appears in the agent's
+    skill index and loads its tools when activated, so all four are checked by
+    default. The `self-improve` guidance skill stays on regardless of this pick.
     """
-    return placeholder_step(
+    _, store = _extras_list("skill_kits")
+
+    def get_initial(state: WizardState) -> list[str]:
+        stored = state.extras.get("skill_kits")
+        if isinstance(stored, list):
+            return list(stored)
+        return list(_SKILL_KIT_IDS)
+
+    return multi_select_step(
         step_id="skill_kits",
         title="Default skill kits",
         note=(
-            "Placeholder. These kits are not built yet, so nothing is enabled here "
-            "(self-improve stays on by default). You can manage skills later in the "
-            "settings UI."
+            "Pick the capability kits Nymeria keeps on by default. Each shows up in "
+            "the agent's skill index and loads its tools only when the task needs "
+            "them, so leaving all four on is cheap. The self-improve guidance skill "
+            "stays on regardless. You can change these later in settings."
         ),
-        options=[
-            Choice(
-                "credential-management",
-                "Credential management",
-                "Connect, inspect, and clean up service credentials (coming soon).",
-            ),
-            Choice(
-                "tool-management",
-                "Tool management",
-                "Find, enable, and build tools, including HTTP/API-backed ones (coming soon).",
-            ),
-            Choice(
-                "skill-management",
-                "Skill management",
-                "Find, install, create, and edit Skills and Skill Kits (coming soon).",
-            ),
-            Choice(
-                "mcp-management",
-                "MCP management",
-                "Find, install, test, and manage MCP servers (coming soon).",
-            ),
-        ],
+        choices=_SKILL_KITS,
+        get_initial=get_initial,
+        store=store,
     )
 
 
@@ -254,6 +272,20 @@ def seeded_tool_names(state: WizardState) -> list[str]:
     return names
 
 
+def seeded_global_skills(state: WizardState) -> list[str]:
+    """The capability kit names the init flow seeds as default-on global skills.
+
+    Reads the `skill_kits` multi-select. When the step was never reached (e.g. a
+    non-interactive run that did not pass `--skill-kit`), defaults to all bundled
+    kits, matching the interactive step's all-checked default. `self-improve` is
+    added separately by the finalize seeding, not here.
+    """
+    value = state.extras.get("skill_kits")
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return list(_SKILL_KIT_IDS)
+
+
 __all__ = [
     "make_web_search_step",
     "make_fetch_url_step",
@@ -262,6 +294,7 @@ __all__ = [
     "make_stt_step",
     "make_skill_kits_step",
     "seeded_tool_names",
+    "seeded_global_skills",
     "has_nonperplexity_search",
     "unmet_fetch_dependency",
 ]

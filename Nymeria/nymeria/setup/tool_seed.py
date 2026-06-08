@@ -49,4 +49,25 @@ def default_thread_tools_for_state(state: "WizardState") -> list[str]:
     return names
 
 
-__all__ = ["core_seed_tool_names", "default_thread_tools_for_state"]
+def selected_global_skills_for_state(state: "WizardState") -> list[str]:
+    """``enabled_global_skills`` to seed: the self-improve guidance skill plus the
+    init-chosen capability kits.
+
+    ``self-improve`` is always included (the text-only routing/guidance skill that
+    the backend also defaults on); the chosen ``*-management`` kits follow.
+    Order-preserving dedup.
+    """
+    from .steps.placeholders import seeded_global_skills
+
+    names = ["self-improve"]
+    for name in seeded_global_skills(state):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+__all__ = [
+    "core_seed_tool_names",
+    "default_thread_tools_for_state",
+    "selected_global_skills_for_state",
+]

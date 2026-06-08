@@ -287,9 +287,9 @@ SECURITY_PROFILE_CHOICES = {
         value=SecurityProfile.UNLEASHED,
         label="Unleashed",
         description=(
-            "No approval gates, full autonomy, and the self-improve Skill Kit "
-            "bound by default. Use only inside a sandbox. (Enforcement is being "
-            "built out.)"
+            "No approval gates, full autonomy, and the capability-expansion kits "
+            "(tool, skill, MCP, and credential management) enabled by default. Use "
+            "only inside a sandbox. (Enforcement is being built out.)"
         ),
         advanced=True,
     ),

@@ -51,7 +51,17 @@ LEGACY_TOOL_RENAMES: Dict[str, Union[str, List[str]]] = {
     "auth_manage": ["auth_inspect", "auth_cleanup", "auth_bindings"],
 }
 
-DEFAULT_GLOBAL_SKILLS: List[str] = ["self-improve"]
+# self-improve (the text-only capability-expansion guidance skill) plus the
+# focused, default-on capability kits it routes to. All ship bundled in
+# skills_bundled/. Each is index-only until activated, so enabling them by
+# default costs only description chars per thread.
+DEFAULT_GLOBAL_SKILLS: List[str] = [
+    "self-improve",
+    "tool-management",
+    "skill-management",
+    "mcp-management",
+    "credential-management",
+]
 
 
 def migrate_tool_names(names: List[str]) -> List[str]:
@@ -464,11 +474,14 @@ class UserProfileManager:
         return profile
 
     def _migrate_default_global_skills(self, profile: UserProfile) -> UserProfile:
-        """One-time migration: make bundled self-improvement opt-out via UI.
+        """One-time migration: enable the bundled default capability kits.
 
-        ``self-improve`` should be on by default, but through the same
-        enabled_global_skills setting the frontend checkbox edits. The
-        watermark prevents re-adding it after the user unticks the box.
+        ``DEFAULT_GLOBAL_SKILLS`` (the self-improve guidance skill plus the
+        focused capability kits) should be on by default, but through the same
+        enabled_global_skills setting the frontend checkbox edits. The watermark
+        prevents re-adding a kit after the user unticks the box. Because this is
+        a single watermark, existing already-migrated profiles do not pick up
+        kits added to the list later; enable those by hand or via the UI.
         """
         if profile.global_skill_defaults_migrated:
             return profile

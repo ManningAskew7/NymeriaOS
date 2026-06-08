@@ -48,10 +48,12 @@ _OPTIONAL_KEY_FLAGS = (
 )
 
 # CLI flag -> state.extras family key, for seeding tool families non-interactively.
+# (argparse dest is the first element with dashes turned to underscores.)
 _FAMILY_FLAGS = (
     ("web_search", "web_search"),
     ("fetch_url", "fetch_url"),
     ("image_gen", "image_gen"),
+    ("skill_kit", "skill_kits"),
 )
 
 
@@ -151,6 +153,10 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--image-gen", action="append", default=None, metavar="TOOL",
         help="Seed an image_gen_* backend into the default tools (repeatable)",
+    )
+    parser.add_argument(
+        "--skill-kit", action="append", default=None, metavar="KIT",
+        help="Seed a default-on capability kit into enabled_global_skills (repeatable)",
     )
     parser.add_argument(
         "--root",

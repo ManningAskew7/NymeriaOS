@@ -127,37 +127,37 @@ are not activatable through `/skill` or `/kit` and do not appear in normal
 `/skills` listings, but remain inspectable through `/skills show <name>` for
 debugging.
 
-### Bundled self-improve Skill Kit
+### Bundled self-improve skill and the focused management kits
 
-`self-improve` ships as a bundled Skill Kit and Nymeria initializes it in each
-user profile's `enabled_global_skills` list once. That means it is on by
-default for new threads, and the Settings → Skills "Enable globally" checkbox
-is the source of truth: unticking it removes `self-improve` from the user's
-default thread skill set and Nymeria will not silently re-add it.
+`self-improve` ships as a bundled, text-only guidance skill: it binds no tools
+(`required_tools` is empty). Its body holds the capability-expansion operating
+philosophy plus the safety rules and a "which kit when" router. The
+capability-expansion tools themselves live in four focused, bundled Skill Kits
+that each bind their tools (ttl 2h) only when activated:
 
-Use it when the user asks Nymeria to gain a durable capability, integration,
-or reusable workflow, or before tool search/enabling, MCP search/install,
-skill search/install, API probing, or Skill Kit authoring. Activation binds:
+| Skill Kit | Binds | Use for |
+|-----------|-------|---------|
+| `tool-management` | `tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request` | find/enable/build tools, including HTTP or API-backed custom tools |
+| `skill-management` | `skill_manage`, `skill_write`, `skill_edit` | find/install/create/edit Skills and Skill Kits |
+| `mcp-management` | `manage_mcp` | find/install/test/manage MCP servers (ships with the single `manage_mcp` tool today) |
+| `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (these auth tools are core/always-on, so this kit is mainly guidance) |
 
-- `tool_search`
-- `tool_manage`
-- `manage_mcp`
-- `skill_manage`
-- `api_discover`
-- `http_request`
-- `tool_create`
-- `skill_write`
-- `skill_edit`
+Nymeria initializes `self-improve` and all four `*-management` kits in each user
+profile's `enabled_global_skills` list once, so they are on by default for new
+threads and their tools load lazily on activation. The Settings → Skills "Enable
+globally" checkbox is the source of truth: unticking one removes it from the
+user's default thread skill set and Nymeria will not silently re-add it.
 
-The Skill Kit teaches the end-to-end sequence: inspect existing capabilities,
-enable tools/skills/MCP servers when they already fit, discover/test APIs when
-needed, create reusable HTTP or Python tools through `tool_create`, then write
-or edit the workflow as a user-scope Skill Kit with `skill_write` or
-`skill_edit`. Generated Skill Kits are enabled on the
-current thread by default through `ThreadConfig.enabled_skills`; they are not
-added to `enabled_global_skills` unless the user later enables them globally in
-Settings. Codebase self-modification tools (`claude_code`, `reload_all`, and
-rollback) stay separate and admin-only.
+Activate `Skill(name="self-improve")` for the operating philosophy, then the
+matching kit for the work: inspect existing capabilities, enable
+tools/skills/MCP servers when they already fit, discover/test APIs when needed,
+create reusable HTTP or Python tools through `tool_create`, then write or edit
+the workflow as a user-scope Skill Kit with `skill_write` or `skill_edit`.
+Generated Skill Kits are enabled on the current thread by default through
+`ThreadConfig.enabled_skills`; they are not added to `enabled_global_skills`
+unless the user later enables them globally in Settings. Codebase
+self-modification tools (`claude_code`, `reload_all`, and rollback) stay
+separate and admin-only.
 
 ## Progressive disclosure (how the context budget stays small)
 
@@ -189,8 +189,11 @@ Four scope layers, in precedence order (name collisions: user > global > bundled
 | Bundled | `Nymeria/nymeria/skills_bundled/<skill-name>/` | ships with the repo |
 
 `enabled_global_skills` on the user profile contains skills active by default
-on every thread. Nymeria seeds new and unmigrated profiles with
-`self-improve`, but after that the list is fully user-controlled. Per-thread
+on every thread. Nymeria seeds new and unmigrated profiles with `self-improve`
+plus the `tool-management`, `skill-management`, `mcp-management`, and
+`credential-management` kits (`DEFAULT_GLOBAL_SKILLS` in
+`nymeria/core/user_profile.py`), but after that the list is fully
+user-controlled. Per-thread
 `enabled_skills` extends that set; per-thread `disabled_skills` subtracts from
 both global defaults and thread-local enables.
 
@@ -219,8 +222,9 @@ Implementation: the Skills HTTP routes are mounted from
 
 ## Agent-facing tools
 
-Capability-expansion tools are optional and normally arrive through
-`Skill(name="self-improve")`, not through the default tool list:
+Capability-expansion tools are optional and normally arrive through the focused
+management kits, not through the default tool list. The skill tools below arrive
+through `Skill(name="skill-management")`:
 
 - `skill_manage(action='list'|'search'|'install'|'enable'|'disable'|'inspect'|'status'|'prune', ...)`
 - `list_installed_skills(scope='all'|'user'|'global'|'bundled')`
@@ -228,9 +232,10 @@ Capability-expansion tools are optional and normally arrive through
 - `install_skill(name, source='anthropic', scope='user'|'global')`
 
 `skill_write` and `skill_edit` are the preferred authoring facades exposed by
-`self-improve`; `skill_write` accepts full SKILL.md markdown plus optional
-scripts, and `skill_edit` rewrites an existing SKILL.md while preserving
-auxiliary files. `tool_create` handles reusable HTTP or Python helper tools.
+the `skill-management` kit; `skill_write` accepts full SKILL.md markdown plus
+optional scripts, and `skill_edit` rewrites an existing SKILL.md while
+preserving auxiliary files. `tool_create` (from the `tool-management` kit)
+handles reusable HTTP or Python helper tools.
 
 The progressively-disclosed `Skill(name)` meta-tool is *not* in `ALL_TOOLS`  -
 it's synthesized per-graph in

@@ -12,7 +12,7 @@ from langgraph.types import Command
 from nymeria.core.agent import set_current_agent
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
-from nymeria.core.user_profile import UserProfileManager
+from nymeria.core.user_profile import DEFAULT_GLOBAL_SKILLS, UserProfileManager
 from nymeria.skills import SkillManager
 from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
 from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_all_tool_metadata
@@ -92,9 +92,13 @@ def test_self_improve_global_default_is_profile_setting_and_thread_disable_wins(
 
     profiles = UserProfileManager(tmp_path / "profiles")
     profile = profiles.get_profile("alice")
-    assert profile.enabled_global_skills == ["self-improve"]
+    # The migration seeds the full default set: self-improve plus the focused
+    # capability kits it routes to.
+    assert profile.enabled_global_skills == DEFAULT_GLOBAL_SKILLS
     assert profile.global_skill_defaults_migrated is True
 
+    # Only self-improve exists on disk in this test's bundled dir, so the kits
+    # are enabled-but-not-installed and filtered out of the active set.
     active = manager.list_for_thread(
         user_id="alice",
         enabled_global_skills=profile.enabled_global_skills,

@@ -36,7 +36,7 @@ Nymeria has a three-tier tool system: **core tools** always loaded, **dynamic ca
 
 > **Skill meta-tool:** A single `Skill(name)` tool is synthesized per-thread at graph-build time when any skills are active  -  it's not in `ALL_TOOLS`. Its description carries an `<available_skills>` index of `(name, description)` pairs; calling it returns that skill's full SKILL.md body. Skill Kits can additionally declare `metadata.nymeria.required_tools`; activation strictly binds those tools with a TTL before resuming the same turn. Users can activate non-internal markdown skills with `/skill <name> [prompt]` and Skill Kits with `/kit <name> [ttl] [prompt]`. See `docs/skills.md`.
 
-> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill/Skill Kit authoring are no longer default tools. The bundled `self-improve` Skill Kit is enabled by default and binds `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `api_discover`, `http_request`, `tool_create`, `skill_write`, and `skill_edit` only when the agent activates it.
+> **Capability expansion:** Tool discovery/enabling, MCP management, skill management, API probing, and Skill/Skill Kit authoring are no longer default tools. The bundled `self-improve` skill is a text-only guidance skill (it binds no tools); it holds the capability-expansion operating philosophy plus a router to four focused, default-on Skill Kits that each bind their tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential`, which are core/always-on tools, so this kit is mainly guidance).
 
 > **Note:** `bash_execute` is a core tool for personal-assistant effectiveness and relies on the backend deployment boundary for sandboxing. `claude_code`, `reload_all`, and `self_modify_rollback` live in `OPTIONAL_TOOLS` and are admin-only optional tools. See `nymeria/tools/__init__.py` for the canonical lists.
 
@@ -55,8 +55,12 @@ Not loaded by default. Enable per-thread via thread config, or use through SelfM
 
 ### Optional: Capability Expansion and Authoring
 
-Not loaded by default. The normal path is to activate `Skill(name="self-improve")`,
-which binds the facades below with a TTL.
+Not loaded by default. The normal path is to activate the matching focused Skill
+Kit, which binds its facades below with a TTL: `tool-management` for
+`tool_search`/`tool_manage`/`tool_create`/`api_discover`/`http_request`,
+`skill-management` for `skill_manage`/`skill_write`/`skill_edit`, and
+`mcp-management` for `manage_mcp`. `Skill(name="self-improve")` itself binds no
+tools; it provides the operating philosophy and routes to these kits.
 
 | # | Tool | Category | Security | Description |
 |---|------|----------|----------|-------------|
@@ -1527,7 +1531,7 @@ Credential providers and fallback env vars:
 ### tool_manage
 
 Enable, disable, prune, or inspect current-thread tool bindings. This is
-normally available after the agent activates `Skill(name="self-improve")`.
+normally available after the agent activates `Skill(name="tool-management")`.
 
 ```python
 tool_manage(
@@ -1863,7 +1867,7 @@ legacy parsed-command callers.
 
 ## HTTP/API and Skill Authoring Tools (Optional)
 
-General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP/Python tools, and generated Skills or Skill Kits. These are not loaded by default; normally load `Skill(name="self-improve")`, then manage per-thread bindings with `tool_manage` when needed.
+General-purpose API primitives and authoring tools for one-off integration work, reusable HTTP/Python tools, and generated Skills or Skill Kits. These are not loaded by default; normally load `Skill(name="tool-management")` for the HTTP/API and tool-building primitives or `Skill(name="skill-management")` for the Skill authoring tools, then manage per-thread bindings with `tool_manage` when needed.
 
 ### http_request
 
@@ -2039,8 +2043,8 @@ partial key material. User prompting for new secrets belongs to
 ### skill_write
 
 Write a new Skill or Skill Kit from full SKILL.md markdown, with optional
-script files. This is the preferred agent-facing authoring tool from
-`self-improve`.
+script files. This is the preferred agent-facing authoring tool from the
+`skill-management` kit.
 
 ```python
 skill_write(
