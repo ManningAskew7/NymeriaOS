@@ -9,9 +9,9 @@ from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.tool_search_index import ToolSearchIndex
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.tools import (
-    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-    ALL_TOOLS,
-    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    ADMIN_ONLY_TOOL_NAMES,
+    SEED_TOOLS,
+    DEVELOPER_ONLY_TOOL_NAMES,
 )
 from nymeria.vendor.react_agent.tool_registry import ToolRegistry
 
@@ -21,7 +21,7 @@ class FakeAgent:
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.profile_manager = UserProfileManager(data_dir)
         self.thread_config_manager = ThreadConfigManager(data_dir)
-        self.tool_registry = ToolRegistry().register_all(ALL_TOOLS)
+        self.tool_registry = ToolRegistry().register_all(SEED_TOOLS)
         self._callable_tool_thread_map: dict[str, str] = {}
         self.synced_tools = 0
         self.default_graph_rebuilds = 0
@@ -170,7 +170,7 @@ def test_thread_callable_tools_filters_to_runtime_visible_callables(
         ThreadConfig(
             thread_id="core-collision",
             callable=True,
-            callable_name=ALL_TOOLS[0].name,
+            callable_name=SEED_TOOLS[0].name,
             callable_team_id="team-a",
             callable_team_name="Ops",
         ),
@@ -212,23 +212,23 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     client, agent = _client(tmp_path, api_client_builder)
     user_token = _create_user(agent, "owner")
     admin_token = _create_user(agent, "admin", role="admin")
-    admin_only = sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)[0]
-    developer_only = sorted(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)[0]
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
 
     user_admin_only = client.put(
         "/tools/defaults",
         headers=api_client_builder.auth(user_token),
-        json={"tool_names": [ALL_TOOLS[0].name, admin_only]},
+        json={"tool_names": [SEED_TOOLS[0].name, admin_only]},
     )
     user_developer_only = client.put(
         "/tools/defaults",
         headers=api_client_builder.auth(user_token),
-        json={"tool_names": [ALL_TOOLS[0].name, developer_only]},
+        json={"tool_names": [SEED_TOOLS[0].name, developer_only]},
     )
     admin_allowed = client.put(
         "/tools/defaults",
         headers=api_client_builder.auth(admin_token),
-        json={"tool_names": [ALL_TOOLS[0].name, admin_only, "todo"]},
+        json={"tool_names": [SEED_TOOLS[0].name, admin_only, "todo"]},
     )
 
     assert user_admin_only.status_code == 403
@@ -238,13 +238,13 @@ def test_default_tools_role_gates_and_rebuilds_default_graphs(
     assert admin_allowed.status_code == 200
     assert admin_allowed.json() == {
         "status": "ok",
-        "default_tools": sorted([ALL_TOOLS[0].name, admin_only, "nym_todo"]),
+        "default_tools": sorted([SEED_TOOLS[0].name, admin_only, "nym_todo"]),
         "count": 3,
     }
     assert agent.profile_manager.get_profile(
         "admin"
     ).tool_preferences.default_thread_tools == [
-        ALL_TOOLS[0].name,
+        SEED_TOOLS[0].name,
         admin_only,
         "nym_todo",
     ]

@@ -31,14 +31,14 @@ def _thread_share_available_tool_names(
 ) -> tuple[set[str], set[str], set[str]]:
     """Return (available tools, role-gated tools, callable tool names)."""
     from ...tools import (
-        ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-        ALL_TOOLS,
-        DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-        OPTIONAL_TOOLS,
+        ADMIN_ONLY_TOOL_NAMES,
+        SEED_TOOLS,
+        DEVELOPER_ONLY_TOOL_NAMES,
+        CATALOG_TOOLS,
     )
 
-    names = {t.name for t in ALL_TOOLS}
-    names.update(OPTIONAL_TOOLS.keys())
+    names = {t.name for t in SEED_TOOLS}
+    names.update(CATALOG_TOOLS.keys())
     try:
         names.update(t.get("name") for t in agent.tool_registry.list_tools() if t.get("name"))
     except Exception:
@@ -56,9 +56,9 @@ def _thread_share_available_tool_names(
 
     # Callable tools are resolved from ownership, not enabled_tools. Do
     # not preserve guessed callable names as portable tool enablements.
-    role_gated = set(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)
+    role_gated = set(ADMIN_ONLY_TOOL_NAMES)
     if user_role != "admin":
-        role_gated.update(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)
+        role_gated.update(DEVELOPER_ONLY_TOOL_NAMES)
     return names - callable_names, role_gated, callable_names
 
 

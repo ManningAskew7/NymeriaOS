@@ -209,11 +209,11 @@ def create_thread_config_router(
         if request.enabled_tools is not None and not request.clear_enabled_tools:
             if user.role != "admin":
                 from ...tools import (
-                    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-                    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+                    ADMIN_ONLY_TOOL_NAMES,
+                    DEVELOPER_ONLY_TOOL_NAMES,
                 )
 
-                blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(
+                blocked = ADMIN_ONLY_TOOL_NAMES.intersection(
                     request.enabled_tools
                 )
                 if blocked:
@@ -224,7 +224,7 @@ def create_thread_config_router(
                             f"{sorted(blocked)}"
                         ),
                     )
-                blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(
+                blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(
                     request.enabled_tools
                 )
                 if blocked:
@@ -262,9 +262,9 @@ def create_thread_config_router(
         if request.callable_name is not None:
             if request.callable_name:
                 validate_callable_name(request.callable_name)
-                from ...tools import ALL_TOOLS
+                from ...tools import SEED_TOOLS
 
-                core_tool_names = {t.name for t in ALL_TOOLS}
+                core_tool_names = {t.name for t in SEED_TOOLS}
                 if request.callable_name in core_tool_names:
                     raise HTTPException(
                         status_code=400,

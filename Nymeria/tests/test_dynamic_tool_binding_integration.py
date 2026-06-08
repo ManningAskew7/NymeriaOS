@@ -96,7 +96,7 @@ def test_flag_on_passes_resolver_and_superset_to_create_graph():
     assert "dynamic_tool_resolver" in captured["kwargs"]
     assert "superset_tools" in captured["kwargs"]
     assert callable(captured["kwargs"]["dynamic_tool_resolver"])
-    # Superset should be non-empty (core ALL_TOOLS at minimum).
+    # Superset should be non-empty (core SEED_TOOLS at minimum).
     assert captured["tools_len"] > 0
     assert len(captured["kwargs"]["superset_tools"]) > 0
 
@@ -108,7 +108,7 @@ def test_flag_on_populates_superset_name_set_on_agent():
         agent._build_graph_with_prompt("prompt", user_id="u1", thread_id="t1")
 
     assert agent._current_tool_superset_names
-    # ALL_TOOLS core names must be there — bash_execute, file_read, etc.
+    # SEED_TOOLS core names must be there — bash_execute, file_read, etc.
     assert "bash_execute" in agent._current_tool_superset_names
     assert "tool_search" in agent._current_tool_superset_names
 

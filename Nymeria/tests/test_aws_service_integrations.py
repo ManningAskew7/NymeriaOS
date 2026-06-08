@@ -226,7 +226,7 @@ def test_aws_client_returns_credential_hint_without_keys(monkeypatch):
 
 
 def test_aws_service_registration_and_security_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, get_tool_metadata
 
     safe_names = {
@@ -254,7 +254,7 @@ def test_aws_service_registration_and_security_metadata():
     }
 
     for name in safe_names | moderate_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
 
     for name in safe_names:
         assert get_tool_metadata(name).security_level == SecurityLevel.SAFE

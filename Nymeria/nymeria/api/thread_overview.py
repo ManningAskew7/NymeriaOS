@@ -17,7 +17,7 @@ from ..core.checkpoint_status import (
 from ..core.thread_classification import classify_platform
 from ..core.thread_config import ThreadConfig
 from ..core.time_utils import ensure_aware_utc, utc_now
-from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+from ..tools import SEED_TOOLS, CATALOG_TOOLS
 from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 
 logger = logging.getLogger(__name__)
@@ -650,7 +650,7 @@ def _visible_callable_threads(
 def _tools_defaults(tc: ThreadConfig) -> dict[str, Any]:
     return {
         "default_tool_names": [],
-        "core_tool_names": [tool.name for tool in ALL_TOOLS],
+        "core_tool_names": [tool.name for tool in SEED_TOOLS],
         "disabled_names": list(tc.disabled_tools or []),
         "enabled_optional_names": list(tc.enabled_tools or []),
         "live_temporary_tools": [],
@@ -708,7 +708,7 @@ def _tools_section(
     total = len(effective_names)
     return {
         "default_tool_names": sorted(default_names),
-        "core_tool_names": [tool.name for tool in ALL_TOOLS],
+        "core_tool_names": [tool.name for tool in SEED_TOOLS],
         "disabled_names": sorted(tc.disabled_tools or []),
         "enabled_optional_names": sorted(tc.enabled_tools or []),
         "live_temporary_tools": live_temp_details,
@@ -725,12 +725,12 @@ def _tools_section(
 def _default_tool_names(agent: Any, user_id: str) -> set[str]:
     profile_manager = getattr(agent, "profile_manager", None)
     if profile_manager is None:
-        return {tool.name for tool in ALL_TOOLS}
+        return {tool.name for tool in SEED_TOOLS}
     profile = profile_manager.get_profile(user_id)
     prefs = getattr(profile, "tool_preferences", None)
     configured = getattr(prefs, "default_thread_tools", None)
     if configured is None:
-        return {tool.name for tool in ALL_TOOLS}
+        return {tool.name for tool in SEED_TOOLS}
     return {str(name) for name in configured if str(name)}
 
 
@@ -766,7 +766,7 @@ def _effective_tool_names(
         tools, _ = selected
         return {str(getattr(tool, "name", "") or "") for tool in tools if getattr(tool, "name", "")}
 
-    all_tools = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
+    all_tools = {tool.name for tool in SEED_TOOLS} | set(CATALOG_TOOLS)
     registry = getattr(agent, "tool_registry", None)
     registry_names = {
         str(tool.get("name") or "")

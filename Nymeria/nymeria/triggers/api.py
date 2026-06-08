@@ -24,7 +24,7 @@ from ..core.event_bus import publish_sync_event
 from ..core.rate_limit import SlidingWindowRateLimiter
 from ..core.request_context import reset_request_id, set_request_id
 from ..core import thread_classification as _thread_classification
-from ..tools import ALL_TOOLS
+from ..tools import SEED_TOOLS
 from ..api.routers.accounts import create_accounts_router
 from ..api.routers.autonomous_stream import create_autonomous_stream_router
 from ..api.routers.browser_commands import create_browser_commands_router
@@ -678,7 +678,7 @@ def create_api_app(
         _agent = agent
     else:
         _agent = NymeriaAgent(
-            tools=list(ALL_TOOLS),
+            tools=list(SEED_TOOLS),
             enable_ticker=not disable_ticker,
         )
 

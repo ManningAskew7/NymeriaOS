@@ -15,10 +15,10 @@ from unittest.mock import MagicMock, patch
 
 from nymeria.core.thread_config import ThreadConfig
 from nymeria.tools import (
-    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-    ALL_TOOLS,
-    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-    OPTIONAL_TOOLS,
+    ADMIN_ONLY_TOOL_NAMES,
+    SEED_TOOLS,
+    DEVELOPER_ONLY_TOOL_NAMES,
+    CATALOG_TOOLS,
 )
 from nymeria.vendor.react_agent.config import CheckpointerConfig
 
@@ -97,8 +97,8 @@ def _make_agent():
 
 def _ordinary_optional_tool_name(exclude: set[str] | None = None) -> str:
     excluded = set(exclude or set())
-    blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES | DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
-    for name in OPTIONAL_TOOLS:
+    blocked = ADMIN_ONLY_TOOL_NAMES | DEVELOPER_ONLY_TOOL_NAMES
+    for name in CATALOG_TOOLS:
         if name not in blocked and name not in excluded:
             return name
     raise AssertionError("no ordinary optional tool found")
@@ -128,7 +128,7 @@ def test_select_tools_shared_by_both_build_paths():
 
 def test_select_tools_resolves_defaults_plus_thread_overrides_without_double_counting():
     agent = _make_agent()
-    default_core = ALL_TOOLS[0].name
+    default_core = SEED_TOOLS[0].name
     promoted_optional = _ordinary_optional_tool_name()
     thread_extra = _ordinary_optional_tool_name({promoted_optional})
 

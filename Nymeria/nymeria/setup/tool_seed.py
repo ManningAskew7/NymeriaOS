@@ -3,12 +3,12 @@
 TUI-free single source of truth shared by the core-tools screen (what it
 displays), the review screen (what it summarizes), and finalize (what it writes
 to ``data/users/default/profile.json``). The core seed mirrors the backend's own
-``_migrate_tool_preferences`` (``core/agent.py``): all of ``ALL_TOOLS`` minus the
-capability-expansion tools. We seed from the real ``ALL_TOOLS`` rather than the
+``_migrate_tool_preferences`` (``core/agent.py``): all of ``SEED_TOOLS`` minus the
+capability-expansion tools. We seed from the real ``SEED_TOOLS`` rather than the
 aspirational 12-tool core in ``steps/core_tools.py`` so init never silently drops
 tools that exist today (the core-slimming is unbuilt).
 
-Optional tools (``web_search_*`` / ``image_gen_*``) are NOT in ``ALL_TOOLS``, so
+Optional tools (``web_search_*`` / ``image_gen_*``) are NOT in ``SEED_TOOLS``, so
 to make a new thread inherit a picked backend by default it must be written into
 an explicit ``default_thread_tools`` list: core seed plus the user's picks.
 """
@@ -29,9 +29,9 @@ def core_seed_tool_names() -> list[str]:
     Imported lazily to keep the setup package importable without the heavy tools
     package (the wizard chrome must load fast).
     """
-    from ..tools import ALL_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
+    from ..tools import SEED_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
 
-    return [t.name for t in ALL_TOOLS if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES]
+    return [t.name for t in SEED_TOOLS if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES]
 
 
 def default_thread_tools_for_state(state: "WizardState") -> list[str]:

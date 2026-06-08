@@ -397,7 +397,7 @@ class NymeriaAgent:
         # shell/file tool descriptions before any graph is built.
         self.execution_environment: Any = None
         try:
-            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+            from ..tools import SEED_TOOLS, CATALOG_TOOLS
             from ..tools.execution_environment import (
                 configure_environment_aware_tool_descriptions,
                 detect_execution_environment,
@@ -405,7 +405,7 @@ class NymeriaAgent:
 
             self.execution_environment = detect_execution_environment()
             configure_environment_aware_tool_descriptions(
-                [*ALL_TOOLS, *OPTIONAL_TOOLS.values()],
+                [*SEED_TOOLS, *CATALOG_TOOLS.values()],
                 self.execution_environment,
             )
         except Exception as e:  # noqa: BLE001
@@ -2918,13 +2918,13 @@ class NymeriaAgent:
             self.todo_manager.migrate_unscoped_todos(user_id)
 
     def _migrate_tool_preferences(self) -> None:
-        """Auto-migrate: populate default_thread_tools from ALL_TOOLS if not yet set.
+        """Auto-migrate: populate default_thread_tools from SEED_TOOLS if not yet set.
 
         For users with existing enabled_overrides (old system), incorporate them
         into the default_thread_tools list, then the old fields are ignored via
         extra='ignore' on ToolPreferences.
         """
-        from ..tools import ALL_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
+        from ..tools import SEED_TOOLS, CAPABILITY_EXPANSION_TOOL_NAMES
 
         for user_id in self.profile_manager.list_users():
             profile = self.profile_manager.get_profile(user_id)
@@ -2951,7 +2951,7 @@ class NymeriaAgent:
 
             # Start with all core tools
             default_names = [
-                t.name for t in ALL_TOOLS
+                t.name for t in SEED_TOOLS
                 if t.name not in CAPABILITY_EXPANSION_TOOL_NAMES
             ]
 

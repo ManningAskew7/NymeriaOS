@@ -358,7 +358,7 @@ def test_quickchart_create_url_returns_encoded_chart():
 
 
 def test_public_info_tools_are_registered_with_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = {
@@ -376,7 +376,7 @@ def test_public_info_tools_are_registered_with_metadata():
         "quickchart_create_url",
     }
     for name in safe_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS
@@ -384,7 +384,7 @@ def test_public_info_tools_are_registered_with_metadata():
         assert metadata.default_enabled is False
 
     rss_metadata = get_tool_metadata("rss_feed_read")
-    assert "rss_feed_read" in OPTIONAL_TOOLS
+    assert "rss_feed_read" in CATALOG_TOOLS
     assert rss_metadata is not None
     assert rss_metadata.category == ToolCategory.INTEGRATIONS
     assert rss_metadata.security_level == SecurityLevel.MODERATE

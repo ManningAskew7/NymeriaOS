@@ -15,7 +15,7 @@ from nymeria.core.python_custom_tools import (
     run_python_tool_subprocess,
     validate_python_tool_static,
 )
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
     HTTPToolConfig,
@@ -272,10 +272,10 @@ def test_custom_tool_loader_registers_search_metadata(tmp_path):
 
 
 def test_tool_create_is_optional_with_metadata():
-    core_names = {tool.name for tool in ALL_TOOLS}
+    core_names = {tool.name for tool in SEED_TOOLS}
 
     assert "tool_create" not in core_names
-    assert "tool_create" in OPTIONAL_TOOLS
+    assert "tool_create" in CATALOG_TOOLS
     meta = get_all_tool_metadata("tool_create")
     assert meta is not None
     assert meta.category == ToolCategory.CUSTOM

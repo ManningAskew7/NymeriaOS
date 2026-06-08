@@ -930,8 +930,8 @@ def _tools_package() -> Any:
 
 def _registered_builtin_tools() -> tuple[Dict[str, Any], Set[str]]:
     tools_pkg = _tools_package()
-    all_tools = {tool_obj.name: tool_obj for tool_obj in tools_pkg.ALL_TOOLS}
-    optional_tools = dict(tools_pkg.OPTIONAL_TOOLS)
+    all_tools = {tool_obj.name: tool_obj for tool_obj in tools_pkg.SEED_TOOLS}
+    optional_tools = dict(tools_pkg.CATALOG_TOOLS)
     all_tools.update(optional_tools)
     return all_tools, set(optional_tools)
 

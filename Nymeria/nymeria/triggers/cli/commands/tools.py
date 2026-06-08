@@ -34,19 +34,19 @@ def _user_role(state: "CLIState") -> str:
 
 def _get_loaded_tools(state: "CLIState") -> list[dict[str, str]]:
     """Get tools currently loaded for this thread."""
-    from ....tools import ALL_TOOLS, OPTIONAL_TOOLS
+    from ....tools import SEED_TOOLS, CATALOG_TOOLS
 
     tc = state.thread_config_manager.get_config(state.thread_id)
     disabled = set(tc.disabled_tools) if tc else set()
     enabled = set(tc.enabled_tools) if tc else set()
 
     tools = []
-    for tool in ALL_TOOLS:
+    for tool in SEED_TOOLS:
         status = "disabled" if tool.name in disabled else "enabled"
         tools.append({"name": tool.name, "category": "core", "status": status})
 
     for name in sorted(enabled):
-        if name in OPTIONAL_TOOLS:
+        if name in CATALOG_TOOLS:
             tools.append({"name": name, "category": "optional", "status": "enabled"})
 
     callable_threads = state.thread_config_manager.list_callable_threads()
@@ -74,9 +74,9 @@ def _handle_tools_enable(state: "CLIState", args: list[str]) -> None:
 
     tool_name = args[0]
 
-    from ....tools import OPTIONAL_TOOLS, filter_developer_only_tools
+    from ....tools import CATALOG_TOOLS, filter_developer_only_tools
 
-    if tool_name not in OPTIONAL_TOOLS:
+    if tool_name not in CATALOG_TOOLS:
         state.console.print(f"[red]'{tool_name}' is not an optional tool.[/red]")
         state.console.print("[dim]Use /tools optional to see available tools.[/dim]")
         return
@@ -128,12 +128,12 @@ def _handle_tools_disable(state: "CLIState", args: list[str]) -> None:
 
 def _handle_tools_optional(state: "CLIState", _args: list[str]) -> None:
     """List all optional tools with their status for this thread."""
-    from ....tools import OPTIONAL_TOOLS, filter_discoverable_optional_tool_names
+    from ....tools import CATALOG_TOOLS, filter_discoverable_catalog_tool_names
 
     tc = state.thread_config_manager.get_config(state.thread_id)
     enabled = set(tc.enabled_tools) if tc else set()
-    visible_optional = filter_discoverable_optional_tool_names(
-        OPTIONAL_TOOLS.keys(),
+    visible_optional = filter_discoverable_catalog_tool_names(
+        CATALOG_TOOLS.keys(),
         _user_role(state),
     )
 

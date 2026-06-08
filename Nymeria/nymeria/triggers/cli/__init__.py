@@ -52,9 +52,9 @@ def run_cli(
     """
     if agent is None and getattr(runtime_config, "transport", "api") == "local":
         from ...core.agent import NymeriaAgent
-        from ...tools import ALL_TOOLS
+        from ...tools import SEED_TOOLS
 
-        agent = NymeriaAgent(tools=list(ALL_TOOLS))
+        agent = NymeriaAgent(tools=list(SEED_TOOLS))
 
     cli = CLITrigger(agent, thread_id=thread_id, runtime_config=runtime_config)
     cli.start()

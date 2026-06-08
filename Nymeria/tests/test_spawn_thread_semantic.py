@@ -18,7 +18,7 @@ import pytest
 
 from nymeria.core.thread_config import ThreadConfigManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
-from nymeria.tools import ALL_TOOLS
+from nymeria.tools import SEED_TOOLS
 from nymeria.tools.spawn_thread import (
     PLATFORM_META_IDLE_TIMEOUT,
     PLATFORM_META_LAST_ACTIVE,
@@ -336,7 +336,7 @@ class TestIncludeCoreTools:
         new_id = _extract_thread_id(result)
         tc = stub_agent.thread_config_manager.get_config(new_id)
         assert tc is not None
-        for tool in ALL_TOOLS:
+        for tool in SEED_TOOLS:
             assert tool.name in tc.disabled_tools, (
                 f"core tool {tool.name} not disabled"
             )

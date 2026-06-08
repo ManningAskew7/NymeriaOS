@@ -268,7 +268,7 @@ def test_graphql_execute_query_uses_vault_connection(tmp_path, monkeypatch):
 
 
 def test_developer_platform_tools_are_registered_with_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = {
@@ -290,7 +290,7 @@ def test_developer_platform_tools_are_registered_with_metadata():
     moderate_names = {"graphql_execute_query"}
 
     for name in safe_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS
@@ -298,7 +298,7 @@ def test_developer_platform_tools_are_registered_with_metadata():
         assert metadata.default_enabled is False
 
     for name in moderate_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS

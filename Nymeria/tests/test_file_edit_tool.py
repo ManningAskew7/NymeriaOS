@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools import filesystem
 from nymeria.tools import execution_environment
 from nymeria.tools.file_edit import file_edit
@@ -260,8 +260,8 @@ def test_file_write_is_confined_to_workspace_when_enabled(tmp_path, monkeypatch)
 
 
 def test_file_edit_is_optional_and_has_metadata():
-    assert "file_edit" not in {tool.name for tool in ALL_TOOLS}
-    assert "file_edit" in OPTIONAL_TOOLS
+    assert "file_edit" not in {tool.name for tool in SEED_TOOLS}
+    assert "file_edit" in CATALOG_TOOLS
 
     meta = get_all_tool_metadata("file_edit")
     assert meta is not None

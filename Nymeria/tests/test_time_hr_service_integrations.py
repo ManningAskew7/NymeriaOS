@@ -231,16 +231,16 @@ def test_harvest_list_projects_uses_vault_token_and_account(tmp_path, monkeypatc
 
 
 def test_time_hr_registration_and_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import get_tool_metadata
     from nymeria.tools.time_hr_service_integrations import TIME_HR_SERVICE_TOOLS
 
     names = {tool.name for tool in TIME_HR_SERVICE_TOOLS}
     assert len(names) == 30
-    assert "bamboohr_list_employees" in OPTIONAL_TOOLS
-    assert "beeminder_create_datapoint" in OPTIONAL_TOOLS
-    assert "clockify_create_time_entry" in OPTIONAL_TOOLS
-    assert "harvest_list_projects" in OPTIONAL_TOOLS
+    assert "bamboohr_list_employees" in CATALOG_TOOLS
+    assert "beeminder_create_datapoint" in CATALOG_TOOLS
+    assert "clockify_create_time_entry" in CATALOG_TOOLS
+    assert "harvest_list_projects" in CATALOG_TOOLS
     assert get_tool_metadata("bamboohr_list_employees").security_level.value == "safe"
     assert get_tool_metadata("clockify_create_time_entry").security_level.value == "moderate"
     assert get_tool_metadata("harvest_stop_time_entry").security_level.value == "moderate"

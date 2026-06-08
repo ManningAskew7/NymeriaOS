@@ -6,8 +6,8 @@ specs (TH-01, CX-01) to verify the tool hot-load pipeline end-to-end without
 needing admin privileges.
 
 This tool is intentionally distinct from `hello_test`:
-- `hello_test` is in `DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES` and admin-only.
-- `regression_echo` is in `OPTIONAL_TOOLS` only — any user can search for it,
+- `hello_test` is in `DEVELOPER_ONLY_TOOL_NAMES` and admin-only.
+- `regression_echo` is in `CATALOG_TOOLS` only — any user can search for it,
   enable it via `tool_manage`, and call it. That makes it the right target for
   testing `tool_search → tool_manage → tool_reload → use` flows from a
   non-admin regression user.

@@ -16,7 +16,7 @@ the ``[attach:]`` marker, and attaches the native-vision artifact). The
 OpenAI/Gemini tools reuse the ``_generate_openai`` / ``_generate_gemini`` byte
 producers; the URL-returning providers download bytes through the SSRF egress
 policy via ``download_image_bytes``. ``tools/__init__.py`` folds
-``IMAGE_GEN_INTEGRATION_TOOLS`` into ``OPTIONAL_TOOLS``.
+``IMAGE_GEN_INTEGRATION_TOOLS`` into ``CATALOG_TOOLS``.
 """
 
 from __future__ import annotations
@@ -588,7 +588,7 @@ def image_gen_fal(
 
 
 # Opt-in per-provider image generation tools. tools/__init__.py folds this into
-# OPTIONAL_TOOLS; metadata.py maps it to ToolCategory.IMAGE (security MODERATE).
+# CATALOG_TOOLS; metadata.py maps it to ToolCategory.IMAGE (security MODERATE).
 IMAGE_GEN_INTEGRATION_TOOLS = [
     image_gen_openai,
     image_gen_gemini,

@@ -16,7 +16,7 @@ __all__ = [
     "Settings",
     "get_settings",
     # Tools
-    "ALL_TOOLS",
+    "SEED_TOOLS",
     "bash_execute",
     "file_read",
     "file_write",
@@ -37,11 +37,11 @@ def __getattr__(name: str):
         from .config import Settings, get_settings
 
         return {"Settings": Settings, "get_settings": get_settings}[name]
-    if name in {"ALL_TOOLS", "bash_execute", "file_read", "file_write", "web_search_perplexity"}:
-        from .tools import ALL_TOOLS, bash_execute, file_read, file_write, web_search_perplexity
+    if name in {"SEED_TOOLS", "bash_execute", "file_read", "file_write", "web_search_perplexity"}:
+        from .tools import SEED_TOOLS, bash_execute, file_read, file_write, web_search_perplexity
 
         return {
-            "ALL_TOOLS": ALL_TOOLS,
+            "SEED_TOOLS": SEED_TOOLS,
             "bash_execute": bash_execute,
             "file_read": file_read,
             "file_write": file_write,

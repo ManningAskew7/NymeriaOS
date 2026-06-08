@@ -77,10 +77,10 @@ _ARTICLE_HTML = (
 
 
 def test_registered_in_web_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_fetch import WEB_FETCH_TOOLS
 
-    assert "fetch_url_nymeria" in OPTIONAL_TOOLS
+    assert "fetch_url_nymeria" in CATALOG_TOOLS
     assert [t.name for t in WEB_FETCH_TOOLS] == ["fetch_url_nymeria"]
 
 

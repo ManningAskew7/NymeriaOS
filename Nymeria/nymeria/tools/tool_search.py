@@ -87,7 +87,7 @@ def _short_desc(desc: str, max_len: int = 60) -> str:
 
 def _build_catalog() -> Dict[str, dict]:
     """Build a searchable catalog from ALL tools (core + optional + dynamic)."""
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
     from .metadata import (
         CUSTOM_TOOL_METADATA,
         MCP_SERVER_TOOL_METADATA,
@@ -96,8 +96,8 @@ def _build_catalog() -> Dict[str, dict]:
 
     catalog = {}
 
-    all_tools = {t.name: t for t in ALL_TOOLS}
-    all_tools.update(OPTIONAL_TOOLS)
+    all_tools = {t.name: t for t in SEED_TOOLS}
+    all_tools.update(CATALOG_TOOLS)
 
     for name, tool_obj in all_tools.items():
         meta = get_all_tool_metadata(name)
@@ -138,10 +138,10 @@ def _get_user_role(user_id: str) -> str:
 
 def _build_discovery_catalog(user_role: str) -> Dict[str, dict]:
     """Build the catalog shown to a caller in search/category views."""
-    from . import filter_discoverable_optional_tool_names
+    from . import filter_discoverable_catalog_tool_names
 
     catalog = _build_catalog()
-    visible = filter_discoverable_optional_tool_names(catalog.keys(), user_role)
+    visible = filter_discoverable_catalog_tool_names(catalog.keys(), user_role)
     return {name: entry for name, entry in catalog.items() if name in visible}
 
 
@@ -154,10 +154,10 @@ def _resolve_tool_object(name: str, agent) -> Optional[Any]:
     no live tool object (typically MCP server tools whose backing server
     is installed but disabled).
     """
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
 
-    all_tools_dict = {t.name: t for t in ALL_TOOLS}
-    all_tools_dict.update(OPTIONAL_TOOLS)
+    all_tools_dict = {t.name: t for t in SEED_TOOLS}
+    all_tools_dict.update(CATALOG_TOOLS)
     if name in all_tools_dict:
         return all_tools_dict[name]
     if agent is not None and getattr(agent, "tool_registry", None):
@@ -306,7 +306,7 @@ def bind_tools_for_thread(
     """
     from ..core.agent import get_current_agent
     from ..core.thread_config import ThreadConfig, TemporaryToolEntry
-    from . import ALL_TOOLS
+    from . import SEED_TOOLS
     from .metadata import ToolCategory, get_all_tool_metadata, SecurityLevel
 
     agent = get_current_agent()
@@ -468,7 +468,7 @@ def bind_tools_for_thread(
         )
     valid = [n for n in valid if n in allowed]
 
-    # Developer-only diagnostics are kept in OPTIONAL_TOOLS for admin/test
+    # Developer-only diagnostics are kept in CATALOG_TOOLS for admin/test
     # validation, but regular users should neither discover nor bind them.
     allowed, blocked = filter_developer_only_tools(valid, user_role)
     if blocked:
@@ -495,10 +495,10 @@ def bind_tools_for_thread(
         agent._resolve_temporary_tools(tc)
 
     # Compute the thread's *actual* default-bound tool set. A user profile
-    # can override ALL_TOOLS via profile.tool_preferences.default_thread_tools
-    # (a curated subset), and graph-build uses that subset — not ALL_TOOLS —
-    # to decide which tools to bind by default. Classifying against ALL_TOOLS
-    # silently misclassifies any tool that lives in ALL_TOOLS but is absent
+    # can override SEED_TOOLS via profile.tool_preferences.default_thread_tools
+    # (a curated subset), and graph-build uses that subset — not SEED_TOOLS —
+    # to decide which tools to bind by default. Classifying against SEED_TOOLS
+    # silently misclassifies any tool that lives in SEED_TOOLS but is absent
     # from default_thread_tools (e.g., `personality_set`): the classifier
     # thinks it's already bound, drops it into the no-op bucket, and never
     # actually adds it anywhere — the tool then vanishes. Using the same
@@ -510,7 +510,7 @@ def bind_tools_for_thread(
     except Exception:
         default_tools_pref = None
     if default_tools_pref is None:
-        default_bound = {t.name for t in ALL_TOOLS}
+        default_bound = {t.name for t in SEED_TOOLS}
     else:
         default_bound = set(default_tools_pref)
 
@@ -575,7 +575,7 @@ def bind_tools_for_thread(
         # (2) part of the thread's default-bound set — no write needed,
         #     adding to enabled_tools would be redundant clutter. (Note:
         #     this bucket is NOT the same as the "core" used by the
-        #     disable guard below — that protects ALL_TOOLS hardcoded
+        #     disable guard below — that protects SEED_TOOLS hardcoded
         #     essentials, a broader concept than default-bound.)
         if in_default:
             already_default.append(name)
@@ -797,7 +797,7 @@ def _enable(
 
 def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     from ..core.agent import get_current_agent
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
 
     agent = get_current_agent()
     if agent is None:
@@ -807,7 +807,7 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
         return "[Error]: Provide tool names to disable via the 'tools' parameter."
 
     catalog = _build_catalog()
-    all_known = set(OPTIONAL_TOOLS.keys()) | set(catalog.keys())
+    all_known = set(CATALOG_TOOLS.keys()) | set(catalog.keys())
     valid = [n for n in tool_names if n in all_known]
     invalid = [n for n in tool_names if n not in all_known]
 
@@ -820,7 +820,7 @@ def _disable(tool_names: List[str], thread_id: str, force: bool = False) -> str:
     # subset (partial success), so mixed batches like disable([core, opt])
     # don't have their non-core portion blocked just because a core name
     # snuck in. The agent can retry the refused core subset with force=True.
-    core_names = {t.name for t in ALL_TOOLS}
+    core_names = {t.name for t in SEED_TOOLS}
     core_targets = [n for n in valid if n in core_names]
     non_core_targets = [n for n in valid if n not in core_names]
 
@@ -961,7 +961,7 @@ def _status(thread_id: str) -> str:
 
 
 def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
-    from . import ALL_TOOLS, filter_admin_only_tools, filter_developer_only_tools
+    from . import SEED_TOOLS, filter_admin_only_tools, filter_developer_only_tools
 
     try:
         profile = agent.profile_manager.get_profile(user_id or "default")
@@ -969,7 +969,7 @@ def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
     except Exception:
         default_tools_pref = None
 
-    names = {t.name for t in ALL_TOOLS} if default_tools_pref is None else set(default_tools_pref)
+    names = {t.name for t in SEED_TOOLS} if default_tools_pref is None else set(default_tools_pref)
     try:
         user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
         role = user.role if user else "user"

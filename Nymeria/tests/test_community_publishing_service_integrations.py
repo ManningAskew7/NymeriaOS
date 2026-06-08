@@ -372,7 +372,7 @@ def test_facebook_page_create_post_adds_appsecret_proof(monkeypatch):
 
 
 def test_community_publishing_registration_and_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.community_publishing_service_integrations import COMMUNITY_PUBLISHING_SERVICE_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
@@ -391,7 +391,7 @@ def test_community_publishing_registration_and_metadata():
         "facebook_graph_get_node",
         "facebook_page_create_post",
     } <= names
-    assert names <= set(OPTIONAL_TOOLS)
+    assert names <= set(CATALOG_TOOLS)
     assert get_tool_metadata("reddit_search_posts").category == ToolCategory.INTEGRATIONS
     assert get_tool_metadata("reddit_search_posts").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("discourse_search").security_level == SecurityLevel.SAFE

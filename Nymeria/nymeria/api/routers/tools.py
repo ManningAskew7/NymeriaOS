@@ -75,9 +75,9 @@ def create_tools_router(
     ):
         """List tools available for per-thread enabling."""
         from ...tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
-            filter_discoverable_optional_tool_names,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
+            filter_discoverable_catalog_tool_names,
         )
 
         agent = get_agent_fn()
@@ -87,19 +87,19 @@ def create_tools_router(
         core_set = (
             set(default_tools)
             if default_tools is not None
-            else {t.name for t in ALL_TOOLS}
+            else {t.name for t in SEED_TOOLS}
         )
-        visible_optional = filter_discoverable_optional_tool_names(
-            OPTIONAL_TOOLS.keys(),
+        visible_optional = filter_discoverable_catalog_tool_names(
+            CATALOG_TOOLS.keys(),
             user.role,
         )
         result = []
         seen = set()
-        for t in ALL_TOOLS:
+        for t in SEED_TOOLS:
             if t.name not in core_set and t.name not in seen:
                 result.append({"name": t.name, "description": t.description})
                 seen.add(t.name)
-        for name, tool in OPTIONAL_TOOLS.items():
+        for name, tool in CATALOG_TOOLS.items():
             if name in visible_optional and name not in core_set and name not in seen:
                 result.append({"name": name, "description": tool.description})
                 seen.add(name)
@@ -113,7 +113,7 @@ def create_tools_router(
     ):
         """Return callable threads actually available to a caller thread."""
         require_thread_access_fn(user, thread_id, claim=False)
-        from ...tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ...tools import SEED_TOOLS, CATALOG_TOOLS
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
@@ -125,13 +125,13 @@ def create_tools_router(
             else None
         )
 
-        all_tools_dict = {t.name: t for t in ALL_TOOLS}
-        all_tools_dict.update(OPTIONAL_TOOLS)
+        all_tools_dict = {t.name: t for t in SEED_TOOLS}
+        all_tools_dict.update(CATALOG_TOOLS)
         default_tools = profile.tool_preferences.default_thread_tools
         core_names = (
             default_tools
             if default_tools is not None
-            else [t.name for t in ALL_TOOLS]
+            else [t.name for t in SEED_TOOLS]
         )
         existing_names = {name for name in core_names if name in all_tools_dict}
         if default_tools is not None:
@@ -175,9 +175,9 @@ def create_tools_router(
     ):
         """Get the default tool set for new threads."""
         from ...tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
-            filter_discoverable_optional_tool_names,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
+            filter_discoverable_catalog_tool_names,
         )
         from ...tools.metadata import (
             MCP_SERVER_TOOL_METADATA,
@@ -192,15 +192,15 @@ def create_tools_router(
         if prefs.default_thread_tools is not None:
             default_set = set(prefs.default_thread_tools)
         else:
-            default_set = {t.name for t in ALL_TOOLS}
+            default_set = {t.name for t in SEED_TOOLS}
 
         tools_out = []
         seen = set()
-        visible_optional = filter_discoverable_optional_tool_names(
-            OPTIONAL_TOOLS.keys(),
+        visible_optional = filter_discoverable_catalog_tool_names(
+            CATALOG_TOOLS.keys(),
             user.role,
         )
-        for t in ALL_TOOLS:
+        for t in SEED_TOOLS:
             meta = get_tool_metadata(t.name)
             category = meta.category.value if meta else "general"
             tools_out.append({
@@ -213,7 +213,7 @@ def create_tools_router(
                 **integration_grouping_fields(t.name, category),
             })
             seen.add(t.name)
-        for name, t in OPTIONAL_TOOLS.items():
+        for name, t in CATALOG_TOOLS.items():
             if name in visible_optional and name not in seen:
                 meta = get_tool_metadata(name)
                 category = meta.category.value if meta else "unknown"
@@ -265,18 +265,18 @@ def create_tools_router(
         """Set which tools new threads inherit by default."""
         from ...core.user_profile import migrate_tool_names
         from ...tools import (
-            ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-            ALL_TOOLS,
-            DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-            OPTIONAL_TOOLS,
+            ADMIN_ONLY_TOOL_NAMES,
+            SEED_TOOLS,
+            DEVELOPER_ONLY_TOOL_NAMES,
+            CATALOG_TOOLS,
         )
         from ...tools.metadata import MCP_SERVER_TOOL_METADATA
 
         tool_names = migrate_tool_names(list(request.tool_names))
 
         known = (
-            {t.name for t in ALL_TOOLS}
-            | set(OPTIONAL_TOOLS.keys())
+            {t.name for t in SEED_TOOLS}
+            | set(CATALOG_TOOLS.keys())
             | set(MCP_SERVER_TOOL_METADATA.keys())
         )
         unknown = set(tool_names) - known
@@ -284,7 +284,7 @@ def create_tools_router(
             raise HTTPException(400, detail=f"Unknown tools: {sorted(unknown)}")
 
         if user.role != "admin":
-            blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)
+            blocked = ADMIN_ONLY_TOOL_NAMES.intersection(tool_names)
             if blocked:
                 raise HTTPException(
                     status_code=403,
@@ -293,7 +293,7 @@ def create_tools_router(
                         f"user: {sorted(blocked)}"
                     ),
                 )
-            blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(tool_names)
+            blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(tool_names)
             if blocked:
                 raise HTTPException(
                     status_code=403,
@@ -322,11 +322,11 @@ def create_tools_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Reset default tools to all core tools."""
-        from ...tools import ALL_TOOLS
+        from ...tools import SEED_TOOLS
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
-        profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
+        profile.tool_preferences.default_thread_tools = [t.name for t in SEED_TOOLS]
         agent.profile_manager.save_profile(profile)
 
         agent._rebuild_default_graphs()
@@ -342,11 +342,11 @@ def create_tools_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """List all tool categories with their tools."""
-        from ...tools import filter_discoverable_optional_tool_names
+        from ...tools import filter_discoverable_catalog_tool_names
         from ...tools.metadata import get_category_tools_summary
 
         categories = get_category_tools_summary()
-        visible_names = filter_discoverable_optional_tool_names(
+        visible_names = filter_discoverable_catalog_tool_names(
             {name for names in categories.values() for name in names},
             user.role,
         )

@@ -251,10 +251,10 @@ def _coerce_python_config(python_code: str, entrypoint: str = "run") -> PythonTo
 
 
 def _reserved_tool_names(agent: Any = None) -> set[str]:
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
 
-    names = {t.name for t in ALL_TOOLS}
-    names.update(OPTIONAL_TOOLS.keys())
+    names = {t.name for t in SEED_TOOLS}
+    names.update(CATALOG_TOOLS.keys())
     if agent is not None and getattr(agent, "tool_registry", None):
         try:
             names.update(agent.tool_registry.list_tools())

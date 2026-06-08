@@ -11,9 +11,9 @@ from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.time_utils import utc_now
 from nymeria.core.user_profile import UserProfileManager
 from nymeria.tools import (
-    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-    ALL_TOOLS,
-    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+    ADMIN_ONLY_TOOL_NAMES,
+    SEED_TOOLS,
+    DEVELOPER_ONLY_TOOL_NAMES,
 )
 from nymeria.tools.definitions.custom_tool_schema import (
     CustomToolDefinition,
@@ -141,7 +141,7 @@ def test_unified_tools_list_is_user_scoped_and_hides_custom_tools_from_non_admin
     user_tools = {tool["id"]: tool for tool in user_payload["tools"]}
     assert "price_lookup" not in user_tools
     assert user_payload["custom_count"] == 0
-    assert user_tools[ALL_TOOLS[0].name]["tool_type"] == "builtin"
+    assert user_tools[SEED_TOOLS[0].name]["tool_type"] == "builtin"
 
     admin_payload = admin_response.json()
     admin_tools = {tool["id"]: tool for tool in admin_payload["tools"]}
@@ -161,9 +161,9 @@ def test_unified_tool_enable_preserves_role_gates_and_rebuilds_defaults(
     client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
     user_token = _create_user(agent, "owner")
     admin_token = _create_user(agent, "admin", role="admin")
-    core_tool = ALL_TOOLS[0].name
-    admin_only = sorted(ADMIN_ONLY_OPTIONAL_TOOL_NAMES)[0]
-    developer_only = sorted(DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES)[0]
+    core_tool = SEED_TOOLS[0].name
+    admin_only = sorted(ADMIN_ONLY_TOOL_NAMES)[0]
+    developer_only = sorted(DEVELOPER_ONLY_TOOL_NAMES)[0]
 
     disable_response = client.put(
         f"/users/owner/tools/unified/{core_tool}/enable",
@@ -219,7 +219,7 @@ def test_unified_description_and_config_mutations_are_user_scoped(
     client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
     token = _create_user(agent, "owner")
     _create_user(agent, "other")
-    tool_id = ALL_TOOLS[0].name
+    tool_id = SEED_TOOLS[0].name
 
     set_description = client.put(
         f"/users/owner/tools/unified/{tool_id}/description",

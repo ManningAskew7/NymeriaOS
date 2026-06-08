@@ -499,9 +499,9 @@ def _safe_callable_name(value: str) -> str:
 def _unavailable_callable_names(agent: Any, user_id: str) -> set[str]:
     names: set[str] = set()
     try:
-        from ..tools import ALL_TOOLS
+        from ..tools import SEED_TOOLS
 
-        names.update(tool.name for tool in ALL_TOOLS)
+        names.update(tool.name for tool in SEED_TOOLS)
     except Exception:
         logger.warning("Failed to inspect core tool names while branching", exc_info=True)
 
