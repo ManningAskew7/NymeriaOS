@@ -592,6 +592,9 @@ def test_review_summary_markup_surfaces_collected_choices():
     assert "Agent settings: thorough" in markup
     assert "RAG search" not in markup  # a skipped placeholder is not shown
     assert "Tailscale" in markup
+    # The post-setup handoff is surfaced (default is print, not start).
+    assert "Next" in markup
+    assert "print the start command" in markup
 
 
 def test_print_deployment_summary_suppresses_local_only_and_non_docker_image_tier():
@@ -1886,3 +1889,224 @@ def test_noninteractive_local_provider_without_key(monkeypatch, tmp_path):
     assert rc == 0
     assert "LLM_PROVIDER=lmstudio" in config
     assert "LMSTUDIO_API_KEY" not in config  # no key line for a keyless provider
+
+
+# --- opt-in start-now -------------------------------------------------------
+
+
+def test_run_init_parser_and_state_accept_start_flag():
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.runner import _build_state, build_parser
+
+    args = build_parser().parse_args(
+        ["--hosting", "docker", "--provider", "anthropic",
+         "--model", "m", "--api-key", "k", "--start"]
+    )
+    assert args.start is True
+    state = _build_state(args)
+    assert state.next_action is NextAction.START_API_OPEN_FRONTEND
+    # Pre-seeded so the interactive start-now step reflects the flag.
+    assert state.extras.get("start_now") is NextAction.START_API_OPEN_FRONTEND
+
+    # --start wins over --next-action.
+    args2 = build_parser().parse_args(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "k",
+         "--next-action", "print_commands", "--start"]
+    )
+    assert _build_state(args2).next_action is NextAction.START_API_OPEN_FRONTEND
+
+    # Without an explicit choice, nothing is pre-seeded (shape default applies).
+    args3 = build_parser().parse_args(
+        ["--hosting", "docker", "--provider", "anthropic", "--model", "m",
+         "--api-key", "k"]
+    )
+    assert _build_state(args3).next_action is NextAction.PRINT_COMMANDS
+    assert "start_now" not in _build_state(args3).extras
+
+
+def test_start_now_step_applies_and_choices_are_shape_aware():
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.start_now import start_now_applies, start_now_choices
+
+    assert start_now_applies(WizardState(hosting=HostingOption.LOCAL)) is True
+    assert start_now_applies(WizardState(hosting=HostingOption.DOCKER)) is True
+    # Background-service start is not wired, so the step is skipped there.
+    assert start_now_applies(WizardState(hosting=HostingOption.SERVICE)) is False
+    assert start_now_applies(WizardState()) is False  # no hosting chosen yet
+    # A CLI handoff chosen by flag suppresses the start-now question.
+    assert (
+        start_now_applies(
+            WizardState(hosting=HostingOption.LOCAL, next_action=NextAction.CLI)
+        )
+        is False
+    )
+
+    docker = start_now_choices(HostingOption.DOCKER)
+    assert docker[0].value is NextAction.START_API_OPEN_FRONTEND  # docker -> start
+    local = start_now_choices(HostingOption.LOCAL)
+    assert local[0].value is NextAction.PRINT_COMMANDS  # local -> print
+    for choices in (docker, local):
+        assert {c.value for c in choices} == {
+            NextAction.START_API_OPEN_FRONTEND,
+            NextAction.PRINT_COMMANDS,
+        }
+
+
+def test_start_now_is_in_default_flow_before_review():
+    from nymeria.setup.nav import Navigator
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import build_default_steps
+
+    steps = build_default_steps()
+    ids = [step.id for step in steps]
+    assert "start_now" in ids
+    assert ids.index("start_now") < ids.index("review")
+
+    def applicable(state: "WizardState") -> list[str]:
+        nav = Navigator(steps, state)
+        nav.start()
+        return [steps[i].id for i in nav.applicable_indices()]
+
+    assert "start_now" in applicable(WizardState(hosting=HostingOption.LOCAL))
+    assert "start_now" in applicable(WizardState(hosting=HostingOption.DOCKER))
+    assert "start_now" not in applicable(WizardState(hosting=HostingOption.SERVICE))
+
+
+def test_finalize_starts_docker_when_opted_in(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    calls: list[tuple[list[str], object]] = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs.get("cwd")))
+        return _Result()
+
+    health: list[dict] = []
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        finalize_mod, "wait_for_health", lambda **kw: bool(health.append(kw)) or True
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "docker",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert len(calls) == 1
+    cmd, cwd = calls[0]
+    assert cmd == ["docker", "compose", "-f", "docker-compose.single.yml", "up", "-d"]
+    assert cwd == str(root)
+    assert health  # polled for health after a clean start
+    assert "Nymeria is up" in out
+
+
+def test_finalize_starts_local_foreground_when_opted_in(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    calls: list[tuple[list[str], object, dict]] = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs.get("cwd"), kwargs.get("env") or {}))
+        return _Result()
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        finalize_mod,
+        "wait_for_health",
+        lambda **kw: pytest.fail("local foreground start must not health-poll"),
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "local",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    cmd, cwd, env = calls[0]
+    assert cmd[0] == finalize_mod.sys.executable
+    assert cmd[-1] == "slim"
+    assert cwd == str(root)
+    assert env.get("NYMERIA_PROJECT_ROOT") == str(root)
+
+
+def test_finalize_default_does_not_start_a_process(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    def boom(*_a, **_k):
+        pytest.fail("the default handoff must not launch a process")
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", boom)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "docker",
+         "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "docker compose -f docker-compose.single.yml up -d" in out
+
+
+def test_finalize_docker_start_failure_falls_back_to_printing(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    class _Result:
+        returncode = 1  # compose failed
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(
+        finalize_mod,
+        "wait_for_health",
+        lambda **kw: pytest.fail("must not health-poll after a failed start"),
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "docker",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0  # config was written; a failed start is non-fatal
+    assert "did not start cleanly" in out
+    assert "docker compose -f docker-compose.single.yml up -d" in out
+
+
+def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.start_now import make_start_now_step
+
+    async def drive(switch: bool) -> WizardState:
+        state = WizardState(hosting=HostingOption.DOCKER)
+        app = SetupWizardApp(state, steps=[make_start_now_step()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if switch:
+                await pilot.press("down")   # to "Just print the command"
+                await pilot.press("space")  # select it
+                await pilot.pause()
+            await pilot.press("enter")      # lock the highlighted option + finish
+            await pilot.pause()
+        return state
+
+    # Docker default: Enter accepts the highlighted first option (start now).
+    assert asyncio.run(drive(False)).next_action is NextAction.START_API_OPEN_FRONTEND
+    # Arrow + space switches to print before Enter records it.
+    assert asyncio.run(drive(True)).next_action is NextAction.PRINT_COMMANDS

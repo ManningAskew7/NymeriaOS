@@ -25,6 +25,7 @@ from .model import make_model_step
 from .rag import make_embedder_step, make_reranker_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
+from .start_now import make_start_now_step
 from .welcome import make_welcome_step
 
 
@@ -65,8 +66,9 @@ def build_default_steps() -> list[Step]:
         make_tts_step(),
         make_stt_step(),
         make_agent_settings_step(),
-        # External access, then review and write.
+        # External access, then offer to start the backend, then review and write.
         make_external_access_step(),
+        make_start_now_step(),
         make_review_step(),
     ]
 
