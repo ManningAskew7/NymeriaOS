@@ -43,6 +43,19 @@ Screen {
     padding: 1 1 0 1;
 }
 
+/* Recommended embedder+reranker combos (embedder step) and the dynamic
+   per-embedder pairing hint (reranker step): secondary text in a subtle box so
+   the guidance reads as help, not a selectable option. */
+#combo-hint,
+#combo-rec {
+    color: #aab4c3;
+    background: #151a24;
+    border: round #3a4251;
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+
 #wizard-error {
     color: #fca5a5;
     height: auto;

@@ -2,10 +2,19 @@
 
 TUI-free (like ``setup/providers.py``) so the interactive wizard, the headless
 finalize path, and the quickstart helper share one source of truth. The
-premium / value / local recommendations come from an internal retrieval-quality
-eval on a blended 40k-chunk agentic corpus (see
+premium / value / local recommendations and the per-option ``metrics`` come from
+an internal retrieval-quality eval on a blended 40k-chunk agentic corpus (see
 ``docs/private/rag/rag-eval-notes.md``; the public summary is in the local-LLM
-doc).
+doc). Metrics are internal avg nDCG@5 across the tool/prose/code layers under a
+frozen, set-wise LLM-graded qrels; treat them as relative, corpus-specific
+rankings, not absolute scores. Benchmark leaderboard order frequently did NOT
+transfer to this corpus, so the picks here are what won OUR eval.
+
+Only providers the backend can actually drive are listed: embedders are
+``openai`` / ``cohere`` / ``gemini`` / ``local`` (``memory_index.py``); rerankers
+are ``voyage`` / ``cohere`` / ``zeroentropy`` / ``local`` (``rag_quality.py``).
+Jina, for instance, is eval-tested but has no production endpoint, so it is not
+offered.
 
 Each option maps a stable id (stored on ``WizardState``) to the production env
 vars the backend reads (``EMBEDDING_*`` / ``RAG_RERANK_*``). Secrets ride in
@@ -44,6 +53,7 @@ class EmbedderOption:
     input_type: Optional[str] = None  # EMBEDDING_INPUT_TYPE
     recommended: bool = False
     key_label: str = "API key"
+    metrics: str = ""  # one-line internal-eval summary, shown under the description
 
 
 @dataclass(frozen=True)
@@ -59,19 +69,24 @@ class RerankerOption:
     onnx_file: Optional[str] = None  # RAG_RERANK_LOCAL_ONNX_FILE
     recommended: bool = False
     key_label: str = "API key"
+    metrics: str = ""  # one-line internal-eval summary, shown under the description
 
 
-# Embedders, in display order (premium, value, local). The vector-only quality
-# ranking on the eval corpus is Cohere > Gemini (free) > Voyage-lite > granite;
-# a reranker narrows the gap, so the value and local tiers stay strong picks.
+# Embedders, in display order (premium, value, local). Vector-only quality on the
+# eval corpus ranks Cohere > Gemini (free) > Voyage-large > Voyage-lite ~ OpenAI
+# ~ granite; a reranker narrows the gap (it erases the embedder gap on prose), so
+# the value and local tiers stay strong picks. Each provider lists its fuller
+# lineup so a user can match an account they already hold; the recommended pick
+# per tier carries the (recommended) tag.
 EMBEDDERS: list[EmbedderOption] = [
     EmbedderOption(
         id="premium-cohere",
         tier="premium",
         label="Cohere embed-v4 (1024-d)",
         description=(
-            "Top retrieval quality in our eval, with the biggest lead on "
-            "structured, code, and tool content. Needs a Cohere API key (paid)."
+            "Best overall in our eval, with the biggest lead on structured, code, "
+            "and tool content. Run at 1024-d (Matryoshka): same quality as full "
+            "1536-d for less storage. Needs a Cohere API key (paid)."
         ),
         provider="cohere",
         model="embed-v4.0",
@@ -80,14 +95,52 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="cohere",
         recommended=True,
         key_label="Cohere API key",
+        metrics="Internal eval avg nDCG@5 0.71 (tool 0.66 / prose 0.63 / code 0.84): #1 of every embedder tested.",
+    ),
+    EmbedderOption(
+        id="premium-cohere-1536",
+        tier="premium",
+        label="Cohere embed-v4 (1536-d, full)",
+        description=(
+            "The same embed-v4 model at full 1536-d width. No measured quality gain "
+            "over the 1024-d pick and ~50% more vector storage, so prefer 1024-d "
+            "unless you specifically want full dimensions. Needs a Cohere API key."
+        ),
+        provider="cohere",
+        model="embed-v4.0",
+        dimensions=1536,
+        requires_key=True,
+        key_vendor="cohere",
+        key_label="Cohere API key",
+        metrics="Internal eval avg nDCG@5 0.70: statistically tied with 1024-d, which edges it on tool and prose.",
+    ),
+    EmbedderOption(
+        id="premium-voyage-large",
+        tier="premium",
+        label="Voyage 4 large (1024-d)",
+        description=(
+            "Strong all-round premium embedder, a notch below Cohere on every "
+            "layer. Its edge: one Voyage key also powers the Voyage rerankers, so "
+            "embedding and reranking share a single account. Needs a Voyage API key."
+        ),
+        provider="openai",
+        model="voyage-4-large",
+        dimensions=1024,
+        requires_key=True,
+        key_vendor="voyage",
+        base_url="https://api.voyageai.com/v1",
+        input_type="voyage",
+        key_label="Voyage API key",
+        metrics="Internal eval avg nDCG@5 0.67 (tool 0.59 / prose 0.61 / code 0.81): premium #2, just behind Cohere.",
     ),
     EmbedderOption(
         id="value-gemini",
         tier="value",
         label="Gemini embedding-001 (free tier)",
         description=(
-            "About 98% of premium quality at roughly free on Google's free tier: "
-            "the best quality per dollar. Needs a Google AI (Gemini) API key."
+            "Best quality per dollar: #2 embedder overall and free on Google's "
+            "free tier, beating paid Voyage on tool and prose. Mind the free-tier "
+            "rate/daily caps. Needs a Google AI (Gemini) API key."
         ),
         provider="gemini",
         model="gemini-embedding-001",
@@ -96,14 +149,16 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="gemini",
         recommended=True,
         key_label="Google AI (Gemini) API key",
+        metrics="Internal eval avg nDCG@5 0.68 (tool 0.59 / prose 0.61 / code 0.82): #2 overall, free.",
     ),
     EmbedderOption(
         id="value-voyage-lite",
         tier="value",
         label="Voyage 4 lite (1024-d)",
         description=(
-            "All-paid value pick if Gemini's free-tier limits are a problem. "
-            "Shares its key with the Voyage reranker. Needs a Voyage API key."
+            "The cheapest paid Voyage embedder. An all-paid value option if "
+            "Gemini's free-tier caps are a problem, but Gemini beats it on both "
+            "price and quality. Shares its key with the Voyage rerankers."
         ),
         provider="openai",
         model="voyage-4-lite",
@@ -113,6 +168,25 @@ EMBEDDERS: list[EmbedderOption] = [
         base_url="https://api.voyageai.com/v1",
         input_type="voyage",
         key_label="Voyage API key",
+        metrics="Internal eval avg nDCG@5 0.64: the weakest API embedder tested; prefer Gemini unless free-tier caps bite.",
+    ),
+    EmbedderOption(
+        id="value-openai-small",
+        tier="value",
+        label="OpenAI text-embedding-3-small (1536-d)",
+        description=(
+            "The familiar OpenAI default, offered because many users already have "
+            "the key, but a weak baseline on this agentic corpus: the free local "
+            "Granite model beats it on prose and code. Prefer Gemini or Cohere for "
+            "quality. Needs an OpenAI API key."
+        ),
+        provider="openai",
+        model="text-embedding-3-small",
+        dimensions=1536,
+        requires_key=True,
+        key_vendor="openai",
+        key_label="OpenAI API key",
+        metrics="Internal eval avg nDCG@5 0.60 (tool 0.55 / prose 0.51 / code 0.74): below the free local Granite.",
     ),
     EmbedderOption(
         id="local-granite",
@@ -120,21 +194,26 @@ EMBEDDERS: list[EmbedderOption] = [
         label="Granite small (384-d, on-device)",
         description=(
             "Free, fully private, runs on CPU with no API key. Best local pick in "
-            "our eval. Needs the optional local-rag extra (sentence-transformers)."
+            "our eval and competitive on code; 8192-token context, Apache-2.0. "
+            "Needs the optional local-rag extra (sentence-transformers)."
         ),
         provider="local",
         model="ibm-granite/granite-embedding-small-english-r2",
         dimensions=384,
         requires_key=False,
         recommended=True,
+        metrics="Internal eval avg nDCG@5 0.61 (code 0.79, within 0.03 of premium): best on-device embedder.",
     ),
 ]
 
 
-# Rerankers, in display order. Voyage rerank-2.5 is the best single all-rounder;
-# rerank-2.5-lite matches it at ~40% the price; zerank-2 wins code-heavy corpora;
-# Ettin is the free on-device pick. "None" keeps rag_search vector-only (lowest
-# latency), which is the default since a reranker trades latency for accuracy.
+# Rerankers, in display order (none, premium, value, local). Voyage rerank-2.5 is
+# the best single all-rounder and owns prose; rerank-2.5-lite matches it at ~40%
+# the price; Cohere rerank-v4.0-pro edges on code and shares a Cohere key; zerank-2
+# is a code specialist; the Ettin cross-encoders are the free on-device picks (68m
+# best, 32m faster). "None" keeps rag_search vector-only (lowest latency), the
+# default since a reranker trades latency for accuracy. A reranker erases the
+# embedder gap, so it matters most on a cheap or local first stage.
 RERANKERS: list[RerankerOption] = [
     RerankerOption(
         id="none",
@@ -153,8 +232,9 @@ RERANKERS: list[RerankerOption] = [
         tier="premium",
         label="Voyage rerank-2.5",
         description=(
-            "Best single all-round reranker in our eval. Needs a Voyage API key "
-            "(reused automatically if you chose the Voyage embedder)."
+            "Best single all-round reranker in our eval, with the biggest lift on "
+            "prose. Needs a Voyage API key (reused automatically if you chose a "
+            "Voyage embedder)."
         ),
         provider="voyage",
         model="rerank-2.5",
@@ -162,6 +242,23 @@ RERANKERS: list[RerankerOption] = [
         key_vendor="voyage",
         recommended=True,
         key_label="Voyage API key",
+        metrics="Internal eval avg nDCG@5 0.77 on the premium pool (tool 0.73 / prose 0.72 / code 0.86): best all-rounder.",
+    ),
+    RerankerOption(
+        id="premium-cohere-pro",
+        tier="premium",
+        label="Cohere rerank-v4.0-pro",
+        description=(
+            "Premium reranker that edges Voyage on code but trails it on prose. "
+            "Best paired with the Cohere embedder, whose key it reuses. Needs a "
+            "Cohere API key."
+        ),
+        provider="cohere",
+        model="rerank-v4.0-pro",
+        requires_key=True,
+        key_vendor="cohere",
+        key_label="Cohere API key",
+        metrics="Internal eval avg nDCG@5 0.76 on the premium pool; best on code (0.87), behind Voyage on prose.",
     ),
     RerankerOption(
         id="value-voyage-2.5-lite",
@@ -177,35 +274,111 @@ RERANKERS: list[RerankerOption] = [
         key_vendor="voyage",
         recommended=True,
         key_label="Voyage API key",
+        metrics="Internal eval: within ~0.01 nDCG@5 of the full rerank-2.5, at ~40% of the cost.",
     ),
     RerankerOption(
         id="value-zerank-2",
         tier="value",
         label="ZeroEntropy zerank-2 (code specialist)",
         description=(
-            "Wins on code-heavy corpora in our eval; weaker on prose. Pick this if "
-            "your assistant mostly works with code. Needs a ZeroEntropy API key."
+            "A code specialist, not a general pick: it tops code in our eval but is "
+            "last/near-last on tool and weakest on prose at equal depth. Choose it "
+            "only if your assistant mostly works with code. Needs a ZeroEntropy key."
         ),
         provider="zeroentropy",
         model="zerank-2",
         requires_key=True,
         key_vendor="zeroentropy",
         key_label="ZeroEntropy API key",
+        metrics="Internal eval: best on CODE (~0.87, top of all rerankers) but worst on prose; code-only winner.",
     ),
     RerankerOption(
         id="local-ettin",
         tier="local",
-        label="Ettin cross-encoder (on-device)",
+        label="Ettin 68m cross-encoder (on-device)",
         description=(
-            "Free, fully private, runs on CPU with no API key. Best local reranker "
-            "in our eval. Needs the optional local-rag extra (sentence-transformers)."
+            "Free, fully private, runs on CPU with no API key. Best on-device "
+            "reranker in our eval; biggest help on cheap/local embeddings. Needs "
+            "the optional local-rag extra (sentence-transformers)."
         ),
         provider="local",
         model="cross-encoder/ettin-reranker-68m-v1",
         requires_key=False,
         recommended=True,
+        metrics="Internal eval: +0.07 to +0.10 nDCG@5 on local/cheap embeddings, small lift on premium; ~3-5s/query CPU.",
+    ),
+    RerankerOption(
+        id="local-ettin-32m",
+        tier="local",
+        label="Ettin 32m cross-encoder (on-device, faster)",
+        description=(
+            "Lighter on-device reranker: ~2.7x faster than the 68m on CPU for a "
+            "small quality drop. Pick it when rerank latency is tight. Needs the "
+            "optional local-rag extra."
+        ),
+        provider="local",
+        model="cross-encoder/ettin-reranker-32m-v1",
+        requires_key=False,
+        metrics="Internal eval: ~0.035 nDCG@5 below the 68m but ~2.7x faster on CPU.",
     ),
 ]
+
+
+# Recommended embedder + reranker pairings from the eval, by tier. Surfaced in the
+# wizard so the intended combos are obvious even though each option is picked
+# separately.
+RECOMMENDED_COMBOS: list[tuple[str, str, str, str]] = [
+    (
+        "Premium",
+        "premium-cohere",
+        "premium-voyage-2.5",
+        "SOTA quality (internal eval avg nDCG@5 0.77)",
+    ),
+    (
+        "Value",
+        "value-gemini",
+        "value-voyage-2.5-lite",
+        "~98% of premium at a near-free embedder + a cheap reranker",
+    ),
+    (
+        "Local",
+        "local-granite",
+        "local-ettin",
+        "free, fully private, on-device",
+    ),
+]
+
+# The reranker recommended to pair with each embedder, plus a one-line rationale.
+_RECOMMENDED_RERANKER: dict[str, tuple[str, str]] = {
+    "premium-cohere": (
+        "premium-voyage-2.5",
+        "SOTA pair; for code-heavy work swap to Cohere rerank-v4.0-pro (shares your Cohere key).",
+    ),
+    "premium-cohere-1536": (
+        "premium-voyage-2.5",
+        "SOTA pair; code-heavy work can swap to Cohere rerank-v4.0-pro.",
+    ),
+    "premium-voyage-large": (
+        "premium-voyage-2.5",
+        "One Voyage key powers embedding and reranking; code-heavy work can use zerank-2.",
+    ),
+    "value-gemini": (
+        "value-voyage-2.5-lite",
+        "Value pair: about 98% of premium quality.",
+    ),
+    "value-voyage-lite": (
+        "value-voyage-2.5-lite",
+        "All-paid value pair; one Voyage key for both.",
+    ),
+    "value-openai-small": (
+        "value-voyage-2.5-lite",
+        "A reranker erases most of the embedder gap, so this lifts a weak first stage.",
+    ),
+    "local-granite": (
+        "local-ettin",
+        "Free, fully private, on-device pair.",
+    ),
+}
 
 _EMBEDDERS_BY_ID = {opt.id: opt for opt in EMBEDDERS}
 _RERANKERS_BY_ID = {opt.id: opt for opt in RERANKERS}
@@ -221,6 +394,25 @@ def get_embedder(option_id: Optional[str]) -> Optional[EmbedderOption]:
 
 def get_reranker(option_id: Optional[str]) -> Optional[RerankerOption]:
     return _RERANKERS_BY_ID.get(option_id) if option_id else None
+
+
+def recommended_reranker_for(
+    embedder_id: Optional[str],
+) -> Optional[tuple[str, str]]:
+    """Return ``(reranker_id, rationale)`` recommended for this embedder, or None.
+
+    Falls back to the local pair for any unmapped local embedder so the reranker
+    step always has a recommendation to show.
+    """
+    if not embedder_id:
+        return None
+    rec = _RECOMMENDED_RERANKER.get(embedder_id)
+    if rec is not None:
+        return rec
+    emb = get_embedder(embedder_id)
+    if emb is not None and emb.tier == "local":
+        return ("local-ettin", "Free, fully private, on-device pair.")
+    return None
 
 
 def rag_env_for_state(state: "WizardState") -> dict[str, str]:
@@ -278,10 +470,12 @@ __all__ = [
     "RerankerOption",
     "EMBEDDERS",
     "RERANKERS",
+    "RECOMMENDED_COMBOS",
     "QUICKSTART_EMBEDDER",
     "QUICKSTART_RERANKER",
     "get_embedder",
     "get_reranker",
+    "recommended_reranker_for",
     "rag_env_for_state",
     "apply_quickstart_rag",
 ]

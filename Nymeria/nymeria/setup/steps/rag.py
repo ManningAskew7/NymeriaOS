@@ -25,11 +25,14 @@ from textual.widgets import Input, RadioButton, Static
 from ..nav import Step
 from ..rag_catalog import (
     EMBEDDERS,
+    RECOMMENDED_COMBOS,
     RERANKERS,
     TIER_LABELS,
     EmbedderOption,
     RerankerOption,
     get_embedder,
+    get_reranker,
+    recommended_reranker_for,
 )
 from .base import CircleRadioButton, FormStep
 
@@ -43,6 +46,25 @@ def _tagged_label(option) -> str:
     if getattr(option, "recommended", False):
         label += " (recommended)"
     return label
+
+
+def _describe(option) -> str:
+    """The focused option's description plus its one-line internal-eval metric."""
+    text = option.description
+    metrics = getattr(option, "metrics", "")
+    return f"{text}\n{metrics}" if metrics else text
+
+
+def _combos_markup() -> str:
+    """The recommended embedder + reranker pairings, one line per tier."""
+    lines = ["Recommended combos (embedder + reranker):"]
+    for tier, emb_id, rer_id, blurb in RECOMMENDED_COMBOS:
+        emb = get_embedder(emb_id)
+        rer = get_reranker(rer_id)
+        if emb is None or rer is None:
+            continue
+        lines.append(f"  {tier}: {emb.label} + {rer.label}, {blurb}")
+    return "\n".join(lines)
 
 
 class EmbedderStep(FormStep):
@@ -66,6 +88,7 @@ class EmbedderStep(FormStep):
 
     def compose_body(self) -> ComposeResult:
         initial = self.state.embedder or self._options[0].id
+        yield Static(_combos_markup(), id="combo-hint")
         yield Static("Embedding model", classes="field-label")
         with Vertical(classes="radio-group", id="model-group"):
             for o in self._options:
@@ -114,7 +137,7 @@ class EmbedderStep(FormStep):
         if focused in buttons:
             i = buttons.index(focused)  # type: ignore[arg-type]
             if 0 <= i < len(self._options):
-                self.query_one("#choice-desc", Static).update(self._options[i].description)
+                self.query_one("#choice-desc", Static).update(_describe(self._options[i]))
 
     def _on_single_select(self, group: object, button: RadioButton) -> None:
         if getattr(group, "id", None) != "model-group":
@@ -190,6 +213,15 @@ class RerankerStep(FormStep):
 
     def compose_body(self) -> ComposeResult:
         initial = self.state.reranker or self._options[0].id
+        rec = recommended_reranker_for(self.state.embedder)
+        if rec is not None:
+            rer = get_reranker(rec[0])
+            emb = get_embedder(self.state.embedder)
+            if rer is not None and emb is not None:
+                yield Static(
+                    f"Recommended with {emb.label}: {rer.label}. {rec[1]}",
+                    id="combo-rec",
+                )
         with Vertical(classes="radio-group", id="reranker-group"):
             for o in self._options:
                 yield CircleRadioButton(_tagged_label(o), value=(o.id == initial))
@@ -216,7 +248,7 @@ class RerankerStep(FormStep):
         if focused in buttons:
             i = buttons.index(focused)  # type: ignore[arg-type]
             if 0 <= i < len(self._options):
-                self.query_one("#choice-desc", Static).update(self._options[i].description)
+                self.query_one("#choice-desc", Static).update(_describe(self._options[i]))
 
     def _on_single_select(self, group: object, button: RadioButton) -> None:
         if getattr(group, "id", None) != "reranker-group":
