@@ -34,6 +34,16 @@ CHARS_PER_TOKEN = 4  # Approximate
 EMBEDDING_DIMENSIONS = 1536  # text-embedding-3-small
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Bound the OpenAI-compatible embedding client so a slow/unreachable endpoint
+# cannot block on the SDK default (~600s x 2 retries). The client is shared by
+# the latency-sensitive search query path and batch indexing, so the base client
+# gets a generous ceiling (batches of up to 128 short chunks still finish well
+# inside it) and the query path overrides to a tighter ceiling so a stalled
+# endpoint degrades rag_search to BM25 in seconds instead of hanging the turn.
+# The native cohere/gemini providers already bound themselves in _native_embed_post.
+EMBED_CLIENT_TIMEOUT_SECONDS = 60.0
+EMBED_QUERY_TIMEOUT_SECONDS = 12.0
+
 # Browser User-Agent for native embedding HTTP calls (Cohere). Some managed
 # endpoints sit behind a CDN that rejects a bare urllib User-Agent; a browser UA
 # is harmless for the providers that do not need it.
@@ -341,6 +351,10 @@ class MemoryIndex:
         self._lock = threading.RLock()
         self._openai_client = None
         self._dim_mismatch = False
+        # Diagnostics from the most recent search() (which branches actually ran,
+        # candidate counts, embedder identity). rag_search surfaces it so the
+        # configured embedder/reranker stack can be confirmed live in testing.
+        self._last_search_diag: Optional[Dict[str, Any]] = None
 
         # Ensure directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -534,7 +548,10 @@ class MemoryIndex:
                 raise RuntimeError("EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key")
             try:
                 from openai import OpenAI
-                kwargs = {"api_key": self.embedding_api_key}
+                kwargs: Dict[str, Any] = {
+                    "api_key": self.embedding_api_key,
+                    "timeout": EMBED_CLIENT_TIMEOUT_SECONDS,
+                }
                 if self.embedding_base_url:
                     kwargs["base_url"] = self.embedding_base_url
                 self._openai_client = OpenAI(**kwargs)
@@ -609,6 +626,10 @@ class MemoryIndex:
         out: List[Optional[List[float]]] = [None] * len(inputs)
         try:
             client = self._get_openai_client()
+            # The search query path fails fast (a stalled endpoint degrades to
+            # BM25 in seconds); batch indexing keeps the generous client ceiling.
+            if input_type == "query":
+                client = client.with_options(timeout=EMBED_QUERY_TIMEOUT_SECONDS)
             kwargs = self._embed_kwargs()
             if self.embedding_input_type:
                 it = "query" if input_type == "query" else "document"
@@ -1398,6 +1419,7 @@ class MemoryIndex:
         Returns:
             List of ChunkResult objects sorted by relevance
         """
+        self._last_search_diag = None
         if not query or not query.strip():
             return []
 
@@ -1537,6 +1559,22 @@ class MemoryIndex:
                         return 0.0
                     rows.sort(key=lambda r: _interval_distance(r.get('et')))
                     anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+
+                # Record which retrieval branches actually ran this search so
+                # rag_search can confirm the live embedder/retrieval stack.
+                self._last_search_diag = {
+                    "retrieval_mode": retrieval_mode,
+                    "embedding_provider": self.embedding_provider,
+                    "embedding_model": self.embedding_model,
+                    "embedding_dimensions": self.embedding_dimensions,
+                    "vector_used": query_embedding is not None,
+                    "vector_candidates": len(vector_ids),
+                    "bm25_used": bool(fts_query),
+                    "bm25_candidates": len(bm25_ids),
+                    "anchor_candidates": len(anchor_ids),
+                    "candidate_pool": candidate_pool,
+                    "vector_limit": vector_limit,
+                }
 
                 candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids, *anchor_ids]))
                 if not candidate_ids:
