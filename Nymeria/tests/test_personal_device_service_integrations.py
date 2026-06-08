@@ -182,16 +182,16 @@ def test_philips_hue_update_light_uses_vault_token_and_username(tmp_path, monkey
 
 
 def test_personal_device_registration_and_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import get_tool_metadata
     from nymeria.tools.personal_device_service_integrations import PERSONAL_DEVICE_SERVICE_TOOLS
 
     names = {tool.name for tool in PERSONAL_DEVICE_SERVICE_TOOLS}
     assert len(names) == 25
-    assert "oura_get_profile" in OPTIONAL_TOOLS
-    assert "strava_create_activity" in OPTIONAL_TOOLS
-    assert "homeassistant_call_service" in OPTIONAL_TOOLS
-    assert "philips_hue_update_light_state" in OPTIONAL_TOOLS
+    assert "oura_get_profile" in CATALOG_TOOLS
+    assert "strava_create_activity" in CATALOG_TOOLS
+    assert "homeassistant_call_service" in CATALOG_TOOLS
+    assert "philips_hue_update_light_state" in CATALOG_TOOLS
     assert get_tool_metadata("oura_get_profile").security_level.value == "safe"
     assert get_tool_metadata("homeassistant_call_service").security_level.value == "moderate"
     assert get_tool_metadata("philips_hue_update_light_state").security_level.value == "moderate"

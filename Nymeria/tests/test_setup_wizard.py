@@ -80,12 +80,12 @@ def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
 
 def test_core_tools_match_plan_section_a():
     """The Core toolset screen pins the 12 literal tools from
-    core-toolset-plan.md Section A (the review screen prints len(CORE_TOOLS)).
+    core-toolset-plan.md Section A (the review screen prints len(CORE_TOOLSET_TARGET)).
     """
-    from nymeria.setup.steps.core_tools import CORE_TOOLS
+    from nymeria.setup.steps.core_tools import CORE_TOOLSET_TARGET
 
-    names = [name for name, _note in CORE_TOOLS]
-    assert len(CORE_TOOLS) == 12
+    names = [name for name, _note in CORE_TOOLSET_TARGET]
+    assert len(CORE_TOOLSET_TARGET) == 12
     assert names == [
         "bash_execute",
         "file_read",

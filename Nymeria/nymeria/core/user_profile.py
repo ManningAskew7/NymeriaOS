@@ -108,7 +108,7 @@ class ToolPreferences(BaseModel):
         default=None,
         description=(
             "Tool names that new threads inherit by default. "
-            "None = not yet initialized (will be populated from ALL_TOOLS on first use). "
+            "None = not yet initialized (will be populated from SEED_TOOLS on first use). "
             "Empty list = no tools. "
             "Can include both core and optional tool names."
         )
@@ -147,7 +147,7 @@ class ToolPreferences(BaseModel):
         return False
 
     def reset_to_defaults(self) -> None:
-        """Reset all tool preferences to defaults (re-init from ALL_TOOLS)."""
+        """Reset all tool preferences to defaults (re-init from SEED_TOOLS)."""
         self.default_thread_tools = None
         self.tool_configs.clear()
         self.custom_descriptions.clear()

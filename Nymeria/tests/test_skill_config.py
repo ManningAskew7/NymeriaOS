@@ -14,7 +14,7 @@ from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
 from nymeria.core.user_profile import DEFAULT_GLOBAL_SKILLS, UserProfileManager
 from nymeria.skills import SkillManager
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_all_tool_metadata
 from nymeria.tools.skill_config import (
     skill_edit,
@@ -386,17 +386,17 @@ description: Skill with old recorded usage.
 
 
 def test_skill_write_and_edit_are_optional_with_metadata():
-    core_names = {tool.name for tool in ALL_TOOLS}
+    core_names = {tool.name for tool in SEED_TOOLS}
 
     assert "skill_config" not in core_names
     assert "skill_kit_create" not in core_names
-    assert "skill_config" not in OPTIONAL_TOOLS
-    assert "skill_kit_create" not in OPTIONAL_TOOLS
+    assert "skill_config" not in CATALOG_TOOLS
+    assert "skill_kit_create" not in CATALOG_TOOLS
     assert get_all_tool_metadata("skill_config") is None
     assert get_all_tool_metadata("skill_kit_create") is None
     for name in ("skill_write", "skill_edit"):
         assert name not in core_names
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         meta = get_all_tool_metadata(name)
         assert meta is not None
         assert meta.category == ToolCategory.CUSTOM

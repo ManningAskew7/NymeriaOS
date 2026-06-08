@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import nymeria.tools as tools_package
 from nymeria.tools import (
-    ALL_TOOLS,
-    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
-    OPTIONAL_TOOLS,
+    SEED_TOOLS,
+    DEVELOPER_ONLY_TOOL_NAMES,
+    CATALOG_TOOLS,
     filter_developer_only_tools,
 )
 from nymeria.tools import auth_cache_utils
@@ -861,7 +861,7 @@ def test_legacy_tool_symbols_are_not_public_exports():
     for name in legacy_todo_symbols:
         assert name not in tools_package.__all__
 
-    registered_names = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
+    registered_names = {tool.name for tool in SEED_TOOLS} | set(CATALOG_TOOLS)
     assert not (registered_names & set(legacy_trigger_symbols + legacy_todo_symbols))
 
 
@@ -878,15 +878,15 @@ def test_trigger_consolidation_and_tool_search_schema_budget():
 
 
 def test_builtin_tools_have_metadata():
-    tools = list(ALL_TOOLS) + list(OPTIONAL_TOOLS.values())
+    tools = list(SEED_TOOLS) + list(CATALOG_TOOLS.values())
     missing = sorted({tool.name for tool in tools if get_all_tool_metadata(tool.name) is None})
 
     assert missing == []
 
 
 def test_builtin_tool_metadata_is_generated_from_registered_tools():
-    tools = {tool.name: tool for tool in ALL_TOOLS}
-    tools.update(OPTIONAL_TOOLS)
+    tools = {tool.name: tool for tool in SEED_TOOLS}
+    tools.update(CATALOG_TOOLS)
 
     refresh_builtin_tool_metadata()
 
@@ -895,7 +895,7 @@ def test_builtin_tool_metadata_is_generated_from_registered_tools():
         name
         for name, meta in TOOL_METADATA.items()
         if meta.default_enabled
-    } == {tool.name for tool in ALL_TOOLS}
+    } == {tool.name for tool in SEED_TOOLS}
     assert [
         name
         for name, tool in sorted(tools.items())
@@ -921,18 +921,18 @@ def test_builtin_tool_metadata_getters_reuse_loaded_cache(monkeypatch):
         counting_generate,
     )
 
-    assert get_tool_metadata(ALL_TOOLS[0].name) is not None
-    assert get_all_tool_metadata(ALL_TOOLS[0].name) is not None
+    assert get_tool_metadata(SEED_TOOLS[0].name) is not None
+    assert get_all_tool_metadata(SEED_TOOLS[0].name) is not None
     assert calls == 0
 
     refresh_builtin_tool_metadata()
     assert calls == 1
-    assert get_all_tool_metadata(ALL_TOOLS[0].name) is not None
+    assert get_all_tool_metadata(SEED_TOOLS[0].name) is not None
     assert calls == 1
 
 
 def test_builtin_tool_names_avoid_claude_oauth_reserved_mcp_namespace():
-    registered_names = {tool.name for tool in ALL_TOOLS} | set(OPTIONAL_TOOLS)
+    registered_names = {tool.name for tool in SEED_TOOLS} | set(CATALOG_TOOLS)
     rejected_by_claude_oauth = sorted(
         name
         for name in registered_names
@@ -962,11 +962,11 @@ def test_new_registered_tools_receive_generated_metadata(monkeypatch):
         description = "Optional generated metadata."
 
     with monkeypatch.context() as m:
-        m.setattr(tools_package, "ALL_TOOLS", [*ALL_TOOLS, FakeTool()])
+        m.setattr(tools_package, "SEED_TOOLS", [*SEED_TOOLS, FakeTool()])
         m.setattr(
             tools_package,
-            "OPTIONAL_TOOLS",
-            {**OPTIONAL_TOOLS, FakeOptionalTool.name: FakeOptionalTool()},
+            "CATALOG_TOOLS",
+            {**CATALOG_TOOLS, FakeOptionalTool.name: FakeOptionalTool()},
         )
         refresh_builtin_tool_metadata()
 
@@ -995,7 +995,7 @@ def test_optional_profile_tools_keep_profile_category():
 
 
 def test_hello_test_is_developer_only_in_tool_discovery():
-    assert "hello_test" in DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+    assert "hello_test" in DEVELOPER_ONLY_TOOL_NAMES
 
     user_results = _search("hello", "", "thread-a", user_role="user")
     admin_results = _search("hello", "", "thread-a", user_role="admin")

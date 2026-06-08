@@ -63,13 +63,13 @@ def _enable_mcp_tools_for_user_defaults(
 ) -> None:
     if not tool_names:
         return
-    from ...tools import ALL_TOOLS
+    from ...tools import SEED_TOOLS
 
     agent = get_agent_fn()
     with agent.profile_manager.atomic_update(user_id) as profile:
         dtt = profile.tool_preferences.default_thread_tools
         if dtt is None:
-            dtt = [t.name for t in ALL_TOOLS]
+            dtt = [t.name for t in SEED_TOOLS]
         for name in tool_names:
             if name not in dtt:
                 dtt.append(name)

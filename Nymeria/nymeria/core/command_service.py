@@ -897,9 +897,9 @@ class CommandBackendClient:
 
     async def get_default_tools(self, user_id: str = "default") -> dict:
         from ..tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
-            filter_discoverable_optional_tool_names,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
+            filter_discoverable_catalog_tool_names,
         )
         from ..tools.metadata import (
             MCP_SERVER_TOOL_METADATA,
@@ -913,16 +913,16 @@ class CommandBackendClient:
         default_set = (
             set(prefs.default_thread_tools)
             if prefs.default_thread_tools is not None
-            else {t.name for t in ALL_TOOLS}
+            else {t.name for t in SEED_TOOLS}
         )
 
         tools_out = []
         seen = set()
-        visible_optional = filter_discoverable_optional_tool_names(
-            OPTIONAL_TOOLS.keys(),
+        visible_optional = filter_discoverable_catalog_tool_names(
+            CATALOG_TOOLS.keys(),
             self.user.role,
         )
-        for t in ALL_TOOLS:
+        for t in SEED_TOOLS:
             meta = get_tool_metadata(t.name)
             category = meta.category.value if meta else "general"
             tools_out.append({
@@ -935,7 +935,7 @@ class CommandBackendClient:
                 **integration_grouping_fields(t.name, category),
             })
             seen.add(t.name)
-        for name, tool in OPTIONAL_TOOLS.items():
+        for name, tool in CATALOG_TOOLS.items():
             if name in visible_optional and name not in seen:
                 meta = get_tool_metadata(name)
                 category = meta.category.value if meta else "unknown"
@@ -975,11 +975,11 @@ class CommandBackendClient:
         }
 
     async def get_tool_categories(self) -> dict:
-        from ..tools import filter_discoverable_optional_tool_names
+        from ..tools import filter_discoverable_catalog_tool_names
         from ..tools.metadata import get_category_tools_summary
 
         categories = get_category_tools_summary()
-        visible_names = filter_discoverable_optional_tool_names(
+        visible_names = filter_discoverable_catalog_tool_names(
             {name for names in categories.values() for name in names},
             self.user.role,
         )
@@ -1354,18 +1354,18 @@ class CommandBackendClient:
             enabled_tools = list(kwargs["enabled_tools"])
             if self.user.role != "admin":
                 from ..tools import (
-                    ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-                    DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+                    ADMIN_ONLY_TOOL_NAMES,
+                    DEVELOPER_ONLY_TOOL_NAMES,
                 )
 
-                blocked = ADMIN_ONLY_OPTIONAL_TOOL_NAMES.intersection(enabled_tools)
+                blocked = ADMIN_ONLY_TOOL_NAMES.intersection(enabled_tools)
                 if blocked:
                     _raise_http_status(
                         403,
                         "Admin-only tools cannot be enabled by this user: "
                         f"{sorted(blocked)}",
                     )
-                blocked = DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES.intersection(enabled_tools)
+                blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(enabled_tools)
                 if blocked:
                     _raise_http_status(
                         403,

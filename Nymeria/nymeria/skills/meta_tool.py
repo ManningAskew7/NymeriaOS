@@ -138,10 +138,10 @@ def _known_nymeria_tool_names() -> set[str]:
     """
     names: set[str] = set()
     try:
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+        from ..tools import SEED_TOOLS, CATALOG_TOOLS
 
-        names.update(t.name for t in ALL_TOOLS)
-        names.update(OPTIONAL_TOOLS.keys())
+        names.update(t.name for t in SEED_TOOLS)
+        names.update(CATALOG_TOOLS.keys())
     except Exception:
         logger.warning("Failed to import tool names from tools module", exc_info=True)
 

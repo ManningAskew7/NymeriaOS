@@ -18,7 +18,7 @@ from nymeria.core.time_utils import utc_now
 from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.core.trigger_manager import TriggerAction, TriggerManager
 from nymeria.core.user_profile import UserProfileManager
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.definitions.mcp_schema import MCPDiscoveredTool, MCPServerDefinition
 from nymeria.vendor.react_agent.config import LLMConfig
 
@@ -183,9 +183,9 @@ def test_thread_overview_tool_counts_use_defaults_plus_overrides(
 ):
     client, agent, _settings, token = _client(tmp_path, api_client_builder)
     thread_id = "tool-counts"
-    promoted_optional = next(iter(OPTIONAL_TOOLS))
-    thread_extra = next(name for name in OPTIONAL_TOOLS if name != promoted_optional)
-    default_core = ALL_TOOLS[0].name
+    promoted_optional = next(iter(CATALOG_TOOLS))
+    thread_extra = next(name for name in CATALOG_TOOLS if name != promoted_optional)
+    default_core = SEED_TOOLS[0].name
 
     agent.accounts_repo.claim_thread(thread_id, "owner")
     with agent.profile_manager.atomic_update("owner") as profile:
@@ -226,7 +226,7 @@ def test_thread_overview_returns_resolved_sections(
     thread_id = "thread-overview"
     helper_id = "helper-thread"
     now = utc_now()
-    optional_tool = next(iter(OPTIONAL_TOOLS))
+    optional_tool = next(iter(CATALOG_TOOLS))
 
     agent.accounts_repo.claim_thread(thread_id, "owner")
     agent.accounts_repo.claim_thread(helper_id, "owner")
@@ -239,7 +239,7 @@ def test_thread_overview_returns_resolved_sections(
     )
     with agent.profile_manager.atomic_update("owner") as profile:
         profile.tool_preferences.default_thread_tools = [
-            ALL_TOOLS[0].name,
+            SEED_TOOLS[0].name,
             "mcp__srv__search",
         ]
         profile.enabled_global_skills = ["global-skill"]

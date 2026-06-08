@@ -1364,7 +1364,7 @@ _PRV_TOOLS_A = (
 
 # Optional tools — available for per-thread enabling but NOT loaded by default.
 # Maps tool name -> tool object. Users enable these via thread config UI.
-OPTIONAL_TOOLS = {t.name: t for t in (
+CATALOG_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
     + FILE_EDIT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
@@ -1457,7 +1457,7 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
 # every agent-callable write site (tool_search, spawn_thread, slash
 # /tools), and as defense-in-depth at graph-build time. Names — not tool
 # objects — so the gate survives reload_all().
-ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
+ADMIN_ONLY_TOOL_NAMES = frozenset(
     [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)]
     + [claude_code.name]
 )
@@ -1465,7 +1465,7 @@ ADMIN_ONLY_OPTIONAL_TOOL_NAMES = frozenset(
 # Optional tools that exist for development/regression validation rather than
 # production use. Admins can still discover and bind them when deliberately
 # testing dynamic tool loading; regular users should not see or enable them.
-DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES = frozenset([hello_test.name])
+DEVELOPER_ONLY_TOOL_NAMES = frozenset([hello_test.name])
 
 
 def filter_developer_only_tools(
@@ -1476,11 +1476,11 @@ def filter_developer_only_tools(
     names = set(tool_names)
     if user_role == "admin":
         return names, set()
-    blocked = names & DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+    blocked = names & DEVELOPER_ONLY_TOOL_NAMES
     return names - blocked, blocked
 
 
-def filter_discoverable_optional_tool_names(
+def filter_discoverable_catalog_tool_names(
     tool_names,
     user_role: str,
 ) -> set:
@@ -1498,7 +1498,7 @@ def filter_admin_only_tools(
     Returns ``(allowed, blocked)``: the input names split into a set the
     caller may have, and a set the caller is not allowed to enable.
     Admins see everything allowed; for any other role, names in
-    ``ADMIN_ONLY_OPTIONAL_TOOL_NAMES`` are stripped into ``blocked``.
+    ``ADMIN_ONLY_TOOL_NAMES`` are stripped into ``blocked``.
 
     This is the single chokepoint shared by tool_search, spawn_thread, the
     REST gate at PATCH /threads/{id}/config, and the graph-build defense-
@@ -1508,11 +1508,11 @@ def filter_admin_only_tools(
     names = set(tool_names)
     if user_role == "admin":
         return names, set()
-    blocked = names & ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+    blocked = names & ADMIN_ONLY_TOOL_NAMES
     return names - blocked, blocked
 
 # All available tools
-ALL_TOOLS = [
+SEED_TOOLS = [
     # Core system tools
     bash_execute,
     file_read,
@@ -2698,14 +2698,14 @@ __all__ = [
     "CHROME_BROWSER_TOOLS",
     "CALENDAR_TOOLS",
     "SELF_AGENT_TOOLS",
-    "OPTIONAL_TOOLS",
-    "ADMIN_ONLY_OPTIONAL_TOOL_NAMES",
-    "DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES",
+    "CATALOG_TOOLS",
+    "ADMIN_ONLY_TOOL_NAMES",
+    "DEVELOPER_ONLY_TOOL_NAMES",
     "CAPABILITY_EXPANSION_TOOL_NAMES",
     "filter_admin_only_tools",
     "filter_developer_only_tools",
-    "filter_discoverable_optional_tool_names",
-    "ALL_TOOLS",
+    "filter_discoverable_catalog_tool_names",
+    "SEED_TOOLS",
     "hello_test",
     "GOOGLE_DOCS_TOOLS",
     "GOOGLE_SHEETS_TOOLS",

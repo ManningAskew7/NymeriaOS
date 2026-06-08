@@ -568,11 +568,11 @@ def _settings_mapping(settings: Any) -> dict[str, Any]:
 
 
 def _local_default_tools(agent: Any, user_id: str) -> dict[str, Any]:
-    from ...tools import ALL_TOOLS
+    from ...tools import SEED_TOOLS
 
     profile = agent.profile_manager.get_profile(user_id)
     default_tools = profile.tool_preferences.default_thread_tools
-    names = list(default_tools) if default_tools is not None else [tool.name for tool in ALL_TOOLS]
+    names = list(default_tools) if default_tools is not None else [tool.name for tool in SEED_TOOLS]
     return {"default_tools": names, "available_tools": [{"name": name} for name in names]}
 
 

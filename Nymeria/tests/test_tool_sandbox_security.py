@@ -8,13 +8,13 @@ from types import SimpleNamespace
 
 
 def test_bash_execute_is_default_core_tool():
-    from nymeria.tools import ALL_TOOLS, ADMIN_ONLY_OPTIONAL_TOOL_NAMES, OPTIONAL_TOOLS
+    from nymeria.tools import SEED_TOOLS, ADMIN_ONLY_TOOL_NAMES, CATALOG_TOOLS
 
-    core_tool_names = {tool.name for tool in ALL_TOOLS}
+    core_tool_names = {tool.name for tool in SEED_TOOLS}
 
     assert "bash_execute" in core_tool_names
-    assert "bash_execute" not in OPTIONAL_TOOLS
-    assert "bash_execute" not in ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+    assert "bash_execute" not in CATALOG_TOOLS
+    assert "bash_execute" not in ADMIN_ONLY_TOOL_NAMES
 
 
 def test_self_file_write_is_disabled_without_escape_hatch(monkeypatch):

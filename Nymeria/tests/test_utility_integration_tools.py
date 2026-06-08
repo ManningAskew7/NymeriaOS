@@ -189,7 +189,7 @@ def test_wolfram_alpha_query_uses_vault_app_id(tmp_path, monkeypatch):
 
 
 def test_utility_integrations_tools_are_optional_integrations():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     for name in {
@@ -197,7 +197,7 @@ def test_utility_integrations_tools_are_optional_integrations():
         "wikipedia_search",
         "wolfram_alpha_query",
     }:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS

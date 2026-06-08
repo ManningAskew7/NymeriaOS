@@ -52,9 +52,9 @@ def create_unified_tools_router(
         """
         require_same_user_or_admin_fn(user, user_id)
         from ...tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
-            filter_discoverable_optional_tool_names,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
+            filter_discoverable_catalog_tool_names,
         )
         from ...tools.metadata import MCP_SERVER_TOOL_METADATA, get_tool_metadata
 
@@ -66,17 +66,17 @@ def create_unified_tools_router(
 
         dtt = tool_prefs.default_thread_tools
         if dtt is None:
-            dtt_set = {tool.name for tool in ALL_TOOLS}
+            dtt_set = {tool.name for tool in SEED_TOOLS}
         else:
             dtt_set = set(dtt)
 
         unified_tools = []
         seen = set()
-        visible_optional = filter_discoverable_optional_tool_names(
-            OPTIONAL_TOOLS.keys(),
+        visible_optional = filter_discoverable_catalog_tool_names(
+            CATALOG_TOOLS.keys(),
             user.role,
         )
-        for tool in ALL_TOOLS:
+        for tool in SEED_TOOLS:
             meta = get_tool_metadata(tool.name)
             enabled = tool.name in dtt_set
             tool_info = {
@@ -94,7 +94,7 @@ def create_unified_tools_router(
             unified_tools.append(builtin_tool_to_unified(tool_info, tool_prefs))
             seen.add(tool.name)
 
-        for name, tool in OPTIONAL_TOOLS.items():
+        for name, tool in CATALOG_TOOLS.items():
             if name in seen or name not in visible_optional:
                 continue
             meta = get_tool_metadata(name)
@@ -192,9 +192,9 @@ def create_unified_tools_router(
         """
         require_same_user_or_admin_fn(user, user_id)
         from ...tools import (
-            ADMIN_ONLY_OPTIONAL_TOOL_NAMES,
-            ALL_TOOLS,
-            DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES,
+            ADMIN_ONLY_TOOL_NAMES,
+            SEED_TOOLS,
+            DEVELOPER_ONLY_TOOL_NAMES,
         )
         from ...tools.metadata import get_all_tool_metadata
 
@@ -214,7 +214,7 @@ def create_unified_tools_router(
 
         if (
             request.enabled
-            and tool_id in ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+            and tool_id in ADMIN_ONLY_TOOL_NAMES
             and user.role != "admin"
         ):
             raise HTTPException(
@@ -223,7 +223,7 @@ def create_unified_tools_router(
             )
         if (
             request.enabled
-            and tool_id in DEVELOPER_ONLY_OPTIONAL_TOOL_NAMES
+            and tool_id in DEVELOPER_ONLY_TOOL_NAMES
             and user.role != "admin"
         ):
             raise HTTPException(
@@ -234,7 +234,7 @@ def create_unified_tools_router(
         with agent.profile_manager.atomic_update(user_id) as profile:
             dtt = profile.tool_preferences.default_thread_tools
             if dtt is None:
-                dtt = [tool.name for tool in ALL_TOOLS]
+                dtt = [tool.name for tool in SEED_TOOLS]
 
             if request.enabled:
                 if tool_id not in dtt:

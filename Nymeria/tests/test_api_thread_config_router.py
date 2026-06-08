@@ -7,7 +7,7 @@ from pathlib import Path
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, ThreadLLMConfig
 from nymeria.core.thread_metadata import ThreadMetadataManager
-from nymeria.tools import ALL_TOOLS
+from nymeria.tools import SEED_TOOLS
 
 
 class FakeAgent:
@@ -218,7 +218,7 @@ def test_thread_config_rejects_invalid_core_and_duplicate_callable_names(
     core_name = client.patch(
         "/threads/target/config",
         headers=headers,
-        json={"callable_name": ALL_TOOLS[0].name},
+        json={"callable_name": SEED_TOOLS[0].name},
     )
     duplicate = client.patch(
         "/threads/target/config",

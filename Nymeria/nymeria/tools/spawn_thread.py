@@ -16,7 +16,7 @@ The tool exposes three ergonomic knobs over the raw thread config:
     index (e.g. ["research"] selects web/RAG/wiki tools).
   * ttl_hours: single optional TTL (None = permanent, int = temporary with
     that many idle hours before the ticker sweeps it).
-  * include_core_tools: when False, the child skips ALL_TOOLS and gets only
+  * include_core_tools: when False, the child skips SEED_TOOLS and gets only
     the explicitly resolved/selected set.
 
 It only exposes the *append* path for system prompts
@@ -378,15 +378,15 @@ def _resolve_semantic_tools(
 
     Returns (set_of_optional_tool_names, sorted_resolution_records). Each
     record is {"name": str, "score": float, "query": str}, deduped by name
-    keeping the highest score across queries. Core tools (in ALL_TOOLS) are
+    keeping the highest score across queries. Core tools (in SEED_TOOLS) are
     excluded since they're inherited by default; unknown names and names not
     accepted as optional/registry tools are skipped. Admin/dev-only tools are
     filtered by the search index when user_role is passed.
     """
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
     from ..core.tool_search_index import search_tools
 
-    core_names = {t.name for t in ALL_TOOLS}
+    core_names = {t.name for t in SEED_TOOLS}
     best: Dict[str, dict] = {}
     for raw_query in queries:
         query = (raw_query or "").strip()
@@ -414,7 +414,7 @@ def _resolve_semantic_tools(
             name = getattr(result, "name", None)
             if not name or name in core_names:
                 continue
-            is_optional = name in OPTIONAL_TOOLS
+            is_optional = name in CATALOG_TOOLS
             is_registry = bool(
                 getattr(agent, "tool_registry", None)
                 and agent.tool_registry.get_tool(name)
@@ -500,7 +500,7 @@ def spawn_thread(
         disabled_tools: CORE tool names to EXCLUDE for this child (e.g.
             ["bash_execute"] for a sandboxed child).
         include_core_tools: If True (default), the child inherits all core
-            tools (ALL_TOOLS). Set False to give the child only the tools
+            tools (SEED_TOOLS). Set False to give the child only the tools
             resolved by tool_queries/optional_tools/tool_categories (plus
             its callable invoker if make_callable). Useful for tight,
             focused sub-agents that should not have memory writes,
@@ -551,7 +551,7 @@ def spawn_thread(
         - instructions max 5000 chars; title truncated to 80 chars.
         - ttl_hours must be >= 1 when set.
     """
-    from . import ALL_TOOLS, OPTIONAL_TOOLS
+    from . import SEED_TOOLS, CATALOG_TOOLS
     from ..core.agent import get_current_agent
     from ..core.event_bus import publish_sync_event
     from ..core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -687,16 +687,16 @@ def spawn_thread(
                 unknown_cats.append(cat)
                 continue
             for name in cat_summary.get(cat_norm, []):
-                if name in OPTIONAL_TOOLS:
+                if name in CATALOG_TOOLS:
                     enabled_set.add(name)
         if unknown_cats:
             warnings.append(f"unknown categor(ies): {', '.join(unknown_cats)}")
 
     if optional_tools:
-        all_known = {t.name for t in ALL_TOOLS} | set(OPTIONAL_TOOLS.keys())
+        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
         unknown_tools: List[str] = []
         for name in optional_tools:
-            if name in OPTIONAL_TOOLS:
+            if name in CATALOG_TOOLS:
                 enabled_set.add(name)
             elif name in all_known or (
                 agent.tool_registry and agent.tool_registry.get_tool(name)
@@ -730,7 +730,7 @@ def spawn_thread(
 
     disabled_list: List[str] = []
     if disabled_tools:
-        core_tool_names = {t.name for t in ALL_TOOLS}
+        core_tool_names = {t.name for t in SEED_TOOLS}
         unknown_disabled: List[str] = []
         for name in disabled_tools:
             if name in core_tool_names:
@@ -745,7 +745,7 @@ def spawn_thread(
     if not include_core_tools:
         # Funnel every core tool name into disabled_list so the graph builder
         # filters them out. Dedupe in case the caller also named some explicitly.
-        disabled_list = sorted({*(disabled_list), *(t.name for t in ALL_TOOLS)})
+        disabled_list = sorted({*(disabled_list), *(t.name for t in SEED_TOOLS)})
 
     llm_config = None
     if any(

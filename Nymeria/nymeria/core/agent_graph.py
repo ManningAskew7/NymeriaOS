@@ -97,8 +97,8 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     the callable thread itself runs as a sub-agent.
     """
     from ..tools import (
-        ALL_TOOLS,
-        OPTIONAL_TOOLS,
+        SEED_TOOLS,
+        CATALOG_TOOLS,
         filter_admin_only_tools,
         filter_developer_only_tools,
     )
@@ -109,10 +109,10 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     profile = agent.profile_manager.get_profile(owner_id)
     default_tools = profile.tool_preferences.default_thread_tools
 
-    all_tools_dict = {t.name: t for t in ALL_TOOLS}
-    all_tools_dict.update(OPTIONAL_TOOLS)
+    all_tools_dict = {t.name: t for t in SEED_TOOLS}
+    all_tools_dict.update(CATALOG_TOOLS)
 
-    core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+    core_names = default_tools if default_tools is not None else [t.name for t in SEED_TOOLS]
     if default_tools is not None:
         owner = agent.accounts_repo.get_user_by_id(owner_id) if owner_id else None
         owner_role = owner.role if owner else "user"
@@ -219,14 +219,14 @@ def _select_dream_tools_for_graph(
         DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS,
     )
     from ..tools import (
-        ALL_TOOLS,
-        OPTIONAL_TOOLS,
+        SEED_TOOLS,
+        CATALOG_TOOLS,
         filter_admin_only_tools,
         filter_developer_only_tools,
     )
 
-    all_tools_dict = {t.name: t for t in ALL_TOOLS}
-    all_tools_dict.update(OPTIONAL_TOOLS)
+    all_tools_dict = {t.name: t for t in SEED_TOOLS}
+    all_tools_dict.update(CATALOG_TOOLS)
 
     disabled = set(tc.disabled_tools or [])
     requested_extras = set(tc.enabled_tools or []) - disabled
@@ -234,7 +234,7 @@ def _select_dream_tools_for_graph(
     extra_names = {
         name
         for name in requested_extras
-        if name in OPTIONAL_TOOLS and name in policy_extras
+        if name in CATALOG_TOOLS and name in policy_extras
     }
     ignored_outside_policy = requested_extras - extra_names
     if ignored_outside_policy:
@@ -341,15 +341,15 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         default_tools = profile.tool_preferences.default_thread_tools
 
         from ..tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
             filter_admin_only_tools,
             filter_developer_only_tools,
         )
-        all_tools_dict = {t.name: t for t in ALL_TOOLS}
-        all_tools_dict.update(OPTIONAL_TOOLS)
+        all_tools_dict = {t.name: t for t in SEED_TOOLS}
+        all_tools_dict.update(CATALOG_TOOLS)
 
-        core_names = default_tools if default_tools is not None else [t.name for t in ALL_TOOLS]
+        core_names = default_tools if default_tools is not None else [t.name for t in SEED_TOOLS]
         if default_tools is not None:
             owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
             owner_role = owner.role if owner else "user"
@@ -432,9 +432,9 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
                 )
             extra_names = allowed_extras
         if extra_names:
-            from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
-            all_tools_dict = {t.name: t for t in ALL_TOOLS}
-            all_tools_dict.update(OPTIONAL_TOOLS)
+            from ..tools import SEED_TOOLS, CATALOG_TOOLS
+            all_tools_dict = {t.name: t for t in SEED_TOOLS}
+            all_tools_dict.update(CATALOG_TOOLS)
             callable_names = set((agent._callable_tool_thread_map or {}).keys())
             existing = {t.name for t in tools}
             for name in extra_names:
@@ -521,8 +521,8 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
     live dynamic resolver before rejecting a call.
 
     Sources merged (deduped by name):
-      - ALL_TOOLS (core)
-      - OPTIONAL_TOOLS (all optional, gated downstream by role/disable)
+      - SEED_TOOLS (core)
+      - CATALOG_TOOLS (all optional, gated downstream by role/disable)
       - tool_registry.all_tools() (MCP + dynamically registered tools)
       - owned callable threads (team-scoped, per user)
       - skill meta-tool (if the user has any active skills)
@@ -536,10 +536,10 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
         tools = _select_dream_tools_for_graph(agent, user_id, thread_id, tc)
         return tools, {tool.name for tool in tools}
 
-    from ..tools import ALL_TOOLS, OPTIONAL_TOOLS
+    from ..tools import SEED_TOOLS, CATALOG_TOOLS
 
-    merged: Dict[str, BaseTool] = {t.name: t for t in ALL_TOOLS}
-    for name, tool in OPTIONAL_TOOLS.items():
+    merged: Dict[str, BaseTool] = {t.name: t for t in SEED_TOOLS}
+    for name, tool in CATALOG_TOOLS.items():
         merged.setdefault(name, tool)
 
     if getattr(agent, "tool_registry", None):

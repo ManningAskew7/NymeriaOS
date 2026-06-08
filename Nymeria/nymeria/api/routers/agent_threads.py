@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
-from ...tools import ALL_TOOLS
+from ...tools import SEED_TOOLS
 from ..schemas.agent_threads import AgentThreadCreateRequest
 
 
@@ -54,7 +54,7 @@ def create_agent_threads_router(
         """Create a new callable thread."""
         agent = get_agent_fn()
 
-        core_tool_names = {tool.name for tool in ALL_TOOLS}
+        core_tool_names = {tool.name for tool in SEED_TOOLS}
         if request.callable_name in core_tool_names:
             raise HTTPException(
                 status_code=400,

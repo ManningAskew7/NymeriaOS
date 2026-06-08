@@ -144,7 +144,7 @@ class CodeValidator:
         Returns:
             Tuple of (success, output message)
         """
-        test_code = "from nymeria.tools import ALL_TOOLS; print(f'Loaded {len(ALL_TOOLS)} tools')"
+        test_code = "from nymeria.tools import SEED_TOOLS; print(f'Loaded {len(SEED_TOOLS)} tools')"
 
         try:
             result = subprocess.run(

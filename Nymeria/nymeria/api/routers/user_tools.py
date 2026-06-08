@@ -36,19 +36,19 @@ def create_user_tools_router(
         """List all tools with their enabled state for a specific user."""
         require_same_user_or_admin_fn(user, user_id)
         from ...tools import (
-            ALL_TOOLS,
-            OPTIONAL_TOOLS,
-            filter_discoverable_optional_tool_names,
+            SEED_TOOLS,
+            CATALOG_TOOLS,
+            filter_discoverable_catalog_tool_names,
         )
         from ...tools.metadata import get_tool_metadata, integration_grouping_fields
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
         dtt = profile.tool_preferences.default_thread_tools
-        dtt_set = set(dtt) if dtt is not None else {t.name for t in ALL_TOOLS}
+        dtt_set = set(dtt) if dtt is not None else {t.name for t in SEED_TOOLS}
 
         tools_list = []
-        for t in ALL_TOOLS:
+        for t in SEED_TOOLS:
             meta = get_tool_metadata(t.name)
             category = meta.category.value if meta else "general"
             tools_list.append({
@@ -65,11 +65,11 @@ def create_user_tools_router(
                 **integration_grouping_fields(t.name, category),
             })
 
-        visible_optional = filter_discoverable_optional_tool_names(
-            OPTIONAL_TOOLS.keys(),
+        visible_optional = filter_discoverable_catalog_tool_names(
+            CATALOG_TOOLS.keys(),
             user.role,
         )
-        for name, t in OPTIONAL_TOOLS.items():
+        for name, t in CATALOG_TOOLS.items():
             if name not in visible_optional:
                 continue
             meta = get_tool_metadata(name)
@@ -197,12 +197,12 @@ def create_user_tools_router(
     ):
         """Reset all tool preferences to defaults (all core tools enabled)."""
         require_same_user_or_admin_fn(user, user_id)
-        from ...tools import ALL_TOOLS
+        from ...tools import SEED_TOOLS
 
         agent = get_agent_fn()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.default_thread_tools = [t.name for t in ALL_TOOLS]
+            profile.tool_preferences.default_thread_tools = [t.name for t in SEED_TOOLS]
             profile.tool_preferences.tool_configs.clear()
             profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = utc_now()

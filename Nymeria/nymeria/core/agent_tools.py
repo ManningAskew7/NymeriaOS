@@ -20,7 +20,7 @@ external caller — ``run.py``, the API routers, ``command_service``,
 ``thread_deletion``, ``triggers/cli`` commands, and ``agent_graph``'s
 ``_resolve_temporary_tools`` callout.
 
-Cross-module imports (``get_callable_thread_tools``, ``ALL_TOOLS``,
+Cross-module imports (``get_callable_thread_tools``, ``SEED_TOOLS``,
 ``get_custom_tool_loader``, ``get_mcp_server_registry``,
 ``reload_mcp_server_registry``, MCP metadata helpers,
 ``mark_tool_search_dirty``) stay inside function bodies — they are lazy in
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
     """Sync callable thread tools into the tool registry.
 
-    Rebuilds the registry with ALL_TOOLS + callable thread tools + custom tools.
+    Rebuilds the registry with SEED_TOOLS + callable thread tools + custom tools.
     Call this after creating/deleting callable threads.
 
     Note: per-user graph builds source callable thread tools directly from
@@ -61,7 +61,7 @@ def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
         List of callable thread tool names now in the registry
     """
     from ..agents.tool_factory import get_callable_thread_tools
-    from ..tools import ALL_TOOLS
+    from ..tools import SEED_TOOLS
 
     # Get callable thread tools (from threads with callable=True)
     thread_tools = get_callable_thread_tools(agent.thread_config_manager)
@@ -76,7 +76,7 @@ def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
     agent._callable_tool_thread_map = new_map
 
     # Rebuild the tool registry: core + callable thread tools
-    combined = list(ALL_TOOLS) + thread_tools
+    combined = list(SEED_TOOLS) + thread_tools
     agent.tool_registry = ToolRegistry()
     agent.tool_registry.register_all(combined)
 
@@ -405,7 +405,7 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     This re-imports all tools (picking up any new files) and rebuilds the agent's
     graphs so new tools become available on the NEXT message turn.
 
-    New core tools (added to ALL_TOOLS) are automatically registered in each
+    New core tools (added to SEED_TOOLS) are automatically registered in each
     user's default_thread_tools so they appear as enabled by default.  Removed
     core tools are cleaned out of the list as well.
 
@@ -420,9 +420,9 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
 
     logger.info("Reloading tools module...")
 
-    # Snapshot current ALL_TOOLS before reload (for diff)
+    # Snapshot current SEED_TOOLS before reload (for diff)
     old_core_names = {
-        t.name for t in getattr(tools_module, 'ALL_TOOLS', [])
+        t.name for t in getattr(tools_module, 'SEED_TOOLS', [])
     }
 
     # Get all submodule names (including newly created files)
@@ -452,12 +452,12 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     importlib.reload(tools_module)
     from ..tools.metadata import refresh_builtin_tool_metadata
 
-    # Get ALL_TOOLS directly from the reloaded module object
-    # (using 'from ..tools import ALL_TOOLS' could get cached references)
-    ALL_TOOLS = getattr(tools_module, 'ALL_TOOLS', [])
+    # Get SEED_TOOLS directly from the reloaded module object
+    # (using 'from ..tools import SEED_TOOLS' could get cached references)
+    SEED_TOOLS = getattr(tools_module, 'SEED_TOOLS', [])
     refresh_builtin_tool_metadata()
-    new_core_names = {t.name for t in ALL_TOOLS}
-    logger.info(f"ALL_TOOLS after reload: {list(new_core_names)}")
+    new_core_names = {t.name for t in SEED_TOOLS}
+    logger.info(f"SEED_TOOLS after reload: {list(new_core_names)}")
 
     # Auto-sync default_thread_tools for all users
     agent._sync_default_thread_tools(old_core_names, new_core_names)
@@ -467,7 +467,7 @@ def reload_tools(agent: "NymeriaAgent") -> List[str]:
     thread_tools = get_callable_thread_tools(agent.thread_config_manager)
 
     # Clear and re-register all tools (core + callable thread tools)
-    combined_tools = list(ALL_TOOLS) + thread_tools
+    combined_tools = list(SEED_TOOLS) + thread_tools
     agent.tool_registry = ToolRegistry()
     agent.tool_registry.register_all(combined_tools)
 

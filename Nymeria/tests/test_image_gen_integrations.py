@@ -211,7 +211,7 @@ def test_key_falls_back_to_settings(monkeypatch):
 
 # --- Registration / metadata -------------------------------------------------
 def test_image_gen_tools_registered_as_optional_image_tools():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     names = [
@@ -223,7 +223,7 @@ def test_image_gen_tools_registered_as_optional_image_tools():
     ]
     registered = {t.name for t in igi.IMAGE_GEN_INTEGRATION_TOOLS}
     for name in names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         assert name in registered
         metadata = get_tool_metadata(name)
         assert metadata is not None
@@ -233,6 +233,6 @@ def test_image_gen_tools_registered_as_optional_image_tools():
 
 
 def test_image_generate_tool_retired():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
 
-    assert "image_generate" not in OPTIONAL_TOOLS
+    assert "image_generate" not in CATALOG_TOOLS

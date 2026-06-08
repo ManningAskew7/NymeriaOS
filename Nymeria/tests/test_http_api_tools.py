@@ -9,7 +9,7 @@ import httpx
 
 from nymeria.core.custom_tools import execute_http_tool
 from nymeria.core.http_policy import HTTPPolicyConfig, evaluate_http_url
-from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.http_api import TOOL_VERSION, _api_discover_impl, _http_request_impl
 from nymeria.tools.definitions.custom_tool_schema import HTTPToolConfig
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
@@ -471,12 +471,12 @@ def test_custom_http_tool_uses_shared_policy_for_blocked_targets():
 
 
 def test_http_api_tools_are_optional_with_metadata():
-    core_names = {tool.name for tool in ALL_TOOLS}
+    core_names = {tool.name for tool in SEED_TOOLS}
 
     assert "http_request" not in core_names
     assert "api_discover" not in core_names
-    assert "http_request" in OPTIONAL_TOOLS
-    assert "api_discover" in OPTIONAL_TOOLS
+    assert "http_request" in CATALOG_TOOLS
+    assert "api_discover" in CATALOG_TOOLS
 
     for tool_name in ("http_request", "api_discover"):
         meta = get_all_tool_metadata(tool_name)

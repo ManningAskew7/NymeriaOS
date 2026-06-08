@@ -134,16 +134,16 @@ def test_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_registered_under_new_name_in_optional_group():
-    from nymeria.tools import ALL_TOOLS, OPTIONAL_TOOLS
+    from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
     from nymeria.tools.web import WEB_SEARCH_SERVICE_TOOLS
 
     # New name is an opt-in optional tool, not core.
-    assert "web_search_perplexity" in OPTIONAL_TOOLS
+    assert "web_search_perplexity" in CATALOG_TOOLS
     assert [t.name for t in WEB_SEARCH_SERVICE_TOOLS] == ["web_search_perplexity"]
 
     # The old name is gone everywhere.
-    assert "web_search" not in OPTIONAL_TOOLS
-    assert all(t.name not in ("web_search",) for t in ALL_TOOLS)
+    assert "web_search" not in CATALOG_TOOLS
+    assert all(t.name not in ("web_search",) for t in SEED_TOOLS)
 
 
 # --- Tavily (web_search_tavily) ------------------------------------------------
@@ -310,10 +310,10 @@ def test_tavily_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_tavily_registered_in_optional_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
-    assert "web_search_tavily" in OPTIONAL_TOOLS
+    assert "web_search_tavily" in CATALOG_TOOLS
     assert "web_search_tavily" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
 
 
@@ -555,10 +555,10 @@ def test_exa_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_exa_registered_in_optional_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
-    assert "web_search_exa_ai" in OPTIONAL_TOOLS
+    assert "web_search_exa_ai" in CATALOG_TOOLS
     assert "web_search_exa_ai" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
 
 
@@ -764,10 +764,10 @@ def test_firecrawl_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_firecrawl_registered_in_optional_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
-    assert "web_search_firecrawl" in OPTIONAL_TOOLS
+    assert "web_search_firecrawl" in CATALOG_TOOLS
     assert "web_search_firecrawl" in [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS]
 
 
@@ -1049,9 +1049,9 @@ def test_brave_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_brave_registered_in_optional_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
 
-    assert "web_search_brave" in OPTIONAL_TOOLS
+    assert "web_search_brave" in CATALOG_TOOLS
 
 
 # --- SearXNG ---------------------------------------------------------------
@@ -1305,12 +1305,12 @@ def test_searxng_api_error_is_returned_as_error_string(monkeypatch):
 
 
 def test_searxng_registered_in_optional_group():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS
 
-    assert "web_search_searxng" in OPTIONAL_TOOLS
+    assert "web_search_searxng" in CATALOG_TOOLS
     # The old utility-group searxng_search was replaced by this family member.
-    assert "searxng_search" not in OPTIONAL_TOOLS
+    assert "searxng_search" not in CATALOG_TOOLS
     assert [t.name for t in WEB_SEARCH_INTEGRATION_TOOLS] == [
         "web_search_tavily",
         "web_search_exa_ai",

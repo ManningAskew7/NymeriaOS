@@ -7,7 +7,7 @@ Firecrawl, Brave, then SearXNG. Each provider resolves its credential (an API
 key, or a base URL for the self-hosted SearXNG) through the credential vault
 (vault, then settings,
 then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
-``tools/__init__.py`` folds into ``OPTIONAL_TOOLS`` alongside
+``tools/__init__.py`` folds into ``CATALOG_TOOLS`` alongside
 ``WEB_SEARCH_SERVICE_TOOLS``.
 """
 
@@ -1139,7 +1139,7 @@ def web_search_searxng(
 
 
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
-# into OPTIONAL_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
+# into CATALOG_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
 # Search group. SearXNG (keyless, self-hosted) replaced the old utility-group
 # searxng_search per docs/private/plans/web-search-integrations.md.
 WEB_SEARCH_INTEGRATION_TOOLS = [

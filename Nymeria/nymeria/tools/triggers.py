@@ -640,7 +640,7 @@ def trigger_info(
     return "[Error]: action must be one of: list, detail, test, history, sources."
 
 
-# Grouped export for ALL_TOOLS registration
+# Grouped export for SEED_TOOLS registration
 TRIGGER_TOOLS = [
     trigger_config,
     trigger_info,

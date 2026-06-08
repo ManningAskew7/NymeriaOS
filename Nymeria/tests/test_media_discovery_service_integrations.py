@@ -192,7 +192,7 @@ def test_spotify_get_track_prefers_vault_access_token(tmp_path, monkeypatch):
 
 
 def test_media_discovery_registration_and_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.media_discovery_service_integrations import MEDIA_DISCOVERY_SERVICE_TOOLS
     from nymeria.tools.metadata import SecurityLevel, get_tool_metadata
 
@@ -203,7 +203,7 @@ def test_media_discovery_registration_and_metadata():
         "spotify_search",
         "spotify_get_playlist",
     } <= names
-    assert names <= set(OPTIONAL_TOOLS)
+    assert names <= set(CATALOG_TOOLS)
     assert get_tool_metadata("youtube_search").security_level == SecurityLevel.SAFE
     assert get_tool_metadata("spotify_get_playlist").security_level == SecurityLevel.SAFE
 

@@ -6,7 +6,7 @@ from typing import Any
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
-from nymeria.tools import ALL_TOOLS
+from nymeria.tools import SEED_TOOLS
 from nymeria.triggers import api as api_module
 
 
@@ -194,7 +194,7 @@ def test_create_agent_thread_rejects_owner_duplicate_and_core_tool_conflict(
     core_conflict = client.post(
         "/agents/threads",
         headers=api_client_builder.auth(owner_token),
-        json={"callable_name": ALL_TOOLS[0].name},
+        json={"callable_name": SEED_TOOLS[0].name},
     )
 
     assert cross_user_allowed.status_code == 200

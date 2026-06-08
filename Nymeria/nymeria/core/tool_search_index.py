@@ -298,7 +298,7 @@ class ToolSearchIndex:
         agent: Any,
         thread_id: Optional[str],
     ) -> list[ToolSearchDocument]:
-        from ..tools import ALL_TOOLS, OPTIONAL_TOOLS, filter_discoverable_optional_tool_names
+        from ..tools import SEED_TOOLS, CATALOG_TOOLS, filter_discoverable_catalog_tool_names
         from ..tools.metadata import (
             CUSTOM_TOOL_METADATA,
             MCP_SERVER_TOOL_METADATA,
@@ -306,9 +306,9 @@ class ToolSearchIndex:
         )
 
         docs: dict[str, ToolSearchDocument] = {}
-        optional_names = set(OPTIONAL_TOOLS)
-        all_tools = {tool.name: tool for tool in ALL_TOOLS}
-        all_tools.update(OPTIONAL_TOOLS)
+        optional_names = set(CATALOG_TOOLS)
+        all_tools = {tool.name: tool for tool in SEED_TOOLS}
+        all_tools.update(CATALOG_TOOLS)
 
         for name, tool_obj in all_tools.items():
             meta = get_all_tool_metadata(name)
@@ -358,7 +358,7 @@ class ToolSearchIndex:
         if agent is not None and thread_id:
             docs.update(self._callable_thread_docs(agent, user_id, thread_id, set(docs)))
 
-        visible = filter_discoverable_optional_tool_names(docs.keys(), user_role)
+        visible = filter_discoverable_catalog_tool_names(docs.keys(), user_role)
         return sorted(
             (doc for name, doc in docs.items() if name in visible),
             key=lambda doc: doc.name.casefold(),
@@ -592,7 +592,7 @@ class ToolSearchIndex:
         )
 
     def _default_tool_set(self, agent: Any, user_id: str) -> set[str]:
-        from ..tools import ALL_TOOLS
+        from ..tools import SEED_TOOLS
 
         try:
             profile = agent.profile_manager.get_profile(user_id) if agent else None
@@ -600,7 +600,7 @@ class ToolSearchIndex:
         except Exception:
             default_tools = None
         if default_tools is None:
-            return {tool.name for tool in ALL_TOOLS}
+            return {tool.name for tool in SEED_TOOLS}
         return set(default_tools)
 
     def _thread_status(
@@ -668,9 +668,9 @@ class ToolSearchIndex:
 
 
 def _enable_hint(name: str, status: Optional[str], user_role: str) -> str:
-    from ..tools import ADMIN_ONLY_OPTIONAL_TOOL_NAMES
+    from ..tools import ADMIN_ONLY_TOOL_NAMES
 
-    if name in ADMIN_ONLY_OPTIONAL_TOOL_NAMES and user_role != "admin":
+    if name in ADMIN_ONLY_TOOL_NAMES and user_role != "admin":
         return f"Admin-only; ask an admin to run /tools enable {name}"
     if status in {"default_enabled", "enabled_permanent"} or (
         status and status.startswith("enabled_ttl:")

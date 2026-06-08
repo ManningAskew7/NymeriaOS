@@ -4,8 +4,8 @@ These tools ship in every default thread and are not chosen at init. This screen
 shows them for orientation; the following family steps seed the init-chosen tools
 on top, and finalize writes the whole set (core plus picks) into the bootstrap
 admin's `default_thread_tools`. The displayed list is the REAL seed
-(`tool_seed.core_seed_tool_names`, i.e. `ALL_TOOLS` minus capability-expansion),
-which is what finalize writes; `CORE_TOOLS` below is the aspirational 12-tool
+(`tool_seed.core_seed_tool_names`, i.e. `SEED_TOOLS` minus capability-expansion),
+which is what finalize writes; `CORE_TOOLSET_TARGET` below is the aspirational 12-tool
 target from `docs/private/core-toolset-plan.md` Section A (core-slimming unbuilt).
 """
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 # Section A target set (12). Notes call out the few that are not self-evident.
-CORE_TOOLS: tuple[tuple[str, str], ...] = (
+CORE_TOOLSET_TARGET: tuple[tuple[str, str], ...] = (
     ("bash_execute", ""),
     ("file_read", ""),
     ("file_write", ""),
@@ -43,7 +43,7 @@ CORE_TOOLS: tuple[tuple[str, str], ...] = (
 def _core_tools_markup() -> str:
     from ..tool_seed import core_seed_tool_names
 
-    notes = dict(CORE_TOOLS)
+    notes = dict(CORE_TOOLSET_TARGET)
     lines = [
         "[bold]Core toolset[/bold] (always on for every new thread):",
         "",
@@ -89,4 +89,4 @@ def make_core_tools_step() -> Step:
     return Step(id="core_tools", applies=lambda _state: True, build=build)
 
 
-__all__ = ["make_core_tools_step", "CoreToolsStep", "CORE_TOOLS"]
+__all__ = ["make_core_tools_step", "CoreToolsStep", "CORE_TOOLSET_TARGET"]

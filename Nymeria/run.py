@@ -363,9 +363,9 @@ def run_cli(args: argparse.Namespace) -> None:
     agent = None
     if runtime_config.transport == "local":
         from nymeria import NymeriaAgent
-        from nymeria.tools import ALL_TOOLS
+        from nymeria.tools import SEED_TOOLS
 
-        agent = NymeriaAgent(tools=list(ALL_TOOLS))
+        agent = NymeriaAgent(tools=list(SEED_TOOLS))
         agent.sync_agent_tools()
 
     # Start CLI. Explicit launch thread refs are resolved by the CLI after the

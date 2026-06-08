@@ -472,7 +472,7 @@ def test_operations_monitoring_missing_credentials_return_setup_hints(monkeypatc
 
 
 def test_operations_monitoring_tools_are_registered_with_metadata():
-    from nymeria.tools import OPTIONAL_TOOLS
+    from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.metadata import SecurityLevel, ToolCategory, get_tool_metadata
 
     safe_names = [
@@ -538,14 +538,14 @@ def test_operations_monitoring_tools_are_registered_with_metadata():
     ]
 
     for name in safe_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS
         assert metadata.security_level == SecurityLevel.SAFE
 
     for name in moderate_names:
-        assert name in OPTIONAL_TOOLS
+        assert name in CATALOG_TOOLS
         metadata = get_tool_metadata(name)
         assert metadata is not None
         assert metadata.category == ToolCategory.INTEGRATIONS
