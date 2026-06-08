@@ -611,7 +611,10 @@ https://github.com/example/mcp-server`}
   .field-label {
     font-size: var(--font-size-sm);
     font-weight: 600;
-    color: var(--text-primary);
+    /* §4 — labels recede behind the input value (which is --text-primary),
+       so the eye finds the answer before the question. Weight stays at 600
+       for emphasis on install-critical fields. */
+    color: var(--text-secondary);
   }
 
   .paste-box-wrap {
