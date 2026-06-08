@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
+  import Icon from '$lib/components/common/Icon.svelte';
 
   interface Props {
     sidebar: Snippet;
@@ -139,13 +140,11 @@
       aria-expanded={!uiStore.sidebarCollapsed}
       title={uiStore.sidebarCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)'}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        {#if uiStore.sidebarCollapsed}
-          <polyline points="9,6 15,12 9,18" />
-        {:else}
-          <polyline points="15,6 9,12 15,18" />
-        {/if}
-      </svg>
+      {#if uiStore.sidebarCollapsed}
+        <Icon name="chevronRight" size={14} />
+      {:else}
+        <Icon name="chevronLeft" size={14} />
+      {/if}
     </button>
   </aside>
 
@@ -175,13 +174,11 @@
       aria-expanded={!uiStore.rightPanelCollapsed}
       title={uiStore.rightPanelCollapsed ? 'Expand dashboard (Ctrl+Shift+B)' : 'Collapse dashboard (Ctrl+Shift+B)'}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        {#if uiStore.rightPanelCollapsed}
-          <polyline points="15,6 9,12 15,18" />
-        {:else}
-          <polyline points="9,6 15,12 9,18" />
-        {/if}
-      </svg>
+      {#if uiStore.rightPanelCollapsed}
+        <Icon name="chevronLeft" size={14} />
+      {:else}
+        <Icon name="chevronRight" size={14} />
+      {/if}
     </button>
     {@render rightPanel()}
   </aside>
