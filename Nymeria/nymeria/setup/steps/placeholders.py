@@ -3,11 +3,12 @@
 These follow Section B of `docs/private/core-toolset-plan.md`: at init the user
 seeds members of real tool families on top of the always-on core set. The
 `web_search_*`, `fetch_url_*`, and `image_gen_*` families are built, so they are
-real multi-selects over the actual registered tool names. The `rag_search_*`
-suite is not built yet (only a single `rag_search` exists today), so it stays a
-placeholder. Text-to-speech and speech-to-text are placeholders too. Selections
-are recorded on `WizardState`; wiring them into the per-user
-`default_thread_tools` is separate future work.
+real multi-selects over the actual registered tool names, and the picks are
+written to the bootstrap admin's `default_thread_tools` at finalize (via
+`tool_seed.default_thread_tools_for_state` and `finalize.seed_bootstrap_profile`)
+so a new thread inherits them. Text-to-speech and speech-to-text stay
+placeholders: their options are recorded on `WizardState`, but nothing consumes
+them yet.
 """
 
 from __future__ import annotations
@@ -125,7 +126,7 @@ def make_web_search_step() -> Step:
         title="Web search backends",
         note=(
             "Pick the web search tools for your default toolset (all six are "
-            "built; recorded now, not written to your defaults yet). Every backend "
+            "built and saved to your default thread tools). Every backend "
             "except Perplexity returns links only, so add a web fetch backend next."
         ),
         choices=_WEB_SEARCH_BACKENDS,
@@ -135,15 +136,28 @@ def make_web_search_step() -> Step:
 
 
 def make_fetch_url_step() -> Step:
-    """Real multi-select over the built fetch_url-family tools (Section B/C)."""
-    get_initial, store = _extras_list("fetch_url")
+    """Real multi-select over the built fetch_url-family tools (Section B/C).
+
+    `fetch_url_nymeria` is default-checked: it distills pages with the configured
+    primary LLM, so it needs no separate key and is a safe out-of-the-box default
+    (the quick path seeds the same one, see `quick.QUICK_FETCH_DEFAULT`).
+    """
+    _, store = _extras_list("fetch_url")
+
+    def get_initial(state: WizardState) -> list[str]:
+        stored = state.extras.get("fetch_url")
+        if isinstance(stored, list):
+            return list(stored)
+        return ["fetch_url_nymeria"]
+
     return multi_select_step(
         step_id="fetch_url",
         title="Web fetch backends",
         note=(
             "Pick the tools that read full page content from a URL. Web search "
             "backends other than Perplexity return only links, so they need one of "
-            "these to be useful."
+            "these to be useful. The built-in Nymeria fetcher is on by default and "
+            "needs no key (it uses your configured LLM)."
         ),
         choices=_WEB_FETCH_BACKENDS,
         get_initial=get_initial,
@@ -160,7 +174,7 @@ def make_image_gen_step() -> Step:
         title="Image generation providers",
         note=(
             "Pick the image generation tools for your default toolset (all five "
-            "are built; recorded now, not written to your defaults yet). Each needs "
+            "are built and saved to your default thread tools). Each needs "
             "its provider API key set. The budget hosts (Replicate, fal.ai) cost "
             "far less than the flagship providers."
         ),
@@ -257,12 +271,12 @@ def make_skill_kits_step() -> Step:
 
 
 def seeded_tool_names(state: WizardState) -> list[str]:
-    """Concrete tool names the init flow would seed from the built families.
+    """Concrete tool names the init flow seeds from the built families.
 
     Only the built `web_search_*`, `fetch_url_*`, and `image_gen_*` families
     resolve to real tool names today; the placeholder families contribute nothing
-    until their suites land. Kept here so review and any future finalize wiring
-    share one source.
+    until their suites land. Shared by the review screen and finalize seeding
+    (`tool_seed.default_thread_tools_for_state`) so they agree on one source.
     """
     names: list[str] = []
     for family in ("web_search", "fetch_url", "image_gen"):
