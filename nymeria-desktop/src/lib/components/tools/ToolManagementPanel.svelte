@@ -49,21 +49,21 @@
   let descriptionInput = $state('');
   let configInputs = $state<Record<string, unknown>>({});
 
-  // Collapsible state for Core / Available sections. Honour the user's
+  // Collapsible state for Default / Available sections. Honour the user's
   // collapse choice unconditionally — searching does not force-open either
   // section, so the user can collapse one and watch the other update as
   // they type. The section header still shows the live match-count badge
   // when collapsed, so it's clear results landed in there.
-  let coreOpen = $state(true);
+  let defaultOpen = $state(true);
   let availableOpen = $state(false);
 
-  // Per-card collapse state for the shared grouped lists (Core + Available
+  // Per-card collapse state for the shared grouped lists (Default + Available
   // pools share these; distinct poolKeys keep their ids from colliding).
   let glExpanded = $state<Set<string>>(new Set());
   let glCollapsed = $state<Set<string>>(new Set());
 
   const isSearching = $derived(searchQuery.trim().length > 0);
-  const effectiveCoreOpen = $derived(coreOpen);
+  const effectiveDefaultOpen = $derived(defaultOpen);
   const effectiveAvailableOpen = $derived(availableOpen);
 
   // Force-refresh default tools on every mount so newly-installed MCP
@@ -102,17 +102,17 @@
       name: tool.name,
       description: tool.description,
       category: tool.category,
-      toolType: tool.is_optional ? 'optional' : 'core',
-      tags: [tool.security_level, tool.is_optional ? 'optional' : 'core']
+      toolType: 'builtin',
+      tags: [tool.security_level]
     }));
   });
 
   const visibleDefaultToolCount = $derived(defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool)).length);
-  const coreCount = $derived(
+  const defaultCount = $derived(
     defaultToolsStore.tools.filter((tool) => !isMcpDefaultTool(tool) && selectedTools.has(tool.name)).length
   );
-  const availableCount = $derived(visibleDefaultToolCount - coreCount);
-  const totalWithCallable = $derived(coreCount + defaultToolsStore.callableThreadCount);
+  const availableCount = $derived(visibleDefaultToolCount - defaultCount);
+  const totalWithCallable = $derived(defaultCount + defaultToolsStore.callableThreadCount);
 
   // Normalize a built-in tool row for the shared grouped list. `data` carries
   // the original DefaultToolInfo back to the row snippet for badges/edit/toggle.
@@ -176,9 +176,9 @@
     };
   }
 
-  // Backend results that belong in the Core section (currently selected
+  // Backend results that belong in the Default section (currently selected
   // tools) but weren't surfaced locally.
-  const backendExtrasCoreList = $derived.by(() => {
+  const backendExtrasDefaultList = $derived.by(() => {
     if (backendSearchResults.length === 0) return [] as DefaultToolInfo[];
     const localNames = new Set(
       filteredTools.filter((t) => selectedTools.has(t.name)).map((t) => t.name)
@@ -211,14 +211,14 @@
 
   // Normalized pools for the shared grouped list. Available folds in the
   // backend search extras so they group naturally; relevance order is kept.
-  const coreItems = $derived(
-    [...filteredTools.filter((t) => selectedTools.has(t.name)), ...backendExtrasCoreList].map(toGrouped)
+  const defaultItems = $derived(
+    [...filteredTools.filter((t) => selectedTools.has(t.name)), ...backendExtrasDefaultList].map(toGrouped)
   );
   const availItems = $derived(
     [...filteredTools.filter((t) => !selectedTools.has(t.name)), ...backendExtrasAvailableList].map(toGrouped)
   );
   // Section-header match badges (filtered + backend extras).
-  const coreMatchCount = $derived(coreItems.length);
+  const defaultMatchCount = $derived(defaultItems.length);
   const availableMatchCount = $derived(availItems.length);
 
   const hasChanges = $derived.by(() => {
@@ -260,7 +260,7 @@
       unifiedToolsStore.resetLoaded();
       await unifiedToolsStore.loadTools();
       saveStatus = 'success';
-      saveMessage = 'Core tool set saved!';
+      saveMessage = 'Default tools saved!';
     } else {
       saveStatus = 'error';
       saveMessage = defaultToolsStore.error || 'Failed to save';
@@ -433,7 +433,7 @@
     <div class="summary-bar">
       <div class="summary-left">
         <span class="summary-count">
-          <strong>{coreCount}</strong> core tools for new threads
+          <strong>{defaultCount}</strong> default tools for new threads
         </span>
         {#if defaultToolsStore.callableThreadCount > 0}
           <span class="summary-callable">
@@ -460,31 +460,31 @@
       />
     </div>
 
-    <!-- Core Tools Section -->
-    {#if coreCount > 0}
-      <div class="section-group" class:collapsed={!effectiveCoreOpen}>
+    <!-- Default Tools Section -->
+    {#if defaultCount > 0}
+      <div class="section-group" class:collapsed={!effectiveDefaultOpen}>
         <button
           class="section-header section-toggle"
-          onclick={() => (coreOpen = !coreOpen)}
+          onclick={() => (defaultOpen = !defaultOpen)}
           type="button"
-          aria-expanded={effectiveCoreOpen}
+          aria-expanded={effectiveDefaultOpen}
         >
-          <span class="section-chevron" class:open={effectiveCoreOpen}>
+          <span class="section-chevron" class:open={effectiveDefaultOpen}>
             <Icon name="chevronRight" size={14} />
           </span>
-          <span class="section-title">Core Tools</span>
-          <span class="section-count">{sectionCountLabel(coreMatchCount, coreCount)}</span>
+          <span class="section-title">Default tools</span>
+          <span class="section-count">{sectionCountLabel(defaultMatchCount, defaultCount)}</span>
         </button>
-        {#if effectiveCoreOpen}
+        {#if effectiveDefaultOpen}
         <p class="section-hint">Loaded automatically in every new thread. Toggle off to move to Available.</p>
-        {#if coreItems.length === 0}
-          <div class="section-empty">{isSearching ? `No core tools match "${searchQuery}".` : 'No core tools yet.'}</div>
+        {#if defaultItems.length === 0}
+          <div class="section-empty">{isSearching ? `No default tools match "${searchQuery}".` : 'No default tools yet.'}</div>
         {:else}
           <div class="tools-body">
             <ToolGroupedList
-              items={coreItems}
+              items={defaultItems}
               searchActive={isSearching}
-              poolKey="core"
+              poolKey="default"
               defaultOpenTopLevel
               bind:expanded={glExpanded}
               bind:collapsed={glCollapsed}
@@ -512,7 +512,7 @@
           <span class="section-count">{sectionCountLabel(availableMatchCount, availableCount)}</span>
         </button>
         {#if effectiveAvailableOpen}
-        <p class="section-hint">Not loaded by default. Toggle on to promote to Core, or enable per-thread in thread settings.</p>
+        <p class="section-hint">Not loaded by default. Toggle on to add to your defaults, or enable per-thread in thread settings.</p>
         {#if availItems.length === 0}
           <div class="section-empty">{isSearching ? `No available tools match "${searchQuery}".` : 'No available tools.'}</div>
         {:else}
@@ -623,7 +623,7 @@
   </div>
   </div>
 
-  <!-- Pinned footer: Save/Reset for the core-tools selection -->
+  <!-- Pinned footer: Save/Reset for the default-tools selection -->
   {#if defaultToolsStore.loaded}
     <div class="panel-footer panel-footer-pinned">
       <button
@@ -871,7 +871,6 @@
   <div class="tool-info">
     <span class="tool-name">
       {tool.name}
-      {#if tool.is_optional}<span class="optional-badge">optional</span>{/if}
       {#if isAdminOnlyTool(tool.name)}
         <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
       {/if}
@@ -890,15 +889,15 @@
     <ToggleSwitch
       checked={selected}
       onclick={() => toggleTool(tool.name)}
-      title={selected ? 'Remove from core' : 'Add to core'}
-      ariaLabel={`${selected ? 'Remove' : 'Add'} ${tool.name} ${selected ? 'from' : 'to'} core tools`}
+      title={selected ? 'Remove from defaults' : 'Add to defaults'}
+      ariaLabel={`${selected ? 'Remove' : 'Add'} ${tool.name} ${selected ? 'from' : 'to'} default tools`}
     />
   </div>
 {/snippet}
 
 {#if showWarning}
   <ToolCountWarning
-    toolCount={coreCount}
+    toolCount={defaultCount}
     callableCount={defaultToolsStore.callableThreadCount}
     onContinue={doSave}
     onGoBack={() => (showWarning = false)}
@@ -1013,7 +1012,7 @@
     color: var(--text-muted);
   }
 
-  /* Section groups (Core / Available) — bordered card with a solid grey header bar */
+  /* Section groups (Default / Available): bordered card with a solid grey header bar */
   .section-group {
     display: flex;
     flex-direction: column;
@@ -1022,7 +1021,7 @@
     background: var(--bg-elevated);
   }
 
-  /* Unused for the Core/Available buttons now, kept for any other callers */
+  /* Unused for the Default/Available buttons now, kept for any other callers */
   .section-header {
     display: flex;
     align-items: center;
@@ -1030,7 +1029,7 @@
     padding: 0 var(--spacing-xs);
   }
 
-  /* Solid grey title bar for the Core / Available cards */
+  /* Solid grey title bar for the Default / Available cards */
   button.section-toggle {
     display: flex;
     align-items: center;
@@ -1156,19 +1155,6 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-  }
-
-  .optional-badge {
-    display: inline-block;
-    font-size: var(--font-size-3xs);
-    font-weight: 600;
-    padding: 0 4px;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
-    color: var(--accent-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    text-indent: 0.3px;
   }
 
   .admin-only-badge {

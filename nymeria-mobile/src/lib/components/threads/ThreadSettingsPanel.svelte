@@ -201,17 +201,17 @@
 
   // Effective tool count
   const effectiveToolCount = $derived.by(() => {
-    const coreNames = defaultToolsStore.defaultToolNames;
-    const activeCore = coreNames.filter(n => !disabledTools.has(n)).length;
-    return activeCore + enabledTools.size;
+    const defaultNames = defaultToolsStore.defaultToolNames;
+    const activeDefault = defaultNames.filter(n => !disabledTools.has(n)).length;
+    return activeDefault + enabledTools.size;
   });
 
-  // Optional tools (not in core set), excluding MCP tools
-  const optionalTools = $derived.by(() => {
+  // Tools not in the default set, excluding MCP tools
+  const availableTools = $derived.by(() => {
     if (!defaultToolsStore.loaded) return [];
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
     return defaultToolsStore.tools
-      .filter(t => !coreSet.has(t.name) && !t.name.startsWith('mcp__'))
+      .filter(t => !defaultSet.has(t.name) && !t.name.startsWith('mcp__'))
       .map(t => ({
         name: t.name,
         description: t.description,
@@ -230,7 +230,7 @@
       discoveredCount: number;
       tools: { name: string; shortName: string; description: string; isDefault: boolean }[];
     }[];
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
     return mcpServersStore.servers.map(server => ({
       id: server.id,
       name: server.name,
@@ -242,7 +242,7 @@
           name,
           shortName: tool.name,
           description: tool.description,
-          isDefault: coreSet.has(name),
+          isDefault: defaultSet.has(name),
         };
       }),
     }));
@@ -282,7 +282,7 @@
     if (tool.isDefault) {
       toggleTool(tool.name);
     } else {
-      toggleOptionalTool(tool.name);
+      toggleAvailableTool(tool.name);
     }
   }
 
@@ -311,7 +311,7 @@
     }
   }
 
-  // Filtered core tools
+  // Filtered default tools
   const toolsLoadError = $derived(unifiedToolsStore.error || defaultToolsStore.error);
   const toolsReady = $derived(unifiedToolsStore.loaded && defaultToolsStore.loaded);
   const toolsLoading = $derived(unifiedToolsStore.loading || defaultToolsStore.loading || !toolsReady);
@@ -319,8 +319,8 @@
   const filteredTools = $derived.by(() => {
     if (!defaultToolsStore.loaded) return [];
 
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
-    let allTools = unifiedToolsStore.tools.filter(t => coreSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
+    let allTools = unifiedToolsStore.tools.filter(t => defaultSet.has(t.name) && !isMcpToolName(t.name) && t.category !== 'mcp_server');
     return filterToolSearch(allTools, toolSearch, (tool: UnifiedTool) => ({
       id: tool.id,
       name: tool.name,
@@ -332,13 +332,13 @@
     }));
   });
 
-  const filteredOptionalTools = $derived.by(() =>
-    filterToolSearch(optionalTools, toolSearch, (tool) => ({
+  const filteredAvailableTools = $derived.by(() =>
+    filterToolSearch(availableTools, toolSearch, (tool) => ({
       name: tool.name,
       description: tool.description,
       category: tool.category,
-      tags: [tool.securityLevel, 'optional'],
-      toolType: 'optional',
+      tags: [tool.securityLevel],
+      toolType: 'builtin',
     }))
   );
 
@@ -514,7 +514,7 @@
     disabledTools = next;
   }
 
-  function toggleOptionalTool(toolName: string) {
+  function toggleAvailableTool(toolName: string) {
     const next = new Set(enabledTools);
     if (next.has(toolName)) { next.delete(toolName); } else { next.add(toolName); }
     enabledTools = next;
@@ -649,15 +649,15 @@
       }
 
       // Disabled tools
-      const coreSet = new Set(defaultToolsStore.defaultToolNames);
-      const effectiveDisabled = [...disabledTools].filter(t => coreSet.has(t));
+      const defaultSet = new Set(defaultToolsStore.defaultToolNames);
+      const effectiveDisabled = [...disabledTools].filter(t => defaultSet.has(t));
       if (effectiveDisabled.length > 0) {
         updates.disabled_tools = effectiveDisabled;
       } else {
         updates.clear_disabled_tools = true;
       }
 
-      // Enabled optional tools
+      // Tools enabled for this thread (added on top of the defaults)
       if (enabledTools.size > 0) {
         updates.enabled_tools = Array.from(enabledTools);
       } else {
@@ -1324,7 +1324,7 @@
           <div class="tools-list">
             {#if filteredTools.length === 0}
               <div class="loading-state">
-                {toolSearch.trim() ? 'No core tools match your search.' : 'No core tools enabled by default.'}
+                {toolSearch.trim() ? 'No default tools match your search.' : 'No default tools yet.'}
               </div>
             {:else}
               {#each filteredTools as tool (tool.id)}
@@ -1346,21 +1346,21 @@
             {/if}
           </div>
 
-          {#if optionalTools.length > 0}
+          {#if availableTools.length > 0}
             <div class="section-divider">
               <span class="section-title">
-                Optional Tools
+                Available to add
                 {#if enabledToolCount > 0}<span class="tab-badge">{enabledToolCount}</span>{/if}
               </span>
-              <p class="hint">Not in your core set. Enable for this thread only.</p>
+              <p class="hint">Not in your defaults. Enable for this thread only.</p>
             </div>
             <div class="tools-list">
-              {#if filteredOptionalTools.length === 0}
+              {#if filteredAvailableTools.length === 0}
                 <div class="loading-state">
-                  {toolSearch.trim() ? 'No optional tools match your search.' : 'No optional tools available.'}
+                  {toolSearch.trim() ? 'Nothing matches your search.' : 'No tools available to add.'}
                 </div>
               {:else}
-                {#each filteredOptionalTools as tool (tool.name)}
+                {#each filteredAvailableTools as tool (tool.name)}
                   <div class="tool-row" class:tool-enabled={enabledTools.has(tool.name)}>
                     <div class="tool-info">
                       <span class="tool-name">{tool.name}</span>
@@ -1369,7 +1369,7 @@
                     <button
                       class="toggle-btn"
                       class:off={!enabledTools.has(tool.name)}
-                      onclick={() => toggleOptionalTool(tool.name)}
+                      onclick={() => toggleAvailableTool(tool.name)}
                       type="button"
                     >
                       <span class="toggle-track"><span class="toggle-thumb"></span></span>

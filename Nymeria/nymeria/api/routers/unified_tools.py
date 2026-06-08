@@ -89,7 +89,6 @@ def create_unified_tools_router(
                 "config_schema": meta.config_schema if meta else None,
                 "user_config": tool_prefs.get_tool_config(tool.name),
                 "globally_disabled": False,
-                "default_enabled": True,
             }
             unified_tools.append(builtin_tool_to_unified(tool_info, tool_prefs))
             seen.add(tool.name)
@@ -109,7 +108,6 @@ def create_unified_tools_router(
                 "config_schema": meta.config_schema if meta else None,
                 "user_config": tool_prefs.get_tool_config(name),
                 "globally_disabled": False,
-                "default_enabled": False,
             }
             unified_tools.append(builtin_tool_to_unified(tool_info, tool_prefs))
             seen.add(name)

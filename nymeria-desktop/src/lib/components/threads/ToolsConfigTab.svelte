@@ -31,7 +31,7 @@
     expanded?: Set<string>;
     collapsed?: Set<string>;
     // Open/closed state of the two pools (Enabled / Available), hoisted like the
-    // rest so it survives the remount. Mirrors the global panel's Core/Available.
+    // rest so it survives the remount. Mirrors the global panel's Default/Available.
     enabledOpen?: boolean;
     availableOpen?: boolean;
   }
@@ -88,14 +88,14 @@
   }
 
   const mcpServersForThread = $derived.by(() => {
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
     return mcpServersStore.servers.map((server) => ({
       id: server.id,
       name: server.name,
       enabled: server.enabled,
       tools: server.discoveredTools.map((t) => {
         const mcpName = `mcp__${server.id}__${t.name}`;
-        return { mcpName, shortName: t.name, description: t.description, isDefault: coreSet.has(mcpName) };
+        return { mcpName, shortName: t.name, description: t.description, isDefault: defaultSet.has(mcpName) };
       }),
     }));
   });
@@ -122,7 +122,7 @@
 
   const allItems = $derived.by(() => {
     const items: ToolItem[] = [];
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
 
     const meta = new Map<string, Meta>();
     for (const t of defaultToolsStore.tools) {
@@ -160,7 +160,7 @@
         service: m?.service ?? null,
         serviceLabel: m?.serviceLabel ?? null,
         isMcp: false,
-        isDefault: coreSet.has(name),
+        isDefault: defaultSet.has(name),
         isTemporary: liveTempNames.has(name),
         expiresAt: temporaryTools?.[name]?.expiresAt ?? null,
       });
@@ -243,7 +243,7 @@
     const out = { native: [] as ToolItem[], mcp: [] as ToolItem[] };
     if (!searchActive || backendResults.length === 0) return out;
     const shown = new Set(filtered.map((i) => i.name));
-    const coreSet = new Set(defaultToolsStore.defaultToolNames);
+    const defaultSet = new Set(defaultToolsStore.defaultToolNames);
     const serverNameById = new Map(mcpServersForThread.map((s) => [s.id, s.name]));
     const discoveredMcpNames = new Set(mcpServersForThread.flatMap((s) => s.tools.map((t) => t.mcpName)));
     for (const r of backendResults) {
@@ -264,7 +264,7 @@
           serverId,
           serverName: serverNameById.get(serverId) ?? serverId,
           serverEnabled: true,
-          isDefault: coreSet.has(r.name),
+          isDefault: defaultSet.has(r.name),
           isTemporary: false,
           expiresAt: null,
         });
@@ -279,7 +279,7 @@
           service: r.service ?? null,
           serviceLabel: r.serviceLabel ?? null,
           isMcp: false,
-          isDefault: coreSet.has(r.name),
+          isDefault: defaultSet.has(r.name),
           isTemporary: false,
           expiresAt: null,
         });
