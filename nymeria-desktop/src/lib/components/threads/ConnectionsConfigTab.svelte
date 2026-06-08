@@ -120,7 +120,7 @@
 
     {#if chatAppBindings.length === 0}
       <div class="chatapp-cta">
-        <p style="margin: 0;">No chats bound to this thread yet. Pick how you want to connect:</p>
+        <p>No chats bound to this thread yet. Pick how you want to connect:</p>
         <div class="chatapp-cta-buttons">
           <button class="btn btn-primary" type="button" onclick={() => (showChatAppWizard = true)}>Connect via shared bot</button>
           <button class="btn btn-secondary" type="button" onclick={() => (showMyBotWizard = true)}>Use my own bot</button>

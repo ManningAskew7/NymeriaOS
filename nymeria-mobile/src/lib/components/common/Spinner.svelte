@@ -32,10 +32,4 @@
     height: 28px;
     border-width: 3px;
   }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 </style>

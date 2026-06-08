@@ -54,7 +54,7 @@
 <div class="tab-panel skills-thread-panel">
   {#if skillsStore.installed.length === 0}
     <div class="skills-empty">
-      <p style="margin: 0;">No skills installed yet.</p>
+      <p>No skills installed yet.</p>
       <p class="field-hint" style="margin-top: 0.5rem;">
         Install skills from Settings → Skills → Browse Marketplace, then return here to enable them for this thread.
       </p>
