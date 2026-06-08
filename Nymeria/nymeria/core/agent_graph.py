@@ -97,10 +97,10 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     the callable thread itself runs as a sub-agent.
     """
     from ..tools import (
-        SEED_TOOLS,
-        CATALOG_TOOLS,
         filter_admin_only_tools,
         filter_developer_only_tools,
+        resolve_default_tool_names,
+        static_tool_catalog,
     )
 
     own_callable_name = tc.callable_name
@@ -109,10 +109,9 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     profile = agent.profile_manager.get_profile(owner_id)
     default_tools = profile.tool_preferences.default_thread_tools
 
-    all_tools_dict = {t.name: t for t in SEED_TOOLS}
-    all_tools_dict.update(CATALOG_TOOLS)
+    all_tools_dict = static_tool_catalog()
 
-    core_names = default_tools if default_tools is not None else [t.name for t in SEED_TOOLS]
+    core_names = resolve_default_tool_names(default_tools)
     if default_tools is not None:
         owner = agent.accounts_repo.get_user_by_id(owner_id) if owner_id else None
         owner_role = owner.role if owner else "user"
@@ -219,14 +218,13 @@ def _select_dream_tools_for_graph(
         DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS,
     )
     from ..tools import (
-        SEED_TOOLS,
         CATALOG_TOOLS,
         filter_admin_only_tools,
         filter_developer_only_tools,
+        static_tool_catalog,
     )
 
-    all_tools_dict = {t.name: t for t in SEED_TOOLS}
-    all_tools_dict.update(CATALOG_TOOLS)
+    all_tools_dict = static_tool_catalog()
 
     disabled = set(tc.disabled_tools or [])
     requested_extras = set(tc.enabled_tools or []) - disabled
@@ -341,15 +339,14 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         default_tools = profile.tool_preferences.default_thread_tools
 
         from ..tools import (
-            SEED_TOOLS,
-            CATALOG_TOOLS,
             filter_admin_only_tools,
             filter_developer_only_tools,
+            resolve_default_tool_names,
+            static_tool_catalog,
         )
-        all_tools_dict = {t.name: t for t in SEED_TOOLS}
-        all_tools_dict.update(CATALOG_TOOLS)
+        all_tools_dict = static_tool_catalog()
 
-        core_names = default_tools if default_tools is not None else [t.name for t in SEED_TOOLS]
+        core_names = resolve_default_tool_names(default_tools)
         if default_tools is not None:
             owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
             owner_role = owner.role if owner else "user"
@@ -432,9 +429,8 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
                 )
             extra_names = allowed_extras
         if extra_names:
-            from ..tools import SEED_TOOLS, CATALOG_TOOLS
-            all_tools_dict = {t.name: t for t in SEED_TOOLS}
-            all_tools_dict.update(CATALOG_TOOLS)
+            from ..tools import static_tool_catalog
+            all_tools_dict = static_tool_catalog()
             callable_names = set((agent._callable_tool_thread_map or {}).keys())
             existing = {t.name for t in tools}
             for name in extra_names:

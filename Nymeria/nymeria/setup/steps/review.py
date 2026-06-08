@@ -70,7 +70,7 @@ def _summary_markup(state: WizardState) -> str:
         if state.base_url:
             lines.append(f"[bold]Base URL[/bold]  {state.base_url}")
 
-    # Tools: the always-on core set plus the concrete family members seeded at
+    # Tools: the default (seed) set plus the concrete family members seeded at
     # init (web_search_* / fetch_url_* / image_gen_*), written to the bootstrap
     # admin's default_thread_tools, with the still-placeholder capabilities below.
     total_default = len(default_thread_tools_for_state(state))

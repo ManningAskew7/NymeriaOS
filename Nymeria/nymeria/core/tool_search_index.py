@@ -592,16 +592,14 @@ class ToolSearchIndex:
         )
 
     def _default_tool_set(self, agent: Any, user_id: str) -> set[str]:
-        from ..tools import SEED_TOOLS
+        from ..tools import resolve_default_tool_names
 
         try:
             profile = agent.profile_manager.get_profile(user_id) if agent else None
             default_tools = profile.tool_preferences.default_thread_tools if profile else None
         except Exception:
             default_tools = None
-        if default_tools is None:
-            return {tool.name for tool in SEED_TOOLS}
-        return set(default_tools)
+        return set(resolve_default_tool_names(default_tools))
 
     def _thread_status(
         self,

@@ -180,8 +180,9 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 | **Credentials** | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` |
 | **Capability Expansion** | `Skill(name="self-improve")` is text-only guidance (binds no tools) and routes to four default-on kits that bind their tools only when activated: `tool-management` (`tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request`), `skill-management` (`skill_manage`, `skill_write`, `skill_edit`), `mcp-management` (`manage_mcp`), and `credential-management` (the core `auth_*`/`request_credential` tools) |
 
-The code-owned source of truth is `nymeria/tools/__init__.py`: 19 core tools in
-`ALL_TOOLS` and roughly 1,260 optional tools in `OPTIONAL_TOOLS` (the exact
+The code-owned source of truth is `nymeria/tools/__init__.py`: ~18 seed tools in
+`SEED_TOOLS` (the default for new threads) and roughly 1,260 catalog tools in
+`CATALOG_TOOLS` (the exact
 count drifts as integrations land; regenerate `tools-index.md` for the live
 total).
 

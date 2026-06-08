@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 def core_seed_tool_names() -> list[str]:
-    """The always-on core tools every default thread starts with.
+    """The seed tools every new thread's default set starts with.
 
     Mirrors ``NymeriaAgent._migrate_tool_preferences`` (``core/agent.py``) so an
     admin seeded at init matches a normally-migrated user for the core portion.

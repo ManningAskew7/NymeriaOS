@@ -359,6 +359,34 @@ class TestIncludeCoreTools:
 
 
 # ---------------------------------------------------------------------------
+# disabled_tools validation
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledToolsValidation:
+    def test_valid_optional_name_disables_without_unknown_core_warning(self, stub_agent):
+        # Regression: a valid catalog (optional) tool named in disabled_tools must
+        # land in disabled_tools and NOT be mislabeled an "unknown core tool".
+        result = spawn_thread.invoke(
+            {"title": "t", "disabled_tools": ["web_search_tavily"]},
+            config=_runnable_config(),
+        )
+        assert not result.startswith("[Error]"), result
+        assert "unknown core tool" not in result
+        new_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(new_id)
+        assert "web_search_tavily" in tc.disabled_tools
+
+    def test_genuinely_unknown_name_warns_as_unknown_tool(self, stub_agent):
+        result = spawn_thread.invoke(
+            {"title": "t", "disabled_tools": ["not_a_real_tool_xyz"]},
+            config=_runnable_config(),
+        )
+        assert "unknown tool(s) to disable" in result
+        assert "not_a_real_tool_xyz" in result
+
+
+# ---------------------------------------------------------------------------
 # instructions + prompt regression
 # ---------------------------------------------------------------------------
 

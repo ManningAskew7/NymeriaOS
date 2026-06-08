@@ -39,13 +39,14 @@ def create_user_tools_router(
             SEED_TOOLS,
             CATALOG_TOOLS,
             filter_discoverable_catalog_tool_names,
+            resolve_default_tool_names,
         )
         from ...tools.metadata import get_tool_metadata, integration_grouping_fields
 
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
         dtt = profile.tool_preferences.default_thread_tools
-        dtt_set = set(dtt) if dtt is not None else {t.name for t in SEED_TOOLS}
+        dtt_set = set(resolve_default_tool_names(dtt))
 
         tools_list = []
         for t in SEED_TOOLS:
@@ -195,14 +196,14 @@ def create_user_tools_router(
         user_id: str,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Reset all tool preferences to defaults (all core tools enabled)."""
+        """Reset all tool preferences to defaults (the built-in seed set)."""
         require_same_user_or_admin_fn(user, user_id)
-        from ...tools import SEED_TOOLS
+        from ...tools import seed_tool_names
 
         agent = get_agent_fn()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.default_thread_tools = [t.name for t in SEED_TOOLS]
+            profile.tool_preferences.default_thread_tools = seed_tool_names()
             profile.tool_preferences.tool_configs.clear()
             profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = utc_now()

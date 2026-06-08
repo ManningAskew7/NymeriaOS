@@ -133,7 +133,15 @@ class ThreadConfig(BaseModel):
 
     thread_id: str
     instructions: Optional[str] = Field(default=None, max_length=5000)
+    # Per-thread subtractive override, AUTHORITATIVE at graph-build: removes these
+    # names from the thread's bound set, filtering both the default-bound tools
+    # and the additive extras (enabled_tools / temporary_tools). May name any
+    # tool, seed or catalog. Kept non-destructive so un-disabling is a true
+    # restore (see agent_graph.select_tools_for_graph).
     disabled_tools: List[str] = Field(default_factory=list)
+    # Per-thread additive override: binds these catalog (or seed) tools on top of
+    # the user's default_thread_tools for this thread only. disabled_tools wins
+    # over this on conflict.
     enabled_tools: List[str] = Field(default_factory=list)
     # Agent-managed TTL'd enablements. Keyed by tool name. Separate from
     # enabled_tools (which is permanent and user-facing via the UI/API) so that
