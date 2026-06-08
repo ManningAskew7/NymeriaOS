@@ -159,6 +159,30 @@ class ApiTestClientBuilder:
         return {"Authorization": f"Bearer {token}", **headers}
 
 
+@pytest.fixture(autouse=True)
+def _offline_tool_search_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the shared tool-search catalog offline during the suite.
+
+    ``get_tool_search_index()`` builds a process singleton from
+    ``settings.embedding_api_key``. On a developer shell (or with a stray
+    ``.env.docker`` on the path) that key is populated, so the first semantic
+    tool search makes a live OpenAI embeddings call. Without a client timeout
+    that hung for the SDK default and tripped pytest-timeout; even with the new
+    bounded timeout, unit tests should never reach the network.
+
+    Pre-seed the singleton with a keyless index so the real
+    ``is_semantic_available`` logic returns False and search degrades to the
+    in-process lexical ranking instantly. Tests that construct their own
+    ``ToolSearchIndex`` are unaffected; a test that wants semantic mode can
+    re-patch the singleton with a fake embedder.
+    """
+    from nymeria.core import tool_search_index as tsi
+
+    monkeypatch.setattr(
+        tsi, "_DEFAULT_INDEX", tsi.ToolSearchIndex(openai_api_key=None)
+    )
+
+
 @pytest.fixture
 def api_client_builder(monkeypatch: pytest.MonkeyPatch) -> ApiTestClientBuilder:
     api_module._reset_auth_failure_rate_limiter_for_tests()
