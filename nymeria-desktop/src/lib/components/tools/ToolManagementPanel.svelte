@@ -1725,5 +1725,9 @@
     display: block;
     margin-bottom: var(--spacing-sm);
     font-weight: 600;
+    /* §4 — labels recede behind the input value (which is --text-primary),
+       so the eye finds the answer before the question. Weight stays at 600
+       because these label larger config blocks, not single fields. */
+    color: var(--text-secondary);
   }
 </style>
