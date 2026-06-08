@@ -256,8 +256,8 @@
     flex-direction: column;
     gap: 0.6rem;
     padding: 1rem;
-    background: var(--bg-elevated, #2a2a2a);
-    border: 1px solid var(--border-default, #3a3a3a);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-lg, 8px);
   }
 
@@ -270,23 +270,23 @@
 
   .presets-label {
     font-size: var(--font-size-xs);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
   }
 
   .preset-btn {
     padding: 0.2rem 0.6rem;
     font-size: var(--font-size-xs);
-    border: 1px solid var(--border-default, #3a3a3a);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm, 4px);
-    background: var(--bg-base, #1a1a1a);
-    color: var(--accent-primary, #6c9fff);
+    background: var(--bg-base);
+    color: var(--accent-primary);
     cursor: pointer;
     transition: all var(--transition-fast, 0.15s);
   }
 
   .preset-btn:hover {
-    background: var(--bg-hover, #333);
-    border-color: var(--accent-primary, #6c9fff);
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
   }
 
   .form-row {
@@ -310,32 +310,32 @@
 
   .field-label {
     font-size: var(--font-size-xs);
-    color: var(--text-secondary, #999);
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
     gap: 0.3rem;
   }
 
   .required {
-    color: var(--error, #ff6b6b);
+    color: var(--error);
   }
 
   .auto-badge {
     font-size: var(--font-size-3xs);
     padding: 0 0.3rem;
     border-radius: 3px;
-    background: var(--accent-primary, #6c9fff);
-    color: var(--bg-base, #1a1a1a);
+    background: var(--accent-primary);
+    color: var(--bg-base);
     font-weight: 600;
   }
 
   .form-field input,
   .form-field textarea {
     padding: 0.4rem 0.6rem;
-    border: 1px solid var(--border-default, #3a3a3a);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm, 4px);
-    background: var(--bg-base, #1a1a1a);
-    color: var(--text-primary, #e0e0e0);
+    background: var(--bg-base);
+    color: var(--text-primary);
     font-size: var(--font-size-sm);
     font-family: inherit;
     transition: border-color var(--transition-fast, 0.15s);
@@ -344,16 +344,16 @@
   .form-field input:focus,
   .form-field textarea:focus {
     outline: none;
-    border-color: var(--accent-primary, #6c9fff);
+    border-color: var(--accent-primary);
   }
 
   .has-error input {
-    border-color: var(--error, #ff6b6b);
+    border-color: var(--error);
   }
 
   .field-hint {
     font-size: var(--font-size-2xs);
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     /* §5 — reading text capped to 60ch so multi-line hints stay readable
        on wide displays instead of stretching the full panel width. */
     max-width: 60ch;
@@ -361,7 +361,7 @@
 
   .field-error {
     font-size: var(--font-size-2xs);
-    color: var(--error, #ff6b6b);
+    color: var(--error);
   }
 
   .args-list {
@@ -379,17 +379,17 @@
   .arg-row input {
     flex: 1;
     padding: 0.35rem 0.6rem;
-    border: 1px solid var(--border-default, #3a3a3a);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-sm, 4px);
-    background: var(--bg-base, #1a1a1a);
-    color: var(--text-primary, #e0e0e0);
+    background: var(--bg-base);
+    color: var(--text-primary);
     font-size: var(--font-size-sm);
     font-family: var(--font-mono);
   }
 
   .arg-row input:focus {
     outline: none;
-    border-color: var(--accent-primary, #6c9fff);
+    border-color: var(--accent-primary);
   }
 
   .arg-remove {
@@ -398,14 +398,14 @@
     padding: 0.3rem;
     border: none;
     background: none;
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     cursor: pointer;
     border-radius: var(--radius-sm, 4px);
   }
 
   .arg-remove:hover {
-    color: var(--error, #ff6b6b);
-    background: var(--bg-hover, #333);
+    color: var(--error);
+    background: var(--bg-hover);
   }
 
   .arg-add {
@@ -413,25 +413,25 @@
     align-items: center;
     gap: 0.3rem;
     padding: 0.3rem 0.5rem;
-    border: 1px dashed var(--border-default, #3a3a3a);
+    border: 1px dashed var(--border-default);
     border-radius: var(--radius-sm, 4px);
     background: none;
-    color: var(--text-muted, #777);
+    color: var(--text-muted);
     font-size: var(--font-size-xs);
     cursor: pointer;
     align-self: flex-start;
   }
 
   .arg-add:hover {
-    color: var(--accent-primary, #6c9fff);
-    border-color: var(--accent-primary, #6c9fff);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   .form-error {
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm, 4px);
     background: color-mix(in srgb, var(--error) 10%, transparent);
-    color: var(--error, #ff6b6b);
+    color: var(--error);
     font-size: var(--font-size-xs);
   }
 

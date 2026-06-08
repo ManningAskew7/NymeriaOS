@@ -1676,7 +1676,7 @@
   }
 
   .status-bar.success {
-    background: rgba(52, 211, 153, 0.15);
+    background: rgba(var(--success-rgb), 0.15);
     color: var(--success);
   }
 

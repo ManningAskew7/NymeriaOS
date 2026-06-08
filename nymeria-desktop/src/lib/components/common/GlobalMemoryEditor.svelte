@@ -218,7 +218,7 @@
     max-width: 60ch;
   }
 
-  .cap-note { color: var(--warning, #f59e0b); }
+  .cap-note { color: var(--warning); }
 
   .count {
     flex-shrink: 0;
@@ -232,8 +232,8 @@
   }
 
   .count.full {
-    color: var(--warning, #f59e0b);
-    border-color: var(--warning, #f59e0b);
+    color: var(--warning);
+    border-color: var(--warning);
   }
 
   .status {
@@ -241,8 +241,8 @@
     margin: 0;
   }
 
-  .status.success { color: var(--success, #22c55e); }
-  .status.error { color: var(--error, #ef4444); }
+  .status.success { color: var(--success); }
+  .status.error { color: var(--error); }
 
   .add-form {
     display: flex;
@@ -270,7 +270,7 @@
   .value-input:focus,
   .value-edit:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
   }
 
   .key-input::placeholder,

@@ -88,10 +88,10 @@
     align-items: center;
     gap: 8px;
     padding: 10px var(--spacing-sm);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    background: rgba(var(--warning-rgb), 0.12);
+    border: 1px solid rgba(var(--warning-rgb), 0.4);
     border-radius: var(--radius-sm);
-    color: var(--warning, #fbbf24);
+    color: var(--warning);
     font-size: var(--font-size-sm);
     font-weight: 500;
   }

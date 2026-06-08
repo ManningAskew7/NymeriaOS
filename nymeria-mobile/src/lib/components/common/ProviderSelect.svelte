@@ -333,7 +333,7 @@
     background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
     border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
     border-radius: 6px;
-    color: var(--text-primary, #e4e4e7);
+    color: var(--text-primary);
     font: inherit;
     cursor: pointer;
     text-align: left;
@@ -344,7 +344,7 @@
   }
 
   .trigger:focus-visible {
-    outline: 2px solid var(--accent-primary, #6366f1);
+    outline: 2px solid var(--accent-primary);
     outline-offset: -1px;
   }
 
@@ -354,7 +354,7 @@
   }
 
   .open .trigger {
-    border-color: var(--accent-primary, #6366f1);
+    border-color: var(--accent-primary);
   }
 
   .trigger-content {
@@ -430,15 +430,15 @@
     gap: 12px;
     padding: 6px 12px;
     cursor: pointer;
-    color: var(--text-primary, #e4e4e7);
+    color: var(--text-primary);
   }
 
   .option.active {
-    background: var(--bg-hover, rgba(99, 102, 241, 0.12));
+    background: var(--bg-hover, rgba(var(--info-rgb), 0.12));
   }
 
   .option.selected {
-    background: var(--bg-active, rgba(99, 102, 241, 0.18));
+    background: var(--bg-active, rgba(var(--info-rgb), 0.18));
   }
 
   .option-text {
@@ -464,7 +464,7 @@
 
   .option-warning {
     font-size: var(--font-size-2xs);
-    color: var(--error, #f87171);
+    color: var(--error);
     line-height: 1.35;
   }
 
@@ -477,7 +477,7 @@
     text-transform: uppercase;
     line-height: 1.4;
     flex-shrink: 0;
-    color: var(--text-primary, #e4e4e7);
+    color: var(--text-primary);
   }
 
   .chip-sm {
@@ -486,11 +486,11 @@
 
   .chip-native,
   .chip-gateway {
-    color: var(--text-primary, #e4e4e7);
+    color: var(--text-primary);
   }
 
   .chip-unverified {
-    color: var(--error, #f87171);
+    color: var(--error);
   }
 
   /* Touch devices (mobile, tablets): enlarge tap targets to at least 44px so

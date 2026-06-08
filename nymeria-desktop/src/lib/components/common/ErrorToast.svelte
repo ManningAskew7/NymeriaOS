@@ -125,20 +125,20 @@
   }
 
   .toast.destructive {
-    border-left-color: var(--error, #ef4444);
+    border-left-color: var(--error);
     color: var(--text-primary);
   }
 
   .toast.destructive :global(svg) {
-    color: var(--error, #ef4444);
+    color: var(--error);
   }
 
   .toast.warning {
-    border-left-color: var(--warning, #fbbf24);
+    border-left-color: var(--warning);
   }
 
   .toast.warning :global(svg) {
-    color: var(--warning, #fbbf24);
+    color: var(--warning);
   }
 
   .toast.info {
@@ -193,7 +193,7 @@
   }
 
   .toast-action:hover {
-    background: var(--accent-primary-alpha, rgba(34, 211, 238, 0.12));
+    background: var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.12));
   }
 
   .toast-close {

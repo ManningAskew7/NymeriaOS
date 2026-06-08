@@ -700,21 +700,21 @@
   }
 
   .tools-badge.reduced {
-    background: color-mix(in srgb, var(--warning, #f59e0b) 20%, transparent);
-    color: var(--warning, #f59e0b);
-    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+    background: color-mix(in srgb, var(--warning) 20%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
   }
 
   .mcp-badge {
-    background: color-mix(in srgb, var(--info, #38bdf8) 18%, transparent);
-    color: var(--info, #38bdf8);
-    border: 1px solid color-mix(in srgb, var(--info, #38bdf8) 30%, transparent);
+    background: color-mix(in srgb, var(--info) 18%, transparent);
+    color: var(--info);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
   }
 
   .mcp-badge.reduced {
-    background: color-mix(in srgb, var(--warning, #f59e0b) 18%, transparent);
-    color: var(--warning, #f59e0b);
-    border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
   }
 
   .callables-badge {
@@ -724,15 +724,15 @@
   }
 
   .skills-badge {
-    background: color-mix(in srgb, var(--success, #10b981) 16%, transparent);
-    color: var(--success, #10b981);
-    border: 1px solid color-mix(in srgb, var(--success, #10b981) 28%, transparent);
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
+    border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
   }
 
   .triggers-badge {
-    background: color-mix(in srgb, var(--success, #10b981) 20%, transparent);
-    color: var(--success, #10b981);
-    border: 1px solid color-mix(in srgb, var(--success, #10b981) 30%, transparent);
+    background: color-mix(in srgb, var(--success) 20%, transparent);
+    color: var(--success);
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
   }
 
   .instructions-badge {

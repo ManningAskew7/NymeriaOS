@@ -397,7 +397,7 @@
   .route-nudge {
     margin-bottom: var(--spacing-md);
     padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--error, #f87171);
+    border: 1px solid var(--error);
     border-radius: var(--radius-sm);
     background: var(--error-alpha, rgba(248, 113, 113, 0.08));
   }
@@ -438,7 +438,7 @@
   .field-input:focus,
   .field-select:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
   }
 
   .field-input::placeholder {

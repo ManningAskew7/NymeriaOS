@@ -750,7 +750,7 @@ https://github.com/example/mcp-server`}
 
   .error-banner {
     background: color-mix(in srgb, var(--error) 10%, transparent);
-    color: var(--error, #f44336);
+    color: var(--error);
     border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
   }
 
@@ -1047,7 +1047,7 @@ https://github.com/example/mcp-server`}
   }
 
   .config-field strong {
-    color: var(--error, #f44336);
+    color: var(--error);
     margin-left: 2px;
   }
 
@@ -1078,7 +1078,7 @@ https://github.com/example/mcp-server`}
      (specificity 0,1,1). Anchor to the same selector chain instead
      (0,2,1) so we win on specificity without escalating to !important. */
   .config-field small.field-error {
-    color: var(--error, #f44336);
+    color: var(--error);
   }
 
   .confirm-box {

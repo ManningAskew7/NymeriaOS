@@ -658,10 +658,10 @@
   /* Source-type dot colors — kept aligned with .source-chip in
      TriggerItem.svelte so the same source reads the same color across
      both views. */
-  .meta-tag.source[data-source="webhook"] { --chip-dot-color: var(--warning, #fbbf24); }
-  .meta-tag.source[data-source="outlook_email"] { --chip-dot-color: var(--info, #818cf8); }
+  .meta-tag.source[data-source="webhook"] { --chip-dot-color: var(--warning); }
+  .meta-tag.source[data-source="outlook_email"] { --chip-dot-color: var(--info); }
   .meta-tag.source[data-source="rss"] { --chip-dot-color: #fb923c; }
-  .meta-tag.source[data-source="slack"] { --chip-dot-color: var(--success, #34d399); }
+  .meta-tag.source[data-source="slack"] { --chip-dot-color: var(--success); }
   .meta-tag.source[data-source="teams"] { --chip-dot-color: #a78bfa; }
   .meta-tag.source[data-source="http_poll"] { --chip-dot-color: var(--accent-primary); }
 
@@ -669,8 +669,8 @@
      (Nymeria's core AI function), notify = warning (alert), todo =
      success (concrete output). */
   .meta-tag.action[data-action="agent_prompt"] { --chip-dot-color: var(--accent-primary); }
-  .meta-tag.action[data-action="notify"] { --chip-dot-color: var(--warning, #fbbf24); }
-  .meta-tag.action[data-action="create_todo"] { --chip-dot-color: var(--success, #34d399); }
+  .meta-tag.action[data-action="notify"] { --chip-dot-color: var(--warning); }
+  .meta-tag.action[data-action="create_todo"] { --chip-dot-color: var(--success); }
 
   .meta-detail {
     font-size: var(--font-size-xs);
@@ -784,7 +784,7 @@
   .field-input:focus,
   .field-select:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
   }
 
   .field-input::placeholder {
@@ -812,7 +812,7 @@
 
   .field-textarea:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
   }
 
   .field-textarea::placeholder {

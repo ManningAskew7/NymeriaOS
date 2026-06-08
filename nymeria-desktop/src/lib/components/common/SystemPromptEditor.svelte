@@ -193,7 +193,7 @@
 
   .prompt-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(99, 102, 241, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
   }
 
   .prompt-input::placeholder {
@@ -218,11 +218,11 @@
   }
 
   .status.success {
-    color: var(--success, #22c55e);
+    color: var(--success);
   }
 
   .status.error {
-    color: var(--error, #ef4444);
+    color: var(--error);
   }
 
   .actions {

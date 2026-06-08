@@ -118,17 +118,17 @@
   }
 
   .toggle-switch-outlined .toggle-track {
-    background: var(--bg-elevated-2, var(--bg-base, #1a1a1a));
-    border: 1px solid var(--border-default, #3a3a3a);
+    background: var(--bg-elevated-2, var(--bg-base));
+    border: 1px solid var(--border-default);
   }
 
   .toggle-switch-outlined.checked .toggle-track {
-    background: var(--accent-primary, #6c9fff);
-    border-color: var(--accent-primary, #6c9fff);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   .toggle-switch-outlined .toggle-thumb {
-    background: var(--text-muted, #777);
+    background: var(--text-muted);
   }
 
   .toggle-switch-outlined.checked .toggle-thumb {

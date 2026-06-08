@@ -391,7 +391,7 @@
   }
 
   .test-result.success {
-    background: rgba(52, 211, 153, 0.1);
+    background: rgba(var(--success-rgb), 0.1);
     color: var(--success);
   }
 

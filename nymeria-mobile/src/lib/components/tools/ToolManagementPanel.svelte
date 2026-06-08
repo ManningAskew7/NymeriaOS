@@ -272,9 +272,9 @@
     padding: 0 5px;
     margin-left: 4px;
     border-radius: var(--radius-sm);
-    background: rgba(251, 191, 36, 0.12);
-    color: var(--warning, #fbbf24);
-    border: 1px solid rgba(251, 191, 36, 0.4);
+    background: rgba(var(--warning-rgb), 0.12);
+    color: var(--warning);
+    border: 1px solid rgba(var(--warning-rgb), 0.4);
     text-transform: uppercase;
     letter-spacing: 0.6px;
     vertical-align: middle;

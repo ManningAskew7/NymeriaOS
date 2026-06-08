@@ -452,7 +452,7 @@
   .field-input:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(34, 211, 238, 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.15));
   }
 
   .field-error {
@@ -465,7 +465,7 @@
     align-items: center;
     gap: 4px;
     font-size: var(--font-size-2xs);
-    color: var(--success, #22c55e);
+    color: var(--success);
     font-weight: 500;
   }
 

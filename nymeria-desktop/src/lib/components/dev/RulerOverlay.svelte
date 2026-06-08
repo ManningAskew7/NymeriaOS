@@ -286,7 +286,7 @@
   .crosshair-h,
   .crosshair-v {
     position: absolute;
-    background: rgba(34, 211, 238, 0.45);
+    background: rgba(var(--accent-primary-rgb), 0.45);
     pointer-events: none;
   }
   .crosshair-h { left: 0; right: 0; height: 1px; }
@@ -300,7 +300,7 @@
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     border-radius: 3px;
-    border: 1px solid rgba(34, 211, 238, 0.35);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.35);
     pointer-events: none;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -361,8 +361,8 @@
 
   .measure-box {
     position: absolute;
-    border: 1px dashed #fbbf24;
-    background: rgba(251, 191, 36, 0.08);
+    border: 1px dashed var(--warning);
+    background: rgba(var(--warning-rgb), 0.08);
     pointer-events: none;
   }
   .measure-tag {
@@ -371,7 +371,7 @@
     left: 0;
     padding: 2px 6px;
     background: rgba(0, 0, 0, 0.9);
-    color: #fbbf24;
+    color: var(--warning);
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     border-radius: 3px;
