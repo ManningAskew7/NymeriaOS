@@ -72,6 +72,11 @@ class WizardState:
     # screens, and lets finalize tell a default apart from a deliberate choice.
     rag_quickstarted: bool = False
 
+    # Quick path (`nymeria init --quick`): gate the wizard to the essentials
+    # (hosting + LLM) and default everything else with no-extra-auth picks. See
+    # setup/quick.py for the kept-step set and the defaults applied.
+    quick: bool = False
+
     # Paths and post-setup behavior (driven by flags, not wizard screens yet).
     root: Path | None = None
     data_dir: Path | None = None

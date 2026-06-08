@@ -26,6 +26,7 @@ from ..onboarding import (
 )
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from .finalize import finalize
+from .quick import apply_quick_defaults
 from .state import WizardState
 
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
@@ -168,8 +169,19 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Data directory to write as NYMERIA_DATA_DIR",
     )
-    parser.add_argument("--quick", action="store_true", help="Ask the minimum")
-    parser.add_argument("--custom", action="store_true", help="Walk every section")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Ask only the essentials (hosting + LLM) and default the rest with "
+            "no-extra-auth picks (free local RAG, keyless web fetch, all skill kits)"
+        ),
+    )
+    parser.add_argument(
+        "--custom",
+        action="store_true",
+        help="Walk every section (the default); wins over --quick if both are given",
+    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -282,6 +294,9 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         root=root,
         data_dir=data_dir,
         next_action=next_action,
+        # --quick gates the wizard to the essentials; --custom forces the full
+        # walk and wins if both are passed.
+        quick=bool(getattr(args, "quick", False)) and not bool(getattr(args, "custom", False)),
         skip_llm_test=bool(getattr(args, "skip_llm_test", False)),
         force=bool(getattr(args, "force", False)),
         run_doctor=bool(getattr(args, "run_doctor", False) or getattr(args, "full_doctor", False)),
@@ -316,6 +331,11 @@ def run_init(args: argparse.Namespace) -> int:
             "--non-interactive and the provider flags for an unattended setup.[/red]"
         )
         return 2
+
+    # Quick path: seed the skipped steps' no-extra-auth defaults (free local RAG,
+    # keyless web fetch) before the wizard runs so the review screen is accurate.
+    if state.quick:
+        apply_quick_defaults(state)
 
     # Interactive: collect answers in the Textual wizard, then finalize headless
     # so the bootstrap token prints to normal scrollback.

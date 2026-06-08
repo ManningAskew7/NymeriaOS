@@ -361,6 +361,113 @@ def test_default_flow_order_and_conditional_image_tier():
     )
 
 
+# --- quick path -------------------------------------------------------------
+
+
+def test_quick_path_gates_steps_to_essentials():
+    from nymeria.setup.nav import Navigator
+    from nymeria.setup.quick import QUICK_KEEP_STEP_IDS
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import build_default_steps
+
+    steps = build_default_steps()
+
+    def applicable_ids(state: "WizardState") -> list[str]:
+        nav = Navigator(steps, state)
+        nav.start()
+        return [steps[i].id for i in nav.applicable_indices()]
+
+    skippable = (
+        "image_tier", "security_profile", "auth_method", "core_tools",
+        "web_search", "fetch_url", "embedder", "reranker", "image_gen",
+        "backend_keys", "skill_kits", "tts", "stt", "agent_settings",
+        "external_access",
+    )
+
+    # Full (default) path keeps the optional/placeholder steps. (reranker and
+    # backend_keys are conditional on other picks, so they are excluded here.)
+    full = applicable_ids(WizardState(hosting=HostingOption.LOCAL))
+    for sid in ("security_profile", "auth_method", "core_tools", "web_search",
+                "fetch_url", "embedder", "image_gen", "skill_kits", "external_access"):
+        assert sid in full
+
+    # Quick path keeps only the essentials; every skippable step is gated off.
+    # A provider is set so the provider-gated model step is applicable (the
+    # Navigator re-evaluates this as the real run advances).
+    quick = applicable_ids(
+        WizardState(hosting=HostingOption.LOCAL, provider="anthropic", quick=True)
+    )
+    assert set(quick) <= QUICK_KEEP_STEP_IDS
+    for essential in ("welcome", "hosting", "provider", "model", "start_now", "review"):
+        assert essential in quick
+    for sid in skippable:
+        assert sid not in quick
+
+
+def test_apply_quick_defaults_seeds_keyless_fetch_and_local_rag():
+    from nymeria.setup.quick import apply_quick_defaults
+    from nymeria.setup.rag_catalog import QUICKSTART_EMBEDDER, QUICKSTART_RERANKER
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_seed import (
+        default_thread_tools_for_state,
+        selected_global_skills_for_state,
+    )
+
+    state = WizardState(quick=True)
+    apply_quick_defaults(state)
+
+    # Free local RAG, flagged as the quickstart default (no paid key).
+    assert state.embedder == QUICKSTART_EMBEDDER
+    assert state.reranker == QUICKSTART_RERANKER
+    assert state.rag_quickstarted is True
+    assert "EMBEDDING_API_KEY" not in state.optional_env
+    # Keyless web fetch seeded; nothing that needs a search/image key.
+    assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
+    assert "web_search" not in state.extras
+    assert "image_gen" not in state.extras
+    # The seeded default tools carry the keyless fetcher on top of the core seed.
+    tools = default_thread_tools_for_state(state)
+    assert "fetch_url_nymeria" in tools
+    assert "bash_execute" in tools
+    # Skill kits fall back to all-on (self-improve plus the four bundled kits).
+    assert selected_global_skills_for_state(state) == [
+        "self-improve",
+        "tool-management",
+        "skill-management",
+        "mcp-management",
+        "credential-management",
+    ]
+
+
+def test_apply_quick_defaults_respects_explicit_picks():
+    from nymeria.setup.quick import apply_quick_defaults
+    from nymeria.setup.state import WizardState
+
+    # An explicit embedding key signals the keyed default: local RAG is not forced.
+    # An explicit fetch family pick is left untouched.
+    state = WizardState(
+        quick=True,
+        optional_env={"EMBEDDING_API_KEY": "sk-emb"},
+        extras={"fetch_url": ["jina_reader_fetch_url"]},
+    )
+    apply_quick_defaults(state)
+    assert state.embedder is None
+    assert state.rag_quickstarted is False
+    assert state.extras["fetch_url"] == ["jina_reader_fetch_url"]
+
+
+def test_quick_and_custom_flags_resolve_on_state():
+    from nymeria.setup.runner import _build_state, build_parser
+
+    base = ["--provider", "anthropic", "--model", "m", "--api-key", "k"]
+
+    assert _build_state(build_parser().parse_args(base + ["--quick"])).quick is True
+    # --custom forces the full walk and wins over --quick.
+    assert _build_state(build_parser().parse_args(base + ["--quick", "--custom"])).quick is False
+    # Default is the full walk.
+    assert _build_state(build_parser().parse_args(base)).quick is False
+
+
 # --- headless finalize ------------------------------------------------------
 
 
@@ -1302,9 +1409,10 @@ def test_wizard_pilot_web_search_multiselect_seeds_real_backend():
     assert seeded_tool_names(state) == ["web_search_perplexity"]
 
 
-def test_wizard_pilot_fetch_url_multiselect_seeds_real_backend():
-    """The web fetch step is a real multi-select over the built fetch_url-family
-    tool names, parallel to web search.
+def test_wizard_pilot_fetch_url_multiselect_defaults_nymeria_on():
+    """The web fetch step defaults the keyless built-in fetcher (fetch_url_nymeria)
+    checked, so accepting the default records it with no toggling. It needs no key
+    (it distills pages with the configured LLM), making it a safe default.
     """
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
@@ -1315,9 +1423,7 @@ def test_wizard_pilot_fetch_url_multiselect_seeds_real_backend():
         app = SetupWizardApp(state, steps=[make_fetch_url_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("space")  # toggle the first (highlighted) backend
-            await pilot.pause()
-            await pilot.press("enter")  # advance, storing the selection
+            await pilot.press("enter")  # accept the default (nymeria fetch pre-checked)
             await pilot.pause()
         return state
 
