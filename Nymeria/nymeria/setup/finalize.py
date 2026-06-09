@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -25,6 +26,7 @@ from rich.console import Console
 
 from .._runtime_paths import default_user_project_root, find_project_root
 from ..config.llm_providers import LLMProviderSpec
+from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
 from ..onboarding import (
     EXTERNAL_ACCESS_CHOICES,
@@ -44,6 +46,12 @@ from .rag_catalog import apply_quickstart_rag, rag_env_for_state
 from .state import WizardState
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
+
+# Single-container Docker (slim) artifacts. The compose file reads `.env.docker`
+# and runs `python run.py slim` as service `nymeria-single`, which mints the
+# bootstrap admin + token into its `/data` volume on first boot.
+DOCKER_SINGLE_COMPOSE = "docker-compose.single.yml"
+DOCKER_SINGLE_SERVICE = "nymeria-single"
 
 
 class FinalizeError(RuntimeError):
@@ -131,11 +139,23 @@ def finalize(
                     "(cannot verify without extra setup).[/yellow]"
                 )
 
-    root = resolve_root(state)
+    # Config target is shape-aware: local/service write `config.env` (read by
+    # run.py from the runtime root); the Docker single-container shape writes
+    # `.env.docker` next to the compose file that reads it via `env_file`.
+    for_docker = state.hosting is HostingOption.DOCKER
+    root = resolve_runtime_root(state, for_docker=for_docker)
     data_dir = resolve_data_dir(state, root=root)
+    if for_docker and state.root is None and source_checkout_root() is None:
+        console.print(
+            "[yellow]Could not find docker-compose.single.yml in a source "
+            "checkout.[/yellow] Writing .env.docker to "
+            f"{root}; move it next to the compose file before bringing the "
+            "container up."
+        )
     try:
         check_writable(root)
-        check_writable(data_dir)
+        if not for_docker:
+            check_writable(data_dir)
     except OSError as exc:
         console.print(f"[red]Cannot write setup files: {exc}[/red]")
         return 2
@@ -143,7 +163,7 @@ def finalize(
     if port_in_use(8000):
         console.print("[yellow]Warning:[/yellow] port 8000 is already in use.")
 
-    config_path = root / "config.env"
+    config_path = root / (".env.docker" if for_docker else "config.env")
     if config_path.exists() and not state.force and not overwrite_confirmed:
         if non_interactive:
             console.print(
@@ -161,8 +181,10 @@ def finalize(
 
     optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
+    secrets_key = _resolve_secrets_key(config_path)
 
-    data_dir.mkdir(parents=True, exist_ok=True)
+    if not for_docker:
+        data_dir.mkdir(parents=True, exist_ok=True)
     console.print("\n[bold]Configuration[/bold]")
     write_config(
         config_path,
@@ -172,16 +194,27 @@ def finalize(
         api_key=api_key,
         optional_env=optional_env,
         extra_env=extra_env,
+        secrets_key=secrets_key,
+        for_docker=for_docker,
     )
 
-    repo = AccountsRepo(data_dir / "accounts.db")
-    repo.ensure_bootstrap_admin(data_dir)
-    token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
-
     console.print(f"[green]Config:[/green] {config_path}")
-    console.print(f"[green]Data dir:[/green] {data_dir}")
-    seed_bootstrap_profile(data_dir, state, console)
-    print_bootstrap_token_handoff(token_path, console)
+    if for_docker:
+        # The container owns its data: it mints the bootstrap admin + token into
+        # its `/data` volume on first boot. A host-side bootstrap would be
+        # invisible to it and would print the wrong token, so skip it and read
+        # the real token back from the running container (see run_next_action).
+        console.print(
+            "[green]Data:[/green] container-managed volume (the backend creates "
+            "its admin and bootstrap token on first start)"
+        )
+    else:
+        repo = AccountsRepo(data_dir / "accounts.db")
+        repo.ensure_bootstrap_admin(data_dir)
+        token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
+        console.print(f"[green]Data dir:[/green] {data_dir}")
+        seed_bootstrap_profile(data_dir, state, console)
+        print_bootstrap_token_handoff(token_path, console)
     print_capability_summary(spec, optional_env, console, extra_env=extra_env)
     print_deployment_summary(state, console)
 
@@ -209,13 +242,22 @@ def write_config(
     api_key: str = "",
     optional_env: Mapping[str, str] | None = None,
     extra_env: Mapping[str, str] | None = None,
+    secrets_key: str = "",
+    for_docker: bool = False,
 ) -> None:
-    """Atomically write config.env with 0600 perms (it holds API keys).
+    """Atomically write the env file with 0600 perms (it holds API keys).
 
     When `spec` is None (the provider step was skipped), the LLM lines are
     omitted so the backend still starts and a provider can be set later. The key
     is written to the provider's highest-priority env var; for Anthropic that is
     `ANTHROPIC_DIRECT_API_KEY` (the direct, non-proxy key), not `ANTHROPIC_API_KEY`.
+
+    `for_docker` selects the Docker single-container flavor (a `.env.docker`):
+    the storage/host lines (`DATABASE_BACKEND`, `NYMERIA_DATA_DIR`, `API_HOST`)
+    are omitted because the compose file sets `NYMERIA_DATA_DIR=/data` and slim
+    forces sqlite + redis-off inside the container; writing a host data dir here
+    would only mislead. `secrets_key`, when set, is the credential-vault Fernet
+    key (`NYMERIA_SECRETS_KEY`) and is written for every shape.
     """
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,14 +273,20 @@ def write_config(
     for env_var, value in extra_env.items():
         if value:
             lines.append(f"{env_var}={_env_value(value)}")
-    lines.append("DATABASE_BACKEND=sqlite")
-    lines.append(f"NYMERIA_DATA_DIR={_env_value(str(data_dir))}")
-    lines.append("API_HOST=0.0.0.0")
+    if not for_docker:
+        lines.append("DATABASE_BACKEND=sqlite")
+        lines.append(f"NYMERIA_DATA_DIR={_env_value(str(data_dir))}")
+        lines.append("API_HOST=0.0.0.0")
     lines.append("API_PORT=8000")
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
             lines.append(f"{env_var}={_env_value(value)}")
+    if secrets_key:
+        # Credential-vault encryption key (Fernet). Without it the first vault
+        # write (OAuth connect, BYO bot token, integration secret) raises
+        # SecretsKeyMissing. Read straight from the env by nymeria/core/secrets.py.
+        lines.append(f"NYMERIA_SECRETS_KEY={_env_value(secrets_key)}")
     lines.append("")
 
     content = "\n".join(lines)
@@ -262,9 +310,46 @@ def write_config(
 
 
 def _env_value(value: str) -> str:
-    if value and all(c.isalnum() or c in "/._:-" for c in value):
+    # `=` is in the safe set so base64url values (Fernet keys end in `=`) write
+    # unquoted; Docker `env_file` quote handling is version-fragile, and bare
+    # base64url is unambiguous for both python-dotenv and compose.
+    if value and all(c.isalnum() or c in "/._:-=" for c in value):
         return value
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _resolve_secrets_key(config_path: Path) -> str:
+    """Return a stable `NYMERIA_SECRETS_KEY`: preserve an existing one, else mint.
+
+    Never rotate an existing key (rotation orphans every secret already encrypted
+    with it). Looks first in the env file we are about to write (so a `--force`
+    re-run keeps the same key), then the process environment, then mints a fresh
+    Fernet key via `nymeria.core.secrets.generate_key`.
+    """
+    existing = _read_secrets_key_from_file(config_path)
+    if existing:
+        return existing
+    env_key = os.environ.get("NYMERIA_SECRETS_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+    return nymeria_secrets.generate_key()
+
+
+def _read_secrets_key_from_file(config_path: Path) -> str | None:
+    if not config_path.exists():
+        return None
+    try:
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw_line.strip()
+            if not stripped.startswith("NYMERIA_SECRETS_KEY="):
+                continue
+            value = stripped.split("=", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
 
 
 def _resolve_optional_env(
@@ -345,6 +430,37 @@ def resolve_root(state: WizardState) -> Path:
     if state.root is not None:
         return Path(state.root).expanduser().resolve()
     return default_init_root()
+
+
+def resolve_runtime_root(state: WizardState, *, for_docker: bool) -> Path:
+    """Where the generated env file (and, for Docker, the compose invocation) lives.
+
+    Honors an explicit `--root`. For Docker hosting with no override, prefers the
+    source-checkout root that holds `docker-compose.single.yml` so the generated
+    `.env.docker` sits next to the compose file the user runs; falls back to the
+    normal init root (`~/.nymeria`) when no checkout is found (clone-free install).
+    """
+    if state.root is not None:
+        return Path(state.root).expanduser().resolve()
+    if for_docker:
+        checkout = source_checkout_root()
+        if checkout is not None:
+            return checkout
+    return default_init_root()
+
+
+def source_checkout_root() -> Path | None:
+    """The source-checkout dir holding `docker-compose.single.yml`, or None.
+
+    The single-container compose file only exists in a source checkout; a
+    clone-free (pip/uv) install does not ship it, so None signals the deferred
+    clone-free Docker case (finalize then writes `.env.docker` to the init root
+    and prints guidance to move it next to the compose file).
+    """
+    root = find_project_root(Path(__file__).resolve())
+    if root is not None and (root / DOCKER_SINGLE_COMPOSE).exists():
+        return root
+    return None
 
 
 def resolve_data_dir(state: WizardState, *, root: Path) -> Path:
@@ -559,6 +675,9 @@ def print_next_action(state: WizardState, console: Console) -> None:
     elif state.hosting is HostingOption.DOCKER:
         console.print("\nStart Nymeria (single-container Docker):")
         _print_command(console, start_command)
+        # The container mints its own token into its /data volume on first boot;
+        # there is no host token file to paste, so point at the in-container one.
+        _print_docker_token_command(console)
     elif state.hosting is HostingOption.SERVICE:
         console.print(
             "\nBackground-service install is not wired up yet. For now start "
@@ -569,7 +688,7 @@ def print_next_action(state: WizardState, console: Console) -> None:
         console.print("\nStart Nymeria with:")
         _print_command(console, start_command)
 
-    if state.next_action is not NextAction.CLI:
+    if state.next_action is not NextAction.CLI and state.hosting is not HostingOption.DOCKER:
         console.print("Then open http://localhost:8000 and paste the bootstrap token.")
     console.print("\nRe-run setup anytime with `nymeria init`. Check health with `nymeria doctor`.")
 
@@ -603,7 +722,7 @@ def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
 
 
 def _start_now_docker(console: Console, *, root: Path) -> int:
-    command = "docker compose -f docker-compose.single.yml up -d"
+    command = f"docker compose -f {DOCKER_SINGLE_COMPOSE} up -d"
     console.print("\nStarting Nymeria (single-container Docker)...")
     _print_command(console, command)
     try:
@@ -614,7 +733,7 @@ def _start_now_docker(console: Console, *, root: Path) -> int:
             "Run it yourself:[/yellow]"
         )
         _print_command(console, command)
-        _print_start_token_reminder(console)
+        _print_docker_token_command(console)
         return 0
     if result.returncode != 0:
         console.print(
@@ -622,17 +741,18 @@ def _start_now_docker(console: Console, *, root: Path) -> int:
             "or run it yourself:[/yellow]"
         )
         _print_command(console, command)
-        _print_start_token_reminder(console)
+        _print_docker_token_command(console)
         return 0
     if wait_for_health(console=console):
         console.print("[green]Nymeria is up.[/green]")
+        _print_docker_bootstrap_token(console, root=root)
     else:
         console.print(
             "[yellow]Started, but the health check has not passed yet. It may "
             "still be coming up; check "
-            "`docker compose -f docker-compose.single.yml logs -f`.[/yellow]"
+            f"`docker compose -f {DOCKER_SINGLE_COMPOSE} logs -f`.[/yellow]"
         )
-    _print_start_token_reminder(console)
+        _print_docker_token_command(console)
     return 0
 
 
@@ -688,14 +808,66 @@ def wait_for_health(
     return False
 
 
-def _print_start_token_reminder(console: Console) -> None:
-    console.print(
-        "Open http://localhost:8000 and paste the bootstrap token shown above."
+def _docker_token_command() -> str:
+    return (
+        f"docker compose -f {DOCKER_SINGLE_COMPOSE} exec {DOCKER_SINGLE_SERVICE} "
+        f"cat /data/{BOOTSTRAP_TOKEN_FILENAME}"
     )
+
+
+def _print_docker_token_command(console: Console) -> None:
+    console.print(
+        "\nOnce the container is healthy, read your one-time bootstrap token "
+        "(paste it into the Desktop/Mobile Setup Wizard) with:"
+    )
+    _print_command(console, _docker_token_command())
     console.print(
         "\nRe-run setup anytime with `nymeria init`. Check health with "
         "`nymeria doctor`."
     )
+
+
+def _read_docker_bootstrap_token(*, root: Path) -> str | None:
+    """Read the container's freshly minted bootstrap token from its /data volume.
+
+    The single-container backend creates the real `nym_...` token inside its
+    named volume on first boot; this execs in to fetch it. Returns None if it
+    cannot be read yet (e.g. the container is not ready or `docker` is absent).
+    """
+    command = [
+        "docker", "compose", "-f", DOCKER_SINGLE_COMPOSE, "exec", "-T",
+        DOCKER_SINGLE_SERVICE, "cat", f"/data/{BOOTSTRAP_TOKEN_FILENAME}",
+    ]
+    try:
+        result = subprocess.run(
+            command, cwd=str(root), capture_output=True, text=True, timeout=15
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(BOOTSTRAP_TOKEN_REGEX, result.stdout)
+    return match.group(0) if match else None
+
+
+def _print_docker_bootstrap_token(console: Console, *, root: Path) -> None:
+    token = _read_docker_bootstrap_token(root=root)
+    if token:
+        console.print(f"\n[green]Bootstrap token:[/green] {token}", soft_wrap=True)
+        console.print(
+            "Paste this one-time `nym_...` token into the Desktop/Mobile Setup "
+            "Wizard (it is consumed on first use). It is NOT your provider API key."
+        )
+        console.print(
+            "\nOpen http://localhost:8000 to use the web UI. Re-run setup anytime "
+            "with `nymeria init`."
+        )
+    else:
+        console.print(
+            "\n[yellow]Could not read the bootstrap token from the container "
+            "yet.[/yellow] Once it is healthy, run:"
+        )
+        _print_command(console, _docker_token_command())
 
 
 def _maybe_run_doctor(
@@ -740,6 +912,8 @@ __all__ = [
     "write_config",
     "seed_bootstrap_profile",
     "resolve_root",
+    "resolve_runtime_root",
+    "source_checkout_root",
     "resolve_data_dir",
     "default_init_root",
     "check_writable",

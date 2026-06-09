@@ -714,6 +714,85 @@ def test_noninteractive_records_deployment_choices_without_dead_config(
     assert "EXTERNAL_ACCESS" not in config
 
 
+def _read_secrets_key(text: str) -> str | None:
+    match = re.search(r"^NYMERIA_SECRETS_KEY=(\S+)$", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def test_env_value_leaves_base64_unquoted():
+    # A Fernet key is url-safe base64 ending in `=`; it must write unquoted so
+    # Docker `env_file` does not treat the quotes literally.
+    key = "5KFavWE8-H-C5jk11S6vogyg-s50WyVBvAPY6ZXzuns="
+    assert finalize_mod._env_value(key) == key
+
+
+def test_noninteractive_mints_and_preserves_secrets_key(monkeypatch, tmp_path):
+    from cryptography.fernet import Fernet
+
+    _stub_llm(monkeypatch)
+    # Resolution reads the existing key from the env; isolate the test from any
+    # NYMERIA_SECRETS_KEY in the ambient environment.
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    root = tmp_path / "runtime"
+    args = [
+        "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+        "--root", str(root), "--non-interactive",
+    ]
+
+    assert setup_main(args) == 0
+    key1 = _read_secrets_key((root / "config.env").read_text(encoding="utf-8"))
+    assert key1 is not None
+    Fernet(key1.encode("ascii"))  # a valid Fernet key, does not raise
+
+    # Re-running (even with --force) preserves the same key: rotating it would
+    # orphan every secret already encrypted with it.
+    assert setup_main(args + ["--force"]) == 0
+    key2 = _read_secrets_key((root / "config.env").read_text(encoding="utf-8"))
+    assert key2 == key1
+
+
+def test_noninteractive_docker_writes_env_docker_not_config(monkeypatch, tmp_path):
+    from cryptography.fernet import Fernet
+
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-x", "--hosting", "docker",
+         "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+
+    # Docker hosting writes `.env.docker` (read by the single-container compose),
+    # never `config.env`.
+    env_docker = root / ".env.docker"
+    assert env_docker.exists()
+    assert not (root / "config.env").exists()
+    content = env_docker.read_text(encoding="utf-8")
+    assert "LLM_PROVIDER=anthropic" in content
+    assert "ANTHROPIC_DIRECT_API_KEY=sk-ant-x" in content
+    assert "API_PORT=8000" in content
+
+    # The credential-vault key is minted for Docker too, and is valid + unquoted.
+    key = _read_secrets_key(content)
+    assert key is not None
+    Fernet(key.encode("ascii"))
+
+    # Host/storage lines are omitted: the compose sets NYMERIA_DATA_DIR=/data and
+    # slim forces sqlite, so a host data dir here would only mislead.
+    assert "NYMERIA_DATA_DIR" not in content
+    assert "DATABASE_BACKEND" not in content
+    assert "API_HOST" not in content
+
+    # The container owns its data and mints its own token on first boot, so no
+    # host-side bootstrap artifacts are written.
+    assert not (root / "data" / "accounts.db").exists()
+    assert not (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
+
+
 def _capture_console():
     import io
 
@@ -2151,12 +2230,19 @@ def test_finalize_starts_docker_when_opted_in(monkeypatch, tmp_path, capsys):
     _stub_llm(monkeypatch)
     root = tmp_path / "runtime"
     calls: list[tuple[list[str], object]] = []
+    fake_token = "nym_dockertoken_abc123"
 
     class _Result:
-        returncode = 0
+        def __init__(self, stdout=""):
+            self.returncode = 0
+            self.stdout = stdout
 
     def fake_run(cmd, *args, **kwargs):
         calls.append((cmd, kwargs.get("cwd")))
+        # After a clean start the wizard execs into the container to read the
+        # real bootstrap token from its /data volume.
+        if "exec" in cmd:
+            return _Result(stdout=f"Token: {fake_token}\n")
         return _Result()
 
     health: list[dict] = []
@@ -2173,12 +2259,15 @@ def test_finalize_starts_docker_when_opted_in(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert len(calls) == 1
-    cmd, cwd = calls[0]
-    assert cmd == ["docker", "compose", "-f", "docker-compose.single.yml", "up", "-d"]
-    assert cwd == str(root)
+    # The compose `up -d` runs first, in the runtime root...
+    assert calls[0][0] == ["docker", "compose", "-f", "docker-compose.single.yml", "up", "-d"]
+    assert calls[0][1] == str(root)
     assert health  # polled for health after a clean start
     assert "Nymeria is up" in out
+    # ...then the wizard execs in to surface the container-minted token (there is
+    # no host token for the Docker shape).
+    assert any("exec" in cmd and "cat" in cmd for cmd, _cwd in calls)
+    assert fake_token in out
 
 
 def test_finalize_starts_local_foreground_when_opted_in(monkeypatch, tmp_path):
