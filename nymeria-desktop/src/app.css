@@ -260,6 +260,31 @@ body {
   overflow: hidden;
 }
 
+/* Skip-to-content link — WCAG 2.4.1 Bypass Blocks (Level A).
+   Visually hidden until it receives focus, at which point it slides into the
+   top-left so the first Tab press from a fresh page lands somewhere a
+   keyboard user can act on instead of cycling through the sidebar. Target
+   is the <main id="main-content"> in AppShell. */
+.skip-to-content {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  z-index: 9999;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-elevated-2);
+  color: var(--text-primary);
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 0 0 var(--radius-md) 0;
+  transition: left 0s;
+}
+.skip-to-content:focus,
+.skip-to-content:focus-visible {
+  left: 0;
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
 /* Headings — global scale.
    Establishes the size + weight ramp so the visual hierarchy is enforced
    rather than reinvented per-component. Components MAY override per

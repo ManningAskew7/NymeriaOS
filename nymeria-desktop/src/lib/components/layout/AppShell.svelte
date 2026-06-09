@@ -148,7 +148,7 @@
     </button>
   </aside>
 
-  <main class="main-panel">
+  <main class="main-panel" id="main-content">
     {@render main()}
   </main>
 
