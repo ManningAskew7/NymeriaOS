@@ -111,11 +111,19 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgHover: '#2a2e33',
       bgActive: '#32373d',
       textPrimary: '#e8eaed',
-      textSecondary: '#9aa0a6',
-      // Bumped from #6b7280 (was 3.12:1 on bg-elevated-2, sub-AA). Now 4.79:1
-      // worst-case — clears WCAG AA Normal while preserving the blue-gray hue
-      // family and staying clearly below textSecondary in the type scale.
-      textMuted: '#888d96',
+      // Bumped from #9aa0a6 (was 4.55:1 on bgActive — barely-AA near-miss).
+      // Now 5.38:1 on bgActive worst-case. The lift is paired with a matching
+      // textMuted bump below so the type-scale gap is preserved (steps 11/12);
+      // see textMuted comment for why solo-bumping textMuted alone collapsed
+      // the hierarchy.
+      textSecondary: '#a6afb3',
+      // Bumped from #888d96 (was 3.60:1 on bgActive, sub-AA — and the prior
+      // worst-case of 4.79:1 only covered bgBase/bgElevated/bgElevated2, not
+      // the hover/active state backgrounds). Now 4.69:1 on bgActive, 5.34:1
+      // on bgHover. Hierarchy gap with textSecondary preserved at ~0.06 L
+      // (would have collapsed to ~0.001 L if textSecondary had stayed at the
+      // old value, hence the tandem lift above).
+      textMuted: '#9ba3a9',
       accentPrimary: '#5fb8cc',
       accentSecondary: '#5b8bbf',
       accentHover: '#4ba3b8',
@@ -203,10 +211,13 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgActive: '#333841',
       textPrimary: '#f0f0f2',
       textSecondary: '#a8a8b0',
-      // Bumped from #6e6e75 (was 3.11:1 on bg-elevated-2, sub-AA). Now 4.93:1
-      // worst-case — clears WCAG AA Normal while preserving the neutral-cool
-      // hue family and staying clearly below textSecondary in the type scale.
-      textMuted: '#8b8b93',
+      // Bumped from #8b8b93 (was 3.48:1 on bgActive, sub-AA — and the prior
+      // worst-case of 4.93:1 only covered bgBase/bgElevated/bgElevated2, not
+      // the hover/active state backgrounds). Now 4.51:1 on bgActive, 5.37:1
+      // on bgHover. Solo bump works here (no tandem textSecondary lift needed
+      // like Midnight) because Platinum's textSecondary L=0.395 leaves
+      // headroom above the bgActive-clear threshold (~0.345).
+      textMuted: '#9fa0a5',
       // Documented exception: Platinum runs a brighter near-white silver accent.
       accentPrimary: '#e0f0ff',
       accentSecondary: '#8291a8',
