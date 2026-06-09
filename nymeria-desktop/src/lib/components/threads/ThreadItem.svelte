@@ -693,8 +693,9 @@
   .pin-indicator {
     display: inline-flex;
     align-items: center;
+    /* Rendered only when isPinned, so it must read as a state signal —
+       not double-muted via opacity over already-muted text. */
     color: var(--text-muted);
-    opacity: 0.6;
   }
 
   .recovered-indicator {

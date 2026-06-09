@@ -302,8 +302,9 @@
     align-items: center;
     justify-content: center;
     min-width: 18px;
+    /* Rendered only when isPinned, so it must read as a state signal —
+       not double-muted via opacity over already-muted text. */
     color: var(--text-muted);
-    opacity: 0.6;
     flex-shrink: 0;
   }
 
