@@ -2872,6 +2872,323 @@ def test_finalize_docker_start_failure_falls_back_to_printing(monkeypatch, tmp_p
     assert "docker compose -f docker-compose.single.yml up -d" in out
 
 
+# --- full Docker stack (Postgres + Redis) -----------------------------------
+
+
+def _env_line(text: str, key: str) -> str | None:
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith(f"{key}="):
+            value = stripped.split("=", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value or None
+    return None
+
+
+def test_docker_stack_spec_selects_per_stack():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    slim = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.SLIM))
+    assert slim.compose_args == ("-f", "docker-compose.single.yml")
+    assert slim.service == "nymeria-single"
+    assert slim.health_url.endswith("/health")
+    assert slim.needs_service_token is False
+
+    full = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.FULL))
+    assert full.compose_args == ("--env-file", ".env.docker")
+    assert full.service == "api"
+    assert full.health_url.endswith("/ready")
+    assert full.needs_service_token is True
+    # The full stack's first boot (build + deep Postgres/Redis check) gets a longer
+    # readiness budget than the single container.
+    assert full.health_timeout > slim.health_timeout
+
+    # No explicit stack defaults to slim (back-compat with the single-container path).
+    assert finalize_mod._docker_stack_spec(WizardState()).service == "nymeria-single"
+
+
+def test_compose_command_str_per_stack():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    slim = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.SLIM))
+    full = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.FULL))
+
+    assert (
+        finalize_mod._compose_command_str(slim, "up", "-d")
+        == "docker compose -f docker-compose.single.yml up -d"
+    )
+    # The full stack carries the DISCORD_BOT_TOKEN guard and uses --env-file.
+    assert (
+        finalize_mod._compose_command_str(full, "up", "-d")
+        == "DISCORD_BOT_TOKEN=disabled docker compose --env-file .env.docker up -d"
+    )
+
+
+def test_finalize_full_stack_writes_minted_db_secrets(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    args = [
+        "--provider", "anthropic", "--model", "claude-test-model",
+        "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+        "--root", str(root), "--non-interactive",
+    ]
+    assert setup_main(args) == 0
+
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    # The compose requires POSTGRES_PASSWORD / REDIS_PASSWORD; both are minted.
+    pg = _env_line(content, "POSTGRES_PASSWORD")
+    rd = _env_line(content, "REDIS_PASSWORD")
+    assert pg and rd and pg != rd
+    assert '"' not in pg and len(pg) >= 16  # unquoted, non-trivial
+    assert "POSTGRES_USER=nymeria" in content
+    assert "POSTGRES_DB=nymeria" in content
+
+    # A reconfigure (--force) must PRESERVE the same DB password: rotating it would
+    # break auth against the already-initialized postgres volume.
+    assert setup_main(args + ["--force"]) == 0
+    content2 = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content2, "POSTGRES_PASSWORD") == pg
+    assert _env_line(content2, "REDIS_PASSWORD") == rd
+
+
+def test_finalize_slim_docker_writes_no_db_secrets(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    # Default (no --docker-stack) is slim; it must not write Postgres/Redis secrets.
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--non-interactive"]
+    ) == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert "POSTGRES_PASSWORD" not in content
+    assert "REDIS_PASSWORD" not in content
+
+
+def test_full_stack_omits_init_picks_but_slim_carries_them(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    picks = ["--web-search", "web_search_tavily"]
+
+    # Full stack: the picks would land in per-service `environment:` blocks that do
+    # not pass NYMERIA_INIT_* through, so they are NOT written and the user is told.
+    full_root = tmp_path / "full"
+    full_root.mkdir()
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(full_root),
+         "--non-interactive", *picks]
+    ) == 0
+    full_content = (full_root / ".env.docker").read_text(encoding="utf-8")
+    full_out = capsys.readouterr().out
+    assert "NYMERIA_INIT_" not in full_content
+    assert "not yet carried into the full stack" in full_out
+
+    # Slim stack with the same picks DOES carry them (env_file injects the whole file).
+    slim_root = tmp_path / "slim"
+    slim_root.mkdir()
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "slim", "--root", str(slim_root),
+         "--non-interactive", *picks]
+    ) == 0
+    slim_content = (slim_root / ".env.docker").read_text(encoding="utf-8")
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in slim_content
+
+
+def test_provision_service_token_skips_when_already_set(monkeypatch, tmp_path):
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    config = tmp_path / ".env.docker"
+    config.write_text("NYMERIA_SERVICE_TOKEN=nym_existing\n", encoding="utf-8")
+    spec = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.FULL))
+
+    def fake_run(*_a, **_k):
+        pytest.fail("must not exec when the service token already exists")
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    console, _buf = _capture_console()
+    finalize_mod._provision_full_stack_service_token(
+        console, spec=spec, root=tmp_path, config_path=config
+    )
+    assert _env_line(config.read_text(encoding="utf-8"), "NYMERIA_SERVICE_TOKEN") == "nym_existing"
+
+
+def test_provision_service_token_falls_back_to_issue_token(monkeypatch, tmp_path):
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    config = tmp_path / ".env.docker"
+    config.write_text("POSTGRES_PASSWORD=x\n", encoding="utf-8")
+    spec = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.FULL))
+    seen: list[str] = []
+
+    class _R:
+        def __init__(self, rc, stdout="", stderr=""):
+            self.returncode = rc
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, *_a, **_k):
+        if "add" in cmd:
+            seen.append("add")
+            return _R(2, stderr="User already exists: bot-service")  # add fails
+        if "issue-token" in cmd:
+            seen.append("issue-token")
+            return _R(0, stdout="  Token: nym_issued_zzz\n")
+        return _R(0)
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    console, _buf = _capture_console()
+    finalize_mod._provision_full_stack_service_token(
+        console, spec=spec, root=tmp_path, config_path=config
+    )
+    assert seen == ["add", "issue-token"]  # add tried first, then the fallback
+    assert _env_line(config.read_text(encoding="utf-8"),
+                     "NYMERIA_SERVICE_TOKEN") == "nym_issued_zzz"
+
+
+def test_provision_service_token_warns_when_all_fail(monkeypatch, tmp_path):
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    config = tmp_path / ".env.docker"
+    config.write_text("POSTGRES_PASSWORD=x\n", encoding="utf-8")
+    spec = finalize_mod._docker_stack_spec(WizardState(docker_stack=DockerStack.FULL))
+
+    class _R:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *_a, **_k: _R())
+    console, buf = _capture_console()
+    finalize_mod._provision_full_stack_service_token(
+        console, spec=spec, root=tmp_path, config_path=config
+    )
+    assert "Could not provision the service token" in buf.getvalue()
+    # No token line is written on failure.
+    assert _env_line(config.read_text(encoding="utf-8"), "NYMERIA_SERVICE_TOKEN") is None
+
+
+def test_finalize_full_stack_default_prints_complete_sequence(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    def boom(*_a, **_k):
+        pytest.fail("the default handoff must not launch a process")
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", boom)
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full",
+         "--root", str(root), "--non-interactive"]
+    ) == 0
+    out = capsys.readouterr().out
+
+    # The full-stack print path lays out the whole sequence: bring up the API,
+    # read the bootstrap token, mint the service token, then start the rest.
+    assert (
+        "DISCORD_BOT_TOKEN=disabled docker compose --env-file .env.docker up -d api"
+        in out
+    )
+    assert "exec api cat /data/BOOTSTRAP_TOKEN.txt" in out
+    assert "users add bot-service@localhost --role admin --id bot-service" in out
+
+
+def test_finalize_starts_full_stack_orchestration_when_opted_in(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    boot_token = "nym_bootstrap_aaa111"
+    svc_token = "nym_service_bbb222"
+    calls: list[tuple[list[str], object, dict]] = []
+
+    class _Result:
+        def __init__(self, stdout=""):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs.get("cwd"), kwargs.get("env") or {}))
+        if "cat" in cmd:
+            return _Result(stdout=f"Token: {boot_token}\n")
+        if "users" in cmd and "add" in cmd:
+            return _Result(stdout=f"Issued token: {svc_token}\n")
+        return _Result()
+
+    health: list[dict] = []
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        finalize_mod, "wait_for_health", lambda **kw: bool(health.append(kw)) or True
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+
+    cmds = [cmd for cmd, _cwd, _env in calls]
+    # 1) Bring up the database, cache, and API first (so the admin exists).
+    assert cmds[0] == ["docker", "compose", "--env-file", ".env.docker", "up", "-d", "api"]
+    assert calls[0][2].get("DISCORD_BOT_TOKEN") == "disabled"  # env guard threaded
+    # 2) Health polled on the deep /ready endpoint.
+    assert health and str(health[0].get("url", "")).endswith("/ready")
+    # 3) Bootstrap token surfaced from the api container.
+    assert any("cat" in c for c in cmds)
+    assert boot_token in out
+    # 4) Service token minted and persisted to .env.docker.
+    assert any("users" in c and "add" in c for c in cmds)
+    assert _env_line((root / ".env.docker").read_text(encoding="utf-8"),
+                     "NYMERIA_SERVICE_TOKEN") == svc_token
+    # 5) The remaining services start with a final `up -d` (no api target).
+    assert ["docker", "compose", "--env-file", ".env.docker", "up", "-d"] in cmds
+
+
+def test_finalize_full_stack_service_token_preserved_on_reconfigure(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / ".env.docker").write_text(
+        "NYMERIA_SERVICE_TOKEN=nym_existing_token\nPOSTGRES_PASSWORD=keepme\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, *args, **kwargs):
+        if "users" in cmd and "add" in cmd:
+            pytest.fail("must not re-mint a service token that already exists")
+        class _R:
+            returncode = 0
+            stdout = "Token: nym_bootstrap_xyz\n"
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(root),
+         "--start", "--force", "--non-interactive"]
+    )
+    assert rc == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_SERVICE_TOKEN") == "nym_existing_token"
+    # The preserved POSTGRES_PASSWORD is also kept (not rotated).
+    assert _env_line(content, "POSTGRES_PASSWORD") == "keepme"
+
+
 def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():
     from nymeria.onboarding import NextAction
     from nymeria.setup.app import SetupWizardApp
