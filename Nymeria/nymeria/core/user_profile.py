@@ -438,14 +438,17 @@ class UserProfileManager:
                 logger.debug(f"Loaded profile for user: {user_id}")
                 profile = self._migrate_rag_enabled(profile)
                 profile = self._migrate_default_global_skills(profile)
+                profile = self._migrate_default_thread_tools(profile)
                 return profile
             except Exception as e:
                 logger.error(f"Failed to load profile for {user_id}: {e}")
                 # Return new profile on error
-                return self._migrate_default_global_skills(UserProfile(user_id=user_id))
+                fresh = self._migrate_default_global_skills(UserProfile(user_id=user_id))
+                return self._migrate_default_thread_tools(fresh)
         else:
             logger.debug(f"Creating new profile for user: {user_id}")
-            return self._migrate_default_global_skills(UserProfile(user_id=user_id))
+            fresh = self._migrate_default_global_skills(UserProfile(user_id=user_id))
+            return self._migrate_default_thread_tools(fresh)
 
     def _migrate_rag_enabled(self, profile: UserProfile) -> UserProfile:
         """One-time migration: ensure existing profiles get rag_enabled=True.
@@ -473,6 +476,80 @@ class UserProfileManager:
                 logger.warning(f"Failed to persist rag migration for {profile.user_id}: {e}")
         return profile
 
+    def _migrate_default_thread_tools(self, profile: UserProfile) -> UserProfile:
+        """One-time seed of the Docker bootstrap admin's `default_thread_tools`.
+
+        The host wizard cannot write the container's `/data` volume, so for the
+        Docker single-container shape it carried the bootstrap admin's picked default
+        tools in `.env.docker` (contract in `config/init_seed_env.py`). This applies
+        them the first time that profile is created inside the container, reaching
+        parity with a local install where `finalize.seed_bootstrap_profile` wrote them
+        host-side. It runs on the same lazy `get_profile` path that first materializes
+        the profile, so a genuine first boot adopts them (the agent's
+        `_migrate_tool_preferences` runs before the profile exists and so cannot).
+
+        Scoped to the bootstrap admin and one-shot: only fires while
+        `default_thread_tools` is unset, so a restart, a recreate against the same
+        volume, or a later Settings edit never re-applies. Every other profile (and a
+        no-pick install) leaves `default_thread_tools` unset here for the agent's
+        core-seed migration / the `SEED_TOOLS` fallback to handle unchanged.
+        Best-effort: the env reader never raises; `migrate_tool_names` applies the
+        `LEGACY_TOOL_RENAMES` + order-preserving dedup, so a hand-edited var cannot
+        persist a stale alias or duplicate (the wizard-written value is already clean).
+        """
+        if profile.tool_preferences.default_thread_tools is not None:
+            return profile
+
+        from .accounts import BOOTSTRAP_USER_ID
+        from ..config.init_seed_env import init_default_thread_tools_from_env
+
+        if profile.user_id != BOOTSTRAP_USER_ID:
+            return profile
+        init_picks = init_default_thread_tools_from_env()
+        if not init_picks:
+            return profile
+
+        lock = self._get_lock(profile.user_id)
+        with lock:
+            if profile.tool_preferences.default_thread_tools is not None:
+                return profile
+            profile.tool_preferences.default_thread_tools = migrate_tool_names(init_picks)
+            profile.updated_at = utc_now()
+            try:
+                self.save_profile(profile)
+                logger.info(
+                    "Seeded default_thread_tools for bootstrap admin %s from init "
+                    "picks (%d tools)",
+                    profile.user_id,
+                    len(profile.tool_preferences.default_thread_tools),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to persist init default_thread_tools for %s: %s",
+                    profile.user_id,
+                    e,
+                )
+        return profile
+
+    def _default_global_skills_for(self, user_id: str) -> List[str]:
+        """The default ``enabled_global_skills`` seeded for a freshly migrated profile.
+
+        Normally ``DEFAULT_GLOBAL_SKILLS`` (self-improve plus the focused kits). The
+        one exception is the bootstrap admin on a Docker single-container first boot:
+        the host wizard cannot seed the container's volume, so it carried the user's
+        init picks in `.env.docker`; when present they win here, reaching parity with
+        a local install. Other users (and any no-pick install) get the plain default
+        set. Best-effort: the env reader never raises. See `config/init_seed_env.py`.
+        """
+        from .accounts import BOOTSTRAP_USER_ID
+        from ..config.init_seed_env import init_enabled_global_skills_from_env
+
+        if user_id == BOOTSTRAP_USER_ID:
+            init_picks = init_enabled_global_skills_from_env()
+            if init_picks:
+                return init_picks
+        return DEFAULT_GLOBAL_SKILLS
+
     def _migrate_default_global_skills(self, profile: UserProfile) -> UserProfile:
         """One-time migration: enable the bundled default capability kits.
 
@@ -490,8 +567,9 @@ class UserProfileManager:
         with lock:
             if profile.global_skill_defaults_migrated:
                 return profile
+            defaults = self._default_global_skills_for(profile.user_id)
             changed = False
-            for skill_name in DEFAULT_GLOBAL_SKILLS:
+            for skill_name in defaults:
                 if skill_name not in profile.enabled_global_skills:
                     profile.enabled_global_skills.append(skill_name)
                     changed = True
@@ -503,7 +581,7 @@ class UserProfileManager:
                 logger.info(
                     "Migrated profile %s: default global skills=%s",
                     profile.user_id,
-                    DEFAULT_GLOBAL_SKILLS,
+                    defaults,
                 )
             except Exception as e:
                 logger.warning(

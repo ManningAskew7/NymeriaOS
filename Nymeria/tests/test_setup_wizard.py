@@ -751,6 +751,107 @@ def test_init_does_not_clobber_existing_profile(monkeypatch, tmp_path):
     assert after["tool_preferences"]["default_thread_tools"] == ["bash_execute"]
 
 
+def test_docker_shape_carries_init_picks_in_env_docker(monkeypatch, tmp_path):
+    """Docker cannot seed the container's volume, so the picks ride in `.env.docker`.
+
+    The host writes no profile.json for the Docker shape (the container mints its
+    own); instead the bootstrap admin's default_thread_tools and
+    enabled_global_skills are carried as `:`-joined, UNQUOTED env vars the container
+    reads on first boot.
+    """
+    from nymeria.config.init_seed_env import (
+        INIT_DEFAULT_THREAD_TOOLS_ENV,
+        INIT_ENABLED_GLOBAL_SKILLS_ENV,
+    )
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+
+    rc = setup_main(
+        [
+            "--hosting", "docker",
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+            "--image-gen", "image_gen_gemini", "--gemini-api-key", "g",
+            "--skill-kit", "tool-management", "--skill-kit", "mcp-management",
+            "--root", str(root), "--non-interactive",
+        ]
+    )
+    assert rc == 0
+
+    # Docker writes `.env.docker`, not config.env, and seeds no host profile.
+    assert not (root / "config.env").exists()
+    assert not (root / "data" / "users" / "default" / "profile.json").exists()
+    env_docker = (root / ".env.docker").read_text(encoding="utf-8")
+
+    lines = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in env_docker.splitlines()
+        if "=" in line and not line.startswith("#")
+    }
+    tools_value = lines[INIT_DEFAULT_THREAD_TOOLS_ENV]
+    assert '"' not in tools_value  # unquoted: Docker env_file quoting never exercised
+    tools = tools_value.split(":")
+    # Picked optional backends ride alongside the always-on core seed.
+    assert "web_search_tavily" in tools and "image_gen_gemini" in tools
+    assert "bash_execute" in tools and "memory_read" in tools
+    # Skills: self-improve plus exactly the picked kits, order preserved.
+    assert lines[INIT_ENABLED_GLOBAL_SKILLS_ENV].split(":") == [
+        "self-improve",
+        "tool-management",
+        "mcp-management",
+    ]
+
+
+def test_docker_shape_no_picks_writes_no_init_seed_vars(monkeypatch, tmp_path):
+    """No optional picks -> the carrier vars are absent, so the container's own
+    core-seed and default-skill migrations run unchanged (no new noise)."""
+    from nymeria.config.init_seed_env import (
+        INIT_DEFAULT_THREAD_TOOLS_ENV,
+        INIT_ENABLED_GLOBAL_SKILLS_ENV,
+    )
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+
+    rc = setup_main(
+        [
+            "--hosting", "docker",
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--root", str(root), "--non-interactive",
+        ]
+    )
+    assert rc == 0
+    env_docker = (root / ".env.docker").read_text(encoding="utf-8")
+    assert INIT_DEFAULT_THREAD_TOOLS_ENV not in env_docker
+    assert INIT_ENABLED_GLOBAL_SKILLS_ENV not in env_docker
+
+
+def test_local_shape_writes_no_init_seed_vars(monkeypatch, tmp_path):
+    """The carrier vars are Docker-only: local hosting seeds the profile directly,
+    so config.env must never carry them even when picks are made."""
+    from nymeria.config.init_seed_env import (
+        INIT_DEFAULT_THREAD_TOOLS_ENV,
+        INIT_ENABLED_GLOBAL_SKILLS_ENV,
+    )
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--hosting", "local",
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+            "--root", str(root), "--non-interactive",
+        ]
+    )
+    assert rc == 0
+    config = (root / "config.env").read_text(encoding="utf-8")
+    assert INIT_DEFAULT_THREAD_TOOLS_ENV not in config
+    assert INIT_ENABLED_GLOBAL_SKILLS_ENV not in config
+
+
 def test_noninteractive_records_deployment_choices_without_dead_config(
     monkeypatch, tmp_path, capsys
 ):
