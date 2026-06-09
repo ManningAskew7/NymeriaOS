@@ -166,11 +166,20 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       // typography (timestamps, meta, hint copy) stays comfortably legible.
       textSecondary: '#3d3830',
       textMuted: '#544c3f',
-      // Muted to ~47% HSL saturation to match the calmer-accent design.
-      // Untouched per user request.
-      accentPrimary: '#2d7d75',
+      // Teal accent. Previously #2d7d75 (4.07:1 as text on bgBase, sub-AA;
+      // 3.69:1 on bgElevated2). Darkened just enough to clear 4.5:1 as text
+      // on every Light bg, while keeping the same teal hue family (G ~= B
+      // with both >> R, characteristic blue-leaning teal). Hover stays in the
+      // lift-on-hover convention -- accentHover is perceptibly lighter than
+      // accentPrimary, but darkened from #3a988e (was textOnAccent 3.34:1,
+      // sub-AA) to give textOnAccent #fdfbf2 a clear 4.55:1 against it.
+      // Worst-case ratios:
+      //   accentPrimary #2d6b69:  text on bgElevated2 4.65:1
+      //                           textOnAccent on it  5.93:1
+      //   accentHover   #3a7e7c:  textOnAccent on it  4.55:1
+      accentPrimary: '#2d6b69',
       accentSecondary: '#b07a3a',
-      accentHover: '#3a988e',
+      accentHover: '#3a7e7c',
       // Off-white for text/icons on the teal/amber solid fills.
       textOnAccent: '#fdfbf2',
       // Semantic colors. The previous tier (#2a8f4c / #bc8715 / #cc3333 /
