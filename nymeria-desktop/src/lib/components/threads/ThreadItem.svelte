@@ -169,6 +169,7 @@
   onfocusout={handleFocusOut}
   role="button"
   tabindex="0"
+  aria-current={isActive ? 'page' : undefined}
 >
   <div class="thread-icon">
     {#if thread.platform === 'discord'}

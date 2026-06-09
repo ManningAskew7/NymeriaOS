@@ -947,6 +947,7 @@
           class="nav-item"
           class:active={activeTab === 'account'}
           onclick={() => (activeTab = 'account')}
+          aria-current={activeTab === 'account' ? 'page' : undefined}
           type="button"
         >
           <Icon name="user" size={14} />
@@ -956,6 +957,7 @@
           class="nav-item"
           class:active={activeTab === 'connection'}
           onclick={() => (activeTab = 'connection')}
+          aria-current={activeTab === 'connection' ? 'page' : undefined}
           type="button"
         >
           <Icon name="server" size={14} />
@@ -969,6 +971,7 @@
           class="nav-item"
           class:active={activeTab === 'appearance'}
           onclick={() => (activeTab = 'appearance')}
+          aria-current={activeTab === 'appearance' ? 'page' : undefined}
           type="button"
         >
           <Icon name="settings" size={14} />
@@ -978,6 +981,7 @@
           class="nav-item"
           class:active={activeTab === 'notifications'}
           onclick={() => (activeTab = 'notifications')}
+          aria-current={activeTab === 'notifications' ? 'page' : undefined}
           disabled={!serverSettings}
           type="button"
         >
@@ -988,6 +992,7 @@
           class="nav-item"
           class:active={activeTab === 'memory'}
           onclick={() => (activeTab = 'memory')}
+          aria-current={activeTab === 'memory' ? 'page' : undefined}
           type="button"
         >
           <Icon name="pin" size={14} />
@@ -1001,6 +1006,7 @@
           class="nav-item"
           class:active={activeTab === 'tools'}
           onclick={() => (activeTab = 'tools')}
+          aria-current={activeTab === 'tools' ? 'page' : undefined}
           disabled={!serverSettings}
           type="button"
         >
@@ -1011,6 +1017,7 @@
           class="nav-item"
           class:active={activeTab === 'rag'}
           onclick={() => (activeTab = 'rag')}
+          aria-current={activeTab === 'rag' ? 'page' : undefined}
           type="button"
         >
           <Icon name="bolt" size={14} />
@@ -1020,6 +1027,7 @@
           class="nav-item"
           class:active={activeTab === 'mcp'}
           onclick={() => (activeTab = 'mcp')}
+          aria-current={activeTab === 'mcp' ? 'page' : undefined}
           disabled={!serverSettings}
           type="button"
         >
@@ -1030,6 +1038,7 @@
           class="nav-item"
           class:active={activeTab === 'skills'}
           onclick={() => (activeTab = 'skills')}
+          aria-current={activeTab === 'skills' ? 'page' : undefined}
           disabled={!serverSettings}
           type="button"
         >
@@ -1040,6 +1049,7 @@
           class="nav-item"
           class:active={activeTab === 'credentials'}
           onclick={() => (activeTab = 'credentials')}
+          aria-current={activeTab === 'credentials' ? 'page' : undefined}
           disabled={!serverSettings}
           type="button"
         >
@@ -1055,6 +1065,7 @@
             class="nav-item"
             class:active={activeTab === 'llm'}
             onclick={() => (activeTab = 'llm')}
+            aria-current={activeTab === 'llm' ? 'page' : undefined}
             disabled={!serverSettings}
             type="button"
           >
@@ -1065,6 +1076,7 @@
             class="nav-item"
             class:active={activeTab === 'agent'}
             onclick={() => (activeTab = 'agent')}
+            aria-current={activeTab === 'agent' ? 'page' : undefined}
             disabled={!serverSettings}
             type="button"
           >
@@ -1075,6 +1087,7 @@
             class="nav-item"
             class:active={activeTab === 'persona'}
             onclick={() => (activeTab = 'persona')}
+            aria-current={activeTab === 'persona' ? 'page' : undefined}
             disabled={!serverSettings}
             type="button"
           >
@@ -1085,6 +1098,7 @@
             class="nav-item"
             class:active={activeTab === 'dream'}
             onclick={() => (activeTab = 'dream')}
+            aria-current={activeTab === 'dream' ? 'page' : undefined}
             disabled={!serverSettings}
             type="button"
           >
@@ -1095,6 +1109,7 @@
             class="nav-item"
             class:active={activeTab === 'voice'}
             onclick={() => (activeTab = 'voice')}
+            aria-current={activeTab === 'voice' ? 'page' : undefined}
             disabled={!serverSettings}
             type="button"
           >
@@ -1106,6 +1121,7 @@
               class="nav-item"
               class:active={activeTab === 'proxy'}
               onclick={() => (activeTab = 'proxy')}
+              aria-current={activeTab === 'proxy' ? 'page' : undefined}
               type="button"
             >
               <Icon name="server" size={14} />
@@ -1116,6 +1132,7 @@
             class="nav-item"
             class:active={activeTab === 'users'}
             onclick={() => (activeTab = 'users')}
+            aria-current={activeTab === 'users' ? 'page' : undefined}
             type="button"
           >
             <Icon name="users" size={14} />

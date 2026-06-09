@@ -678,6 +678,8 @@
         class:active={threadsStore.organizationMode === 'folders'}
         type="button"
         title="Show folders"
+        aria-label="Show folders"
+        aria-pressed={threadsStore.organizationMode === 'folders'}
         onclick={() => threadsStore.setOrganizationMode('folders')}
       >
         <Icon name="folder" size={14} />
@@ -687,6 +689,8 @@
         class:active={threadsStore.organizationMode === 'teams'}
         type="button"
         title="Show teams"
+        aria-label="Show teams"
+        aria-pressed={threadsStore.organizationMode === 'teams'}
         onclick={() => threadsStore.setOrganizationMode('teams')}
       >
         <Icon name="users" size={14} />
@@ -720,6 +724,7 @@
           class="sort-option"
           class:active={threadsStore.sortMode === opt.value}
           type="button"
+          aria-current={threadsStore.sortMode === opt.value ? 'true' : undefined}
           onclick={() => handleSortChange(opt.value)}
         >
           {opt.label}
