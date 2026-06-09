@@ -165,10 +165,18 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       accentHover: '#3a988e',
       // Off-white for text/icons on the teal/amber solid fills.
       textOnAccent: '#fdfbf2',
-      success: '#16a34a',
-      warning: '#ca8a04',
-      error: '#dc2626',
-      info: '#2563eb',
+      // Semantic colors muted from Tailwind -600 (which assume bright-white bg)
+      // toward the calm-paper character. accentPrimary sits at ~47% saturation;
+      // semantics land between calm (47%) and Tailwind's alarm tier (75-95%) so
+      // they still read as state indicators without shouting on warm paper.
+      //   success: #16a34a (76% sat) -> #2a8f4c (55%) — calmer green
+      //   warning: #ca8a04 (96% sat) -> #bc8715 (80%) — less neon amber
+      //   error:   #dc2626 (72% sat) -> #cc3333 (60%) — softer red
+      //   info:    #2563eb (83% sat) -> #336bcc (60%) — calmer blue
+      success: '#2a8f4c',
+      warning: '#bc8715',
+      error: '#cc3333',
+      info: '#336bcc',
       // Bubbles tuned to the new palette so they sit on the page coherently
       // instead of looking pasted on.
       bubbleUser: '#c9e3df',
