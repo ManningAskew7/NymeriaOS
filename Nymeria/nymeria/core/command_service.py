@@ -1224,111 +1224,19 @@ class CommandBackendClient:
 
     async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
         self._require_admin()
-        from ..api.routers.settings import (
-            _clear_settings_cache,
-            _env_mapping,
-            _restart_required_keys,
-            _sync_process_env,
-        )
+        from ..api.routers.settings import apply_server_settings_update
         from ..api.schemas.settings import ServerSettingsUpdate
-        from ..config.settings import get_env_write_path
 
-        settings = self._settings()
+        # One canonical applier shared with PATCH /settings: atomic 0600 quoted env
+        # write, os.environ sync, settings-cache clear, agent re-bind, graph rebuild,
+        # and restart reporting all live there so this path cannot drift from the route.
         updates = ServerSettingsUpdate(**kwargs)
-        updates_dict = {
-            key: value for key, value in updates.model_dump().items() if value is not None
-        }
-        if not updates_dict:
-            return {"message": "No updates provided", "restart_required": False}
-
-        env_path = get_env_write_path(settings.project_root)
-        existing_lines = (
-            env_path.read_text(encoding="utf-8").splitlines()
-            if env_path.exists()
-            else []
+        return apply_server_settings_update(
+            updates,
+            settings=self._settings(),
+            agent=self.agent,
+            get_settings_fn=self.settings_fn,
         )
-        env_mapping = _env_mapping()
-        updated_vars = set()
-        new_lines = []
-        for line in existing_lines:
-            updated = False
-            for setting_name, env_var in env_mapping.items():
-                if setting_name in updates_dict and line.startswith(f"{env_var}="):
-                    value = updates_dict[setting_name]
-                    if isinstance(value, bool):
-                        value = str(value).lower()
-                    new_lines.append(f"{env_var}={value}")
-                    updated_vars.add(setting_name)
-                    updated = True
-                    break
-            if not updated:
-                new_lines.append(line)
-
-        for setting_name, value in updates_dict.items():
-            if setting_name not in updated_vars:
-                env_var = env_mapping.get(setting_name)
-                if env_var:
-                    if isinstance(value, bool):
-                        value = str(value).lower()
-                    new_lines.append(f"{env_var}={value}")
-
-        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        _sync_process_env(new_lines, set(env_mapping.values()))
-        _clear_settings_cache(self.settings_fn)
-        new_settings = self.settings_fn()
-        self.agent.settings = new_settings
-
-        llm_fields = {
-            "llm_provider",
-            "llm_model",
-            "llm_fast_model",
-            "llm_fallback_models",
-            "llm_temperature",
-            "llm_max_tokens",
-            "llm_top_p",
-            "llm_top_k",
-            "llm_frequency_penalty",
-            "llm_presence_penalty",
-            "llm_reasoning_effort",
-            "llm_extended_thinking",
-            "llm_use_model_defaults",
-            "llm_base_url",
-            "llm_context_length",
-            "llm_ollama_num_ctx",
-            "llm_provider_route",
-            "openai_api_mode",
-            "llm_stream_max_retries",
-            "llm_stream_retry_initial_delay",
-            "llm_stream_retry_max_delay",
-        }
-        llm_credential_fields = {
-            "anthropic_api_key",
-            "anthropic_direct_api_key",
-            "openai_api_key",
-            "openrouter_api_key",
-        }
-        graph_fields = llm_fields | {"tool_output_max_chars"} | llm_credential_fields
-        if graph_fields & set(updates_dict):
-            with self.agent._graph_cache_lock:
-                self.agent._user_graphs.clear()
-                self.agent._async_user_graphs.clear()
-            self.agent._default_graph = self.agent._build_graph_with_prompt(
-                self.agent._base_system_prompt
-            )
-            self.agent._default_async_graph = self.agent._build_async_graph_with_prompt(
-                self.agent._base_system_prompt
-            )
-
-        needs_restart = bool(_restart_required_keys() & set(updates_dict))
-        return {
-            "message": "Settings updated and applied" + (
-                " (some changes require /restart api to take effect)"
-                if needs_restart
-                else ""
-            ),
-            "updated": list(updates_dict.keys()),
-            "restart_required": needs_restart,
-        }
 
     async def update_thread_config(
         self,

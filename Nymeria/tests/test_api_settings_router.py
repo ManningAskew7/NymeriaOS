@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from dataclasses import dataclass, replace
@@ -1216,3 +1217,87 @@ def test_dream_prompts_require_admin(monkeypatch, tmp_path):
 
     resp = client.get("/settings/dream-prompts", headers=_auth(user_token))
     assert resp.status_code == 403
+
+
+def test_patch_settings_s3_credential_writes_aws_env_var(tmp_path: Path, monkeypatch):
+    # The S3 fields map to AWS SDK names (the override table), and the Settings model
+    # now reads them back from the same names. End-to-end: PATCHing s3_access_key_id
+    # must land as AWS_ACCESS_KEY_ID in the env file, not S3_ACCESS_KEY_ID.
+    # setenv (not delenv) so the os.environ write the applier makes is reverted on
+    # teardown and cannot leak into other tests that load real Settings.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "")
+    monkeypatch.delenv("S3_ACCESS_KEY_ID", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("LLM_MODEL=keep\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"s3_access_key_id": "AKIA-test-123"}
+    )
+
+    assert response.status_code == 200
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "AWS_ACCESS_KEY_ID=AKIA-test-123" in env_text
+    assert "S3_ACCESS_KEY_ID=" not in env_text
+    assert "LLM_MODEL=keep" in env_text
+
+
+def _backend_client(tmp_path: Path, settings: FakeSettings | None = None):
+    """A CommandBackendClient (the in-process slash-command path) wired to fakes."""
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+
+    settings = settings or FakeSettings(project_root=tmp_path, data_dir=tmp_path)
+    provider = FakeSettingsProvider(settings)
+    agent = FakeAgent(tmp_path)
+    user = _CommandBackendUser(id="admin", role="admin")
+    return CommandBackendClient(agent, user=user, settings_fn=provider), agent
+
+
+def test_command_backend_update_settings_writes_atomic_quoted_0600(
+    tmp_path: Path, monkeypatch
+):
+    # The slash-command settings path (CommandBackendClient.update_settings) now shares
+    # the PATCH applier, so it gains the Phase-1 guarantees its old inline write_text()
+    # lacked: atomic 0600, quoted special-char values, untouched lines and the secrets
+    # key preserved. setenv (not delenv) registers LLM_MODEL for teardown so the
+    # applier's os.environ write is reverted and cannot leak into other tests.
+    monkeypatch.setenv("LLM_MODEL", "old")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "# keep me\n"
+        "NYMERIA_SECRETS_KEY=k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=\n"
+        "LLM_MODEL=old\n",
+        encoding="utf-8",
+    )
+    backend, _agent = _backend_client(tmp_path)
+
+    result = asyncio.run(backend.update_settings(llm_model="model with space"))
+
+    assert result["restart_required"] is False
+    assert result["updated"] == ["llm_model"]
+    env_text = env_path.read_text(encoding="utf-8")
+    assert 'LLM_MODEL="model with space"' in env_text
+    assert "LLM_MODEL=old" not in env_text
+    assert "# keep me" in env_text
+    assert "NYMERIA_SECRETS_KEY=k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=" in env_text
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_command_backend_update_settings_reports_restart_and_rebuilds_graph(
+    tmp_path: Path, monkeypatch
+):
+    # A restart-required key (embedding_provider) is flagged; an LLM field rebuilds the
+    # agent graph, identical to the PATCH route (they share one applier now). setenv
+    # registers both written vars for teardown so the applier's os.environ writes
+    # (EMBEDDING_PROVIDER=cohere, LLM_MODEL=m2) cannot leak into Settings-loading tests.
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL", "m1")
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=openai\n", encoding="utf-8")
+    backend, agent = _backend_client(tmp_path)
+
+    result = asyncio.run(
+        backend.update_settings(embedding_provider="cohere", llm_model="m2")
+    )
+
+    assert result["restart_required"] is True
+    assert agent.graph_rebuilds == ["sync", "async"]
