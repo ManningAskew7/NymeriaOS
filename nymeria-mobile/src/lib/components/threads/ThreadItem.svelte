@@ -116,6 +116,7 @@
   class="thread-item"
   class:active={isActive}
   class:pinned={thread.pinned}
+  aria-current={isActive ? 'page' : undefined}
   onclick={() => onSelect(thread.id)}
   oncontextmenu={handleContextMenu}
 >
