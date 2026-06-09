@@ -112,7 +112,10 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgActive: '#32373d',
       textPrimary: '#e8eaed',
       textSecondary: '#9aa0a6',
-      textMuted: '#6b7280',
+      // Bumped from #6b7280 (was 3.12:1 on bg-elevated-2, sub-AA). Now 4.79:1
+      // worst-case — clears WCAG AA Normal while preserving the blue-gray hue
+      // family and staying clearly below textSecondary in the type scale.
+      textMuted: '#888d96',
       accentPrimary: '#5fb8cc',
       accentSecondary: '#5b8bbf',
       accentHover: '#4ba3b8',
@@ -122,7 +125,11 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       warning: '#fbbf24',
       error: '#f87171',
       info: '#818cf8',
-      bubbleUser: '#1e3a5f',
+      // Calm cyan-tinted slate so the user-action surface pairs with the accent
+      // (the same "bgBase + accent direction" pattern Light uses with #c9e3df).
+      // Old #1e3a5f was a saturated iMessage-style navy that read disjoint
+      // against the calm cyan accent.
+      bubbleUser: '#1a3036',
       bubbleAi: '#1a1d21',
       bubbleTool: '#1a1f2e',
       // Hairline borders (steps 6/7). Surface separation comes from the
@@ -188,7 +195,10 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgActive: '#333841',
       textPrimary: '#f0f0f2',
       textSecondary: '#a8a8b0',
-      textMuted: '#6e6e75',
+      // Bumped from #6e6e75 (was 3.11:1 on bg-elevated-2, sub-AA). Now 4.93:1
+      // worst-case — clears WCAG AA Normal while preserving the neutral-cool
+      // hue family and staying clearly below textSecondary in the type scale.
+      textMuted: '#8b8b93',
       // Documented exception: Platinum runs a brighter near-white silver accent.
       accentPrimary: '#e0f0ff',
       accentSecondary: '#8291a8',
