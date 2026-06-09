@@ -51,6 +51,18 @@
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) onClose();
   }
+
+  // §6 a11y — Escape closes the bottom-sheet modal while open. Window
+  // listener (vs onkeydown on the backdrop) so the handler fires no
+  // matter where focus currently sits inside the sheet.
+  $effect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
 </script>
 
 {#if isOpen}
