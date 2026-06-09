@@ -143,6 +143,11 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       // Hairline borders (steps 6/7). Surface separation comes from the
       // elevation ladder above, not from heavy lines — these sit just enough
       // above the panel bg (~rgb(25,28,32)) to frame cleanly without shouting.
+      // Intentional WCAG SC 1.4.11 non-compliance: a WCAG-compliant
+      // borderDefault (3:1 on every surface) lands at ~#707275, which read
+      // as too heavy in the running app. The hairline aesthetic is preserved
+      // and the failure is documented; the focus ring (--border-focus =
+      // accentPrimary) gives high contrast on interaction.
       borderSubtle: '#24282d',
       borderDefault: '#343a40',
     },
@@ -204,7 +209,10 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bubbleAi: '#fdfbf2',
       bubbleTool: '#efe3c4',
       // Borders given a touch more warmth and visibility so card outlines
-      // actually delineate the surfaces.
+      // actually delineate the surfaces. Same intentional WCAG SC 1.4.11
+      // non-compliance as Midnight: the 3:1-compliant value lands at ~#8a7871
+      // (a brown-mauve) which felt too heavy on the warm paper, so the
+      // hairline aesthetic is preserved here too.
       borderSubtle: '#d4ccb1',
       borderDefault: '#ab9f81',
     },
@@ -245,6 +253,10 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bubbleAi: '#15171c',
       bubbleTool: '#1c2027',
       borderSubtle: '#232831',
+      // Same intentional WCAG SC 1.4.11 non-compliance as Midnight: the
+      // 3:1-compliant Platinum borderDefault lands at ~#6c6d70 (a clearly
+      // visible neutral gray) which felt too heavy in the running app, so
+      // the hairline aesthetic is preserved here too.
       borderDefault: '#333a44',
     },
   },
