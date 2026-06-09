@@ -1,10 +1,10 @@
-"""Deployment-shaping steps: image capability tier, security profile, remote access.
+"""Deployment-shaping steps: Docker stack, security profile, remote access.
 
-These mirror the high-level decisions in the setup-wizard plan that are not yet
-fully automated. The framework is real (single-select, stored on `WizardState`,
-shown in review); the downstream effect is a placeholder until image generation,
-the approval gate, and remote-access automation land. Each choice carries a
-sensible default so a quick run can Enter straight through.
+These mirror the high-level decisions in the setup-wizard plan. The Docker-stack
+choice (slim vs full) is wired through finalize; security profile and remote
+access are framework-real placeholders (single-select, stored on `WizardState`,
+shown in review) until the approval gate and remote-access automation land. Each
+choice carries a sensible default so a quick run can Enter straight through.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ from __future__ import annotations
 from typing import Mapping
 
 from ...onboarding import (
+    DOCKER_STACK_CHOICES,
+    DOCKER_STACK_ORDER,
     EXTERNAL_ACCESS_CHOICES,
     EXTERNAL_ACCESS_ORDER,
-    IMAGE_TIER_CHOICES,
-    IMAGE_TIER_ORDER,
     SECURITY_PROFILE_CHOICES,
     SECURITY_PROFILE_ORDER,
+    DockerStack,
     ExternalAccess,
     HostingOption,
-    ImageTier,
     OnboardingChoice,
     SecurityProfile,
 )
@@ -38,26 +38,31 @@ def _choices(order: tuple, table: Mapping) -> list[Choice]:
     return out
 
 
-def make_image_tier_step() -> Step:
-    """Container image capability tier. Only applies to container hosts."""
+def make_docker_stack_step() -> Step:
+    """Docker runtime shape: slim single container vs full Postgres+Redis stack.
 
-    def get_initial(state: WizardState) -> ImageTier:
-        return state.image_tier or ImageTier.MINIMAL
+    Only applies to Docker hosts. Both shapes run the same agent on the same lean
+    image; this is the Axis-1 topology choice (see onboarding.DockerStack).
+    """
 
-    def store(state: WizardState, value: ImageTier) -> None:
-        state.image_tier = value
+    def get_initial(state: WizardState) -> DockerStack:
+        return state.docker_stack or DockerStack.SLIM
+
+    def store(state: WizardState, value: DockerStack) -> None:
+        state.docker_stack = value
 
     def applies(state: WizardState) -> bool:
         return state.hosting is HostingOption.DOCKER
 
     return single_select_step(
-        step_id="image_tier",
-        title="Container image capability tier",
+        step_id="docker_stack",
+        title="Docker stack",
         note=(
-            "Which binaries to bake into the container image. Placeholder: image "
-            "building is not wired into setup yet, so this is recorded only."
+            "Slim runs one container on SQLite (the containerized local install). "
+            "Full runs the Postgres + Redis stack for multi-user support and "
+            "scaling. Same features either way."
         ),
-        choices=_choices(IMAGE_TIER_ORDER, IMAGE_TIER_CHOICES),
+        choices=_choices(DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES),
         get_initial=get_initial,
         store=store,
         applies=applies,
@@ -109,7 +114,7 @@ def make_external_access_step() -> Step:
 
 
 __all__ = [
-    "make_image_tier_step",
+    "make_docker_stack_step",
     "make_security_profile_step",
     "make_external_access_step",
 ]

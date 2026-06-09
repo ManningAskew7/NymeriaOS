@@ -20,12 +20,15 @@ Defaults chosen for zero extra auth or cost:
   truly zero-config. The user adds one later in settings.
 - Skill kits: left unset, which the seeding fallback resolves to all bundled
   kits on (they load on demand, so this is cheap).
+- Docker stack: slim (the single-container shape), the simplest single-user
+  default; only consulted when hosting is Docker.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..onboarding import DockerStack
 from . import family_catalog
 from .rag_catalog import apply_quickstart_rag
 
@@ -87,6 +90,10 @@ def apply_quick_defaults(state: "WizardState") -> None:
     # Keyless web fetch, unless a flag already seeded the fetch family.
     if not state.extras.get("fetch_url"):
         state.extras["fetch_url"] = list(QUICK_FETCH_DEFAULT)
+    # Default the Docker shape to slim (simplest single-user container); the
+    # docker_stack step is gated off in quick mode, so seed it for review.
+    if state.docker_stack is None:
+        state.docker_stack = DockerStack.SLIM
 
 
 __all__ = [

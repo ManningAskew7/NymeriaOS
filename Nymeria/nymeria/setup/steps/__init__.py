@@ -9,8 +9,8 @@ from .auth import make_auth_method_step
 from .backend_keys import make_backend_keys_step
 from .core_tools import make_core_tools_step
 from .deployment import (
+    make_docker_stack_step,
     make_external_access_step,
-    make_image_tier_step,
     make_security_profile_step,
 )
 from .hosting import make_hosting_step
@@ -50,10 +50,10 @@ def _quick_gated(step: Step) -> Step:
 def build_default_steps() -> list[Step]:
     """The ordered wizard step list, mirroring the setup-wizard plan's flow.
 
-    Phases: detect environment, pick a deployment target, shape the image and
-    security posture, choose LLM auth and provider/model, configure optional
+    Phases: detect environment, pick a deployment target, shape the Docker stack
+    and security posture, choose LLM auth and provider/model, configure optional
     capabilities, choose external access, then review and write. Conditional
-    steps (image tier on container hosts, connection on providers that need it)
+    steps (the Docker stack on Docker hosts, connection on providers that need it)
     drop out via their `applies` predicate. Several steps are framework-real
     placeholders until their downstream automation lands. In `--quick` mode every
     step outside `QUICK_KEEP_STEP_IDS` is gated off (see `_quick_gated`).
@@ -67,9 +67,9 @@ def _default_step_list() -> list[Step]:
     return [
         # Detect environment.
         make_welcome_step(),
-        # Choose a deployment target, then shape the container image and posture.
+        # Choose a deployment target, then the Docker stack and security posture.
         make_hosting_step(),
-        make_image_tier_step(),
+        make_docker_stack_step(),
         make_security_profile_step(),
         # Choose LLM auth, then the provider, connection, and model.
         make_auth_method_step(),

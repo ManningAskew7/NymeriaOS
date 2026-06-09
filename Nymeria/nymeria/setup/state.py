@@ -15,9 +15,9 @@ from typing import Any
 
 from ..config.llm_providers import LLMProviderSpec, get_llm_provider_spec
 from ..onboarding import (
+    DockerStack,
     ExternalAccess,
     HostingOption,
-    ImageTier,
     NextAction,
     ProviderAuthMethod,
     SecurityProfile,
@@ -29,9 +29,9 @@ class WizardState:
     # Deployment target: how to host the slim backend on this machine.
     hosting: HostingOption | None = None
 
-    # Container image capability tier (only meaningful for container hosts).
-    # Placeholder: image generation is not wired into finalize yet.
-    image_tier: ImageTier | None = None
+    # Docker runtime shape (only meaningful for Docker hosts): slim single
+    # container vs the full Postgres + Redis stack. See onboarding.DockerStack.
+    docker_stack: DockerStack | None = None
 
     # First-run security posture. Recorded now; enforcement is built out later.
     security_profile: SecurityProfile | None = None

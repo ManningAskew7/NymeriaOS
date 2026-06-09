@@ -9,9 +9,9 @@ from textual.widgets import Static
 
 from ...config.llm_providers import get_llm_provider_spec
 from ...onboarding import (
+    DOCKER_STACK_CHOICES,
     EXTERNAL_ACCESS_CHOICES,
     HOSTING_CHOICES,
-    IMAGE_TIER_CHOICES,
     PROVIDER_AUTH_METHOD_CHOICES,
     SECURITY_PROFILE_CHOICES,
     HostingOption,
@@ -43,9 +43,9 @@ def _summary_markup(state: WizardState) -> str:
 
     if state.hosting is not None:
         lines.append(f"[bold]Hosting[/bold]   {HOSTING_CHOICES[state.hosting].label}")
-    if state.image_tier is not None and state.hosting is HostingOption.DOCKER:
+    if state.docker_stack is not None and state.hosting is HostingOption.DOCKER:
         lines.append(
-            f"[bold]Image[/bold]     {IMAGE_TIER_CHOICES[state.image_tier].label}"
+            f"[bold]Stack[/bold]     {DOCKER_STACK_CHOICES[state.docker_stack].label}"
         )
     if state.security_profile is not None:
         lines.append(

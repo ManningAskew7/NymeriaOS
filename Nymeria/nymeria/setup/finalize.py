@@ -30,7 +30,6 @@ from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
 from ..onboarding import (
     EXTERNAL_ACCESS_CHOICES,
-    IMAGE_TIER_CHOICES,
     SECURITY_PROFILE_CHOICES,
     ExternalAccess,
     HostingOption,
@@ -731,20 +730,13 @@ def print_capability_summary(
 def print_deployment_summary(state: WizardState, console: Console) -> None:
     """Echo the deployment-shaping choices the installer cannot fully act on yet.
 
-    Image tier, security profile, and non-local external access are recorded by
-    the wizard but their automation (image building, the approval gate, tunnel
-    setup) is not built, so they are surfaced here rather than silently dropped.
+    Security profile and non-local external access are recorded by the wizard but
+    their automation (the approval gate, tunnel setup) is not built, so they are
+    surfaced here rather than silently dropped. The Docker-stack choice is acted
+    on (it selects the compose file and start command), so it is not echoed here.
     """
 
     rows: list[tuple[str, str, str]] = []
-    if state.image_tier is not None and state.hosting is HostingOption.DOCKER:
-        rows.append(
-            (
-                "Image tier",
-                IMAGE_TIER_CHOICES[state.image_tier].label,
-                "image building is not wired into setup yet",
-            )
-        )
     if state.security_profile is not None:
         rows.append(
             (

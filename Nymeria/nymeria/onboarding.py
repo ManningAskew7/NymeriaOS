@@ -43,18 +43,17 @@ class NextAction(StrEnum):
     CLI = "cli"
 
 
-class ImageTier(StrEnum):
-    """Which binaries are baked into a container image (first-run, container hosts).
+class DockerStack(StrEnum):
+    """Which Docker runtime shape to deploy (first-run, Docker hosts).
 
-    Tool availability is a property of the image, not the runtime shape: the
-    roughly 1,250 optional tools are in-process Python and run on any base. Only a
-    small subset shells out to system binaries, so the image choice is three rungs
-    rather than a minimal-versus-Kali binary. Placeholder until image generation
-    is wired into finalize.
+    This is the Axis-1 topology choice, not an image-toolset choice: both shapes
+    run the same agent and ship the same lean image. SLIM is one container on
+    SQLite with an in-memory bus (the containerized twin of the local install);
+    FULL is the Postgres + Redis multi-container stack, functionally identical but
+    with multi-user support, scaling headroom, and per-container fault isolation.
     """
 
-    MINIMAL = "minimal"
-    STANDARD = "standard"
+    SLIM = "slim"
     FULL = "full"
 
 
@@ -156,11 +155,11 @@ HOSTING_CHOICES = {
     ),
     HostingOption.DOCKER: OnboardingChoice(
         value=HostingOption.DOCKER,
-        label="Docker (single container)",
+        label="Docker",
         description=(
-            "Runs the slim backend inside one Docker container with explicit "
-            "volumes. More isolation and easy to reset, and it requires "
-            "Docker to be installed."
+            "Runs the backend in Docker with explicit volumes. More isolation and "
+            "easy to reset, and it requires Docker to be installed. You choose the "
+            "slim or full stack next."
         ),
     ),
 }
@@ -223,39 +222,31 @@ NEXT_ACTION_CHOICES = {
     ),
 }
 
-IMAGE_TIER_ORDER = (
-    ImageTier.MINIMAL,
-    ImageTier.STANDARD,
-    ImageTier.FULL,
+DOCKER_STACK_ORDER = (
+    DockerStack.SLIM,
+    DockerStack.FULL,
 )
 
-IMAGE_TIER_CHOICES = {
-    ImageTier.MINIMAL: OnboardingChoice(
-        value=ImageTier.MINIMAL,
-        label="Minimal (Debian)",
+DOCKER_STACK_CHOICES = {
+    DockerStack.SLIM: OnboardingChoice(
+        value=DockerStack.SLIM,
+        label="Slim (single container)",
         description=(
-            "The roughly 1,250 in-process Python tools, no browser, security, or "
-            "CLI binaries. Smallest image and the safest default."
+            "One container running the slim backend on SQLite with an in-memory "
+            "event bus. The containerized twin of a local install. Simplest, and "
+            "the right default for a single user."
         ),
         recommended=True,
     ),
-    ImageTier.STANDARD: OnboardingChoice(
-        value=ImageTier.STANDARD,
-        label="Standard (Debian plus browser, CLI, ffmpeg)",
+    DockerStack.FULL: OnboardingChoice(
+        value=DockerStack.FULL,
+        label="Full (Postgres plus Redis stack)",
         description=(
-            "Adds Node, Chromium/Playwright, the Claude Code CLI, and ffmpeg for "
-            "full everyday capability including browser automation, without the "
-            "Kali heft."
+            "The multi-container stack: Postgres for durable checkpoints and Redis "
+            "for the event bus, plus separate worker and MCP containers. Same "
+            "features as slim, with better multi-user support, scaling headroom, "
+            "and per-container fault isolation. Heavier; needs more resources."
         ),
-    ),
-    ImageTier.FULL: OnboardingChoice(
-        value=ImageTier.FULL,
-        label="Full (Kali security toolchain)",
-        description=(
-            "Adds the pentest toolchain (nmap, sqlmap, hashcat, wordlists). "
-            "Heaviest at 2 to 3 GB, worth it only for security work."
-        ),
-        advanced=True,
     ),
 }
 
