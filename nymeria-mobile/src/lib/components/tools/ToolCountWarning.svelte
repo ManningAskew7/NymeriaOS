@@ -132,7 +132,7 @@
   }
 
   .btn-primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
   }

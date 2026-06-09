@@ -257,7 +257,7 @@
     min-height: var(--touch-target-min);
     border: 1px solid var(--accent-primary);
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     border-radius: var(--radius-sm);
     padding: 0.75rem 1rem;
     font-weight: 600;

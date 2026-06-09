@@ -79,13 +79,13 @@
 
     <div class="tool-details">
       <div class="detail-section">
-        <h4>Arguments</h4>
+        <h3>Arguments</h3>
         <pre class="code-block">{formatArgs(toolCall.arguments)}</pre>
       </div>
 
       {#if toolCall.result}
         <div class="detail-section">
-          <h4>Result</h4>
+          <h3>Result</h3>
           <pre class="code-block result" class:error={toolCall.status === 'error'}>
             {formatResult(toolCall.result)}
           </pre>
@@ -94,7 +94,7 @@
 
       {#if toolCall.artifacts?.length}
         <div class="detail-section">
-          <h4>Artifacts</h4>
+          <h3>Artifacts</h3>
           <div class="artifact-list">
             {#each toolCall.artifacts as artifact (artifact.path)}
               <button
@@ -266,7 +266,7 @@
     gap: var(--spacing-md);
   }
 
-  .detail-section h4 {
+  .detail-section h3 {
     margin: 0 0 var(--spacing-xs) 0;
     font-size: var(--font-size-xs);
     font-weight: 600;

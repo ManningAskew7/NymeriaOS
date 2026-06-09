@@ -431,7 +431,7 @@
   }
 
   .btn-primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border-color: var(--accent-primary);
     padding: 6px 14px;

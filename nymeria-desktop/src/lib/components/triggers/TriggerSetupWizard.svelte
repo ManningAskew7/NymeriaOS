@@ -804,7 +804,7 @@
 
   .progress-step.active .step-number {
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
   }
 
   .progress-step.completed .step-number {
@@ -1323,7 +1323,7 @@
 
   .nav-btn.primary {
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     border-color: var(--accent-primary);
   }
 

@@ -1737,7 +1737,7 @@
     font-size: 10px;
     font-weight: 600;
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     border-radius: 9px;
   }
 
@@ -2173,7 +2173,7 @@
   }
 
   .footer-btn.primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
   }

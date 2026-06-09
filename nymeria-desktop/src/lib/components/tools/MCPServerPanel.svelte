@@ -276,10 +276,10 @@
 
 <div class="mcp-panel">
   <div class="panel-header">
-    <h4>
+    <h3>
       <Icon name="terminal" size={16} />
       MCP Servers
-    </h4>
+    </h3>
     <div class="header-actions">
       {#if isAdmin}
         <Button
@@ -528,7 +528,7 @@
     margin-bottom: 0.4rem;
   }
 
-  .panel-header h4 {
+  .panel-header h3 {
     margin: 0;
     font-size: var(--font-size-base);
     color: var(--text-primary);

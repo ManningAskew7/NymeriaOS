@@ -211,7 +211,7 @@
 
 <form class="tool-form" onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
   <div class="form-section">
-    <h4>Basic Info</h4>
+    <h3>Basic Info</h3>
 
     {#if !tool}
       <div class="field">
@@ -269,7 +269,7 @@
   </div>
 
   <div class="form-section">
-    <h4>Implementation Type</h4>
+    <h3>Implementation Type</h3>
 
     <div class="type-selector">
       <button
@@ -295,7 +295,7 @@
 
   {#if implementationType === 'http'}
     <div class="form-section">
-      <h4>HTTP Configuration</h4>
+      <h3>HTTP Configuration</h3>
 
       <div class="field-row">
         <div class="field" style="flex: 0 0 120px;">
@@ -371,7 +371,7 @@
     </div>
   {:else}
     <div class="form-section">
-      <h4>MCP Configuration</h4>
+      <h3>MCP Configuration</h3>
 
       <div class="field">
         <label for="mcp-command">Server Command</label>
@@ -434,7 +434,7 @@
   {/if}
 
   <div class="form-section">
-    <h4>Parameters</h4>
+    <h3>Parameters</h3>
 
     <div class="field">
       <label for="tool-params">Parameters (JSON)</label>
@@ -480,7 +480,7 @@
     gap: var(--spacing-md);
   }
 
-  .form-section h4 {
+  .form-section h3 {
     margin: 0;
     color: var(--text-primary);
     font-size: var(--font-size-sm);
