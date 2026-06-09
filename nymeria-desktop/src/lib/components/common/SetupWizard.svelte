@@ -118,6 +118,7 @@
           class="progress-step"
           class:active={i + 1 === currentStep}
           class:completed={i + 1 < currentStep}
+          aria-current={i + 1 === currentStep ? 'step' : undefined}
         >
           <div class="step-dot">{i + 1}</div>
         </div>

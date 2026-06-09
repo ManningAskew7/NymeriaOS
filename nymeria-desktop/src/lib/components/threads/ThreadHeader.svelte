@@ -474,9 +474,9 @@
       class="icon-btn cog"
       class:active={threadConfig?.hasCustomizations ?? false}
       onclick={onOpenSettings}
-      title="Thread settings"
+      title={threadConfig?.hasCustomizations ? 'Thread settings (customized)' : 'Thread settings'}
       type="button"
-      aria-label="Thread settings"
+      aria-label={threadConfig?.hasCustomizations ? 'Thread settings, customized' : 'Thread settings'}
     >
       <Icon name="cog" size={16} />
     </button>

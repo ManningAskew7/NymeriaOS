@@ -1162,7 +1162,7 @@
         {:else}
           <div class="connections-list">
             {#each connectionsStore.connections as conn}
-              <div class="connection-row" class:active={connectionsStore.activeConnectionId === conn.id}>
+              <div class="connection-row" class:active={connectionsStore.activeConnectionId === conn.id} aria-current={connectionsStore.activeConnectionId === conn.id ? 'true' : undefined}>
                 <span class="conn-status-dot" class:connected={connectionsStore.activeConnectionId === conn.id}></span>
                 {#if editingConnectionId === conn.id}
                   <input
