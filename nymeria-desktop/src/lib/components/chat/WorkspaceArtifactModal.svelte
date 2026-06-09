@@ -256,7 +256,7 @@
   .action-btn {
     border: 1px solid var(--accent-primary);
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     border-radius: var(--radius-sm);
     padding: 0.65rem 0.95rem;
     font-weight: 600;

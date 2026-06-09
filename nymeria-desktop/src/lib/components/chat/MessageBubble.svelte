@@ -1169,7 +1169,7 @@
     width: 100%;
     padding: var(--spacing-sm);
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     border: none;
     border-radius: var(--radius-md);
     font-weight: 600;

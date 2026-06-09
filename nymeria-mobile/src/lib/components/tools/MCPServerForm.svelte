@@ -251,7 +251,7 @@
     padding: 0 0.3rem;
     border-radius: 3px;
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     font-weight: 600;
   }
 
@@ -358,7 +358,7 @@
     border: none;
     border-radius: 4px;
     background: var(--accent-primary);
-    color: white;
+    color: var(--text-on-accent);
     font-size: 0.85rem;
     min-height: var(--touch-target-min);
   }

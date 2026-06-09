@@ -562,7 +562,7 @@
     {:else if filteredCustomTools.length === 0}
       <div class="empty-state">
         <div class="empty-icon">+</div>
-        <h4>{searchQuery.trim() ? 'No Custom Tools Match' : 'No Custom Tools Yet'}</h4>
+        <h3>{searchQuery.trim() ? 'No Custom Tools Match' : 'No Custom Tools Yet'}</h3>
         <p class="empty-message">
           {searchQuery.trim()
             ? 'Try another search or clear the field to view all custom tools.'
@@ -1360,7 +1360,7 @@
     color: var(--text-muted);
   }
 
-  .empty-state h4 {
+  .empty-state h3 {
     margin: 0 0 var(--spacing-xs);
     color: var(--text-primary);
     font-size: var(--font-size-sm);

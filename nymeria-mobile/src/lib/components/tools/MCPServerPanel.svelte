@@ -220,7 +220,7 @@
 
 <div class="mcp-panel">
   <div class="panel-header">
-    <h4>MCP Servers</h4>
+    <h3>MCP Servers</h3>
     {#if isAdmin}
       <div class="header-actions">
         <button class="add-btn" onclick={() => { showInstallModal = true; }}>
@@ -389,7 +389,7 @@
     gap: 0.35rem;
   }
 
-  .panel-header h4 {
+  .panel-header h3 {
     margin: 0;
     font-size: 0.9rem;
     color: var(--text-primary);

@@ -507,7 +507,7 @@
     padding: var(--spacing-xs) var(--spacing-sm);
     font-size: var(--font-size-sm);
     font-weight: 500;
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border-radius: var(--radius-md);
     min-height: var(--touch-target-min);
@@ -869,7 +869,7 @@
   }
 
   .footer-btn.primary {
-    color: white;
+    color: var(--text-on-accent);
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
   }

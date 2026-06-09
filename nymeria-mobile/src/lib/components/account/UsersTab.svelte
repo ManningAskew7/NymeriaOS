@@ -314,7 +314,7 @@
     </div>
 
     <section class="detail-section">
-      <div class="section-header"><h4>Profile</h4></div>
+      <div class="section-header"><h3>Profile</h3></div>
       <div class="form-stack">
         <label class="form-row">
           <span class="row-label">Display name</span>
@@ -354,7 +354,7 @@
     </section>
 
     <section class="detail-section">
-      <div class="section-header"><h4>API tokens</h4></div>
+      <div class="section-header"><h3>API tokens</h3></div>
       <TokenManagementSection
         mode="admin"
         userId={selectedUser.id}
@@ -363,7 +363,7 @@
     </section>
 
     <section class="detail-section">
-      <div class="section-header"><h4>Linked platforms</h4></div>
+      <div class="section-header"><h3>Linked platforms</h3></div>
       <PlatformLinkingSection
         userId={selectedUser.id}
         userLabel={identityDisplayName(selectedUser)}
@@ -371,7 +371,7 @@
     </section>
 
     <section class="detail-section danger-section">
-      <div class="section-header"><h4>Delete user</h4></div>
+      <div class="section-header"><h3>Delete user</h3></div>
       <p class="section-hint">
         Cleans up tokens and platform identities. Refuses with 409 if this user
         still owns threads or todos.
@@ -660,7 +660,7 @@
     padding-bottom: var(--spacing-xs);
   }
 
-  .section-header h4 {
+  .section-header h3 {
     margin: 0;
     font-size: var(--font-size-sm);
     font-weight: 600;
@@ -723,7 +723,7 @@
     font-size: 12px;
   }
 
-  .danger-section .section-header h4 {
+  .danger-section .section-header h3 {
     color: var(--error);
   }
 
