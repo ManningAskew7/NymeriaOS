@@ -22,6 +22,15 @@
 
   let { title, defaultOpen = false, chevronIcon = 'chevronRight', chevronSize = 16, slideOptions = DROPDOWN_TRANSITION, header, children }: Props = $props();
 
+  // Stable per-instance IDs so the header button can advertise aria-controls
+  // pointing at the content panel, and the panel can label-back via
+  // aria-labelledby. Uniqueness only needs to hold within a single page
+  // lifetime; crypto.randomUUID is available in every WebView2/WKWebView Tauri
+  // ships against.
+  const _uid = crypto.randomUUID().slice(0, 8);
+  const headerId = `collapsible-header-${_uid}`;
+  const contentId = `collapsible-content-${_uid}`;
+
   // svelte-ignore state_referenced_locally — intentional one-time initialization
   let isOpen = $state(defaultOpen);
   // Active during the outro slide. While true the content's bottom border is
@@ -93,7 +102,14 @@
 </script>
 
 <div class="collapsible" class:open={isOpen} bind:this={rootEl}>
-  <button class="header" onclick={toggle} type="button">
+  <button
+    id={headerId}
+    class="header"
+    onclick={toggle}
+    type="button"
+    aria-expanded={isOpen}
+    aria-controls={contentId}
+  >
     <span class="chevron">
       <Icon name={chevronIcon} size={chevronSize} />
     </span>
@@ -106,8 +122,11 @@
 
   {#if isOpen}
     <div
+      id={contentId}
       class="content"
       class:closing={isClosing}
+      role="region"
+      aria-labelledby={headerId}
       transition:slide={slideOptions}
       onoutrostart={() => (isClosing = true)}
       onoutroend={() => (isClosing = false)}

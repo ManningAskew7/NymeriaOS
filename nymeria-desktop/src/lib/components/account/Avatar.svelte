@@ -32,7 +32,7 @@
   {#if state === 'loading'}
     <span class="skeleton"></span>
   {:else if pictureUrl}
-    <img class="picture" src={pictureUrl} alt="" />
+    <img class="picture" src={pictureUrl} alt={identity?.display_name || identity?.email || 'Account avatar'} />
   {:else}
     <span class="account-icon">
       <Icon name="user" size={iconSize} />

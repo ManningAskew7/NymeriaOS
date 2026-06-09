@@ -40,7 +40,7 @@
   });
 </script>
 
-<div class="mobile-shell">
+<main class="mobile-shell" id="main-content">
   <!-- Panel indicator dots -->
   <div class="panel-indicators">
     <button
@@ -79,7 +79,7 @@
       <RightPanel />
     </div>
   </div>
-</div>
+</main>
 
 <style>
   .mobile-shell {
