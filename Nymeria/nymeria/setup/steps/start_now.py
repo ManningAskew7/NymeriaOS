@@ -85,7 +85,7 @@ def _get_initial(state: "WizardState") -> NextAction:
         try:
             return NextAction(chosen)
         except ValueError:
-            pass
+            pass  # stored value is not a valid NextAction; fall back to the shape default
     # Nothing chosen yet: fall back to the shape default (index 0).
     return start_now_choices(state.hosting)[0].value
 

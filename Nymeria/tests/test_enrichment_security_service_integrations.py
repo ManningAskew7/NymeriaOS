@@ -16,6 +16,51 @@ def clear_settings_cache():
     get_settings.cache_clear()
 
 
+# These tools fall back to provider env vars (via settings) when no vault
+# credential is present. Scrub them so the no-credential paths are actually
+# exercised regardless of what the host environment exports (e.g. a real
+# JINA_API_KEY on a dev/CI box leaks in and makes a live network call).
+_PROVIDER_ENV_VARS = (
+    "URLSCAN_API_KEY",
+    "URLSCAN_BASE_URL",
+    "HUNTER_API_KEY",
+    "HUNTER_BASE_URL",
+    "MAILCHECK_API_KEY",
+    "MAILCHECK_BASE_URL",
+    "PEEKALINK_API_KEY",
+    "PEEKALINK_BASE_URL",
+    "JINA_API_KEY",
+    "JINA_READER_BASE_URL",
+    "JINA_SEARCH_BASE_URL",
+    "JINA_DEEPSEARCH_BASE_URL",
+    "MISP_API_KEY",
+    "MISP_BASE_URL",
+    "THEHIVE_API_KEY",
+    "THEHIVE_BASE_URL",
+    "THEHIVE_API_VERSION",
+    "SECURITYSCORECARD_API_KEY",
+    "SECURITYSCORECARD_BASE_URL",
+    "OKTA_ACCESS_TOKEN",
+    "OKTA_DOMAIN",
+    "OKTA_BASE_URL",
+    "ELASTIC_SECURITY_API_KEY",
+    "ELASTIC_SECURITY_BASE_URL",
+    "ELASTIC_SECURITY_USERNAME",
+    "ELASTIC_SECURITY_PASSWORD",
+)
+
+
+@pytest.fixture(autouse=True)
+def scrub_provider_env(monkeypatch):
+    """Drop host-provided provider credentials so no-credential tests stay hermetic.
+
+    Tests that need a specific env var set it explicitly via ``monkeypatch.setenv``,
+    which stacks after this fixture and therefore wins.
+    """
+    for name in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _repo(tmp_path, monkeypatch) -> CredentialVaultRepo:
     monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
     db_path = tmp_path / "accounts.db"

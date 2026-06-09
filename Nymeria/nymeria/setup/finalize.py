@@ -683,7 +683,7 @@ def wait_for_health(
                 if 200 <= getattr(resp, "status", 200) < 300:
                     return True
         except (urllib.error.URLError, OSError):
-            pass
+            pass  # backend not up yet; keep polling until the deadline lapses
         time.sleep(interval)
     return False
 
