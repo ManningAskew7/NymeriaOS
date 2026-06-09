@@ -904,7 +904,9 @@
   .cat-tab.active {
     background: var(--accent-primary);
     border-color: var(--accent-primary);
-    color: white;
+    /* Theme-aware text on accent fill: dark ink on Platinum's pale accent,
+       white on Midnight/Light. Hardcoded white would vanish on Platinum. */
+    color: var(--text-on-accent);
   }
 
   .source-grid {
