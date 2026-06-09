@@ -276,6 +276,7 @@
         type="button"
         class="type-btn"
         class:active={implementationType === 'http'}
+        aria-pressed={implementationType === 'http'}
         onclick={() => (implementationType = 'http')}
       >
         <strong>HTTP</strong>
@@ -285,6 +286,7 @@
         type="button"
         class="type-btn"
         class:active={implementationType === 'mcp'}
+        aria-pressed={implementationType === 'mcp'}
         onclick={() => (implementationType = 'mcp')}
       >
         <strong>MCP</strong>

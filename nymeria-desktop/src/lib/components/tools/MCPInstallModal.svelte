@@ -380,7 +380,7 @@ https://github.com/example/mcp-server`}
         <h3>Reviewing MCP source</h3>
         <ol class="progress-list">
           {#each PREVIEW_STEPS as step, i}
-            <li class:done={i < progressStep} class:active={i === progressStep}>
+            <li class:done={i < progressStep} class:active={i === progressStep} aria-current={i === progressStep ? 'step' : undefined}>
               {#if i < progressStep}
                 <Icon name="check" size={14} />
               {:else if i === progressStep}
@@ -504,7 +504,7 @@ https://github.com/example/mcp-server`}
         <h3>Installing MCP server</h3>
         <ol class="progress-list">
           {#each INSTALL_STEPS as step, i}
-            <li class:done={i < progressStep} class:active={i === progressStep}>
+            <li class:done={i < progressStep} class:active={i === progressStep} aria-current={i === progressStep ? 'step' : undefined}>
               {#if i < progressStep}
                 <Icon name="check" size={14} />
               {:else if i === progressStep}

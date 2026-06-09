@@ -70,7 +70,7 @@
         {@const threadOn = threadEnabledSkills.has(skill.name)}
         {@const threadOff = threadDisabledSkills.has(skill.name)}
         {@const activeHere = (defaultOn || globalOn || threadOn) && !threadOff}
-        <div class="skill-row" class:active={activeHere}>
+        <div class="skill-row" class:active={activeHere} aria-current={activeHere ? 'true' : undefined}>
           <div class="skill-info">
             <div class="skill-head">
               <span class="skill-name">{skill.name}</span>
