@@ -96,7 +96,7 @@ def _get_client() -> NymeriaBackendClient:
         from nymeria.core.service_bootstrap import resolve_service_token
 
         service_token = resolve_service_token(
-            settings.nymeria_service_token, settings.data_dir
+            settings.nymeria_service_token, getattr(settings, "data_dir", None)
         )
     if not service_token:
         raise RuntimeError(

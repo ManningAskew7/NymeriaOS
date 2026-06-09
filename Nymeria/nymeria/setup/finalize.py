@@ -1182,14 +1182,15 @@ def _print_full_stack_init_picks_note(console: Console, state: WizardState) -> N
 
 
 def _warn_shadowing_process_env(console: Console, written: Mapping[str, str]) -> None:
-    """Warn when a value written to `.env.docker` is shadowed by the shell.
+    """Warn when a value written to `.env.docker` is shadowed by the environment.
 
     docker compose resolves `${VAR}` from the process environment BEFORE the
     `--env-file`, so a `POSTGRES_PASSWORD` / `REDIS_PASSWORD` / `NYMERIA_SECRETS_KEY`
-    exported in the operator's shell with a different value silently wins over the
-    one just generated. That mismatch is invisible now but breaks Postgres auth or
-    vault decryption on a later boot in a clean shell, so flag it and tell them to
-    `unset` the conflicting names.
+    already in the environment with a different value silently wins over the one
+    just generated. The shadowing value can come from the operator's shell OR from
+    another `.env.docker` auto-loaded at startup (a common out-of-tree-install case),
+    so the message does not assume the source. The mismatch is invisible now but
+    breaks Postgres auth or vault decryption on a later boot, so flag it.
     """
     clashes = sorted(
         key
@@ -1200,9 +1201,11 @@ def _warn_shadowing_process_env(console: Console, written: Mapping[str, str]) ->
         return
     joined = ", ".join(clashes)
     console.print(
-        f"[yellow]Note:[/yellow] your shell exports {joined}, which docker compose "
-        "uses INSTEAD of the value just written to .env.docker. Unset them before "
-        "bringing the stack up so the generated credentials take effect:"
+        f"[yellow]Note:[/yellow] the environment already defines {joined} with a "
+        "value different from what was just written to .env.docker (exported in your "
+        "shell, or auto-loaded from another .env.docker). docker compose reads "
+        "${VAR} from the environment before --env-file, so that value, not the "
+        "generated one, would take effect. Clear it before bringing the stack up:"
     )
     # Printed via _print_command so the command stays on one unwrapped line.
     _print_command(console, f"unset {' '.join(clashes)}")

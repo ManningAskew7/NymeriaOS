@@ -719,13 +719,17 @@ def run_worker(args: argparse.Namespace) -> None:
         if _init_firebase(settings.fcm_credentials_json):
             print("  - FCM push notifications: enabled")
 
-    # Wait briefly for the API container to become healthy before we
-    # start firing TODOs. Without this, a TODO whose scheduled_for is
-    # recovered at boot will fail with a connection refused before the
-    # API has finished initializing; the ticker would then burn its
-    # retry budget. Mirrors the watchdog's 5-second initial wait.
+    # Wait for the API container to become healthy before firing TODOs (and,
+    # in the full Docker stack, before resolving the service token the api
+    # self-mints onto the shared volume during its own startup). The worker
+    # depends only on postgres/redis, so on a first `up -d` that BUILDS the
+    # image the api can be absent for minutes; a generous deadline avoids a
+    # crash-restart loop (restart: unless-stopped remains the backstop for a
+    # genuinely-down API). Without this, a recovered TODO would also burn the
+    # ticker's retry budget on connection-refused.
     health_url = api_url.rstrip("/") + "/health"
-    deadline = time.monotonic() + 30
+    health_wait_seconds = 180
+    deadline = time.monotonic() + health_wait_seconds
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(health_url, timeout=2) as resp:
@@ -737,8 +741,9 @@ def run_worker(args: argparse.Namespace) -> None:
         time.sleep(1)
     else:
         print(
-            "  - API health: unreachable after 30s — continuing anyway, the "
-            "ticker will retry per-TODO until the API comes up."
+            f"  - API health: unreachable after {health_wait_seconds}s — "
+            "continuing anyway, the ticker will retry per-TODO until the API "
+            "comes up."
         )
 
     # Now that we have waited for the API, resolve the service token: env var if

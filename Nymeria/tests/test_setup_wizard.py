@@ -3196,8 +3196,27 @@ def test_finalize_full_stack_warns_on_shadowing_process_env(monkeypatch, tmp_pat
          "--non-interactive"]
     ) == 0
     out = capsys.readouterr().out
-    assert "your shell exports POSTGRES_PASSWORD" in out
+    assert "the environment already defines POSTGRES_PASSWORD" in out
     assert "unset POSTGRES_PASSWORD" in out
+
+
+def test_finalize_full_stack_no_shadow_warning_when_env_clean(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    # No conflicting values in the environment: the minted/written credentials are
+    # the ones compose will use, so the shadow note must NOT fire (guards the
+    # warning against false positives on a clean install).
+    for key in ("POSTGRES_PASSWORD", "REDIS_PASSWORD", "NYMERIA_SECRETS_KEY",
+                "POSTGRES_USER", "POSTGRES_DB"):
+        monkeypatch.delenv(key, raising=False)
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(root),
+         "--non-interactive"]
+    ) == 0
+    out = capsys.readouterr().out
+    assert "the environment already defines" not in out
 
 
 def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():
