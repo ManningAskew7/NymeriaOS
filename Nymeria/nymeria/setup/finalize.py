@@ -70,8 +70,17 @@ def finalize(
     console: Console,
     non_interactive: bool,
     overwrite_confirmed: bool = False,
+    merge: bool = False,
+    scoped_section: str | None = None,
 ) -> int:
-    """Validate the collected state, write config, and bootstrap the admin."""
+    """Validate the collected state, write config, and bootstrap the admin.
+
+    `merge` (reconfigure mode) merges this run's keys into an existing config file
+    instead of overwriting it, updates the bootstrap profile's picks in place, and
+    suppresses the one-time token re-print. `scoped_section` (an `init <section>`
+    jump) further limits the run to a concise "Updated <section>" outcome: no
+    bootstrap-token handoff, no post-setup launch, no doctor.
+    """
 
     # Out-of-the-box RAG: if nothing RAG-related was configured (no embedder chosen
     # and no embedding key supplied), equip the free, private local stack
@@ -91,7 +100,14 @@ def finalize(
     base_url = state.base_url.strip()
     model = ""
     provider_auth_validated = False
-    if spec is None or (spec.requires_api_key and not api_key):
+    # Reconfigure: an empty key field means "keep the key already on disk", so a
+    # provider whose key is present must not be downgraded to "unconfigured".
+    key_present = bool(
+        spec
+        and spec.api_key_env_vars
+        and spec.api_key_env_vars[0] in state.present_env_keys
+    )
+    if spec is None or (spec.requires_api_key and not api_key and not key_present):
         # Provider step was skipped (or a required key is missing); write a
         # usable config without LLM creds.
         spec = None
@@ -101,13 +117,18 @@ def finalize(
             "`nymeria init` or by editing config.env.[/yellow]"
         )
     else:
+        # Reconfigure with a blank key field: keep the on-disk key. There is no
+        # value to format-check or live-test, so skip both and let the merge-write
+        # preserve the existing key line.
+        keep_existing_key = not api_key and key_present
         model = (state.model or spec.default_model or "").strip()
-        ok, prefix = valid_key_format_for_spec(spec, api_key)
-        if not ok and prefix:
-            console.print(
-                f"[red]The {spec.label} key should start with `{prefix}`.[/red]"
-            )
-            return 2
+        if api_key:
+            ok, prefix = valid_key_format_for_spec(spec, api_key)
+            if not ok and prefix:
+                console.print(
+                    f"[red]The {spec.label} key should start with `{prefix}`.[/red]"
+                )
+                return 2
         if not model:
             console.print(
                 f"[red]No model set for {spec.label}. Re-run `nymeria init` and "
@@ -119,7 +140,7 @@ def finalize(
                 f"[red]{spec.label} needs a base URL. Re-run with --base-url.[/red]"
             )
             return 2
-        if state.skip_llm_test:
+        if state.skip_llm_test or keep_existing_key:
             console.print("[yellow]Skipping LLM connection test.[/yellow]")
         else:
             console.print("\nTesting LLM connection...")
@@ -164,7 +185,14 @@ def finalize(
         console.print("[yellow]Warning:[/yellow] port 8000 is already in use.")
 
     config_path = root / (".env.docker" if for_docker else "config.env")
-    if config_path.exists() and not state.force and not overwrite_confirmed:
+    if merge and not config_path.exists():
+        # Reconfigure whose hosting shape changed (the source file was a different
+        # shape). Fall back to a fresh write of the new-shape file and note it.
+        merge = False
+        console.print(
+            "[yellow]Hosting shape changed; writing a new config file.[/yellow]"
+        )
+    if config_path.exists() and not merge and not state.force and not overwrite_confirmed:
         if non_interactive:
             console.print(
                 f"[red]{config_path} already exists. Re-run with --force to "
@@ -196,6 +224,7 @@ def finalize(
         extra_env=extra_env,
         secrets_key=secrets_key,
         for_docker=for_docker,
+        merge=merge,
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -210,11 +239,27 @@ def finalize(
         )
     else:
         repo = AccountsRepo(data_dir / "accounts.db")
-        repo.ensure_bootstrap_admin(data_dir)
+        admin_token = repo.ensure_bootstrap_admin(data_dir)
         token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
         console.print(f"[green]Data dir:[/green] {data_dir}")
-        seed_bootstrap_profile(data_dir, state, console)
-        print_bootstrap_token_handoff(token_path, console)
+        if merge:
+            update_bootstrap_profile(
+                data_dir, state, console, scoped_section=scoped_section
+            )
+        else:
+            seed_bootstrap_profile(data_dir, state, console)
+        # Print the one-time bootstrap token only when the admin was just created
+        # this run; a reconfigure of an existing install must not re-print a token
+        # that was already consumed.
+        if admin_token is not None:
+            print_bootstrap_token_handoff(token_path, console)
+
+    if scoped_section is not None:
+        # A focused `init <section>` jump: report the one change and stop. No token
+        # handoff, post-setup launch, or doctor for a single-setting edit.
+        console.print(f"\n[green]Updated[/green] the {scoped_section} settings.")
+        return 0
+
     print_capability_summary(spec, optional_env, console, extra_env=extra_env)
     print_deployment_summary(state, console)
 
@@ -244,6 +289,7 @@ def write_config(
     extra_env: Mapping[str, str] | None = None,
     secrets_key: str = "",
     for_docker: bool = False,
+    merge: bool = False,
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -258,38 +304,48 @@ def write_config(
     forces sqlite + redis-off inside the container; writing a host data dir here
     would only mislead. `secrets_key`, when set, is the credential-vault Fernet
     key (`NYMERIA_SECRETS_KEY`) and is written for every shape.
+
+    `merge` (reconfigure) overlays only the keys this run produces onto the
+    existing file, preserving untouched lines and comments. An omitted key (e.g.
+    the provider key when the field was left blank to keep the existing one) is
+    left as-is on disk rather than blanked.
     """
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     optional_env = optional_env or {}
     extra_env = extra_env or {}
     provider_env = spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
-    lines = ["# Generated by `nymeria init`."]
+    produced: list[tuple[str, str]] = []
     if spec is not None:
-        lines.append(f"LLM_PROVIDER={spec.id}")
-        lines.append(f"LLM_MODEL={_env_value(model)}")
+        produced.append(("LLM_PROVIDER", spec.id))
+        produced.append(("LLM_MODEL", _env_value(model)))
         if api_key and provider_env:
-            lines.append(f"{provider_env}={api_key}")
+            produced.append((provider_env, api_key))
     for env_var, value in extra_env.items():
         if value:
-            lines.append(f"{env_var}={_env_value(value)}")
+            produced.append((env_var, _env_value(value)))
     if not for_docker:
-        lines.append("DATABASE_BACKEND=sqlite")
-        lines.append(f"NYMERIA_DATA_DIR={_env_value(str(data_dir))}")
-        lines.append("API_HOST=0.0.0.0")
-    lines.append("API_PORT=8000")
+        produced.append(("DATABASE_BACKEND", "sqlite"))
+        produced.append(("NYMERIA_DATA_DIR", _env_value(str(data_dir))))
+        produced.append(("API_HOST", "0.0.0.0"))
+    produced.append(("API_PORT", "8000"))
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
-            lines.append(f"{env_var}={_env_value(value)}")
+            produced.append((env_var, _env_value(value)))
     if secrets_key:
         # Credential-vault encryption key (Fernet). Without it the first vault
         # write (OAuth connect, BYO bot token, integration secret) raises
         # SecretsKeyMissing. Read straight from the env by nymeria/core/secrets.py.
-        lines.append(f"NYMERIA_SECRETS_KEY={_env_value(secrets_key)}")
-    lines.append("")
+        produced.append(("NYMERIA_SECRETS_KEY", _env_value(secrets_key)))
 
-    content = "\n".join(lines)
+    if merge and config_path.exists():
+        content = _merge_config_content(config_path, produced)
+    else:
+        lines = ["# Generated by `nymeria init`."]
+        lines.extend(f"{key}={value}" for key, value in produced)
+        lines.append("")
+        content = "\n".join(lines)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(config_path.parent), prefix=f".{config_path.name}.", suffix=".tmp"
     )
@@ -307,6 +363,38 @@ def write_config(
         except OSError:
             pass  # best-effort cleanup; re-raise the original error
         raise
+
+
+def _merge_config_content(config_path: Path, produced: list[tuple[str, str]]) -> str:
+    """Overlay produced ``KEY=VALUE`` entries onto the existing file's lines.
+
+    Existing comments, blank lines, and untouched keys are kept verbatim and in
+    place; a produced key replaces only its value; produced keys not already
+    present are appended in canonical order. An omitted key (e.g. a provider key
+    left blank to keep the existing one) is never touched. The line parse mirrors
+    `_read_secrets_key_from_file` (split on the first `=`, strip).
+    """
+    produced_map = dict(produced)
+    seen: set[str] = set()
+    out: list[str] = []
+    try:
+        existing = config_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        existing = []
+    for raw_line in existing:
+        stripped = raw_line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in produced_map and key not in seen:
+                out.append(f"{key}={produced_map[key]}")
+                seen.add(key)
+                continue
+        out.append(raw_line)
+    for key, value in produced:
+        if key not in seen:
+            out.append(f"{key}={value}")
+            seen.add(key)
+    return "\n".join(out) + "\n"
 
 
 def _env_value(value: str) -> str:
@@ -408,6 +496,56 @@ def seed_bootstrap_profile(
         console.print(
             f"[yellow]Could not seed default thread tools ({exc}). "
             "Set them later in settings.[/yellow]"
+        )
+
+
+def update_bootstrap_profile(
+    data_dir: Path,
+    state: WizardState,
+    console: Console,
+    *,
+    scoped_section: str | None = None,
+) -> None:
+    """Reconfigure the bootstrap admin's tool/skill picks in place.
+
+    Unlike ``seed_bootstrap_profile`` (first-run, write-only-if-absent), this
+    updates an EXISTING profile from the hydrated-then-edited state.
+    ``default_thread_tools`` and ``enabled_global_skills`` are recomputed from the
+    init picks; user-added tools captured during hydration
+    (``state.unmanaged_tools``) are preserved by ``default_thread_tools_for_state``.
+    A scoped jump that touched no pick section is a no-op. Falls back to seeding
+    when no profile exists yet (e.g. the admin was just created this run).
+    Best-effort: a failure here never aborts the reconfigure.
+    """
+
+    pick_sections = {"web_search", "fetch_url", "image_gen", "skill_kits"}
+    if scoped_section is not None and scoped_section not in pick_sections:
+        return  # this jump cannot have changed the profile
+
+    from ..core.accounts import BOOTSTRAP_USER_ID
+    from ..core.user_profile import UserProfileManager
+    from .tool_seed import (
+        default_thread_tools_for_state,
+        selected_global_skills_for_state,
+    )
+
+    try:
+        manager = UserProfileManager(data_dir)
+        if not manager._get_profile_path(BOOTSTRAP_USER_ID).exists():
+            seed_bootstrap_profile(data_dir, state, console)
+            return
+        profile = manager.get_profile(BOOTSTRAP_USER_ID)
+        tools = default_thread_tools_for_state(state)
+        profile.tool_preferences.default_thread_tools = tools
+        skills = selected_global_skills_for_state(state)
+        profile.enabled_global_skills = skills
+        manager.save_profile(profile)
+        console.print(f"[green]Default thread tools:[/green] {len(tools)} (updated)")
+        console.print(f"[green]Default skill kits:[/green] {len(skills)} (updated)")
+    except Exception as exc:  # pragma: no cover - best-effort
+        console.print(
+            f"[yellow]Could not update default tools/skills ({exc}). "
+            "Set them in settings.[/yellow]"
         )
 
 
@@ -911,6 +1049,7 @@ __all__ = [
     "finalize",
     "write_config",
     "seed_bootstrap_profile",
+    "update_bootstrap_profile",
     "resolve_root",
     "resolve_runtime_root",
     "source_checkout_root",

@@ -46,6 +46,12 @@ def default_thread_tools_for_state(state: "WizardState") -> list[str]:
     for name in seeded_tool_names(state):
         if name not in names:
             names.append(name)
+    # Reconfigure: re-append any user-added tools captured during hydration so a
+    # profile update never silently drops tools that are neither core nor a known
+    # init family member. Empty on first-run.
+    for name in getattr(state, "unmanaged_tools", []) or []:
+        if name not in names:
+            names.append(name)
     return names
 
 

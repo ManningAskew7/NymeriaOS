@@ -870,6 +870,312 @@ def _capture_console():
     return Console(file=buf, width=100, force_terminal=False), buf
 
 
+# --- reconfigure mode: RAG inverse-mappers ----------------------------------
+
+
+def test_embedder_inverse_roundtrips_every_option_and_has_no_collisions():
+    from nymeria.setup.rag_catalog import EMBEDDERS, embedder_id_for_env
+
+    keys = {}
+    for opt in EMBEDDERS:
+        key = (opt.provider, opt.model, opt.dimensions)
+        assert key not in keys, f"colliding embedder key {key}: {keys.get(key)} vs {opt.id}"
+        keys[key] = opt.id
+        assert embedder_id_for_env(opt.provider, opt.model, opt.dimensions) == opt.id
+
+
+def test_reranker_inverse_roundtrips_and_disabled_maps_to_none():
+    from nymeria.setup.rag_catalog import RERANKERS, reranker_id_for_env
+
+    for opt in RERANKERS:
+        enabled = "false" if opt.provider == "none" else "true"
+        assert reranker_id_for_env(opt.provider, opt.model, enabled) == opt.id
+    # A disabled reranker resolves to the explicit "none" option regardless of provider.
+    assert reranker_id_for_env("voyage", "rerank-2.5", "false") is not None
+    assert reranker_id_for_env("voyage", "rerank-2.5", "false") != "voyage"
+
+
+def test_rag_env_forward_then_inverse_recovers_ids():
+    from nymeria.setup.rag_catalog import (
+        EMBEDDERS,
+        RERANKERS,
+        embedder_id_for_env,
+        rag_env_for_state,
+        reranker_id_for_env,
+    )
+    from nymeria.setup.state import WizardState
+
+    emb_id = EMBEDDERS[0].id
+    rer_id = next(o.id for o in RERANKERS if o.provider != "none")
+    state = WizardState(embedder=emb_id, reranker=rer_id)
+    env = rag_env_for_state(state)
+    assert (
+        embedder_id_for_env(
+            env["EMBEDDING_PROVIDER"], env["EMBEDDING_MODEL"], env.get("EMBEDDING_DIMENSIONS")
+        )
+        == emb_id
+    )
+    assert (
+        reranker_id_for_env(
+            env.get("RAG_RERANK_PROVIDER"),
+            env.get("RAG_RERANK_MODEL"),
+            env.get("RAG_RERANK_ENABLED"),
+        )
+        == rer_id
+    )
+
+
+# --- reconfigure mode: hydration --------------------------------------------
+
+
+def _first_run(monkeypatch, root, *extra):
+    """Write a first-run config + bootstrap profile under ``root`` via the flag path."""
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    args = [
+        "--provider", "anthropic", "--model", "claude-test-model",
+        "--api-key", "sk-ant-x", "--root", str(root),
+        "--non-interactive", "--skip-llm-test", *extra,
+    ]
+    assert setup_main(args) == 0
+
+
+def test_hydrate_returns_false_on_fresh_install(tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    state = WizardState(root=tmp_path / "empty")
+    assert hydrate_state_from_disk(state) is False
+    assert state.provider is None and state.reconfigure is False
+
+
+def test_hydrate_reads_provider_model_and_marks_key_present(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root)
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.reconfigure is True
+    assert state.provider == "anthropic"
+    assert state.model == "claude-test-model"
+    # The key value is never read into state; only its presence is recorded.
+    assert state.api_key == ""
+    assert "ANTHROPIC_DIRECT_API_KEY" in state.present_env_keys
+    # A keyless first run still equips local RAG, so the embedder round-trips.
+    assert state.embedder == "local-granite"
+
+
+def test_hydrate_is_fill_only_if_unset(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root)
+
+    # An explicit flag value (provider already set) must survive hydration.
+    state = WizardState(root=root, provider="openai", model="gpt-x")
+    assert hydrate_state_from_disk(state) is True
+    assert state.provider == "openai"
+    assert state.model == "gpt-x"
+
+
+def test_hydrate_recovers_picks_and_captures_unmanaged(monkeypatch, tmp_path):
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    data_dir = root / "data"
+    _first_run(
+        monkeypatch, root,
+        "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+        "--image-gen", "image_gen_gemini",
+    )
+    # Simulate a user-added (non-core, non-family) tool in the profile.
+    manager = UserProfileManager(data_dir)
+    profile = manager.get_profile("default")
+    tools = list(profile.tool_preferences.default_thread_tools or [])
+    tools.append("my_custom_tool")
+    profile.tool_preferences.default_thread_tools = tools
+    manager.save_profile(profile)
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.extras.get("web_search") == ["web_search_tavily"]
+    assert state.extras.get("image_gen") == ["image_gen_gemini"]
+    assert state.unmanaged_tools == ["my_custom_tool"]
+
+
+def test_hydrate_infers_docker_vs_local(monkeypatch, tmp_path):
+    from nymeria.onboarding import HostingOption
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    # Docker first run writes .env.docker (no host data dir / db backend).
+    docker_root = tmp_path / "checkout"
+    docker_root.mkdir()
+    _first_run(monkeypatch, docker_root, "--hosting", "docker")
+    dstate = WizardState(root=docker_root)
+    assert hydrate_state_from_disk(dstate) is True
+    assert dstate.hosting is HostingOption.DOCKER
+    # Docker picks live in the container volume, so none are hydrated host-side.
+    assert "web_search" not in dstate.extras
+
+    # Local first run writes config.env and is inferred LOCAL.
+    local_root = tmp_path / "local"
+    _first_run(monkeypatch, local_root)
+    lstate = WizardState(root=local_root)
+    assert hydrate_state_from_disk(lstate) is True
+    assert lstate.hosting is HostingOption.LOCAL
+
+
+# --- reconfigure mode: section filtering + runner ---------------------------
+
+
+def test_build_section_steps_filters_to_section_plus_deps():
+    from nymeria.setup.nav import Navigator
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps import build_section_steps, default_step_ids
+
+    assert "provider" in default_step_ids() and "image_gen" in default_step_ids()
+
+    # A family jump keeps the backend-keys step resolvable.
+    state = WizardState(extras={"image_gen": ["image_gen_openai"]})
+    steps = build_section_steps("image_gen")
+    nav = Navigator(steps, state)
+    assert [steps[i].id for i in nav.applicable_indices()] == [
+        "welcome", "image_gen", "backend_keys", "review",
+    ]
+
+    # The LLM unit stays together; connection drops out for a provider that
+    # needs no base URL.
+    s2 = WizardState(provider="anthropic")
+    nav2 = Navigator(build_section_steps("model"), s2)
+    kept = [build_section_steps("model")[i].id for i in nav2.applicable_indices()]
+    assert kept == ["welcome", "provider", "model", "review"]
+
+
+def test_run_init_rejects_unknown_section(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    with pytest.raises(SystemExit) as exc:
+        setup_main(["definitely_not_a_section", "--root", str(tmp_path / "x")])
+    assert "Unknown section" in str(exc.value)
+
+
+# --- reconfigure mode: finalize merge-write + profile update -----------------
+
+
+def test_merge_write_preserves_untouched_lines_and_secrets_key(monkeypatch, tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root)
+    config_path = root / "config.env"
+    # A hand-added line the user put in config.env must survive a reconfigure.
+    original = config_path.read_text(encoding="utf-8")
+    config_path.write_text(original + "MY_CUSTOM_VAR=keepme\n", encoding="utf-8")
+    key_before = _read_secrets_key(original)
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.model = "claude-new-model"  # the one thing we change
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=False,
+                    overwrite_confirmed=True, merge=True) == 0
+
+    after = config_path.read_text(encoding="utf-8")
+    assert "MY_CUSTOM_VAR=keepme" in after          # untouched line preserved
+    assert "LLM_MODEL=claude-new-model" in after     # changed value applied
+    assert _read_secrets_key(after) == key_before    # key never rotated
+    # The kept provider key line survives (blank field == keep existing).
+    assert "ANTHROPIC_DIRECT_API_KEY=sk-ant-x" in after
+    assert "LLM_PROVIDER=anthropic" in after          # not downgraded
+
+
+def test_reconfigure_updates_profile_picks_without_clobbering_custom(monkeypatch, tmp_path):
+    import json
+
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.tool_seed import core_seed_tool_names
+
+    root = tmp_path / "runtime"
+    data_dir = root / "data"
+    _first_run(monkeypatch, root, "--web-search", "web_search_tavily", "--tavily-api-key", "k")
+    manager = UserProfileManager(data_dir)
+    profile = manager.get_profile("default")
+    tools = list(profile.tool_preferences.default_thread_tools or [])
+    tools.append("my_custom_tool")
+    profile.tool_preferences.default_thread_tools = tools
+    manager.save_profile(profile)
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.extras["web_search"] = ["web_search_brave"]  # swap the search backend
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=False,
+                    overwrite_confirmed=True, merge=True,
+                    scoped_section="web_search") == 0
+
+    after = json.loads(
+        (data_dir / "users" / "default" / "profile.json").read_text(encoding="utf-8")
+    )
+    result = after["tool_preferences"]["default_thread_tools"]
+    assert "web_search_brave" in result
+    assert "web_search_tavily" not in result          # the swapped-out pick is gone
+    assert "my_custom_tool" in result                 # user-added tool preserved
+    assert set(core_seed_tool_names()) <= set(result)  # core seed intact
+
+
+def test_scoped_reconfigure_skips_token_and_start(monkeypatch, tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root)
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.extras["image_gen"] = ["image_gen_gemini"]
+    console, buf = _capture_console()
+    rc = finalize(state, console=console, non_interactive=False,
+                  overwrite_confirmed=True, merge=True, scoped_section="image_gen")
+    out = buf.getvalue()
+    assert rc == 0
+    assert "Updated" in out and "image_gen" in out
+    # A scoped edit must not re-print the one-time bootstrap token.
+    assert "Bootstrap token" not in out
+
+
+def test_reconfigure_docker_merges_env_docker_only(monkeypatch, tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _first_run(monkeypatch, root, "--hosting", "docker")
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.model = "claude-docker-new"
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=False,
+                    overwrite_confirmed=True, merge=True) == 0
+
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert "LLM_MODEL=claude-docker-new" in content
+    # No host-side profile is created for a Docker reconfigure.
+    assert not (root / "data" / "users" / "default" / "profile.json").exists()
+
+
 def test_review_summary_markup_surfaces_collected_choices():
     from nymeria.onboarding import (
         ExternalAccess,

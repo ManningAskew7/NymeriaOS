@@ -48,6 +48,30 @@ QUICK_KEEP_STEP_IDS = frozenset(
 QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 
 
+# Section-jump (`nymeria init <section>`) dependency closure: steps that must stay
+# resolvable when jumping to a section, beyond the section itself plus the welcome
+# and review bookends. The provider/connection/model trio is one LLM unit; the
+# tool-family steps need the backend-keys step to collect any new credential; the
+# reranker follows the embedder. Steps not listed keep just themselves. Each step
+# keeps its own `applies`, so conditional members still drop out when irrelevant.
+SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
+    "provider": frozenset({"provider", "connection", "model"}),
+    "connection": frozenset({"provider", "connection", "model"}),
+    "model": frozenset({"provider", "connection", "model"}),
+    "web_search": frozenset({"web_search", "backend_keys"}),
+    "fetch_url": frozenset({"fetch_url", "backend_keys"}),
+    "image_gen": frozenset({"image_gen", "backend_keys"}),
+    "embedder": frozenset({"embedder", "reranker"}),
+    "reranker": frozenset({"embedder", "reranker"}),
+}
+
+
+def section_keep_ids(section: str) -> frozenset[str]:
+    """Step ids to keep applicable for a section jump: section + deps + bookends."""
+    deps = SECTION_DEPENDENCIES.get(section, frozenset({section}))
+    return frozenset({"welcome", "review"} | set(deps))
+
+
 def apply_quick_defaults(state: "WizardState") -> None:
     """Seed defaults for the steps the quick path skips, onto ``state``.
 
@@ -65,4 +89,10 @@ def apply_quick_defaults(state: "WizardState") -> None:
         state.extras["fetch_url"] = list(QUICK_FETCH_DEFAULT)
 
 
-__all__ = ["QUICK_KEEP_STEP_IDS", "QUICK_FETCH_DEFAULT", "apply_quick_defaults"]
+__all__ = [
+    "QUICK_KEEP_STEP_IDS",
+    "QUICK_FETCH_DEFAULT",
+    "apply_quick_defaults",
+    "SECTION_DEPENDENCIES",
+    "section_keep_ids",
+]

@@ -1,0 +1,211 @@
+"""Load an existing install's settings back into ``WizardState`` (reconfigure).
+
+When ``nymeria init`` runs against an install that already has a config file,
+this fills ``WizardState`` from disk so every step shows the current value as its
+default and finalize can merge-write only what changed. Fill-only-if-unset: an
+explicit flag (e.g. ``--model``) always wins over a hydrated value, mirroring
+``quick.apply_quick_defaults`` / ``rag_catalog.apply_quickstart_rag``.
+
+TUI-free and read-only. Reuses ``dotenv.dotenv_values`` (non-mutating) for the
+env file and reads the bootstrap ``profile.json`` directly (not via
+``get_profile``, which injects default skills and would mask "never customized").
+
+Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
+as present (never re-read into the UI); the recorded-but-never-written deployment
+enums (image_tier/security_profile/external_access/auth_method) have no source;
+LOCAL vs SERVICE is indistinguishable on disk (defaults LOCAL); and the Docker
+single-container profile lives in the container volume, so tool/skill picks are
+hydrated for local/service installs only.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+from rich.console import Console
+
+from ..onboarding import HostingOption
+from . import family_catalog, finalize
+from .providers import OPTIONAL_ENV_ORDER
+from .rag_catalog import embedder_id_for_env, reranker_id_for_env
+from .state import WizardState
+
+# Env vars whose mere presence means "already configured" (so a blank field keeps
+# them and the backend-keys step does not re-prompt). The provider's own key var
+# is added dynamically once the provider is known.
+_SECRET_ENV_VARS = set(OPTIONAL_ENV_ORDER) | {"NYMERIA_SECRETS_KEY"}
+
+BOOTSTRAP_USER_ID = "default"
+
+
+def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = None) -> bool:
+    """Fill ``state`` from an existing on-disk config. Return True if one was found.
+
+    Returns False (and leaves ``state`` untouched) for a fresh install, so the
+    caller keeps first-run behavior.
+    """
+    located = _locate_config(state)
+    if located is None:
+        return False
+    config_path, for_docker = located
+
+    try:
+        from dotenv import dotenv_values
+
+        values = {k: v for k, v in dotenv_values(str(config_path)).items() if v is not None}
+    except OSError:
+        return False
+
+    state.reconfigure = True
+
+    if state.hosting is None:
+        # Only DOCKER vs non-docker is recoverable; LOCAL vs SERVICE is not.
+        state.hosting = HostingOption.DOCKER if for_docker else HostingOption.LOCAL
+
+    if state.provider is None and _get(values, "LLM_PROVIDER"):
+        state.provider = _get(values, "LLM_PROVIDER")
+    if not state.model and _get(values, "LLM_MODEL"):
+        state.model = _get(values, "LLM_MODEL") or ""
+    if not state.base_url and _get(values, "LLM_BASE_URL"):
+        state.base_url = _get(values, "LLM_BASE_URL") or ""
+    if not state.api_mode and _get(values, "OPENAI_API_MODE"):
+        state.api_mode = _get(values, "OPENAI_API_MODE") or ""
+
+    # RAG: reverse-map the env back to a catalog id (only if not already chosen and
+    # not auto-quickstarted, which a flag/quick path may have done).
+    if state.embedder is None and not state.rag_quickstarted:
+        emb_id = embedder_id_for_env(
+            _get(values, "EMBEDDING_PROVIDER"),
+            _get(values, "EMBEDDING_MODEL"),
+            _get(values, "EMBEDDING_DIMENSIONS"),
+        )
+        if emb_id is not None:
+            state.embedder = emb_id
+            if _get(values, "RAG_RETRIEVAL_MODE") == "vector":
+                state.rag_retrieval_mode = "vector"
+            if state.reranker is None:
+                rer_id = reranker_id_for_env(
+                    _get(values, "RAG_RERANK_PROVIDER"),
+                    _get(values, "RAG_RERANK_MODEL"),
+                    _get(values, "RAG_RERANK_ENABLED"),
+                )
+                if rer_id is not None:
+                    state.reranker = rer_id
+
+    if state.data_dir is None and not for_docker and _get(values, "NYMERIA_DATA_DIR"):
+        state.data_dir = Path(_get(values, "NYMERIA_DATA_DIR") or "")
+
+    _record_present_keys(state, values)
+
+    if not for_docker:
+        _hydrate_profile_picks(state, for_docker=for_docker)
+
+    if console is not None:
+        where = "Docker (.env.docker)" if for_docker else str(config_path)
+        console.print(f"[green]Reconfiguring[/green] the existing install at {where}")
+    return True
+
+
+def _locate_config(state: WizardState) -> Optional[tuple[Path, bool]]:
+    """Find the highest-precedence existing config file and its shape.
+
+    Honors an explicit ``--root``; otherwise checks the Docker source-checkout
+    root (for ``.env.docker``) and the normal init root (for ``config.env``/
+    ``.env``). The first existing file wins; ``.env.docker`` implies Docker.
+    """
+    candidates: list[tuple[Path, bool]] = []
+    if state.root is not None:
+        root = Path(state.root).expanduser().resolve()
+        candidates = [
+            (root / ".env.docker", True),
+            (root / "config.env", False),
+            (root / ".env", False),
+        ]
+    else:
+        docker_root = finalize.resolve_runtime_root(state, for_docker=True)
+        local_root = finalize.resolve_runtime_root(state, for_docker=False)
+        candidates = [
+            (docker_root / ".env.docker", True),
+            (local_root / "config.env", False),
+            (local_root / ".env", False),
+        ]
+    for path, is_docker in candidates:
+        if path.exists():
+            return path, is_docker
+    return None
+
+
+def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
+    """Record which secret/credential env vars are already set (presence only)."""
+    secret_vars = set(_SECRET_ENV_VARS)
+    spec = state.provider_spec()
+    if spec is not None and spec.api_key_env_vars:
+        secret_vars.add(spec.api_key_env_vars[0])
+    for var in secret_vars:
+        if (values.get(var) or "").strip():
+            state.present_env_keys.add(var)
+
+
+def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
+    """Recover the bootstrap admin's tool/skill picks from ``profile.json``.
+
+    Local/service only (the Docker profile lives in the container volume). Reads
+    the JSON directly so default-skill migration does not mask the real picks.
+    Partitions ``default_thread_tools`` into the init families, subtracting the
+    core seed; tools that are neither core nor a known family member are recorded
+    as ``unmanaged_tools`` so a reconfigure never drops user-added tools.
+    """
+    from .tool_seed import core_seed_tool_names
+
+    root = finalize.resolve_runtime_root(state, for_docker=False)
+    data_dir = finalize.resolve_data_dir(state, root=root)
+    profile_path = data_dir / "users" / BOOTSTRAP_USER_ID / "profile.json"
+    if not profile_path.exists():
+        return
+    try:
+        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+
+    core = set(core_seed_tool_names())
+    families = {
+        "web_search": {c.value for c in family_catalog.web_search_choices()},
+        "fetch_url": {c.value for c in family_catalog.fetch_url_choices()},
+        "image_gen": {c.value for c in family_catalog.image_gen_choices()},
+    }
+    default_tools = raw.get("tool_preferences", {}).get("default_thread_tools")
+    if isinstance(default_tools, list):
+        matched: dict[str, list[str]] = {fam: [] for fam in families}
+        unmanaged: list[str] = []
+        for name in default_tools:
+            if name in core:
+                continue
+            for fam, members in families.items():
+                if name in members:
+                    matched[fam].append(name)
+                    break
+            else:
+                unmanaged.append(name)
+        for fam, names in matched.items():
+            if fam not in state.extras:  # an explicit flag still wins
+                state.extras[fam] = names
+        if unmanaged and not state.unmanaged_tools:
+            state.unmanaged_tools = unmanaged
+
+    enabled_skills = raw.get("enabled_global_skills")
+    if isinstance(enabled_skills, list) and "skill_kits" not in state.extras:
+        kit_values = {c.value for c in family_catalog.skill_kit_choices()}
+        state.extras["skill_kits"] = [s for s in enabled_skills if s in kit_values]
+
+
+def _get(values: dict[str, str], key: str) -> Optional[str]:
+    raw = values.get(key)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
+__all__ = ["hydrate_state_from_disk"]

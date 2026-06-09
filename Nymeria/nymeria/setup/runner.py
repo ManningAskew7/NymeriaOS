@@ -332,6 +332,29 @@ def run_init(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Reconfigure: when an install already exists, load its settings so every step
+    # shows the current value as its default and finalize merge-writes only what
+    # changed. Returns False on a fresh install (first-run behavior unchanged).
+    from .hydrate import hydrate_state_from_disk
+
+    reconfigure = hydrate_state_from_disk(state, console=console)
+
+    # Section jump (`nymeria init <section>`): run only that section (plus its
+    # dependency closure and the welcome/review bookends). Validated against the
+    # known step ids; `None` runs the full wizard.
+    section = getattr(args, "section", None)
+    steps = None
+    if section:
+        from .steps import build_section_steps, default_step_ids
+
+        valid = default_step_ids()
+        if section not in valid:
+            jumpable = ", ".join(s for s in valid if s not in {"welcome", "review"})
+            raise SystemExit(
+                f"Unknown section '{section}'. Choose one of: {jumpable}"
+            )
+        steps = build_section_steps(section)
+
     # Quick path: seed the skipped steps' no-extra-auth defaults (free local RAG,
     # keyless web fetch) before the wizard runs so the review screen is accurate.
     if state.quick:
@@ -341,7 +364,7 @@ def run_init(args: argparse.Namespace) -> int:
     # so the bootstrap token prints to normal scrollback.
     from .app import SetupWizardApp
 
-    app = SetupWizardApp(state)
+    app = SetupWizardApp(state, steps=steps)
     app.run()
     if not app.completed:
         console.print("Setup cancelled.")
@@ -351,6 +374,8 @@ def run_init(args: argparse.Namespace) -> int:
         console=console,
         non_interactive=False,
         overwrite_confirmed=True,
+        merge=reconfigure,
+        scoped_section=section,
     )
 
 

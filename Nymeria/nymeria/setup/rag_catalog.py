@@ -451,6 +451,70 @@ def rag_env_for_state(state: "WizardState") -> dict[str, str]:
     return env
 
 
+def _truthy_env(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def embedder_id_for_env(
+    provider: Optional[str], model: Optional[str], dimensions: object = None
+) -> Optional[str]:
+    """Reverse of ``rag_env_for_state``'s embedder half: recover the catalog id.
+
+    Keyed on ``(provider, model, dimensions)`` because some options share a
+    provider or a model and differ only on dimensions (e.g. the Cohere 1024/1536
+    pair, or the Voyage lineup that all run over an OpenAI-compatible endpoint).
+    Falls back to a ``(provider, model)`` match when dimensions is missing or
+    unparseable. Returns None for an unknown combo (a hand-edited or newer
+    config), leaving the embedder unset rather than guessing.
+    """
+    if not provider or not model:
+        return None
+    try:
+        dims: Optional[int] = (
+            int(str(dimensions)) if dimensions is not None and str(dimensions) != "" else None
+        )
+    except (TypeError, ValueError):
+        dims = None
+    if dims is not None:
+        for opt in EMBEDDERS:
+            if opt.provider == provider and opt.model == model and opt.dimensions == dims:
+                return opt.id
+    for opt in EMBEDDERS:
+        if opt.provider == provider and opt.model == model:
+            return opt.id
+    return None
+
+
+def reranker_id_for_env(
+    provider: Optional[str], model: Optional[str], enabled: object = None
+) -> Optional[str]:
+    """Reverse of ``rag_env_for_state``'s reranker half: recover the catalog id.
+
+    A falsey/absent ``RAG_RERANK_ENABLED`` maps to the explicit "none" option.
+    Otherwise matches ``(provider, model)`` (model may be absent for providers
+    that omit it), loosening to provider-only if the model names a variant not in
+    the catalog. Returns None for an unknown provider.
+    """
+    if not _truthy_env(enabled):
+        for opt in RERANKERS:
+            if opt.provider == "none":
+                return opt.id
+        return None
+    if not provider:
+        return None
+    for opt in RERANKERS:
+        if opt.provider == provider and (opt.model or None) == (model or None):
+            return opt.id
+    for opt in RERANKERS:
+        if opt.provider == provider:
+            return opt.id
+    return None
+
+
 def apply_quickstart_rag(state: "WizardState") -> None:
     """Equip the free, private local RAG stack (granite + Ettin) silently.
 
@@ -482,5 +546,7 @@ __all__ = [
     "get_reranker",
     "recommended_reranker_for",
     "rag_env_for_state",
+    "embedder_id_for_env",
+    "reranker_id_for_env",
     "apply_quickstart_rag",
 ]
