@@ -76,6 +76,16 @@ def _key_placeholder(provider_id: str | None) -> str:
     return f"{prefix}..." if prefix else f"paste your {spec.label} API key"
 
 
+def _provider_key_present(state: WizardState, provider_id: str | None) -> bool:
+    """True when this provider's key env var is already set on disk (reconfigure)."""
+    spec = get_llm_provider_spec(provider_id) if provider_id else None
+    return bool(
+        spec
+        and spec.api_key_env_vars
+        and spec.api_key_env_vars[0] in getattr(state, "present_env_keys", set())
+    )
+
+
 class ProviderStep(WizardStep):
     """Searchable provider picker + API key in one screen."""
 
@@ -93,9 +103,16 @@ class ProviderStep(WizardStep):
         yield Input(
             value=self.state.api_key,
             password=True,
-            placeholder=_key_placeholder(initial),
+            placeholder=self._key_field_placeholder(initial),
             id="api-key",
         )
+
+    def _key_field_placeholder(self, provider_id: str | None) -> str:
+        # Reconfigure: when a key for this provider is already on disk, a blank
+        # field keeps it; advertise that instead of asking for a fresh paste.
+        if _provider_key_present(self.state, provider_id):
+            return "leave blank to keep the existing key"
+        return _key_placeholder(provider_id)
 
     def on_mount(self) -> None:
         self.query_one(SearchableList).focus()
@@ -104,11 +121,15 @@ class ProviderStep(WizardStep):
         # Update the key-field hint to match the highlighted provider. We do not
         # write state.provider here, so skipping the step leaves it unset.
         if event.value:
-            self.query_one("#api-key", Input).placeholder = _key_placeholder(event.value)
+            self.query_one("#api-key", Input).placeholder = self._key_field_placeholder(
+                event.value
+            )
 
     def on_searchable_list_selected(self, event: SearchableList.Selected) -> None:
         # Mouse click on a provider: update the hint and move to the key field.
-        self.query_one("#api-key", Input).placeholder = _key_placeholder(event.value)
+        self.query_one("#api-key", Input).placeholder = self._key_field_placeholder(
+            event.value
+        )
         self.query_one("#api-key", Input).focus()
 
     def action_next(self) -> None:
@@ -129,13 +150,17 @@ class ProviderStep(WizardStep):
             self.show_error("Select a provider.")
             return False
         api_key = self.query_one("#api-key", Input).value.strip()
-        if spec.requires_api_key and not api_key:
+        # Reconfigure: a blank field keeps the key already on disk for this
+        # provider, so do not force a re-paste (finalize preserves the line).
+        keep_existing = not api_key and _provider_key_present(self.state, spec.id)
+        if spec.requires_api_key and not api_key and not keep_existing:
             self.show_error("Enter an API key, or press Ctrl+S to skip this step.")
             return False
-        ok, prefix = valid_key_format_for_spec(spec, api_key)
-        if not ok and prefix:
-            self.show_error(f"That key should start with `{prefix}`.")
-            return False
+        if api_key:
+            ok, prefix = valid_key_format_for_spec(spec, api_key)
+            if not ok and prefix:
+                self.show_error(f"That key should start with `{prefix}`.")
+                return False
         if self.state.provider != spec.id:
             # Connection details belong to the previously chosen provider. On a
             # switch, clear them so a back-nav that skips the (now inapplicable)

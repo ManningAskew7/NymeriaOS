@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..nav import Step
-from ..quick import QUICK_KEEP_STEP_IDS
+from ..quick import QUICK_KEEP_STEP_IDS, section_keep_ids
 from .agent_settings import make_agent_settings_step
 from .auth import make_auth_method_step
 from .backend_keys import make_backend_keys_step
@@ -59,7 +59,12 @@ def build_default_steps() -> list[Step]:
     step outside `QUICK_KEEP_STEP_IDS` is gated off (see `_quick_gated`).
     """
 
-    steps = [
+    steps = _default_step_list()
+    return [_quick_gated(step) for step in steps]
+
+
+def _default_step_list() -> list[Step]:
+    return [
         # Detect environment.
         make_welcome_step(),
         # Choose a deployment target, then shape the container image and posture.
@@ -90,7 +95,33 @@ def build_default_steps() -> list[Step]:
         make_start_now_step(),
         make_review_step(),
     ]
-    return [_quick_gated(step) for step in steps]
 
 
-__all__ = ["build_default_steps"]
+def default_step_ids() -> list[str]:
+    """Ordered ids of every wizard step (the valid `init <section>` names)."""
+    return [step.id for step in _default_step_list()]
+
+
+def _section_gated(step: Step, keep: frozenset[str]) -> Step:
+    """Gate a step off unless its id is in the section keep-set.
+
+    Mirrors `_quick_gated`: kept steps retain their own `applies` (so conditional
+    members like `connection`/`backend_keys`/`reranker` still drop out when
+    irrelevant); everything else is made inapplicable.
+    """
+    if step.id in keep:
+        return step
+    return Step(id=step.id, applies=lambda _state: False, build=step.build)
+
+
+def build_section_steps(section: str) -> list[Step]:
+    """The default step list filtered to a single `init <section>` jump.
+
+    Keeps the section, its dependency closure, and the welcome/review bookends
+    (see `quick.section_keep_ids`); all other steps are gated off.
+    """
+    keep = section_keep_ids(section)
+    return [_section_gated(step, keep) for step in _default_step_list()]
+
+
+__all__ = ["build_default_steps", "build_section_steps", "default_step_ids"]

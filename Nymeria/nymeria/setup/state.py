@@ -86,6 +86,20 @@ class WizardState:
     run_doctor: bool = False
     full_doctor: bool = False
 
+    # --- transient reconfigure state (hydrated from disk, never persisted) ----
+    # True when `nymeria init` ran against an existing install (see setup/hydrate).
+    # Switches finalize to a merge-write and lets steps show "keep existing" copy.
+    reconfigure: bool = False
+    # Secret env vars found set on disk (provider key, *_API_KEY, NYMERIA_SECRETS_KEY,
+    # SEARXNG_BASE_URL). Their VALUES are deliberately never read into state; this
+    # records presence so a blank field means "keep" and finalize does not blank a
+    # working key or downgrade a provider to "unconfigured".
+    present_env_keys: set[str] = field(default_factory=set)
+    # Tools in the bootstrap profile's default set that are neither the core seed
+    # nor a known init family member (user-added). Carried through a reconfigure so
+    # the profile-pick update never silently drops them.
+    unmanaged_tools: list[str] = field(default_factory=list)
+
     def provider_spec(self) -> LLMProviderSpec | None:
         """Return the registry LLMProviderSpec for the chosen provider, or None."""
         if self.provider is None:

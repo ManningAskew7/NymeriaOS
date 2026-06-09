@@ -121,6 +121,9 @@ def already_provided_env(state: "WizardState") -> set[str]:
     spec = state.provider_spec()
     if spec is not None and spec.api_key_env_vars and state.api_key.strip():
         provided.add(spec.api_key_env_vars[0])
+    # Reconfigure: credentials already present on disk (recorded by hydration)
+    # are satisfied, so a fully-keyed existing install shows no backend-keys step.
+    provided |= set(getattr(state, "present_env_keys", set()) or set())
     return provided
 
 
