@@ -898,6 +898,60 @@ def test_patch_settings_provider_credentials_are_admin_only(
         assert "sk-user-should-not-write" not in env_path.read_text(encoding="utf-8")
 
 
+def test_patch_settings_preserves_untouched_lines_and_writes_0600(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Reconfigure must overlay only the changed key onto the existing file: the
+    # hand-written comment, the credential-vault key, and unrelated lines survive
+    # verbatim, and the env file (which holds secrets) is rewritten 0600. Both go
+    # through the shared writer in `config/env_file.py`.
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "# hand-written config, keep me\n"
+        "NYMERIA_SECRETS_KEY=k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=\n"
+        "LLM_MODEL=old-model\n"
+        "SOME_UNMANAGED_KEY=leave-this-alone\n",
+        encoding="utf-8",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"llm_model": "new-model"}
+    )
+
+    assert response.status_code == 200
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "LLM_MODEL=new-model" in env_text
+    assert "LLM_MODEL=old-model" not in env_text
+    assert "# hand-written config, keep me" in env_text
+    assert "NYMERIA_SECRETS_KEY=k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=" in env_text
+    assert "SOME_UNMANAGED_KEY=leave-this-alone" in env_text
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_patch_settings_quotes_values_with_spaces(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # A value with a space must be quoted so python-dotenv and compose parse it
+    # whole. The pre-consolidation handler wrote it unquoted (a latent bug); this
+    # is the regression guard.
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("LLM_MODEL=old\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"llm_model": "model with space"}
+    )
+
+    assert response.status_code == 200
+    env_text = env_path.read_text(encoding="utf-8")
+    assert 'LLM_MODEL="model with space"' in env_text
+
+
 def test_get_settings_does_not_return_provider_secret_fields(
     tmp_path: Path,
     monkeypatch,

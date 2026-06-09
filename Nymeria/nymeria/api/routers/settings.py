@@ -20,6 +20,7 @@ from ...config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from ...config.env_file import format_env_value, write_env_file
 from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import (
     get_max_output_tokens,
@@ -1594,11 +1595,6 @@ def create_settings_router(
         global and can include provider credentials.
         """
         env_path = get_env_write_path(settings.project_root)
-
-        existing_lines = []
-        if env_path.exists():
-            existing_lines = env_path.read_text(encoding="utf-8").splitlines()
-
         env_mapping = _env_mapping()
         dumped_updates = updates.model_dump()
         explicitly_set = updates.model_fields_set
@@ -1612,37 +1608,17 @@ def create_settings_router(
         if not updates_dict:
             return {"message": "No updates provided", "restart_required": False}
 
-        updated_vars = set()
-        new_lines = []
-
-        for line in existing_lines:
-            updated = False
-            for setting_name, env_var in env_mapping.items():
-                if setting_name in updates_dict and line.startswith(f"{env_var}="):
-                    value = updates_dict[setting_name]
-                    if value is None:
-                        value = ""
-                    if isinstance(value, bool):
-                        value = str(value).lower()
-                    new_lines.append(f"{env_var}={value}")
-                    updated_vars.add(setting_name)
-                    updated = True
-                    break
-
-            if not updated:
-                new_lines.append(line)
-
-        for setting_name, value in updates_dict.items():
-            if setting_name not in updated_vars:
-                env_var = env_mapping.get(setting_name)
-                if env_var:
-                    if value is None:
-                        value = ""
-                    if isinstance(value, bool):
-                        value = str(value).lower()
-                    new_lines.append(f"{env_var}={value}")
-
-        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        # Overlay only the changed keys onto the existing file, preserving
+        # untouched lines, comments, and the secrets key, via the same shared
+        # atomic 0600 writer the offline `nymeria init` finalize uses
+        # (`config/env_file.py`). The shared formatter quotes special-char values
+        # (plain alnum values, the common case, stay unquoted).
+        produced = [
+            (env_mapping[name], format_env_value(value))
+            for name, value in updates_dict.items()
+            if name in env_mapping
+        ]
+        new_lines = write_env_file(env_path, produced, merge=True)
 
         _sync_process_env(new_lines, set(env_mapping.values()))
 
