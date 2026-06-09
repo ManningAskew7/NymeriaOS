@@ -64,7 +64,7 @@
         {#if notificationStore.loading && notificationStore.notifications.length === 0}
           <div class="empty-state">
             <Spinner size="md" />
-            <span>Loading...</span>
+            <span>Loading notifications…</span>
           </div>
         {:else if notificationStore.notifications.length === 0}
           <div class="empty-state">

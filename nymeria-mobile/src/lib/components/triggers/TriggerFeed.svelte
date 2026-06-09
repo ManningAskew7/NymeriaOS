@@ -72,7 +72,7 @@
 
   {#if triggersStore.loading && filteredTriggers.length === 0}
     <div class="loading-state">
-      <span class="loading-text">Loading...</span>
+      <span class="loading-text">Loading triggers…</span>
     </div>
   {:else if triggersStore.error}
     <div class="error-state">

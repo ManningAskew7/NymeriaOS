@@ -14,7 +14,7 @@
 <div class="tasks-feed">
   {#if isLoading}
     <div class="feed-state">
-      <span>Loading...</span>
+      <span>Loading scheduled tasks…</span>
     </div>
   {:else if todosStore.error}
     <div class="feed-state error">

@@ -877,7 +877,7 @@
 
     <div class="settings-body">
       {#if loading}
-        <div class="loading-state">Loading...</div>
+        <div class="loading-state">Loading settings…</div>
 
       {:else if activeTab === 'instructions'}
         <div class="setting-group">
