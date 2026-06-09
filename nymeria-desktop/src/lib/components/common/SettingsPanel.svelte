@@ -1153,6 +1153,7 @@
                     type="text"
                     bind:value={editingName}
                     placeholder="Connection name"
+                    aria-label="Connection name"
                   />
                 {:else}
                   <div class="conn-info">
@@ -1162,10 +1163,10 @@
                 {/if}
                 <div class="conn-actions">
                   {#if editingConnectionId === conn.id}
-                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save">
+                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save" aria-label="Save connection">
                       <Icon name="check" size={14} />
                     </button>
-                    <button type="button" class="conn-action-btn" onclick={handleCancelEdit} title="Cancel">
+                    <button type="button" class="conn-action-btn" onclick={handleCancelEdit} title="Cancel" aria-label="Cancel edit">
                       <Icon name="x" size={14} />
                     </button>
                   {:else}
@@ -1181,10 +1182,10 @@
                     {:else}
                       <span class="conn-active-label">Connected</span>
                     {/if}
-                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit">
+                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit" aria-label="Edit connection">
                       <Icon name="edit" size={14} />
                     </button>
-                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete">
+                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete" aria-label="Delete connection">
                       <Icon name="trash" size={14} />
                     </button>
                   {/if}
@@ -1201,6 +1202,7 @@
               type="text"
               bind:value={saveConnectionName}
               placeholder="Connection name (e.g. Work, Personal)"
+              aria-label="New connection name"
               onkeydown={(e) => e.key === 'Enter' && handleSaveCurrentConnection()}
             />
             <Button variant="primary" size="sm" onclick={handleSaveCurrentConnection} disabled={!saveConnectionName.trim()}>

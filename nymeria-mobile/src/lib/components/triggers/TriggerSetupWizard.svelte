@@ -227,7 +227,7 @@
     <!-- Header -->
     <div class="wizard-header">
       <h2>{isEditing ? 'Edit Trigger' : 'New Trigger'}</h2>
-      <button class="close-btn" onclick={onClose} type="button">
+      <button class="close-btn" onclick={onClose} type="button" aria-label="Close wizard">
         <Icon name="x" size={16} />
       </button>
     </div>

@@ -698,6 +698,7 @@
       onclick={handleImportClick}
       disabled={importing}
       title="Import thread"
+      aria-label="Import thread"
     >
       <Icon name={importing ? 'loading' : 'upload'} size={14} />
       <span>Import</span>

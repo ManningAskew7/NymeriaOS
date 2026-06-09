@@ -341,6 +341,7 @@
         onclick={openFilePicker}
         disabled={disabled || isStreaming}
         title="Attach files"
+        aria-label="Attach files"
       >
         <Icon name="paperclip" size={22} />
       </button>
@@ -349,6 +350,7 @@
         onclick={openCamera}
         disabled={disabled || isStreaming}
         title="Take photo"
+        aria-label="Take photo"
       >
         <Icon name="camera" size={22} />
       </button>
@@ -371,6 +373,7 @@
         class="send-btn streaming"
         onclick={handleStopClick}
         title="Stop the current turn"
+        aria-label="Stop response"
       >
         <Icon name="stop" size={16} />
       </button>
@@ -380,6 +383,7 @@
       onclick={handleSendClick}
       disabled={!canSend}
       title={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
+      aria-label={isStreaming ? 'Queue message' : 'Send message'}
     >
       <Icon name="send" size={20} />
     </button>

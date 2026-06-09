@@ -166,9 +166,11 @@
         bind:value={formName}
         placeholder="e.g. Filesystem Server"
         onfocus={() => touched = true}
+        aria-invalid={!!formErrors.name}
+        aria-describedby={formErrors.name ? 'mcp-name-err' : undefined}
       />
       {#if formErrors.name}
-        <span class="field-error">{formErrors.name}</span>
+        <span id="mcp-name-err" class="field-error">{formErrors.name}</span>
       {/if}
     </label>
     <label class="form-field form-field-id" class:has-error={formErrors.id}>
@@ -184,9 +186,11 @@
         placeholder="e.g. filesystem"
         oninput={() => { if (mode === 'add') idManuallyEdited = true; }}
         onfocus={() => touched = true}
+        aria-invalid={!!formErrors.id}
+        aria-describedby={formErrors.id ? 'mcp-id-err' : undefined}
       />
       {#if formErrors.id}
-        <span class="field-error">{formErrors.id}</span>
+        <span id="mcp-id-err" class="field-error">{formErrors.id}</span>
       {/if}
     </label>
   </div>
@@ -203,10 +207,12 @@
       bind:value={formCommand}
       placeholder="e.g. npx"
       onfocus={() => touched = true}
+      aria-invalid={!!formErrors.command}
+      aria-describedby={formErrors.command ? 'mcp-command-err mcp-command-hint' : 'mcp-command-hint'}
     />
-    <span class="field-hint">Full path may be needed (e.g. C:/Program Files/nodejs/npx.cmd)</span>
+    <span id="mcp-command-hint" class="field-hint">Full path may be needed (e.g. C:/Program Files/nodejs/npx.cmd)</span>
     {#if formErrors.command}
-      <span class="field-error">{formErrors.command}</span>
+      <span id="mcp-command-err" class="field-error">{formErrors.command}</span>
     {/if}
   </label>
 

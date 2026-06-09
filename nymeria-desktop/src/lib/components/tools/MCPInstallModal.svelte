@@ -336,7 +336,7 @@ https://github.com/example/mcp-server`}
               <span>{bundleFile ? bundleFile.name : 'Upload MCPB, DXT, or ZIP'}</span>
             </label>
             {#if bundleFile}
-              <button type="button" class="clear-file" onclick={clearBundleFile} title="Clear bundle">
+              <button type="button" class="clear-file" onclick={clearBundleFile} title="Clear bundle" aria-label="Clear bundle file">
                 <Icon name="x" size={14} />
               </button>
             {/if}

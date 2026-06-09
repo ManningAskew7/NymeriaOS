@@ -445,11 +445,13 @@
         rows="6"
         class="monospace"
         class:error={parametersError}
+        aria-invalid={!!parametersError}
+        aria-describedby={parametersError ? 'tool-params-err' : 'tool-params-hint'}
       ></textarea>
       {#if parametersError}
-        <p class="error-text">{parametersError}</p>
+        <p id="tool-params-err" class="error-text">{parametersError}</p>
       {:else}
-        <p class="hint">Define tool parameters as JSON object</p>
+        <p id="tool-params-hint" class="hint">Define tool parameters as JSON object</p>
       {/if}
     </div>
   </div>
