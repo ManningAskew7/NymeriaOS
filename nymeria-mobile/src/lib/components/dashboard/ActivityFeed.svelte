@@ -232,7 +232,7 @@
     padding: 0 6px;
     font-size: var(--font-size-xs);
     font-weight: 600;
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
     border-radius: 10px;
     flex-shrink: 0;
@@ -258,7 +258,7 @@
 
   .trigger-group-items {
     padding-left: var(--spacing-md);
-    border-left: 2px solid var(--accent-primary-alpha);
+    border-left: 2px solid var(--accent-tint-bg);
     margin-left: var(--spacing-lg);
   }
 </style>

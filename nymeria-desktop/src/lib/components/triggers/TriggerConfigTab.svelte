@@ -646,7 +646,7 @@
   }
 
   .meta-tag.source {
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 
@@ -784,7 +784,7 @@
   .field-input:focus,
   .field-select:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .field-input::placeholder {
@@ -812,7 +812,7 @@
 
   .field-textarea:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .field-textarea::placeholder {

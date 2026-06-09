@@ -164,7 +164,7 @@
   .add-task-btn:active {
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .feed-state {

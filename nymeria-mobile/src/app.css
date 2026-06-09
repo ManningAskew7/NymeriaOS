@@ -93,7 +93,11 @@
 
   /* Accent derived — Midnight cyan (#5fb8cc) */
   --accent-primary-rgb: 95, 184, 204;
-  --accent-primary-alpha: rgba(95, 184, 204, 0.15);
+  /* Accent tints — DRY up the selected/active state pattern. -bg paints the
+     fill, -border outlines it. Both track the active theme via the rgb
+     triplet, which themes.ts sets per theme. */
+  --accent-tint-bg: rgba(var(--accent-primary-rgb), 0.15);
+  --accent-tint-border: rgba(var(--accent-primary-rgb), 0.30);
   --accent-glow-sm: 0 0 12px rgba(95, 184, 204, 0.15);
   --accent-glow-md: 0 0 20px rgba(95, 184, 204, 0.2);
 
@@ -230,7 +234,7 @@ input:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+  box-shadow: 0 0 0 3px var(--accent-tint-bg);
 }
 
 input::placeholder,

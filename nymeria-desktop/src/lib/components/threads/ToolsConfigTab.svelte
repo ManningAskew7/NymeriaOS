@@ -470,7 +470,7 @@
   }
   .search-field:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
   .search-field::placeholder { color: var(--text-muted); }
 

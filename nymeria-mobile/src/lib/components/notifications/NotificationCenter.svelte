@@ -129,7 +129,7 @@
   }
 
   .mark-all-btn:active {
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .sheet-body {

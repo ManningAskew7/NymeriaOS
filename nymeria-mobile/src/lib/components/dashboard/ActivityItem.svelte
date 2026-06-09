@@ -133,7 +133,7 @@
     font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     border-radius: var(--radius-sm);
     white-space: nowrap;
     overflow: hidden;

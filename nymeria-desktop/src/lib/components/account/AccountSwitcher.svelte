@@ -326,7 +326,7 @@
   }
 
   .row-active {
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .row-main {
@@ -410,7 +410,7 @@
 
   .rename-input:focus {
     outline: none;
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .row-menu-toggle {

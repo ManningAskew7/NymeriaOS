@@ -343,7 +343,7 @@
     background: var(--bg-elevated-2);
   }
   .gl-head.top .gl-count {
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 

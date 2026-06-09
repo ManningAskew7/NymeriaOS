@@ -313,7 +313,7 @@
     text-indent: 1px;
   }
   .badge-installed {
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
     border-color: var(--accent-primary);
   }

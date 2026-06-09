@@ -197,7 +197,7 @@
   .tab-btn.active {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .panel-body {

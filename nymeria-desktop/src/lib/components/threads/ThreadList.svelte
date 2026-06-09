@@ -1414,7 +1414,7 @@
   .bulk-group {
     color: var(--accent-primary);
     background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border: 1px solid var(--accent-tint-border);
   }
 
   .bulk-group:hover {
@@ -1475,7 +1475,7 @@
 
   .folder-picker-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .folder-picker-create-btn {

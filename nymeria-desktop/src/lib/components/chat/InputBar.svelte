@@ -594,7 +594,7 @@
 
   .send-btn:hover:not(:disabled) {
     background: var(--accent-hover);
-    box-shadow: 0 0 12px rgba(var(--accent-primary-rgb), 0.3);
+    box-shadow: 0 0 12px var(--accent-tint-border);
   }
 
   .send-btn:active:not(:disabled) {

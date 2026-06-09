@@ -213,7 +213,7 @@
   .platform-badge {
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     padding: 1px 6px;
     border-radius: var(--radius-sm);
   }

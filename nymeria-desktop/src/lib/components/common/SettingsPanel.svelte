@@ -2770,7 +2770,7 @@
   .llm-subview-btn.active {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
   }
 
   .section-heading {
@@ -2822,7 +2822,7 @@
   select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   /* Custom range slider — replaces the browser's chunky default with a thin
@@ -3129,7 +3129,7 @@
 
   .font-card.selected {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .font-sample {
@@ -3349,7 +3349,7 @@
 
   .theme-card.selected {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .theme-preview {
@@ -3481,7 +3481,7 @@
   input[type='number']:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   input[type='number']::placeholder {

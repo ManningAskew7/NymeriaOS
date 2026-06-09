@@ -587,7 +587,7 @@
   }
 
   .meta-tag.source {
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 

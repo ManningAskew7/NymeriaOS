@@ -316,7 +316,8 @@ export function applyTheme(themeName: ThemeName): void {
   // Accent derived — RGB triplet and alpha variant used by many components
   const accent = hexToRgb(colors.accentPrimary);
   root.style.setProperty('--accent-primary-rgb', `${accent.r}, ${accent.g}, ${accent.b}`);
-  root.style.setProperty('--accent-primary-alpha', `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
+  root.style.setProperty('--accent-tint-bg', `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
+  root.style.setProperty('--accent-tint-border', `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.30)`);
 
   // Accent glow — derived from theme accent
   root.style.setProperty('--accent-glow-sm', `0 0 12px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.15)`);
