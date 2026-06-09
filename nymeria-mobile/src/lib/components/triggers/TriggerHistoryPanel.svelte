@@ -182,7 +182,7 @@
     flex-direction: column;
     background: var(--bg-elevated);
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg, 12px);
+    border-radius: var(--radius-lg);
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
     animation: slideUp 0.2s ease-out;
   }
@@ -264,7 +264,7 @@
 
   .center-state {
     text-align: center;
-    padding: var(--spacing-xl, 32px) var(--spacing-md);
+    padding: var(--spacing-xl) var(--spacing-md);
     color: var(--text-muted);
     font-size: var(--font-size-sm);
   }

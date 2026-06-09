@@ -330,8 +330,8 @@
     justify-content: space-between;
     gap: 8px;
     padding: 8px 12px;
-    background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
     border-radius: 6px;
     color: var(--text-primary);
     font: inherit;
@@ -340,7 +340,7 @@
   }
 
   .trigger:hover:not(:disabled) {
-    border-color: var(--border-default, rgba(255, 255, 255, 0.24));
+    border-color: var(--border-default);
   }
 
   .trigger:focus-visible {
@@ -372,12 +372,12 @@
   }
 
   .trigger-placeholder {
-    color: var(--text-muted, rgba(255, 255, 255, 0.5));
+    color: var(--text-muted);
   }
 
   .trigger-caret {
     flex-shrink: 0;
-    color: var(--text-muted, rgba(255, 255, 255, 0.5));
+    color: var(--text-muted);
     font-size: var(--font-size-3xs);
     transition: transform 120ms;
   }
@@ -401,7 +401,7 @@
     z-index: 50;
     /* §7 — floating listbox: shadow alone defines elevation; border
        would be redundant chrome. */
-    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+    box-shadow: var(--shadow-lg);
   }
 
   .group-header {
@@ -414,12 +414,12 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--text-muted, rgba(255, 255, 255, 0.5));
+    color: var(--text-muted);
     pointer-events: none;
   }
 
   .group-header:not(:first-child) {
-    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border-top: 1px solid var(--border-subtle);
     margin-top: 4px;
   }
 
@@ -435,11 +435,11 @@
   }
 
   .option.active {
-    background: var(--bg-hover, rgba(var(--info-rgb), 0.12));
+    background: var(--bg-hover);
   }
 
   .option.selected {
-    background: var(--bg-active, rgba(var(--info-rgb), 0.18));
+    background: var(--bg-active);
   }
 
   .option-text {
@@ -459,7 +459,7 @@
 
   .option-description {
     font-size: var(--font-size-2xs);
-    color: var(--text-muted, rgba(255, 255, 255, 0.55));
+    color: var(--text-muted);
     line-height: 1.35;
   }
 

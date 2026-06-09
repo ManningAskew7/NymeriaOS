@@ -294,7 +294,7 @@
   .provider-id {
     flex: 1;
     min-width: 0;
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-primary);
     overflow: hidden;
@@ -343,7 +343,7 @@
   }
 
   .provider-input {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
   }
 
   .form-error {

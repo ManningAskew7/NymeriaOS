@@ -186,7 +186,7 @@
        label sits visually centered rather than left-weighted. */
     text-indent: 0.08em;
     color: var(--accent-secondary);
-    background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.1);
+    background: rgba(var(--accent-primary-rgb), 0.1);
     padding: 2px var(--spacing-sm);
     /* §3 — text chips use --radius-sm, not full pill. Full pill is reserved
        for dot indicators and count badges; a label like STDIO / REGISTRY
@@ -196,7 +196,7 @@
 
   .recipe-card.registry .kind-tag {
     color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.18);
+    background: rgba(var(--accent-primary-rgb), 0.18);
   }
 
   .use-label {

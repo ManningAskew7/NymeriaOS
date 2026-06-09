@@ -258,7 +258,7 @@
     padding: 1rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg, 8px);
+    border-radius: var(--radius-lg);
   }
 
   .presets {
@@ -277,11 +277,11 @@
     padding: 0.2rem 0.6rem;
     font-size: var(--font-size-xs);
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: var(--bg-base);
     color: var(--accent-primary);
     cursor: pointer;
-    transition: all var(--transition-fast, 0.15s);
+    transition: all var(--transition-fast);
   }
 
   .preset-btn:hover {
@@ -333,12 +333,12 @@
   .form-field textarea {
     padding: 0.4rem 0.6rem;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: var(--bg-base);
     color: var(--text-primary);
     font-size: var(--font-size-sm);
     font-family: inherit;
-    transition: border-color var(--transition-fast, 0.15s);
+    transition: border-color var(--transition-fast);
   }
 
   .form-field input:focus,
@@ -380,7 +380,7 @@
     flex: 1;
     padding: 0.35rem 0.6rem;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: var(--bg-base);
     color: var(--text-primary);
     font-size: var(--font-size-sm);
@@ -400,7 +400,7 @@
     background: none;
     color: var(--text-muted);
     cursor: pointer;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
   }
 
   .arg-remove:hover {
@@ -414,7 +414,7 @@
     gap: 0.3rem;
     padding: 0.3rem 0.5rem;
     border: 1px dashed var(--border-default);
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: none;
     color: var(--text-muted);
     font-size: var(--font-size-xs);
@@ -429,7 +429,7 @@
 
   .form-error {
     padding: 0.4rem 0.6rem;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error);
     font-size: var(--font-size-xs);

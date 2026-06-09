@@ -702,7 +702,7 @@
     display: flex;
     flex-direction: column;
     background: var(--bg-elevated);
-    border-radius: var(--radius-lg, 12px);
+    border-radius: var(--radius-lg);
     /* §7 — floating wizard modal: shadow alone defines elevation; the
        hairline --glass-border on a solid background was redundant
        chrome. Tokenized to --shadow-xl. */

@@ -181,7 +181,7 @@
     display: flex;
     flex-direction: column;
     background: var(--bg-elevated);
-    border-radius: var(--radius-lg, 12px);
+    border-radius: var(--radius-lg);
     /* §7 — floating panel overlay: shadow alone defines elevation;
        border (hairline --glass-border on a solid background) would be
        redundant chrome. Tokenized to --shadow-lg. */
@@ -266,7 +266,7 @@
 
   .center-state {
     text-align: center;
-    padding: var(--spacing-xl, 32px) var(--spacing-md);
+    padding: var(--spacing-xl) var(--spacing-md);
     color: var(--text-muted);
     font-size: var(--font-size-sm);
   }

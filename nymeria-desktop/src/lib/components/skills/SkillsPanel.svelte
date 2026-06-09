@@ -234,7 +234,7 @@
 
   .empty {
     text-align: center;
-    padding: var(--spacing-xl, 24px);
+    padding: var(--spacing-xl);
     color: var(--text-secondary);
   }
   .empty .hint {

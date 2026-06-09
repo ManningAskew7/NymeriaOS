@@ -593,7 +593,7 @@
 
   .status-chip.you-chip {
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.12));
+    background: var(--accent-primary-alpha);
     border: 1px solid var(--accent-primary);
   }
 

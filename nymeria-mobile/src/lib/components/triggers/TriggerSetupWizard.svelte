@@ -653,7 +653,7 @@
     flex-direction: column;
     background: var(--bg-elevated);
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg, 12px);
+    border-radius: var(--radius-lg);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
     animation: slideUp 0.2s ease-out;
   }
