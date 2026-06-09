@@ -40,7 +40,7 @@
 </script>
 
 <div class="left-panel">
-  <div class="panel-header">
+  <header class="panel-header">
     <h2>Nymeria</h2>
     <button
       class="new-chat-btn"
@@ -50,13 +50,13 @@
     >
       <Icon name="plus" size={22} />
     </button>
-  </div>
+  </header>
 
-  <div class="panel-body">
+  <nav class="panel-body" aria-label="Threads">
     <ThreadList />
-  </div>
+  </nav>
 
-  <div class="panel-footer">
+  <footer class="panel-footer">
     <ConnectionStatus />
 
     <div class="footer-actions">
@@ -76,7 +76,7 @@
         {/if}
       </button>
     </div>
-  </div>
+  </footer>
 </div>
 
 <NotificationCenter

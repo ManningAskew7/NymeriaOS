@@ -92,32 +92,44 @@
 </script>
 
 <div class="right-panel-content" class:collapsed={isCollapsed} aria-hidden={isCollapsed}>
-  <div class="panel-header">
+  <header class="panel-header">
     <h2>Dashboard</h2>
-    <div class="tab-buttons">
+    <div class="tab-buttons" role="tablist" aria-label="Dashboard view">
       <button
+        id="dashboard-tab-thread"
         class="tab-btn"
         class:active={activeTab === 'thread'}
         onclick={() => (activeTab = 'thread')}
         type="button"
+        role="tab"
+        aria-selected={activeTab === 'thread'}
+        aria-controls="dashboard-tabpanel"
       >
         This Thread
       </button>
       <button
+        id="dashboard-tab-global"
         class="tab-btn"
         class:active={activeTab === 'global'}
         onclick={() => (activeTab = 'global')}
         type="button"
+        role="tab"
+        aria-selected={activeTab === 'global'}
+        aria-controls="dashboard-tabpanel"
       >
         Global
       </button>
     </div>
-  </div>
+  </header>
 
   <div class="panel-body" class:suppress-scrollbar={suppressScrollbar}>
     {#key activeTab}
     <div
       class="dashboard-sections"
+      id="dashboard-tabpanel"
+      role="tabpanel"
+      aria-labelledby={`dashboard-tab-${activeTab}`}
+      tabindex="0"
       in:fade={{ duration: 120 }}
       out:fade={{ duration: 120 }}
     >

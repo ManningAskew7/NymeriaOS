@@ -1408,10 +1408,10 @@
           <!-- Color -->
           <div class="logo-stepper-row">
             <span class="logo-stepper-label">Color</span>
-            <div class="logo-color-controls" role="group" aria-label="Logo color">
-              <button class="color-seg" class:active={logoColor === 'accent'} type="button" onclick={() => setLogoColor('accent')}>Accent</button>
-              <button class="color-seg" class:active={logoColor === 'white'} type="button" onclick={() => setLogoColor('white')}>White</button>
-              <button class="color-seg" class:active={logoColor === 'black'} type="button" onclick={() => setLogoColor('black')}>Black</button>
+            <div class="logo-color-controls" role="radiogroup" aria-label="Logo color">
+              <button class="color-seg" class:active={logoColor === 'accent'} type="button" role="radio" aria-checked={logoColor === 'accent'} onclick={() => setLogoColor('accent')}>Accent</button>
+              <button class="color-seg" class:active={logoColor === 'white'} type="button" role="radio" aria-checked={logoColor === 'white'} onclick={() => setLogoColor('white')}>White</button>
+              <button class="color-seg" class:active={logoColor === 'black'} type="button" role="radio" aria-checked={logoColor === 'black'} onclick={() => setLogoColor('black')}>Black</button>
             </div>
             <button class="logo-reset-btn" type="button" disabled={logoColor === LOGO_COLOR_DEFAULT} onclick={resetLogoColor}>Reset</button>
           </div>
@@ -1527,10 +1527,10 @@
       {#if loadingSettings}
         <p class="loading">Loading settings...</p>
       {:else}
-        <div class="llm-subview-toggle">
-          <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button">Main</button>
-          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button">Fallback</button>
-          <button class="llm-subview-btn" class:active={llmSubView === 'fetch'} onclick={() => (llmSubView = 'fetch')} type="button">Fetch tool</button>
+        <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
+          <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
+          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button" role="tab" aria-selected={llmSubView === 'fallback'}>Fallback</button>
+          <button class="llm-subview-btn" class:active={llmSubView === 'fetch'} onclick={() => (llmSubView = 'fetch')} type="button" role="tab" aria-selected={llmSubView === 'fetch'}>Fetch tool</button>
         </div>
 
         {#if llmSubView === 'main'}
