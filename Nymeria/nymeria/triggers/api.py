@@ -682,29 +682,58 @@ def create_api_app(
             enable_ticker=not disable_ticker,
         )
 
-    # Slim mode bootstraps an internal admin token so same-process MCP /
-    # watchdog / trigger-fire / command-service calls can authenticate
-    # without manual operator provisioning. The token is persisted at
+    # Bootstrap an internal admin service token so MCP / watchdog / trigger-fire
+    # / command-service calls can authenticate without manual operator
+    # provisioning. Slim mints it for its single process; the full Docker stack
+    # mints it from the api into the shared ``nymeria_data`` volume, where the
+    # sibling worker / mcp / watchdog containers read the file (see
+    # ``core.service_bootstrap.resolve_service_token``). Persisted at
     # ``data/SLIM_SERVICE_TOKEN.txt`` (mode 0600) and reused on later boots.
     slim_service_token: Optional[str] = None
-    if slim_mode:
-        from ..core.service_bootstrap import ensure_slim_service_token
+    configured_service_token = (
+        getattr(settings, "nymeria_service_token", None) or ""
+    ).strip()
+    # ``disable_ticker`` is the canonical "multi-container Docker stack" signal
+    # (Redis on; slim forced it False above). Only that shape needs the api to
+    # mint a token its sibling containers can read; a local SQLite ``run.py api``
+    # with no configured token is left untouched, as are redis-off unit tests.
+    should_bootstrap_service_token = slim_mode or (
+        disable_ticker and not configured_service_token
+    )
+    if (
+        should_bootstrap_service_token
+        and getattr(_agent, "accounts_repo", None) is not None
+    ):
+        from ..core.service_bootstrap import ensure_service_token
 
-        slim_service_token = ensure_slim_service_token(
-            _agent.accounts_repo,
-            settings.data_dir,
-            configured_token=settings.nymeria_service_token,
-        )
-        # Mutate the cached settings instance and process env so every
-        # consumer that reads either path (MCP client, command service,
-        # trigger-fire helpers) picks the slim token up automatically.
         try:
-            object.__setattr__(settings, "nymeria_service_token", slim_service_token)
-        except Exception:
-            settings.nymeria_service_token = slim_service_token  # type: ignore[attr-defined]
-        os.environ["NYMERIA_SERVICE_TOKEN"] = slim_service_token
-        if slim_base_url:
-            os.environ["NYMERIA_API_URL"] = slim_base_url
+            slim_service_token = ensure_service_token(
+                _agent.accounts_repo,
+                settings.data_dir,
+                configured_token=getattr(settings, "nymeria_service_token", None),
+            )
+        except Exception:  # noqa: BLE001 - best-effort; never block app startup
+            logger.warning(
+                "Service-token bootstrap failed; internal callers may be "
+                "unauthenticated until NYMERIA_SERVICE_TOKEN is set.",
+                exc_info=True,
+            )
+            slim_service_token = None
+
+        if slim_service_token:
+            # Mutate the cached settings instance and process env so every
+            # in-process consumer (MCP client, command service, trigger-fire
+            # helpers) picks the token up automatically.
+            try:
+                object.__setattr__(
+                    settings, "nymeria_service_token", slim_service_token
+                )
+            except Exception:
+                settings.nymeria_service_token = slim_service_token  # type: ignore[attr-defined]
+            os.environ["NYMERIA_SERVICE_TOKEN"] = slim_service_token
+
+    if slim_mode and slim_base_url:
+        os.environ["NYMERIA_API_URL"] = slim_base_url
 
     # Initialize FCM if enabled
     if settings.fcm_enabled and settings.fcm_credentials_json:

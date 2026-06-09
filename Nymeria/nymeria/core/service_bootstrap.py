@@ -64,6 +64,38 @@ def _write_token_file(path: Path, raw_token: str) -> None:
         pass
 
 
+def read_service_token_file(data_dir: Optional[Path]) -> Optional[str]:
+    """Return the raw service token persisted on the data volume, or None.
+
+    None-safe: a missing ``data_dir`` (some lightweight settings stubs omit it)
+    or an absent file yields ``None`` instead of raising. This does NOT verify
+    the token against any accounts repo; thin clients that only read the file
+    the api minted (worker, mcp, watchdog, bots) call this, while the api uses
+    ``ensure_service_token`` to mint/verify.
+    """
+    if data_dir is None:
+        return None
+    return _read_token_file(_slim_token_path(Path(data_dir)))
+
+
+def resolve_service_token(
+    configured: Optional[str], data_dir: Optional[Path]
+) -> Optional[str]:
+    """Resolve the internal service token without minting.
+
+    Configured value (typically ``settings.nymeria_service_token`` from the
+    ``NYMERIA_SERVICE_TOKEN`` env var) wins; otherwise fall back to the file the
+    api minted into the shared data volume. Mirrors the precedence
+    ``ensure_service_token`` uses, but read-only: the worker / mcp / watchdog /
+    bots run in separate processes (or containers sharing ``nymeria_data``) and
+    pick up the api-minted token from disk.
+    """
+    cleaned = (configured or "").strip()
+    if cleaned:
+        return cleaned
+    return read_service_token_file(data_dir)
+
+
 def _verify_admin_token(repo: "AccountsRepo", raw: str) -> bool:
     """Return True if ``raw`` resolves to an enabled admin via the repo."""
     if not raw:
@@ -189,3 +221,11 @@ def ensure_slim_service_token(
         token_path,
     )
     return raw
+
+
+# Canonical name. The same bootstrap now serves the full Docker stack as well as
+# slim: the api process mints into the shared ``nymeria_data`` volume and the
+# worker / mcp / watchdog read the file (via ``resolve_service_token``). The
+# ``ensure_slim_service_token`` name is kept for back-compat with existing
+# imports and tests.
+ensure_service_token = ensure_slim_service_token

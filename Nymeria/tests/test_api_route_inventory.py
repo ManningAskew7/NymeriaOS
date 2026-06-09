@@ -682,3 +682,46 @@ def test_non_admin_act_as_is_rejected(tmp_path: Path, api_client_builder):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Act-As requires admin"
+
+
+def test_create_api_app_multi_container_mints_service_token(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """Full Docker stack (Redis on, no operator token): the api self-mints the
+    internal service token onto the shared data volume so the sibling worker /
+    mcp / watchdog containers can read it without operator provisioning."""
+    from nymeria.core.event_bus import EventBus
+    from nymeria.core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
+
+    # Only the mint side effect matters here; avoid standing up a real Redis bus.
+    monkeypatch.setattr(
+        "nymeria.core.event_bus.create_event_bus",
+        lambda settings, **kwargs: EventBus(),
+    )
+    settings = api_client_builder.settings(
+        tmp_path, redis_enabled=True, redis_url="redis://localhost:6379/0"
+    )
+    agent = FakeAgent(tmp_path)
+    # Constructing the app runs the synchronous mint block before serving.
+    api_client_builder.client(agent, settings)
+
+    token_file = tmp_path / SLIM_SERVICE_TOKEN_FILENAME
+    assert token_file.is_file()
+    minted = token_file.read_text(encoding="utf-8").strip()
+    assert minted.startswith("nym_")
+    assert getattr(settings, "nymeria_service_token", None) == minted
+
+
+def test_create_api_app_without_redis_does_not_mint_service_token(
+    tmp_path: Path, api_client_builder
+):
+    """A local SQLite api (no Redis) must NOT self-mint; that path is unchanged
+    so existing local/dev behavior and redis-off unit tests are unaffected."""
+    from nymeria.core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
+
+    settings = api_client_builder.settings(tmp_path)  # redis off by default
+    agent = FakeAgent(tmp_path)
+    api_client_builder.client(agent, settings)
+
+    assert not (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).exists()
+    assert getattr(settings, "nymeria_service_token", None) is None

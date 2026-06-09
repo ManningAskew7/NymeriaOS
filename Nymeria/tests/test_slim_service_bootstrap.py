@@ -14,12 +14,51 @@ from nymeria.core.service_bootstrap import (
     SLIM_SERVICE_TOKEN_FILENAME,
     SLIM_SERVICE_TOKEN_LABEL,
     SLIM_SERVICE_USER_ID,
+    ensure_service_token,
     ensure_slim_service_token,
+    read_service_token_file,
+    resolve_service_token,
 )
 
 
 def _make_repo(tmp_path: Path) -> AccountsRepo:
     return AccountsRepo(tmp_path / "accounts.db")
+
+
+def test_ensure_service_token_is_canonical_alias() -> None:
+    # The full Docker stack imports the generic name; it must be the same
+    # bootstrap as the slim one.
+    assert ensure_service_token is ensure_slim_service_token
+
+
+def test_read_service_token_file_returns_none_when_absent(tmp_path: Path) -> None:
+    assert read_service_token_file(tmp_path) is None
+    # None-safe: a settings stub without a data_dir must not raise.
+    assert read_service_token_file(None) is None
+
+
+def test_read_service_token_file_reads_written_token(tmp_path: Path) -> None:
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_on_disk\n", encoding="utf-8")
+
+    assert read_service_token_file(tmp_path) == "nym_on_disk"
+
+
+def test_resolve_service_token_prefers_configured_over_file(tmp_path: Path) -> None:
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_on_disk\n", encoding="utf-8")
+
+    assert resolve_service_token("  nym_env  ", tmp_path) == "nym_env"
+
+
+def test_resolve_service_token_falls_back_to_file(tmp_path: Path) -> None:
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_on_disk\n", encoding="utf-8")
+
+    assert resolve_service_token("", tmp_path) == "nym_on_disk"
+    assert resolve_service_token(None, tmp_path) == "nym_on_disk"
+
+
+def test_resolve_service_token_returns_none_when_both_empty(tmp_path: Path) -> None:
+    assert resolve_service_token("", tmp_path) is None
+    assert resolve_service_token(None, None) is None
 
 
 def test_bootstrap_creates_bot_service_when_absent(tmp_path: Path) -> None:

@@ -306,3 +306,28 @@ def test_collection_result_wraps_empty_and_non_empty_lists():
     result = _collection_result("executions", [{"id": "exec-1"}])
 
     assert result == {"executions": [{"id": "exec-1"}], "total": 1}
+
+
+def test_get_client_falls_back_to_minted_token_file(tmp_path, monkeypatch):
+    """In the full Docker stack the mcp container shares ``nymeria_data`` with
+    the api and starts after it is healthy, so ``_get_client`` resolves the
+    api-minted service token from disk when no operator token is set."""
+    from types import SimpleNamespace
+
+    import nymeria.config as config_module
+    import nymeria.mcp_server as mcp_server
+    from nymeria.core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
+
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_minted\n", encoding="utf-8")
+    monkeypatch.setattr(
+        config_module,
+        "get_settings",
+        lambda: SimpleNamespace(nymeria_service_token="", data_dir=tmp_path),
+    )
+    monkeypatch.setattr(mcp_server, "_service_token_override", None, raising=False)
+    monkeypatch.setattr(mcp_server, "_backend_url_override", "http://api:8000", raising=False)
+    monkeypatch.setattr(mcp_server, "_client", None, raising=False)
+
+    client = mcp_server._get_client()
+
+    assert client.service_token == "nym_minted"
