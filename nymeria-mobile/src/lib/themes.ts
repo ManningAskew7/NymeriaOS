@@ -173,18 +173,22 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       accentHover: '#3a988e',
       // Off-white for text/icons on the teal/amber solid fills.
       textOnAccent: '#fdfbf2',
-      // Semantic colors muted from Tailwind -600 (which assume bright-white bg)
-      // toward the calm-paper character. accentPrimary sits at ~47% saturation;
-      // semantics land between calm (47%) and Tailwind's alarm tier (75-95%) so
-      // they still read as state indicators without shouting on warm paper.
-      //   success: #16a34a (76% sat) -> #2a8f4c (55%) — calmer green
-      //   warning: #ca8a04 (96% sat) -> #bc8715 (80%) — less neon amber
-      //   error:   #dc2626 (72% sat) -> #cc3333 (60%) — softer red
-      //   info:    #2563eb (83% sat) -> #336bcc (60%) — calmer blue
-      success: '#2a8f4c',
-      warning: '#bc8715',
-      error: '#cc3333',
-      info: '#336bcc',
+      // Semantic colors. The previous tier (#2a8f4c / #bc8715 / #cc3333 /
+      // #336bcc) mused toward "calm-paper character" but failed WCAG AA on
+      // every Light background — warning was 2.40:1 on bgElevated2 (need 4.5
+      // as text). Walked back to clear 4.5:1 on bgBase/bgElevated/bgElevated2
+      // for both text (4.5:1) and indicator (3:1) roles while keeping each
+      // hue family. These darker values stay calmer than raw Tailwind-600 by
+      // preserving the moderate-saturation character; the contrast comes
+      // from luminance, not loudness.
+      //   success: #2a8f4c -> #2a6b4c  (4.80:1 worst-case on bgElevated2)
+      //   warning: #bc8715 -> #885705  (4.66:1 worst-case)
+      //   error:   #cc3333 -> #b03333  (4.72:1 worst-case)
+      //   info:    #336bcc -> #3357cc  (4.71:1 worst-case)
+      success: '#2a6b4c',
+      warning: '#885705',
+      error: '#b03333',
+      info: '#3357cc',
       // Bubbles tuned to the new palette so they sit on the page coherently
       // instead of looking pasted on.
       bubbleUser: '#c9e3df',
