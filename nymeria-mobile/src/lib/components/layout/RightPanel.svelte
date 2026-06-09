@@ -42,7 +42,7 @@
 </script>
 
 <div class="right-panel">
-  <div class="panel-header">
+  <header class="panel-header">
     <button
       class="back-btn"
       onclick={() => uiStore.goToChat()}
@@ -60,29 +60,43 @@
     >
       <Icon name="refresh" size={20} />
     </button>
-  </div>
+  </header>
 
   <!-- Tab Toggle -->
-  <div class="tab-bar">
+  <div class="tab-bar" role="tablist" aria-label="Dashboard view">
     <button
+      id="dashboard-tab-thread"
       class="tab-btn"
       class:active={activeTab === 'thread'}
       onclick={() => (activeTab = 'thread')}
       type="button"
+      role="tab"
+      aria-selected={activeTab === 'thread'}
+      aria-controls="dashboard-tabpanel"
     >
       This Thread
     </button>
     <button
+      id="dashboard-tab-global"
       class="tab-btn"
       class:active={activeTab === 'global'}
       onclick={() => (activeTab = 'global')}
       type="button"
+      role="tab"
+      aria-selected={activeTab === 'global'}
+      aria-controls="dashboard-tabpanel"
     >
       Global
     </button>
   </div>
 
-  <div class="panel-body">
+  <div
+    class="panel-body"
+    id="dashboard-tabpanel"
+    role="tabpanel"
+    aria-labelledby={`dashboard-tab-${activeTab}`}
+    tabindex="0"
+  >
     <!-- Tasks Section -->
     <Collapsible title="Tasks" defaultOpen={true}>
       {#snippet header()}

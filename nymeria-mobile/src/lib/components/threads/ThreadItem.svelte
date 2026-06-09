@@ -14,6 +14,18 @@
 
   let showActions = $state(false);
 
+  // Close the slide-up actions sheet on Escape — without this, keyboard users
+  // (including those using a paired Bluetooth keyboard with a mobile device)
+  // have no way out except backdrop click.
+  $effect(() => {
+    if (!showActions) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') showActions = false;
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
+
   function formatTime(date: Date): string {
     const now = new Date();
     const diff = now.getTime() - date.getTime();

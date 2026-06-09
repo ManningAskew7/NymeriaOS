@@ -74,7 +74,7 @@
 </script>
 
 <div class="sidebar-content" class:collapsed={isCollapsed}>
-  <div class="sidebar-header" class:collapsed={isCollapsed}>
+  <header class="sidebar-header" class:collapsed={isCollapsed}>
     {#if !isCollapsed}
       <div class="brand">
         <img src="/wolfhead-transparent.png" alt="" class="brand-mark" />
@@ -97,15 +97,15 @@
         <Icon name="plus" size={20} />
       </button>
     {/if}
-  </div>
+  </header>
 
   {#if !isCollapsed}
-    <div class="threads-container">
+    <nav class="threads-container" aria-label="Threads">
       <ThreadList />
-    </div>
+    </nav>
   {/if}
 
-  <div class="sidebar-footer" class:collapsed={isCollapsed}>
+  <footer class="sidebar-footer" class:collapsed={isCollapsed}>
     {#if !isCollapsed}
       <div class="footer-row">
         <div class="footer-account">
@@ -171,7 +171,7 @@
         <Icon name="settings" size={20} />
       </button>
     {/if}
-  </div>
+  </footer>
 </div>
 
 <Modal title="Global Settings" isOpen={showSettings} onClose={closeSettings}>

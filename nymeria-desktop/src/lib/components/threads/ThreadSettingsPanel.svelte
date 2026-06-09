@@ -1039,26 +1039,44 @@
 
     <div class="modal-body">
       <aside class="settings-sidebar" aria-label="Thread settings sections">
-        {#each NAV_GROUPS as group (group.label)}
-          <div class="nav-group">
-            <span class="nav-group-label">{group.label}</span>
-            {#each group.items as item (item.id)}
-              <button
-                class="nav-item"
-                class:active={activeTab === item.id}
-                onclick={() => (activeTab = item.id)}
-                type="button"
-              >
-                <Icon name={item.icon} size={14} />
-                <span class="nav-item-label">{item.label}</span>
-                {#if navCustomized[item.id]}<span class="nav-dot" aria-hidden="true"></span>{/if}
-              </button>
-            {/each}
-          </div>
-        {/each}
+        <!-- Inner div hosts the tablist widget role; <aside> keeps its
+             complementary landmark semantic for AT users navigating
+             by landmarks. -->
+        <div class="settings-sidebar-inner" role="tablist" aria-label="Thread settings sections" aria-orientation="vertical">
+          {#each NAV_GROUPS as group, gi (group.label)}
+            <div class="nav-group" role="group" aria-labelledby={`thread-nav-group-${gi}`}>
+              <span class="nav-group-label" id={`thread-nav-group-${gi}`}>{group.label}</span>
+              {#each group.items as item (item.id)}
+                <button
+                  id={`thread-tab-${item.id}`}
+                  class="nav-item"
+                  class:active={activeTab === item.id}
+                  onclick={() => (activeTab = item.id)}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === item.id}
+                  aria-controls="thread-settings-tabpanel"
+                >
+                  <Icon name={item.icon} size={14} />
+                  <span class="nav-item-label">{item.label}</span>
+                  {#if navCustomized[item.id]}<span class="nav-dot" aria-hidden="true"></span>{/if}
+                </button>
+              {/each}
+            </div>
+          {/each}
+        </div>
       </aside>
 
       <main class="settings-content">
+        <!-- Inner div carries the tabpanel widget role so the <main>
+             landmark is preserved for AT navigation. -->
+        <div
+          class="settings-content-inner"
+          id="thread-settings-tabpanel"
+          role="tabpanel"
+          aria-labelledby={`thread-tab-${activeTab}`}
+          tabindex="0"
+        >
         {#key contentKey}
           <div class="tab-fade">
             {#if activeTab === 'behavior'}
@@ -1163,6 +1181,7 @@
             {/if}
           </div>
         {/key}
+        </div>
       </main>
     </div>
 
@@ -1341,16 +1360,21 @@
 
   /* Sidebar mirrors the global Settings panel's nav idiom (grouped nav-items)
      so the two menus share one navigation language; only the layout around it
-     differs (this panel keeps its thread header + Save/Reset footer). */
+     differs (this panel keeps its thread header + Save/Reset footer).
+     The flex layout moved to .settings-sidebar-inner so <aside> can remain a
+     complementary landmark while the inner div carries role="tablist". */
   .settings-sidebar {
     flex: 0 0 220px;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
     padding: var(--spacing-md) var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
     border-right: 1px solid var(--border-subtle);
     background: var(--bg-base);
     overflow-y: auto;
+  }
+
+  .settings-sidebar-inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
   }
 
   .nav-group {

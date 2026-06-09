@@ -269,15 +269,17 @@
               placeholder="Search sources..."
               bind:value={sourceSearch}
             />
-            <div class="category-tabs">
+            <div class="category-tabs" role="tablist" aria-label="Trigger source category">
               <button
                 class="cat-tab" class:active={!categoryFilter}
                 onclick={() => (categoryFilter = null)} type="button"
+                role="tab" aria-selected={!categoryFilter}
               >All</button>
               {#each categories as cat}
                 <button
                   class="cat-tab" class:active={categoryFilter === cat}
                   onclick={() => (categoryFilter = cat)} type="button"
+                  role="tab" aria-selected={categoryFilter === cat}
                 >{cat}</button>
               {/each}
             </div>
