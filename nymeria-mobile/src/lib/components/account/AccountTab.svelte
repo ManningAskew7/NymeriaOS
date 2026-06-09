@@ -259,7 +259,7 @@
   }
 
   .field-value.mono {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 12px;
   }
 

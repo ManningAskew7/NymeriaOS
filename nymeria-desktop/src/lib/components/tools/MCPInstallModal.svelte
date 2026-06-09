@@ -644,7 +644,7 @@ https://github.com/example/mcp-server`}
   .paste-box:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb, 108, 159, 255), 0.15);
+    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .paste-box::placeholder {
@@ -660,9 +660,9 @@ https://github.com/example/mcp-server`}
     align-items: center;
     gap: 6px;
     padding: 4px var(--spacing-sm);
-    background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
     color: var(--accent-primary);
-    border: 1px solid rgba(var(--accent-primary-rgb, 108, 159, 255), 0.3);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
     /* §3 — text chip uses --radius-sm, not full pill. */
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
@@ -908,9 +908,9 @@ https://github.com/example/mcp-server`}
   }
 
   @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb, 108, 159, 255), 0.5); }
-    70% { box-shadow: 0 0 0 8px rgba(var(--accent-primary-rgb, 108, 159, 255), 0); }
-    100% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb, 108, 159, 255), 0); }
+    0% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb), 0.5); }
+    70% { box-shadow: 0 0 0 8px rgba(var(--accent-primary-rgb), 0); }
+    100% { box-shadow: 0 0 0 0 rgba(var(--accent-primary-rgb), 0); }
   }
 
   .preview-header,
@@ -1139,9 +1139,9 @@ https://github.com/example/mcp-server`}
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb, 108, 159, 255), 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
     padding: 2px var(--spacing-sm);
-    border-radius: var(--radius-full, 9999px);
+    border-radius: var(--radius-full);
   }
 
   .tool-chips {

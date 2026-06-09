@@ -48,8 +48,8 @@
   .context-status-bar {
     display: flex;
     align-items: center;
-    gap: var(--spacing-xs, 4px);
-    padding: 4px var(--spacing-md, 16px);
+    gap: var(--spacing-xs);
+    padding: 4px var(--spacing-md);
     font-size: 0.7rem;
     color: var(--text-muted);
     border-top: 1px solid var(--border-subtle);

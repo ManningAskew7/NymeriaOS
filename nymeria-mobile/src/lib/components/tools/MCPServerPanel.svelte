@@ -54,11 +54,11 @@
 
   function getStatusColor(server: MCPServer): string {
     if (server.installStatus === 'failed') return 'var(--error)';
-    if (server.installStatus === 'needs_config' || server.installStatus === 'draft') return '#f59e0b';
+    if (server.installStatus === 'needs_config' || server.installStatus === 'draft') return 'var(--warning)';
     if (server.installStatus === 'disabled') return 'var(--text-secondary)';
     if (!server.enabled) return 'var(--text-secondary)';
-    if (server.discoveredTools.length === 0) return '#f59e0b';
-    return '#22c55e';
+    if (server.discoveredTools.length === 0) return 'var(--warning)';
+    return 'var(--success)';
   }
 
   function getStatusLabel(server: MCPServer): string {

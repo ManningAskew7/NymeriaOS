@@ -217,7 +217,7 @@
   .details {
     display: flex;
     align-items: center;
-    gap: var(--spacing-xs, 4px);
+    gap: var(--spacing-xs);
     /* 1px down + 3px left optical nudge for the whole text row. Composes
        with the per-element translateY(1px) below, so individual elements
        end up shifted by (-3px, 2px) total. */

@@ -715,7 +715,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(var(--accent-primary-rgb, 59, 130, 246), 0.1);
+    background: rgba(var(--accent-primary-rgb), 0.1);
     border-radius: var(--radius-lg);
     display: flex;
     flex-direction: column;

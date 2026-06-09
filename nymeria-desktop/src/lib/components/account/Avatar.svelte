@@ -81,9 +81,9 @@
     border-radius: 50%;
     background: linear-gradient(
       90deg,
-      var(--bg-elevated, rgba(255, 255, 255, 0.1)) 0%,
-      var(--bg-hover, rgba(255, 255, 255, 0.18)) 50%,
-      var(--bg-elevated, rgba(255, 255, 255, 0.1)) 100%
+      var(--bg-elevated) 0%,
+      var(--bg-hover) 50%,
+      var(--bg-elevated) 100%
     );
     background-size: 200% 100%;
     animation: avatar-shimmer 1.4s ease-in-out infinite;

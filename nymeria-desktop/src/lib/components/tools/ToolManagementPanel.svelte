@@ -1079,7 +1079,7 @@
 
   /* Promote the section title so it outweighs the CORE/PROFILE category bars below */
   .section-toggle .section-title {
-    font-size: var(--font-size-md, 14px);
+    font-size: var(--font-size-md);
     font-weight: 700;
     letter-spacing: 0.01em;
   }
@@ -1197,7 +1197,7 @@
     padding: 0;
     background: none;
     border: 1px solid transparent;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     color: var(--text-muted);
     cursor: pointer;
     transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
@@ -1669,7 +1669,7 @@
   }
 
   .meta-label {
-    font-size: var(--font-size-xs, 11px);
+    font-size: var(--font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     /* text-indent matches letter-spacing so the uppercase label sits

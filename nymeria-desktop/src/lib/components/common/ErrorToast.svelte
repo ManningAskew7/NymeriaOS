@@ -193,7 +193,7 @@
   }
 
   .toast-action:hover {
-    background: var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.12));
+    background: var(--accent-primary-alpha);
   }
 
   .toast-close {

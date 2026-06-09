@@ -412,7 +412,7 @@
   }
 
   .prefix {
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-secondary);
     background: var(--bg-base);

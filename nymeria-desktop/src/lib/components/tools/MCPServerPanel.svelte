@@ -524,7 +524,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: var(--spacing-sm, 0.5rem);
+    gap: var(--spacing-sm);
     margin-bottom: 0.4rem;
   }
 
@@ -597,9 +597,9 @@
 
   .server-card {
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg, 8px);
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    transition: border-color var(--transition-fast, 0.15s);
+    transition: border-color var(--transition-fast);
   }
 
   .server-card.expanded {
@@ -621,7 +621,7 @@
     cursor: pointer;
     color: var(--text-primary);
     font-size: var(--font-size-sm);
-    transition: background var(--transition-fast, 0.15s);
+    transition: background var(--transition-fast);
   }
 
   .server-header:hover {
@@ -646,7 +646,7 @@
   .server-summary:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: 2px;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
   }
 
   .status-dot {
@@ -764,7 +764,7 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.4rem 0.6rem;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     animation: fadeIn 0.2s ease;
   }
@@ -784,7 +784,7 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.4rem 0.6rem;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--warning) 12%, transparent);
     color: var(--warning);
     font-size: var(--font-size-xs);
@@ -820,9 +820,9 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.5rem;
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-sm);
     background: var(--bg-elevated);
-    transition: background var(--transition-fast, 0.15s);
+    transition: background var(--transition-fast);
   }
 
   .tool-row:hover {

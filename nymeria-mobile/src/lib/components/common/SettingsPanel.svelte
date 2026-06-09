@@ -1401,7 +1401,7 @@
     background: var(--bg-base);
     padding: 1px 6px;
     border-radius: var(--radius-sm);
-    font-family: var(--font-mono, ui-monospace, 'SF Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 12px;
   }
 

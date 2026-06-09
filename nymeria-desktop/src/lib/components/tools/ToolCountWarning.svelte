@@ -81,7 +81,7 @@
        floating". */
     border: 1px solid var(--warning);
     border-radius: var(--radius-lg);
-    padding: var(--spacing-lg) var(--spacing-xl, 24px);
+    padding: var(--spacing-lg) var(--spacing-xl);
     max-width: 420px;
     width: 90vw;
     text-align: center;

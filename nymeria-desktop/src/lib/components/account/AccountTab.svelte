@@ -452,7 +452,7 @@
   .field-input:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--accent-primary-rgb), 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
   }
 
   .field-error {

@@ -81,7 +81,7 @@
   }
   .text-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
   }
   .text-input::placeholder { color: var(--text-muted); }
   .text-input.mono {
@@ -138,7 +138,7 @@
   .field-input.narrow { max-width: 280px; }
   .field-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha, rgba(var(--info-rgb), 0.15));
+    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
   }
   .field-input::placeholder { color: var(--text-muted); }
 </style>
