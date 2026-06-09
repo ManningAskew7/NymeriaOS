@@ -369,8 +369,10 @@ def get_rag_context(
         try:
             from ..config import get_settings
             retrieval_mode = get_settings().rag_retrieval_mode
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                f"Could not read rag_retrieval_mode from settings; using default '{retrieval_mode}': {e}"
+            )
         if rag_prefs.get("retrieval_mode"):
             retrieval_mode = rag_prefs["retrieval_mode"]
         results = memory_index.search(
@@ -613,8 +615,8 @@ def index_conversation_turn(
 
         # Optional contextual-retrieval blurb (off by default; adds one LLM call).
         context = None
+        settings = getattr(agent, "settings", None)
         try:
-            settings = getattr(agent, "settings", None)
             if settings is not None and getattr(settings, "rag_contextual_enabled", False):
                 from .rag_quality import generate_contextual_blurb
                 context = generate_contextual_blurb(

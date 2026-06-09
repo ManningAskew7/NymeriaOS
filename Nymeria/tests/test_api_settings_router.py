@@ -95,6 +95,14 @@ class FakeSettings:
     perplexity_search_model: str = "sonar-pro"
     gemini_api_key: str | None = None
     gemini_extraction_model: str = "gemini-test"
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int | None = None
+    rag_retrieval_mode: str = "hybrid"
+    rag_embed_tool_results: bool = True
+    rag_rerank_enabled: bool = False
+    rag_rerank_provider: str = "llm"
+    rag_rerank_model: str | None = None
     nymeria_api_key: str | None = "legacy-secret"
     nymeria_data_dir: str | None = None
     redis_enabled: bool = False

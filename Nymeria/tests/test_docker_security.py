@@ -447,7 +447,7 @@ def test_security_sensitive_dependency_floors_or_pins_are_bumped() -> None:
         "urllib3>=2.2.2,<3.0.0",
         "PyYAML>=6.0.2,<7.0.0",
         "Jinja2>=3.1.6,<4.0.0",
-        "Pillow>=10.4.0,<12.0.0",
+        "Pillow>=10.4.0,<13.0.0",
         "cryptography>=42.0.4,<47.0.0",
     }
     for requirement in expected:

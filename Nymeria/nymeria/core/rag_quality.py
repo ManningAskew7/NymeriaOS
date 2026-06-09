@@ -161,7 +161,7 @@ def api_rerank(
         return results
     candidates = results[:top_n]
     docs = [((getattr(r, "content", "") or "")[:doc_max_chars]) for r in candidates]
-    payload = {"model": model, "query": query, "documents": docs}
+    payload: dict[str, object] = {"model": model, "query": query, "documents": docs}
     # Voyage names this top_k; Cohere/ZeroEntropy use top_n.
     payload["top_k" if provider == "voyage" else "top_n"] = len(docs)
     try:
