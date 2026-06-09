@@ -772,6 +772,35 @@ class ServerSettingsUpdate(BaseModel):
     voice_default_thread_id: Optional[str] = None
 
 
+# Settings fields whose dotenv var is not simply the uppercased field name. Only the
+# S3 tool credentials diverge (they follow the AWS SDK naming the boto/S3 client and
+# the matching `Settings` validation_aliases use). Every other field maps to
+# `field.upper()`. `tests/test_settings_env_mapping.py` asserts this stays exhaustive.
+_ENV_VAR_OVERRIDES = {
+    "s3_access_key_id": "AWS_ACCESS_KEY_ID",
+    "s3_secret_access_key": "AWS_SECRET_ACCESS_KEY",
+    "s3_session_token": "AWS_SESSION_TOKEN",
+    "s3_region": "AWS_REGION",
+    "s3_endpoint_url": "AWS_ENDPOINT_URL_S3",
+}
+
+
+def server_settings_env_mapping() -> dict[str, str]:
+    """Return the settings-field -> dotenv-var map for every patchable setting.
+
+    Derived from `ServerSettingsUpdate` (the patchable surface) so it cannot drift:
+    a new update field automatically gets a mapping entry. Each field maps to
+    `field.upper()` unless listed in `_ENV_VAR_OVERRIDES`. The `Settings` model
+    carries matching `validation_alias`es for the override fields, so the env var
+    written here is the same one the field reads back (see the round-trip guard in
+    `tests/test_settings_env_mapping.py`).
+    """
+    return {
+        name: _ENV_VAR_OVERRIDES.get(name, name.upper())
+        for name in ServerSettingsUpdate.model_fields
+    }
+
+
 class LLMProviderTestRequest(BaseModel):
     """Request model for testing an arbitrary provider configuration."""
 
