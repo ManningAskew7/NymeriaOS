@@ -230,12 +230,12 @@
             <Icon name="success" size={48} />
           </div>
           <h2>Connection Ready</h2>
-          <p>This app is connected to NymeriaOS. Start a conversation to begin.</p>
+          <p>This app is connected to NymeriaOS. Start a thread to begin.</p>
 
           <div class="tips">
             <h3>Quick Tips:</h3>
             <ul>
-              <li>Type a message to chat with Nymeria</li>
+              <li>Send a message to start your first thread</li>
               <li>Nymeria can remember information about you</li>
               <li>Create TODOs to let Nymeria work autonomously</li>
             </ul>
@@ -260,7 +260,7 @@
         </Button>
       {:else}
         <Button variant="primary" onclick={handleComplete}>
-          Start Chatting
+          Start a Thread
         </Button>
       {/if}
     </div>

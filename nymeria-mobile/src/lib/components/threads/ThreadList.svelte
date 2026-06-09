@@ -90,8 +90,8 @@
             <p>No threads match "{searchQuery}"</p>
           {:else}
             <Icon name="chat" size={32} />
-            <p>No conversations yet</p>
-            <span>Start a new chat to begin</span>
+            <p>No threads yet</p>
+            <span>Start a new thread to begin</span>
           {/if}
         </div>
       {/if}

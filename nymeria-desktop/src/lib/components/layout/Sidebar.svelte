@@ -16,7 +16,7 @@
 
   let isCollapsed = $derived(uiStore.sidebarCollapsed);
 
-  function handleNewChat() {
+  function handleNewThread() {
     threadsStore.createThread();
     chatStore.clearMessages();
   }
@@ -81,7 +81,7 @@
         <h1 class="logo"><span class="logo-name">Nymeria</span><span class="logo-os">OS</span></h1>
       </div>
       <span class="new-thread-wrap">
-        <Button variant="primary" size="sm" onclick={handleNewChat}>
+        <Button variant="primary" size="sm" onclick={handleNewThread}>
           <Icon name="plus" size={14} />
           <span class="new-thread-label">New Thread</span>
         </Button>
@@ -90,9 +90,9 @@
       <button
         class="icon-btn"
         type="button"
-        onclick={handleNewChat}
-        title="New Chat"
-        aria-label="New Chat"
+        onclick={handleNewThread}
+        title="New Thread"
+        aria-label="New Thread"
       >
         <Icon name="plus" size={20} />
       </button>

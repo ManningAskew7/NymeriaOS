@@ -99,9 +99,15 @@
       threadsStore.createThread();
     }
 
-    // Auto-title the thread from the first message if it's still "New Chat"
+    // Auto-title the thread from the first message if it's still the default
+    // ("New Thread" for new threads, or "New Chat" for threads created before
+    // the §9 terminology canon sweep).
     const currentThread = threadsStore.currentThread;
-    if (currentThread && currentThread.title === 'New Chat' && message.trim()) {
+    if (
+      currentThread &&
+      (currentThread.title === 'New Thread' || currentThread.title === 'New Chat') &&
+      message.trim()
+    ) {
       threadsStore.autoTitleFromMessage(currentThread.id, message);
     }
 
@@ -308,7 +314,7 @@
     // If we don't have a local thread, create one with backend's ID
     if (!currentId) {
       const firstUserMessage = chatStore.messages.find((m) => m.role === 'user');
-      const title = firstUserMessage?.content || 'New Chat';
+      const title = firstUserMessage?.content || 'New Thread';
       threadsStore.setThreadFromApi(backendThreadId, title);
       threadsStore.autoTitleFromMessage(backendThreadId, title);
       return;

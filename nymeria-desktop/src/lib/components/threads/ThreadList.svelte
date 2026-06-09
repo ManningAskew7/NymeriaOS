@@ -387,7 +387,7 @@
       } else if (/\b404\b/.test(result.error)) {
         loadError = 'That thread no longer exists on the backend.';
       } else {
-        loadError = 'Could not load chat history. Check your connection and try again.';
+        loadError = 'Could not load threads. Check your connection and try again.';
       }
     }
   }
@@ -757,8 +757,8 @@
 
     {#if threadsStore.threads.length === 0}
       <div class="empty-state">
-        <p>No conversations yet</p>
-        <p class="hint">Start a new chat to begin</p>
+        <p>No threads yet</p>
+        <p class="hint">Start a new thread to begin</p>
       </div>
     {:else}
     <!-- Tab content (folders <-> teams) crossfades via {#key} + transition:fade,
