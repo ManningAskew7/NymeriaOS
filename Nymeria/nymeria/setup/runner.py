@@ -15,9 +15,9 @@ from pathlib import Path
 from rich.console import Console
 
 from ..onboarding import (
+    DockerStack,
     ExternalAccess,
     HostingOption,
-    ImageTier,
     NextAction,
     ProviderAuthMethod,
     SecurityProfile,
@@ -96,10 +96,10 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         help="LLM auth method. Only api_key is wired; CLIProxy OAuth is deferred",
     )
     parser.add_argument(
-        "--image-tier",
-        choices=choice_values(ImageTier),
+        "--docker-stack",
+        choices=choice_values(DockerStack),
         default=None,
-        help="Container image capability tier for container hosts (placeholder)",
+        help="Docker runtime shape for Docker hosts: slim or full (Postgres+Redis)",
     )
     parser.add_argument(
         "--security-profile",
@@ -241,10 +241,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
             ProviderAuthMethod, args.auth_method, option_name="--auth-method"
         )
 
-    image_tier = None
-    if getattr(args, "image_tier", None):
-        image_tier = parse_choice(
-            ImageTier, args.image_tier, option_name="--image-tier"
+    docker_stack = None
+    if getattr(args, "docker_stack", None):
+        docker_stack = parse_choice(
+            DockerStack, args.docker_stack, option_name="--docker-stack"
         )
 
     security_profile = None
@@ -280,7 +280,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
 
     return WizardState(
         hosting=hosting,
-        image_tier=image_tier,
+        docker_stack=docker_stack,
         security_profile=security_profile,
         auth_method=auth_method,
         external_access=external_access,

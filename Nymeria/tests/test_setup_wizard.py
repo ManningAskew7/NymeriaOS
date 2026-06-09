@@ -46,19 +46,19 @@ def test_parse_choice_rejects_retired_hosting_value():
 
 def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
     from nymeria.onboarding import (
+        DOCKER_STACK_CHOICES,
+        DOCKER_STACK_ORDER,
         EXTERNAL_ACCESS_CHOICES,
         EXTERNAL_ACCESS_ORDER,
-        IMAGE_TIER_CHOICES,
-        IMAGE_TIER_ORDER,
         SECURITY_PROFILE_CHOICES,
         SECURITY_PROFILE_ORDER,
+        DockerStack,
         ExternalAccess,
-        ImageTier,
         SecurityProfile,
     )
 
     for order, table, enum_type, recommended in (
-        (IMAGE_TIER_ORDER, IMAGE_TIER_CHOICES, ImageTier, ImageTier.MINIMAL),
+        (DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES, DockerStack, DockerStack.SLIM),
         (
             SECURITY_PROFILE_ORDER,
             SECURITY_PROFILE_CHOICES,
@@ -375,7 +375,7 @@ def test_navigator_position_reflects_applicable_total():
     assert nav.position() == (3, 3)  # the skip must not break the running count
 
 
-def test_default_flow_order_and_conditional_image_tier():
+def test_default_flow_order_and_conditional_docker_stack():
     from nymeria.setup.nav import Navigator
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps import build_default_steps
@@ -385,7 +385,7 @@ def test_default_flow_order_and_conditional_image_tier():
     assert ids[0] == "welcome"  # the plan's "detect environment" step comes first
     assert ids[-1] == "review"
     for required in (
-        "image_tier",
+        "docker_stack",
         "security_profile",
         "auth_method",
         "external_access",
@@ -412,10 +412,10 @@ def test_default_flow_order_and_conditional_image_tier():
         nav.start()
         return [steps[i].id for i in nav.applicable_indices()]
 
-    # image_tier is a property of a container image, so it only applies to a
-    # container host.
-    assert "image_tier" not in applicable_ids(WizardState(hosting=HostingOption.LOCAL))
-    assert "image_tier" in applicable_ids(WizardState(hosting=HostingOption.DOCKER))
+    # docker_stack (slim vs full) is a property of a Docker deployment, so it only
+    # applies to a Docker host.
+    assert "docker_stack" not in applicable_ids(WizardState(hosting=HostingOption.LOCAL))
+    assert "docker_stack" in applicable_ids(WizardState(hosting=HostingOption.DOCKER))
 
     # backend_keys is conditional: it appears only when a selected backend needs a
     # credential that has not already been provided.
@@ -446,7 +446,7 @@ def test_quick_path_gates_steps_to_essentials():
         return [steps[i].id for i in nav.applicable_indices()]
 
     skippable = (
-        "image_tier", "security_profile", "auth_method", "core_tools",
+        "docker_stack", "security_profile", "auth_method", "core_tools",
         "web_search", "fetch_url", "embedder", "reranker", "image_gen",
         "backend_keys", "skill_kits", "tts", "stt", "agent_settings",
         "external_access",
@@ -505,6 +505,23 @@ def test_apply_quick_defaults_seeds_keyless_fetch_and_local_rag():
         "mcp-management",
         "credential-management",
     ]
+
+
+def test_apply_quick_defaults_seeds_slim_docker_stack():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.quick import apply_quick_defaults
+    from nymeria.setup.state import WizardState
+
+    state = WizardState(quick=True)
+    apply_quick_defaults(state)
+    # The quick path defaults the Docker shape to slim (the docker_stack step is
+    # gated off in quick mode), so review and finalize see a concrete value.
+    assert state.docker_stack is DockerStack.SLIM
+
+    # An explicit pick is left untouched.
+    full = WizardState(quick=True, docker_stack=DockerStack.FULL)
+    apply_quick_defaults(full)
+    assert full.docker_stack is DockerStack.FULL
 
 
 def test_apply_quick_defaults_respects_explicit_picks():
@@ -1122,6 +1139,10 @@ def test_hydrate_infers_docker_vs_local(monkeypatch, tmp_path):
     dstate = WizardState(root=docker_root)
     assert hydrate_state_from_disk(dstate) is True
     assert dstate.hosting is HostingOption.DOCKER
+    # The single-container write carries no POSTGRES_PASSWORD, so it infers slim.
+    from nymeria.onboarding import DockerStack
+
+    assert dstate.docker_stack is DockerStack.SLIM
     # Docker picks live in the container volume, so none are hydrated host-side.
     assert "web_search" not in dstate.extras
 
@@ -1131,6 +1152,30 @@ def test_hydrate_infers_docker_vs_local(monkeypatch, tmp_path):
     lstate = WizardState(root=local_root)
     assert hydrate_state_from_disk(lstate) is True
     assert lstate.hosting is HostingOption.LOCAL
+
+
+def test_hydrate_infers_full_vs_slim_docker_stack(tmp_path):
+    from nymeria.onboarding import DockerStack, HostingOption
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    # A full-stack .env.docker carries POSTGRES_PASSWORD; the slim shape never does.
+    full_root = tmp_path / "full"
+    full_root.mkdir()
+    (full_root / ".env.docker").write_text(
+        "LLM_PROVIDER=anthropic\nPOSTGRES_PASSWORD=secret\n", encoding="utf-8"
+    )
+    fstate = WizardState(root=full_root)
+    assert hydrate_state_from_disk(fstate) is True
+    assert fstate.hosting is HostingOption.DOCKER
+    assert fstate.docker_stack is DockerStack.FULL
+
+    slim_root = tmp_path / "slim"
+    slim_root.mkdir()
+    (slim_root / ".env.docker").write_text("LLM_PROVIDER=anthropic\n", encoding="utf-8")
+    sstate = WizardState(root=slim_root)
+    assert hydrate_state_from_disk(sstate) is True
+    assert sstate.docker_stack is DockerStack.SLIM
 
 
 # --- reconfigure mode: section filtering + runner ---------------------------
@@ -1279,9 +1324,9 @@ def test_reconfigure_docker_merges_env_docker_only(monkeypatch, tmp_path):
 
 def test_review_summary_markup_surfaces_collected_choices():
     from nymeria.onboarding import (
+        DockerStack,
         ExternalAccess,
         HostingOption,
-        ImageTier,
         ProviderAuthMethod,
         SecurityProfile,
     )
@@ -1290,7 +1335,7 @@ def test_review_summary_markup_surfaces_collected_choices():
 
     state = WizardState(
         hosting=HostingOption.DOCKER,
-        image_tier=ImageTier.STANDARD,
+        docker_stack=DockerStack.FULL,
         security_profile=SecurityProfile.SECURE,
         auth_method=ProviderAuthMethod.API_KEY,
         provider="anthropic",
@@ -1306,7 +1351,7 @@ def test_review_summary_markup_surfaces_collected_choices():
     markup = _summary_markup(state)
 
     assert "Hosting" in markup
-    assert "Image" in markup  # docker host -> image tier surfaces
+    assert "Stack" in markup  # docker host -> stack (slim/full) surfaces
     assert "Security" in markup
     assert "claude-opus-4-8" in markup
     assert "Default thread tools:" in markup  # core seed + picks, now written
@@ -1319,11 +1364,11 @@ def test_review_summary_markup_surfaces_collected_choices():
     assert "print the start command" in markup
 
 
-def test_print_deployment_summary_suppresses_local_only_and_non_docker_image_tier():
+def test_print_deployment_summary_suppresses_local_only_and_omits_docker_stack():
     from nymeria.onboarding import (
+        DockerStack,
         ExternalAccess,
         HostingOption,
-        ImageTier,
         SecurityProfile,
     )
     from nymeria.setup.finalize import print_deployment_summary
@@ -1331,15 +1376,15 @@ def test_print_deployment_summary_suppresses_local_only_and_non_docker_image_tie
 
     console, buf = _capture_console()
     state = WizardState(
-        hosting=HostingOption.LOCAL,  # not a container host
-        image_tier=ImageTier.STANDARD,
+        hosting=HostingOption.DOCKER,
+        docker_stack=DockerStack.FULL,  # acted on, not a "recorded only" placeholder
         security_profile=SecurityProfile.STANDARD,
         external_access=ExternalAccess.LOCAL_ONLY,  # the recommended default
     )
     print_deployment_summary(state, console)
     out = buf.getvalue()
 
-    assert "Image tier" not in out  # suppressed: image tier is container-only
+    assert "Stack" not in out  # the docker stack is wired, so it is not echoed here
     assert "External access" not in out  # suppressed: local-only is the default
     assert "Security profile: Standard" in out
     assert "recorded, not yet automated" in out  # honest placeholder framing
@@ -1520,7 +1565,7 @@ def test_run_init_parser_accepts_new_flags():
             "provider",
             "--hosting", "local",
             "--auth-method", "api_key",
-            "--image-tier", "standard",
+            "--docker-stack", "full",
             "--security-profile", "secure",
             "--external-access", "tailscale",
             "--provider", "anthropic",
@@ -1540,7 +1585,7 @@ def test_run_init_parser_accepts_new_flags():
     assert args.section == "provider"
     assert args.hosting == "local"
     assert args.auth_method == "api_key"
-    assert args.image_tier == "standard"
+    assert args.docker_stack == "full"
     assert args.security_profile == "secure"
     assert args.external_access == "tailscale"
     assert args.provider == "anthropic"
@@ -1582,9 +1627,9 @@ async def _no_models(*_args, **_kwargs):
     return []
 
 
-# Step indices in the default flow (welcome, hosting, image_tier, security,
-# auth, provider, connection, model, ...). image_tier (2) only applies to a
-# container host, so on the default local path the provider step is index 5.
+# Step indices in the default flow (welcome, hosting, docker_stack, security,
+# auth, provider, connection, model, ...). docker_stack (2) only applies to a
+# Docker host, so on the default local path the provider step is index 5.
 _HOSTING_STEP = 1
 _SECURITY_STEP = 3
 _AUTH_STEP = 4
@@ -1596,8 +1641,8 @@ async def _advance_to_provider(pilot) -> None:
     """Walk welcome -> hosting -> security -> auth on the default (local) path.
 
     Accepts every default (local hosting, Standard security, Direct API key) and
-    leaves the provider picker focused. image_tier is skipped because the default
-    hosting is not a container.
+    leaves the provider picker focused. docker_stack is skipped because the
+    default hosting is not Docker.
     """
     await pilot.press("enter")  # welcome -> hosting
     await pilot.pause()
@@ -1628,7 +1673,7 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
             await pilot.press("enter")  # accept default hosting (local), advance
             await pilot.pause()
             assert state.hosting is HostingOption.LOCAL
-            # image_tier (index 2) is skipped for a non-container host.
+            # docker_stack (index 2) is skipped for a non-Docker host.
             assert app.nav.current() == _SECURITY_STEP
             await pilot.press("escape")  # back to hosting (does not exit)
             await pilot.pause()
@@ -1933,7 +1978,7 @@ def test_wizard_pilot_ctrl_s_skips_without_recording():
 
     app = asyncio.run(drive())
     assert app.state.hosting is None
-    # Hosting unset means a non-container host, so image_tier is skipped and the
+    # Hosting unset means a non-Docker host, so docker_stack is skipped and the
     # security profile step is next.
     assert app.nav.current() == _SECURITY_STEP
 

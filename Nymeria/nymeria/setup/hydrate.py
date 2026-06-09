@@ -12,10 +12,11 @@ env file and reads the bootstrap ``profile.json`` directly (not via
 
 Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
 as present (never re-read into the UI); the recorded-but-never-written deployment
-enums (image_tier/security_profile/external_access/auth_method) have no source;
-LOCAL vs SERVICE is indistinguishable on disk (defaults LOCAL); and the Docker
-single-container profile lives in the container volume, so tool/skill picks are
-hydrated for local/service installs only.
+enums (security_profile/external_access/auth_method) have no source; LOCAL vs
+SERVICE is indistinguishable on disk (defaults LOCAL); and the Docker profile
+lives in the container volume, so tool/skill picks are hydrated for local/service
+installs only. The Docker stack IS recoverable (the full stack writes
+POSTGRES_PASSWORD; the slim shape never does).
 """
 
 from __future__ import annotations
@@ -63,6 +64,15 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     if state.hosting is None:
         # Only DOCKER vs non-docker is recoverable; LOCAL vs SERVICE is not.
         state.hosting = HostingOption.DOCKER if for_docker else HostingOption.LOCAL
+
+    if for_docker and state.docker_stack is None:
+        # Slim vs full is recoverable: the full stack writes POSTGRES_PASSWORD,
+        # the slim shape never does. An explicit --docker-stack flag still wins.
+        from ..onboarding import DockerStack
+
+        state.docker_stack = (
+            DockerStack.FULL if _get(values, "POSTGRES_PASSWORD") else DockerStack.SLIM
+        )
 
     if state.provider is None and _get(values, "LLM_PROVIDER"):
         state.provider = _get(values, "LLM_PROVIDER")
