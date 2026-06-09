@@ -196,9 +196,22 @@
 
   <div class="credential-list">
     {#if credentialsStore.loading && visibleCredentials.length === 0}
-      <div class="empty-state">Loading credentials...</div>
+      <div class="empty-state">
+        <Icon name="loading" size={20} />
+        <span>Loading credentials…</span>
+      </div>
     {:else if visibleCredentials.length === 0}
-      <div class="empty-state">No saved credentials</div>
+      <div class="empty-state">
+        <Icon name="key" size={24} />
+        <p>No credentials saved yet.</p>
+        <span>Save API keys and tokens here. They're stored locally and shared only with the tool or MCP server you scope them to.</span>
+        <div class="empty-cta">
+          <Button onclick={startCreate}>
+            <Icon name="plus" size={14} />
+            Add your first credential
+          </Button>
+        </div>
+      </div>
     {:else}
       {#each visibleCredentials as credential}
         <div class="credential-row">
@@ -418,9 +431,27 @@
   }
 
   .empty-state {
-    padding: var(--spacing-lg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: var(--spacing-xl) var(--spacing-md);
     text-align: center;
     color: var(--text-muted);
+  }
+
+  .empty-state p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-md);
+  }
+
+  .empty-state span {
+    font-size: var(--font-size-sm);
+  }
+
+  .empty-cta {
+    margin-top: var(--spacing-sm);
   }
 
   @media (max-width: 720px) {

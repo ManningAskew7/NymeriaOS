@@ -58,7 +58,7 @@
 
   {#if todosStore.loading && todosStore.todos.length === 0}
     <div class="feed-state">
-      <span>Loading...</span>
+      <span>Loading tasks…</span>
     </div>
   {:else if todosStore.error}
     <div class="feed-state error">

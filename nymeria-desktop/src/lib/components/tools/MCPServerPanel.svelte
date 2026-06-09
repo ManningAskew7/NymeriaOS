@@ -497,7 +497,7 @@
                   {#if confirmDeleteId === server.id}
                     <div class="confirm-delete">
                       <span>Delete this server?</span>
-                      <Button size="sm" variant="danger" onclick={() => handleDelete(server.id)}>Confirm</Button>
+                      <Button size="sm" variant="danger" onclick={() => handleDelete(server.id)}>Delete server</Button>
                       <Button size="sm" variant="ghost" onclick={() => confirmDeleteId = null}>Cancel</Button>
                     </div>
                   {:else}

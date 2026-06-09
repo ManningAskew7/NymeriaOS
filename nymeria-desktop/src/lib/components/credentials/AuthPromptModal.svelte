@@ -622,7 +622,7 @@
             {checkingOAuth ? 'Checking…' : 'Check status'}
           </Button>
           {#if oauthResolved}
-            <Button type="button" onclick={close}>Done</Button>
+            <Button type="button" onclick={close}>Close</Button>
           {/if}
         </div>
       {/if}

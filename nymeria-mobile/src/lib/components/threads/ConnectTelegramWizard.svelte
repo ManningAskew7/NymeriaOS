@@ -232,7 +232,7 @@
         to this thread. Messages sent there will appear here, and replies will
         stream both ways.
       </p>
-      <button class="action-btn primary" type="button" onclick={onClose}>Done</button>
+      <button class="action-btn primary" type="button" onclick={onClose}>Close</button>
     </div>
   {/if}
 </WizardShell>

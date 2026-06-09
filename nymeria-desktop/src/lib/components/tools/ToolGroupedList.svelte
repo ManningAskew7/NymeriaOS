@@ -263,7 +263,7 @@
             </div>
           {/each}
         {:else}
-          <div class="gl-empty">{node.emptyText ?? 'No tools.'}</div>
+          <div class="gl-empty">{node.emptyText ?? 'No tools in this group yet.'}</div>
         {/if}
       </div>
     {/if}

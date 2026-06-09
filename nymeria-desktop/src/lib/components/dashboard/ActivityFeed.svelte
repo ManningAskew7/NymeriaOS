@@ -117,7 +117,7 @@
 <div class="activity-feed">
   {#if activityStore.loading && activityStore.entries.length === 0}
     <div class="loading-state">
-      <span class="loading-text">Loading...</span>
+      <span class="loading-text">Loading recent activity…</span>
     </div>
   {:else if activityStore.error}
     <div class="error-state">

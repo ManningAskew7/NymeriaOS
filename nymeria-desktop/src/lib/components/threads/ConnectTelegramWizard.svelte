@@ -236,7 +236,7 @@
         to this thread. Messages sent there will appear here, and replies will
         stream both ways.
       </p>
-      <Button onclick={onClose}>Done</Button>
+      <Button onclick={onClose}>Close</Button>
     </div>
   {/if}
 </WizardShell>

@@ -87,7 +87,7 @@
       {#if notificationStore.loading && notificationStore.notifications.length === 0}
         <div class="notification-empty">
           <Icon name="loading" size={24} />
-          <span>Loading...</span>
+          <span>Loading notifications…</span>
         </div>
       {:else if notificationStore.notifications.length === 0}
         <div class="notification-empty">

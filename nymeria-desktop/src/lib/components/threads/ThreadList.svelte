@@ -1087,7 +1087,7 @@
     {/each}
   </ul>
   <div class="delete-confirm-actions">
-    <Button variant="primary" onclick={() => (importWarnings = [])}>Done</Button>
+    <Button variant="primary" onclick={() => (importWarnings = [])}>Close</Button>
   </div>
 </Modal>
 

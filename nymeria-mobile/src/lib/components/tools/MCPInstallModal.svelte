@@ -251,7 +251,7 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
             {/each}
           </div>
         {/if}
-        <button type="button" class="primary full" onclick={handleClose}>Done</button>
+        <button type="button" class="primary full" onclick={handleClose}>Close</button>
       </div>
     {/if}
   </div>

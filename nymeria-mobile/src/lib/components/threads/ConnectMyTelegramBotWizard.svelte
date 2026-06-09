@@ -260,7 +260,7 @@
         <strong>@{registeredBot?.bot_username}</strong>. Messages will
         stream both ways.
       </p>
-      <button class="action-btn primary" type="button" onclick={onClose}>Done</button>
+      <button class="action-btn primary" type="button" onclick={onClose}>Close</button>
     </div>
   {/if}
 </WizardShell>
