@@ -11,7 +11,7 @@
   /* Text (WCAG AA contrast) */
   --text-primary: #e8eaed;
   --text-secondary: #9aa0a6;
-  --text-muted: #6b7280;
+  --text-muted: #888d96;
 
   /* Accent (calm cyan — bright reserved for primary actions only).
      Aligned to the Midnight theme so the pre-hydration first paint matches
@@ -29,7 +29,7 @@
   --info: #818cf8;
 
   /* Message Bubbles */
-  --bubble-user: #1e3a5f;
+  --bubble-user: #1a3036;
   --bubble-ai: #1a1d21;
   --bubble-tool: #1a1f2e;
 
