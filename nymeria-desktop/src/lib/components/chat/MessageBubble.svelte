@@ -545,13 +545,13 @@
     </time>
     {#if showActions}
       <div class="message-actions">
-        <button type="button" class="action-btn" title="Copy response" onclick={handleCopyResponse}>
+        <button type="button" class="action-btn" title="Copy response" aria-label="Copy response" onclick={handleCopyResponse}>
           <Icon name={copyResponseIcon} size={14} />
         </button>
-        <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" onclick={handleCopyFull}>
+        <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" aria-label="Copy full message" onclick={handleCopyFull}>
           <Icon name={copyFullIcon} size={14} />
         </button>
-        <button type="button" class="action-btn" title="Report problem" onclick={openReportModal}>
+        <button type="button" class="action-btn" title="Report problem" aria-label="Report problem" onclick={openReportModal}>
           <Icon name="warning" size={14} />
         </button>
       </div>

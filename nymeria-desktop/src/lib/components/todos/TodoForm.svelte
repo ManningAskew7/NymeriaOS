@@ -201,7 +201,7 @@
 <Modal title={modalTitle} {isOpen} onClose={handleClose}>
   <form class="todo-form" onsubmit={handleSubmit}>
     {#if formError}
-      <div class="form-error">
+      <div class="form-error" role="alert">
         <Icon name="warning" size={14} />
         {formError}
       </div>

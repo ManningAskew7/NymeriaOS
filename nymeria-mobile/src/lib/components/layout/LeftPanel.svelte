@@ -46,6 +46,7 @@
       class="new-chat-btn"
       onclick={handleNewChat}
       title="New Chat"
+      aria-label="New chat"
     >
       <Icon name="plus" size={22} />
     </button>

@@ -308,6 +308,7 @@
           class="filter-input"
           type="search"
           placeholder="Search by email, name, role…"
+          aria-label="Search users"
           bind:value={filterText}
         />
       </div>

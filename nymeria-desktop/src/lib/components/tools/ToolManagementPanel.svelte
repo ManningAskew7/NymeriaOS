@@ -457,6 +457,7 @@
         class="search-input"
         bind:value={searchQuery}
         placeholder="Search tools..."
+        aria-label="Search tools"
       />
     </div>
 

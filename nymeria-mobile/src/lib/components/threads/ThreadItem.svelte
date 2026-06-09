@@ -126,6 +126,7 @@
     class="more-btn"
     onclick={handleMoreClick}
     title="Thread actions"
+    aria-label="Thread actions"
   >
     <Icon name="chevronDown" size={16} />
   </button>

@@ -241,6 +241,7 @@
       onclick={handleEdit}
       type="button"
       title="Edit task"
+      aria-label="Edit task"
     >
       <Icon name="edit" size={12} />
     </button>

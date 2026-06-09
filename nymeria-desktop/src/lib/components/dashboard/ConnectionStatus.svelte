@@ -75,6 +75,7 @@
         class="restart-btn"
         onclick={handleRestart}
         title="Restart API server"
+        aria-label="Restart API server"
         type="button"
       >
         <Icon name="refresh" size={12} />
