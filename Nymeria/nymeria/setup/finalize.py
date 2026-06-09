@@ -1051,10 +1051,20 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             "still be coming up; check "
             f"`{_compose_command_str(spec, 'logs', '-f')}`.[/yellow]"
         )
-        # The full stack only started the database/cache/API so far; print the
-        # remaining steps (token, service token, start the rest), not just the
-        # token read, so a slow boot does not leave the user with a half stack.
-        _print_docker_next_steps(console, state)
+        if spec.needs_service_token:
+            # The database, cache, and API were already started; the remaining
+            # steps are read the token, provision the service token, then start the
+            # rest. Do NOT re-print `up -d api` (already run). Provisioning is not
+            # attempted here because the API never became healthy.
+            console.print(
+                "\nOnce it is healthy, read the bootstrap token, provision the "
+                "service token, then start the rest:"
+            )
+            _print_command(console, _docker_token_command(spec))
+            _print_command(console, _service_token_mint_command(spec))
+            _print_command(console, _compose_command_str(spec, "up", "-d"))
+        else:
+            _print_docker_token_command(console, spec)
         return 0
     console.print("[green]Nymeria is up.[/green]")
     _print_docker_bootstrap_token(console, spec=spec, root=root)
@@ -1069,7 +1079,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         )
         _print_command(console, rest_command)
         try:
-            subprocess.run(
+            rest = subprocess.run(
                 _compose_argv(spec, "up", "-d"), cwd=str(root), env=_compose_env(spec)
             )
         except (OSError, ValueError) as exc:
@@ -1078,6 +1088,13 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
                 "Run it yourself:[/yellow]"
             )
             _print_command(console, rest_command)
+        else:
+            if rest.returncode != 0:
+                console.print(
+                    "[yellow]Some services did not start cleanly. Check the "
+                    "output above, or re-run:[/yellow]"
+                )
+                _print_command(console, rest_command)
     return 0
 
 

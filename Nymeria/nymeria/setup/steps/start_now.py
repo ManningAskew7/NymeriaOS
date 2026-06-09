@@ -33,8 +33,8 @@ _DOCKER_START = Choice(
     value=NextAction.START_API_OPEN_FRONTEND,
     label="Start now (Docker, detached)",
     description=(
-        "Run the single-container compose in the background now, wait for the "
-        "health check, then show the URL and bootstrap token."
+        "Bring the Docker stack up in the background now, wait for the health "
+        "check, then show the URL and bootstrap token."
     ),
 )
 _DOCKER_PRINT = Choice(

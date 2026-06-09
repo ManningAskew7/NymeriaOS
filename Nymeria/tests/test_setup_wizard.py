@@ -3189,6 +3189,47 @@ def test_finalize_full_stack_service_token_preserved_on_reconfigure(monkeypatch,
     assert _env_line(content, "POSTGRES_PASSWORD") == "keepme"
 
 
+def test_finalize_full_stack_health_timeout_prints_remaining_steps(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    calls: list[list[str]] = []
+
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    # The API never becomes healthy within the timeout.
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **_kw: False)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(root),
+         "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0  # a slow boot is non-fatal
+    # Only the first `up -d api` ran; provisioning must NOT exec when the API never
+    # became healthy (no `users add`, no second `up -d`, no token read).
+    assert calls == [
+        ["docker", "compose", "--env-file", ".env.docker", "up", "-d", "api"]
+    ]
+    assert not any("users" in c for c in calls)
+    # The remaining manual steps are printed so the user is not left with a half
+    # stack, and the token line was never written (provisioning did not run).
+    assert "exec api cat /data/BOOTSTRAP_TOKEN.txt" in out
+    assert "users add bot-service@localhost --role admin --id bot-service" in out
+    assert _env_line(
+        (root / ".env.docker").read_text(encoding="utf-8"), "NYMERIA_SERVICE_TOKEN"
+    ) is None
+
+
 def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():
     from nymeria.onboarding import NextAction
     from nymeria.setup.app import SetupWizardApp
