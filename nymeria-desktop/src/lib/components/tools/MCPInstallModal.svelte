@@ -648,8 +648,10 @@ https://github.com/example/mcp-server`}
   }
 
   .paste-box::placeholder {
+    /* Color does the muting; opacity:1 overrides Firefox's 0.54 default
+       so --text-muted (4.79:1 AA) is what actually renders cross-browser. */
     color: var(--text-muted);
-    opacity: 0.75;
+    opacity: 1;
   }
 
   .format-chip {
