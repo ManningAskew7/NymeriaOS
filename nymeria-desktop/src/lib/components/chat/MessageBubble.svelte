@@ -375,7 +375,13 @@
 </div>
 {:else if !isHiddenMessage}
 <div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
-  <div class="bubble-content">
+  <!--
+    Crit 4 — aria-busy silences AT browse-mode reads of mid-stream content
+    on the assistant bubble. Cleared when status leaves 'streaming', after
+    which the bubble is normal navigable content. ChatContainer's status
+    live region handles the start/end announcements.
+  -->
+  <div class="bubble-content" aria-busy={!isUser && isStreaming ? 'true' : undefined}>
     {#if isUser}
       {#if hasAttachments}
         <div class="user-attachments">
