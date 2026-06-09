@@ -89,7 +89,15 @@ def _get_client() -> NymeriaBackendClient:
         service_token = _service_token_override
     else:
         settings = get_settings()
-        service_token = settings.nymeria_service_token
+        # In the full Docker stack the mcp container shares the ``nymeria_data``
+        # volume with the api and starts only once the api is healthy, so the
+        # token the api self-minted is already on disk. Fall back to it when no
+        # operator token is set (resolve_service_token: env wins, else file).
+        from nymeria.core.service_bootstrap import resolve_service_token
+
+        service_token = resolve_service_token(
+            settings.nymeria_service_token, settings.data_dir
+        )
     if not service_token:
         raise RuntimeError(
             "NYMERIA_SERVICE_TOKEN is required for the MCP thin client. "

@@ -70,7 +70,12 @@ _load_environment()
 
 
 _SERVICE_TOKEN_REQUIRED_COMMANDS = {
-    "worker": "the worker (ticker)",
+    # NOTE: "worker" is intentionally absent. The worker depends only on
+    # postgres/redis (not api-healthy) and can start before the api self-mints
+    # the service token onto the shared volume, so it must NOT be gated by the
+    # early dispatch check; ``run_worker`` resolves the token after its own API
+    # health wait instead. (The cosmetic "not set" warning is suppressed for it
+    # in ``main`` so this omission stays silent.)
     "discord-bot": "the Discord bot",
     "telegram-bot": "the Telegram bot",
     "slack-bot": "the Slack bot",
@@ -197,10 +202,21 @@ def _service_token_requirement(args: argparse.Namespace) -> str | None:
 
 
 def _require_service_token(settings, role: str, *, stream=None) -> str:
-    """Return the admin service token or fail with provisioning guidance."""
+    """Return the admin service token or fail with provisioning guidance.
+
+    Falls back to the token the api self-mints onto the shared data volume
+    (``data/SLIM_SERVICE_TOKEN.txt``) when ``NYMERIA_SERVICE_TOKEN`` is unset, so
+    thin clients that start after the api is healthy (watchdog, mcp, bots, and
+    the worker once it has waited for the API) pick it up with no operator
+    provisioning.
+    """
+    from nymeria.core.service_bootstrap import read_service_token_file
+
     token = settings.nymeria_service_token
     if isinstance(token, str):
         token = token.strip()
+    if not token:
+        token = read_service_token_file(getattr(settings, "data_dir", None))
     if token:
         return token
 
@@ -662,8 +678,10 @@ def run_worker(args: argparse.Namespace) -> None:
 
     settings = get_settings()
 
-    # The ticker fires triggers through the API with service-token auth.
-    _require_service_token(settings, "the worker (ticker)")
+    # The service token is resolved AFTER the API health wait below, not here:
+    # in the full Docker stack the api self-mints it onto the shared data volume
+    # during its own startup, and the worker depends only on postgres/redis (not
+    # api-healthy), so it can reach this point before the token exists.
 
     api_url = (
         getattr(args, "api_url", None)
@@ -723,7 +741,12 @@ def run_worker(args: argparse.Namespace) -> None:
             "ticker will retry per-TODO until the API comes up."
         )
 
-    client = NymeriaAPIClient(base_url=api_url, api_key=settings.nymeria_service_token)
+    # Now that we have waited for the API, resolve the service token: env var if
+    # the operator set one, else the file the api self-minted onto the shared
+    # volume. Exits with provisioning guidance if neither yields a token; a
+    # transient miss self-heals via the worker's ``restart: unless-stopped``.
+    service_token = _require_service_token(settings, "the worker (ticker)")
+    client = NymeriaAPIClient(base_url=api_url, api_key=service_token)
     executor = APIClientExecutor(client, publish_autonomous_events=False)
 
     schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
@@ -1853,8 +1876,16 @@ def main() -> None:
         _require_launch_mode_service_token(args, get_settings())
 
     # Slim bootstraps its own internal service token, so the generic
-    # "NYMERIA_SERVICE_TOKEN not set" warning is misleading there.
-    suppress_service_token_warning = service_token_required or args.command == "slim"
+    # "NYMERIA_SERVICE_TOKEN not set" warning is misleading there. The worker is
+    # the same: in the full Docker stack the api self-mints the token onto the
+    # shared volume and the worker resolves it after its API health wait, so the
+    # warning would be a false alarm (and "worker" is deliberately not in
+    # _SERVICE_TOKEN_REQUIRED_COMMANDS, hence not covered by service_token_required).
+    suppress_service_token_warning = (
+        service_token_required
+        or args.command == "slim"
+        or args.command == "worker"
+    )
 
     # Validate configuration before running commands that need it
     # Skip validation for service status checks and help

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nymeria.core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
 from run import (
     _require_launch_mode_service_token,
     _require_service_token,
@@ -25,6 +26,26 @@ def test_require_service_token_strips_whitespace():
     assert _require_service_token(settings, "the test role") == "nym_test"
 
 
+def test_require_service_token_falls_back_to_minted_file(tmp_path):
+    """When the env token is empty, the api-minted file on the shared volume
+    supplies it (the full Docker stack worker/watchdog/mcp path)."""
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_from_file\n", encoding="utf-8")
+    settings = SimpleNamespace(nymeria_service_token="", data_dir=tmp_path)
+
+    assert _require_service_token(settings, "the test role") == "nym_from_file"
+
+
+def test_require_service_token_handles_missing_data_dir(capsys):
+    """A settings stub without ``data_dir`` must still exit cleanly (getattr
+    guard), not raise AttributeError, when no token is available."""
+    settings = SimpleNamespace(nymeria_service_token="")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _require_service_token(settings, "the test role")
+
+    assert exc_info.value.code == 1
+
+
 def test_require_service_token_exits_with_provisioning_guidance(capsys):
     settings = SimpleNamespace(nymeria_service_token="")
 
@@ -41,7 +62,6 @@ def test_require_service_token_exits_with_provisioning_guidance(capsys):
 @pytest.mark.parametrize(
     ("command", "action", "role"),
     [
-        ("worker", None, "the worker (ticker)"),
         ("discord-bot", None, "the Discord bot"),
         ("telegram-bot", None, "the Telegram bot"),
         ("watchdog", None, "the watchdog worker"),
@@ -61,6 +81,11 @@ def test_service_token_requirement_covers_internal_launch_modes(command, action,
         ("api", None),
         ("cli", None),
         ("users", None),
+        # The worker is intentionally NOT early-gated: it depends only on
+        # postgres/redis (not api-healthy) and can start before the api
+        # self-mints the service token onto the shared volume, so it resolves
+        # the token after its own API health wait instead.
+        ("worker", None),
     ],
 )
 def test_service_token_requirement_skips_modes_without_internal_api_calls(command, action):
