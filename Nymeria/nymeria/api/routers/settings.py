@@ -20,7 +20,7 @@ from ...config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
-from ...config.env_file import format_env_value, write_env_file
+from ...config.env_file import format_env_value, parse_env_value, write_env_file
 from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import (
     get_max_output_tokens,
@@ -339,14 +339,20 @@ def _mask_value(val: str) -> str:
 
 
 def _sync_process_env(new_lines: list[str], mapped_env_vars: set[str]) -> None:
-    """Sync mapped dotenv values into os.environ after a settings update."""
+    """Sync mapped dotenv values into os.environ after a settings update.
+
+    The written line may carry a quoted RHS (``format_env_value`` quotes
+    special-char values), so the value is un-quoted via ``parse_env_value`` before
+    it reaches ``os.environ``. Otherwise the env source (which outranks the dotenv
+    source) would feed the hot-reloaded Settings a value wrapped in literal quotes.
+    """
     for line in new_lines:
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, _, val = line.partition("=")
             key = key.strip()
             if key in mapped_env_vars:
-                os.environ[key] = val
+                os.environ[key] = parse_env_value(val)
 
 
 def _clear_settings_cache(get_settings_fn: Callable[[], Any]) -> None:
@@ -425,7 +431,7 @@ def apply_server_settings_update(
     }
 
     if not updates_dict:
-        return {"message": "No updates provided", "restart_required": False}
+        return {"message": "No updates provided", "updated": [], "restart_required": False}
 
     # Overlay only the changed keys onto the existing file, preserving untouched
     # lines, comments, and the secrets key, via the shared atomic 0600 writer the
@@ -1088,13 +1094,16 @@ def create_settings_router(
         settings: Settings = Depends(get_settings_fn),
     ):
         """Get settable environment variables with masked sensitive values."""
+        # Report the env var each field actually writes to (the canonical mapping),
+        # not a naive upper() that would mislabel the divergent S3 fields.
+        env_name_map = server_settings_env_mapping()
         entries = []
         for category, keys in _env_categories().items():
             for key in keys:
                 if key in HIDDEN_CONFIG_SETTINGS:
                     continue
                 val = getattr(settings, key, None)
-                env_var = key.upper()
+                env_var = env_name_map.get(key, key.upper())
                 is_secret = _is_secret_setting_key(key)
                 display_val = None
                 if val is not None:
@@ -1155,7 +1164,7 @@ def create_settings_router(
 
         return {
             "name": key,
-            "env_var": key.upper(),
+            "env_var": server_settings_env_mapping().get(key, key.upper()),
             "value": display_val,
             "is_secret": is_secret,
         }

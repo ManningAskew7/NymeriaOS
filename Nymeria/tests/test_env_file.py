@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nymeria.config.env_file import format_env_value, merge_env_lines, write_env_file
+from nymeria.config.env_file import (
+    format_env_value,
+    merge_env_lines,
+    parse_env_value,
+    write_env_file,
+)
 
 
 def test_format_env_value_bools_and_none():
@@ -33,6 +38,27 @@ def test_format_env_value_quotes_special_chars():
     assert format_env_value("model with space") == '"model with space"'
     assert format_env_value('he said "hi"') == '"he said \\"hi\\""'
     assert format_env_value("a\\b") == '"a\\\\b"'
+
+
+def test_parse_env_value_inverts_format():
+    # parse(format(x)) == x for the cases format produces: plain, base64, and the
+    # quoted/escaped special-char path. This is the property _sync_process_env relies
+    # on so a hot-reloaded value never carries literal quotes.
+    for value in (
+        "gpt-5.5",
+        "k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=",
+        "model with space",
+        'he said "hi"',
+        "a\\b",
+        "trailing space ",
+        '{"k": "v", "n": 1}',
+    ):
+        assert parse_env_value(format_env_value(value)) == value
+
+
+def test_parse_env_value_leaves_unquoted_and_empty():
+    assert parse_env_value("gpt-5.5") == "gpt-5.5"
+    assert parse_env_value("") == ""
 
 
 def test_merge_env_lines_overlays_and_preserves_order():

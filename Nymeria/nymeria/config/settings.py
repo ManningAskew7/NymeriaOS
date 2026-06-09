@@ -128,6 +128,9 @@ class Settings(BaseSettings):
         env_file=tuple(str(path) for path in get_env_file_paths(PROJECT_ROOT)),
         env_file_encoding="utf-8",
         extra="ignore",
+        # Keep field-name construction working for the aliased S3 fields (env reads
+        # still resolve via their AliasChoices; this only re-enables Settings(s3_*=)).
+        populate_by_name=True,
     )
 
     @classmethod
