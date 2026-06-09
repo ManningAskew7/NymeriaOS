@@ -712,7 +712,15 @@ def create_api_app(
                 settings.data_dir,
                 configured_token=getattr(settings, "nymeria_service_token", None),
             )
-        except Exception:  # noqa: BLE001 - best-effort; never block app startup
+        except Exception:  # noqa: BLE001
+            if slim_mode:
+                # Slim is one process: without the token its embedded MCP /
+                # watchdog / command calls cannot authenticate, so fail loudly
+                # rather than start a half-working backend (pre-broadening behavior).
+                raise
+            # Full stack: best-effort. A mint failure here must not block the api
+            # from serving; internal callers stay unauthenticated until the next
+            # boot mints successfully or an operator sets NYMERIA_SERVICE_TOKEN.
             logger.warning(
                 "Service-token bootstrap failed; internal callers may be "
                 "unauthenticated until NYMERIA_SERVICE_TOKEN is set.",
