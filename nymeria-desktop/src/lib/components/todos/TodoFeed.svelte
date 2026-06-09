@@ -286,7 +286,7 @@
   .group-items.highlighted {
     padding: var(--spacing-xs);
     background: rgba(var(--accent-primary-rgb), 0.1);
-    border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
+    border: 1px solid var(--accent-tint-border);
     border-radius: var(--radius-md);
   }
 

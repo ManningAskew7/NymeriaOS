@@ -221,7 +221,7 @@
   .tab-btn.active {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
   }
 
   .panel-body {

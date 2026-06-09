@@ -973,7 +973,7 @@
   }
 
   .mode-badge.custom {
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 
@@ -1005,7 +1005,7 @@
 
   .search-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .search-input::placeholder {
@@ -1100,7 +1100,7 @@
     white-space: nowrap;
     flex-shrink: 0;
     border-radius: var(--radius-full);
-    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 
@@ -1420,7 +1420,7 @@
   }
 
   .tool-type.http {
-    background: rgba(var(--accent-primary-rgb), 0.15);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
   }
 

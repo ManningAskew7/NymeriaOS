@@ -271,7 +271,7 @@
     padding: 0 5px;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    background: rgba(var(--accent-primary-rgb), 0.15);
+    background: var(--accent-tint-bg);
     color: var(--accent-primary);
     border-radius: var(--radius-full);
     flex-shrink: 0;

@@ -421,7 +421,7 @@
   .field input:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .hint {
@@ -465,7 +465,7 @@
     background: var(--bg-elevated);
     border: 1px solid var(--accent-primary);
     border-radius: var(--radius-md);
-    box-shadow: 0 0 0 3px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .identity-meta {

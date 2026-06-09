@@ -633,7 +633,7 @@
   }
 
   .edit-input:focus {
-    box-shadow: 0 0 0 2px var(--accent-primary-alpha);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 
   .thread-badges {

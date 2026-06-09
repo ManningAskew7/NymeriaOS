@@ -684,7 +684,7 @@
   .model-badge.override {
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border: 1px solid var(--accent-tint-border);
   }
 
   .model-badge.default {
@@ -696,7 +696,7 @@
   .tools-badge {
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border: 1px solid var(--accent-tint-border);
   }
 
   .tools-badge.reduced {
@@ -720,7 +720,7 @@
   .callables-badge {
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border: 1px solid var(--accent-tint-border);
   }
 
   .skills-badge {
@@ -744,7 +744,7 @@
   .callable-badge {
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+    border: 1px solid var(--accent-tint-border);
   }
 
   .messages-area {

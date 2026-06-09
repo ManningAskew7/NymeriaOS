@@ -180,7 +180,7 @@
     color: var(--accent-primary);
     opacity: 0.4;
     margin-bottom: var(--spacing-lg);
-    filter: drop-shadow(0 0 12px rgba(var(--accent-primary-rgb), 0.15));
+    filter: drop-shadow(0 0 12px var(--accent-tint-bg));
   }
 
   .empty-state h2 {

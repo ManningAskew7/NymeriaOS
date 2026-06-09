@@ -70,7 +70,7 @@
   }
 
   .todo-item.running {
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .todo-icon {

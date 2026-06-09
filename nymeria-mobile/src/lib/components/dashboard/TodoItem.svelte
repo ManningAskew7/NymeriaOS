@@ -222,7 +222,7 @@
   }
 
   .todo-item.highlighted {
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .todo-item.scheduled {
@@ -247,7 +247,7 @@
 
   .complete-btn:active:not(:disabled) {
     border-color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .complete-btn.checked {
@@ -318,7 +318,7 @@
     font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     border-radius: var(--radius-sm);
     white-space: nowrap;
     overflow: hidden;
@@ -336,7 +336,7 @@
     gap: 2px;
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     padding: 0 4px;
     border-radius: var(--radius-sm);
   }
@@ -347,7 +347,7 @@
     gap: 2px;
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
     padding: 0 4px;
     border-radius: var(--radius-sm);
   }

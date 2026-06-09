@@ -53,7 +53,7 @@
   }
 
   .notification-item.unread {
-    background: var(--accent-primary-alpha);
+    background: var(--accent-tint-bg);
   }
 
   .notif-content {

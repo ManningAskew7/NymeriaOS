@@ -642,7 +642,7 @@
   select:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb), 0.15);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .model-input {
