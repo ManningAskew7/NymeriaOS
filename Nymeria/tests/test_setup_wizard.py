@@ -223,6 +223,74 @@ def test_fetch_dependency_nudge_predicates():
     assert unmet_fetch_dependency(satisfied) is False
 
 
+# --- declarative family catalog (drift guards) ------------------------------
+
+
+def test_family_catalog_web_search_matches_runtime_tools():
+    from nymeria.setup import family_catalog
+    from nymeria.tools import WEB_SEARCH_SERVICE_TOOLS, WEB_SEARCH_INTEGRATION_TOOLS
+
+    expected = [t.name for t in (*WEB_SEARCH_SERVICE_TOOLS, *WEB_SEARCH_INTEGRATION_TOOLS)]
+    assert [c.value for c in family_catalog.web_search_choices()] == expected
+    # Perplexity (the self-sufficient backend) leads, matching the prior order.
+    assert family_catalog.web_search_choices()[0].value == "web_search_perplexity"
+
+
+def test_family_catalog_fetch_url_includes_nymeria_and_jina():
+    from nymeria.setup import family_catalog
+
+    assert [c.value for c in family_catalog.fetch_url_choices()] == [
+        "fetch_url_nymeria",
+        "jina_reader_fetch_url",
+    ]
+    assert family_catalog.default_checked_fetch_url() == ["fetch_url_nymeria"]
+
+
+def test_family_catalog_image_gen_matches_runtime_tools():
+    from nymeria.setup import family_catalog
+    from nymeria.tools import IMAGE_GEN_INTEGRATION_TOOLS
+
+    assert [c.value for c in family_catalog.image_gen_choices()] == [
+        t.name for t in IMAGE_GEN_INTEGRATION_TOOLS
+    ]
+
+
+def test_family_catalog_skill_kits_discovered_live_and_default_checked():
+    from nymeria.setup import family_catalog
+    from nymeria.core.user_profile import DEFAULT_GLOBAL_SKILLS
+
+    offered = {c.value for c in family_catalog.skill_kit_choices()}
+    default_checked = family_catalog.default_checked_skill_kits()
+    # The curated default-on set is DEFAULT_GLOBAL_SKILLS minus the guidance skill.
+    assert default_checked == [s for s in DEFAULT_GLOBAL_SKILLS if s != "self-improve"]
+    # Every default-checked kit is actually offered (discovered live from bundled).
+    assert set(default_checked) <= offered
+    # self-improve is a guidance skill, not a selectable kit.
+    assert "self-improve" not in offered
+    # Discovery is drift-proof: it surfaces bundled kits beyond the legacy four.
+    assert offered  # non-empty even if the scan path changes
+
+
+def test_every_keyed_catalog_backend_has_a_key_spec():
+    """Drift guard: a new web_search/image_gen backend needs a BACKEND_KEY_SPECS entry."""
+    from nymeria.setup import family_catalog
+    from nymeria.setup.tool_keys import BACKEND_KEY_SPECS
+
+    # fetch_url_nymeria is intentionally keyless (uses the configured primary LLM).
+    keyless = {"fetch_url_nymeria"}
+    keyed_backends = [
+        c.value
+        for c in (
+            *family_catalog.web_search_choices(),
+            *family_catalog.image_gen_choices(),
+            *family_catalog.fetch_url_choices(),
+        )
+        if c.value not in keyless
+    ]
+    missing = [name for name in keyed_backends if name not in BACKEND_KEY_SPECS]
+    assert not missing, f"backends missing a BACKEND_KEY_SPECS entry: {missing}"
+
+
 # --- environment detection --------------------------------------------------
 
 
@@ -1561,10 +1629,12 @@ def test_wizard_pilot_backend_keys_step_collects_key():
     assert state.optional_env["TAVILY_API_KEY"] == "tav-secret"
 
 
-def test_wizard_pilot_skill_kits_multiselect_defaults_all_on_and_records_list():
-    """The skill-kits step is a real multi-select: all kits are checked by default
-    and the chosen kit names are recorded as a list in extras.
+def test_wizard_pilot_skill_kits_multiselect_defaults_on_and_records_list():
+    """The skill-kits step is a real multi-select: the curated default kit set is
+    checked by default, the offered set is discovered live from bundled kits, and
+    the chosen kit names are recorded as a list in extras.
     """
+    from nymeria.setup import family_catalog
     from nymeria.setup.app import SetupWizardApp
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.placeholders import make_skill_kits_step, seeded_global_skills
@@ -1574,17 +1644,17 @@ def test_wizard_pilot_skill_kits_multiselect_defaults_all_on_and_records_list():
         app = SetupWizardApp(state, steps=[make_skill_kits_step()])
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")  # accept the all-checked default
+            await pilot.press("enter")  # accept the default-checked set
             await pilot.pause()
         return state
 
     state = asyncio.run(drive())
-    assert state.extras["skill_kits"] == [
-        "tool-management",
-        "skill-management",
-        "mcp-management",
-        "credential-management",
-    ]
+    # The recorded picks are exactly the curated default-on kits (order follows the
+    # discovered list, so compare order-independently).
+    assert set(state.extras["skill_kits"]) == set(family_catalog.default_checked_skill_kits())
+    # The offered set is discovered live, so it is a superset of the defaults.
+    offered = {c.value for c in family_catalog.skill_kit_choices()}
+    assert set(family_catalog.default_checked_skill_kits()) <= offered
     assert seeded_global_skills(state) == state.extras["skill_kits"]
 
 

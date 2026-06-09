@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import family_catalog
 from .rag_catalog import apply_quickstart_rag
 
 if TYPE_CHECKING:
@@ -42,8 +43,9 @@ QUICK_KEEP_STEP_IDS = frozenset(
 
 # Keyless web fetch default: distills pages with the configured primary LLM, so
 # it needs no separate key. Seeded into default_thread_tools via the fetch_url
-# family (see steps/placeholders.seeded_tool_names).
-QUICK_FETCH_DEFAULT = ["fetch_url_nymeria"]
+# family (see steps/placeholders.seeded_tool_names). Single source of truth lives
+# in family_catalog so the full-path fetch step and the quick path agree.
+QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 
 
 def apply_quick_defaults(state: "WizardState") -> None:
