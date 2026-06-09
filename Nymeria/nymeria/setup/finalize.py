@@ -71,8 +71,9 @@ class _DockerStackSpec:
     Postgres + Redis stack so the start/health/token helpers stay stack-agnostic.
     `compose_args` are the args between `docker compose` and the subcommand;
     `command_env` is any environment the compose invocation needs; `health_timeout`
-    bounds the readiness poll; `needs_service_token` triggers the post-boot
-    service-token provisioning the full stack requires.
+    bounds the readiness poll. Both stacks now mint their own internal service
+    token (slim in-process, full from the api into the shared `nymeria_data`
+    volume), so finalize no longer does any post-boot token provisioning.
     """
 
     compose_args: tuple[str, ...]
@@ -81,7 +82,6 @@ class _DockerStackSpec:
     label: str
     command_env: tuple[tuple[str, str], ...] = ()
     health_timeout: float = 40.0
-    needs_service_token: bool = False
 
 
 _DOCKER_STACK_SPECS: dict[DockerStack, _DockerStackSpec] = {
@@ -98,14 +98,13 @@ _DOCKER_STACK_SPECS: dict[DockerStack, _DockerStackSpec] = {
         # connect), exactly the "the stack is up" signal we want to wait on.
         health_url="http://localhost:8000/ready",
         label="full Docker stack (Postgres + Redis)",
-        # docker-compose.yml keeps DISCORD_BOT_TOKEN optional, but this matches the
-        # documented full-stack invocation and guards against a compose that marks
-        # it required; harmless since the installer always sets a provider key.
-        command_env=(("DISCORD_BOT_TOKEN", "disabled"),),
+        # No DISCORD_BOT_TOKEN sentinel: docker-compose.yml fully defaults it
+        # (`${DISCORD_BOT_TOKEN:-}`), so compose validates without it and the api
+        # sees an empty value (cleanly "not configured") rather than the literal
+        # "disabled" it would otherwise treat as a real token.
         # First boot builds the image and waits on a deep Postgres + Redis check,
         # so allow longer than the single container.
         health_timeout=120.0,
-        needs_service_token=True,
     ),
 }
 
@@ -289,9 +288,7 @@ def finalize(
     optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
     secrets_key = _resolve_secrets_key(config_path)
-    is_full_stack = (
-        for_docker and (state.docker_stack or DockerStack.SLIM) is DockerStack.FULL
-    )
+    is_full_stack = _is_full_stack(state)
     # Docker owns its `/data` volume, so the host cannot seed the bootstrap profile
     # (that is why the Docker branch below skips seed_bootstrap_profile). Carry the
     # picks into the container via `.env.docker` instead; it reads them once on
@@ -334,14 +331,15 @@ def finalize(
             "[green]Data:[/green] container-managed volume (the backend creates "
             "its admin and bootstrap token on first start)"
         )
-        if is_full_stack and init_picks:
-            # The picks would not reach the full stack's containers yet, so say so
-            # rather than write config that silently does nothing.
-            console.print(
-                "[yellow]Note:[/yellow] tool and skill picks are not yet carried "
-                "into the full stack automatically; set them in Settings after the "
-                "backend is up."
-            )
+        # The picks would not reach the full stack's containers yet, so say so
+        # rather than write config that silently does nothing. Reprinted at the
+        # end of the start handoff so a long `--start` scroll does not bury it.
+        _print_full_stack_init_picks_note(console, state)
+        if is_full_stack and full_stack_env:
+            shadow_keys = dict(full_stack_env)
+            if secrets_key:
+                shadow_keys["NYMERIA_SECRETS_KEY"] = secrets_key
+            _warn_shadowing_process_env(console, shadow_keys)
     else:
         repo = AccountsRepo(data_dir / "accounts.db")
         admin_token = repo.ensure_bootstrap_admin(data_dir)
@@ -533,9 +531,10 @@ def _resolve_full_stack_env(config_path: Path) -> dict[str, str]:
     the already-initialized postgres volume), and sets the user/db names the
     compose interpolates. The compose supplies sane defaults for CORS and the
     user/db names, but writing them keeps the generated file self-describing. An
-    already-provisioned `NYMERIA_SERVICE_TOKEN` is carried forward so a fresh
-    (non-merge) re-write keeps it, which also makes the post-boot provisioning a
-    no-op on a re-run.
+    operator-set `NYMERIA_SERVICE_TOKEN` already on disk is carried forward so a
+    fresh (non-merge) re-write does not drop it; when absent the api self-mints
+    the internal token onto the shared volume on first boot, so finalize writes
+    no service-token line of its own.
     """
     env = {
         "POSTGRES_USER": "nymeria",
@@ -952,45 +951,19 @@ def _start_command_for_hosting(state: WizardState) -> str:
 
 
 def _print_docker_next_steps(console: Console, state: WizardState) -> None:
-    """Print the start command(s) and token handoff for the chosen Docker stack.
+    """Print the start command and token handoff for the chosen Docker stack.
 
-    Slim is a single `up` plus the in-container token read. The full stack is a
-    multi-step sequence: bring up the database, cache, and API; read the bootstrap
-    token; provision the internal service token into `.env.docker`; then start the
-    remaining services.
+    Both stacks are now a single `up -d` plus the in-container bootstrap-token
+    read: the slim container mints its internal service token in-process, and the
+    full stack's api mints it onto the shared `nymeria_data` volume where the
+    worker / mcp / watchdog containers read it, so there is no host-side
+    service-token step to run.
     """
     spec = _docker_stack_spec(state)
-    if not spec.needs_service_token:
-        console.print(f"\nStart Nymeria ({spec.label}):")
-        _print_command(console, _compose_command_str(spec, "up", "-d"))
-        _print_docker_token_command(console, spec)
-        return
-
-    console.print(
-        f"\nStart the {spec.label}. First bring up the database, cache, and API:"
-    )
-    _print_command(console, _compose_command_str(spec, "up", "-d", spec.service))
-    console.print(
-        "\nOnce it is healthy, read your one-time bootstrap token (paste it into "
-        "the Desktop/Mobile Setup Wizard):"
-    )
-    _print_command(
-        console,
-        _compose_command_str(
-            spec, "exec", spec.service, "cat", f"/data/{BOOTSTRAP_TOKEN_FILENAME}"
-        ),
-    )
-    console.print(
-        "\nProvision the internal service token (the worker and bots need it), add "
-        "the printed nym_... value to .env.docker as NYMERIA_SERVICE_TOKEN, then "
-        "start the rest of the stack:"
-    )
-    _print_command(console, _service_token_mint_command(spec))
+    console.print(f"\nStart Nymeria ({spec.label}):")
     _print_command(console, _compose_command_str(spec, "up", "-d"))
-    console.print(
-        "\nRe-run setup anytime with `nymeria init`. Check health with "
-        "`nymeria doctor`."
-    )
+    _print_full_stack_init_picks_note(console, state)
+    _print_docker_token_command(console, spec)
 
 
 # --- opt-in start -----------------------------------------------------------
@@ -1017,15 +990,17 @@ def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
 
 def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> int:
     spec = _docker_stack_spec(state)
-    # The full stack brings up the database, cache, and API first (so the bootstrap
-    # admin exists and a service token can be minted) before starting the rest.
-    first_target = (spec.service,) if spec.needs_service_token else ()
-    up_command = _compose_command_str(spec, "up", "-d", *first_target)
+    # One `up -d` brings up the whole stack: the full stack's `depends_on` health
+    # gates order Postgres + Redis before the api, the api self-mints the internal
+    # service token onto the shared volume during its own startup, and the worker /
+    # mcp / watchdog read that token from disk once the api is healthy. No host-side
+    # service-token provisioning is needed for either stack.
+    up_command = _compose_command_str(spec, "up", "-d")
     console.print(f"\nStarting Nymeria ({spec.label})...")
     _print_command(console, up_command)
     try:
         result = subprocess.run(
-            _compose_argv(spec, "up", "-d", *first_target),
+            _compose_argv(spec, "up", "-d"),
             cwd=str(root),
             env=_compose_env(spec),
         )
@@ -1051,50 +1026,12 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             "still be coming up; check "
             f"`{_compose_command_str(spec, 'logs', '-f')}`.[/yellow]"
         )
-        if spec.needs_service_token:
-            # The database, cache, and API were already started; the remaining
-            # steps are read the token, provision the service token, then start the
-            # rest. Do NOT re-print `up -d api` (already run). Provisioning is not
-            # attempted here because the API never became healthy.
-            console.print(
-                "\nOnce it is healthy, read the bootstrap token, provision the "
-                "service token, then start the rest:"
-            )
-            _print_command(console, _docker_token_command(spec))
-            _print_command(console, _service_token_mint_command(spec))
-            _print_command(console, _compose_command_str(spec, "up", "-d"))
-        else:
-            _print_docker_token_command(console, spec)
+        _print_docker_token_command(console, spec)
+        _print_full_stack_init_picks_note(console, state)
         return 0
     console.print("[green]Nymeria is up.[/green]")
     _print_docker_bootstrap_token(console, spec=spec, root=root)
-    if spec.needs_service_token:
-        config_path = root / ".env.docker"
-        _provision_full_stack_service_token(
-            console, spec=spec, root=root, config_path=config_path
-        )
-        rest_command = _compose_command_str(spec, "up", "-d")
-        console.print(
-            "\nStarting the remaining services (worker, MCP, watchdog)..."
-        )
-        _print_command(console, rest_command)
-        try:
-            rest = subprocess.run(
-                _compose_argv(spec, "up", "-d"), cwd=str(root), env=_compose_env(spec)
-            )
-        except (OSError, ValueError) as exc:
-            console.print(
-                f"[yellow]Could not start the remaining services ({exc}). "
-                "Run it yourself:[/yellow]"
-            )
-            _print_command(console, rest_command)
-        else:
-            if rest.returncode != 0:
-                console.print(
-                    "[yellow]Some services did not start cleanly. Check the "
-                    "output above, or re-run:[/yellow]"
-                )
-                _print_command(console, rest_command)
+    _print_full_stack_init_picks_note(console, state)
     return 0
 
 
@@ -1153,13 +1090,6 @@ def wait_for_health(
 def _docker_token_command(spec: _DockerStackSpec) -> str:
     return _compose_command_str(
         spec, "exec", spec.service, "cat", f"/data/{BOOTSTRAP_TOKEN_FILENAME}"
-    )
-
-
-def _service_token_mint_command(spec: _DockerStackSpec) -> str:
-    return _compose_command_str(
-        spec, "exec", spec.service, "python3", "run.py", "users", "add",
-        "bot-service@localhost", "--role", "admin", "--id", "bot-service",
     )
 
 
@@ -1224,92 +1154,58 @@ def _print_docker_bootstrap_token(
         _print_command(console, _docker_token_command(spec))
 
 
-def _exec_token_mint(
-    spec: _DockerStackSpec, root: Path, tail: list[str]
-) -> str | None:
-    """Run a token-minting `run.py users ...` exec; return the `nym_` token or None.
-
-    Returns None on any failure (docker absent, non-zero exit, no token in stdout),
-    so callers can fall back without handling exceptions.
-    """
-    argv = _compose_argv(
-        spec, "exec", "-T", spec.service, "python3", "run.py", "users", *tail
+def _is_full_stack(state: WizardState) -> bool:
+    return (
+        state.hosting is HostingOption.DOCKER
+        and (state.docker_stack or DockerStack.SLIM) is DockerStack.FULL
     )
-    try:
-        result = subprocess.run(
-            argv,
-            cwd=str(root),
-            env=_compose_env(spec),
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    match = re.search(BOOTSTRAP_TOKEN_REGEX, result.stdout)
-    return match.group(0) if match else None
 
 
-_SERVICE_USER_ADD_TAIL = [
-    "add", "bot-service@localhost", "--role", "admin", "--id", "bot-service",
-]
+def _print_full_stack_init_picks_note(console: Console, state: WizardState) -> None:
+    """Remind that init tool/skill picks are not auto-carried into the full stack.
 
-
-def _provision_full_stack_service_token(
-    console: Console, *, spec: _DockerStackSpec, root: Path, config_path: Path
-) -> None:
-    """Mint the bot-service admin in the running stack and persist its token.
-
-    The full stack (unlike slim) does not auto-mint the internal service token the
-    worker / MCP / bots authenticate with, so provision it here: exec `users add`
-    in the API container, capture the `nym_...` token, and merge it into
-    `.env.docker` as NYMERIA_SERVICE_TOKEN. Idempotent (skips when already set) and
-    graceful (prints the manual command on any failure, never raises). If the
-    bot-service user already exists (a re-run after the token line was removed),
-    `add` fails, so fall back to `issue-token`, which mints an additional token
-    without revoking existing ones.
+    The single-container stack injects `.env.docker` wholesale via `env_file:`, so
+    its `NYMERIA_INIT_*` carriers reach the container; the full stack's per-service
+    `environment:` blocks do not pass them through (a deferred follow-up). Printed
+    both during config and again at the end of the start handoff so a long
+    `--start` scroll does not bury it. No-op unless the full stack actually carries
+    picks that differ from the defaults.
     """
-    if _read_env_value_from_file(config_path, "NYMERIA_SERVICE_TOKEN"):
-        return  # already provisioned (reconfigure / re-run)
-    console.print(
-        "\nProvisioning the internal service token (for the worker and bots)..."
-    )
-    token = _exec_token_mint(spec, root, _SERVICE_USER_ADD_TAIL)
-    if not token:
-        token = _exec_token_mint(spec, root, ["issue-token", "bot-service"])
-    if not token:
-        _warn_service_token_manual(console, spec, "could not mint a token")
+    if not _is_full_stack(state):
         return
-    try:
-        write_env_file(
-            config_path,
-            [("NYMERIA_SERVICE_TOKEN", _env_value(token))],
-            merge=True,
-            header="# Generated by `nymeria init`.",
-        )
-    except OSError as exc:
-        _warn_service_token_manual(console, spec, str(exc))
+    if not docker_init_seed_env(state):
         return
     console.print(
-        "[green]Service token provisioned and saved to .env.docker.[/green]"
+        "[yellow]Note:[/yellow] tool and skill picks are not yet carried into the "
+        "full stack automatically; set them in Settings once the backend is up."
     )
 
 
-def _warn_service_token_manual(
-    console: Console, spec: _DockerStackSpec, reason: str
-) -> None:
-    console.print(
-        f"[yellow]Could not provision the service token automatically ({reason}). "
-        "Run it yourself, add the printed nym_... value to .env.docker as "
-        "NYMERIA_SERVICE_TOKEN, then re-run `up -d`:[/yellow]"
+def _warn_shadowing_process_env(console: Console, written: Mapping[str, str]) -> None:
+    """Warn when a value written to `.env.docker` is shadowed by the shell.
+
+    docker compose resolves `${VAR}` from the process environment BEFORE the
+    `--env-file`, so a `POSTGRES_PASSWORD` / `REDIS_PASSWORD` / `NYMERIA_SECRETS_KEY`
+    exported in the operator's shell with a different value silently wins over the
+    one just generated. That mismatch is invisible now but breaks Postgres auth or
+    vault decryption on a later boot in a clean shell, so flag it and tell them to
+    `unset` the conflicting names.
+    """
+    clashes = sorted(
+        key
+        for key, value in written.items()
+        if value and key in os.environ and os.environ[key].strip() != value
     )
-    _print_command(console, _service_token_mint_command(spec))
+    if not clashes:
+        return
+    joined = ", ".join(clashes)
     console.print(
-        "If the bot-service user already exists, use `issue-token bot-service` "
-        "instead of `add`."
+        f"[yellow]Note:[/yellow] your shell exports {joined}, which docker compose "
+        "uses INSTEAD of the value just written to .env.docker. Unset them before "
+        "bringing the stack up so the generated credentials take effect:"
     )
+    # Printed via _print_command so the command stays on one unwrapped line.
+    _print_command(console, f"unset {' '.join(clashes)}")
 
 
 def _maybe_run_doctor(
