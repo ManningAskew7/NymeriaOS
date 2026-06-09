@@ -835,41 +835,41 @@
     </div>
 
     <div class="tab-bar">
-      <button class="tab-btn" class:active={activeTab === 'instructions'} onclick={() => (activeTab = 'instructions')}>
+      <button class="tab-btn" class:active={activeTab === 'instructions'} aria-current={activeTab === 'instructions' ? 'page' : undefined} onclick={() => (activeTab = 'instructions')}>
         Instructions
       </button>
-      <button class="tab-btn" class:active={activeTab === 'system'} onclick={() => (activeTab = 'system')}>
+      <button class="tab-btn" class:active={activeTab === 'system'} aria-current={activeTab === 'system' ? 'page' : undefined} onclick={() => (activeTab = 'system')}>
         System
         {#if systemPrompt.trim()}<span class="tab-badge">1</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'agent'} onclick={() => (activeTab = 'agent')}>
+      <button class="tab-btn" class:active={activeTab === 'agent'} aria-current={activeTab === 'agent' ? 'page' : undefined} onclick={() => (activeTab = 'agent')}>
         Agent
         {#if isCallable}<span class="tab-badge">1</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'dream'} onclick={() => (activeTab = 'dream')}>
+      <button class="tab-btn" class:active={activeTab === 'dream'} aria-current={activeTab === 'dream' ? 'page' : undefined} onclick={() => (activeTab = 'dream')}>
         Dream
         {#if dreamEnabled}<span class="tab-badge">1</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'model'} onclick={() => (activeTab = 'model')}>
+      <button class="tab-btn" class:active={activeTab === 'model'} aria-current={activeTab === 'model' ? 'page' : undefined} onclick={() => (activeTab = 'model')}>
         Model
       </button>
-      <button class="tab-btn" class:active={activeTab === 'tools'} onclick={() => (activeTab = 'tools')}>
+      <button class="tab-btn" class:active={activeTab === 'tools'} aria-current={activeTab === 'tools' ? 'page' : undefined} onclick={() => (activeTab = 'tools')}>
         Tools
         {#if disabledToolCount > 0}<span class="tab-badge">{disabledToolCount}</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'mcp'} onclick={() => (activeTab = 'mcp')}>
+      <button class="tab-btn" class:active={activeTab === 'mcp'} aria-current={activeTab === 'mcp' ? 'page' : undefined} onclick={() => (activeTab = 'mcp')}>
         MCP
         {#if mcpOverrideCount > 0}<span class="tab-badge">{mcpOverrideCount}</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'skills'} onclick={() => (activeTab = 'skills')}>
+      <button class="tab-btn" class:active={activeTab === 'skills'} aria-current={activeTab === 'skills' ? 'page' : undefined} onclick={() => (activeTab = 'skills')}>
         Skills
         {#if resolvedActiveSkillNames.size > 0}<span class="tab-badge">{resolvedActiveSkillNames.size}</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'triggers'} onclick={() => (activeTab = 'triggers')}>
+      <button class="tab-btn" class:active={activeTab === 'triggers'} aria-current={activeTab === 'triggers' ? 'page' : undefined} onclick={() => (activeTab = 'triggers')}>
         Triggers
         {#if activeTriggerCount > 0}<span class="tab-badge">{activeTriggerCount}</span>{/if}
       </button>
-      <button class="tab-btn" class:active={activeTab === 'chatapp'} onclick={() => (activeTab = 'chatapp')}>
+      <button class="tab-btn" class:active={activeTab === 'chatapp'} aria-current={activeTab === 'chatapp' ? 'page' : undefined} onclick={() => (activeTab = 'chatapp')}>
         Chat App
         {#if chatAppBindings.length > 0}<span class="tab-badge">{chatAppBindings.length}</span>{/if}
       </button>
