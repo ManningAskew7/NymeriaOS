@@ -552,7 +552,7 @@
       <div class="error-message">
         <Icon name="error" size={16} />
         {toolsStore.error}
-        <button onclick={() => toolsStore.clearError()}>Dismiss</button>
+        <button type="button" onclick={() => toolsStore.clearError()}>Dismiss</button>
       </div>
     {/if}
 

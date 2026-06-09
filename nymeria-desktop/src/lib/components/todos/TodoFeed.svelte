@@ -68,7 +68,7 @@
   {#if todosStore.error}
     <div class="error-state">
       <p>{todosStore.error}</p>
-      <button class="retry-btn" onclick={() => todosStore.fetch()}>
+      <button type="button" class="retry-btn" onclick={() => todosStore.fetch()}>
         Retry
       </button>
     </div>

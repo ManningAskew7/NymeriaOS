@@ -317,15 +317,15 @@
 <Modal title="Provider Setup" {isOpen} {onClose}>
   <div class="provider-wizard">
     <div class="steps" aria-label="Provider setup progress">
-      <button class="step" class:active={step === 1} class:complete={step > 1} onclick={() => (step = 1)}>
+      <button type="button" class="step" class:active={step === 1} class:complete={step > 1} onclick={() => (step = 1)}>
         <span>1</span>
         Auth
       </button>
-      <button class="step" class:active={step === 2} class:complete={step > 2} onclick={() => (step = 2)}>
+      <button type="button" class="step" class:active={step === 2} class:complete={step > 2} onclick={() => (step = 2)}>
         <span>2</span>
         Credentials
       </button>
-      <button class="step" class:active={step === 3} onclick={() => (step = 3)} disabled={!testCanRun}>
+      <button type="button" class="step" class:active={step === 3} onclick={() => (step = 3)} disabled={!testCanRun}>
         <span>3</span>
         Test
       </button>

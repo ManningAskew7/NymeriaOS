@@ -457,7 +457,7 @@
 {#if open}
   <div class="settings-modal">
     <div class="settings-header">
-      <button class="back-btn" onclick={onClose}>
+      <button type="button" class="back-btn" onclick={onClose}>
         <Icon name="chevronLeft" size={22} />
       </button>
       <h2>Settings</h2>

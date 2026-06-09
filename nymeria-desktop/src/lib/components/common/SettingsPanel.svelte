@@ -1162,10 +1162,10 @@
                 {/if}
                 <div class="conn-actions">
                   {#if editingConnectionId === conn.id}
-                    <button class="conn-action-btn" onclick={handleUpdateConnection} title="Save">
+                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save">
                       <Icon name="check" size={14} />
                     </button>
-                    <button class="conn-action-btn" onclick={handleCancelEdit} title="Cancel">
+                    <button type="button" class="conn-action-btn" onclick={handleCancelEdit} title="Cancel">
                       <Icon name="x" size={14} />
                     </button>
                   {:else}
@@ -1181,10 +1181,10 @@
                     {:else}
                       <span class="conn-active-label">Connected</span>
                     {/if}
-                    <button class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit">
+                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit">
                       <Icon name="edit" size={14} />
                     </button>
-                    <button class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete">
+                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete">
                       <Icon name="trash" size={14} />
                     </button>
                   {/if}

@@ -158,7 +158,7 @@
 </script>
 
 {#if !visible}
-  <button class="ruler-pin" onclick={() => (visible = true)} aria-label="Open ruler" data-tooltip="Ruler (Ctrl+Shift+R)">
+  <button type="button" class="ruler-pin" onclick={() => (visible = true)} aria-label="Open ruler" data-tooltip="Ruler (Ctrl+Shift+R)">
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M21 3 3 21" />
       <path d="m7 17 1.5-1.5" />
@@ -224,18 +224,18 @@
     <div class="ruler-panel" style:left="{panelX}px" style:top="{panelY}px">
       <div class="panel-header" onpointerdown={startPanelDrag} role="presentation">
         <span class="panel-title">Ruler</span>
-        <button class="close-btn" onclick={() => (visible = false)} aria-label="Close ruler" data-tooltip="Close (Esc)">×</button>
+        <button type="button" class="close-btn" onclick={() => (visible = false)} aria-label="Close ruler" data-tooltip="Close (Esc)">×</button>
       </div>
       <div class="panel-body">
-        <button class="row-btn" onclick={addH}>+ Horizontal guide</button>
-        <button class="row-btn" onclick={addV}>+ Vertical guide</button>
-        <button class="row-btn" class:on={measureMode} onclick={() => (measureMode = !measureMode)}>
+        <button type="button" class="row-btn" onclick={addH}>+ Horizontal guide</button>
+        <button type="button" class="row-btn" onclick={addV}>+ Vertical guide</button>
+        <button type="button" class="row-btn" class:on={measureMode} onclick={() => (measureMode = !measureMode)}>
           {measureMode ? 'Stop measuring' : 'Measure box'}
         </button>
-        <button class="row-btn" class:on={showCrosshair} onclick={() => (showCrosshair = !showCrosshair)}>
+        <button type="button" class="row-btn" class:on={showCrosshair} onclick={() => (showCrosshair = !showCrosshair)}>
           {showCrosshair ? 'Hide crosshair' : 'Show crosshair'}
         </button>
-        <button class="row-btn ghost" onclick={clearAll}>Clear all</button>
+        <button type="button" class="row-btn ghost" onclick={clearAll}>Clear all</button>
         <div class="panel-hint">
           Click a guide to select • Arrow keys nudge 1px (Shift = 10px) • Delete removes it • Double-click also removes • Ctrl+Shift+R to toggle
         </div>
