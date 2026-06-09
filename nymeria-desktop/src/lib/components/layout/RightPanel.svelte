@@ -196,7 +196,8 @@
 
   .tab-buttons {
     display: flex;
-    gap: var(--spacing-xs);
+    /* §3 chip-row gap: ≥8px so adjacent tabs don't crowd edge-to-edge. */
+    gap: var(--spacing-sm);
     margin-top: var(--spacing-sm);
   }
 

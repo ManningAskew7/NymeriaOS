@@ -832,7 +832,8 @@
 
   .category-tabs {
     display: flex;
-    gap: 4px;
+    /* §3 chip-row gap: ≥8px so adjacent chips don't crowd edge-to-edge. */
+    gap: var(--spacing-sm);
     flex-wrap: wrap;
   }
 
@@ -843,7 +844,9 @@
     color: var(--text-muted);
     background: transparent;
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-full);
+    /* §3: moderate radius for filter chips (matches desktop .cat-tab).
+       Full pill is reserved for count badges and segmented controls. */
+    border-radius: var(--radius-md);
     cursor: pointer;
     text-transform: capitalize;
     transition: all var(--transition-fast);
@@ -857,7 +860,9 @@
   .cat-tab.active {
     background: var(--accent-primary);
     border-color: var(--accent-primary);
-    color: white;
+    /* Theme-aware text on accent fill: dark ink on Platinum's pale accent,
+       white on Midnight/Light. Hardcoded white would vanish on Platinum. */
+    color: var(--text-on-accent);
   }
 
   .source-grid {
