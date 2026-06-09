@@ -16,6 +16,7 @@ read/overlay/append/atomic-write mechanics.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Sequence
@@ -41,6 +42,21 @@ def format_env_value(value: str | bool | None) -> str:
     if not text:
         return ""
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def parse_env_value(raw: str) -> str:
+    """Inverse of :func:`format_env_value` for a single dotenv RHS.
+
+    Strips a surrounding pair of double quotes and reverses the backslash escaping,
+    so a value read back from a written line (e.g. to sync ``os.environ``) matches
+    what a dotenv parser would load rather than carrying literal quotes. Unquoted
+    values are returned unchanged. The ``\\(.)`` substitution unescapes left to
+    right in one pass, so ``\\\\`` -> ``\\`` and ``\\"`` -> ``"`` without
+    double-processing.
+    """
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return re.sub(r"\\(.)", r"\1", raw[1:-1])
+    return raw
 
 
 def merge_env_lines(
@@ -122,4 +138,9 @@ def write_env_file(
     return lines
 
 
-__all__ = ["format_env_value", "merge_env_lines", "write_env_file"]
+__all__ = [
+    "format_env_value",
+    "parse_env_value",
+    "merge_env_lines",
+    "write_env_file",
+]

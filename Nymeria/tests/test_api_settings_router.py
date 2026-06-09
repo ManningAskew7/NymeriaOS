@@ -938,8 +938,8 @@ def test_patch_settings_quotes_values_with_spaces(
 ):
     # A value with a space must be quoted so python-dotenv and compose parse it
     # whole. The pre-consolidation handler wrote it unquoted (a latent bug); this
-    # is the regression guard.
-    monkeypatch.delenv("LLM_MODEL", raising=False)
+    # is the regression guard. setenv registers LLM_MODEL for teardown cleanup.
+    monkeypatch.setenv("LLM_MODEL", "old")
     env_path = tmp_path / ".env"
     env_path.write_text("LLM_MODEL=old\n", encoding="utf-8")
     client, _agent, token, _provider = _client(monkeypatch, tmp_path)
@@ -951,6 +951,9 @@ def test_patch_settings_quotes_values_with_spaces(
     assert response.status_code == 200
     env_text = env_path.read_text(encoding="utf-8")
     assert 'LLM_MODEL="model with space"' in env_text
+    # The quoted file value must reach os.environ UN-quoted, else the hot-reloaded
+    # Settings (env source outranks dotenv) would carry literal quotes.
+    assert os.environ["LLM_MODEL"] == "model with space"
 
 
 def test_get_settings_does_not_return_provider_secret_fields(
@@ -1223,9 +1226,12 @@ def test_patch_settings_s3_credential_writes_aws_env_var(tmp_path: Path, monkeyp
     # The S3 fields map to AWS SDK names (the override table), and the Settings model
     # now reads them back from the same names. End-to-end: PATCHing s3_access_key_id
     # must land as AWS_ACCESS_KEY_ID in the env file, not S3_ACCESS_KEY_ID.
-    # setenv (not delenv) so the os.environ write the applier makes is reverted on
-    # teardown and cannot leak into other tests that load real Settings.
+    # setenv (not delenv) so the os.environ writes the applier makes are reverted on
+    # teardown and cannot leak into other tests that load real Settings. _sync_process_env
+    # re-syncs EVERY mapped var present in the merged file, so the seeded LLM_MODEL line
+    # is written to os.environ too and must also be registered for cleanup.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "")
+    monkeypatch.setenv("LLM_MODEL", "keep")
     monkeypatch.delenv("S3_ACCESS_KEY_ID", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("LLM_MODEL=keep\n", encoding="utf-8")
@@ -1281,6 +1287,9 @@ def test_command_backend_update_settings_writes_atomic_quoted_0600(
     assert "# keep me" in env_text
     assert "NYMERIA_SECRETS_KEY=k7Jn-3xQp9_aB2cD4eF6gH8iJ0kL2mN4oP6qR8sT0u=" in env_text
     assert env_path.stat().st_mode & 0o777 == 0o600
+    # The slash path shares the applier's os.environ sync, so the quoted file value
+    # is un-quoted before reload (the bug this commit also fixes for this path).
+    assert os.environ["LLM_MODEL"] == "model with space"
 
 
 def test_command_backend_update_settings_reports_restart_and_rebuilds_graph(
