@@ -55,6 +55,39 @@ def default_thread_tools_for_state(state: "WizardState") -> list[str]:
     return names
 
 
+def docker_init_seed_env(state: "WizardState") -> dict[str, str]:
+    """Env vars that carry the bootstrap admin's picks into a Docker container.
+
+    The Docker single-container shape owns its `/data` volume, so finalize cannot
+    seed the bootstrap profile on the host the way local/service hosting does
+    (`finalize.seed_bootstrap_profile`). Instead the picks ride in `.env.docker`
+    as two name-list env vars the container reads once on first boot (see
+    ``config/init_seed_env.py`` for the contract and the container-side readers).
+
+    Returns ONLY the vars that DIFFER from the backend's own first-boot defaults
+    (``core_seed_tool_names()`` for tools, ``DEFAULT_GLOBAL_SKILLS`` for skills),
+    so a no-pick install writes nothing extra and the container's normal core-seed
+    and default-skill migrations run unchanged. When a var is written it holds the
+    exact list `seed_bootstrap_profile` would have written on the host, keeping the
+    two seeding paths in agreement.
+    """
+    from ..config.init_seed_env import (
+        INIT_DEFAULT_THREAD_TOOLS_ENV,
+        INIT_ENABLED_GLOBAL_SKILLS_ENV,
+        format_init_name_list,
+    )
+    from ..core.user_profile import DEFAULT_GLOBAL_SKILLS
+
+    out: dict[str, str] = {}
+    tools = default_thread_tools_for_state(state)
+    if tools != core_seed_tool_names():
+        out[INIT_DEFAULT_THREAD_TOOLS_ENV] = format_init_name_list(tools)
+    skills = selected_global_skills_for_state(state)
+    if skills != DEFAULT_GLOBAL_SKILLS:
+        out[INIT_ENABLED_GLOBAL_SKILLS_ENV] = format_init_name_list(skills)
+    return out
+
+
 def selected_global_skills_for_state(state: "WizardState") -> list[str]:
     """``enabled_global_skills`` to seed: the self-improve guidance skill plus the
     init-chosen capability kits.
@@ -76,4 +109,5 @@ __all__ = [
     "core_seed_tool_names",
     "default_thread_tools_for_state",
     "selected_global_skills_for_state",
+    "docker_init_seed_env",
 ]

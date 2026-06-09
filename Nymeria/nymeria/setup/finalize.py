@@ -44,6 +44,7 @@ from .providers import (
 )
 from .rag_catalog import apply_quickstart_rag, rag_env_for_state
 from .state import WizardState
+from .tool_seed import docker_init_seed_env
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
 
@@ -210,6 +211,11 @@ def finalize(
     optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
     secrets_key = _resolve_secrets_key(config_path)
+    # Docker owns its `/data` volume, so the host cannot seed the bootstrap
+    # profile (that is why the Docker branch below skips seed_bootstrap_profile).
+    # Carry the picks into the container via `.env.docker` instead; it reads them
+    # once on first boot. Empty for a no-pick install (writes nothing extra).
+    init_seed_env = docker_init_seed_env(state) if for_docker else None
 
     if not for_docker:
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -225,6 +231,7 @@ def finalize(
         secrets_key=secrets_key,
         for_docker=for_docker,
         merge=merge,
+        init_seed_env=init_seed_env,
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -290,6 +297,7 @@ def write_config(
     secrets_key: str = "",
     for_docker: bool = False,
     merge: bool = False,
+    init_seed_env: Mapping[str, str] | None = None,
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -309,11 +317,17 @@ def write_config(
     existing file, preserving untouched lines and comments. An omitted key (e.g.
     the provider key when the field was left blank to keep the existing one) is
     left as-is on disk rather than blanked.
+
+    `init_seed_env` (Docker shape only) carries the bootstrap admin's tool/skill
+    picks into the container, which reads them once on first boot
+    (`setup/tool_seed.docker_init_seed_env`, contract in `config/init_seed_env.py`).
+    The values are `:`-joined identifier lists, so they write unquoted.
     """
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     optional_env = optional_env or {}
     extra_env = extra_env or {}
+    init_seed_env = init_seed_env or {}
     provider_env = spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
     produced: list[tuple[str, str]] = []
     if spec is not None:
@@ -338,6 +352,11 @@ def write_config(
         # write (OAuth connect, BYO bot token, integration secret) raises
         # SecretsKeyMissing. Read straight from the env by nymeria/core/secrets.py.
         produced.append(("NYMERIA_SECRETS_KEY", _env_value(secrets_key)))
+    for env_var, value in init_seed_env.items():
+        # Docker first-boot pick carriers (`:`-joined name lists). Already in the
+        # safe set, so `_env_value` leaves them unquoted for Docker `env_file`.
+        if value:
+            produced.append((env_var, _env_value(value)))
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
