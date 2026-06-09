@@ -13,68 +13,15 @@ them yet.
 
 from __future__ import annotations
 
+from .. import family_catalog
 from ..nav import Step
 from ..state import WizardState
 from .base import Choice, multi_select_step, placeholder_step
 
 
-# Section B, built: the six registered web_search_* backends.
-_WEB_SEARCH_BACKENDS = [
-    Choice(
-        "web_search_perplexity",
-        "Perplexity",
-        "Synthesized answers; self-sufficient (needs no web fetch backend).",
-    ),
-    Choice("web_search_tavily", "Tavily", "Links and previews; pair with a web fetch backend."),
-    Choice("web_search_exa_ai", "Exa", "Links and previews; pair with a web fetch backend."),
-    Choice(
-        "web_search_firecrawl",
-        "Firecrawl",
-        "Links and previews; pair with a web fetch backend.",
-    ),
-    Choice("web_search_brave", "Brave Search", "Links and previews; pair with a web fetch backend."),
-    Choice("web_search_searxng", "SearXNG", "Self-hosted; pair with a web fetch backend."),
-]
-
-# Section B, built: the two registered fetch_url-family tools.
-_WEB_FETCH_BACKENDS = [
-    Choice(
-        "fetch_url_nymeria",
-        "Nymeria fetch",
-        "Built-in fetcher that distills a page with a configurable model.",
-    ),
-    Choice("jina_reader_fetch_url", "Jina Reader", "Hosted reader endpoint (key required)."),
-]
-
-# Section B, built: the five registered image_gen_* providers (mirrors the
-# web_search_* suite so users can pick and swap providers individually).
-_IMAGE_GEN_BACKENDS = [
-    Choice(
-        "image_gen_openai",
-        "OpenAI GPT Image",
-        "Top-ranked all-rounder: photorealism, prompt adherence, in-image text (key required).",
-    ),
-    Choice(
-        "image_gen_gemini",
-        "Google Gemini (Nano Banana Pro)",
-        "Best for in-image text, infographics/diagrams, and 4K output (key required).",
-    ),
-    Choice(
-        "image_gen_flux",
-        "Black Forest Labs FLUX.2",
-        "Flagship photorealism and multi-reference; async submit and poll (key required).",
-    ),
-    Choice(
-        "image_gen_replicate",
-        "Replicate (budget)",
-        "Low-cost host for FLUX.1 schnell or Z-Image Turbo; good for drafts (key required).",
-    ),
-    Choice(
-        "image_gen_fal",
-        "fal.ai (budget)",
-        "Fast low-cost host for Z-Image Turbo or FLUX.1 schnell (key required).",
-    ),
-]
+def _choices(family_choices) -> list[Choice]:
+    """Wrap the TUI-free catalog ``FamilyChoice`` list into wizard ``Choice``s."""
+    return [Choice(c.value, c.label, c.description) for c in family_choices]
 
 
 def _extras_list(step_id: str):
@@ -129,7 +76,7 @@ def make_web_search_step() -> Step:
             "built and saved to your default thread tools). Every backend "
             "except Perplexity returns links only, so add a web fetch backend next."
         ),
-        choices=_WEB_SEARCH_BACKENDS,
+        choices=_choices(family_catalog.web_search_choices()),
         get_initial=get_initial,
         store=store,
     )
@@ -148,7 +95,7 @@ def make_fetch_url_step() -> Step:
         stored = state.extras.get("fetch_url")
         if isinstance(stored, list):
             return list(stored)
-        return ["fetch_url_nymeria"]
+        return family_catalog.default_checked_fetch_url()
 
     return multi_select_step(
         step_id="fetch_url",
@@ -159,7 +106,7 @@ def make_fetch_url_step() -> Step:
             "these to be useful. The built-in Nymeria fetcher is on by default and "
             "needs no key (it uses your configured LLM)."
         ),
-        choices=_WEB_FETCH_BACKENDS,
+        choices=_choices(family_catalog.fetch_url_choices()),
         get_initial=get_initial,
         store=store,
         warning_fn=_fetch_url_warning,
@@ -178,7 +125,7 @@ def make_image_gen_step() -> Step:
             "its provider API key set. The budget hosts (Replicate, fal.ai) cost "
             "far less than the flagship providers."
         ),
-        choices=_IMAGE_GEN_BACKENDS,
+        choices=_choices(family_catalog.image_gen_choices()),
         get_initial=get_initial,
         store=store,
     )
@@ -210,42 +157,16 @@ def make_stt_step() -> Step:
     )
 
 
-# Section D, built: the bundled, default-on capability kits that the agent loads
-# on demand. self-improve (the text-only guidance skill) stays on separately and
-# is not a toggle here.
-_SKILL_KITS = [
-    Choice(
-        "tool-management",
-        "Tool management",
-        "Find, enable, and build tools, including HTTP/API-backed ones.",
-    ),
-    Choice(
-        "skill-management",
-        "Skill management",
-        "Find, install, create, and edit Skills and Skill Kits.",
-    ),
-    Choice(
-        "mcp-management",
-        "MCP management",
-        "Find, install, test, and manage MCP servers.",
-    ),
-    Choice(
-        "credential-management",
-        "Credential management",
-        "Request, inspect, and clean up service credentials and connections.",
-    ),
-]
-
-_SKILL_KIT_IDS = [choice.value for choice in _SKILL_KITS]
-
-
 def make_skill_kits_step() -> Step:
     """Real multi-select over the bundled, default-on capability kits (Section D).
 
     Seeds the chosen kit names into the bootstrap admin's `enabled_global_skills`
-    (see `finalize.seed_bootstrap_profile`). Each kit only appears in the agent's
-    skill index and loads its tools when activated, so all four are checked by
-    default. The `self-improve` guidance skill stays on regardless of this pick.
+    (see `finalize.seed_bootstrap_profile`). The offered kits are discovered live
+    from `skills_bundled/` (`family_catalog.skill_kit_choices`); the curated
+    default-checked set is `family_catalog.default_checked_skill_kits`. Each kit
+    only appears in the agent's skill index and loads its tools when activated, so
+    leaving them on is cheap. The `self-improve` guidance skill stays on
+    regardless of this pick.
     """
     _, store = _extras_list("skill_kits")
 
@@ -253,7 +174,7 @@ def make_skill_kits_step() -> Step:
         stored = state.extras.get("skill_kits")
         if isinstance(stored, list):
             return list(stored)
-        return list(_SKILL_KIT_IDS)
+        return family_catalog.default_checked_skill_kits()
 
     return multi_select_step(
         step_id="skill_kits",
@@ -261,10 +182,10 @@ def make_skill_kits_step() -> Step:
         note=(
             "Pick the capability kits Nymeria keeps on by default. Each shows up in "
             "the agent's skill index and loads its tools only when the task needs "
-            "them, so leaving all four on is cheap. The self-improve guidance skill "
+            "them, so leaving them on is cheap. The self-improve guidance skill "
             "stays on regardless. You can change these later in settings."
         ),
-        choices=_SKILL_KITS,
+        choices=_choices(family_catalog.skill_kit_choices()),
         get_initial=get_initial,
         store=store,
     )
@@ -290,14 +211,14 @@ def seeded_global_skills(state: WizardState) -> list[str]:
     """The capability kit names the init flow seeds as default-on global skills.
 
     Reads the `skill_kits` multi-select. When the step was never reached (e.g. a
-    non-interactive run that did not pass `--skill-kit`), defaults to all bundled
-    kits, matching the interactive step's all-checked default. `self-improve` is
-    added separately by the finalize seeding, not here.
+    non-interactive run that did not pass `--skill-kit`), defaults to the curated
+    default-on kit set, matching the interactive step's default check.
+    `self-improve` is added separately by the finalize seeding, not here.
     """
     value = state.extras.get("skill_kits")
     if isinstance(value, list):
         return [str(item) for item in value]
-    return list(_SKILL_KIT_IDS)
+    return family_catalog.default_checked_skill_kits()
 
 
 __all__ = [
