@@ -46,6 +46,18 @@
       notificationStore.fetch();
     }
   });
+
+  // §6 a11y — Escape closes the dropdown while open. Window listener so
+  // the handler fires no matter where focus currently sits inside the
+  // notification center (or outside it).
+  $effect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
 </script>
 
 {#if isOpen}
