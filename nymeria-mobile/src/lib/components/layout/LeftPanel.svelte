@@ -24,7 +24,7 @@
     settingsInitialTab = undefined;
   }
 
-  function handleNewChat() {
+  function handleNewThread() {
     const thread = threadsStore.createThread();
     threadsStore.selectThread(thread.id);
     chatStore.clearMessages();
@@ -43,10 +43,10 @@
   <header class="panel-header">
     <h2>Nymeria</h2>
     <button
-      class="new-chat-btn"
-      onclick={handleNewChat}
-      title="New Chat"
-      aria-label="New chat"
+      class="new-thread-btn"
+      onclick={handleNewThread}
+      title="New Thread"
+      aria-label="New thread"
     >
       <Icon name="plus" size={22} />
     </button>
@@ -114,7 +114,7 @@
     color: var(--accent-primary);
   }
 
-  .new-chat-btn {
+  .new-thread-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -125,7 +125,7 @@
     transition: all var(--transition-fast);
   }
 
-  .new-chat-btn:active {
+  .new-thread-btn:active {
     background: var(--bg-hover);
     color: var(--accent-primary);
   }

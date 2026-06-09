@@ -994,7 +994,7 @@
               <input type="checkbox" bind:checked={ragEnabled} />
               <span>Enable semantic memory (RAG)</span>
             </label>
-            <p class="hint">Let the agent search your own past conversations, tool results, and notes</p>
+            <p class="hint">Let the agent search your own past threads, tool results, and notes</p>
           </div>
 
           <div class="setting-group">
@@ -1023,7 +1023,7 @@
           <div class="setting-group">
             <label class="setting-toggle">
               <input type="checkbox" bind:checked={ragIncludeConversations} />
-              <span>Search conversations</span>
+              <span>Search threads</span>
             </label>
           </div>
           <div class="setting-group">

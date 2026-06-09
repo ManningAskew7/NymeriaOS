@@ -18,7 +18,7 @@
   import { untrack } from 'svelte';
   import type { DispatchInfo, FileAttachment, SSEEvent } from '$lib/types';
 
-  let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Chat');
+  let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Thread');
   let showThreadSettings = $state(false);
 
   // Load global stores for header badges

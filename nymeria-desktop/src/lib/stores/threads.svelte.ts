@@ -467,7 +467,7 @@ function createThreadsStore() {
     createThread(title?: string): Thread {
       const thread: Thread = {
         id: generateId(),
-        title: title || 'New Chat',
+        title: title || 'New Thread',
         createdAt: new Date(),
         updatedAt: new Date(),
         messageCount: 0
@@ -482,7 +482,7 @@ function createThreadsStore() {
       // here. The backend auto-claims a personal thread on first touch via
       // require_thread_access (POST /chat, command execution, and
       // PATCH /threads/{id}/metadata all run through it). Eagerly claiming
-      // at tab-open time used to register every "New Chat" in thread_owners
+      // at tab-open time used to register every newly-created empty thread in thread_owners
       // immediately, so abandoned tabs became permanent empty backend threads
       // that reappear after a sync (and, with multiple connections, leaked
       // across backends). The TOFU window the old eager claim guarded is not
@@ -595,11 +595,13 @@ function createThreadsStore() {
 
     /**
      * Auto-generate a title from the first user message if the thread
-     * still has the default "New Chat" title.
+     * still has a default title ("New Thread" for new threads, or
+     * "New Chat" for threads created before the §9 terminology canon
+     * sweep).
      */
     autoTitleFromMessage(id: string, message: string) {
       const thread = threads.find((t) => t.id === id);
-      if (thread && thread.title === 'New Chat') {
+      if (thread && (thread.title === 'New Thread' || thread.title === 'New Chat')) {
         const newTitle = generateTitleFromMessage(message);
         threads = threads.map((t) =>
           t.id === id ? { ...t, title: newTitle, updatedAt: new Date() } : t
@@ -711,7 +713,7 @@ function createThreadsStore() {
         const local = localMap.get(bt.thread_id);
         return {
           id: bt.thread_id,
-          title: bt.title || local?.title || 'New Chat',
+          title: bt.title || local?.title || 'New Thread',
           pinned: bt.pinned ?? local?.pinned ?? false,
           platform: (bt.platform as ThreadPlatform) || detectThreadPlatform(bt.thread_id),
           callable: bt.callable ?? local?.callable ?? bt.platform === 'callable',

@@ -1045,7 +1045,7 @@ function createAutonomousStore() {
         // Another client created a new thread
         threadsStore.addThreadFromSync(
           event.thread_id,
-          (event.title as string) || 'New Chat',
+          (event.title as string) || 'New Thread',
           event.platform as import('$lib/types').ThreadPlatform | undefined,
         );
         break;

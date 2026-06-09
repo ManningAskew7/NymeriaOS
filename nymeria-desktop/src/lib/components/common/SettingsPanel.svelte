@@ -2173,7 +2173,7 @@
         <div class="field checkbox-field">
           <input id="rag-enabled" type="checkbox" bind:checked={ragEnabled} />
           <label for="rag-enabled">Enable semantic memory (RAG)</label>
-          <p class="hint">Let the agent search your own past conversations, tool results, and notes</p>
+          <p class="hint">Let the agent search your own past threads, tool results, and notes</p>
         </div>
 
         <div class="field">
@@ -2200,7 +2200,7 @@
         <div class="section-heading">Content searched</div>
         <div class="field checkbox-field">
           <input id="rag-inc-conv" type="checkbox" bind:checked={ragIncludeConversations} />
-          <label for="rag-inc-conv">Conversations</label>
+          <label for="rag-inc-conv">Threads</label>
         </div>
         <div class="field checkbox-field">
           <input id="rag-inc-mem" type="checkbox" bind:checked={ragIncludeMemories} />

@@ -822,7 +822,7 @@ function createChatStore() {
 
     /**
      * Handle a "compacted" event from the backend.
-     * Clears the UI chat history and shows a system-style notification.
+     * Clears the rendered thread messages and shows a system-style notification.
      */
     handleCompacted(messagesRemoved: number, summary?: string, autoResumed: boolean = false) {
       this._forceFlush();

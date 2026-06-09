@@ -111,11 +111,11 @@
           />
         </svg>
       </div>
-      <h2>{showCompactedEmpty ? 'Context compacted' : 'Start a conversation'}</h2>
+      <h2>{showCompactedEmpty ? 'Context compacted' : 'Start a thread'}</h2>
       <p>
         {showCompactedEmpty
           ? 'Older messages were summarized. Send a message to continue.'
-          : 'Send a message to begin chatting with Nymeria'}
+          : 'Send a message to start a thread with Nymeria'}
       </p>
     </div>
   {:else}

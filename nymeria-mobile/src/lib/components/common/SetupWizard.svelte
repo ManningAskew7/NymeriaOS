@@ -241,7 +241,7 @@
         {step === 0 ? 'Get Started' : 'Next'}
       </Button>
     {:else}
-      <Button variant="primary" onclick={completeSetup}>Start Chatting</Button>
+      <Button variant="primary" onclick={completeSetup}>Start a Thread</Button>
     {/if}
   </div>
 </div>
