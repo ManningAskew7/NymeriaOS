@@ -119,7 +119,7 @@
     <div class="presets">
       <span class="presets-label">Quick start:</span>
       {#each MCP_PRESETS as preset}
-        <button class="preset-btn" onclick={() => applyPreset(preset)}>
+        <button type="button" class="preset-btn" onclick={() => applyPreset(preset)}>
           {preset.label}
         </button>
       {/each}
@@ -172,12 +172,12 @@
             oninput={(e) => updateArg(i, (e.target as HTMLInputElement).value)}
             placeholder={i === 0 ? 'e.g. -y' : 'e.g. @modelcontextprotocol/...'}
           />
-          <button class="arg-remove" onclick={() => removeArg(i)}>
+          <button type="button" class="arg-remove" onclick={() => removeArg(i)}>
             <Icon name="x" size={14} />
           </button>
         </div>
       {/each}
-      <button class="arg-add" onclick={addArg}>
+      <button type="button" class="arg-add" onclick={addArg}>
         <Icon name="plus" size={14} /> Add argument
       </button>
     </div>

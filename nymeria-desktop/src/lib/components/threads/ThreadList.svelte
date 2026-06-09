@@ -730,7 +730,7 @@
   {#if loadError}
     <div class="load-error">
       <p>{loadError}</p>
-      <button onclick={() => loadError = null}>Dismiss</button>
+      <button type="button" onclick={() => loadError = null}>Dismiss</button>
     </div>
   {/if}
 
