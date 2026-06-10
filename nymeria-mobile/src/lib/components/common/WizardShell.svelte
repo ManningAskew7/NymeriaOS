@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -10,9 +11,17 @@
   }
 
   let { title, onClose, children, footer }: Props = $props();
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      onClose();
+    }
+  }
 </script>
 
-<div class="wizard-backdrop" role="dialog" aria-modal="true" aria-label={title}>
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="wizard-backdrop" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" use:trapFocus>
   <div class="wizard">
     <header class="wizard-header">
       <button class="back-btn" type="button" onclick={onClose} aria-label="Close">
@@ -37,7 +46,7 @@
   .wizard-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 400;
+    z-index: 1000;
     background: var(--bg-base);
     display: flex;
     flex-direction: column;

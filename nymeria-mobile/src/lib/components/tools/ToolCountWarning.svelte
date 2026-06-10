@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { trapFocus } from '$lib/actions/focus';
+
   interface Props {
     toolCount: number;
     callableCount: number;
@@ -23,7 +25,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="warning-overlay" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
+<div class="warning-overlay" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1" use:trapFocus>
   <div class="warning-panel">
     <div class="warning-icon">!</div>
     <h3>High Tool Count</h3>
@@ -56,7 +58,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 400;
+    z-index: 1100;
     padding: var(--spacing-lg);
   }
 

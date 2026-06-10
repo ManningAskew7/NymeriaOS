@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FileAttachment } from '$lib/types';
+  import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import { formatFileSize } from '$lib/utils/fileProcessing';
 
@@ -119,6 +120,7 @@
     tabindex="-1"
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
+    use:trapFocus
   >
     <div class="modal-content">
       <div class="modal-header">

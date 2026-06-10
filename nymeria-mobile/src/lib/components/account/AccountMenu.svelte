@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { trapFocus } from '$lib/actions/focus';
   import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
@@ -68,7 +69,7 @@
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="account-backdrop" onclick={handleBackdropClick}>
-    <div class="account-sheet" role="dialog" aria-modal="true" aria-label="Account">
+    <div class="account-sheet" role="dialog" aria-modal="true" aria-label="Account" tabindex="-1" use:trapFocus>
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-header">
         <Avatar {identity} size={56} state={identity ? 'connected' : 'unverified'} />
