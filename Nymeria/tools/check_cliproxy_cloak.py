@@ -447,10 +447,14 @@ def _uses_adaptive_thinking(model: str) -> bool:
 
 
 def _thinking_probe_body(model: str) -> dict:
+    # Match the production path: Sonnet/Opus OAuth requests without the billing
+    # block come back as a misleading 429 from upstream, so the probe must send
+    # it just like probe [2/4] and nodes.py do.
     body = {
         "model": model,
         "max_tokens": 1600,
         "stream": True,
+        "system": [CLIPROXY_BILLING_SYSTEM_BLOCK],
         "messages": [
             {
                 "role": "user",
