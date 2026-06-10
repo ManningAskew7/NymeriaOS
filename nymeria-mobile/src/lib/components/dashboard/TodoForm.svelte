@@ -267,9 +267,9 @@
 
     {#if showThreadSelector}
       <div class="form-group">
-        <label for="threadId">Output to conversation</label>
+        <label for="threadId">Output to thread</label>
         <select id="threadId" bind:value={selectedThreadId} disabled={saving || deleting}>
-          <option value="__new__">+ New conversation</option>
+          <option value="__new__">+ New thread</option>
           {#each availableThreads as thread (thread.id)}
             <option value={thread.id}>{thread.title}</option>
           {/each}

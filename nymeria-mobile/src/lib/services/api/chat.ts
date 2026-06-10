@@ -545,7 +545,7 @@ export class ChatApi extends CredentialsApi {
         case 'compacting':
           return {
             type: 'compacting',
-            data: { message: (data.message as string) || 'Compacting conversation...' },
+            data: { message: (data.message as string) || 'Compacting thread…' },
             timestamp: new Date(),
             threadId
           };
