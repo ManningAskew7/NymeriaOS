@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Icon, Modal } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     threadId: string | null;
@@ -49,7 +50,7 @@
       } catch (err) {
         if (!cancelled) {
           status = 'error';
-          message = err instanceof Error ? err.message : 'Failed to load checkpoint';
+          message = humanizeErrorText(err, { action: 'load', resource: 'the checkpoint' });
         }
       } finally {
         if (!cancelled) loading = false;

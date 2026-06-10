@@ -9,6 +9,7 @@
   import TokenManagementSection from './TokenManagementSection.svelte';
   import PlatformLinkingSection from './PlatformLinkingSection.svelte';
   import { identityDisplayName } from './avatar';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   let identity = $derived(configStore.identity);
   let isAdmin = $derived(identity?.role === 'admin');
@@ -96,7 +97,7 @@
       // Auto-clear the saved indicator after a bit so it doesn't linger.
       setTimeout(() => (nameSaved = false), 2200);
     } catch (e) {
-      nameError = e instanceof Error ? e.message : 'Failed to save';
+      nameError = humanizeErrorText(e, { action: 'save', resource: 'your name' });
     } finally {
       saving = false;
     }

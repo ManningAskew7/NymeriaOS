@@ -54,7 +54,7 @@
 
       result = await toolsStore.testTool(tool.id, params);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Test failed';
+      error = e instanceof Error ? e.message : 'The test could not run.';
     } finally {
       testing = false;
     }
@@ -139,7 +139,7 @@
         <h4>Result</h4>
         <div class="result-meta">
           <span class="status" class:success={result.success}>
-            {result.success ? 'Success' : 'Failed'}
+            {result.success ? 'Test passed' : 'Test failed'}
           </span>
           <span class="duration">{formatDuration(result.executionTimeMs)}</span>
         </div>

@@ -6,6 +6,7 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ThreadItem from './ThreadItem.svelte';
   import FolderItem from './FolderItem.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
@@ -487,7 +488,7 @@
       const document = await api.exportThread(thread.id);
       downloadJson(exportFilename(thread.title), document);
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to export thread';
+      loadError = humanizeErrorText(e, { action: 'export', resource: 'the thread' });
     }
   }
 
@@ -515,7 +516,7 @@
       importReportTitle = result.title;
       importWarnings = result.warnings;
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to import thread';
+      loadError = humanizeErrorText(e, { action: 'import', resource: 'the thread' });
     } finally {
       importing = false;
     }
@@ -586,7 +587,7 @@
       lastClickedId = null;
       threadsStore.setOrganizationMode('teams');
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to create team';
+      loadError = humanizeErrorText(e, { action: 'create', resource: 'the team' });
     }
   }
 
@@ -598,7 +599,7 @@
       lastClickedId = null;
       threadsStore.setOrganizationMode('teams');
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to update team';
+      loadError = humanizeErrorText(e, { action: 'update', resource: 'the team' });
     }
   }
 
@@ -606,7 +607,7 @@
     try {
       await threadsStore.renameThreadTeam(teamId, name);
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to rename team';
+      loadError = humanizeErrorText(e, { action: 'update', resource: 'the team name' });
     }
   }
 
@@ -614,7 +615,7 @@
     try {
       await threadsStore.deleteThreadTeam(teamId);
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to delete team';
+      loadError = humanizeErrorText(e, { action: 'delete', resource: 'the team' });
     }
   }
 

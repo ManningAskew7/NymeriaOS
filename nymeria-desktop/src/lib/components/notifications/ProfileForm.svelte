@@ -6,6 +6,7 @@
     NotificationProfileUpdate
   } from '$lib/types';
   import Button from '$lib/components/common/Button.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     destinations: NotificationDestination[];
@@ -43,7 +44,7 @@
         await onSubmit({ name, destinationNames });
       }
     } catch (e) {
-      submitError = e instanceof Error ? e.message : 'Save failed';
+      submitError = humanizeErrorText(e, { action: 'save', resource: 'the profile' });
     } finally {
       submitting = false;
     }

@@ -2,6 +2,7 @@
   import type { Thread, Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerActionType, TriggerSourceInfo } from '$lib/types';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     thread: Thread;
@@ -214,7 +215,7 @@
       }
       closeForm();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save trigger';
+      error = humanizeErrorText(e, { action: 'save', resource: 'the trigger' });
     } finally {
       saving = false;
     }

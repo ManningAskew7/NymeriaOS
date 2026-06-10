@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import type { ChatAppProvider, PlatformIdentity } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
 
@@ -62,7 +63,7 @@
     try {
       identities = await api.listUserPlatforms(userId);
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load platform links';
+      loadError = humanizeErrorText(e, { action: 'load', resource: 'platform links' });
     } finally {
       loading = false;
     }
@@ -92,7 +93,7 @@
       linkProviderUserId = '';
       await load();
     } catch (e) {
-      linkError = e instanceof Error ? e.message : 'Failed to link platform';
+      linkError = humanizeErrorText(e, { action: 'connect', resource: 'the platform' });
     } finally {
       linking = false;
     }
@@ -115,7 +116,7 @@
       await api.unlinkUserPlatform(userId, p.provider, p.provider_user_id);
       await load();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to unlink';
+      loadError = humanizeErrorText(e, { action: 'delete', resource: 'the platform link' });
     } finally {
       unlinkingKey = null;
     }

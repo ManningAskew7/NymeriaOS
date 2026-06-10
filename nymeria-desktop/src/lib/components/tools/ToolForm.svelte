@@ -163,7 +163,7 @@
       }
       return result;
     } catch (e) {
-      parametersError = 'Invalid JSON format';
+      parametersError = 'Parameters must be valid JSON. Check for a missing comma, quote, or bracket.';
       return null;
     }
   }

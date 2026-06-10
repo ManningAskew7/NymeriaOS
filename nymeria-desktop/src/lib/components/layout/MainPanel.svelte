@@ -132,7 +132,7 @@
       }
       console.error('Chat error:', error);
       chatStore.setLastMessageError(
-        error instanceof Error ? error.message : 'Unknown error occurred'
+        error instanceof Error ? error.message : 'The reply could not be completed. Try sending again.'
       );
     } finally {
       // Only touch chat store if we're still on the stream's original thread —
@@ -201,7 +201,7 @@
       } catch (error) {
         chatStore.addCommandResult(
           trimmed,
-          `**Error:** ${error instanceof Error ? error.message : 'Command failed'}`,
+          `**Error:** ${error instanceof Error ? error.message : 'The command did not complete.'}`,
           false
         );
       }
@@ -267,7 +267,7 @@
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = err instanceof Error ? err.message : 'Queue request failed';
+      const msg = err instanceof Error ? err.message : 'Could not queue your prompt. Try again in a moment.';
       chatStore.setPendingPromptStatus(promptId, 'error', msg);
     }
   }

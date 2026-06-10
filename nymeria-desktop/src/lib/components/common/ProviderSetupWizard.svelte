@@ -8,6 +8,7 @@
     ServerSettingsUpdate,
   } from '$lib/types';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import {
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_OPENAI_CLIPROXY_BASE_URL,
@@ -290,7 +291,7 @@
       }
     } catch (e) {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Provider test failed.';
+      testMessage = humanizeErrorText(e, { action: 'test', resource: 'the provider' });
     }
   }
 
@@ -309,7 +310,7 @@
       await onSaved();
     } catch (e) {
       saveStatus = 'error';
-      saveMessage = e instanceof Error ? e.message : 'Failed to save provider settings.';
+      saveMessage = humanizeErrorText(e, { action: 'save', resource: 'the provider settings' });
     }
   }
 </script>

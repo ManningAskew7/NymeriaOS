@@ -4,6 +4,7 @@
   import type { UserMemory } from '$lib/types';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+  import { humanizeErrorText, type HumanErrorContext } from '$lib/services/api/humanizeError';
 
   const MAX_ENTRIES = 100;
   const MAX_VALUE = 1000;
@@ -25,9 +26,9 @@
 
   function clearStatus() { status = 'idle'; message = ''; }
   function ok(msg: string) { status = 'success'; message = msg; }
-  function fail(e: unknown, fallback: string) {
+  function fail(e: unknown, ctx: HumanErrorContext) {
     status = 'error';
-    message = e instanceof Error ? e.message : fallback;
+    message = humanizeErrorText(e, ctx);
   }
 
   async function load() {
@@ -40,7 +41,7 @@
       drafts = next;
       clearStatus();
     } catch (e) {
-      fail(e, 'Failed to load memories');
+      fail(e, { action: 'load', resource: 'your memories' });
     } finally {
       loading = false;
     }
@@ -60,7 +61,7 @@
       await load();
       ok(`Saved "${key}".`);
     } catch (e) {
-      fail(e, 'Failed to save memory');
+      fail(e, { action: 'save', resource: 'the memory' });
     } finally {
       busyKey = null;
     }
@@ -74,7 +75,7 @@
       await load();
       ok(`Deleted "${key}".`);
     } catch (e) {
-      fail(e, 'Failed to delete memory');
+      fail(e, { action: 'delete', resource: 'the memory' });
     } finally {
       busyKey = null;
     }
@@ -94,7 +95,7 @@
       await load();
       ok(`Added "${key}".`);
     } catch (e) {
-      fail(e, 'Failed to add memory');
+      fail(e, { action: 'create', resource: 'the memory' });
     } finally {
       adding = false;
     }

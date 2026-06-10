@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import type { AccountIdentity, AdminUser, UserRole } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import Button from '$lib/components/common/Button.svelte';
@@ -77,7 +78,7 @@
     try {
       users = await api.listAdminUsers();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load users';
+      loadError = humanizeErrorText(e, { action: 'load', resource: 'users' });
     } finally {
       loading = false;
     }
@@ -160,7 +161,7 @@
       showCreate = false;
       showCopyDialog = true;
     } catch (e) {
-      createError = e instanceof Error ? e.message : 'Failed to create user';
+      createError = humanizeErrorText(e, { action: 'create', resource: 'the user' });
     } finally {
       creating = false;
     }
@@ -199,7 +200,7 @@
         issuedAccountMessage = 'Saved to the account switcher.';
       }
     } catch (e) {
-      issuedAccountError = e instanceof Error ? e.message : 'Failed to save account';
+      issuedAccountError = humanizeErrorText(e, { action: 'save', resource: 'the account' });
     } finally {
       savingIssuedAccount = false;
     }
@@ -236,7 +237,7 @@
       detailDirty = false;
       await load();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : 'Failed to save';
+      saveError = humanizeErrorText(e, { action: 'save', resource: 'the user' });
     } finally {
       saving = false;
     }
@@ -256,7 +257,7 @@
       await api.updateAdminUser(selectedUser.id, { disabled: !selectedUser.disabled });
       await load();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : `Failed to ${action} user`;
+      saveError = humanizeErrorText(e, { action: 'update', resource: 'the user' });
     } finally {
       togglingDisabled = false;
     }
@@ -276,7 +277,7 @@
       selectedId = null;
       await load();
     } catch (e) {
-      deleteError = e instanceof Error ? e.message : 'Failed to delete user';
+      deleteError = humanizeErrorText(e, { action: 'delete', resource: 'the user' });
     } finally {
       deleting = false;
     }
