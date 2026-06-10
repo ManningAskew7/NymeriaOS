@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from nymeria.triggers import api_client
 from nymeria.triggers.api_client import NymeriaAPIClient
 
@@ -28,6 +30,11 @@ class FakeResponse:
 
     def raise_for_status(self) -> None:
         self.raised = True
+        if self.status_code >= 400:
+            request = api_client.httpx.Request("GET", "http://api/test")
+            raise api_client.httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request, response=self
+            )
 
     def json(self) -> Any:
         return self._json_data
@@ -430,3 +437,236 @@ def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkey
     assert requests[8]["url"] == "http://api/tools/defaults"
     assert requests[9]["url"] == "http://api/tools/custom/weather%2Ftool/test"
     assert requests[9]["json"] == {"params": {"city": "SF"}}
+
+
+# ── Service-token refresh-and-retry on 401 ──────────────────────────────────
+#
+# In the full Docker stack the api self-mints the service token onto the
+# shared volume; a long-running worker/watchdog holds the old token after a
+# re-mint. The client refreshes via an injected refresher and retries once.
+
+
+class ScriptedAsyncClient:
+    """Fake httpx.AsyncClient serving queued responses, recording auth headers."""
+
+    instances: list["ScriptedAsyncClient"] = []
+    script: list[FakeResponse] = []
+    auth_headers: list[str | None] = []
+
+    def __init__(self, *, timeout) -> None:
+        self.timeout = timeout
+        self.__class__.instances.append(self)
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeResponse:
+        ScriptedAsyncClient.auth_headers.append(
+            (kwargs.get("headers") or {}).get("Authorization")
+        )
+        return ScriptedAsyncClient.script.pop(0)
+
+    def stream(self, method: str, url: str, **kwargs) -> FakeStreamContext:
+        ScriptedAsyncClient.auth_headers.append(
+            (kwargs.get("headers") or {}).get("Authorization")
+        )
+        return FakeStreamContext(ScriptedAsyncClient.script.pop(0))
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _patch_scripted_client(monkeypatch, script: list[FakeResponse]) -> None:
+    ScriptedAsyncClient.instances.clear()
+    ScriptedAsyncClient.script = list(script)
+    ScriptedAsyncClient.auth_headers = []
+    monkeypatch.setattr(api_client.httpx, "AsyncClient", ScriptedAsyncClient)
+
+
+class RecordingRefresher:
+    def __init__(self, token: str | None = None, error: Exception | None = None):
+        self.token = token
+        self.error = error
+        self.calls = 0
+
+    def __call__(self) -> str | None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.token
+
+
+_CHAT_LINES = [
+    'data: {"type": "response", "content": "hi"}',
+    'data: {"type": "done"}',
+]
+
+
+def test_request_refreshes_and_retries_once_on_401(monkeypatch):
+    _patch_scripted_client(
+        monkeypatch,
+        [FakeResponse(status_code=401), FakeResponse({"ok": True})],
+    )
+    refresher = RecordingRefresher(token="nym_new")
+
+    async def run() -> Any:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        try:
+            return await client.get_settings()
+        finally:
+            await client.close()
+
+    assert asyncio.run(run()) == {"ok": True}
+    assert refresher.calls == 1
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old", "Bearer nym_new"]
+
+
+def test_request_no_retry_when_token_unchanged(monkeypatch):
+    _patch_scripted_client(monkeypatch, [FakeResponse(status_code=401)])
+    refresher = RecordingRefresher(token="nym_old")
+
+    async def run() -> None:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                await client.get_settings()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert refresher.calls == 1
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_request_no_refresher_propagates_401(monkeypatch):
+    _patch_scripted_client(monkeypatch, [FakeResponse(status_code=401)])
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="nym_old")
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                await client.get_settings()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_request_refresher_exception_propagates_original_401(monkeypatch):
+    _patch_scripted_client(monkeypatch, [FakeResponse(status_code=401)])
+    refresher = RecordingRefresher(error=RuntimeError("volume gone"))
+
+    async def run() -> None:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                await client.get_settings()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert refresher.calls == 1
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_request_non_401_not_retried(monkeypatch):
+    _patch_scripted_client(monkeypatch, [FakeResponse(status_code=500)])
+    refresher = RecordingRefresher(token="nym_new")
+
+    async def run() -> None:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                await client.get_settings()
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert refresher.calls == 0
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_chat_stream_refreshes_and_retries_on_401_before_first_chunk(monkeypatch):
+    _patch_scripted_client(
+        monkeypatch,
+        [FakeResponse(status_code=401), FakeResponse(lines=_CHAT_LINES)],
+    )
+    refresher = RecordingRefresher(token="nym_new")
+
+    async def run() -> list[dict[str, Any]]:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        try:
+            return [
+                event
+                async for event in client.chat_stream(
+                    message="hello", thread_id="thread-1", user_id="user-1"
+                )
+            ]
+        finally:
+            await client.close()
+
+    events = asyncio.run(run())
+    assert events == [{"type": "response", "content": "hi"}, {"type": "done"}]
+    assert refresher.calls == 1
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old", "Bearer nym_new"]
+
+
+def test_chat_stream_no_retry_after_chunks_yielded(monkeypatch):
+    class MidStreamFailingResponse(FakeResponse):
+        async def aiter_lines(self):
+            yield 'data: {"type": "response", "content": "hi"}'
+            request = api_client.httpx.Request("POST", "http://api/chat")
+            raise api_client.httpx.HTTPStatusError(
+                "mid-stream 401",
+                request=request,
+                response=FakeResponse(status_code=401),
+            )
+
+    _patch_scripted_client(monkeypatch, [MidStreamFailingResponse(lines=[])])
+    refresher = RecordingRefresher(token="nym_new")
+
+    async def run() -> list[dict[str, Any]]:
+        client = NymeriaAPIClient(
+            base_url="http://api", api_key="nym_old", token_refresher=refresher
+        )
+        seen: list[dict[str, Any]] = []
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                async for event in client.chat_stream(
+                    message="hello", thread_id="thread-1", user_id="user-1"
+                ):
+                    seen.append(event)
+        finally:
+            await client.close()
+        return seen
+
+    seen = asyncio.run(run())
+    assert seen == [{"type": "response", "content": "hi"}]
+    assert refresher.calls == 0
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_chat_stream_no_refresher_propagates_401(monkeypatch):
+    _patch_scripted_client(monkeypatch, [FakeResponse(status_code=401)])
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="nym_old")
+        try:
+            with pytest.raises(api_client.httpx.HTTPStatusError):
+                async for _ in client.chat_stream(
+                    message="hello", thread_id="thread-1", user_id="user-1"
+                ):
+                    pass
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]

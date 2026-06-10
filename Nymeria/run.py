@@ -751,7 +751,13 @@ def run_worker(args: argparse.Namespace) -> None:
     # volume. Exits with provisioning guidance if neither yields a token; a
     # transient miss self-heals via the worker's ``restart: unless-stopped``.
     service_token = _require_service_token(settings, "the worker (ticker)")
-    client = NymeriaAPIClient(base_url=api_url, api_key=service_token)
+    from nymeria.core.service_bootstrap import service_token_refresher
+
+    client = NymeriaAPIClient(
+        base_url=api_url,
+        api_key=service_token,
+        token_refresher=service_token_refresher(settings),
+    )
     executor = APIClientExecutor(client, publish_autonomous_events=False)
 
     schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
@@ -929,7 +935,13 @@ def run_watchdog(args: argparse.Namespace) -> None:
     print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    from nymeria.core.service_bootstrap import service_token_refresher
+
+    api = NymeriaAPIClient(
+        base_url=api_url,
+        api_key=api_key,
+        token_refresher=service_token_refresher(settings),
+    )
     worker = WatchdogWorker(client=api, settings=settings)
 
     def signal_handler(signum, frame):

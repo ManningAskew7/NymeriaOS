@@ -10,7 +10,7 @@ around ``httpx.AsyncClient``.
 import asyncio
 import json as _json
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 import httpx
@@ -47,10 +47,16 @@ class NymeriaAPIClient:
     cutover will make it the authoritative identity for every endpoint.
     """
 
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        token_refresher: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._token_refresher = token_refresher
         self._clients: Dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 
     async def close(self) -> None:
@@ -94,6 +100,31 @@ class NymeriaAPIClient:
             return self._headers
         return {**self._headers, "X-Nymeria-Act-As": act_as}
 
+    def _maybe_refresh_token(self) -> bool:
+        """Re-resolve the service token via the injected refresher.
+
+        Returns True only when the refresher yields a non-empty token that
+        DIFFERS from the current one, in which case ``self.api_key`` and the
+        auth headers are rebuilt so the caller can retry. The unchanged guard
+        matters: when the resolved token is the same stale value (e.g. the
+        on-disk token also expired), retrying would only hammer the API's
+        auth-failure rate limiter, so we surface the original 401 instead.
+        """
+        if self._token_refresher is None:
+            return False
+        try:
+            refreshed = self._token_refresher()
+        except Exception as exc:
+            logger.warning("Service token refresh failed: %s", exc)
+            return False
+        refreshed = (refreshed or "").strip()
+        if not refreshed or refreshed == self.api_key:
+            return False
+        logger.info("Service token rotated; retrying with refreshed credentials")
+        self.api_key = refreshed
+        self._headers = {"Authorization": f"Bearer {refreshed}"}
+        return True
+
     async def _request(
         self,
         method: str,
@@ -104,15 +135,30 @@ class NymeriaAPIClient:
         act_as: Optional[str] = None,
         timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
     ) -> Any:
-        resp = await self._client_for_loop().request(
-            method,
-            self._url(path),
-            headers=self._headers_for(act_as),
-            json=json_body,
-            params=params,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
+        retried = False
+        while True:
+            resp = await self._client_for_loop().request(
+                method,
+                self._url(path),
+                headers=self._headers_for(act_as),
+                json=json_body,
+                params=params,
+                timeout=timeout,
+            )
+            try:
+                resp.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                # A 401 can mean the api re-minted the shared service token
+                # while this long-running process still held the old one.
+                if (
+                    not retried
+                    and exc.response.status_code == 401
+                    and self._maybe_refresh_token()
+                ):
+                    retried = True
+                    continue
+                raise
         if getattr(resp, "status_code", None) == 204:
             return {}
         return resp.json()
@@ -242,24 +288,43 @@ class NymeriaAPIClient:
         if publish_autonomous_events is not None:
             body["publish_autonomous_events"] = publish_autonomous_events
         stream_timeout = _SSE_TIMEOUT if is_self_invoke else _CHAT_TIMEOUT
-        async with self._client_for_loop().stream(
-            "POST",
-            self._url("/chat"),
-            headers=self._headers_for(user_id),
-            json=body,
-            timeout=stream_timeout,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
+        yielded = False
+        retried = False
+        while True:
+            try:
+                async with self._client_for_loop().stream(
+                    "POST",
+                    self._url("/chat"),
+                    headers=self._headers_for(user_id),
+                    json=body,
+                    timeout=stream_timeout,
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        raw = line[6:]
+                        if raw.startswith(":"):
+                            continue
+                        try:
+                            chunk = _json.loads(raw)
+                        except _json.JSONDecodeError:
+                            continue
+                        yielded = True
+                        yield chunk
+                return
+            except httpx.HTTPStatusError as exc:
+                # The 401 from a re-minted service token fires at stream open,
+                # before any chunk is yielded; never retry after output started.
+                if (
+                    not retried
+                    and not yielded
+                    and exc.response.status_code == 401
+                    and self._maybe_refresh_token()
+                ):
+                    retried = True
                     continue
-                raw = line[6:]
-                if raw.startswith(":"):
-                    continue
-                try:
-                    yield _json.loads(raw)
-                except _json.JSONDecodeError:
-                    continue
+                raise
 
     async def autonomous_stream(
         self,

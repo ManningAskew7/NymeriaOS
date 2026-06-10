@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from .accounts import AccountsRepo
@@ -94,6 +94,29 @@ def resolve_service_token(
     if cleaned:
         return cleaned
     return read_service_token_file(data_dir)
+
+
+def service_token_refresher(settings) -> Callable[[], Optional[str]]:
+    """Build a zero-arg callable that re-resolves the internal service token.
+
+    The closure calls :func:`resolve_service_token` on every invocation, so it
+    always reflects the CURRENT on-disk token: when the api re-mints onto the
+    shared data volume (e.g. at the 90-day TTL boundary), a long-running thin
+    client can pick up the rotation without a restart. ``NymeriaAPIClient``
+    calls this after a 401 to refresh and retry once.
+
+    Env-wins semantics make this a safe no-op when the operator pins
+    ``NYMERIA_SERVICE_TOKEN``: the closure keeps returning the same env value,
+    the client sees an unchanged token, and no retry is attempted.
+    """
+
+    def _refresh() -> Optional[str]:
+        return resolve_service_token(
+            settings.nymeria_service_token,
+            getattr(settings, "data_dir", None),
+        )
+
+    return _refresh
 
 
 def _verify_admin_token(repo: "AccountsRepo", raw: str) -> bool:

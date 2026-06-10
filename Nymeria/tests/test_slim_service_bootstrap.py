@@ -6,6 +6,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from nymeria.core.service_bootstrap import (
     ensure_slim_service_token,
     read_service_token_file,
     resolve_service_token,
+    service_token_refresher,
 )
 
 
@@ -59,6 +61,46 @@ def test_resolve_service_token_falls_back_to_file(tmp_path: Path) -> None:
 def test_resolve_service_token_returns_none_when_both_empty(tmp_path: Path) -> None:
     assert resolve_service_token("", tmp_path) is None
     assert resolve_service_token(None, None) is None
+
+
+def test_service_token_refresher_reads_file_when_env_unset(tmp_path: Path) -> None:
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_on_disk\n", encoding="utf-8")
+    settings = SimpleNamespace(nymeria_service_token="", data_dir=tmp_path)
+
+    assert service_token_refresher(settings)() == "nym_on_disk"
+
+
+def test_service_token_refresher_prefers_env(tmp_path: Path) -> None:
+    (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_on_disk\n", encoding="utf-8")
+    settings = SimpleNamespace(nymeria_service_token="  nym_env  ", data_dir=tmp_path)
+
+    assert service_token_refresher(settings)() == "nym_env"
+
+
+def test_service_token_refresher_reflects_rotated_file(tmp_path: Path) -> None:
+    # The core correctness property: the SAME closure must pick up a re-mint
+    # written after it was built, since it re-reads the file on every call.
+    token_file = tmp_path / SLIM_SERVICE_TOKEN_FILENAME
+    token_file.write_text("nym_old\n", encoding="utf-8")
+    settings = SimpleNamespace(nymeria_service_token="", data_dir=tmp_path)
+
+    refresh = service_token_refresher(settings)
+    assert refresh() == "nym_old"
+
+    token_file.write_text("nym_new\n", encoding="utf-8")
+    assert refresh() == "nym_new"
+
+
+def test_service_token_refresher_returns_none_when_both_empty(tmp_path: Path) -> None:
+    settings = SimpleNamespace(nymeria_service_token="", data_dir=tmp_path)
+
+    assert service_token_refresher(settings)() is None
+
+
+def test_service_token_refresher_handles_missing_data_dir() -> None:
+    settings = SimpleNamespace(nymeria_service_token="")
+
+    assert service_token_refresher(settings)() is None
 
 
 def test_bootstrap_creates_bot_service_when_absent(tmp_path: Path) -> None:
