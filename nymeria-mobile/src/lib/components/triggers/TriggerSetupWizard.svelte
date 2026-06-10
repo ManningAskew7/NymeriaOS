@@ -694,8 +694,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
@@ -705,7 +705,7 @@
   }
 
   .close-btn:hover {
-    background: var(--bg-elevated-2);
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
