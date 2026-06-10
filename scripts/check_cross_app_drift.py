@@ -2,7 +2,9 @@
 """Cross-app drift checker for nymeria-desktop vs nymeria-mobile.
 
 Compares files that exist in both apps under src/ and enforces:
-- EXACT_MATCH: files that must be byte-identical
+- EXACT_MATCH: files that must be content-identical (line endings
+  normalized; Windows checkouts can leave one copy CRLF and the other LF
+  while git autocrlf reports both as clean)
 - KNOWN_DRIFT: files expected to differ (platform-specific reasons)
 - Unclassified overlap: new shared files that need categorization
 
@@ -12,7 +14,6 @@ Exit codes:
 """
 
 import argparse
-import filecmp
 import sys
 from pathlib import Path
 
@@ -178,6 +179,14 @@ EXTRA_ROOT_FILES = {"app.css"}
 EXTRA_ROOT_DIRS = {"routes"}
 
 
+def files_match(desktop: Path, mobile: Path) -> bool:
+    """Content equality with CRLF/LF normalized on both sides."""
+    return (
+        desktop.read_bytes().replace(b"\r\n", b"\n")
+        == mobile.read_bytes().replace(b"\r\n", b"\n")
+    )
+
+
 def discover_overlap() -> set[str]:
     """Find all files that exist in both desktop and mobile src/."""
     overlap: set[str] = set()
@@ -223,7 +232,7 @@ def run_check(verbose: bool = False) -> int:
         if not m.is_file():
             missing_mobile.append(f)
             continue
-        if not filecmp.cmp(str(d), str(m), shallow=False):
+        if not files_match(d, m):
             drifted.append(f)
 
     for f in sorted(KNOWN_DRIFT):
@@ -231,7 +240,7 @@ def run_check(verbose: bool = False) -> int:
         m = MOBILE_SRC / f
         if not d.is_file() and not m.is_file():
             stale_drift.append(f)
-        elif d.is_file() and m.is_file() and filecmp.cmp(str(d), str(m), shallow=False):
+        elif d.is_file() and m.is_file() and files_match(d, m):
             now_identical.append(f)
 
     for f in sorted(overlap):
@@ -254,7 +263,8 @@ def run_check(verbose: bool = False) -> int:
                 print(f"\n  diff: {f}")
                 import subprocess
                 subprocess.run(
-                    ["diff", "-u", "--label", f"desktop/{f}", "--label", f"mobile/{f}",
+                    ["diff", "-u", "--strip-trailing-cr",
+                     "--label", f"desktop/{f}", "--label", f"mobile/{f}",
                      str(DESKTOP_SRC / f), str(MOBILE_SRC / f)],
                     cwd=REPO_ROOT,
                 )
@@ -265,8 +275,7 @@ def run_check(verbose: bool = False) -> int:
         for f in unclassified:
             d = DESKTOP_SRC / f
             m = MOBILE_SRC / f
-            identical = filecmp.cmp(str(d), str(m), shallow=False)
-            tag = "identical" if identical else "differs"
+            tag = "identical" if files_match(d, m) else "differs"
             print(f"  - {f}  ({tag})")
         print("  Add each to EXACT_MATCH or KNOWN_DRIFT in this script.")
 
