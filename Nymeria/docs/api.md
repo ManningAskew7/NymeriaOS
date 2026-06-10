@@ -1077,6 +1077,8 @@ Returns the callable thread tools actually available from that caller thread aft
 
 ## SSE Event Types
 
+**Keepalive comments:** during silent stretches (a long tool call emitting nothing), the chat stream sends an SSE comment frame `: keepalive` every 25 seconds. Comment lines (anything starting with `:`) carry no event and must be ignored, per the SSE spec; parsers that only act on `data: `-prefixed lines (all Nymeria clients) need no change. This keeps proxies and tunnel edges with idle timeouts (Cloudflare closes at ~100s) from cutting a turn mid-stream.
+
 | Type | Description | Fields |
 |------|-------------|--------|
 | `thinking` | Agent reasoning / extended-thinking text | `content` |
