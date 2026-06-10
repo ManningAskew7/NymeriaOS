@@ -91,7 +91,7 @@
         <p class="hint">Create a trigger to automate responses to events</p>
       {:else}
         <p>No triggers yet</p>
-        <p class="hint">Create your first automation to react to webhooks, emails, and more</p>
+        <p class="hint">Create your first trigger to react to webhooks, emails, and more</p>
       {/if}
     </div>
   {:else}

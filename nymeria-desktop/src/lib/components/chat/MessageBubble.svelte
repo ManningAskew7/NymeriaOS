@@ -9,6 +9,7 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import AgentActivityIndicator from './AgentActivityIndicator.svelte';
@@ -295,10 +296,12 @@
   let reportDescription = $state('');
   let reportSending = $state(false);
   let reportSent = $state(false);
+  let reportError = $state<string | null>(null);
 
   function openReportModal() {
     reportDescription = '';
     reportSent = false;
+    reportError = null;
     reportModalOpen = true;
   }
 
@@ -308,6 +311,7 @@
 
   async function submitReport() {
     reportSending = true;
+    reportError = null;
     try {
       const recentMessages = chatStore.messages.slice(-10).map(m => ({
         role: m.role,
@@ -331,6 +335,7 @@
       reportSent = true;
     } catch (err) {
       console.error('Failed to send report:', err);
+      reportError = humanizeErrorText(err, { action: 'send', resource: 'the report' });
       reportSent = false;
     } finally {
       reportSending = false;
@@ -584,13 +589,16 @@
         bind:value={reportDescription}
         rows="4"
       ></textarea>
+      {#if reportError}
+        <p class="report-error" role="alert">{reportError}</p>
+      {/if}
       <button
         type="button"
         class="report-submit"
         onclick={submitReport}
         disabled={reportSending}
       >
-        {reportSending ? 'Sending...' : 'Send Report'}
+        {reportSending ? 'Sending…' : 'Send Report'}
       </button>
     {/if}
   {/snippet}
@@ -1201,6 +1209,12 @@
   .report-submit:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .report-error {
+    margin: 0 0 var(--spacing-md) 0;
+    font-size: var(--font-size-sm);
+    color: var(--error);
   }
 
   .report-success {

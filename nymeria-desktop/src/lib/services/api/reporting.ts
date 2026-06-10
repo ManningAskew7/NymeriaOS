@@ -17,7 +17,7 @@ export class ReportingApi extends CLIProxyApi {
       body: JSON.stringify(data)
     });
     if (!response.ok) {
-      throw new Error(`Report failed: ${response.status}`);
+      throw new Error(await this._extractError(response, 'Report failed'));
     }
   }
 }
