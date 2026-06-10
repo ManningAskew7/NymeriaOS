@@ -129,8 +129,10 @@ def _env_categories() -> dict[str, list[str]]:
             "fetch_summary_provider",
             "fetch_summary_model",
             "fetch_summary_base_url",
+            "cliproxy_management_url",
         ],
         "API Keys": [
+            "cliproxy_management_key",
             "openai_api_key",
             "anthropic_api_key",
             "anthropic_direct_api_key",

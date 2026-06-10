@@ -644,7 +644,7 @@ class Settings(BaseSettings):
     )
     llm_base_url: Optional[str] = Field(
         default=None,
-        description="Override base URL for LLM API (e.g., local proxy at http://localhost:8317/v1)"
+        description="Override base URL for LLM API (e.g., local proxy at http://localhost:8318/v1)"
     )
     llm_context_length: Optional[int] = Field(
         default=None,
@@ -686,6 +686,27 @@ class Settings(BaseSettings):
         ge=0.0,
         le=300.0,
         description="Maximum backoff delay in seconds for transient LLM call/stream retries"
+    )
+
+    # CLIProxy management API (subscription OAuth sidecar). Distinct from
+    # llm_base_url: this is the control plane (/v0/management) used to drive
+    # OAuth logins, auth files, and proxy settings; the data plane stays on
+    # the regular LLM_* fields.
+    cliproxy_management_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "CLIProxy base URL for the management API, host root without /v1 "
+            "(e.g. http://cli-proxy-api:8317 from the Docker stack, "
+            "http://localhost:8318 from the host). Unset disables CLIProxy "
+            "management features."
+        ),
+    )
+    cliproxy_management_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "CLIProxy remote-management secret (plaintext; the proxy stores a "
+            "bcrypt hash at rest). Sent as a Bearer token to /v0/management."
+        ),
     )
 
     # API Keys

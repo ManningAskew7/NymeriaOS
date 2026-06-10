@@ -181,8 +181,10 @@ class ServerSettingsUpdate(BaseModel):
     fetch_summary_provider: Optional[str] = None
     fetch_summary_model: Optional[str] = None
     fetch_summary_base_url: Optional[str] = None
+    cliproxy_management_url: Optional[str] = None
     # Accepted by PATCH /settings only. Secret values are intentionally absent
     # from ServerSettingsResponse.
+    cliproxy_management_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     anthropic_direct_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
