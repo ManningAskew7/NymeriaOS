@@ -13,6 +13,7 @@
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
+  import CLIProxySection from './CLIProxySection.svelte';
   import ProviderSelect from './ProviderSelect.svelte';
   import { CredentialManagerPanel } from '../credentials';
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
@@ -566,6 +567,7 @@
         {#if loadingSettings}
           <div class="loading-state">Loading model settings…</div>
         {:else}
+          <CLIProxySection />
           <div class="setting-group">
             <label class="setting-label" for="mobile-llm-provider">Provider</label>
             <ProviderSelect

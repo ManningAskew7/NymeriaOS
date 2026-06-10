@@ -1,3 +1,3 @@
-import { CommandsApi } from './commands';
+import { CLIProxyApi } from './cliproxy';
 
-export class ReportingApi extends CommandsApi {}
+export class ReportingApi extends CLIProxyApi {}

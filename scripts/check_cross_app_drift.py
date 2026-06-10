@@ -46,6 +46,7 @@ EXACT_MATCH: set[str] = {
     "lib/stores/threadConfig.svelte.ts",
     "lib/themes.ts",
     "lib/services/api.svelte.ts",
+    "lib/services/api/cliproxy.ts",
     "lib/services/api/commands.ts",
     "lib/services/api/credentials.ts",
     "lib/services/api/humanizeError.ts",

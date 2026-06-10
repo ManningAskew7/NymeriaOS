@@ -933,6 +933,69 @@ export interface ServerSettings {
   rag_rerank_model: string | null;
 }
 
+// --- CLIProxy management (admin /cliproxy routes) ---------------------------
+
+export interface CLIProxyProviderInfo {
+  id: string;
+  label: string;
+  description: string;
+  flow: 'browser' | 'device';
+  nymeria_provider: string;
+  url_shape: 'root' | 'v1';
+  api_mode: string;
+  key_env_var: string;
+  default_model: string;
+  tos_warning: string;
+  auth_file_provider: string;
+  /** null when the proxy has not been probed (unconfigured/unreachable). */
+  supported: boolean | null;
+  logged_in: boolean | null;
+}
+
+export interface CLIProxyStatus {
+  configured: boolean;
+  reachable: boolean;
+  management_html_url: string | null;
+  detail: string;
+  providers: CLIProxyProviderInfo[];
+}
+
+export interface CLIProxyOAuthStart {
+  provider: string;
+  flow: 'browser' | 'device';
+  url: string;
+  state: string;
+}
+
+export interface CLIProxyAuthFile {
+  name: string;
+  provider?: string;
+  status?: string;
+  disabled?: boolean;
+  unavailable?: boolean;
+  account?: string;
+  email?: string;
+  [key: string]: unknown;
+}
+
+export interface CLIProxyApplyRouteRequest {
+  provider: string;
+  model?: string;
+  scope?: 'global' | 'thread';
+  thread_id?: string;
+  gatekeeper_key?: string;
+}
+
+export interface CLIProxyApplyRouteResponse {
+  scope: 'global' | 'thread';
+  provider: string;
+  model: string;
+  base_url: string;
+  api_mode: string;
+  thread_id?: string | null;
+  restart_required: boolean;
+}
+
 export interface ServerSettingsUpdate {
   llm_provider?: LLMProvider;
   llm_model?: string;
