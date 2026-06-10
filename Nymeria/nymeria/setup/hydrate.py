@@ -12,8 +12,10 @@ env file and reads the bootstrap ``profile.json`` directly (not via
 
 Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
 as present (never re-read into the UI); the recorded-but-never-written deployment
-enums (security_profile/external_access/auth_method) have no source; LOCAL vs
-SERVICE is indistinguishable on disk (defaults LOCAL). Tool/skill picks hydrate
+enums (security_profile/external_access) have no source; LOCAL vs
+SERVICE is indistinguishable on disk (defaults LOCAL). `auth_method` is inferred:
+a CLIProxy-looking LLM_BASE_URL selects the subscription branch (see
+`_hydrate_cliproxy`), anything else stays the API-key default. Tool/skill picks hydrate
 from `profile.json` for local/service installs; for Docker (whose profile lives
 in the container volume) they hydrate from the `NYMERIA_INIT_*` carrier lines in
 `.env.docker` instead. The carriers record first-boot intent at the env-file
@@ -45,7 +47,10 @@ from .state import WizardState
 # Env vars whose mere presence means "already configured" (so a blank field keeps
 # them and the backend-keys step does not re-prompt). The provider's own key var
 # is added dynamically once the provider is known.
-_SECRET_ENV_VARS = set(OPTIONAL_ENV_ORDER) | {"NYMERIA_SECRETS_KEY"}
+_SECRET_ENV_VARS = set(OPTIONAL_ENV_ORDER) | {
+    "NYMERIA_SECRETS_KEY",
+    "CLIPROXY_MANAGEMENT_KEY",
+}
 
 BOOTSTRAP_USER_ID = "default"
 
@@ -117,6 +122,7 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
         state.data_dir = Path(_get(values, "NYMERIA_DATA_DIR") or "")
 
     _record_present_keys(state, values)
+    _hydrate_cliproxy(state, values)
 
     if for_docker:
         _hydrate_carrier_picks(state, values)
@@ -167,6 +173,36 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
     for var in secret_vars:
         if (values.get(var) or "").strip():
             state.present_env_keys.add(var)
+
+
+def _hydrate_cliproxy(state: WizardState, values: dict[str, str]) -> None:
+    """Recover the CLIProxy subscription branch from a routed install.
+
+    `auth_method` itself is never written to disk; it is inferred from the
+    LLM base URL looking like a CLIProxy endpoint (the same signal the
+    runtime cloak uses), unless an explicit --auth-method flag won. The
+    concrete CLI is inferred from the route shape where unambiguous:
+    anthropic at the proxy root is Claude, openai+/v1 in responses mode is
+    Codex; the openai+/v1 chat shape is shared by every other CLI, so the
+    pick is left for the provider step (prefilled by its model default).
+    """
+    from ..onboarding import ProviderAuthMethod
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+    base_url = _get(values, "LLM_BASE_URL") or ""
+    if not state.cliproxy_management_url and _get(values, "CLIPROXY_MANAGEMENT_URL"):
+        state.cliproxy_management_url = _get(values, "CLIPROXY_MANAGEMENT_URL") or ""
+    if state.auth_method_explicit or not looks_like_cliproxy_url(base_url):
+        return
+    state.auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
+    if state.cliproxy_provider is None:
+        provider = (_get(values, "LLM_PROVIDER") or "").lower()
+        on_v1 = base_url.rstrip("/").endswith("/v1")
+        api_mode = (_get(values, "OPENAI_API_MODE") or "").lower()
+        if provider == "anthropic" and not on_v1:
+            state.cliproxy_provider = "claude"
+        elif provider == "openai" and on_v1 and api_mode == "responses":
+            state.cliproxy_provider = "codex"
 
 
 def _apply_tool_picks(state: WizardState, default_tools: list[str]) -> None:

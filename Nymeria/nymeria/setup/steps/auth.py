@@ -1,10 +1,9 @@
-"""LLM auth method step: direct API key (real) vs subscription OAuth (deferred).
+"""LLM auth method step: direct API key vs subscription OAuth via CLIProxy.
 
-The plan defaults LLM auth to a direct, TOS-clean API key and keeps subscription
-OAuth via CLIProxy an opt-in advanced path. That OAuth branch is parked in git
-history and not wired into this installer, so the step shows it for orientation
-but gates selection: choosing it explains why and asks for the API-key path. The
-provider/connection/model steps then run only for the API-key path.
+The direct, TOS-clean API key stays the recommended default. Choosing the
+subscription branch routes through the CLIProxy steps that follow (disclaimer,
+endpoint, provider, login, model); the provider/connection/model trio of the
+API-key path drops out via its `applies` predicate, and vice versa.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from ...onboarding import (
     PROVIDER_AUTH_METHOD_CHOICES,
     PROVIDER_AUTH_METHOD_ORDER,
     ProviderAuthMethod,
+    legacy_cliproxy_provider,
 )
 from ..nav import Step
 from ..state import WizardState
@@ -30,48 +30,18 @@ def _auth_choices() -> list[Choice]:
         meta = PROVIDER_AUTH_METHOD_CHOICES[method]
         if method is ProviderAuthMethod.API_KEY:
             label = meta.label + " (recommended)"
-            description = meta.description
         else:
-            label = meta.label + " (not in this installer yet)"
-            description = (
-                meta.description
-                + " Deferred for now; choose Direct API key to continue."
-            )
-        out.append(Choice(value=method, label=label, description=description))
+            label = meta.label + " (advanced)"
+        out.append(Choice(value=method, label=label, description=meta.description))
     return out
 
 
 class AuthMethodStep(SingleSelectStep):
-    """Single-select that accepts only the wired API-key path for now."""
-
-    def collect(self) -> bool:
-        buttons = self._buttons()
-        sel = next((i for i, b in enumerate(buttons) if b.value), None)
-        if sel is None or sel >= len(self._choices):
-            self.show_error("Select an option, then press Enter.")
-            return False
-        value = self._choices[sel].value
-        if value is not ProviderAuthMethod.API_KEY:
-            # Web-form validation: focus the only valid option and explain.
-            api_idx = next(
-                (i for i, c in enumerate(self._choices)
-                 if c.value is ProviderAuthMethod.API_KEY),
-                None,
-            )
-            if api_idx is not None and api_idx < len(buttons):
-                buttons[api_idx].focus()
-            self.show_error(
-                "Subscription OAuth via CLIProxy is not available in the installer "
-                "yet. Choose Direct API key to continue."
-            )
-            return False
-        self._store(self.state, value)
-        return True
+    """Single-select between the API-key path and the CLIProxy OAuth branch."""
 
     def action_skip(self) -> None:
-        # Skipping must not leave a deferred OAuth value in state (which would
-        # silently disable provider/connection/model via the applies predicate).
-        # Pin the only wired method, then advance.
+        # Skipping pins the recommended method so downstream `applies`
+        # predicates see a definite branch, then advances.
         self.show_error("")
         self._store(self.state, ProviderAuthMethod.API_KEY)
         self._wizard.advance()
@@ -79,7 +49,11 @@ class AuthMethodStep(SingleSelectStep):
 
 def make_auth_method_step() -> Step:
     def get_initial(state: WizardState) -> ProviderAuthMethod:
-        return state.auth_method or ProviderAuthMethod.API_KEY
+        method = state.auth_method or ProviderAuthMethod.API_KEY
+        # Legacy per-provider values render as the generic branch.
+        if legacy_cliproxy_provider(method) is not None:
+            return ProviderAuthMethod.CLIPROXY_OAUTH
+        return method
 
     def store(state: WizardState, value: Any) -> None:
         state.auth_method = value
@@ -95,13 +69,19 @@ def make_auth_method_step() -> Step:
             get_initial=get_initial,
             store=store,
             note=(
-                "Direct API keys are the simple, terms-of-service-clean default. "
-                "Subscription OAuth via CLIProxy is an advanced path that is not "
-                "wired into setup yet."
+                "Direct API keys are the simple, terms-of-service-clean "
+                "default. Subscription OAuth routes an existing AI "
+                "subscription through a CLIProxy deployment; it is an "
+                "advanced path behind a disclaimer."
             ),
         )
 
     return Step(id="auth_method", applies=lambda _state: True, build=build)
 
 
-__all__ = ["make_auth_method_step", "AuthMethodStep"]
+def is_cliproxy_auth(state: WizardState) -> bool:
+    """True when the wizard is on the CLIProxy subscription branch."""
+    return state.auth_method_is_cliproxy()
+
+
+__all__ = ["make_auth_method_step", "AuthMethodStep", "is_cliproxy_auth"]

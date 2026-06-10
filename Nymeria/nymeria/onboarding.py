@@ -21,11 +21,31 @@ class HostingOption(StrEnum):
 
 
 class ProviderAuthMethod(StrEnum):
-    """Supported ways to authenticate the primary LLM provider."""
+    """Supported ways to authenticate the primary LLM provider.
+
+    `CLIPROXY_OAUTH` is the provider-generic subscription branch (the concrete
+    CLI is a separate pick from the CLIProxy catalog). The two legacy
+    per-provider values stay valid inputs because the desktop setup flow
+    hardcodes them; `legacy_cliproxy_provider` maps them onto the generic
+    branch.
+    """
 
     API_KEY = "api_key"
+    CLIPROXY_OAUTH = "cliproxy_oauth"
     CLIPROXY_CLAUDE_OAUTH = "cliproxy_claude_oauth"
     CLIPROXY_CODEX_OAUTH = "cliproxy_codex_oauth"
+
+
+# Legacy per-provider auth methods -> the CLIProxy catalog id they pin.
+LEGACY_CLIPROXY_AUTH_PROVIDERS: dict[ProviderAuthMethod, str] = {
+    ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH: "claude",
+    ProviderAuthMethod.CLIPROXY_CODEX_OAUTH: "codex",
+}
+
+
+def legacy_cliproxy_provider(method: "ProviderAuthMethod") -> str | None:
+    """The pinned CLIProxy provider id for a legacy auth method, else None."""
+    return LEGACY_CLIPROXY_AUTH_PROVIDERS.get(method)
 
 
 class SetupStyle(StrEnum):
@@ -116,10 +136,11 @@ HOSTING_ORDER = (
     HostingOption.DOCKER,
 )
 
+# Visible order in the auth step: the generic subscription branch replaced the
+# two legacy per-provider rows (which stay valid enum inputs, just not shown).
 PROVIDER_AUTH_METHOD_ORDER = (
     ProviderAuthMethod.API_KEY,
-    ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH,
-    ProviderAuthMethod.CLIPROXY_CODEX_OAUTH,
+    ProviderAuthMethod.CLIPROXY_OAUTH,
 )
 
 SETUP_STYLE_ORDER = (
@@ -170,21 +191,30 @@ PROVIDER_AUTH_METHOD_CHOICES = {
         label="Direct API key",
         description="Use an Anthropic, OpenAI, or OpenRouter API key directly.",
     ),
+    ProviderAuthMethod.CLIPROXY_OAUTH: OnboardingChoice(
+        value=ProviderAuthMethod.CLIPROXY_OAUTH,
+        label="Subscription OAuth via CLIProxy",
+        description=(
+            "Route an existing AI subscription (Claude Max/Pro, ChatGPT "
+            "Plus/Pro, Gemini, Kimi, Grok, and more) through a CLIProxy "
+            "deployment instead of paying per token. Advanced path with "
+            "terms-of-service risk; a disclaimer follows."
+        ),
+        advanced=True,
+    ),
     ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH: OnboardingChoice(
         value=ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH,
-        label="CLIProxy Claude OAuth",
+        label="CLIProxy Claude OAuth (legacy)",
         description=(
-            "Advanced path for Anthropic-compatible routing through a separate "
-            "CLIProxy deployment."
+            "Legacy alias for the generic CLIProxy branch pinned to Claude."
         ),
         advanced=True,
     ),
     ProviderAuthMethod.CLIPROXY_CODEX_OAUTH: OnboardingChoice(
         value=ProviderAuthMethod.CLIPROXY_CODEX_OAUTH,
-        label="CLIProxy Codex/OpenAI OAuth",
+        label="CLIProxy Codex/OpenAI OAuth (legacy)",
         description=(
-            "Advanced path for OpenAI-compatible routing through a separate "
-            "CLIProxy deployment."
+            "Legacy alias for the generic CLIProxy branch pinned to Codex."
         ),
         advanced=True,
     ),

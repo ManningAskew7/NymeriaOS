@@ -21,6 +21,7 @@ from ..onboarding import (
     NextAction,
     ProviderAuthMethod,
     SecurityProfile,
+    legacy_cliproxy_provider,
 )
 
 
@@ -36,16 +37,40 @@ class WizardState:
     # First-run security posture. Recorded now; enforcement is built out later.
     security_profile: SecurityProfile | None = None
 
-    # How the primary LLM is authenticated. Only the direct API-key path is wired;
-    # subscription OAuth via CLIProxy is deferred (the auth step gates it).
+    # How the primary LLM is authenticated: a direct API key, or the
+    # provider-generic subscription branch through CLIProxy.
     auth_method: ProviderAuthMethod = ProviderAuthMethod.API_KEY
+    # True when --auth-method was passed explicitly; hydrate then never
+    # re-infers the branch from a CLIProxy-looking LLM_BASE_URL on disk.
+    auth_method_explicit: bool = False
 
-    # LLM provider + credentials (API-key path).
+    # LLM provider + credentials (API-key path). The CLIProxy branch fills
+    # these too, at finalize time, derived from the catalog spec and the
+    # hosting shape (see finalize._apply_cliproxy_route).
     provider: str | None = None
     api_key: str = ""
     model: str = ""
     base_url: str = ""
     api_mode: str = ""  # "", "responses", or "chat_completions"
+
+    # --- CLIProxy subscription-OAuth branch (auth_method = CLIPROXY_OAUTH) ----
+    # Catalog id of the chosen CLI (see nymeria/cliproxy/catalog.py).
+    cliproxy_provider: str | None = None
+    # Proxy host root as reachable from THIS machine (the wizard drives the
+    # /v0/management OAuth dance through it). Finalize derives the
+    # backend-facing URL per hosting shape separately.
+    cliproxy_management_url: str = ""
+    # Remote-management secret. Blank on a reconfigure means "keep the one on
+    # disk" (the steps read it back from the env file at use time, never into
+    # the UI).
+    cliproxy_management_key: str = ""
+    # Data-plane gatekeeper key (cpx-...); fetched or minted through the
+    # management API by the login step when not supplied.
+    cliproxy_gatekeeper_key: str = ""
+    # True when the wizard generated and started <root>/cliproxy/ itself.
+    cliproxy_deploy: bool = False
+    # Set by the login step once an active auth file exists for the pick.
+    cliproxy_logged_in: bool = False
 
     # How the backend is reached from outside this machine. Placeholder: the
     # wizard records the choice and finalize prints the matching guidance.
@@ -105,6 +130,13 @@ class WizardState:
         if self.provider is None:
             return None
         return get_llm_provider_spec(self.provider)
+
+    def auth_method_is_cliproxy(self) -> bool:
+        """True on the CLIProxy subscription branch (incl. legacy aliases)."""
+        return (
+            self.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
+            or legacy_cliproxy_provider(self.auth_method) is not None
+        )
 
 
 __all__ = ["WizardState"]
