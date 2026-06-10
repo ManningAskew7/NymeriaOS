@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
 import type { UnifiedTool } from '$lib/types';
@@ -96,7 +97,7 @@ function createUnifiedToolsStore() {
       loaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
-      error = e instanceof Error ? e.message : 'Failed to load tools';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your tools' });
       console.error('Failed to load unified tools:', e);
       loaded = true;
     } finally {
@@ -120,7 +121,7 @@ function createUnifiedToolsStore() {
       defaultToolsStore.resetLoaded();
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the tool' });
       return false;
     } finally {
       loading = false;
@@ -135,7 +136,7 @@ function createUnifiedToolsStore() {
       await loadTools(userId);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool description';
+      error = humanizeErrorText(e, { action: 'save', resource: "the tool's description" });
       return false;
     } finally {
       loading = false;
@@ -150,7 +151,7 @@ function createUnifiedToolsStore() {
       await loadTools(userId);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool config';
+      error = humanizeErrorText(e, { action: 'save', resource: "the tool's settings" });
       return false;
     } finally {
       loading = false;

@@ -13,6 +13,11 @@ describe('humanizeError', () => {
     expect(title).toBe("Couldn't connect to the backend");
   });
 
+  it('covers toggle-style verbs (disable)', () => {
+    const body = humanizeErrorText(new Error('x (500)'), { action: 'disable', resource: 'the credential' });
+    expect(body).toBe("Couldn't disable the credential. Try again in a moment.");
+  });
+
   it('surfaces a presentable backend detail with provenance', () => {
     const body = humanizeErrorText(new Error('Source URL is unreachable'), {
       action: 'save',

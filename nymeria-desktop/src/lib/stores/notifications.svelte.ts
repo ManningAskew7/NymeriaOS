@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type {
   Notification,
   NotificationChannelType,
@@ -48,7 +49,7 @@ function createNotificationStore() {
       unreadCount = response.unreadCount;
       lastFetch = new Date();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch notifications';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your notifications' });
       console.error('Failed to fetch notifications:', e);
     } finally {
       loading = false;
@@ -64,7 +65,7 @@ function createNotificationStore() {
       );
       unreadCount = Math.max(0, unreadCount - 1);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to mark notification as read';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the notification' });
       console.error('Failed to mark notification as read:', e);
     }
   }
@@ -76,7 +77,7 @@ function createNotificationStore() {
       notifications = notifications.map((n) => ({ ...n, read: true }));
       unreadCount = 0;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to mark all notifications as read';
+      error = humanizeErrorText(e, { action: 'update', resource: 'your notifications' });
       console.error('Failed to mark all notifications as read:', e);
     }
   }
@@ -88,7 +89,7 @@ function createNotificationStore() {
       notifications = notifications.filter((n) => n.id !== notificationId);
       if (wasUnread) unreadCount = Math.max(0, unreadCount - 1);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to delete notification';
+      error = humanizeErrorText(e, { action: 'delete', resource: 'the notification' });
       console.error('Failed to delete notification:', e);
     }
   }
@@ -99,7 +100,7 @@ function createNotificationStore() {
       notifications = [];
       unreadCount = 0;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to clear notifications';
+      error = humanizeErrorText(e, { action: 'delete', resource: 'your notifications' });
       console.error('Failed to clear notifications:', e);
     }
   }
@@ -172,7 +173,7 @@ function createNotificationStore() {
       profiles = profs;
       preferences = prefs;
     } catch (e) {
-      configError = e instanceof Error ? e.message : 'Failed to load notification config';
+      configError = humanizeErrorText(e, { action: 'load', resource: 'the notification settings' });
       console.error('Failed to load notification config:', e);
     } finally {
       configLoading = false;

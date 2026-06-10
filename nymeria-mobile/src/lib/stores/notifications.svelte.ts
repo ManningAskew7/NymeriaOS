@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type { Notification } from '$lib/types';
 
 function createNotificationStore() {
@@ -27,7 +28,7 @@ function createNotificationStore() {
       unreadCount = response.unreadCount;
       lastFetch = new Date();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch notifications';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your notifications' });
       console.error('Failed to fetch notifications:', e);
     } finally {
       loading = false;
@@ -43,7 +44,7 @@ function createNotificationStore() {
       );
       unreadCount = Math.max(0, unreadCount - 1);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to mark notification as read';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the notification' });
       console.error('Failed to mark notification as read:', e);
     }
   }
@@ -55,7 +56,7 @@ function createNotificationStore() {
       notifications = notifications.map((n) => ({ ...n, read: true }));
       unreadCount = 0;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to mark all notifications as read';
+      error = humanizeErrorText(e, { action: 'update', resource: 'your notifications' });
       console.error('Failed to mark all notifications as read:', e);
     }
   }

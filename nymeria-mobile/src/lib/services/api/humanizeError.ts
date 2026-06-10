@@ -21,6 +21,7 @@ export type ErrorAction =
   | 'create'
   | 'update'
   | 'delete'
+  | 'disable'
   | 'test'
   | 'connect'
   | 'send'
@@ -61,6 +62,7 @@ const ACTION_VERB: Record<ErrorAction, string> = {
   create: 'create',
   update: 'update',
   delete: 'delete',
+  disable: 'disable',
   test: 'test',
   connect: 'connect to',
   send: 'send',

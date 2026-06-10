@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import type {
   Trigger,
@@ -54,7 +55,7 @@ function createTriggersStore() {
       loaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
-      error = e instanceof Error ? e.message : 'Failed to load triggers';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your triggers' });
       console.error('Failed to load triggers:', e);
       // Mark loaded so consumer `$effect` blocks don't loop on a 404/auth error.
       loaded = true;
