@@ -124,3 +124,8 @@ verify-*.log
 job-log.txt
 notification-popover-fix.png
 initial-load.png
+
+# === Cloudflare tunnel connector assets written by `nymeria init` ===
+# TUNNEL_TOKEN.txt is a live tunnel credential; for Docker hosting the wizard
+# writes it inside the source checkout, so keep the whole dir untracked.
+/Nymeria/cloudflared/

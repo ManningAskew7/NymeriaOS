@@ -121,10 +121,15 @@ def _summary_markup(state: WizardState) -> str:
 
     if state.external_access is not None:
         lines.append("")
-        lines.append(
-            "[bold]External[/bold]  "
-            f"{EXTERNAL_ACCESS_CHOICES[state.external_access].label}"
-        )
+        external = EXTERNAL_ACCESS_CHOICES[state.external_access].label
+        from ..finalize import active_public_url
+
+        if active_public_url(state):
+            from ..external_access import public_origin
+
+            verified = "verified" if state.public_url_verified else "unverified"
+            external += f" at {public_origin(active_public_url(state))} ({verified})"
+        lines.append(f"[bold]External[/bold]  {external}")
 
     # Post-setup handoff (set by the start-now step or the --start/--next-action
     # flags). Surfaced so the final Enter's effect is no surprise.

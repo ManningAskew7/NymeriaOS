@@ -4,6 +4,8 @@ Your Nymeria backend runs on some machine: a VPS, a home server, a Raspberry Pi.
 
 This page covers four paths, ordered roughly from simplest to most powerful. **You can use more than one at a time**. Telegram plus Tailscale is a common combination.
 
+**The setup wizard automates the Tailscale and Cloudflare paths.** Run `nymeria init external_access`: it detects the tool, drives the login or provisioning, exposes the backend, verifies the resulting URL end to end (including SSE streaming, which some relays silently break), and writes `NYMERIA_PUBLIC_URL` plus the matching `CORS_ORIGINS` entry for you. The manual steps below remain valid and are what the wizard does under the hood.
+
 ## TL;DR
 
 | Goal | Use |
@@ -102,6 +104,8 @@ On each client device (laptop, phone, etc.):
 
 That's it. Zero public exposure, end-to-end encrypted, no domain required, no port forwarding.
 
+**Funnel (optional, public):** `sudo tailscale funnel --bg 8000` exposes the same URL to the whole internet (the wizard offers this as the "public" choice). That trades away the zero-public-exposure property above: the API is then guarded only by Nymeria's token auth, and Funnel does not preserve public client IPs, so per-client rate limiting cannot distinguish callers. Prefer Serve unless you specifically need app-less public access.
+
 ### When Tailscale is the right answer
 
 - You access Nymeria from your own devices and nobody else's
@@ -135,6 +139,8 @@ cloudflared tunnel --url http://localhost:8000
 ```
 
 Cloudflare prints a URL like `https://random-words-here.trycloudflare.com`. Anyone with that URL can reach your Nymeria API. **The URL changes every restart**. This is fine for one-off sharing, not daily use.
+
+**Warning: quick tunnels cannot carry Nymeria's chat.** Cloudflare documents that quick tunnels do not support Server-Sent Events (and cap in-flight requests at 200), so `/health` works but chat streaming breaks. Use a named tunnel (below) or Tailscale instead; verify any relay with `GET /health/stream` (events must arrive spaced out, not in one burst at the end).
 
 ### Setup: named tunnel (free Cloudflare account, stable URL)
 
@@ -174,6 +180,8 @@ NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
 - Public traffic flows through Cloudflare's edge; Cloudflare terminates public TLS and proxies through the tunnel to your server.
 - For most personal use this is acceptable. For sensitive deployments consider Tailscale instead.
 - Cloudflare can disconnect your tunnel for policy reasons (rare for legitimate use).
+- Cloudflare's proxy closes connections idle for ~100 seconds. Short chat streams pass fine, but a turn that stays silent for minutes (a long-running tool call between events) can be cut mid-stream until the backend grows SSE keepalives.
+- With a colocated tunnel every request reaches the API from one local address, so the per-IP auth-failure limiter collapses to one bucket. Set `NYMERIA_FORWARDED_ALLOW_IPS=127.0.0.1` so it keys on the real client IPs cloudflared forwards (see [configuration.md](configuration.md)).
 
 ---
 

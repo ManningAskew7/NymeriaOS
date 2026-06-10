@@ -60,6 +60,7 @@ prompt_toolkit>=3.0.0
 textual>=0.80.0
 Jinja2>=3.1.6,<4.0.0
 Pillow>=10.4.0,<13.0.0
+qrcode>=8.0,<9.0  # terminal QR codes (setup wizard: tailscale login, pairing handoff)
 
 # MCP Server support (for agent-to-agent communication)
 mcp>=1.2.0

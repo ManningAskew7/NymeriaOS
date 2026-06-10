@@ -138,7 +138,20 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         "--external-access",
         choices=choice_values(ExternalAccess),
         default=None,
-        help="How the backend is reached remotely (placeholder guidance)",
+        help=(
+            "How the backend is reached remotely. Interactive runs get a "
+            "guided tailscale/cloudflare setup; non-interactive runs pair "
+            "this with --public-url"
+        ),
+    )
+    parser.add_argument(
+        "--public-url",
+        default=None,
+        help=(
+            "Public origin the backend is reached at remotely (e.g. "
+            "https://nymeria.example.com); written to NYMERIA_PUBLIC_URL and "
+            "added to CORS_ORIGINS"
+        ),
     )
     parser.add_argument(
         "--next-action",
@@ -294,6 +307,21 @@ def _build_state(args: argparse.Namespace) -> WizardState:
             ExternalAccess, args.external_access, option_name="--external-access"
         )
 
+    public_url = (getattr(args, "public_url", None) or "").strip()
+    if public_url and not public_url.lower().startswith(("http://", "https://")):
+        # A non-origin here would be persisted into NYMERIA_PUBLIC_URL and
+        # CORS_ORIGINS where it can never match anything.
+        raise SystemExit(
+            "--public-url must be a full origin starting with http:// or "
+            "https:// (for example https://nymeria.example.com)"
+        )
+    if public_url and external_access is ExternalAccess.LOCAL_ONLY:
+        # The local-only gate would silently discard the validated URL.
+        raise SystemExit(
+            "--public-url conflicts with --external-access local_only; pick "
+            "a non-local choice or drop the URL"
+        )
+
     next_action = DEFAULT_NEXT_ACTION
     explicit_next_action = False
     if getattr(args, "next_action", None):
@@ -330,6 +358,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
             getattr(args, "cliproxy_gatekeeper_key", None) or ""
         ).strip(),
         external_access=external_access,
+        public_url=public_url,
         provider=getattr(args, "provider", None),
         api_key=(getattr(args, "api_key", None) or "").strip(),
         model=(getattr(args, "model", None) or "").strip(),

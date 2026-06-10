@@ -891,13 +891,16 @@ def test_noninteractive_records_deployment_choices_without_dead_config(
     out = capsys.readouterr().out
     config = (root / "config.env").read_text(encoding="utf-8")
     assert rc == 0
-    # The placeholder choices are surfaced to the operator...
-    assert "Deployment choices" in out
+    # Both choices are surfaced to the operator...
+    assert "Security profile" in out
     assert "Secure" in out
-    assert "Tailscale" in out
-    # ...but not written as config the backend would ignore.
+    assert "External access" in out and "Tailscale" in out
+    # ...security profile stays recorded-only (no dead config), while the
+    # external-access choice round-trips through its env marker so a
+    # reconfigure can hydrate it (no public URL was set up, so none writes).
     assert "SECURITY_PROFILE" not in config
-    assert "EXTERNAL_ACCESS" not in config
+    assert "NYMERIA_EXTERNAL_ACCESS=tailscale" in config
+    assert "NYMERIA_PUBLIC_URL" not in config
 
 
 def _read_secrets_key(text: str) -> str | None:
@@ -1474,8 +1477,8 @@ def test_print_deployment_summary_suppresses_local_only_and_omits_docker_stack()
 
     assert "Stack" not in out  # the docker stack is wired, so it is not echoed here
     assert "External access" not in out  # suppressed: local-only is the default
-    assert "Security profile: Standard" in out
-    assert "recorded, not yet automated" in out  # honest placeholder framing
+    assert "Security profile" in out and "Standard" in out
+    assert "enforcement is being built out" in out  # honest placeholder framing
 
 
 def test_print_deployment_summary_is_silent_without_recorded_choices():

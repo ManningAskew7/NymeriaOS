@@ -20,6 +20,10 @@ from .deployment import (
     make_external_access_step,
     make_security_profile_step,
 )
+from .external_access import (
+    make_external_access_cloudflare_step,
+    make_external_access_tailscale_step,
+)
 from .hosting import make_hosting_step
 from .placeholders import (
     make_fetch_url_step,
@@ -104,8 +108,11 @@ def _default_step_list() -> list[Step]:
         make_tts_step(),
         make_stt_step(),
         make_agent_settings_step(),
-        # External access, then offer to start the backend, then review and write.
+        # External access (the choice, then the guided tailscale/cloudflare
+        # setup), then offer to start the backend, then review and write.
         make_external_access_step(),
+        make_external_access_tailscale_step(),
+        make_external_access_cloudflare_step(),
         make_start_now_step(),
         make_review_step(),
     ]

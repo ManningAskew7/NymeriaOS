@@ -87,6 +87,14 @@ _LLM_SECTION_STEPS = frozenset(
     }
 )
 
+_EXTERNAL_ACCESS_SECTION_STEPS = frozenset(
+    {
+        "external_access",
+        "external_access_tailscale",
+        "external_access_cloudflare",
+    }
+)
+
 SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
     # The whole LLM unit travels together: jumping to any of its steps must be
     # able to switch between the API-key trio and the CLIProxy branch (the
@@ -105,6 +113,13 @@ SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
     "image_gen": frozenset({"image_gen", "backend_keys"}),
     "embedder": frozenset({"embedder", "reranker"}),
     "reranker": frozenset({"embedder", "reranker"}),
+    # The external-access choice gates the guided tailscale/cloudflare setup
+    # steps, so a jump to ANY of the three must carry all three (jumping
+    # straight to a tunnel step would otherwise build an empty wizard when
+    # the choice is not hydrated).
+    "external_access": _EXTERNAL_ACCESS_SECTION_STEPS,
+    "external_access_tailscale": _EXTERNAL_ACCESS_SECTION_STEPS,
+    "external_access_cloudflare": _EXTERNAL_ACCESS_SECTION_STEPS,
 }
 
 

@@ -91,6 +91,7 @@ EXPECTED_ROUTES = [
     ('/devices/register', ('POST',)),
     ('/devices/{token}', ('DELETE',)),
     ('/health', ('GET',)),
+    ('/health/stream', ('GET',)),
     ('/integrations/google-chat/webhook', ('POST',)),
     ('/integrations/instagram/webhook', ('GET',)),
     ('/integrations/instagram/webhook', ('POST',)),
