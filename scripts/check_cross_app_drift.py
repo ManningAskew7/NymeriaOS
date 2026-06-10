@@ -187,7 +187,7 @@ def discover_overlap() -> set[str]:
         rel = desktop_file.relative_to(DESKTOP_SRC)
         mobile_file = MOBILE_SRC / rel
         if mobile_file.is_file():
-            overlap.add(str(rel))
+            overlap.add(rel.as_posix())
 
     return overlap
 
