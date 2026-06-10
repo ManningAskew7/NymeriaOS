@@ -173,7 +173,7 @@
             loading={testing}
           >
             {#if testing}
-              Testing...
+              Testing…
             {:else}
               Test Connection
             {/if}

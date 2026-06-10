@@ -143,7 +143,7 @@
   {/if}
 
   {#if loading}
-    <p class="loading">Loading memories...</p>
+    <p class="loading">Loading memories…</p>
   {:else if memories.length === 0}
     <p class="empty">No memories stored yet. Add one above, or let the agent learn things over time.</p>
   {:else}

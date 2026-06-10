@@ -118,7 +118,7 @@
         disabled={runDisabled}
         title={hasUnsavedChanges ? 'Save changes before running a dream' : 'Run dream now'}
       >
-        {dreamRunning ? 'Starting...' : 'Run Dream'}
+        {dreamRunning ? 'Starting…' : 'Run Dream'}
       </button>
       {#if dreamStatus}
         <span class="dream-status">{dreamStatus}</span>

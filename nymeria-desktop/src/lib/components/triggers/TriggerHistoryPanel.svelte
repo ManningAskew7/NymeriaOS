@@ -83,7 +83,7 @@
     <div class="panel-body">
       {#if loading}
         <div class="center-state">
-          <span class="loading-text">Loading history...</span>
+          <span class="loading-text">Loading history…</span>
         </div>
       {:else if error}
         <div class="center-state error">

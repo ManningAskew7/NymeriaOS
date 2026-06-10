@@ -425,7 +425,7 @@
 <div class="tool-management">
   <div class="panel-scroll">
   {#if defaultToolsStore.loading}
-    <div class="loading">Loading tools...</div>
+    <div class="loading">Loading tools…</div>
   {:else if !defaultToolsStore.loaded}
     <div class="loading">Not connected to the backend. Open Settings → Backend to connect, then manage tools here.</div>
   {:else}
@@ -456,7 +456,7 @@
         type="text"
         class="search-input"
         bind:value={searchQuery}
-        placeholder="Search tools..."
+        placeholder="Search tools…"
         aria-label="Search tools"
       />
     </div>
@@ -558,7 +558,7 @@
     {/if}
 
     {#if toolsStore.loading}
-      <div class="loading">Loading custom tools...</div>
+      <div class="loading">Loading custom tools…</div>
     {:else if filteredCustomTools.length === 0}
       <div class="empty-state">
         <div class="empty-icon">+</div>
@@ -641,7 +641,7 @@
         disabled={defaultToolsStore.saving || !hasChanges}
         type="button"
       >
-        {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}
+        {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
       </button>
     </div>
 
@@ -776,7 +776,7 @@
               id="description-input"
               rows={4}
               bind:value={descriptionInput}
-              placeholder="Enter a custom description..."
+              placeholder="Enter a custom description…"
             ></textarea>
             {#if tool.customDescription}
               <div class="info-box">

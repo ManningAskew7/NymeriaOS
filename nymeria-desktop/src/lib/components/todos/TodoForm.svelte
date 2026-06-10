@@ -133,7 +133,7 @@
         if (selectedThreadId === '__new__') {
           // Create a new thread for this scheduled task
           const taskPreview = task.trim().slice(0, 30);
-          const newThread = threadsStore.createThread(`Scheduled: ${taskPreview}${task.length > 30 ? '...' : ''}`);
+          const newThread = threadsStore.createThread(`Scheduled: ${taskPreview}${task.length > 30 ? '…' : ''}`);
           threadId = newThread.id;
         } else {
           threadId = selectedThreadId;
@@ -226,7 +226,7 @@
       <textarea
         id="notes"
         bind:value={notes}
-        placeholder="Additional details..."
+        placeholder="Additional details…"
         rows={3}
         maxlength={1000}
         disabled={saving || deleting}

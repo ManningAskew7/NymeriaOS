@@ -95,14 +95,14 @@
   </header>
 
   {#if loading}
-    <p class="loading">Loading system prompt...</p>
+    <p class="loading">Loading system prompt…</p>
   {:else}
     <textarea
       class="prompt-input"
       bind:value={content}
       maxlength={MAX_LEN}
       rows={20}
-      placeholder="You are Nymeria, a helpful AI assistant..."
+      placeholder="You are Nymeria, a helpful AI assistant…"
       spellcheck="false"
     ></textarea>
     <div class="editor-foot">

@@ -175,14 +175,14 @@ function createCLIProxyStore() {
     const current = oauth;
     if (!current) return;
     error = null;
-    oauth = { ...current, status: 'delivering', detail: 'Delivering the callback to the proxy...' };
+    oauth = { ...current, status: 'delivering', detail: 'Delivering the callback to the proxy…' };
     try {
       await api.deliverCLIProxyOAuthCallback(current.provider, redirectUrl);
       // The await may have raced the poll: never clobber a completed login,
       // and restart the poll if it already died (timeout/error before paste).
       const latest = oauth;
       if (!latest || latest.state !== current.state || latest.status === 'ok') return;
-      oauth = { ...latest, status: 'wait', detail: 'Callback delivered; finishing the login...' };
+      oauth = { ...latest, status: 'wait', detail: 'Callback delivered; finishing the login…' };
       if (!oauthTimer) {
         const spec = status?.providers.find((entry) => entry.id === current.provider);
         startStatusPolling(current.provider, spec?.label ?? current.provider, current.state, 120_000);

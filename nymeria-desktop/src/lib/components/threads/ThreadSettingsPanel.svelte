@@ -1204,7 +1204,7 @@
           disabled={saving || !hasChanges()}
           type="button"
         >
-          {saving ? 'Saving...' : 'Save Changes'}
+          {saving ? 'Saving…' : 'Save Changes'}
         </button>
       </div>
     </div>

@@ -163,7 +163,7 @@
         {#if loading}
           <div class="artifact-state">
             <Icon name="loading" size={22} />
-            <span>Loading preview...</span>
+            <span>Loading preview…</span>
           </div>
         {:else if error}
           <div class="artifact-state error">

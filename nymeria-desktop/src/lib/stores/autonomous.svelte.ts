@@ -515,7 +515,7 @@ function createAutonomousStore() {
     _pendingReplayTimers.set(threadId, timer);
   }
 
-  function ensureStreamingForCurrentTask(event: AutonomousEvent, placeholder = 'Autonomous task in progress...'): boolean {
+  function ensureStreamingForCurrentTask(event: AutonomousEvent, placeholder = 'Autonomous task in progress…'): boolean {
     const taskId = event.task_id as string | undefined;
     // While a thread switch is loading history, the message list is about to be
     // replaced, so do not bind a streaming message yet: buffer and let
@@ -602,7 +602,7 @@ function createAutonomousStore() {
     activeTaskId = activeTasksByThread.get(threadId) ?? activeTaskId;
     chatStore.setStreaming(true);
     if (created) {
-      chatStore.setIntermediateContent('Autonomous task in progress...');
+      chatStore.setIntermediateContent('Autonomous task in progress…');
     }
 
     const buf = _pendingEvents.get(threadId);
@@ -675,14 +675,14 @@ function createAutonomousStore() {
             chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
           }
 
-          ensureStreamingForCurrentTask(event, 'Autonomous task started...');
+          ensureStreamingForCurrentTask(event, 'Autonomous task started…');
         }
         break;
 
       case 'thinking':
         // Only update if this is our autonomous task on the current thread
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addThinkingStep(event.content as string || 'Thinking...');
+          chatStore.addThinkingStep(event.content as string || 'Thinking…');
         } else if (isOurTask) {
           // Buffer for replay: during the current thread's switch gap (or while a
           // user chat is still streaming), and for a thread not on screen so a

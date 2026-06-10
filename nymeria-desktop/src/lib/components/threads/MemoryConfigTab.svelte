@@ -32,14 +32,14 @@
         id="notepad-input"
         class="text-input mono"
         bind:value={notepad}
-        placeholder="Notes the agent should remember for this thread..."
+        placeholder="Notes the agent should remember for this thread…"
         rows={14}
       ></textarea>
       <span class="char-count">
         {notepad.length}{#if notepadCharLimit} / {notepadCharLimit}{/if}
       </span>
     {:else}
-      <p class="field-hint">Loading notepad...</p>
+      <p class="field-hint">Loading notepad…</p>
     {/if}
 
     <div class="sub-field">

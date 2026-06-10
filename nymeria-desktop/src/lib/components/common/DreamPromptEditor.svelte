@@ -128,7 +128,7 @@
   </header>
 
   {#if loading}
-    <p class="loading">Loading dream prompts...</p>
+    <p class="loading">Loading dream prompts…</p>
   {:else if loadError}
     <p class="status error">{loadError}</p>
   {:else}

@@ -267,7 +267,7 @@
             <input
               class="search-input"
               type="text"
-              placeholder="Search sources..."
+              placeholder="Search sources…"
               bind:value={sourceSearch}
             />
             <div class="category-tabs" role="tablist" aria-label="Trigger source category">
@@ -493,7 +493,7 @@
                 id="notify-platform"
                 class="field-input"
                 type="text"
-                placeholder="desktop, discord, telegram..."
+                placeholder="desktop, discord, telegram…"
                 value={String(actionConfig.platform || '')}
                 oninput={(e) => { actionConfig.platform = (e.target as HTMLInputElement).value; actionConfig = actionConfig; }}
               />
@@ -580,7 +580,7 @@
             {#if resolvedThreadId}
               <div class="summary-row">
                 <span class="summary-label">Thread</span>
-                <span class="summary-value">{resolvedThreadId.substring(0, 12)}...</span>
+                <span class="summary-value">{resolvedThreadId.substring(0, 12)}…</span>
               </div>
             {/if}
           </div>
@@ -612,7 +612,7 @@
             disabled={!canAdvance() || saving}
             type="button"
           >
-            {saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Create Trigger'}
+            {saving ? 'Saving…' : isEditing ? 'Save Changes' : 'Create Trigger'}
           </button>
         {:else}
           <button

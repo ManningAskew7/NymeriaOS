@@ -80,7 +80,7 @@
       <Icon name="tool" size={16} />
       <input
         type="text"
-        placeholder="Search tools..."
+        placeholder="Search tools…"
         bind:value={searchQuery}
       />
     </div>

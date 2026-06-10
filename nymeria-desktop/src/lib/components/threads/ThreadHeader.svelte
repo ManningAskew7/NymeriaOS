@@ -39,7 +39,7 @@
 
   const healthTooltip = $derived(
     healthStore.checking && !healthStore.connected
-      ? 'Checking API...'
+      ? 'Checking API…'
       : healthStore.connected
         ? 'API connected'
         : 'API disconnected'
@@ -218,7 +218,7 @@
   const instructionsTooltip = $derived.by(() => {
     if (!threadConfig?.instructions) return '';
     const preview = threadConfig.instructions.substring(0, 80);
-    return preview + (threadConfig.instructions.length > 80 ? '...' : '');
+    return preview + (threadConfig.instructions.length > 80 ? '…' : '');
   });
 
   type MetaPart = {

@@ -346,18 +346,18 @@
     <div class="tools-msg">
       <p>{loadError}</p>
       <button class="retry-btn" type="button" onclick={retryLoad} disabled={retrying}>
-        {retrying ? 'Retrying...' : 'Retry'}
+        {retrying ? 'Retrying…' : 'Retry'}
       </button>
     </div>
   {:else if loading}
-    <div class="tools-msg">Loading tools...</div>
+    <div class="tools-msg">Loading tools…</div>
   {:else}
     <div class="tools-search">
       <input
         type="text"
         class="search-field"
         bind:value={query}
-        placeholder="Search tools by name or description..."
+        placeholder="Search tools by name or description…"
         aria-label="Search tools"
       />
       {#if query}
@@ -367,7 +367,7 @@
       {/if}
     </div>
     {#if searching}
-      <div class="search-status">Searching the full catalog...</div>
+      <div class="search-status">Searching the full catalog…</div>
     {/if}
 
     {#if section === 'native'}

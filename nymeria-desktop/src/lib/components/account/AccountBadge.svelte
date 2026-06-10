@@ -54,7 +54,7 @@
   );
 
   let primaryLabel = $derived(
-    stillVerifying ? 'Connecting...' : identityDisplayName(identity)
+    stillVerifying ? 'Connecting…' : identityDisplayName(identity)
   );
   let secondaryLabel = $derived(
     entryError

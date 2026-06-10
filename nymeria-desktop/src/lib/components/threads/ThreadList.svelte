@@ -969,7 +969,7 @@
             <input
               type="text"
               class="folder-picker-input"
-              placeholder="New folder name..."
+              placeholder="New folder name…"
               bind:value={newFolderName}
               onkeydown={handleNewFolderKeydown}
             />
@@ -1003,7 +1003,7 @@
             <input
               type="text"
               class="folder-picker-input"
-              placeholder="New team name..."
+              placeholder="New team name…"
               bind:value={newTeamName}
               onkeydown={handleNewTeamKeydown}
             />

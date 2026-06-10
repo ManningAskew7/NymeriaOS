@@ -72,7 +72,7 @@
     try {
       const result = await triggersStore.testTrigger(trigger.id);
       testResult = result.conditions_pass
-        ? `Preview: ${result.rendered_output.substring(0, 100)}${result.rendered_output.length > 100 ? '...' : ''}`
+        ? `Preview: ${result.rendered_output.substring(0, 100)}${result.rendered_output.length > 100 ? '…' : ''}`
         : 'Conditions would NOT pass for sample event';
       setTimeout(() => { testResult = null; }, 5000);
     } catch (e) {

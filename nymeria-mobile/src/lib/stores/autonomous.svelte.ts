@@ -526,7 +526,7 @@ function createAutonomousStore() {
 
       case 'thinking':
         if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addThinkingStep(event.content as string || 'Thinking...');
+          chatStore.addThinkingStep(event.content as string || 'Thinking…');
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
         }

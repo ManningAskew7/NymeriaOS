@@ -341,14 +341,14 @@
 
               <div class="action-row">
                 <button class="action-btn" onclick={() => handleTest(server.id)} disabled={testingServer === server.id}>
-                  {testingServer === server.id ? 'Testing...' : 'Test'}
+                  {testingServer === server.id ? 'Testing…' : 'Test'}
                 </button>
                 <button class="action-btn" onclick={() => handleDiscover(server.id)} disabled={discoveringServer === server.id}>
-                  {discoveringServer === server.id ? '...' : 'Rediscover'}
+                  {discoveringServer === server.id ? 'Rediscovering…' : 'Rediscover'}
                 </button>
                 {#if server.installStatus === 'failed' || server.installStatus === 'needs_config' || server.installStatus === 'draft'}
                   <button class="action-btn" onclick={() => handleRetry(server)} disabled={retryingServer === server.id}>
-                    {retryingServer === server.id ? 'Retrying...' : 'Retry'}
+                    {retryingServer === server.id ? 'Retrying…' : 'Retry'}
                   </button>
                 {/if}
                 <button class="action-btn" onclick={() => { editingServerId = server.id; editError = null; }}>

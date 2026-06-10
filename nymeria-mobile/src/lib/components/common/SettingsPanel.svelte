@@ -503,7 +503,7 @@
         </div>
         <div class="setting-actions">
           <Button variant="secondary" onclick={handleTestConnection}>
-            {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+            {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
           </Button>
           <Button onclick={handleSaveConnection}>Save Connection</Button>
         </div>
@@ -607,9 +607,9 @@
               <p class="hint">{availableModelsState.models.length} models available from provider</p>
             {:else if availableModelsState.loading}
               <select class="setting-input" disabled>
-                <option>Loading models...</option>
+                <option>Loading models…</option>
               </select>
-              <p class="hint">Fetching available models from provider...</p>
+              <p class="hint">Fetching available models from provider…</p>
             {:else}
               <select class="setting-input" bind:value={llmModel}>
                 {#if (modelOptions[llmProvider] ?? []).length > 0}
@@ -854,7 +854,7 @@
           </div>
 
           <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save LLM Settings'}
+            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
           </Button>
         {/if}
 
@@ -983,14 +983,14 @@
           {/if}
 
           <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save Agent Settings'}
+            {savingSettings ? 'Saving…' : 'Save Agent Settings'}
           </Button>
         {/if}
 
       {:else if activeTab === 'rag'}
         <h3 class="section-heading">My RAG (this account)</h3>
         {#if ragUserLoading}
-          <p class="loading">Loading RAG settings...</p>
+          <p class="loading">Loading RAG settings…</p>
         {:else}
           <div class="setting-group">
             <label class="setting-toggle">
@@ -1059,7 +1059,7 @@
           </div>
 
           <Button onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
-            {ragUserSaving ? 'Saving...' : 'Save My RAG Settings'}
+            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
           </Button>
           {#if ragUserMessage}
             <p class="hint">{ragUserMessage}</p>
@@ -1114,7 +1114,7 @@
               </div>
             {/if}
             <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-              {savingSettings ? 'Saving...' : 'Save RAG Engine'}
+              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
             </Button>
           {/if}
         {/if}
@@ -1298,7 +1298,7 @@
           </div>
 
           <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save Voice Settings'}
+            {savingSettings ? 'Saving…' : 'Save Voice Settings'}
           </Button>
         {/if}
 

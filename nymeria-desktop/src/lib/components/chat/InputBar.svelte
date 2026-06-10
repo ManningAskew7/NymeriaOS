@@ -29,7 +29,7 @@
   let {
     onSend,
     disabled = false,
-    placeholder = 'Type a message...',
+    placeholder = 'Type a message…',
     filesEnabled = true,
     insertText = '',
     onInsertConsumed,

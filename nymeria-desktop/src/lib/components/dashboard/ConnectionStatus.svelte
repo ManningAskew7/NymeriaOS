@@ -18,9 +18,9 @@
 
   const statusText = $derived(
     restarting
-      ? 'Restarting...'
+      ? 'Restarting…'
       : healthStore.checking && !healthStore.connected
-        ? 'Checking...'
+        ? 'Checking…'
         : healthStore.connected
           ? 'API Connected'
           : 'API Disconnected'

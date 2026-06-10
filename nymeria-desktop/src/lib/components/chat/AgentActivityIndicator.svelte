@@ -70,7 +70,7 @@
 </script>
 
 {#if phase !== 'typing'}
-  <div class="activity-line" aria-label={`${PHASE_TEXT[phase]}...`}>
+  <div class="activity-line" aria-label={`${PHASE_TEXT[phase]}…`}>
     <span class="activity-text accent-wave-text" data-phase={phase}>
       {#key phase}
         <span class="phase-label">{PHASE_TEXT[phase]}</span>

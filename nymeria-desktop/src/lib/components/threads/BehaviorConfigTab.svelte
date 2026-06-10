@@ -48,7 +48,7 @@
       id="system-prompt-input"
       class="text-input mono"
       bind:value={systemPrompt}
-      placeholder="You are a specialized assistant that..."
+      placeholder="You are a specialized assistant that…"
       maxlength={50000}
       rows={10}
     ></textarea>

@@ -124,10 +124,10 @@ function generateTitleFromMessage(message: string, maxLength: number = 40): stri
   const lastSpace = truncated.lastIndexOf(' ');
 
   if (lastSpace > maxLength * 0.6) {
-    return truncated.slice(0, lastSpace) + '...';
+    return truncated.slice(0, lastSpace) + '…';
   }
 
-  return truncated + '...';
+  return truncated + '…';
 }
 
 function createThreadsStore() {

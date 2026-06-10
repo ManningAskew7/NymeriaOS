@@ -931,7 +931,7 @@
           <textarea
             class="setting-textarea mono"
             bind:value={systemPrompt}
-            placeholder="You are a specialized assistant that..."
+            placeholder="You are a specialized assistant that…"
             maxlength={50000}
             rows={10}
           ></textarea>
@@ -966,7 +966,7 @@
             <textarea
               class="setting-textarea"
               bind:value={callableDescription}
-              placeholder="Describe what this agent does..."
+              placeholder="Describe what this agent does…"
               maxlength={500}
               rows={3}
             ></textarea>
@@ -1049,7 +1049,7 @@
             disabled={saving || dreamRunning || !dreamEnabled || hasChanges()}
             title={hasChanges() ? 'Save changes before running a dream' : 'Run dream now'}
           >
-            {dreamRunning ? 'Starting...' : 'Run Dream'}
+            {dreamRunning ? 'Starting…' : 'Run Dream'}
           </button>
           {#if dreamStatus}
             <span class="dream-status">{dreamStatus}</span>
@@ -1147,9 +1147,9 @@
             <p class="hint">{availableModelsState.models.length} models available from provider</p>
           {:else if availableModelsState.loading}
             <select class="setting-input" disabled>
-              <option>Loading models...</option>
+              <option>Loading models…</option>
             </select>
-            <p class="hint">Fetching available models from provider...</p>
+            <p class="hint">Fetching available models from provider…</p>
           {/if}
           <input
             type="text"
@@ -1313,14 +1313,14 @@
             type="text"
             class="setting-input"
             bind:value={toolSearch}
-            placeholder="Search tools..."
+            placeholder="Search tools…"
           />
         </div>
 
         {#if toolsLoadError}
           <div class="loading-state">{toolsLoadError}</div>
         {:else if toolsLoading}
-          <div class="loading-state">Loading tools...</div>
+          <div class="loading-state">Loading tools…</div>
         {:else}
           <div class="tools-list">
             {#if filteredTools.length === 0}
@@ -1387,7 +1387,7 @@
         {#if toolsLoadError}
           <div class="loading-state">{toolsLoadError}</div>
         {:else if toolsLoading}
-          <div class="loading-state">Loading MCP tools...</div>
+          <div class="loading-state">Loading MCP tools…</div>
         {:else}
           <div class="section-divider">
             <span class="section-title">
@@ -1467,7 +1467,7 @@
         {#if skillsStore.installedError}
           <div class="loading-state">{skillsStore.installedError}</div>
         {:else if skillsStore.installedLoading && !skillsStore.installedLoaded}
-          <div class="loading-state">Loading skills...</div>
+          <div class="loading-state">Loading skills…</div>
         {:else if skillsStore.installed.length === 0}
           <div class="loading-state">No skills installed.</div>
         {:else}
@@ -1628,7 +1628,7 @@
           disabled={saving || !hasChanges()}
           type="button"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

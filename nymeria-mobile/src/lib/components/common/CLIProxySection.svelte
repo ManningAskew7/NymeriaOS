@@ -94,7 +94,7 @@
     try {
       await api.deliverCLIProxyOAuthCallback(oauthProvider, pasted);
       callbackUrl = '';
-      oauthDetail = 'Callback delivered; finishing the login...';
+      oauthDetail = 'Callback delivered; finishing the login…';
     } catch (e) {
       oauthDetail = humanizeErrorText(e, { action: 'send', resource: 'the callback' });
     }

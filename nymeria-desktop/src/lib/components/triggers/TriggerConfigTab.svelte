@@ -251,7 +251,7 @@
   </div>
 
   {#if triggersStore.loading}
-    <div class="empty-state">Loading triggers...</div>
+    <div class="empty-state">Loading triggers…</div>
   {:else if threadTriggers.length === 0}
     <div class="empty-state">
       No triggers configured for this thread. Create one to automate tasks.
@@ -358,7 +358,7 @@
         bind:value={formSourceType}
         onchange={() => { formSourceConfig = {}; }}
       >
-        <option value="">Select a source...</option>
+        <option value="">Select a source…</option>
         {#each sourceNames as name}
           <option value={name}>{sourceLabel(name)}</option>
         {/each}
@@ -440,7 +440,7 @@
             class="field-textarea"
             value={(formActionConfig.prompt_template ?? formActionConfig.prompt ?? '') as string}
             oninput={(e) => handleActionConfigChange('prompt_template', (e.target as HTMLTextAreaElement).value)}
-            placeholder="New email received. From: {'{from_name}'} ({'{from_address}'})\nSubject: {'{subject}'}\nPreview: {'{body_preview}'}\n\nTriage this email..."
+            placeholder="New email received. From: {'{from_name}'} ({'{from_address}'})\nSubject: {'{subject}'}\nPreview: {'{body_preview}'}\n\nTriage this email…"
             rows={5}
           ></textarea>
         </div>
@@ -534,7 +534,7 @@
       Cancel
     </button>
     <button class="btn btn-primary" onclick={handleSave} disabled={saving} type="button">
-      {saving ? 'Saving...' : view === 'create' ? 'Create Trigger' : 'Save Changes'}
+      {saving ? 'Saving…' : view === 'create' ? 'Create Trigger' : 'Save Changes'}
     </button>
   </div>
 {/if}

@@ -122,7 +122,7 @@
       onclick={runTest}
       disabled={testing}
     >
-      {testing ? 'Running...' : 'Run Test'}
+      {testing ? 'Running…' : 'Run Test'}
     </Button>
   </div>
 
