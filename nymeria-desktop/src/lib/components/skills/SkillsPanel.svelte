@@ -85,6 +85,10 @@
     <div class="banner banner-error">{skillsStore.installedError}</div>
   {/if}
 
+  {#if skillsStore.enabledGlobalError}
+    <div class="banner banner-error">{skillsStore.enabledGlobalError}</div>
+  {/if}
+
   {#if skillsStore.installedLoading && !skillsStore.installedLoaded}
     <p class="status">Loading skills…</p>
   {:else if skillsStore.installed.length === 0}

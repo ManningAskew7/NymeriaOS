@@ -23,6 +23,7 @@ function createTriggersStore() {
   let loading = $state(false);
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  let sourcesError = $state<string | null>(null);
   let pollInterval: ReturnType<typeof setInterval> | null = null;
   let visibilityHandler: (() => void) | null = null;
   let identityGeneration = 0;
@@ -67,9 +68,11 @@ function createTriggersStore() {
   }
 
   async function loadSources(): Promise<void> {
+    sourcesError = null;
     try {
       sources = await api.getTriggerSources();
     } catch (e) {
+      sourcesError = humanizeErrorText(e, { action: 'load', resource: 'trigger sources' });
       console.error('Failed to load trigger sources:', e);
     }
   }
@@ -139,6 +142,7 @@ function createTriggersStore() {
     get loading() { return loading; },
     get loaded() { return loaded; },
     get error() { return error; },
+    get sourcesError() { return sourcesError; },
 
     get enabledCount() { return triggers.filter(t => t.enabled).length; },
     get activeTriggers() { return triggers.filter(t => t.enabled); },

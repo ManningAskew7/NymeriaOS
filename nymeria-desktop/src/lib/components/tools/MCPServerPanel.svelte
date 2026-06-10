@@ -183,6 +183,10 @@
       await defaultToolsStore.load();
     } catch (e) {
       console.error('Toggle failed:', e);
+      testResults = { ...testResults, [server.id]: { status: 'error', error: humanizeErrorText(e, { action: server.enabled ? 'disable' : 'enable', resource: 'the server' }) } };
+      // The toggle sits in the collapsed header; expand the card so the
+      // failure banner is visible next to the switch the user just flipped.
+      expandedServer = server.id;
     }
   }
 
@@ -214,6 +218,7 @@
       await defaultToolsStore.load();
     } catch (e) {
       console.error('Discovery failed:', e);
+      testResults = { ...testResults, [serverId]: { status: 'error', error: humanizeErrorText(e, { action: 'load', resource: "the server's tools" }) } };
     } finally {
       discoveringServer = null;
     }
@@ -271,6 +276,7 @@
       await defaultToolsStore.load();
     } catch (e) {
       console.error('Delete failed:', e);
+      testResults = { ...testResults, [serverId]: { status: 'error', error: humanizeErrorText(e, { action: 'delete', resource: 'the server' }) } };
     }
   }
 </script>

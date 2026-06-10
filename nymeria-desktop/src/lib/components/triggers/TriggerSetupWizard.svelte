@@ -311,6 +311,10 @@
           <h3>Choose a trigger source</h3>
           <p class="step-desc">Select what event should fire this trigger</p>
 
+          {#if triggersStore.sourcesError}
+            <div class="save-error">{triggersStore.sourcesError}</div>
+          {/if}
+
           <div class="source-filters">
             <input
               class="search-input"

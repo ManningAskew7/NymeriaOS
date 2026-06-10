@@ -2,6 +2,8 @@
   import type { TodoItem as TodoItemType } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
+  import { errorsStore } from '$lib/stores/errors.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { onDestroy } from 'svelte';
 
   interface Props {
@@ -108,6 +110,11 @@
       }
     } catch (err) {
       console.error('Failed to complete todo:', err);
+      // The checkbox row has no inline error slot; surface through the toast layer.
+      errorsStore.push({
+        kind: 'generic',
+        message: humanizeErrorText(err, { action: 'complete', resource: 'the task' }),
+      });
     } finally {
       completing = false;
     }

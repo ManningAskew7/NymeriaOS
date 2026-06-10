@@ -8,6 +8,7 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
+  import { errorsStore } from '$lib/stores/errors.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ToolCallCard from './ToolCallCard.svelte';
@@ -236,6 +237,11 @@
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error('[MessageBubble] Attachment download failed:', error);
+      // File chips have no inline error slot; surface through the toast layer.
+      errorsStore.push({
+        kind: 'generic',
+        message: humanizeErrorText(error, { action: 'download', resource: 'the attachment' }),
+      });
     } finally {
       downloadingIds.delete(file.id);
     }

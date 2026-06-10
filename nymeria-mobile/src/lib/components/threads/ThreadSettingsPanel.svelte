@@ -1471,6 +1471,9 @@
         {:else if skillsStore.installed.length === 0}
           <div class="loading-state">No skills installed.</div>
         {:else}
+          {#if skillsStore.enabledGlobalError}
+            <div class="loading-state">{skillsStore.enabledGlobalError}</div>
+          {/if}
           <div class="section-divider">
             <span class="section-title">Thread Skills</span>
             <p class="hint">Enable or disable installed skills for this thread. Globally enabled and default skills are active unless disabled here.</p>

@@ -22,6 +22,7 @@ export type ErrorAction =
   | 'update'
   | 'delete'
   | 'disable'
+  | 'enable'
   | 'test'
   | 'connect'
   | 'send'
@@ -31,7 +32,9 @@ export type ErrorAction =
   | 'start'
   | 'install'
   | 'copy'
-  | 'run';
+  | 'run'
+  | 'complete'
+  | 'download';
 
 export interface HumanErrorContext {
   /** What the user was trying to do. Drives the verb in the headline. */
@@ -63,6 +66,7 @@ const ACTION_VERB: Record<ErrorAction, string> = {
   update: 'update',
   delete: 'delete',
   disable: 'disable',
+  enable: 'enable',
   test: 'test',
   connect: 'connect to',
   send: 'send',
@@ -73,6 +77,8 @@ const ACTION_VERB: Record<ErrorAction, string> = {
   install: 'install',
   copy: 'copy',
   run: 'run',
+  complete: 'complete',
+  download: 'download',
 };
 
 // Recovery hint per action -- generic but actionable, which is the §9 bar
@@ -88,6 +94,7 @@ const ACTION_HINT: Partial<Record<ErrorAction, string>> = {
   import: 'Check the file and try again.',
   install: 'Try again, or check that the source is reachable.',
   copy: 'You can copy it manually instead.',
+  download: 'Try again, or check your connection to the backend.',
 };
 
 function rawMessage(e: unknown): string {
