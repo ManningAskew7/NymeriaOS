@@ -1,5 +1,6 @@
 <script lang="ts">
   import { trapFocus } from '$lib/actions/focus';
+  import { Icon } from '$lib/components/common';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMarketplaceSource } from '$lib/types';
@@ -66,8 +67,8 @@
   <div class="marketplace-panel" role="dialog" aria-modal="true" aria-labelledby="marketplace-title" tabindex="-1" use:trapFocus>
     <div class="marketplace-header">
       <h3 id="marketplace-title">Skills Marketplace</h3>
-      <button class="btn-close" onclick={onClose} type="button" aria-label="Close">
-        ×
+      <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
+        <Icon name="x" size={20} />
       </button>
     </div>
 
@@ -197,16 +198,15 @@
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .btn-close {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 24px;
-    line-height: 1;
-    padding: 0 var(--spacing-sm);
+  .close-btn {
+    padding: var(--spacing-xs);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
   }
-  .btn-close:hover {
+
+  .close-btn:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 

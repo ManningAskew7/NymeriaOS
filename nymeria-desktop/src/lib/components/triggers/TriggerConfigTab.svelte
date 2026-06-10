@@ -700,8 +700,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     transition: all var(--transition-fast);
