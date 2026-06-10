@@ -219,6 +219,9 @@ def _env_categories() -> dict[str, list[str]]:
 def _secret_keys() -> set[str]:
     """Settings that should be masked in GET /settings/env."""
     return {
+        # No _SECRET_KEY_SUFFIXES entry matches the bare *_key here, so the
+        # CLIProxy remote-management secret needs an explicit allowlist row.
+        "cliproxy_management_key",
         "openai_api_key",
         "anthropic_api_key",
         "anthropic_direct_api_key",

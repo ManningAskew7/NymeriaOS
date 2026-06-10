@@ -16,8 +16,6 @@ import type {
   CLIProxyStatus
 } from '$lib/types';
 
-export const LOCAL_CLIPROXY_ROOT_URL = 'http://127.0.0.1:8318';
-
 interface CLIProxySession {
   provider: string;
   email: string;
@@ -117,6 +115,38 @@ function createCLIProxyStore() {
     }
   }
 
+  function startStatusPolling(providerId: string, providerLabel: string, oauthState: string, timeoutMs: number) {
+    stopOAuthPolling();
+    const deadline = Date.now() + timeoutMs;
+    oauthTimer = setInterval(async () => {
+      const current = oauth;
+      if (!current || current.state !== oauthState) {
+        stopOAuthPolling();
+        return;
+      }
+      if (Date.now() > deadline) {
+        stopOAuthPolling();
+        oauth = { ...current, status: 'error', detail: 'The login session expired; start it again.' };
+        return;
+      }
+      try {
+        const result = await api.getCLIProxyOAuthStatus(oauthState, providerId);
+        if (result === 'ok') {
+          stopOAuthPolling();
+          oauth = { ...current, status: 'ok', detail: 'Login complete.' };
+          message = `${providerLabel} login complete.`;
+          await refresh(true);
+        } else if (result === 'error') {
+          stopOAuthPolling();
+          oauth = { ...current, status: 'error', detail: 'The provider reported a login error.' };
+        }
+      } catch (e) {
+        stopOAuthPolling();
+        oauth = { ...current, status: 'error', detail: humanizeErrorText(e, { action: 'connect', resource: 'the proxy' }) };
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
   async function startOAuth(provider: CLIProxyProviderInfo) {
     error = null;
     message = null;
@@ -135,34 +165,7 @@ function createCLIProxyStore() {
             : 'Approve the login in the browser. If it ends on a dead localhost page, paste that page\'s full URL below.'
       };
       window.open(started.url, '_blank', 'noopener');
-      const deadline = Date.now() + LOGIN_TIMEOUT_MS;
-      oauthTimer = setInterval(async () => {
-        const current = oauth;
-        if (!current || current.state !== started.state) {
-          stopOAuthPolling();
-          return;
-        }
-        if (Date.now() > deadline) {
-          stopOAuthPolling();
-          oauth = { ...current, status: 'error', detail: 'The login session expired; start it again.' };
-          return;
-        }
-        try {
-          const result = await api.getCLIProxyOAuthStatus(started.state, provider.id);
-          if (result === 'ok') {
-            stopOAuthPolling();
-            oauth = { ...current, status: 'ok', detail: 'Login complete.' };
-            message = `${provider.label} login complete.`;
-            await refresh(true);
-          } else if (result === 'error') {
-            stopOAuthPolling();
-            oauth = { ...current, status: 'error', detail: 'The provider reported a login error.' };
-          }
-        } catch (e) {
-          stopOAuthPolling();
-          oauth = { ...current, status: 'error', detail: humanizeErrorText(e, { action: 'connect', resource: 'the proxy' }) };
-        }
-      }, POLL_INTERVAL_MS);
+      startStatusPolling(provider.id, provider.label, started.state, LOGIN_TIMEOUT_MS);
     } catch (e) {
       fail(e, 'start', 'the login');
     }
@@ -175,9 +178,19 @@ function createCLIProxyStore() {
     oauth = { ...current, status: 'delivering', detail: 'Delivering the callback to the proxy...' };
     try {
       await api.deliverCLIProxyOAuthCallback(current.provider, redirectUrl);
-      oauth = { ...current, status: 'wait', detail: 'Callback delivered; finishing the login...' };
+      // The await may have raced the poll: never clobber a completed login,
+      // and restart the poll if it already died (timeout/error before paste).
+      const latest = oauth;
+      if (!latest || latest.state !== current.state || latest.status === 'ok') return;
+      oauth = { ...latest, status: 'wait', detail: 'Callback delivered; finishing the login...' };
+      if (!oauthTimer) {
+        const spec = status?.providers.find((entry) => entry.id === current.provider);
+        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state, 120_000);
+      }
     } catch (e) {
-      oauth = { ...current, status: 'wait', detail: humanizeErrorText(e, { action: 'send', resource: 'the callback' }) };
+      const latest = oauth;
+      if (!latest || latest.state !== current.state || latest.status === 'ok') return;
+      oauth = { ...latest, status: 'wait', detail: humanizeErrorText(e, { action: 'send', resource: 'the callback' }) };
     }
   }
 

@@ -964,6 +964,7 @@ def create_api_app(
             require_admin_user,
             get_agent,
             get_settings,
+            require_thread_access_fn=_require_thread_access,
         )
     )
     app.include_router(

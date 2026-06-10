@@ -28,8 +28,10 @@
 
   type AuthMethod = 'api_key' | 'cliproxy';
 
-  // Offline fallback when the backend catalog is unreachable: the two
-  // historically supported CLIs with their route shapes.
+  // Offline fallback when the backend catalog is unreachable: a static copy
+  // of the backend catalog's route shapes (refreshed by loadCatalog when the
+  // backend answers). Needed in full so settings -> wizard detection can
+  // resolve every CLI, not just claude/codex.
   const FALLBACK_CLIPROXY_CATALOG: CLIProxyProviderInfo[] = [
     {
       id: 'claude', label: 'Claude (Max/Pro subscription)', description: '',
@@ -44,8 +46,54 @@
       api_mode: 'responses', key_env_var: 'OPENAI_API_KEY',
       default_model: 'gpt-5.5', tos_warning: '', auth_file_provider: 'codex',
       supported: null, logged_in: null
+    },
+    {
+      id: 'gemini-cli', label: 'Gemini CLI (Google account)', description: '',
+      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'gemini-3-pro-preview', tos_warning: '', auth_file_provider: 'gemini',
+      supported: null, logged_in: null
+    },
+    {
+      id: 'antigravity', label: 'Antigravity (Google account)', description: '',
+      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'gemini-3-pro-preview', tos_warning: '', auth_file_provider: 'antigravity',
+      supported: null, logged_in: null
+    },
+    {
+      id: 'kimi', label: 'Kimi (Moonshot subscription)', description: '',
+      flow: 'device', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'kimi-k2.5', tos_warning: '', auth_file_provider: 'kimi',
+      supported: null, logged_in: null
+    },
+    {
+      id: 'grok', label: 'Grok (SuperGrok/X Premium subscription)', description: '',
+      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'chat_completions', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'grok-4.3', tos_warning: '', auth_file_provider: 'xai',
+      supported: null, logged_in: null
     }
   ];
+
+  // Settings -> wizard reverse mapping. Codex only when the saved route is
+  // actually in Responses mode; the chat_completions shape is shared by the
+  // other CLIs, so resolve by the saved model's catalog default and fall back
+  // to the first chat-mode entry. This keeps the save path (which writes the
+  // selected spec's api_mode) from silently flipping a Gemini/Kimi/Grok route
+  // to Responses mode.
+  function detectCliproxySelection(settings: ServerSettings): string {
+    if (settings.llm_provider === 'anthropic') return 'claude';
+    if ((settings.openai_api_mode ?? 'responses') === 'responses') return 'codex';
+    const model = (settings.llm_model || '').trim();
+    const byModel = cliproxyCatalog.find(
+      (entry) => entry.api_mode === 'chat_completions' && entry.default_model === model
+    );
+    if (byModel) return byModel.id;
+    const chatEntry = cliproxyCatalog.find((entry) => entry.api_mode === 'chat_completions');
+    return chatEntry?.id ?? 'codex';
+  }
   type WizardStep = 1 | 2 | 3;
   type TestStatus = 'idle' | 'testing' | 'success' | 'error';
   type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
@@ -182,7 +230,7 @@
         baseUrl = currentSettings.llm_base_url;
       } else if (currentSettings.llm_provider === 'openai' && currentSettings.llm_base_url) {
         authMethod = 'cliproxy';
-        cliproxySelection = 'codex';
+        cliproxySelection = detectCliproxySelection(currentSettings);
         baseUrl = currentSettings.llm_base_url;
       } else {
         authMethod = 'api_key';

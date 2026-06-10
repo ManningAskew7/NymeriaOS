@@ -46,6 +46,40 @@ class CLIProxyDeployment:
     gatekeeper_key: str
 
 
+def read_existing_secrets(directory: Path) -> tuple[str | None, str | None]:
+    """Recover (management_secret, gatekeeper_key) from a prior deployment.
+
+    A re-run must reuse the original plaintext secret: the running container
+    already bcrypt-hashed it, so regenerating config.yaml with a fresh one
+    would lock the wizard out of its own proxy. The gatekeeper is read back
+    from the generated config.yaml's api-keys block.
+    """
+    secret = None
+    gatekeeper = None
+    secret_path = directory / MANAGEMENT_SECRET_FILENAME
+    try:
+        lines = [
+            line.strip()
+            for line in secret_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if lines:
+            secret = lines[-1]
+    except OSError:
+        # No prior deployment (or unreadable): caller mints fresh secrets.
+        pass
+    try:
+        for line in (directory / "config.yaml").read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith('- "cpx-'):
+                gatekeeper = stripped[len('- "'):].rstrip('"')
+                break
+    except OSError:
+        # Same: a missing config.yaml just means nothing to reuse.
+        pass
+    return secret, gatekeeper
+
+
 def generate_cliproxy_deployment(
     directory: Path,
     *,
@@ -162,6 +196,7 @@ def compose_up(directory: Path, *, timeout: float = 300.0) -> tuple[bool, str]:
 
 __all__ = [
     "CLIPROXY_HOST_PORT",
+    "read_existing_secrets",
     "CLIPROXY_PINNED_IMAGE",
     "CLIProxyDeployment",
     "MANAGEMENT_SECRET_FILENAME",
