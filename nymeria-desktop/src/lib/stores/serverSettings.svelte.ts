@@ -1,4 +1,6 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { errorsStore } from './errors.svelte';
 
 function createServerSettingsStore() {
   let provider = $state<string | null>(null);
@@ -28,6 +30,12 @@ function createServerSettingsStore() {
         loaded = true;
       } catch (e) {
         console.error('Failed to load server settings:', e);
+        // No panel owns this load (it backs the model chip and inherited
+        // provider defaults), so surface the failure through the toast layer.
+        errorsStore.push({
+          kind: 'generic',
+          message: humanizeErrorText(e, { action: 'load', resource: 'server settings' }),
+        });
       } finally {
         loading = false;
       }

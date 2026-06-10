@@ -199,18 +199,22 @@
   }
 
   async function handleToggle(trigger: Trigger) {
+    error = '';
     try {
       await triggersStore.updateTrigger(trigger.id, { enabled: !trigger.enabled });
     } catch (e) {
+      error = humanizeErrorText(e, { action: trigger.enabled ? 'disable' : 'enable', resource: 'the trigger' });
       console.error('Failed to toggle trigger:', e);
     }
   }
 
   async function handleDelete(id: string) {
+    error = '';
     try {
       await triggersStore.deleteTrigger(id);
       confirmDeleteId = null;
     } catch (e) {
+      error = humanizeErrorText(e, { action: 'delete', resource: 'the trigger' });
       console.error('Failed to delete trigger:', e);
     }
   }
@@ -226,6 +230,10 @@
         <span>New Trigger</span>
       </button>
     </div>
+
+    {#if error}
+      <div class="form-error">{error}</div>
+    {/if}
 
     {#if triggersStore.loading}
       <div class="empty-state">Loading triggers…</div>
@@ -320,6 +328,9 @@
         </select>
         {#if currentSourceInfo}
           <p class="field-hint">{currentSourceInfo.description}</p>
+        {/if}
+        {#if triggersStore.sourcesError}
+          <div class="form-error">{triggersStore.sourcesError}</div>
         {/if}
       </div>
 

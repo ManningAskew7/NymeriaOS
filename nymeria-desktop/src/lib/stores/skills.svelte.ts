@@ -26,6 +26,7 @@ export function createSkillsStore() {
   let enabledGlobal = $state<string[]>([]);
   let enabledGlobalLoaded = $state(false);
   let enabledGlobalLoading = $state(false);
+  let enabledGlobalError = $state<string | null>(null);
   let enabledGlobalRefreshQueued = false;
 
   // Marketplace search results (last query)
@@ -51,6 +52,7 @@ export function createSkillsStore() {
     enabledGlobal = [];
     enabledGlobalLoaded = false;
     enabledGlobalLoading = false;
+    enabledGlobalError = null;
     enabledGlobalRefreshQueued = false;
     marketplaceResults = [];
     marketplaceSearching = false;
@@ -98,6 +100,7 @@ export function createSkillsStore() {
     if (enabledGlobalLoaded && !force) return;
     const requestGeneration = identityGeneration;
     enabledGlobalLoading = true;
+    enabledGlobalError = null;
     try {
       const nextEnabledGlobal = await api.getGlobalSkills();
       if (requestGeneration !== identityGeneration) return;
@@ -105,6 +108,7 @@ export function createSkillsStore() {
       enabledGlobalLoaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
+      enabledGlobalError = humanizeErrorText(e, { action: 'load', resource: 'your global skills' });
       console.error('skills: loadGlobal failed', e);
       // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
       enabledGlobalLoaded = true;
@@ -229,6 +233,7 @@ export function createSkillsStore() {
     get enabledGlobal() { return enabledGlobal; },
     get enabledGlobalLoaded() { return enabledGlobalLoaded; },
     get enabledGlobalLoading() { return enabledGlobalLoading; },
+    get enabledGlobalError() { return enabledGlobalError; },
 
     // Marketplace
     get marketplaceResults() { return marketplaceResults; },
