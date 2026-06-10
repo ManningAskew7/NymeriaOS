@@ -39,9 +39,25 @@ if TYPE_CHECKING:
 # The only steps the quick path still prompts for; every other step is gated off
 # and defaulted. Hosting and the LLM (provider/connection/model/key) cannot be
 # defaulted; start_now stays a single end question; welcome and review are the
-# entry and confirmation screens.
+# entry and confirmation screens. The cliproxy_* steps are the LLM essentials
+# of the subscription branch (entered in quick mode via --auth-method, since
+# the auth step itself is quick-gated); their own applies predicates keep them
+# off the API-key path.
 QUICK_KEEP_STEP_IDS = frozenset(
-    {"welcome", "hosting", "provider", "connection", "model", "start_now", "review"}
+    {
+        "welcome",
+        "hosting",
+        "provider",
+        "connection",
+        "model",
+        "cliproxy_disclaimer",
+        "cliproxy_endpoint",
+        "cliproxy_provider",
+        "cliproxy_login",
+        "cliproxy_model",
+        "start_now",
+        "review",
+    }
 )
 
 # Keyless web fetch default: distills pages with the configured primary LLM, so
@@ -57,10 +73,33 @@ QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 # tool-family steps need the backend-keys step to collect any new credential; the
 # reranker follows the embedder. Steps not listed keep just themselves. Each step
 # keeps its own `applies`, so conditional members still drop out when irrelevant.
+_LLM_SECTION_STEPS = frozenset(
+    {
+        "auth_method",
+        "provider",
+        "connection",
+        "model",
+        "cliproxy_disclaimer",
+        "cliproxy_endpoint",
+        "cliproxy_provider",
+        "cliproxy_login",
+        "cliproxy_model",
+    }
+)
+
 SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
-    "provider": frozenset({"provider", "connection", "model"}),
-    "connection": frozenset({"provider", "connection", "model"}),
-    "model": frozenset({"provider", "connection", "model"}),
+    # The whole LLM unit travels together: jumping to any of its steps must be
+    # able to switch between the API-key trio and the CLIProxy branch (the
+    # applies predicates pick the active side).
+    "auth_method": _LLM_SECTION_STEPS,
+    "provider": _LLM_SECTION_STEPS,
+    "connection": _LLM_SECTION_STEPS,
+    "model": _LLM_SECTION_STEPS,
+    "cliproxy_disclaimer": _LLM_SECTION_STEPS,
+    "cliproxy_endpoint": _LLM_SECTION_STEPS,
+    "cliproxy_provider": _LLM_SECTION_STEPS,
+    "cliproxy_login": _LLM_SECTION_STEPS,
+    "cliproxy_model": _LLM_SECTION_STEPS,
     "web_search": frozenset({"web_search", "backend_keys"}),
     "fetch_url": frozenset({"fetch_url", "backend_keys"}),
     "image_gen": frozenset({"image_gen", "backend_keys"}),

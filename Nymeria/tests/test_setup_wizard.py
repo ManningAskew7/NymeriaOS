@@ -1225,12 +1225,14 @@ def test_build_section_steps_filters_to_section_plus_deps():
         "welcome", "image_gen", "backend_keys", "review",
     ]
 
-    # The LLM unit stays together; connection drops out for a provider that
-    # needs no base URL.
+    # The LLM unit stays together (auth_method included so a jump can flip
+    # between the API-key trio and the CLIProxy branch); connection drops out
+    # for a provider that needs no base URL, and the cliproxy_* steps drop out
+    # on the API-key path.
     s2 = WizardState(provider="anthropic")
     nav2 = Navigator(build_section_steps("model"), s2)
     kept = [build_section_steps("model")[i].id for i in nav2.applicable_indices()]
-    assert kept == ["welcome", "provider", "model", "review"]
+    assert kept == ["welcome", "auth_method", "provider", "model", "review"]
 
 
 def test_run_init_rejects_unknown_section(monkeypatch, tmp_path):
@@ -1714,13 +1716,15 @@ async def _no_models(*_args, **_kwargs):
 
 
 # Step indices in the default flow (welcome, hosting, docker_stack, security,
-# auth, provider, connection, model, ...). docker_stack (2) only applies to a
-# Docker host, so on the default local path the provider step is index 5.
+# auth, the five cliproxy_* branch steps, provider, connection, model, ...).
+# docker_stack (2) only applies to a Docker host and the cliproxy_* steps
+# (5-9) only to the subscription branch, so on the default local API-key path
+# the provider step is index 10.
 _HOSTING_STEP = 1
 _SECURITY_STEP = 3
 _AUTH_STEP = 4
-_PROVIDER_STEP = 5
-_CONNECTION_STEP = 6
+_PROVIDER_STEP = 10
+_CONNECTION_STEP = 11
 
 
 async def _advance_to_provider(pilot) -> None:
@@ -2388,9 +2392,9 @@ def test_wizard_pilot_provider_switch_clears_stale_connection_state():
     assert state.base_url == ""  # cleared on the switch
 
 
-def test_wizard_pilot_auth_step_blocks_deferred_oauth():
-    """The auth step shows subscription OAuth for orientation but refuses to
-    advance on it (the branch is deferred). Direct API key is accepted.
+def test_wizard_pilot_auth_step_enters_cliproxy_branch():
+    """Selecting subscription OAuth advances into the CLIProxy branch (the
+    disclaimer step), and the API-key provider trio drops out of the flow.
     """
     from nymeria.onboarding import ProviderAuthMethod
     from nymeria.setup.app import SetupWizardApp
@@ -2406,18 +2410,16 @@ def test_wizard_pilot_auth_step_blocks_deferred_oauth():
             await pilot.press("enter")  # accept security profile -> auth method
             await pilot.pause()
             assert app.nav.current() == _AUTH_STEP
-            await pilot.press("down")  # focus a deferred CLIProxy OAuth method
+            await pilot.press("down")  # focus Subscription OAuth via CLIProxy
             await pilot.pause()
-            await pilot.press("enter")  # gated: error, focus returns to API key, stay
-            await pilot.pause()
-            assert app.nav.current() == _AUTH_STEP
-            await pilot.press("enter")  # focus is now Direct API key -> accepted
+            await pilot.press("enter")  # accepted -> the disclaimer step
             await pilot.pause()
         return app
 
     app = asyncio.run(drive())
-    assert app.state.auth_method is ProviderAuthMethod.API_KEY
-    assert app.nav.current() == _PROVIDER_STEP
+    assert app.state.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
+    # Index 5 is cliproxy_disclaimer, the first step of the branch.
+    assert app.nav.current() == 5
 
 
 def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
@@ -3460,3 +3462,259 @@ def test_wizard_pilot_reranker_reuses_cohere_key_for_cohere_pro():
     assert state.reranker == "premium-cohere-pro"
     # The Cohere embedding key was reused for the reranker, not re-prompted.
     assert state.optional_env["RAG_RERANK_API_KEY"] == "co-secret"
+
+
+# --- CLIProxy subscription branch ---------------------------------------------
+
+
+def test_finalize_cliproxy_claude_local_writes_root_url_and_gatekeeper(
+    monkeypatch, tmp_path
+):
+    """The Claude route: anthropic provider, proxy ROOT URL (no /v1), the cpx-
+    gatekeeper in ANTHROPIC_API_KEY (never the DIRECT slot), and the management
+    endpoint persisted for the backend's /cliproxy routes."""
+    calls = _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    rc = setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_PROVIDER") == "anthropic"
+    assert _env_line(content, "LLM_BASE_URL") == "http://localhost:8318"
+    assert _env_line(content, "LLM_MODEL") == "claude-opus-4-7"
+    assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-gate"
+    assert "ANTHROPIC_DIRECT_API_KEY" not in content
+    assert _env_line(content, "CLIPROXY_MANAGEMENT_URL") == "http://localhost:8318"
+    assert _env_line(content, "CLIPROXY_MANAGEMENT_KEY") == "cpm-secret"
+    # The live test ran against the host-reachable proxy with the gatekeeper.
+    assert calls and calls[0][2] == "cpx-gate"
+
+
+def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
+    monkeypatch, tmp_path
+):
+    """The Codex route on the full stack: openai + /v1 + responses, gatekeeper
+    in OPENAI_API_KEY, and the backend-facing URLs use the docker network
+    alias while the live test used the host URL."""
+    calls = _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "codex",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "docker", "--docker-stack", "full",
+         "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_PROVIDER") == "openai"
+    assert _env_line(content, "LLM_BASE_URL") == "http://cli-proxy-api:8317/v1"
+    assert _env_line(content, "LLM_MODEL") == "gpt-5.5"
+    assert _env_line(content, "OPENAI_API_MODE") == "responses"
+    assert _env_line(content, "OPENAI_API_KEY") == "cpx-gate"
+    assert _env_line(content, "CLIPROXY_MANAGEMENT_URL") == "http://cli-proxy-api:8317"
+    assert calls and calls[0][1] == "gpt-5.5"
+
+
+def test_finalize_cliproxy_slim_docker_uses_host_gateway(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "grok",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "docker", "--docker-stack", "slim",
+         "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_BASE_URL") == "http://host.docker.internal:8318/v1"
+    assert _env_line(content, "OPENAI_API_MODE") == "chat_completions"
+    assert _env_line(content, "LLM_MODEL") == "grok-4.3"
+
+
+def test_legacy_auth_method_flags_map_to_generic_branch(monkeypatch, tmp_path):
+    """--auth-method cliproxy_claude_oauth (desktop back-compat) behaves as the
+    generic branch pinned to Claude."""
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    rc = setup_main(
+        ["--auth-method", "cliproxy_claude_oauth",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_PROVIDER") == "anthropic"
+    assert _env_line(content, "LLM_BASE_URL") == "http://localhost:8318"
+
+
+def test_noninteractive_cliproxy_requires_provider_and_endpoint(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--auth-method", "cliproxy_oauth", "--hosting", "local",
+             "--root", str(tmp_path / "a"), "--non-interactive"]
+        )
+    assert "--cliproxy-provider" in str(exc.value)
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "kimi",
+             "--hosting", "local", "--root", str(tmp_path / "b"),
+             "--non-interactive"]
+        )
+    assert "--cliproxy-management-url" in str(exc.value)
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "kimi",
+             "--cliproxy-management-url", "http://localhost:8318",
+             "--hosting", "local", "--root", str(tmp_path / "c"),
+             "--non-interactive"]
+        )
+    assert "--cliproxy-gatekeeper-key" in str(exc.value)
+
+
+def test_hydrate_infers_cliproxy_branch_from_base_url(monkeypatch, tmp_path):
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
+    assert state.cliproxy_provider == "claude"
+    assert state.cliproxy_management_url == "http://localhost:8318"
+    # The secret is presence-only, never read back into state.
+    assert "CLIPROXY_MANAGEMENT_KEY" in state.present_env_keys
+    assert state.cliproxy_management_key == ""
+
+
+def test_hydrate_infers_codex_from_v1_responses_shape(monkeypatch, tmp_path):
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "codex",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
+    assert state.cliproxy_provider == "codex"
+
+
+def test_hydrate_explicit_api_key_flag_wins_over_inference(monkeypatch, tmp_path):
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root, auth_method_explicit=True)
+    assert hydrate_state_from_disk(state) is True
+    assert state.auth_method is ProviderAuthMethod.API_KEY
+
+
+def test_cliproxy_untouched_reconfigure_rewrites_identical_route(
+    monkeypatch, tmp_path
+):
+    """An untouched reconfigure re-derives the same route lines (deterministic
+    from pick + shape), so the merge is byte-stable for the LLM block."""
+    from rich.console import Console
+
+    from nymeria.setup.finalize import finalize as finalize_fn
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+    before = (root / "config.env").read_text(encoding="utf-8")
+
+    state = WizardState(root=root, skip_llm_test=True)
+    assert hydrate_state_from_disk(state) is True
+    rc = finalize_fn(
+        state, console=Console(quiet=True), non_interactive=True, merge=True
+    )
+    assert rc == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    for key in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL",
+                "ANTHROPIC_API_KEY", "CLIPROXY_MANAGEMENT_URL",
+                "CLIPROXY_MANAGEMENT_KEY"):
+        assert _env_line(after, key) == _env_line(before, key), key
+
+
+def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):
+    from nymeria.setup.cliproxy_deploy import (
+        CLIPROXY_PINNED_IMAGE,
+        generate_cliproxy_deployment,
+    )
+
+    deployment = generate_cliproxy_deployment(
+        tmp_path / "cliproxy",
+        management_secret="cpm-test",
+        gatekeeper_key="cpx-test",
+        join_network="nymeria_edge",
+    )
+    compose = (tmp_path / "cliproxy" / "docker-compose.yml").read_text()
+    config = (tmp_path / "cliproxy" / "config.yaml").read_text()
+    assert CLIPROXY_PINNED_IMAGE in compose
+    assert '"8318:8317"' in compose
+    assert "nymeria_edge" in compose and "cli-proxy-api" in compose
+    assert 'secret-key: "cpm-test"' in config
+    assert '"cpx-test"' in config
+    secret_file = tmp_path / "cliproxy" / "MANAGEMENT_SECRET.txt"
+    assert secret_file.stat().st_mode & 0o777 == 0o600
+    assert deployment.management_url == "http://localhost:8318"
+
+    # No external network block when not joining one.
+    generate_cliproxy_deployment(
+        tmp_path / "solo",
+        management_secret="cpm-test",
+        gatekeeper_key="cpx-test",
+    )
+    solo = (tmp_path / "solo" / "docker-compose.yml").read_text()
+    assert "external" not in solo

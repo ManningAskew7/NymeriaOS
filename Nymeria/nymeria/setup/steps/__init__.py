@@ -7,6 +7,13 @@ from ..quick import QUICK_KEEP_STEP_IDS, section_keep_ids
 from .agent_settings import make_agent_settings_step
 from .auth import make_auth_method_step
 from .backend_keys import make_backend_keys_step
+from .cliproxy import (
+    make_cliproxy_disclaimer_step,
+    make_cliproxy_endpoint_step,
+    make_cliproxy_login_step,
+    make_cliproxy_model_step,
+    make_cliproxy_provider_step,
+)
 from .core_tools import make_core_tools_step
 from .deployment import (
     make_docker_stack_step,
@@ -71,8 +78,15 @@ def _default_step_list() -> list[Step]:
         make_hosting_step(),
         make_docker_stack_step(),
         make_security_profile_step(),
-        # Choose LLM auth, then the provider, connection, and model.
+        # Choose LLM auth, then the provider, connection, and model. The
+        # CLIProxy subscription branch replaces the provider/connection/model
+        # trio when chosen; each side drops out via its applies predicate.
         make_auth_method_step(),
+        make_cliproxy_disclaimer_step(),
+        make_cliproxy_endpoint_step(),
+        make_cliproxy_provider_step(),
+        make_cliproxy_login_step(),
+        make_cliproxy_model_step(),
         make_provider_step(),
         make_connection_step(),
         make_model_step(),

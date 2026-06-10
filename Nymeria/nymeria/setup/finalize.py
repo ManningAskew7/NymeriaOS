@@ -173,6 +173,13 @@ def finalize(
     if state.embedder is None and not state.optional_env.get("EMBEDDING_API_KEY"):
         apply_quickstart_rag(state)
 
+    # CLIProxy subscription branch: derive the shared LLM fields (provider,
+    # base_url, api_mode, model default, gatekeeper key) from the catalog pick
+    # and hosting shape. The returned URL is the host-reachable one to live-test
+    # against; the written base_url may be a container alias.
+    cliproxy_test_base = _apply_cliproxy_route(state)
+    key_env_override = cliproxy_key_env_override(state)
+
     spec = state.provider_spec()
     api_key = state.api_key.strip()
     base_url = state.base_url.strip()
@@ -180,11 +187,12 @@ def finalize(
     provider_auth_validated = False
     # Reconfigure: an empty key field means "keep the key already on disk", so a
     # provider whose key is present must not be downgraded to "unconfigured".
-    key_present = bool(
-        spec
-        and spec.api_key_env_vars
-        and spec.api_key_env_vars[0] in state.present_env_keys
+    # On the CLIProxy branch the key lives in the override var, not the
+    # registry's first (direct) slot.
+    provider_key_env = key_env_override or (
+        spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else None
     )
+    key_present = bool(provider_key_env and provider_key_env in state.present_env_keys)
     if spec is None or (spec.requires_api_key and not api_key and not key_present):
         # Provider step was skipped (or a required key is missing); write a
         # usable config without LLM creds.
@@ -200,7 +208,9 @@ def finalize(
         # preserve the existing key line.
         keep_existing_key = not api_key and key_present
         model = (state.model or spec.default_model or "").strip()
-        if api_key:
+        # The CLIProxy branch carries a cpx- gatekeeper, not a provider key,
+        # so the provider prefix check does not apply there.
+        if api_key and not state.auth_method_is_cliproxy():
             ok, prefix = valid_key_format_for_spec(spec, api_key)
             if not ok and prefix:
                 console.print(
@@ -224,7 +234,12 @@ def finalize(
             console.print("\nTesting LLM connection...")
             try:
                 result = check_llm_connection_for_spec(
-                    spec, model, api_key, base_url=base_url or None
+                    spec,
+                    model,
+                    api_key,
+                    # CLIProxy: test through the host-reachable proxy URL; the
+                    # written base_url may be a docker-network alias.
+                    base_url=(cliproxy_test_base or base_url) or None,
                 )
             except LLMConnectionError as exc:
                 console.print(f"[red]LLM connection failed:[/red] {exc}")
@@ -318,6 +333,7 @@ def finalize(
         merge=merge,
         init_seed_env=init_seed_env,
         full_stack_env=full_stack_env,
+        provider_key_env=key_env_override,
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -394,6 +410,7 @@ def write_config(
     merge: bool = False,
     init_seed_env: Mapping[str, str] | None = None,
     full_stack_env: Mapping[str, str] | None = None,
+    provider_key_env: str | None = None,
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -401,6 +418,9 @@ def write_config(
     omitted so the backend still starts and a provider can be set later. The key
     is written to the provider's highest-priority env var; for Anthropic that is
     `ANTHROPIC_DIRECT_API_KEY` (the direct, non-proxy key), not `ANTHROPIC_API_KEY`.
+    `provider_key_env` overrides that target: the CLIProxy branch passes the
+    catalog's slot so the cpx- gatekeeper lands in `ANTHROPIC_API_KEY` /
+    `OPENAI_API_KEY` instead of the direct slot.
 
     `for_docker` selects the Docker flavor (a `.env.docker`, for either the slim
     single container or the full Postgres + Redis stack): the storage/host lines
@@ -436,7 +456,9 @@ def write_config(
     extra_env = extra_env or {}
     init_seed_env = init_seed_env or {}
     full_stack_env = full_stack_env or {}
-    provider_env = spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
+    provider_env = provider_key_env or (
+        spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
+    )
     produced: list[tuple[str, str]] = []
     if spec is not None:
         produced.append(("LLM_PROVIDER", spec.id))
@@ -684,12 +706,89 @@ def update_bootstrap_profile(
         )
 
 
+def _cliproxy_backend_host(state: WizardState) -> str:
+    """The proxy host root as the BACKEND will reach it, by hosting shape.
+
+    The wizard talks to the proxy on a host-reachable URL
+    (`state.cliproxy_management_url`); the backend may live elsewhere: inside
+    the full Docker stack it reaches the proxy by network alias, inside the
+    slim container through the host gateway, and on a local/service install
+    the host URL works as-is.
+    """
+    if not state.auth_method_is_cliproxy():
+        return ""
+    from ..onboarding import DockerStack
+
+    if state.hosting is HostingOption.DOCKER:
+        if state.docker_stack is DockerStack.FULL:
+            return "http://cli-proxy-api:8317"
+        return "http://host.docker.internal:8318"
+    return (state.cliproxy_management_url or "").strip().rstrip("/") or (
+        "http://localhost:8318"
+    )
+
+
+def _apply_cliproxy_route(state: WizardState) -> str | None:
+    """Fill the shared LLM fields from the CLIProxy catalog pick.
+
+    Returns the host-reachable base URL to LIVE-TEST against (the written
+    `state.base_url` may be a container alias the wizard host cannot reach),
+    or None when the branch is inactive/incomplete. Deterministic from the
+    pick + hosting shape, so an untouched reconfigure rewrites identical
+    lines.
+    """
+    if not state.auth_method_is_cliproxy() or not state.cliproxy_provider:
+        return None
+    from ..cliproxy.catalog import cliproxy_data_plane_url, get_cliproxy_provider
+
+    cspec = get_cliproxy_provider(state.cliproxy_provider)
+    if cspec is None:
+        return None
+    state.provider = cspec.nymeria_provider
+    state.base_url = cliproxy_data_plane_url(_cliproxy_backend_host(state), cspec)
+    state.api_mode = cspec.api_mode
+    if not state.model:
+        state.model = cspec.default_model
+    if state.cliproxy_gatekeeper_key.strip():
+        state.api_key = state.cliproxy_gatekeeper_key.strip()
+    host_url = (state.cliproxy_management_url or "").strip()
+    if not host_url:
+        return None
+    return cliproxy_data_plane_url(host_url, cspec)
+
+
+def cliproxy_key_env_override(state: WizardState) -> str | None:
+    """The env var the gatekeeper key writes to on the CLIProxy branch.
+
+    The catalog routes the cpx- gatekeeper to ANTHROPIC_API_KEY /
+    OPENAI_API_KEY; the registry default for Anthropic would be the DIRECT
+    (pay-per-token) slot, which must stay reserved for real Anthropic keys
+    (see core/agent_llm_config.py).
+    """
+    if not state.auth_method_is_cliproxy() or not state.cliproxy_provider:
+        return None
+    from ..cliproxy.catalog import get_cliproxy_provider
+
+    cspec = get_cliproxy_provider(state.cliproxy_provider)
+    return cspec.key_env_var if cspec else None
+
+
 def _resolve_extra_env(state: WizardState) -> dict[str, str]:
     extra: dict[str, str] = {}
     if state.base_url:
         extra["LLM_BASE_URL"] = state.base_url.strip()
     if state.api_mode:
         extra["OPENAI_API_MODE"] = state.api_mode.strip()
+    # CLIProxy branch: persist the management endpoint so the backend (and its
+    # /cliproxy admin routes) can drive the proxy at runtime. The URL is the
+    # backend-facing one computed by _apply_cliproxy_route; a blank key on a
+    # reconfigure stays omitted, so the merge keeps the existing secret line.
+    if state.auth_method_is_cliproxy():
+        backend_url = _cliproxy_backend_host(state)
+        if backend_url:
+            extra["CLIPROXY_MANAGEMENT_URL"] = backend_url
+        if state.cliproxy_management_key.strip():
+            extra["CLIPROXY_MANAGEMENT_KEY"] = state.cliproxy_management_key.strip()
     # Embedder/reranker choices -> EMBEDDING_* / RAG_RERANK_* env vars (the API
     # keys ride in optional_env). Empty when no embedder was chosen.
     extra.update(rag_env_for_state(state))
@@ -984,6 +1083,20 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
     console.print(f"\nStart Nymeria ({spec.label}):")
     _print_command(console, _compose_command_str(spec, "up", "-d"))
     _print_docker_token_command(console, spec)
+    if state.auth_method_is_cliproxy() and _is_full_stack(state) and not state.cliproxy_deploy:
+        # A wizard-generated deployment already joins the stack's edge network;
+        # a pre-existing proxy must be attached by hand or the api/worker
+        # containers cannot resolve the cli-proxy-api alias.
+        console.print(
+            "\nFull stack + an existing CLIProxy: make sure the proxy container "
+            "is attached to the stack's edge network with the `cli-proxy-api` "
+            "alias, e.g.:"
+        )
+        _print_command(
+            console,
+            "docker network connect --alias cli-proxy-api nymeria_edge "
+            "<your-cliproxy-container>",
+        )
 
 
 # --- opt-in start -----------------------------------------------------------

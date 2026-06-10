@@ -22,8 +22,10 @@ from ..onboarding import (
     ProviderAuthMethod,
     SecurityProfile,
     choice_values,
+    legacy_cliproxy_provider,
     parse_choice,
 )
+from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from .finalize import finalize
 from .quick import apply_quick_defaults
@@ -91,9 +93,34 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--auth-method",
-        choices=(ProviderAuthMethod.API_KEY.value,),
+        choices=choice_values(ProviderAuthMethod),
         default=None,
-        help="LLM auth method. Only api_key is wired; CLIProxy OAuth is deferred",
+        help=(
+            "LLM auth method: api_key (direct key) or cliproxy_oauth "
+            "(subscription via CLIProxy; the legacy cliproxy_claude_oauth / "
+            "cliproxy_codex_oauth values map onto it)"
+        ),
+    )
+    parser.add_argument(
+        "--cliproxy-provider",
+        choices=tuple(spec.id for spec in list_cliproxy_providers()),
+        default=None,
+        help="CLIProxy subscription to route (with --auth-method cliproxy_oauth)",
+    )
+    parser.add_argument(
+        "--cliproxy-management-url",
+        default=None,
+        help="CLIProxy host root URL (no /v1), e.g. http://localhost:8318",
+    )
+    parser.add_argument(
+        "--cliproxy-management-key",
+        default=None,
+        help="CLIProxy remote-management secret (plaintext)",
+    )
+    parser.add_argument(
+        "--cliproxy-gatekeeper-key",
+        default=None,
+        help="CLIProxy data-plane api-key (cpx-...) written as the LLM key",
     )
     parser.add_argument(
         "--docker-stack",
@@ -236,10 +263,18 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         hosting = parse_choice(HostingOption, args.hosting, option_name="--hosting")
 
     auth_method = ProviderAuthMethod.API_KEY
-    if getattr(args, "auth_method", None):
+    auth_method_explicit = bool(getattr(args, "auth_method", None))
+    if auth_method_explicit:
         auth_method = parse_choice(
             ProviderAuthMethod, args.auth_method, option_name="--auth-method"
         )
+    cliproxy_provider = getattr(args, "cliproxy_provider", None)
+    legacy_provider = legacy_cliproxy_provider(auth_method)
+    if legacy_provider is not None:
+        # Legacy per-provider methods map onto the generic branch with the
+        # CLI pinned (desktop back-compat).
+        auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
+        cliproxy_provider = cliproxy_provider or legacy_provider
 
     docker_stack = None
     if getattr(args, "docker_stack", None):
@@ -283,6 +318,17 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         docker_stack=docker_stack,
         security_profile=security_profile,
         auth_method=auth_method,
+        auth_method_explicit=auth_method_explicit,
+        cliproxy_provider=cliproxy_provider,
+        cliproxy_management_url=(
+            getattr(args, "cliproxy_management_url", None) or ""
+        ).strip().rstrip("/"),
+        cliproxy_management_key=(
+            getattr(args, "cliproxy_management_key", None) or ""
+        ).strip(),
+        cliproxy_gatekeeper_key=(
+            getattr(args, "cliproxy_gatekeeper_key", None) or ""
+        ).strip(),
         external_access=external_access,
         provider=getattr(args, "provider", None),
         api_key=(getattr(args, "api_key", None) or "").strip(),
@@ -312,6 +358,27 @@ def run_init(args: argparse.Namespace) -> int:
     state = _build_state(args)
 
     if non_interactive:
+        if state.auth_method_is_cliproxy():
+            # No interactive OAuth is possible here: the proxy must already
+            # hold the subscription login, and every endpoint detail must be
+            # explicit (finalize derives provider/model/base_url from them).
+            if not state.cliproxy_provider:
+                raise SystemExit(
+                    "--cliproxy-provider is required with --non-interactive "
+                    "--auth-method cliproxy_oauth"
+                )
+            if not state.cliproxy_management_url:
+                raise SystemExit(
+                    "--cliproxy-management-url is required with "
+                    "--non-interactive --auth-method cliproxy_oauth"
+                )
+            if not state.cliproxy_gatekeeper_key:
+                raise SystemExit(
+                    "--cliproxy-gatekeeper-key is required with "
+                    "--non-interactive --auth-method cliproxy_oauth (run "
+                    "`nymeria init` interactively to complete the OAuth login)"
+                )
+            return finalize(state, console=console, non_interactive=True)
         if not state.provider:
             raise SystemExit("--provider is required with --non-interactive")
         spec = get_llm_provider_spec(state.provider)
