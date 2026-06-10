@@ -520,3 +520,19 @@ def test_auth_error_maps_to_502_on_action_routes():
         assert "rejected" in response.json()["detail"]
     finally:
         FakeManagementClient.start_oauth = original
+
+
+def test_patch_config_rejects_masked_gatekeeper_round_trip():
+    """GET masks api-keys, so PATCHing a masked value back must 400 instead of
+    clobbering the proxy's real key list."""
+    client, _, _ = make_app()
+    response = client.patch(
+        "/cliproxy/config",
+        json={"knobs": {"api-keys": ["cpx-aaaa…cc", "cpx-real-key"]}},
+    )
+    assert response.status_code == 400
+    assert "masked" in response.json()["detail"]
+    response = client.patch(
+        "/cliproxy/config", json={"knobs": {"api-keys": ["***"]}}
+    )
+    assert response.status_code == 400
