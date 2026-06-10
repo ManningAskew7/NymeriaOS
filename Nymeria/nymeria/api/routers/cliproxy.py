@@ -370,6 +370,22 @@ def create_cliproxy_router(
                 status_code=400,
                 detail=f"Unknown config knobs: {sorted(unknown)}",
             )
+        # GET masks the gatekeeper list, so a naive read-edit-write round trip
+        # would replace the proxy's real keys with masked garbage; reject any
+        # value that looks masked instead of clobbering.
+        api_keys = request.knobs.get("api-keys")
+        if isinstance(api_keys, list) and any(
+            isinstance(key, str) and ("\u2026" in key or key == "***")
+            for key in api_keys
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "api-keys contains masked values; send the full key list "
+                    "(reads of this knob are masked, so edit-and-resend is "
+                    "not supported for it)"
+                ),
+            )
         client = _client_or_400()
         try:
             for path, value in request.knobs.items():
