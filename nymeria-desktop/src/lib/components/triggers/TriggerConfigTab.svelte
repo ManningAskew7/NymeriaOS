@@ -351,7 +351,7 @@
     <!-- Source Type -->
     <div class="field-group">
       <label class="field-label" for="trigger-source">Source Type <span class="required">*</span></label>
-      <p class="field-hint">What event triggers this automation?</p>
+      <p class="field-hint">What event fires this trigger?</p>
       <select
         id="trigger-source"
         class="field-select"

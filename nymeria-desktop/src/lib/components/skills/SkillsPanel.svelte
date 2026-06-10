@@ -69,7 +69,7 @@
 <div class="skills-panel">
   <div class="panel-header">
     <div>
-      <h3 class="panel-title">Agent Skills</h3>
+      <h3 class="panel-title">Skills</h3>
       <p class="panel-hint">
         Skills are bundles of procedural knowledge (SKILL.md + optional scripts).
         Skill Kits are skills that also bind required Nymeria tools when activated.

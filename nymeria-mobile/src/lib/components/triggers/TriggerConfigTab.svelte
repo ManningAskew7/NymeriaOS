@@ -307,7 +307,7 @@
       <!-- Source Type -->
       <div class="field-group">
         <label class="field-label">Source Type <span class="required">*</span></label>
-        <p class="field-hint">What event triggers this automation?</p>
+        <p class="field-hint">What event fires this trigger?</p>
         <select
           class="field-input"
           bind:value={formSourceType}

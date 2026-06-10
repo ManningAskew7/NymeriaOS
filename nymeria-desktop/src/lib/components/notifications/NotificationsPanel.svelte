@@ -107,7 +107,7 @@
       <h2 class="section-title">Notification routing</h2>
       <p class="section-blurb">
         Define <strong>destinations</strong> (where messages go) and bundle them
-        into <strong>profiles</strong> (which the agent picks by name). The
+        into <strong>routing profiles</strong> (which the agent picks by name). The
         bell sidebar always logs every notification regardless of where it was
         sent.
       </p>
@@ -125,7 +125,7 @@
   <!-- Preferences -->
   <div class="card">
     <div class="card-header">
-      <h3>Default profile</h3>
+      <h3>Default routing profile</h3>
     </div>
     <div class="card-body">
       <p class="muted">
@@ -237,7 +237,7 @@
   <!-- Profiles -->
   <div class="card">
     <div class="card-header">
-      <h3>Profiles</h3>
+      <h3>Routing profiles</h3>
       {#if !creatingProfile && !editingProfileId}
         <Button
           variant="primary"
