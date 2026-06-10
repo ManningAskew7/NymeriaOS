@@ -195,7 +195,7 @@
   <div class="form-actions">
     <button class="cancel-btn" onclick={onCancel}>Cancel</button>
     <button class="submit-btn" onclick={handleSubmit} disabled={loading || hasErrors}>
-      {#if loading}Adding...{:else}{mode === 'add' ? 'Add & Discover' : 'Save'}{/if}
+      {#if loading}Adding…{:else}{mode === 'add' ? 'Add & Discover' : 'Save'}{/if}
     </button>
   </div>
 </div>

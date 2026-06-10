@@ -28,7 +28,7 @@ const SYNTHETIC_DISPLAY_PROVIDERS: Record<string, { backend: string; description
   },
   local_openai: {
     backend: 'openai',
-    description: 'Local OpenAI-compatible server (llama.cpp, LM Studio, vLLM, ...).',
+    description: 'Local OpenAI-compatible server (llama.cpp, LM Studio, vLLM, …).',
   },
 };
 

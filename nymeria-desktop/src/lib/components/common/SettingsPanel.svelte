@@ -1195,7 +1195,7 @@
                         onclick={() => handleConnectTo(conn.id)}
                         disabled={connectionsStore.switching}
                       >
-                        {connectionsStore.switching ? '...' : 'Connect'}
+                        {connectionsStore.switching ? 'Connecting…' : 'Connect'}
                       </Button>
                     {:else}
                       <span class="conn-active-label">Connected</span>
@@ -1281,7 +1281,7 @@
 
         <div class="actions">
           <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
-            {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+            {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
           </Button>
           {#if editingConnectionId}
             <Button variant="primary" onclick={handleUpdateConnection}>
@@ -1614,9 +1614,9 @@
             <p class="hint">{availableModelsState.models.length} models available</p>
           {:else if availableModelsState.loading}
             <select id="llm-model" disabled>
-              <option>Loading models...</option>
+              <option>Loading models…</option>
             </select>
-            <p class="hint">Fetching available models...</p>
+            <p class="hint">Fetching available models…</p>
           {:else}
             <select id="llm-model" bind:value={llmModel}>
               {#if (modelOptions[llmProvider] ?? []).length > 0}
@@ -1968,7 +1968,7 @@
             <p class="hint">{summaryModelsState.models.length} models available</p>
           {:else if summaryModelsState.loading}
             <select id="fetch-summary-model" disabled>
-              <option>Loading models...</option>
+              <option>Loading models…</option>
             </select>
           {:else}
             <select id="fetch-summary-model" bind:value={fetchSummaryModel}>
@@ -2005,7 +2005,7 @@
 
         <div class="actions">
           <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save LLM Settings'}
+            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
           </Button>
         </div>
       {/if}
@@ -2157,7 +2157,7 @@
 
         <div class="actions">
           <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save Agent Settings'}
+            {savingSettings ? 'Saving…' : 'Save Agent Settings'}
           </Button>
         </div>
       {/if}
@@ -2169,7 +2169,7 @@
     <div class="tab-content">
       <div class="section-heading">My RAG (this account)</div>
       {#if ragUserLoading}
-        <p class="loading">Loading RAG settings...</p>
+        <p class="loading">Loading RAG settings…</p>
       {:else}
         <div class="field checkbox-field">
           <input id="rag-enabled" type="checkbox" bind:checked={ragEnabled} />
@@ -2227,7 +2227,7 @@
 
         <div class="actions">
           <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
-            {ragUserSaving ? 'Saving...' : 'Save My RAG Settings'}
+            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
           </Button>
           {#if ragUserMessage}
             <span class="hint">{ragUserMessage}</span>
@@ -2282,7 +2282,7 @@
           {/if}
           <div class="actions">
             <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-              {savingSettings ? 'Saving...' : 'Save RAG Engine'}
+              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
             </Button>
           </div>
         {/if}
@@ -2363,7 +2363,7 @@
 
         <div class="actions">
           <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save Dreaming Settings'}
+            {savingSettings ? 'Saving…' : 'Save Dreaming Settings'}
           </Button>
         </div>
 
@@ -2586,7 +2586,7 @@
         </div>
 
         <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-          {savingSettings ? 'Saving...' : 'Save Voice Settings'}
+          {savingSettings ? 'Saving…' : 'Save Voice Settings'}
         </Button>
       {/if}
     </div>

@@ -585,7 +585,7 @@
       <p class="report-detail">Includes: thread ID, last 10 messages, timestamp, browser info.</p>
       <textarea
         class="report-textarea"
-        placeholder="Describe the problem (optional)..."
+        placeholder="Describe the problem (optional)…"
         bind:value={reportDescription}
         rows="4"
       ></textarea>

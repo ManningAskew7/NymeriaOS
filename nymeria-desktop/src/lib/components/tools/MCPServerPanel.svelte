@@ -330,7 +330,7 @@
   {/if}
 
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
-    <div class="loading-state">Loading MCP servers...</div>
+    <div class="loading-state">Loading MCP servers…</div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <div class="empty-state">
       <Icon name="terminal" size={24} />

@@ -49,7 +49,7 @@
       <div class="qa-label">
         {outlookStore.currentEmailSubject
           ? `Selected: ${outlookStore.currentEmailSubject.length > 40
-              ? outlookStore.currentEmailSubject.slice(0, 37) + '...'
+              ? outlookStore.currentEmailSubject.slice(0, 37) + '…'
               : outlookStore.currentEmailSubject}`
           : 'Email selected'}
       </div>

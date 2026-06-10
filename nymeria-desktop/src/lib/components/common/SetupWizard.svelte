@@ -188,7 +188,7 @@
               onclick={testConnection}
               disabled={testStatus === 'testing' || !apiKey}
             >
-              {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+              {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
             </Button>
 
             {#if testMessage}

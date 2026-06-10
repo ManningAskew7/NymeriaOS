@@ -116,7 +116,7 @@
       {#if loading}
         <div class="state">
           <Icon name="loading" size={22} />
-          <span>Loading checkpoint...</span>
+          <span>Loading checkpoint…</span>
         </div>
       {:else if status === 'error'}
         <div class="state error">

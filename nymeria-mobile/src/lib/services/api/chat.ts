@@ -481,7 +481,7 @@ export class ChatApi extends CredentialsApi {
           return {
             type: 'queued',
             data: {
-              message: (data.content as string) || 'Waiting for autonomous task to finish...',
+              message: (data.content as string) || 'Waiting for autonomous task to finish…',
               holder: (data.holder as string) || undefined,
               heldSeconds: (data.held_seconds as number) || undefined
             },

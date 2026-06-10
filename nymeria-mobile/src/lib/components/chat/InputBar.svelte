@@ -26,7 +26,7 @@
   let {
     onSend,
     disabled = false,
-    placeholder = 'Message Nymeria...',
+    placeholder = 'Message Nymeria…',
     filesEnabled = true,
   }: Props = $props();
 

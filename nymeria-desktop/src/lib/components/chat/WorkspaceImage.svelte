@@ -65,7 +65,7 @@
   {#if loading}
     <div class="image-state">
       <Icon name="loading" size={18} />
-      <span>Loading image...</span>
+      <span>Loading image…</span>
     </div>
   {:else if error}
     <div class="image-state error">

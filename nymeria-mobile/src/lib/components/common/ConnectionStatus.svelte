@@ -3,7 +3,7 @@
 
   let statusLabel = $derived(
     healthStore.checking
-      ? 'Checking...'
+      ? 'Checking…'
       : healthStore.connected
         ? 'Connected'
         : 'Disconnected'

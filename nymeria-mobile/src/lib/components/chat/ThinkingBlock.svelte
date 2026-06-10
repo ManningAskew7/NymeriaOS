@@ -42,7 +42,7 @@
         <span class="dot"></span>
         <span class="dot"></span>
       </span>
-      <span class="thinking-label streaming">Thinking...</span>
+      <span class="thinking-label streaming">Thinking…</span>
     {:else}
       <span class="thinking-label">Thought</span>
     {/if}

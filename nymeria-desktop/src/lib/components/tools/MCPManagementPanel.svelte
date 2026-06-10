@@ -71,7 +71,7 @@
 <div class="mcp-management">
   <div class="panel-scroll">
     {#if defaultToolsStore.loading}
-      <div class="loading">Loading MCP servers...</div>
+      <div class="loading">Loading MCP servers…</div>
     {:else if !defaultToolsStore.loaded}
       <div class="loading">Connect to the API to configure MCP servers.</div>
     {:else}
@@ -116,7 +116,7 @@
         disabled={defaultToolsStore.saving || !hasChanges}
         type="button"
       >
-        {defaultToolsStore.saving ? 'Saving...' : 'Save Changes'}
+        {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
       </button>
     </div>
 

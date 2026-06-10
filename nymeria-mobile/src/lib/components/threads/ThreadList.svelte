@@ -48,7 +48,7 @@
     <Icon name="chat" size={16} />
     <input
       type="text"
-      placeholder="Search threads..."
+      placeholder="Search threads…"
       bind:value={searchQuery}
     />
   </div>

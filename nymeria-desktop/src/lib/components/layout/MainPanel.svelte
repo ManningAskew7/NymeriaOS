@@ -709,7 +709,7 @@
           ? 'Type to queue (sends when current turn finishes)'
           : chatStore.isStreaming
             ? 'Type to queue (sends at the next sub-turn halt)'
-            : 'Type a message...'}
+            : 'Type a message…'}
       />
     </div>
   </div>

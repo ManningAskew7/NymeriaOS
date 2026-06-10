@@ -170,7 +170,7 @@ https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem`}
     {:else if stage === 'previewing' || stage === 'installing'}
       <div class="progress-state">
         <div class="spinner"></div>
-        <p>{stage === 'previewing' ? 'Reviewing source...' : 'Installing server...'}</p>
+        <p>{stage === 'previewing' ? 'Reviewing source…' : 'Installing server…'}</p>
       </div>
     {:else if stage === 'preview' && activePlan && activeServer && preview}
       <div class="preview-card">

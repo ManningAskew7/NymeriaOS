@@ -244,7 +244,7 @@
       <textarea
         id="tool-description"
         bind:value={description}
-        placeholder="Describe what this tool does..."
+        placeholder="Describe what this tool does…"
         rows="3"
         required
       ></textarea>
