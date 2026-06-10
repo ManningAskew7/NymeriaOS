@@ -237,7 +237,7 @@
             <ul>
               <li>Send a message to start your first thread</li>
               <li>Nymeria can remember information about you</li>
-              <li>Create TODOs to let Nymeria work autonomously</li>
+              <li>Create tasks to let Nymeria work autonomously</li>
             </ul>
           </div>
         </div>

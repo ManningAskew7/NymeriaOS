@@ -66,7 +66,7 @@
   const ACTION_META: Record<string, { label: string; icon: string; templateKey: string }> = {
     agent_prompt: { label: 'Prompt', icon: 'chat', templateKey: 'prompt_template' },
     notify: { label: 'Notify', icon: 'bell', templateKey: 'message_template' },
-    create_todo: { label: 'Create TODO', icon: 'check', templateKey: 'task_template' },
+    create_todo: { label: 'Create task', icon: 'check', templateKey: 'task_template' },
   };
   const actionMeta = $derived(
     ACTION_META[trigger.action.type] || { label: trigger.action.type, icon: 'bolt', templateKey: '' }

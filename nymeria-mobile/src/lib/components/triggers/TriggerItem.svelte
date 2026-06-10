@@ -32,6 +32,13 @@
   );
   const sourceIcon = $derived(sourceInfo?.icon || 'bolt');
 
+  // §9 Concept 2: surface "create task" to users; keep `create_todo` as the
+  // internal action-type value the backend understands.
+  function actionLabel(type: string): string {
+    if (type === 'create_todo') return 'create task';
+    return type.replace('_', ' ');
+  }
+
   function formatTimeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -102,7 +109,7 @@
       </div>
       <div class="trigger-meta">
         <span class="source-badge">{trigger.source_type}</span>
-        <span class="action-badge">{trigger.action.type.replace('_', ' ')}</span>
+        <span class="action-badge">{actionLabel(trigger.action.type)}</span>
         <span class="fire-count">{trigger.fire_count}x</span>
         <span class="last-fired">{formatTimeAgo(trigger.last_fired)}</span>
       </div>
