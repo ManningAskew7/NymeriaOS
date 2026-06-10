@@ -31,6 +31,7 @@ from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
 from ..onboarding import (
     EXTERNAL_ACCESS_CHOICES,
+    HOSTING_MARKER_ENV,
     SECURITY_PROFILE_CHOICES,
     DockerStack,
     ExternalAccess,
@@ -404,6 +405,16 @@ def finalize(
         # A focused `init <section>` jump: report the one change and stop. No token
         # handoff, post-setup launch, or doctor for a single-setting edit.
         console.print(f"\n[green]Updated[/green] the {scoped_section} settings.")
+        if scoped_section == "hosting":
+            if state.hosting is HostingOption.SERVICE:
+                # Scoped runs never launch anything, so hand over the one
+                # command that makes the new hosting choice real.
+                console.print(
+                    "Install the background service with "
+                    f"`{_service_install_command(state)}`."
+                )
+            else:
+                _warn_stale_service_artifact(state, console)
         return 0
 
     print_capability_summary(spec, optional_env, console, extra_env=extra_env)
@@ -842,6 +853,13 @@ def _resolve_extra_env(state: WizardState) -> dict[str, str]:
     # nothing here writes; the matching retirement drop lives in finalize().
     if state.external_access is not None:
         extra[EXTERNAL_ACCESS_ENV] = state.external_access.value
+    # Hosting: same wizard-only marker pattern. Without it LOCAL vs SERVICE
+    # is only recoverable from the installed unit, so switching away from
+    # SERVICE would silently flip back on the next reconfigure (the artifact
+    # outlives the choice; teardown is the user's call). A hosting-less run
+    # (no flag, fresh root) is the local shape, so default the marker too;
+    # hosting=None can never be a Docker run (for_docker derives from it).
+    extra[HOSTING_MARKER_ENV] = (state.hosting or HostingOption.LOCAL).value
     active_url = active_public_url(state)
     if active_url:
         origin = public_origin(active_url)
@@ -1095,6 +1113,27 @@ def print_deployment_summary(state: WizardState, console: Console) -> None:
             "(recorded; enforcement is being built out)"
         )
     print_external_access_summary(state, console)
+    _warn_stale_service_artifact(state, console)
+
+
+def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
+    """Warn when a previously installed background service was switched away.
+
+    The wizard never tears the service down on a hosting switch (that is the
+    user's call), but staying silent would leave the old unit running and,
+    for a Docker switch, fighting the new stack for port 8000.
+    """
+    if state.hosting in (HostingOption.SERVICE, None):
+        return
+    from nymeria.service_install import installed_artifact_path
+
+    if installed_artifact_path() is None:
+        return
+    console.print(
+        "\n[yellow]A background service from a previous setup is still "
+        "installed and may be running (it binds port 8000). Remove it with "
+        "`nymeria service uninstall`.[/yellow]"
+    )
 
 
 def print_external_access_summary(state: WizardState, console: Console) -> None:
@@ -1221,12 +1260,15 @@ def print_next_action(state: WizardState, console: Console) -> None:
 
     if state.hosting is HostingOption.SERVICE:
         console.print(
-            "\nBackground-service install is not wired up yet. For now start "
-            "Nymeria in the foreground with:"
+            "\nInstall and start the background service (starts on login, "
+            "keeps running) with:"
         )
+        _print_command(console, _service_install_command(state))
+        console.print("Check it anytime with `nymeria service status`.")
+        console.print("Remove it with `nymeria service uninstall`.")
     else:
         console.print("\nStart Nymeria with:")
-    _print_command(console, _start_command_for_hosting(state))
+        _print_command(console, _start_command_for_hosting(state))
     console.print("Then open http://localhost:8000 and paste the bootstrap token.")
     if active_public_url(state):
         console.print(
@@ -1240,6 +1282,8 @@ def print_next_action(state: WizardState, console: Console) -> None:
 
 
 def _start_command_for_hosting(state: WizardState) -> str:
+    # Only reached for LOCAL/None hosting: DOCKER and SERVICE return earlier
+    # in print_next_action with their own command blocks.
     if state.hosting is HostingOption.DOCKER:
         return _compose_command_str(_docker_stack_spec(state), "up", "-d")
     return "nymeria slim"
@@ -1280,11 +1324,13 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
 def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
     """Hand off after config is written.
 
-    When the user opted in (``NextAction.START_API_OPEN_FRONTEND``) on a local or
-    Docker host, actually launch the backend; otherwise just print the start
-    command (the default). Returns the process exit code, which is non-zero only
-    when a foreground local start exits non-zero. A failed auto-start falls back
-    to printing the manual command and returns 0 (config was written fine).
+    When the user opted in (``NextAction.START_API_OPEN_FRONTEND``), actually
+    launch the backend: detached for Docker, foreground for local, and a
+    service install + start + health verify for the background-service host.
+    Otherwise just print the start command (the default). Returns the process
+    exit code, which is non-zero only when a foreground local start exits
+    non-zero. A failed auto-start falls back to printing the manual command
+    and returns 0 (config was written fine).
     """
 
     if state.next_action is NextAction.START_API_OPEN_FRONTEND:
@@ -1292,6 +1338,8 @@ def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
             return _start_now_docker(console, state=state, root=root)
         if state.hosting is HostingOption.LOCAL:
             return _start_now_local(console, state=state, root=root)
+        if state.hosting is HostingOption.SERVICE:
+            return _start_now_service(console, state=state, root=root)
     print_next_action(state, console)
     return 0
 
@@ -1372,6 +1420,78 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
         _print_command(console, "nymeria slim")
         return 0
     return result.returncode
+
+
+def _service_install_command(state: WizardState) -> str:
+    """The exact manual install command for THIS config's root.
+
+    A bare `nymeria service install` resolves its own root (env var or
+    source-checkout discovery), which can differ from where the wizard just
+    wrote config.env; the explicit --root removes the ambiguity.
+    """
+    return f"nymeria service install --root {shlex.quote(str(state.root))}"
+
+
+def _start_now_service(console: Console, *, state: WizardState, root: Path) -> int:
+    """Install the background service, start it, and verify the backend is up.
+
+    Failures never fail setup (config was written fine): unavailable or broken
+    service managers fall back to printing the manual commands and return 0.
+    Dynamic content (errors, hints, command stderr) is markup-escaped: raw
+    output like `[boot]` would otherwise be eaten as a rich tag.
+    """
+    from rich.markup import escape
+
+    from nymeria.service_install import (
+        ServiceInstallError,
+        ServiceUnavailableError,
+        resolve_exec_argv,
+        service_manager,
+    )
+
+    console.print("\nInstalling the background service...")
+    try:
+        manager = service_manager()
+        report = manager.install(exec_argv=resolve_exec_argv(), root=root)
+    except ServiceUnavailableError as exc:
+        console.print(
+            f"[yellow]Cannot install a background service here: {escape(str(exc))}[/yellow]"
+        )
+        for hint in exc.hints:
+            console.print(f"  - {escape(hint)}")
+        console.print("Start Nymeria in the foreground instead:")
+        _print_command(console, "nymeria slim")
+        return 0
+    except (ServiceInstallError, OSError) as exc:
+        console.print(f"[yellow]Service install failed: {escape(str(exc))}[/yellow]")
+        console.print("Fix the cause, then install it yourself:")
+        _print_command(console, _service_install_command(state))
+        return 0
+    for line in report.lines:
+        console.print(f"[green]{escape(line)}[/green]")
+    for warning in report.warnings:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
+    for note in report.notes:
+        console.print(escape(note))
+    if not wait_for_health(console=console):
+        console.print(
+            "[yellow]Installed, but the health check has not passed yet. It "
+            f"may still be coming up; check `{escape(manager.log_hint())}` "
+            "and `nymeria service status`.[/yellow]"
+        )
+        console.print(
+            "Once it answers, open http://localhost:8000 and finish in the "
+            "browser (the one-time bootstrap token, if any, was printed above)."
+        )
+        return 0
+    console.print("[green]Nymeria is up.[/green]")
+    verify_public_url_now(state, console)
+    console.print(
+        "\nOpen http://localhost:8000 to finish in the browser (paste the "
+        "one-time bootstrap token if one was printed above). The service "
+        "starts on login from now on; check it with `nymeria service status`."
+    )
+    return 0
 
 
 def wait_for_health(

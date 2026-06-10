@@ -86,6 +86,12 @@ def test_service_token_requirement_covers_internal_launch_modes(command, action,
         # self-mints the service token onto the shared volume, so it resolves
         # the token after its own API health wait instead.
         ("worker", None),
+        # The service-manager actions never call the API as a privileged
+        # client; only `service run` (the foreground gateway) needs the token.
+        ("service", "install"),
+        ("service", "uninstall"),
+        ("service", "status"),
+        ("service", "restart"),
     ],
 )
 def test_service_token_requirement_skips_modes_without_internal_api_calls(command, action):

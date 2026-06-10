@@ -4,16 +4,17 @@ After review, the only thing left is launching the backend. Rather than silently
 auto-starting (which would seize the terminal for a local foreground run, or run
 Docker the user did not expect), this step asks. The choice maps to
 ``state.next_action``: ``START_API_OPEN_FRONTEND`` makes ``finalize`` run the
-start command (Docker detached then wait-for-health, or ``nymeria slim`` in the
-foreground); ``PRINT_COMMANDS`` just prints it.
+start command (Docker detached then wait-for-health, the background-service
+install + start + health verify, or ``nymeria slim`` in the foreground);
+``PRINT_COMMANDS`` just prints it.
 
-The default is shape-aware (the first choice is selected): Docker defaults to
-starting (detached returns immediately and is safe), local defaults to printing
-(a foreground start takes over the terminal). The step is skipped for the
-background-service host (start is not wired) and when a flag already chose the
-CLI handoff. The choice is mirrored into ``state.extras["start_now"]`` so that
-navigating back and forward is lossless even though the global ``next_action``
-default is ``PRINT_COMMANDS``.
+The default is shape-aware (the first choice is selected): Docker and the
+background service default to starting (both are detached and give the terminal
+back), local defaults to printing (a foreground start takes over the terminal).
+The step is skipped when a flag already chose the CLI handoff. The choice is
+mirrored into ``state.extras["start_now"]`` so that navigating back and forward
+is lossless even though the global ``next_action`` default is
+``PRINT_COMMANDS``.
 """
 
 from __future__ import annotations
@@ -55,26 +56,38 @@ _LOCAL_START = Choice(
         "press Ctrl+C to stop."
     ),
 )
+_SERVICE_INSTALL = Choice(
+    value=NextAction.START_API_OPEN_FRONTEND,
+    label="Install and start the service now",
+    description=(
+        "Install the background service (a systemd user unit on Linux, a "
+        "launchd agent on macOS), start it, and wait for the health check."
+    ),
+)
+_SERVICE_PRINT = Choice(
+    value=NextAction.PRINT_COMMANDS,
+    label="Just print the command",
+    description="Finish setup and show `nymeria service install` to run yourself.",
+)
 
 
 def start_now_choices(hosting: "HostingOption | None") -> list[Choice]:
     """Shape-aware options; the first (index 0) is the default selection.
 
-    Docker defaults to starting (detached, returns immediately); local defaults
-    to printing (a foreground start seizes the terminal).
+    Docker and the background service default to starting (both are detached
+    and return the terminal); local defaults to printing (a foreground start
+    seizes the terminal).
     """
     if hosting is HostingOption.DOCKER:
         return [_DOCKER_START, _DOCKER_PRINT]
+    if hosting is HostingOption.SERVICE:
+        return [_SERVICE_INSTALL, _SERVICE_PRINT]
     return [_LOCAL_PRINT, _LOCAL_START]
 
 
 def start_now_applies(state: "WizardState") -> bool:
-    """Only for a local or Docker host (service start is not wired), and not when
-    a flag already chose the CLI handoff."""
-    return (
-        state.hosting in (HostingOption.LOCAL, HostingOption.DOCKER)
-        and state.next_action is not NextAction.CLI
-    )
+    """For every hosting shape, unless a flag already chose the CLI handoff."""
+    return state.next_action is not NextAction.CLI
 
 
 def _get_initial(state: "WizardState") -> NextAction:

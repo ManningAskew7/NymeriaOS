@@ -138,6 +138,12 @@ HOSTING_ORDER = (
     HostingOption.DOCKER,
 )
 
+# Wizard-only round-trip marker for the hosting choice (like
+# NYMERIA_EXTERNAL_ACCESS): written to the env file by finalize, read back by
+# hydrate so LOCAL vs SERVICE sticks across reconfigures, ignored by the
+# runtime settings model.
+HOSTING_MARKER_ENV = "NYMERIA_HOSTING"
+
 # Visible order in the auth step: the generic subscription branch replaced the
 # two legacy per-provider rows (which stay valid enum inputs, just not shown).
 PROVIDER_AUTH_METHOD_ORDER = (

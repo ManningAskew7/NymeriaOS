@@ -12,8 +12,10 @@ env file and reads the bootstrap ``profile.json`` directly (not via
 
 Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
 as present (never re-read into the UI); security_profile is recorded but never
-written, so it has no source; LOCAL vs SERVICE is indistinguishable on disk
-(defaults LOCAL). External access DOES round-trip: finalize writes the choice
+written, so it has no source. Hosting DOES round-trip: finalize writes the
+choice to the NYMERIA_HOSTING marker, and marker-less configs (written before
+the marker existed) fall back to the installed service artifact to tell LOCAL
+from SERVICE. External access DOES round-trip: finalize writes the choice
 to NYMERIA_EXTERNAL_ACCESS plus the resolved NYMERIA_PUBLIC_URL/CORS_ORIGINS,
 and they hydrate back here. `auth_method` is inferred:
 a CLIProxy-looking LLM_BASE_URL selects the subscription branch (see
@@ -40,7 +42,7 @@ from typing import Optional
 
 from rich.console import Console
 
-from ..onboarding import ExternalAccess, HostingOption
+from ..onboarding import HOSTING_MARKER_ENV, ExternalAccess, HostingOption
 from . import family_catalog, finalize
 from .external_access import CORS_ORIGINS_ENV, EXTERNAL_ACCESS_ENV, PUBLIC_URL_ENV
 from .providers import OPTIONAL_ENV_ORDER
@@ -79,8 +81,10 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     state.reconfigure = True
 
     if state.hosting is None:
-        # Only DOCKER vs non-docker is recoverable; LOCAL vs SERVICE is not.
-        state.hosting = HostingOption.DOCKER if for_docker else HostingOption.LOCAL
+        if for_docker:
+            state.hosting = HostingOption.DOCKER
+        else:
+            state.hosting = _recover_local_hosting(values)
 
     if for_docker and state.docker_stack is None:
         # Slim vs full is recoverable: the full stack writes POSTGRES_PASSWORD,
@@ -343,6 +347,22 @@ def _hydrate_carrier_picks(state: WizardState, values: dict[str, str]) -> None:
     skills = parse_init_name_list(values.get(INIT_ENABLED_GLOBAL_SKILLS_ENV))
     if skills:
         _apply_skill_picks(state, skills)
+
+
+def _recover_local_hosting(values: dict[str, str]) -> HostingOption:
+    """LOCAL vs SERVICE for a non-Docker config.
+
+    The NYMERIA_HOSTING marker (written by finalize) is authoritative, so
+    switching away from SERVICE sticks even while the old unit is still
+    installed. Marker-less configs predate the marker: fall back to the
+    installed service artifact (unit/plist) as the durable SERVICE signal.
+    """
+    marker = _get(values, HOSTING_MARKER_ENV)
+    if marker in (HostingOption.LOCAL.value, HostingOption.SERVICE.value):
+        return HostingOption(marker)
+    from nymeria.service_install import installed_artifact_path
+
+    return HostingOption.SERVICE if installed_artifact_path() else HostingOption.LOCAL
 
 
 def _get(values: dict[str, str], key: str) -> Optional[str]:

@@ -164,7 +164,8 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "After writing config, start the backend now (docker: detached + "
-            "health wait; local: foreground). Default just prints the command."
+            "health wait; service: install + start + health wait; local: "
+            "foreground). Default just prints the command."
         ),
     )
     parser.add_argument("--embedding-api-key", default=None)
