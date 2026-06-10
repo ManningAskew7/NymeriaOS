@@ -13,10 +13,15 @@ env file and reads the bootstrap ``profile.json`` directly (not via
 Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
 as present (never re-read into the UI); the recorded-but-never-written deployment
 enums (security_profile/external_access/auth_method) have no source; LOCAL vs
-SERVICE is indistinguishable on disk (defaults LOCAL); and the Docker profile
-lives in the container volume, so tool/skill picks are hydrated for local/service
-installs only. The Docker stack IS recoverable (the full stack writes
-POSTGRES_PASSWORD; the slim shape never does).
+SERVICE is indistinguishable on disk (defaults LOCAL). Tool/skill picks hydrate
+from `profile.json` for local/service installs; for Docker (whose profile lives
+in the container volume) they hydrate from the `NYMERIA_INIT_*` carrier lines in
+`.env.docker` instead. The carriers record first-boot intent at the env-file
+layer, which is exactly what finalize re-writes, so the round-trip is exact;
+Settings edits made inside a running container are invisible here, and that is
+fine because the carriers only ever matter to a future fresh volume. The Docker
+stack IS recoverable (the full stack writes POSTGRES_PASSWORD; the slim shape
+never does).
 """
 
 from __future__ import annotations
@@ -109,7 +114,9 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
 
     _record_present_keys(state, values)
 
-    if not for_docker:
+    if for_docker:
+        _hydrate_carrier_picks(state, values)
+    else:
         _hydrate_profile_picks(state, for_docker=for_docker)
 
     if console is not None:
@@ -158,17 +165,60 @@ def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
             state.present_env_keys.add(var)
 
 
-def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
-    """Recover the bootstrap admin's tool/skill picks from ``profile.json``.
+def _apply_tool_picks(state: WizardState, default_tools: list[str]) -> None:
+    """Partition a ``default_thread_tools`` list back into wizard state.
 
-    Local/service only (the Docker profile lives in the container volume). Reads
-    the JSON directly so default-skill migration does not mask the real picks.
-    Partitions ``default_thread_tools`` into the init families, subtracting the
-    core seed; tools that are neither core nor a known family member are recorded
-    as ``unmanaged_tools`` so a reconfigure never drops user-added tools.
+    Subtracts the core seed, sorts known family members into their family extras,
+    and records tools that are neither core nor a known family member as
+    ``unmanaged_tools`` so a reconfigure never drops user-added tools.
+    Fill-only-if-unset: an explicit flag still wins.
     """
     from .tool_seed import core_seed_tool_names
 
+    core = set(core_seed_tool_names())
+    families = {
+        "web_search": {c.value for c in family_catalog.web_search_choices()},
+        "fetch_url": {c.value for c in family_catalog.fetch_url_choices()},
+        "image_gen": {c.value for c in family_catalog.image_gen_choices()},
+    }
+    matched: dict[str, list[str]] = {fam: [] for fam in families}
+    unmanaged: list[str] = []
+    for name in default_tools:
+        if name in core:
+            continue
+        for fam, members in families.items():
+            if name in members:
+                matched[fam].append(name)
+                break
+        else:
+            unmanaged.append(name)
+    for fam, names in matched.items():
+        if fam not in state.extras:
+            state.extras[fam] = names
+    if unmanaged and not state.unmanaged_tools:
+        state.unmanaged_tools = unmanaged
+
+
+def _apply_skill_picks(state: WizardState, enabled_skills: list[str]) -> None:
+    """Keep the known skill kits from an ``enabled_global_skills`` list.
+
+    Non-kit entries (e.g. the always-on ``self-improve``) are dropped here and
+    re-added by ``tool_seed.selected_global_skills_for_state`` on write, so the
+    round-trip is exact. Fill-only-if-unset.
+    """
+    if "skill_kits" in state.extras:
+        return
+    kit_values = {c.value for c in family_catalog.skill_kit_choices()}
+    state.extras["skill_kits"] = [s for s in enabled_skills if s in kit_values]
+
+
+def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
+    """Recover the bootstrap admin's tool/skill picks from ``profile.json``.
+
+    Local/service only (the Docker profile lives in the container volume; see
+    ``_hydrate_carrier_picks``). Reads the JSON directly so default-skill
+    migration does not mask the real picks.
+    """
     root = finalize.resolve_runtime_root(state, for_docker=False)
     data_dir = finalize.resolve_data_dir(state, root=root)
     profile_path = data_dir / "users" / BOOTSTRAP_USER_ID / "profile.json"
@@ -179,35 +229,37 @@ def _hydrate_profile_picks(state: WizardState, *, for_docker: bool) -> None:
     except (OSError, ValueError):
         return
 
-    core = set(core_seed_tool_names())
-    families = {
-        "web_search": {c.value for c in family_catalog.web_search_choices()},
-        "fetch_url": {c.value for c in family_catalog.fetch_url_choices()},
-        "image_gen": {c.value for c in family_catalog.image_gen_choices()},
-    }
     default_tools = raw.get("tool_preferences", {}).get("default_thread_tools")
     if isinstance(default_tools, list):
-        matched: dict[str, list[str]] = {fam: [] for fam in families}
-        unmanaged: list[str] = []
-        for name in default_tools:
-            if name in core:
-                continue
-            for fam, members in families.items():
-                if name in members:
-                    matched[fam].append(name)
-                    break
-            else:
-                unmanaged.append(name)
-        for fam, names in matched.items():
-            if fam not in state.extras:  # an explicit flag still wins
-                state.extras[fam] = names
-        if unmanaged and not state.unmanaged_tools:
-            state.unmanaged_tools = unmanaged
+        _apply_tool_picks(state, default_tools)
 
     enabled_skills = raw.get("enabled_global_skills")
-    if isinstance(enabled_skills, list) and "skill_kits" not in state.extras:
-        kit_values = {c.value for c in family_catalog.skill_kit_choices()}
-        state.extras["skill_kits"] = [s for s in enabled_skills if s in kit_values]
+    if isinstance(enabled_skills, list):
+        _apply_skill_picks(state, enabled_skills)
+
+
+def _hydrate_carrier_picks(state: WizardState, values: dict[str, str]) -> None:
+    """Recover Docker tool/skill picks from the ``NYMERIA_INIT_*`` carrier lines.
+
+    The host cannot read the container's profile, but the carriers in
+    ``.env.docker`` are the env-file layer's own record of the picks, and that
+    layer is what a reconfigure rewrites: hydrating them lets finalize re-emit
+    unchanged picks (instead of silently keeping a stale line) and lets an
+    explicit revert-to-defaults clear the carrier. No carrier lines means
+    defaults, which is also what an absent carrier seeds.
+    """
+    from ..config.init_seed_env import (
+        INIT_DEFAULT_THREAD_TOOLS_ENV,
+        INIT_ENABLED_GLOBAL_SKILLS_ENV,
+        parse_init_name_list,
+    )
+
+    tools = parse_init_name_list(values.get(INIT_DEFAULT_THREAD_TOOLS_ENV))
+    if tools:
+        _apply_tool_picks(state, tools)
+    skills = parse_init_name_list(values.get(INIT_ENABLED_GLOBAL_SKILLS_ENV))
+    if skills:
+        _apply_skill_picks(state, skills)
 
 
 def _get(values: dict[str, str], key: str) -> Optional[str]:

@@ -62,6 +62,8 @@ def parse_env_value(raw: str) -> str:
 def merge_env_lines(
     existing_lines: Sequence[str],
     produced: Sequence[tuple[str, str]],
+    *,
+    drop: Sequence[str] = (),
 ) -> list[str]:
     """Overlay ``produced`` ``(KEY, formatted_value)`` pairs onto existing lines.
 
@@ -71,8 +73,15 @@ def merge_env_lines(
     ``produced`` are assumed already formatted (see :func:`format_env_value`);
     this function never formats. The line parse splits on the first ``=`` and
     strips, so leading-whitespace and spaced ``KEY = value`` lines match.
+
+    ``drop`` keys have their existing lines REMOVED instead of preserved. This is
+    for keys whose absence from ``produced`` means "retired", not "unchanged"
+    (the `NYMERIA_INIT_*` pick carriers, which a reconfigure must be able to
+    clear back to defaults). A key in both ``produced`` and ``drop`` is written,
+    not dropped, so callers can pass a static drop list.
     """
     produced_map = dict(produced)
+    drop_keys = {key for key in drop if key not in produced_map}
     seen: set[str] = set()
     out: list[str] = []
     for raw_line in existing_lines:
@@ -82,6 +91,8 @@ def merge_env_lines(
             if key in produced_map and key not in seen:
                 out.append(f"{key}={produced_map[key]}")
                 seen.add(key)
+                continue
+            if key in drop_keys:
                 continue
         out.append(raw_line)
     for key, value in produced:
@@ -97,6 +108,7 @@ def write_env_file(
     *,
     merge: bool,
     header: str | None = None,
+    drop: Sequence[str] = (),
 ) -> list[str]:
     """Atomically write ``path`` (0600) and return the final line list.
 
@@ -105,6 +117,8 @@ def write_env_file(
     every produced key is appended). Otherwise a fresh file is written from
     ``header`` (optional) plus the produced lines. Values are pre-formatted by
     the caller. The returned lines let callers sync ``os.environ`` afterward.
+    ``drop`` keys are removed on merge unless re-produced (see
+    :func:`merge_env_lines`); ignored on a fresh write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if merge:
@@ -112,7 +126,7 @@ def write_env_file(
             existing = path.read_text(encoding="utf-8").splitlines()
         except OSError:
             existing = []
-        lines = merge_env_lines(existing, produced)
+        lines = merge_env_lines(existing, produced, drop=drop)
     else:
         lines = [header] if header else []
         lines.extend(f"{key}={value}" for key, value in produced)

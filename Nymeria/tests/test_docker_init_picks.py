@@ -182,8 +182,9 @@ def test_full_stack_compose_passes_init_pick_carriers_to_api_and_worker():
     `--env-file` interpolation, NOT a service `env_file:`. A var the api/worker
     `environment:` anchor does not list never reaches those containers, so this
     test pins both carriers to a `${VAR:-}` passthrough in both services (the
-    worker inherits the api anchor; either process may be the one that first
-    materializes the bootstrap admin profile on the shared volume).
+    worker inherits the api anchor; the api is the realistic first-materializer
+    of the bootstrap admin profile, but the worker also constructs a
+    UserProfileManager on the shared volume, so it carries the vars too).
     """
     import yaml
     from pathlib import Path

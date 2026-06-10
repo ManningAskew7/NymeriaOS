@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -610,12 +612,28 @@ class UserProfileManager:
             # Update timestamp
             profile.updated_at = utc_now()
 
-            # Write atomically (write to temp file, then rename)
-            temp_path = profile_path.with_suffix(".tmp")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(profile.model_dump(mode="json"), f, indent=2, default=str)
-
-            temp_path.replace(profile_path)
+            # Write atomically via a per-writer temp file. The temp name must be
+            # unique because the profile lock is in-process only: in the full
+            # Docker stack the api and worker containers share this directory,
+            # and a fixed name would let concurrent first-writes clobber each
+            # other's temp content before the rename.
+            fd, temp_name = tempfile.mkstemp(
+                dir=str(profile_path.parent),
+                prefix=f".{profile_path.name}.",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(
+                        profile.model_dump(mode="json"), f, indent=2, default=str
+                    )
+                os.replace(temp_name, profile_path)
+            except BaseException:
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass  # best-effort cleanup; re-raise the original error
+                raise
             logger.debug(f"Saved profile for user: {profile.user_id}")
             return True
 
