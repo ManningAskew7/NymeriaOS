@@ -256,6 +256,11 @@ services:
       # bootstrap admin profile is first created; inert when unset.
       NYMERIA_INIT_DEFAULT_THREAD_TOOLS: ${NYMERIA_INIT_DEFAULT_THREAD_TOOLS:-}
       NYMERIA_INIT_ENABLED_GLOBAL_SKILLS: ${NYMERIA_INIT_ENABLED_GLOBAL_SKILLS:-}
+      # CLIProxy management API (subscription OAuth sidecar); inert when unset.
+      # URL is the proxy host root (e.g. http://cli-proxy-api:8317 on the
+      # shared network); the key is the proxy's remote-management secret.
+      CLIPROXY_MANAGEMENT_URL: ${CLIPROXY_MANAGEMENT_URL:-}
+      CLIPROXY_MANAGEMENT_KEY: ${CLIPROXY_MANAGEMENT_KEY:-}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000}
       # User preferences
