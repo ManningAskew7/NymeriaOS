@@ -439,7 +439,7 @@ export class ChatApi extends CredentialsApi {
           return {
             type: 'error',
             data: {
-              message: (data.content as string) || (data.error as string) || 'Unknown error',
+              message: (data.content as string) || (data.error as string) || 'The server reported an error but sent no details.',
               code: data.code as string | undefined,
               details: data.details as Record<string, unknown> | undefined,
             },

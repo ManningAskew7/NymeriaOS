@@ -2,6 +2,7 @@
   import type { Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerActionType, TriggerSourceInfo } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     threadId: string;
@@ -191,7 +192,7 @@
       }
       closeForm();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save trigger';
+      error = humanizeErrorText(e, { action: 'save', resource: 'the trigger' });
     } finally {
       saving = false;
     }

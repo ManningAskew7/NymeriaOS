@@ -1,6 +1,7 @@
 <script lang="ts">
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { healthStore } from '$lib/stores/health.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
@@ -353,7 +354,7 @@
       await loadServerSettings();
     } catch (e) {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Connection failed';
+      testMessage = humanizeErrorText(e, { action: 'test', resource: 'the connection' });
     }
   }
 
@@ -417,7 +418,7 @@
       serverSettingsStore.refresh();
     } catch (e) {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Failed to save';
+      testMessage = humanizeErrorText(e, { action: 'save', resource: 'settings' });
     } finally {
       savingSettings = false;
     }
@@ -442,7 +443,7 @@
       });
       ragUserMessage = 'RAG settings saved!';
     } catch (e) {
-      ragUserMessage = e instanceof Error ? e.message : 'Failed to save RAG settings';
+      ragUserMessage = humanizeErrorText(e, { action: 'save', resource: 'the RAG settings' });
     } finally {
       ragUserSaving = false;
     }

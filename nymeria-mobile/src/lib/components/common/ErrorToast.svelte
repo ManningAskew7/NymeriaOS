@@ -42,7 +42,7 @@
       case 'forbidden_owner': return 'Not your resource';
       case 'last_admin': return 'Last admin';
       case 'resource_owned': return 'Cannot delete';
-      default: return 'Something went wrong';
+      default: return "That didn't work";
     }
   }
 </script>

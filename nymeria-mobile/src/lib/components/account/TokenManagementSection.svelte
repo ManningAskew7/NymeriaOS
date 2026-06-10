@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import type { TokenInfo } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { configStore } from '$lib/stores/config.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
@@ -50,7 +51,7 @@
         tokens = await api.listMyTokens();
       }
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load tokens';
+      loadError = humanizeErrorText(e, { action: 'load', resource: 'your tokens' });
     } finally {
       loading = false;
     }
@@ -94,7 +95,7 @@
       showCopyDialog = true;
       await load();
     } catch (e) {
-      issueError = e instanceof Error ? e.message : 'Failed to issue token';
+      issueError = humanizeErrorText(e, { action: 'create', resource: 'the token' });
     } finally {
       issuing = false;
     }
@@ -116,7 +117,7 @@
       showCopyDialog = true;
       await load();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to rotate tokens';
+      loadError = humanizeErrorText(e, { action: 'update', resource: 'your tokens' });
     } finally {
       rotating = false;
     }
@@ -144,7 +145,7 @@
       }
       await load();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to revoke token';
+      loadError = humanizeErrorText(e, { action: 'delete', resource: 'the token' });
     } finally {
       revokingPrefix = null;
     }

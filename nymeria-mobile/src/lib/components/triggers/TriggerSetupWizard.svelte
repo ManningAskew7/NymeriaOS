@@ -11,6 +11,7 @@
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     threadId?: string;
@@ -197,7 +198,7 @@
       }
       onClose();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : 'Failed to save trigger';
+      saveError = humanizeErrorText(e, { action: 'save', resource: 'the trigger' });
     } finally {
       saving = false;
     }
