@@ -2975,12 +2975,13 @@ def test_finalize_slim_docker_writes_no_db_secrets(monkeypatch, tmp_path):
     assert "REDIS_PASSWORD" not in content
 
 
-def test_full_stack_omits_init_picks_but_slim_carries_them(monkeypatch, tmp_path, capsys):
+def test_full_stack_and_slim_both_carry_init_picks(monkeypatch, tmp_path, capsys):
     _stub_llm(monkeypatch)
     picks = ["--web-search", "web_search_tavily"]
 
-    # Full stack: the picks would land in per-service `environment:` blocks that do
-    # not pass NYMERIA_INIT_* through, so they are NOT written and the user is told.
+    # Full stack: the shared api/worker `environment:` anchor passes NYMERIA_INIT_*
+    # through `--env-file` interpolation, so the picks ARE written and there is no
+    # "set them in Settings" note anymore.
     full_root = tmp_path / "full"
     full_root.mkdir()
     assert setup_main(
@@ -2990,10 +2991,10 @@ def test_full_stack_omits_init_picks_but_slim_carries_them(monkeypatch, tmp_path
     ) == 0
     full_content = (full_root / ".env.docker").read_text(encoding="utf-8")
     full_out = capsys.readouterr().out
-    assert "NYMERIA_INIT_" not in full_content
-    assert "not yet carried into the full stack" in full_out
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in full_content
+    assert "not yet carried into the full stack" not in full_out
 
-    # Slim stack with the same picks DOES carry them (env_file injects the whole file).
+    # Slim stack with the same picks carries them too (env_file injects the whole file).
     slim_root = tmp_path / "slim"
     slim_root.mkdir()
     assert setup_main(
@@ -3003,6 +3004,10 @@ def test_full_stack_omits_init_picks_but_slim_carries_them(monkeypatch, tmp_path
     ) == 0
     slim_content = (slim_root / ".env.docker").read_text(encoding="utf-8")
     assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in slim_content
+
+    # Both shapes write the same carrier value: one writer, two delivery paths.
+    assert (_env_line(full_content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
+            == _env_line(slim_content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS"))
 
 
 def test_finalize_full_stack_default_prints_single_up_and_token_read(monkeypatch, tmp_path, capsys):
@@ -3083,7 +3088,7 @@ def test_finalize_starts_full_stack_single_up_and_surfaces_token(monkeypatch, tm
     assert cmds.count(up) == 1
 
 
-def test_finalize_full_stack_start_reprints_init_picks_note(monkeypatch, tmp_path, capsys):
+def test_finalize_full_stack_start_carries_init_picks_without_note(monkeypatch, tmp_path, capsys):
     _stub_llm(monkeypatch)
     root = tmp_path / "checkout"
     root.mkdir()
@@ -3103,9 +3108,12 @@ def test_finalize_full_stack_start_reprints_init_picks_note(monkeypatch, tmp_pat
     )
     out = capsys.readouterr().out
     assert rc == 0
-    # The "set them in Settings" note is shown during config AND reprinted after the
-    # stack is up, so a long `--start` scroll does not bury it (item 3a).
-    assert out.count("not yet carried into the full stack") >= 2
+    # The picks now reach the full stack via the compose env passthrough, so the
+    # old "set them in Settings" note must be gone from both the config output and
+    # the start handoff, and the carriers must be in the written env file.
+    assert "not yet carried into the full stack" not in out
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
 
 
 def test_finalize_full_stack_service_token_preserved_on_reconfigure(monkeypatch, tmp_path):
