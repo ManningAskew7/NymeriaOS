@@ -1,200 +1,261 @@
 <script lang="ts">
-  import {
-    CLIPROXY_CLAUDE_MODEL,
-    CLIPROXY_CODEX_MODEL,
-    LOCAL_CLIPROXY_ROOT_URL,
-    LOCAL_OPENAI_CLIPROXY_BASE_URL,
-    cliproxyStore,
-  } from '$lib/stores/cliproxy.svelte';
+  import { cliproxyStore } from '$lib/stores/cliproxy.svelte';
+  import type { CLIProxyProviderInfo } from '$lib/types';
   import { onDestroy, onMount } from 'svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
 
-  const claudeLoginCommand = 'docker exec -it cli-proxy-api-latest ./CLIProxyAPI --claude-login --no-browser';
-  const codexLoginCommand = 'docker exec -it cli-proxy-api-latest ./CLIProxyAPI --codex-device-login --no-browser';
-  const claudeSmokeCommand = `python3 Nymeria/tools/check_cliproxy_cloak.py --base-url ${LOCAL_CLIPROXY_ROOT_URL} --api-key cpx-... --auth-dir CLIProxyAPI-main/temp/latest/auths`;
+  const TOS_DISCLAIMER =
+    'Subscription OAuth routes a personal AI subscription through CLIProxy instead of a pay-per-token API key. '
+    + 'Providers generally consider third-party use of their subscription clients a terms-of-service violation and '
+    + 'may rate-limit or suspend the account. Use a dedicated account if that risk matters to you.';
 
-  let copiedCommand = $state<string | null>(null);
+  let tosAccepted = $state(false);
+  let callbackUrl = $state('');
+  let modelByProvider = $state<Record<string, string>>({});
+  let requestRetry = $state<string>('');
+  let routingStrategy = $state<string>('');
+  let knobsLoaded = $state(false);
 
-  onMount(() => {
-    cliproxyStore.startPolling();
+  onMount(async () => {
+    await cliproxyStore.refresh();
+    if (cliproxyStore.reachable) {
+      await cliproxyStore.loadKnobs();
+      syncKnobInputs();
+      knobsLoaded = true;
+    }
   });
 
   onDestroy(() => {
-    cliproxyStore.stopPolling();
+    cliproxyStore.dismissOAuth();
   });
 
-  async function copyCommand(key: string, command: string) {
-    copiedCommand = null;
-    await navigator.clipboard.writeText(command);
-    copiedCommand = key;
-    window.setTimeout(() => {
-      if (copiedCommand === key) copiedCommand = null;
-    }, 1800);
+  function syncKnobInputs() {
+    const knobs = cliproxyStore.knobs;
+    requestRetry = knobs['request-retry'] != null ? String(knobs['request-retry']) : '';
+    routingStrategy = knobs['routing/strategy'] != null ? String(knobs['routing/strategy']) : '';
+  }
+
+  function modelFor(provider: CLIProxyProviderInfo): string {
+    return modelByProvider[provider.id] ?? provider.default_model;
+  }
+
+  async function login(provider: CLIProxyProviderInfo) {
+    if (provider.tos_warning && !tosAccepted) return;
+    callbackUrl = '';
+    await cliproxyStore.startOAuth(provider);
+  }
+
+  async function deliver() {
+    const pasted = callbackUrl.trim();
+    if (!pasted) return;
+    await cliproxyStore.deliverCallback(pasted);
+    callbackUrl = '';
+  }
+
+  async function applyGlobal(provider: CLIProxyProviderInfo) {
+    await cliproxyStore.applyRoute(provider.id, { model: modelFor(provider).trim() });
+  }
+
+  async function saveKnobs() {
+    const update: Record<string, unknown> = {};
+    const retry = Number.parseInt(requestRetry, 10);
+    if (!Number.isNaN(retry)) update['request-retry'] = retry;
+    if (routingStrategy.trim()) update['routing/strategy'] = routingStrategy.trim();
+    if (Object.keys(update).length === 0) return;
+    await cliproxyStore.saveKnobs(update);
+    syncKnobInputs();
   }
 </script>
 
 <div class="tab-content">
   <div class="field">
-    <span class="field-label">CLIProxy Status</span>
+    <span class="field-label">CLIProxy</span>
     <div class="status-row">
-      <span class="status-dot" class:running={cliproxyStore.running} class:stopped={!cliproxyStore.running}></span>
+      <span
+        class="status-dot"
+        class:running={cliproxyStore.reachable}
+        class:stopped={!cliproxyStore.reachable}
+      ></span>
       <span class="status-text">
-        {#if cliproxyStore.running}
-          Reachable at {cliproxyStore.baseUrl}
+        {#if !cliproxyStore.configured}
+          Not configured on the backend (set CLIPROXY_MANAGEMENT_URL and CLIPROXY_MANAGEMENT_KEY, or run nymeria init)
+        {:else if cliproxyStore.reachable}
+          Management API reachable
         {:else}
-          Not reachable
+          Configured but unreachable{cliproxyStore.status?.detail ? `: ${cliproxyStore.status.detail}` : ''}
         {/if}
       </span>
     </div>
-    {#if cliproxyStore.detail}
-      <p class="hint">{cliproxyStore.detail}</p>
-    {/if}
-    <p class="hint">Source-checkout controls for the pinned Docker deployment at <code>CLIProxyAPI-main/temp/latest</code>.</p>
-  </div>
-
-  <div class="field">
     <div class="actions">
-      {#if cliproxyStore.running}
-        <Button variant="secondary" onclick={cliproxyStore.stop} disabled={cliproxyStore.loading}>
-          <Icon name="stop" size={14} />
-          {cliproxyStore.loading ? 'Stopping' : 'Stop CLIProxy'}
-        </Button>
-      {:else}
-        <Button variant="primary" onclick={cliproxyStore.start} disabled={cliproxyStore.loading}>
-          <Icon name="server" size={14} />
-          {cliproxyStore.loading ? 'Starting' : 'Start CLIProxy'}
-        </Button>
-      {/if}
-      <Button variant="secondary" onclick={cliproxyStore.refreshStatus} disabled={cliproxyStore.loading}>
+      <Button variant="secondary" onclick={() => cliproxyStore.refresh(true)}>
         <Icon name="refresh" size={14} />
         Refresh
       </Button>
+      {#if cliproxyStore.managementHtmlUrl}
+        <a class="panel-link" href={cliproxyStore.managementHtmlUrl} target="_blank" rel="noopener">
+          Open the proxy's own panel for advanced settings
+        </a>
+      {/if}
     </div>
   </div>
 
-  {#if cliproxyStore.running}
-    <div class="route-grid">
-      <section class="route-panel">
-        <div class="route-heading">
-          <Icon name="server" size={18} />
-          <div>
-            <span class="route-title">Claude / Anthropic OAuth</span>
-            <span class="route-subtitle">Root URL, no /v1 suffix</span>
-          </div>
-        </div>
-
-        <div class="route-facts">
-          <div>
-            <span>Provider</span>
-            <strong>Anthropic</strong>
-          </div>
-          <div>
-            <span>Model</span>
-            <strong>{CLIPROXY_CLAUDE_MODEL}</strong>
-          </div>
-          <div class="wide">
-            <span>Base URL</span>
-            <code>{LOCAL_CLIPROXY_ROOT_URL}</code>
-          </div>
-        </div>
-
-        <div class="sessions-list">
-          {#if cliproxyStore.claudeSessions.length > 0}
-            {#each cliproxyStore.claudeSessions as session}
-              <div class="session-item">
-                <span class="session-provider">{session.provider}</span>
-                {#if session.email}
-                  <span class="session-email">{session.email}</span>
-                {/if}
-              </div>
-            {/each}
-          {:else}
-            <p class="hint warning">No Claude OAuth session reported.</p>
-          {/if}
-        </div>
-
-        <div class="route-actions">
-          <Button variant="secondary" onclick={() => copyCommand('claude-login', claudeLoginCommand)}>
-            <Icon name="copy" size={14} />
-            {copiedCommand === 'claude-login' ? 'Copied' : 'Copy Login Command'}
-          </Button>
-          <Button variant="secondary" onclick={() => copyCommand('claude-smoke', claudeSmokeCommand)}>
-            <Icon name="copy" size={14} />
-            {copiedCommand === 'claude-smoke' ? 'Copied' : 'Copy Smoke Test'}
-          </Button>
-          <Button variant="primary" onclick={cliproxyStore.applyClaudeRoute}>
-            <Icon name="check" size={14} />
-            Apply Anthropic Route
-          </Button>
-        </div>
-      </section>
-
-      <section class="route-panel">
-        <div class="route-heading">
-          <Icon name="terminal" size={18} />
-          <div>
-            <span class="route-title">Codex / OpenAI OAuth</span>
-            <span class="route-subtitle">OpenAI-compatible /v1 URL, Responses API</span>
-          </div>
-        </div>
-
-        <div class="route-facts">
-          <div>
-            <span>Provider</span>
-            <strong>OpenAI</strong>
-          </div>
-          <div>
-            <span>Model</span>
-            <strong>{CLIPROXY_CODEX_MODEL}</strong>
-          </div>
-          <div>
-            <span>API Mode</span>
-            <strong>Responses</strong>
-          </div>
-          <div class="wide">
-            <span>Base URL</span>
-            <code>{LOCAL_OPENAI_CLIPROXY_BASE_URL}</code>
-          </div>
-        </div>
-
-        <div class="sessions-list">
-          {#if cliproxyStore.openAISessions.length > 0}
-            {#each cliproxyStore.openAISessions as session}
-              <div class="session-item">
-                <span class="session-provider">{session.provider}</span>
-                {#if session.email}
-                  <span class="session-email">{session.email}</span>
-                {/if}
-              </div>
-            {/each}
-          {:else}
-            <p class="hint warning">No Codex/OpenAI OAuth session reported.</p>
-          {/if}
-        </div>
-
-        <div class="route-actions">
-          <Button variant="secondary" onclick={() => copyCommand('codex-login', codexLoginCommand)}>
-            <Icon name="copy" size={14} />
-            {copiedCommand === 'codex-login' ? 'Copied' : 'Copy Login Command'}
-          </Button>
-          <Button variant="primary" onclick={cliproxyStore.applyCodexRoute}>
-            <Icon name="check" size={14} />
-            Apply OpenAI Route
-          </Button>
-        </div>
-      </section>
+  {#if cliproxyStore.reachable}
+    <div class="field tos">
+      <label class="tos-label">
+        <input type="checkbox" bind:checked={tosAccepted} />
+        <span>{TOS_DISCLAIMER} I understand.</span>
+      </label>
     </div>
 
-    <div class="field">
-      <span class="field-label">Route Reset</span>
-      <div class="actions">
-        <Button variant="secondary" onclick={cliproxyStore.useDirectApi}>
-          <Icon name="x" size={14} />
-          Clear Base URL
-        </Button>
+    {#if cliproxyStore.oauth}
+      {@const flow = cliproxyStore.oauth}
+      <div class="oauth-box" class:ok={flow.status === 'ok'} class:err={flow.status === 'error'}>
+        <div class="oauth-head">
+          <strong>Login: {flow.provider}</strong>
+          <Button variant="secondary" onclick={cliproxyStore.dismissOAuth}>
+            <Icon name="x" size={12} />
+            Dismiss
+          </Button>
+        </div>
+        <p class="hint">{flow.detail}</p>
+        <a class="panel-link" href={flow.url} target="_blank" rel="noopener">Open the login page again</a>
+        {#if flow.flow === 'browser' && flow.status !== 'ok'}
+          <div class="callback-row">
+            <input
+              class="text-input"
+              type="text"
+              placeholder="Paste the full redirect URL (http://localhost:.../callback?code=...)"
+              bind:value={callbackUrl}
+            />
+            <Button variant="primary" onclick={deliver} disabled={!callbackUrl.trim()}>
+              Deliver
+            </Button>
+          </div>
+        {/if}
       </div>
-      <p class="hint">Route buttons update provider settings only. Configure the matching <code>cpx-...</code> gatekeeper key in Provider Setup or the backend env file.</p>
+    {/if}
+
+    <div class="provider-grid">
+      {#each cliproxyStore.providers as provider (provider.id)}
+        {@const files = cliproxyStore.authFilesFor(provider.id)}
+        <section class="provider-card" class:unsupported={provider.supported === false}>
+          <div class="provider-head">
+            <div>
+              <span class="provider-title">{provider.label}</span>
+              <span class="provider-subtitle">{provider.description}</span>
+            </div>
+            {#if provider.supported === false}
+              <span class="badge muted">Not supported by this proxy build</span>
+            {:else if provider.logged_in}
+              <span class="badge ok">Logged in</span>
+            {:else}
+              <span class="badge warn">No login</span>
+            {/if}
+          </div>
+
+          {#if provider.tos_warning}
+            <p class="hint warning">{provider.tos_warning}</p>
+          {/if}
+
+          {#if files.length > 0}
+            <div class="sessions-list">
+              {#each files as file (file.name)}
+                <div class="session-item">
+                  <span class="session-email">{file.account || file.email || file.name}</span>
+                  <span class="session-state">{file.disabled ? 'disabled' : file.status || 'active'}</span>
+                  <div class="session-actions">
+                    <Button
+                      variant="secondary"
+                      onclick={() => cliproxyStore.setAuthFileDisabled(file.name, !file.disabled)}
+                    >
+                      {file.disabled ? 'Enable' : 'Disable'}
+                    </Button>
+                    <Button variant="secondary" onclick={() => cliproxyStore.deleteAuthFile(file.name)}>
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="route-row">
+            <input
+              class="text-input"
+              type="text"
+              placeholder={provider.default_model}
+              value={modelFor(provider)}
+              oninput={(event) => {
+                modelByProvider = {
+                  ...modelByProvider,
+                  [provider.id]: (event.currentTarget as HTMLInputElement).value
+                };
+              }}
+            />
+          </div>
+
+          <div class="route-actions">
+            <Button
+              variant="secondary"
+              onclick={() => login(provider)}
+              disabled={provider.supported === false || (!!provider.tos_warning && !tosAccepted)}
+            >
+              <Icon name="key" size={14} />
+              {provider.logged_in ? 'Re-login' : 'Log in'}
+            </Button>
+            <Button
+              variant="primary"
+              onclick={() => applyGlobal(provider)}
+              disabled={provider.supported === false || !provider.logged_in || !tosAccepted}
+            >
+              <Icon name="check" size={14} />
+              Use for all chats
+            </Button>
+          </div>
+        </section>
+      {/each}
+    </div>
+
+    {#if knobsLoaded}
+      <div class="field">
+        <span class="field-label">Proxy settings</span>
+        <div class="knob-row">
+          <label class="knob">
+            <span>Request retries</span>
+            <input class="text-input narrow" type="number" min="0" bind:value={requestRetry} />
+          </label>
+          <label class="knob">
+            <span>Routing strategy</span>
+            <input class="text-input" type="text" placeholder="round-robin" bind:value={routingStrategy} />
+          </label>
+          <Button variant="secondary" onclick={saveKnobs}>Save</Button>
+        </div>
+        <p class="hint">
+          Model aliases, excluded models, quota behavior, and gatekeeper keys live in the proxy's own panel
+          (link above).
+        </p>
+      </div>
+    {/if}
+  {/if}
+
+  {#if cliproxyStore.localRunning || cliproxyStore.localSessions.length > 0}
+    <div class="field">
+      <span class="field-label">Local container (this machine)</span>
+      <p class="hint">A desktop-managed CLIProxy container is {cliproxyStore.localRunning ? 'running' : 'stopped'}.</p>
+      <div class="actions">
+        {#if cliproxyStore.localRunning}
+          <Button variant="secondary" onclick={cliproxyStore.stopLocal} disabled={cliproxyStore.loading}>
+            <Icon name="stop" size={14} />
+            Stop local container
+          </Button>
+        {:else}
+          <Button variant="secondary" onclick={cliproxyStore.startLocal} disabled={cliproxyStore.loading}>
+            <Icon name="server" size={14} />
+            Start local container
+          </Button>
+        {/if}
+      </div>
     </div>
   {/if}
 
@@ -226,8 +287,6 @@
     display: block;
     font-size: var(--font-size-sm);
     font-weight: 500;
-    /* §4 — labels recede behind the input value (which is --text-primary),
-       so the eye finds the answer before the question. */
     color: var(--text-secondary);
     margin-bottom: 0.5rem;
   }
@@ -239,13 +298,6 @@
     line-height: 1.45;
   }
 
-  .hint code,
-  .route-facts code {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    overflow-wrap: anywhere;
-  }
-
   .hint.warning {
     color: var(--warning);
   }
@@ -254,6 +306,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    margin-bottom: 0.5rem;
   }
 
   .status-dot {
@@ -277,24 +330,87 @@
     color: var(--text-secondary);
   }
 
-  .actions,
-  .route-actions {
+  .actions {
     display: flex;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 0.75rem;
     flex-wrap: wrap;
   }
 
-  .route-grid {
+  .panel-link {
+    font-size: var(--font-size-xs);
+    color: var(--accent);
+  }
+
+  .tos-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    line-height: 1.45;
+    cursor: pointer;
+  }
+
+  .tos-label input {
+    margin-top: 0.15rem;
+  }
+
+  .oauth-box {
+    padding: 0.875rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated-2);
+    margin-bottom: 1rem;
+  }
+
+  .oauth-box.ok {
+    border-color: var(--success);
+  }
+
+  .oauth-box.err {
+    border-color: var(--error);
+  }
+
+  .oauth-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .callback-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .text-input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .text-input.narrow {
+    flex: 0 0 5rem;
+  }
+
+  .provider-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
     margin-bottom: 1.25rem;
   }
 
-  .route-panel {
+  .provider-card {
     display: flex;
     flex-direction: column;
-    gap: 0.875rem;
+    gap: 0.625rem;
     min-width: 0;
     padding: 0.875rem;
     background: var(--bg-elevated-2);
@@ -302,92 +418,117 @@
     border-radius: 6px;
   }
 
-  .route-heading {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.625rem;
-    min-width: 0;
+  .provider-card.unsupported {
+    opacity: 0.6;
   }
 
-  .route-heading > div {
+  .provider-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .provider-head > div {
     display: flex;
     flex-direction: column;
     gap: 0.125rem;
     min-width: 0;
   }
 
-  .route-title {
+  .provider-title {
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
   }
 
-  .route-subtitle {
+  .provider-subtitle {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
   }
 
-  .route-facts {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem;
-  }
-
-  .route-facts div {
-    min-width: 0;
-    padding: 0.5rem;
-    border-radius: 6px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
-  }
-
-  .route-facts .wide {
-    grid-column: 1 / -1;
-  }
-
-  .route-facts span {
-    display: block;
-    color: var(--text-muted);
+  .badge {
+    flex-shrink: 0;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
     font-size: var(--font-size-2xs);
-    margin-bottom: 0.125rem;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
-  .route-facts strong {
-    color: var(--text-primary);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    overflow-wrap: anywhere;
+  .badge.ok {
+    background: rgba(var(--success-rgb), 0.15);
+    color: var(--success);
+  }
+
+  .badge.warn {
+    background: rgba(var(--warning-rgb), 0.15);
+    color: var(--warning);
+  }
+
+  .badge.muted {
+    background: var(--bg-elevated);
+    color: var(--text-muted);
   }
 
   .sessions-list {
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
-    min-height: 2rem;
   }
 
   .session-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
     background: var(--bg-elevated);
     border-radius: 6px;
     border: 1px solid var(--border-subtle);
   }
 
-  .session-provider {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--text-primary);
-    text-transform: capitalize;
-  }
-
   .session-email {
+    flex: 1;
     min-width: 0;
     font-size: var(--font-size-xs);
-    color: var(--text-muted);
+    color: var(--text-primary);
     overflow-wrap: anywhere;
+  }
+
+  .session-state {
+    font-size: var(--font-size-2xs);
+    color: var(--text-muted);
+  }
+
+  .session-actions {
+    display: flex;
+    gap: 0.375rem;
+  }
+
+  .route-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .route-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .knob-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .knob {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
   }
 
   .message {
@@ -413,7 +554,7 @@
   }
 
   @media (max-width: 840px) {
-    .route-grid {
+    .provider-grid {
       grid-template-columns: 1fr;
     }
   }

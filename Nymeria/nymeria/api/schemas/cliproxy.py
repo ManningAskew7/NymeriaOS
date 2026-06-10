@@ -18,6 +18,8 @@ class CLIProxyProviderInfo(BaseModel):
     key_env_var: str
     default_model: str = ""
     tos_warning: str = ""
+    # The provider string this CLI's entries carry in the auth-file list.
+    auth_file_provider: str = ""
     # Live state (None when the proxy is unreachable / not yet probed).
     supported: Optional[bool] = None
     logged_in: Optional[bool] = None

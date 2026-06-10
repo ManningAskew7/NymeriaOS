@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/services/api.svelte';
   import type {
+    CLIProxyProviderInfo,
     LLMProvider,
     LLMProviderTestResponse,
     OpenAIApiMode,
@@ -25,7 +26,26 @@
     onSaved?: () => void | Promise<void>;
   }
 
-  type AuthMethod = 'api_key' | 'cliproxy_claude_oauth' | 'cliproxy_codex_oauth';
+  type AuthMethod = 'api_key' | 'cliproxy';
+
+  // Offline fallback when the backend catalog is unreachable: the two
+  // historically supported CLIs with their route shapes.
+  const FALLBACK_CLIPROXY_CATALOG: CLIProxyProviderInfo[] = [
+    {
+      id: 'claude', label: 'Claude (Max/Pro subscription)', description: '',
+      flow: 'browser', nymeria_provider: 'anthropic', url_shape: 'root',
+      api_mode: '', key_env_var: 'ANTHROPIC_API_KEY',
+      default_model: 'claude-opus-4-7', tos_warning: '', auth_file_provider: 'claude',
+      supported: null, logged_in: null
+    },
+    {
+      id: 'codex', label: 'Codex (ChatGPT Plus/Pro subscription)', description: '',
+      flow: 'browser', nymeria_provider: 'openai', url_shape: 'v1',
+      api_mode: 'responses', key_env_var: 'OPENAI_API_KEY',
+      default_model: 'gpt-5.5', tos_warning: '', auth_file_provider: 'codex',
+      supported: null, logged_in: null
+    }
+  ];
   type WizardStep = 1 | 2 | 3;
   type TestStatus = 'idle' | 'testing' | 'success' | 'error';
   type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
@@ -38,11 +58,7 @@
     { value: 'openrouter', label: 'OpenRouter' },
   ];
 
-  const methodLabels: Record<AuthMethod, string> = {
-    api_key: 'Direct API key',
-    cliproxy_claude_oauth: 'CLIProxy Claude OAuth',
-    cliproxy_codex_oauth: 'CLIProxy Codex OAuth',
-  };
+
 
   const providerLabels: Record<string, string> = {
     anthropic: 'Anthropic',
@@ -52,6 +68,8 @@
 
   let step = $state<WizardStep>(1);
   let authMethod = $state<AuthMethod>('api_key');
+  let cliproxyCatalog = $state<CLIProxyProviderInfo[]>(FALLBACK_CLIPROXY_CATALOG);
+  let cliproxySelection = $state('claude');
   let directProvider = $state<LLMProvider>('anthropic');
   let model = $state('claude-sonnet-4-20250514');
   let apiKey = $state('');
@@ -65,15 +83,24 @@
   let lastSuccessfulTestSignature = $state('');
   let wasOpen = $state(false);
   let lastProvider = $state<LLMProvider>('anthropic');
-  let lastAuthMethod = $state<AuthMethod>('api_key');
+  let lastAuthKey = $state('api_key');
 
-  const effectiveProvider = $derived<LLMProvider>(
-    authMethod === 'cliproxy_claude_oauth'
-      ? 'anthropic'
-      : authMethod === 'cliproxy_codex_oauth'
-        ? 'openai'
-        : directProvider
+  const cliproxySpec = $derived<CLIProxyProviderInfo | null>(
+    cliproxyCatalog.find((entry) => entry.id === cliproxySelection) ?? null
   );
+  const effectiveProvider = $derived<LLMProvider>(
+    authMethod === 'cliproxy'
+      ? ((cliproxySpec?.nymeria_provider as LLMProvider) ?? 'anthropic')
+      : directProvider
+  );
+  const authKey = $derived(
+    authMethod === 'cliproxy' ? `cliproxy:${cliproxySelection}` : 'api_key'
+  );
+
+  function methodLabel(): string {
+    if (authMethod === 'api_key') return 'Direct API key';
+    return `Subscription OAuth: ${cliproxySpec?.label ?? cliproxySelection}`;
+  }
 
   const normalizedProviderBaseUrl = $derived(getNormalizedBaseUrl());
   const testCanRun = $derived(
@@ -91,11 +118,19 @@
   $effect(() => {
     if (isOpen && !wasOpen) {
       initializeFromSettings();
+      void loadCatalog();
       wasOpen = true;
     } else if (!isOpen) {
       wasOpen = false;
     }
   });
+
+  async function loadCatalog() {
+    const catalog = await api.getCLIProxyCatalog();
+    if (catalog.length > 0) {
+      cliproxyCatalog = catalog;
+    }
+  }
 
   $effect(() => {
     if (effectiveProvider !== lastProvider) {
@@ -106,21 +141,24 @@
   });
 
   $effect(() => {
-    if (authMethod !== lastAuthMethod) {
-      if (authMethod === 'cliproxy_claude_oauth') {
-        baseUrl = currentSettings?.llm_provider === 'anthropic' && currentSettings.llm_base_url
-          ? currentSettings.llm_base_url
-          : DEFAULT_CLIPROXY_BASE_URL;
-      } else if (authMethod === 'cliproxy_codex_oauth') {
-        baseUrl = currentSettings?.llm_provider === 'openai' && currentSettings.llm_base_url
-          ? currentSettings.llm_base_url
+    if (authKey !== lastAuthKey) {
+      if (authMethod === 'cliproxy' && cliproxySpec) {
+        const fallback = cliproxySpec.url_shape === 'root'
+          ? DEFAULT_CLIPROXY_BASE_URL
           : DEFAULT_OPENAI_CLIPROXY_BASE_URL;
-        openaiApiMode = 'responses';
+        baseUrl = currentSettings?.llm_provider === cliproxySpec.nymeria_provider
+          && currentSettings.llm_base_url
+          ? currentSettings.llm_base_url
+          : fallback;
+        if (cliproxySpec.api_mode) {
+          openaiApiMode = cliproxySpec.api_mode as OpenAIApiMode;
+        }
+        model = cliproxySpec.default_model || model;
       } else {
         baseUrl = '';
       }
       apiKey = '';
-      lastAuthMethod = authMethod;
+      lastAuthKey = authKey;
       resetVerification();
     }
   });
@@ -139,10 +177,12 @@
       model = currentSettings.llm_model || defaultModelFor(currentSettings.llm_provider);
       openaiApiMode = currentSettings.openai_api_mode ?? 'responses';
       if (currentSettings.llm_provider === 'anthropic' && currentSettings.llm_base_url) {
-        authMethod = 'cliproxy_claude_oauth';
+        authMethod = 'cliproxy';
+        cliproxySelection = 'claude';
         baseUrl = currentSettings.llm_base_url;
       } else if (currentSettings.llm_provider === 'openai' && currentSettings.llm_base_url) {
-        authMethod = 'cliproxy_codex_oauth';
+        authMethod = 'cliproxy';
+        cliproxySelection = 'codex';
         baseUrl = currentSettings.llm_base_url;
       } else {
         authMethod = 'api_key';
@@ -158,7 +198,7 @@
     }
 
     lastProvider = effectiveProvider;
-    lastAuthMethod = authMethod;
+    lastAuthKey = authKey;
   }
 
   function defaultModelFor(provider: LLMProvider): string {
@@ -173,15 +213,16 @@
   function getNormalizedBaseUrl(): string {
     if (authMethod === 'api_key') return '';
 
-    const fallback = authMethod === 'cliproxy_claude_oauth'
+    const shape = cliproxySpec?.url_shape ?? 'root';
+    const fallback = shape === 'root'
       ? DEFAULT_CLIPROXY_BASE_URL
       : DEFAULT_OPENAI_CLIPROXY_BASE_URL;
     const normalized = normalizeBaseUrl(baseUrl || fallback);
 
-    if (authMethod === 'cliproxy_claude_oauth' && normalized.endsWith('/v1')) {
+    if (shape === 'root' && normalized.endsWith('/v1')) {
       return normalized.slice(0, -3);
     }
-    if (authMethod === 'cliproxy_codex_oauth' && !normalized.endsWith('/v1')) {
+    if (shape === 'v1' && !normalized.endsWith('/v1')) {
       return `${normalized}/v1`;
     }
     return normalized;
@@ -252,11 +293,17 @@
       updates.openai_api_mode = openaiApiMode;
     }
 
-    if (authMethod === 'cliproxy_claude_oauth') {
-      updates.anthropic_api_key = apiKey.trim();
-    } else if (authMethod === 'cliproxy_codex_oauth') {
-      updates.openai_api_key = apiKey.trim();
-      updates.openai_api_mode = 'responses';
+    if (authMethod === 'cliproxy') {
+      // The catalog's key slot: the cpx- gatekeeper goes to ANTHROPIC_API_KEY
+      // or OPENAI_API_KEY, never the *_DIRECT_* slots.
+      if (cliproxySpec?.key_env_var === 'OPENAI_API_KEY') {
+        updates.openai_api_key = apiKey.trim();
+      } else {
+        updates.anthropic_api_key = apiKey.trim();
+      }
+      if (cliproxySpec?.api_mode) {
+        updates.openai_api_mode = cliproxySpec.api_mode as OpenAIApiMode;
+      }
     } else if (directProvider === 'anthropic') {
       updates.anthropic_direct_api_key = apiKey.trim();
     } else if (directProvider === 'openai') {
@@ -348,28 +395,22 @@
                 <small>Anthropic, OpenAI, or OpenRouter billing</small>
               </span>
             </button>
-            <button
-              class="method-option"
-              class:selected={authMethod === 'cliproxy_claude_oauth'}
-              onclick={() => handleAuthMethodSelect('cliproxy_claude_oauth')}
-            >
-              <Icon name="server" size={18} />
-              <span>
-                <strong>CLIProxy Claude OAuth</strong>
-                <small>Claude subscription via an existing proxy</small>
-              </span>
-            </button>
-            <button
-              class="method-option"
-              class:selected={authMethod === 'cliproxy_codex_oauth'}
-              onclick={() => handleAuthMethodSelect('cliproxy_codex_oauth')}
-            >
-              <Icon name="terminal" size={18} />
-              <span>
-                <strong>CLIProxy Codex OAuth</strong>
-                <small>OpenAI-compatible proxy using Responses API</small>
-              </span>
-            </button>
+            {#each cliproxyCatalog as entry (entry.id)}
+              <button
+                class="method-option"
+                class:selected={authMethod === 'cliproxy' && cliproxySelection === entry.id}
+                onclick={() => {
+                  cliproxySelection = entry.id;
+                  handleAuthMethodSelect('cliproxy');
+                }}
+              >
+                <Icon name="server" size={18} />
+                <span>
+                  <strong>{entry.label}</strong>
+                  <small>{entry.tos_warning || 'Subscription OAuth via CLIProxy'}</small>
+                </span>
+              </button>
+            {/each}
           </div>
         </div>
 
@@ -423,10 +464,10 @@
             oninput={resetVerification}
           />
           <p class="hint">
-            {#if authMethod === 'cliproxy_claude_oauth'}
-              Use the local <code>cpx-...</code> key from CLIProxy, not an upstream Anthropic key.
-            {:else if authMethod === 'cliproxy_codex_oauth'}
-              Use the local <code>cpx-...</code> key from CLIProxy. Do not reuse it for embeddings.
+            {#if authMethod === 'cliproxy'}
+              Use the proxy's own <code>cpx-...</code> gatekeeper key (from its api-keys list),
+              never an upstream provider key. Log in to the subscription itself from the
+              CLIProxy tab in Settings.
             {:else}
               This value is sent once to the backend and remains write-only in settings responses.
             {/if}
@@ -440,14 +481,14 @@
               id="provider-setup-base-url"
               type="text"
               bind:value={baseUrl}
-              placeholder={authMethod === 'cliproxy_codex_oauth' ? DEFAULT_OPENAI_CLIPROXY_BASE_URL : DEFAULT_CLIPROXY_BASE_URL}
+              placeholder={cliproxySpec?.url_shape === 'v1' ? DEFAULT_OPENAI_CLIPROXY_BASE_URL : DEFAULT_CLIPROXY_BASE_URL}
               oninput={resetVerification}
             />
             <p class="hint">
-              {#if authMethod === 'cliproxy_claude_oauth'}
-                Claude/Anthropic uses the proxy root URL with no <code>/v1</code> suffix.
+              {#if cliproxySpec?.url_shape === 'root'}
+                This CLI uses the proxy root URL with no <code>/v1</code> suffix.
               {:else}
-                Codex/OpenAI uses an OpenAI-compatible URL ending in <code>/v1</code>.
+                This CLI uses the proxy's OpenAI-compatible URL ending in <code>/v1</code>.
               {/if}
             </p>
             {#if normalizeBaseUrl(baseUrl) && normalizeBaseUrl(baseUrl) !== normalizedProviderBaseUrl}
@@ -459,12 +500,12 @@
         {#if effectiveProvider === 'openai' || effectiveProvider === 'openrouter'}
           <div class="field">
             <label for="provider-setup-api-mode">API Mode</label>
-            <select id="provider-setup-api-mode" bind:value={openaiApiMode} disabled={authMethod === 'cliproxy_codex_oauth'}>
+            <select id="provider-setup-api-mode" bind:value={openaiApiMode} disabled={authMethod === 'cliproxy' && !!cliproxySpec?.api_mode}>
               <option value="responses">Responses API</option>
               <option value="chat_completions">Chat Completions</option>
             </select>
-            {#if authMethod === 'cliproxy_codex_oauth'}
-              <p class="hint">CLIProxy Codex OAuth is saved with Responses API mode.</p>
+            {#if authMethod === 'cliproxy' && cliproxySpec?.api_mode}
+              <p class="hint">This CLI is saved with {cliproxySpec.api_mode === 'responses' ? 'Responses API' : 'Chat Completions'} mode.</p>
             {/if}
           </div>
         {/if}
@@ -474,7 +515,7 @@
         <div class="summary">
           <div>
             <span>Auth</span>
-            <strong>{methodLabels[authMethod]}</strong>
+            <strong>{methodLabel()}</strong>
           </div>
           <div>
             <span>Provider</span>

@@ -71,6 +71,7 @@ def _provider_info(
         key_env_var=spec.key_env_var,
         default_model=spec.default_model,
         tos_warning=spec.tos_warning,
+        auth_file_provider=spec.auth_file_provider,
         supported=supported,
         logged_in=logged_in,
     )

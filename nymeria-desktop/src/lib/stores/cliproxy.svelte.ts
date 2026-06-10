@@ -1,163 +1,295 @@
 /**
- * CLIProxy state management.
- * Wraps Tauri invoke() calls for the local sidecar process and uses the
- * frontend API client for backend settings changes.
+ * CLIProxy state management, backend-first.
+ *
+ * The backend's admin /cliproxy routes drive the proxy's management API
+ * (OAuth logins, auth files, config knobs, apply-route), so everything here
+ * works identically in thin-client mode against a remote backend. The Tauri
+ * docker-compose controls remain only as the local-sidecar fallback for
+ * desktop installs that manage their own proxy container.
  */
 
 import { api } from '$lib/services/api.svelte';
-import type { ServerSettingsUpdate } from '$lib/types';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import type {
+  CLIProxyAuthFile,
+  CLIProxyProviderInfo,
+  CLIProxyStatus
+} from '$lib/types';
 
 export const LOCAL_CLIPROXY_ROOT_URL = 'http://127.0.0.1:8318';
-export const LOCAL_OPENAI_CLIPROXY_BASE_URL = `${LOCAL_CLIPROXY_ROOT_URL}/v1`;
-export const CLIPROXY_CLAUDE_MODEL = 'claude-opus-4-7';
-export const CLIPROXY_CODEX_MODEL = 'gpt-5.5';
 
 interface CLIProxySession {
   provider: string;
   email: string;
 }
 
-interface CLIProxyStatusResponse {
+interface LocalProcessStatus {
   running: boolean;
   base_url?: string;
   detail?: string;
   sessions: CLIProxySession[];
 }
 
+export interface OAuthFlowState {
+  provider: string;
+  flow: 'browser' | 'device';
+  url: string;
+  state: string;
+  status: 'wait' | 'ok' | 'error' | 'delivering';
+  detail: string;
+}
+
+const POLL_INTERVAL_MS = 2000;
+const LOGIN_TIMEOUT_MS = 600_000;
+
 function createCLIProxyStore() {
-  let running = $state(false);
-  let sessions = $state<CLIProxySession[]>([]);
+  let status = $state<CLIProxyStatus | null>(null);
+  let authFiles = $state<CLIProxyAuthFile[]>([]);
+  let knobs = $state<Record<string, unknown>>({});
+  let oauth = $state<OAuthFlowState | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let message = $state<string | null>(null);
-  let baseUrl = $state(LOCAL_CLIPROXY_ROOT_URL);
-  let detail = $state('');
-  let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+  let oauthTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Local-sidecar fallback (Tauri only).
+  let localRunning = $state(false);
+  let localDetail = $state('');
+  let localSessions = $state<CLIProxySession[]>([]);
 
   async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
     return tauriInvoke<T>(cmd, args);
   }
 
-  async function refreshStatus() {
+  function fail(e: unknown, action: 'load' | 'save' | 'connect' | 'update' | 'delete' | 'start', resource: string) {
+    error = humanizeErrorText(e, { action, resource });
+  }
+
+  async function refresh(probe = false) {
+    error = null;
     try {
-      const status = await invoke<CLIProxyStatusResponse>('get_cliproxy_status');
-      running = status.running;
-      sessions = status.sessions;
-      baseUrl = status.base_url || LOCAL_CLIPROXY_ROOT_URL;
-      detail = status.detail || '';
-      error = null;
+      status = await api.getCLIProxyStatus(probe);
+      if (status?.reachable) {
+        authFiles = await api.listCLIProxyAuthFiles();
+      } else {
+        authFiles = [];
+      }
     } catch (e) {
-      error = String(e);
+      fail(e, 'load', 'the CLIProxy status');
+    }
+    // The local Tauri process status is a best-effort extra; absence of the
+    // Tauri runtime (web/thin-client builds) is normal.
+    try {
+      const local = await invoke<LocalProcessStatus>('get_cliproxy_status');
+      localRunning = local.running;
+      localDetail = local.detail || '';
+      localSessions = local.sessions || [];
+    } catch {
+      localRunning = false;
+      localSessions = [];
     }
   }
 
-  async function start() {
+  async function loadKnobs() {
+    try {
+      knobs = await api.getCLIProxyConfig();
+    } catch (e) {
+      fail(e, 'load', 'the proxy settings');
+    }
+  }
+
+  async function saveKnobs(update: Record<string, unknown>) {
+    error = null;
+    message = null;
+    try {
+      knobs = await api.patchCLIProxyConfig(update);
+      message = 'Proxy settings saved.';
+    } catch (e) {
+      fail(e, 'save', 'the proxy settings');
+    }
+  }
+
+  function stopOAuthPolling() {
+    if (oauthTimer) {
+      clearInterval(oauthTimer);
+      oauthTimer = null;
+    }
+  }
+
+  async function startOAuth(provider: CLIProxyProviderInfo) {
+    error = null;
+    message = null;
+    stopOAuthPolling();
+    try {
+      const started = await api.startCLIProxyOAuth(provider.id);
+      oauth = {
+        provider: provider.id,
+        flow: started.flow,
+        url: started.url,
+        state: started.state,
+        status: 'wait',
+        detail:
+          started.flow === 'device'
+            ? 'Open the link and approve the login; this panel updates automatically.'
+            : 'Approve the login in the browser. If it ends on a dead localhost page, paste that page\'s full URL below.'
+      };
+      window.open(started.url, '_blank', 'noopener');
+      const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+      oauthTimer = setInterval(async () => {
+        const current = oauth;
+        if (!current || current.state !== started.state) {
+          stopOAuthPolling();
+          return;
+        }
+        if (Date.now() > deadline) {
+          stopOAuthPolling();
+          oauth = { ...current, status: 'error', detail: 'The login session expired; start it again.' };
+          return;
+        }
+        try {
+          const result = await api.getCLIProxyOAuthStatus(started.state, provider.id);
+          if (result === 'ok') {
+            stopOAuthPolling();
+            oauth = { ...current, status: 'ok', detail: 'Login complete.' };
+            message = `${provider.label} login complete.`;
+            await refresh(true);
+          } else if (result === 'error') {
+            stopOAuthPolling();
+            oauth = { ...current, status: 'error', detail: 'The provider reported a login error.' };
+          }
+        } catch (e) {
+          stopOAuthPolling();
+          oauth = { ...current, status: 'error', detail: humanizeErrorText(e, { action: 'connect', resource: 'the proxy' }) };
+        }
+      }, POLL_INTERVAL_MS);
+    } catch (e) {
+      fail(e, 'start', 'the login');
+    }
+  }
+
+  async function deliverCallback(redirectUrl: string) {
+    const current = oauth;
+    if (!current) return;
+    error = null;
+    oauth = { ...current, status: 'delivering', detail: 'Delivering the callback to the proxy...' };
+    try {
+      await api.deliverCLIProxyOAuthCallback(current.provider, redirectUrl);
+      oauth = { ...current, status: 'wait', detail: 'Callback delivered; finishing the login...' };
+    } catch (e) {
+      oauth = { ...current, status: 'wait', detail: humanizeErrorText(e, { action: 'send', resource: 'the callback' }) };
+    }
+  }
+
+  function dismissOAuth() {
+    stopOAuthPolling();
+    oauth = null;
+  }
+
+  async function setAuthFileDisabled(name: string, disabled: boolean) {
+    error = null;
+    try {
+      await api.patchCLIProxyAuthFile(name, { disabled });
+      await refresh();
+    } catch (e) {
+      fail(e, 'update', 'the login');
+    }
+  }
+
+  async function deleteAuthFile(name: string) {
+    error = null;
+    try {
+      await api.deleteCLIProxyAuthFile(name);
+      message = 'Login removed from the proxy.';
+      await refresh(true);
+    } catch (e) {
+      fail(e, 'delete', 'the login');
+    }
+  }
+
+  async function applyRoute(
+    provider: string,
+    options: { model?: string; scope?: 'global' | 'thread'; threadId?: string; gatekeeperKey?: string } = {}
+  ) {
+    error = null;
+    message = null;
+    try {
+      const applied = await api.applyCLIProxyRoute({
+        provider,
+        model: options.model,
+        scope: options.scope ?? 'global',
+        thread_id: options.threadId,
+        gatekeeper_key: options.gatekeeperKey
+      });
+      message =
+        applied.scope === 'thread'
+          ? `Thread routed through CLIProxy (${applied.model}).`
+          : `Backend route set to ${applied.provider} via CLIProxy (${applied.model}).`;
+      return applied;
+    } catch (e) {
+      fail(e, 'save', 'the LLM route');
+      return null;
+    }
+  }
+
+  // --- local sidecar fallback (Tauri desktop only) -------------------------
+
+  async function startLocal() {
     loading = true;
     error = null;
     message = null;
     try {
       await invoke('start_cliproxy');
-      // Wait a moment for the process to start, then refresh
       await new Promise((r) => setTimeout(r, 1000));
-      await refreshStatus();
-      message = 'CLIProxy started from the pinned Docker compose deployment.';
+      await refresh(true);
+      message = 'Local CLIProxy container started.';
     } catch (e) {
-      error = String(e);
+      fail(e, 'start', 'the local CLIProxy container');
     } finally {
       loading = false;
     }
   }
 
-  async function stop() {
+  async function stopLocal() {
     loading = true;
     error = null;
     message = null;
     try {
       await invoke('stop_cliproxy');
-      running = false;
-      sessions = [];
-      message = 'CLIProxy stopped.';
+      localRunning = false;
+      localSessions = [];
+      message = 'Local CLIProxy container stopped.';
     } catch (e) {
-      error = String(e);
+      fail(e, 'update', 'the local CLIProxy container');
     } finally {
       loading = false;
     }
   }
 
-  async function login(provider: 'claude' | 'openai') {
-    error = null;
-    message = null;
-    try {
-      await invoke('cliproxy_login', { provider });
-      message = provider === 'claude'
-        ? 'Claude OAuth login command started.'
-        : 'Codex/OpenAI OAuth login command started.';
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function updateRoute(updates: ServerSettingsUpdate, successMessage: string) {
-    error = null;
-    message = null;
-    try {
-      await api.updateServerSettings(updates);
-      message = successMessage;
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function applyClaudeRoute() {
-    await updateRoute(
-      {
-        llm_provider: 'anthropic',
-        llm_model: CLIPROXY_CLAUDE_MODEL,
-        llm_base_url: LOCAL_CLIPROXY_ROOT_URL,
-      },
-      'Backend route set to CLIProxy Claude OAuth. Confirm the Anthropic gatekeeper key is configured before chatting.'
-    );
-  }
-
-  async function applyCodexRoute() {
-    await updateRoute(
-      {
-        llm_provider: 'openai',
-        llm_model: CLIPROXY_CODEX_MODEL,
-        llm_base_url: LOCAL_OPENAI_CLIPROXY_BASE_URL,
-        openai_api_mode: 'responses',
-      },
-      'Backend route set to CLIProxy Codex/OpenAI OAuth with Responses API mode. Confirm the OpenAI gatekeeper key is configured before chatting.'
-    );
-  }
-
-  async function useDirectApi() {
-    await updateRoute(
-      { llm_base_url: '' },
-      'Backend base URL override cleared.'
-    );
-  }
-
-  function startPolling() {
-    if (pollIntervalId) return;
-    refreshStatus();
-    pollIntervalId = setInterval(refreshStatus, 5000);
-  }
-
-  function stopPolling() {
-    if (pollIntervalId) {
-      clearInterval(pollIntervalId);
-      pollIntervalId = null;
-    }
-  }
-
   return {
-    get running() {
-      return running;
+    get status() {
+      return status;
     },
-    get sessions() {
-      return sessions;
+    get providers(): CLIProxyProviderInfo[] {
+      return status?.providers ?? [];
+    },
+    get configured() {
+      return status?.configured ?? false;
+    },
+    get reachable() {
+      return status?.reachable ?? false;
+    },
+    get managementHtmlUrl() {
+      return status?.management_html_url ?? null;
+    },
+    get authFiles() {
+      return authFiles;
+    },
+    get knobs() {
+      return knobs;
+    },
+    get oauth() {
+      return oauth;
     },
     get loading() {
       return loading;
@@ -168,33 +300,33 @@ function createCLIProxyStore() {
     get message() {
       return message;
     },
-    get baseUrl() {
-      return baseUrl;
+    get localRunning() {
+      return localRunning;
     },
-    get detail() {
-      return detail;
+    get localDetail() {
+      return localDetail;
     },
-    get needsAuth() {
-      return running && sessions.length === 0;
+    get localSessions() {
+      return localSessions;
     },
-    get claudeSessions() {
-      return sessions.filter((session) => session.provider.toLowerCase() === 'claude');
+    authFilesFor(providerId: string): CLIProxyAuthFile[] {
+      const spec = status?.providers.find((entry) => entry.id === providerId);
+      const fileProvider = spec?.auth_file_provider || providerId;
+      return authFiles.filter(
+        (file) => (file.provider || '').toLowerCase() === fileProvider
+      );
     },
-    get openAISessions() {
-      return sessions.filter((session) => {
-        const provider = session.provider.toLowerCase();
-        return provider === 'openai' || provider === 'codex';
-      });
-    },
-    refreshStatus,
-    start,
-    stop,
-    login,
-    applyClaudeRoute,
-    applyCodexRoute,
-    useDirectApi,
-    startPolling,
-    stopPolling,
+    refresh,
+    loadKnobs,
+    saveKnobs,
+    startOAuth,
+    deliverCallback,
+    dismissOAuth,
+    setAuthFileDisabled,
+    deleteAuthFile,
+    applyRoute,
+    startLocal,
+    stopLocal
   };
 }
 
