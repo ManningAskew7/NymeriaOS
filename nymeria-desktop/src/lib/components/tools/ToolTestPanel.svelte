@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CustomTool, CustomToolTestResponse } from '$lib/types';
   import { toolsStore } from '$lib/stores/tools.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import Button from '../common/Button.svelte';
 
   interface Props {
@@ -54,7 +55,7 @@
 
       result = await toolsStore.testTool(tool.id, params);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'The test could not run.';
+      error = humanizeErrorText(e, { action: 'test', resource: 'the tool' });
     } finally {
       testing = false;
     }

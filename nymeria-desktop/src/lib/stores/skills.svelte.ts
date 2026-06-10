@@ -158,7 +158,7 @@ export function createSkillsStore() {
     try {
       marketplaceResults = await api.searchSkillsMarketplace(source, query);
     } catch (e) {
-      marketplaceError = e instanceof Error ? e.message : 'Marketplace search failed';
+      marketplaceError = humanizeErrorText(e, { action: 'load', resource: 'marketplace results' });
       marketplaceResults = [];
       console.error('skills: searchMarketplace failed', e);
     } finally {

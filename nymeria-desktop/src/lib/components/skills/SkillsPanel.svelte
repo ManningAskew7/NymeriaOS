@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMetadata, SkillScope } from '$lib/types';
   import SkillsMarketplacePanel from './SkillsMarketplacePanel.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
 
   let showMarketplace = $state(false);
   let expanded = $state<Record<string, boolean>>({});
+  let actionError = $state<string | null>(null);
 
   onMount(() => {
     void skillsStore.refreshInstalled();
@@ -44,9 +46,15 @@
   });
 
   async function handleToggleGlobal(skill: SkillMetadata) {
+    const enabling = !skillsStore.enabledGlobal.includes(skill.name);
+    actionError = null;
     try {
       await skillsStore.toggleGlobal(skill.name);
     } catch (e) {
+      actionError = humanizeErrorText(e, {
+        action: enabling ? 'enable' : 'disable',
+        resource: `the "${skill.name}" skill`,
+      });
       console.error('toggle global skill failed', e);
     }
   }
@@ -54,10 +62,11 @@
   async function handleUninstall(skill: SkillMetadata) {
     if (skill.scope === 'bundled') return;
     if (!confirm(`Remove skill "${skill.name}" from disk? This cannot be undone.`)) return;
+    actionError = null;
     try {
       await skillsStore.uninstall(skill.name, skill.scope as 'user' | 'global');
     } catch (e) {
-      alert(`Uninstall failed: ${e instanceof Error ? e.message : String(e)}`);
+      actionError = humanizeErrorText(e, { action: 'remove', resource: `the "${skill.name}" skill` });
     }
   }
 
@@ -87,6 +96,10 @@
 
   {#if skillsStore.enabledGlobalError}
     <div class="banner banner-error">{skillsStore.enabledGlobalError}</div>
+  {/if}
+
+  {#if actionError}
+    <div class="banner banner-error">{actionError}</div>
   {/if}
 
   {#if skillsStore.installedLoading && !skillsStore.installedLoaded}

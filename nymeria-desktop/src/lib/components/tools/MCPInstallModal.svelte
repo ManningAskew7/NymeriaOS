@@ -193,11 +193,11 @@
       defaultToolsStore.resetLoaded();
       await defaultToolsStore.load();
     } catch (e) {
-      const raw = e instanceof Error ? e.message : 'Installation failed';
+      const raw = e instanceof Error ? e.message : '';
       if (/failed to fetch|networkerror|load failed/i.test(raw)) {
         error = "Couldn't reach the API, or the response was blocked before the app received backend details.";
       } else {
-        error = raw;
+        error = humanizeErrorText(e, { action: 'install', resource: 'the server' });
       }
       stage = 'preview';
     } finally {

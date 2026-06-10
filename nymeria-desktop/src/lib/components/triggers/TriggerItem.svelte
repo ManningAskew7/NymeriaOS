@@ -4,6 +4,7 @@
   import { cubicOut } from 'svelte/easing';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   // Crossfade animates an element from its old DOM position to its new one
   // by computing a transform between the two bounding rects. We use this so
@@ -274,7 +275,7 @@
       }, 6000);
     } catch (err) {
       testOk = false;
-      testResult = `Error: ${err instanceof Error ? err.message : 'test failed'}`;
+      testResult = humanizeErrorText(err, { action: 'test', resource: 'the trigger' });
       setTimeout(() => {
         testResult = null;
       }, 6000);

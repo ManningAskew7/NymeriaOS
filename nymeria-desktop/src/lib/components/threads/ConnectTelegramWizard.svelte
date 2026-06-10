@@ -17,6 +17,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import WizardShell from '$lib/components/common/WizardShell.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   type Step = 'link' | 'bind' | 'done';
 
@@ -59,7 +60,7 @@
         startLinkPoll();
       }
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = humanizeErrorText(e, { action: 'load', resource: 'your Telegram link status' });
     } finally {
       initializing = false;
     }
@@ -73,7 +74,7 @@
     try {
       linkCode = await api.requestSelfPlatformLinkCode(provider);
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = humanizeErrorText(e, { action: 'create', resource: 'a link code' });
     } finally {
       issuing = false;
     }
@@ -85,7 +86,7 @@
     try {
       bindCode = await api.issueChatAppBindCode(threadId, provider);
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = humanizeErrorText(e, { action: 'create', resource: 'a bind code' });
     } finally {
       issuing = false;
     }

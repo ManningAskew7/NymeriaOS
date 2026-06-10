@@ -1,6 +1,7 @@
 <script lang="ts">
   import { trapFocus } from '$lib/actions/focus';
   import { skillsStore } from '$lib/stores/skills.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMarketplaceSource } from '$lib/types';
 
   interface Props {
@@ -41,7 +42,7 @@
     try {
       await skillsStore.install(name, source, scope);
     } catch (e) {
-      installError = e instanceof Error ? e.message : 'Install failed';
+      installError = humanizeErrorText(e, { action: 'install', resource: `the "${name}" skill` });
     }
   }
 

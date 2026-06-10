@@ -120,7 +120,7 @@
       await chatAppBindingsStore.unbind(threadId, bindingId);
       threadsStore.syncFromBackend();
     } catch (e) {
-      chatAppLoadError = e instanceof Error ? e.message : String(e);
+      chatAppLoadError = humanizeErrorText(e, { action: 'disconnect', resource: 'the chat app' });
     }
   }
 
@@ -438,7 +438,7 @@
         chatAppLoadError = '';
         chatAppBindingsStore.loadBindings(threadId)
           .then(() => { chatAppLoaded = true; })
-          .catch((e) => { chatAppLoadError = e instanceof Error ? e.message : String(e); });
+          .catch((e) => { chatAppLoadError = humanizeErrorText(e, { action: 'load', resource: 'connected chat apps' }); });
       });
     }
   });
