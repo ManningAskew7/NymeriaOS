@@ -100,15 +100,19 @@ class NymeriaAPIClient:
             return self._headers
         return {**self._headers, "X-Nymeria-Act-As": act_as}
 
-    def _maybe_refresh_token(self) -> bool:
+    def _maybe_refresh_token(self, failed_token: str) -> bool:
         """Re-resolve the service token via the injected refresher.
 
-        Returns True only when the refresher yields a non-empty token that
-        DIFFERS from the current one, in which case ``self.api_key`` and the
-        auth headers are rebuilt so the caller can retry. The unchanged guard
-        matters: when the resolved token is the same stale value (e.g. the
-        on-disk token also expired), retrying would only hammer the API's
-        auth-failure rate limiter, so we surface the original 401 instead.
+        ``failed_token`` is the token the 401'd attempt actually sent. Returns
+        True when the refresher yields a non-empty token that DIFFERS from it,
+        meaning a retry has fresh credentials: either the on-disk token rotated
+        just now, or a concurrent call on this shared client already refreshed
+        ``self.api_key`` (comparing against the failed token, not the current
+        one, is what lets that second caller retry too). Returns False when
+        there is no refresher, the refresher errors, or the resolved token is
+        empty or identical to the failed one; retrying with the same token
+        would only hammer the API's auth-failure rate limiter, so the caller
+        surfaces the original 401 instead.
         """
         if self._token_refresher is None:
             return False
@@ -118,11 +122,12 @@ class NymeriaAPIClient:
             logger.warning("Service token refresh failed: %s", exc)
             return False
         refreshed = (refreshed or "").strip()
-        if not refreshed or refreshed == self.api_key:
+        if not refreshed or refreshed == failed_token:
             return False
-        logger.info("Service token rotated; retrying with refreshed credentials")
-        self.api_key = refreshed
-        self._headers = {"Authorization": f"Bearer {refreshed}"}
+        if refreshed != self.api_key:
+            logger.info("Service token rotated; retrying with refreshed credentials")
+            self.api_key = refreshed
+            self._headers = {"Authorization": f"Bearer {refreshed}"}
         return True
 
     async def _request(
@@ -137,6 +142,7 @@ class NymeriaAPIClient:
     ) -> Any:
         retried = False
         while True:
+            attempt_token = self.api_key
             resp = await self._client_for_loop().request(
                 method,
                 self._url(path),
@@ -154,7 +160,7 @@ class NymeriaAPIClient:
                 if (
                     not retried
                     and exc.response.status_code == 401
-                    and self._maybe_refresh_token()
+                    and self._maybe_refresh_token(attempt_token)
                 ):
                     retried = True
                     continue
@@ -291,6 +297,7 @@ class NymeriaAPIClient:
         yielded = False
         retried = False
         while True:
+            attempt_token = self.api_key
             try:
                 async with self._client_for_loop().stream(
                     "POST",
@@ -320,7 +327,7 @@ class NymeriaAPIClient:
                     not retried
                     and not yielded
                     and exc.response.status_code == 401
-                    and self._maybe_refresh_token()
+                    and self._maybe_refresh_token(attempt_token)
                 ):
                     retried = True
                     continue

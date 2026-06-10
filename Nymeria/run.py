@@ -229,6 +229,24 @@ def _require_service_token(settings, role: str, *, stream=None) -> str:
     sys.exit(1)
 
 
+def _service_api_client(api_url: str, api_key: str, settings):
+    """Build a thin-client API client with self-mint token refresh wired.
+
+    The refresher lets a long-running thin client (worker, watchdog, bots)
+    pick up an api re-mint of the shared service token on a 401 without a
+    process restart. An operator-pinned NYMERIA_SERVICE_TOKEN makes the
+    refresh a no-op, so this is safe for every launch path.
+    """
+    from nymeria.core.service_bootstrap import service_token_refresher
+    from nymeria.triggers.api_client import NymeriaAPIClient
+
+    return NymeriaAPIClient(
+        base_url=api_url,
+        api_key=api_key,
+        token_refresher=service_token_refresher(settings),
+    )
+
+
 def _require_bot_sdk(module, platform: str, extra: str) -> None:
     """Fail with install guidance if a bot's optional SDK is not installed.
 
@@ -674,7 +692,6 @@ def run_worker(args: argparse.Namespace) -> None:
     from nymeria.core.todo_schedule_db import TodoScheduleDB
     from nymeria.core.turn_executor import APIClientExecutor
     from nymeria.core.user_profile import UserProfileManager
-    from nymeria.triggers.api_client import NymeriaAPIClient
 
     settings = get_settings()
 
@@ -751,13 +768,7 @@ def run_worker(args: argparse.Namespace) -> None:
     # volume. Exits with provisioning guidance if neither yields a token; a
     # transient miss self-heals via the worker's ``restart: unless-stopped``.
     service_token = _require_service_token(settings, "the worker (ticker)")
-    from nymeria.core.service_bootstrap import service_token_refresher
-
-    client = NymeriaAPIClient(
-        base_url=api_url,
-        api_key=service_token,
-        token_refresher=service_token_refresher(settings),
-    )
+    client = _service_api_client(api_url, service_token, settings)
     executor = APIClientExecutor(client, publish_autonomous_events=False)
 
     schedule_db = TodoScheduleDB(settings.data_dir / "todo_schedule.db")
@@ -860,7 +871,6 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     from nymeria.triggers import discord_bot as _discord_bot
     _require_bot_sdk(_discord_bot, "Discord", "discord")
     from nymeria.triggers.discord_bot import NymeriaDiscordBot
-    from nymeria.triggers.api_client import NymeriaAPIClient
 
     settings = get_settings()
 
@@ -884,7 +894,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
     print("  - Auth: service token")
 
     # Create API client
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
 
     # Create and run bot
     bot = NymeriaDiscordBot(
@@ -916,7 +926,6 @@ def run_watchdog(args: argparse.Namespace) -> None:
     import asyncio
 
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.watchdog_worker import WatchdogWorker
 
     settings = get_settings()
@@ -935,13 +944,7 @@ def run_watchdog(args: argparse.Namespace) -> None:
     print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
     print("  - Auth: service token")
 
-    from nymeria.core.service_bootstrap import service_token_refresher
-
-    api = NymeriaAPIClient(
-        base_url=api_url,
-        api_key=api_key,
-        token_refresher=service_token_refresher(settings),
-    )
+    api = _service_api_client(api_url, api_key, settings)
     worker = WatchdogWorker(client=api, settings=settings)
 
     def signal_handler(signum, frame):
@@ -970,7 +973,6 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
     from nymeria.triggers import telegram_bot as _telegram_bot
     _require_bot_sdk(_telegram_bot, "Telegram", "telegram")
     from nymeria.triggers.telegram_bot import NymeriaTelegramBot
-    from nymeria.triggers.api_client import NymeriaAPIClient
 
     settings = get_settings()
 
@@ -994,7 +996,7 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
     print("  - Auth: service token")
 
     # Create API client
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
 
     # Create and run bot
     bot = NymeriaTelegramBot(
@@ -1024,7 +1026,6 @@ def run_slack_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers import slack_bot as _slack_bot
     _require_bot_sdk(_slack_bot, "Slack", "slack")
     from nymeria.triggers.slack_bot import NymeriaSlackBot
@@ -1053,7 +1054,7 @@ def run_slack_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = NymeriaSlackBot(
         api=api,
         bot_token=settings.slack_bot_token,
@@ -1082,7 +1083,6 @@ def run_matrix_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.matrix_bot import NymeriaMatrixBot
 
     settings = get_settings()
@@ -1114,7 +1114,7 @@ def run_matrix_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = NymeriaMatrixBot(
         api=api,
         homeserver=settings.matrix_homeserver,
@@ -1147,7 +1147,6 @@ def run_mattermost_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.mattermost_bot import NymeriaMattermostBot
 
     settings = get_settings()
@@ -1171,7 +1170,7 @@ def run_mattermost_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = NymeriaMattermostBot(
         api=api,
         base_url=settings.mattermost_base_url,
@@ -1200,7 +1199,6 @@ def run_zulip_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.zulip_bot import NymeriaZulipBot
 
     settings = get_settings()
@@ -1228,7 +1226,7 @@ def run_zulip_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = NymeriaZulipBot(
         api=api,
         base_url=settings.zulip_base_url,
@@ -1258,7 +1256,6 @@ def run_rocketchat_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.rocketchat_bot import NymeriaRocketChatBot
 
     settings = get_settings()
@@ -1286,7 +1283,7 @@ def run_rocketchat_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = NymeriaRocketChatBot(
         api=api,
         base_url=settings.rocketchat_base_url,
@@ -1316,7 +1313,6 @@ def run_signal_bot(args: argparse.Namespace) -> None:
     operations instead of running its own NymeriaAgent.
     """
     from nymeria.config import get_settings
-    from nymeria.triggers.api_client import NymeriaAPIClient
     from nymeria.triggers.signal_bot import create_signal_bot_from_settings
 
     settings = get_settings()
@@ -1341,7 +1337,7 @@ def run_signal_bot(args: argparse.Namespace) -> None:
     print(f"  - API: {api_url}")
     print("  - Auth: service token")
 
-    api = NymeriaAPIClient(base_url=api_url, api_key=api_key)
+    api = _service_api_client(api_url, api_key, settings)
     bot = create_signal_bot_from_settings(api, settings=settings)
 
     def signal_handler(signum, frame):

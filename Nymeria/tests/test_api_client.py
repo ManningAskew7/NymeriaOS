@@ -620,6 +620,10 @@ def test_chat_stream_refreshes_and_retries_on_401_before_first_chunk(monkeypatch
 
 
 def test_chat_stream_no_retry_after_chunks_yielded(monkeypatch):
+    # Real httpx never raises HTTPStatusError from aiter_lines (mid-stream
+    # failures surface as RequestError subtypes, which are deliberately not
+    # retried); this stand-in exists purely to lock in the `yielded` guard
+    # against any 401-shaped error after output started.
     class MidStreamFailingResponse(FakeResponse):
         async def aiter_lines(self):
             yield 'data: {"type": "response", "content": "hi"}'
@@ -670,3 +674,28 @@ def test_chat_stream_no_refresher_propagates_401(monkeypatch):
 
     asyncio.run(run())
     assert ScriptedAsyncClient.auth_headers == ["Bearer nym_old"]
+
+
+def test_maybe_refresh_token_retries_when_another_call_already_refreshed():
+    # Two turns share one client. Turn A 401s and refreshes api_key old->new;
+    # turn B, whose stream opened with the OLD token, then 401s too. The guard
+    # must compare against the token B actually sent, not the already-updated
+    # api_key, so B still gets its retry (with the new headers left intact).
+    refresher = RecordingRefresher(token="nym_new")
+    client = NymeriaAPIClient(
+        base_url="http://api", api_key="nym_new", token_refresher=refresher
+    )
+
+    assert client._maybe_refresh_token("nym_old") is True
+    assert client.api_key == "nym_new"
+    assert client._headers == {"Authorization": "Bearer nym_new"}
+
+
+def test_maybe_refresh_token_declines_when_disk_matches_failed_token():
+    refresher = RecordingRefresher(token="nym_old")
+    client = NymeriaAPIClient(
+        base_url="http://api", api_key="nym_old", token_refresher=refresher
+    )
+
+    assert client._maybe_refresh_token("nym_old") is False
+    assert client.api_key == "nym_old"
