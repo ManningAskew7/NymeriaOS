@@ -13,15 +13,15 @@
 
 <div class="tasks-feed">
   {#if isLoading}
-    <div class="feed-state">
+    <div class="empty-state">
       <span>Loading scheduled tasks…</span>
     </div>
   {:else if todosStore.error}
-    <div class="feed-state error">
+    <div class="empty-state error">
       <p>{todosStore.error}</p>
     </div>
   {:else if !hasScheduledItems}
-    <div class="feed-state">
+    <div class="empty-state">
       <p>No scheduled tasks</p>
       <span class="hint">Schedule a task for later to wake Nymeria up automatically.</span>
     </div>
@@ -40,18 +40,18 @@
     flex-direction: column;
   }
 
-  .feed-state {
+  .empty-state {
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
     font-size: var(--font-size-sm);
   }
 
-  .feed-state.error {
+  .empty-state.error {
     color: var(--error);
   }
 
-  .feed-state p {
+  .empty-state p {
     margin: 0;
   }
 

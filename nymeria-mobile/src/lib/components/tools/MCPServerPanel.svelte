@@ -256,7 +256,7 @@
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
     <div class="loading"><Spinner size="sm" /></div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
-    <p class="empty">No MCP servers configured.</p>
+    <p class="empty-state">No MCP servers configured.</p>
   {:else}
     {#each mcpServersStore.servers as server (server.id)}
       <div class="server-item" class:disabled-server={!server.enabled}>
@@ -407,7 +407,7 @@
     cursor: pointer;
   }
 
-  .loading, .empty {
+  .loading, .empty-state {
     text-align: center;
     color: var(--text-secondary);
     font-size: 0.85rem;

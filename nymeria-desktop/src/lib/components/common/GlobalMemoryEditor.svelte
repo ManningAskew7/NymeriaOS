@@ -105,7 +105,7 @@
 <div class="memory-editor">
   <header class="editor-header">
     <div class="editor-heading">
-      <h3 class="section-title">Global Memory</h3>
+      <h3 class="section-heading">Global Memory</h3>
       <p class="field-hint">
         Persistent facts the agent remembers about you across every thread,
         stored as key/value entries. The same memory the agent reads and writes
@@ -145,7 +145,7 @@
   {#if loading}
     <p class="loading">Loading memories…</p>
   {:else if memories.length === 0}
-    <p class="empty">No memories stored yet. Add one above, or let the agent learn things over time.</p>
+    <p class="empty-state">No memories stored yet. Add one above, or let the agent learn things over time.</p>
   {:else}
     <ul class="memory-list">
       {#each memories as m (m.key)}
@@ -202,9 +202,9 @@
 
   .editor-heading { min-width: 0; }
 
-  .section-title {
+  .section-heading {
     margin: 0 0 6px 0;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -333,7 +333,7 @@
   }
 
   .loading,
-  .empty {
+  .empty-state {
     color: var(--text-muted);
     font-size: var(--font-size-sm);
   }

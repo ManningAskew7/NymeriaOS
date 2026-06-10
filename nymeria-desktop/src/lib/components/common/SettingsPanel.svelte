@@ -1153,7 +1153,7 @@
       <!-- Saved Connections -->
       <div class="saved-connections">
         <div class="section-header">
-          <span class="section-title">Saved Connections</span>
+          <span class="group-label">Saved Connections</span>
         </div>
 
         {#if connectionsStore.connections.length === 0}
@@ -1554,7 +1554,7 @@
         {#if llmSubView === 'main'}
         <div class="provider-setup-callout">
           <div>
-            <span class="section-title">Provider Setup</span>
+            <span class="group-label">Provider Setup</span>
             <p class="hint">Test and save a direct provider key or configure a backend to use an existing CLIProxy OAuth endpoint.</p>
           </div>
           <Button variant="secondary" onclick={() => (showProviderSetupWizard = true)}>
@@ -3557,10 +3557,10 @@
     margin-bottom: var(--spacing-sm);
   }
 
-  .section-title {
-    font-size: var(--font-size-sm);
+  .group-label {
+    font-size: var(--font-size-xs);
     font-weight: 600;
-    color: var(--text-primary);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }

@@ -136,7 +136,7 @@
       <!-- Tasks Section -->
       <Collapsible title="Tasks" defaultOpen={true}>
         {#snippet header()}
-          <span class="section-title">Tasks</span>
+          <span class="section-heading">Tasks</span>
           {#if todosStore.todos.length > 0}
             <span class="section-count">{todosStore.todos.length}</span>
           {/if}
@@ -151,7 +151,7 @@
       <!-- Triggers Section -->
       <Collapsible title="Triggers" defaultOpen={true}>
         {#snippet header()}
-          <span class="section-title">Triggers</span>
+          <span class="section-heading">Triggers</span>
           {#if triggersStore.enabledCount > 0}
             <span class="section-count">{triggersStore.enabledCount}</span>
           {/if}
@@ -167,7 +167,7 @@
       <div class="section-divider"></div>
       <div class="activity-section">
         <div class="activity-header">
-          <span class="section-title">Activity</span>
+          <span class="section-heading">Activity</span>
         </div>
         {#if activeTab === 'thread' && currentThreadId}
           <ActivityFeed threadId={currentThreadId} />
@@ -280,10 +280,11 @@
     transform: translateY(1px) rotate(90deg);
   }
 
-  .section-title {
+  .section-heading {
     flex: 1;
-    font-weight: 500;
-    font-size: var(--font-size-sm);
+    font-weight: 600;
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
   }
 
   .section-count {
