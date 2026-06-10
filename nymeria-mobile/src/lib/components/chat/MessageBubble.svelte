@@ -85,7 +85,7 @@
     const autoCompactMatch = text.match(AUTO_COMPACT_PATTERN);
     if (autoCompactMatch) {
       contextSummary = autoCompactMatch[1].trim();
-      text = '[Auto-compact: Conversation summarized]';
+      text = '[Auto-compact: Thread summarized]';
       return { text, contextSummary, hidden: false, isSmartwatch };
     }
 

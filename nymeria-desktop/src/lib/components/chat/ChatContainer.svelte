@@ -25,9 +25,9 @@
     const isCompacting = chatStore.isCompacting;
 
     if (isCompacting && !wasCompacting) {
-      streamStatusMessage = 'Compacting conversation context';
+      streamStatusMessage = 'Compacting thread context';
     } else if (!isCompacting && wasCompacting && !isStreaming) {
-      streamStatusMessage = 'Conversation context compacted';
+      streamStatusMessage = 'Thread context compacted';
     } else if (isStreaming && !wasStreaming) {
       streamStatusMessage = 'Assistant is responding';
     } else if (!isStreaming && wasStreaming) {
@@ -93,7 +93,7 @@
   {#if chatStore.isLoadingHistory}
     <div class="loading-state">
       <Spinner size="lg" />
-      <p>Loading conversation…</p>
+      <p>Loading thread…</p>
     </div>
   {:else if chatStore.messages.length === 0}
     <div class="empty-state">
