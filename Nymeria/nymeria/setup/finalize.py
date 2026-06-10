@@ -292,12 +292,11 @@ def finalize(
     # Docker owns its `/data` volume, so the host cannot seed the bootstrap profile
     # (that is why the Docker branch below skips seed_bootstrap_profile). Carry the
     # picks into the container via `.env.docker` instead; it reads them once on
-    # first boot. Empty for a no-pick install. SLIM ONLY: the single-container
-    # compose injects the whole file via `env_file:`, but the full stack's compose
-    # uses per-service `environment:` blocks that do not pass `NYMERIA_INIT_*`
-    # through, so writing them there would be dead config (deferred follow-up).
-    init_picks = docker_init_seed_env(state) if for_docker else {}
-    init_seed_env = init_picks if (for_docker and not is_full_stack) else None
+    # first boot. Empty for a no-pick install. Both Docker shapes deliver them:
+    # the single-container compose injects the whole file via `env_file:`, and the
+    # full stack's shared api/worker `environment:` anchor passes the two
+    # `NYMERIA_INIT_*` vars through `--env-file` interpolation.
+    init_seed_env = docker_init_seed_env(state) if for_docker else None
     # The full Postgres + Redis stack needs minted DB/cache passwords in
     # `.env.docker` (compose fails fast without them). Slim and non-Docker shapes
     # write nothing extra here.
@@ -331,14 +330,14 @@ def finalize(
             "[green]Data:[/green] container-managed volume (the backend creates "
             "its admin and bootstrap token on first start)"
         )
-        # The picks would not reach the full stack's containers yet, so say so
-        # rather than write config that silently does nothing. Reprinted at the
-        # end of the start handoff so a long `--start` scroll does not bury it.
-        _print_full_stack_init_picks_note(console, state)
         if is_full_stack and full_stack_env:
             shadow_keys = dict(full_stack_env)
             if secrets_key:
                 shadow_keys["NYMERIA_SECRETS_KEY"] = secrets_key
+            # The pick carriers ride the same `${VAR}` interpolation as the
+            # DB/cache passwords, so a process-env value shadows them too.
+            if init_seed_env:
+                shadow_keys.update(init_seed_env)
             _warn_shadowing_process_env(console, shadow_keys)
     else:
         repo = AccountsRepo(data_dir / "accounts.db")
@@ -416,10 +415,12 @@ def write_config(
     the provider key when the field was left blank to keep the existing one) is
     left as-is on disk rather than blanked.
 
-    `init_seed_env` (Docker shape only) carries the bootstrap admin's tool/skill
+    `init_seed_env` (both Docker shapes) carries the bootstrap admin's tool/skill
     picks into the container, which reads them once on first boot
     (`setup/tool_seed.docker_init_seed_env`, contract in `config/init_seed_env.py`).
-    The values are `:`-joined identifier lists, so they write unquoted.
+    The values are `:`-joined identifier lists, so they write unquoted. The slim
+    compose delivers them via `env_file:`; the full stack via the `NYMERIA_INIT_*`
+    passthroughs in its shared api/worker `environment:` anchor.
 
     `full_stack_env` (full Docker stack only) carries the Postgres/Redis settings
     the multi-container compose interpolates (`POSTGRES_PASSWORD`/`REDIS_PASSWORD`
@@ -462,7 +463,8 @@ def write_config(
         produced.append(("NYMERIA_SECRETS_KEY", _env_value(secrets_key)))
     for env_var, value in init_seed_env.items():
         # Docker first-boot pick carriers (`:`-joined name lists). Already in the
-        # safe set, so `_env_value` leaves them unquoted for Docker `env_file`.
+        # safe set, so `_env_value` leaves them unquoted for both delivery paths
+        # (slim `env_file:`, full-stack `--env-file` interpolation).
         if value:
             produced.append((env_var, _env_value(value)))
 
@@ -962,7 +964,6 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
     spec = _docker_stack_spec(state)
     console.print(f"\nStart Nymeria ({spec.label}):")
     _print_command(console, _compose_command_str(spec, "up", "-d"))
-    _print_full_stack_init_picks_note(console, state)
     _print_docker_token_command(console, spec)
 
 
@@ -1027,11 +1028,9 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             f"`{_compose_command_str(spec, 'logs', '-f')}`.[/yellow]"
         )
         _print_docker_token_command(console, spec)
-        _print_full_stack_init_picks_note(console, state)
         return 0
     console.print("[green]Nymeria is up.[/green]")
     _print_docker_bootstrap_token(console, spec=spec, root=root)
-    _print_full_stack_init_picks_note(console, state)
     return 0
 
 
@@ -1158,26 +1157,6 @@ def _is_full_stack(state: WizardState) -> bool:
     return (
         state.hosting is HostingOption.DOCKER
         and (state.docker_stack or DockerStack.SLIM) is DockerStack.FULL
-    )
-
-
-def _print_full_stack_init_picks_note(console: Console, state: WizardState) -> None:
-    """Remind that init tool/skill picks are not auto-carried into the full stack.
-
-    The single-container stack injects `.env.docker` wholesale via `env_file:`, so
-    its `NYMERIA_INIT_*` carriers reach the container; the full stack's per-service
-    `environment:` blocks do not pass them through (a deferred follow-up). Printed
-    both during config and again at the end of the start handoff so a long
-    `--start` scroll does not bury it. No-op unless the full stack actually carries
-    picks that differ from the defaults.
-    """
-    if not _is_full_stack(state):
-        return
-    if not docker_init_seed_env(state):
-        return
-    console.print(
-        "[yellow]Note:[/yellow] tool and skill picks are not yet carried into the "
-        "full stack automatically; set them in Settings once the backend is up."
     )
 
 

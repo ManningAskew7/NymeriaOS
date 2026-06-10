@@ -170,3 +170,31 @@ def test_agent_migration_does_not_clobber_env_seeded_tools(monkeypatch, tmp_path
 
     after = manager.get_profile(BOOTSTRAP_USER_ID).tool_preferences.default_thread_tools
     assert after == ["read_file", "web_search_tavily"]
+
+
+# --- full-stack compose passthrough ------------------------------------------
+
+
+def test_full_stack_compose_passes_init_pick_carriers_to_api_and_worker():
+    """Lock the delivery path for the full Postgres + Redis stack.
+
+    The writer puts the carriers in `.env.docker`, which the full stack reads via
+    `--env-file` interpolation, NOT a service `env_file:`. A var the api/worker
+    `environment:` anchor does not list never reaches those containers, so this
+    test pins both carriers to a `${VAR:-}` passthrough in both services (the
+    worker inherits the api anchor; either process may be the one that first
+    materializes the bootstrap admin profile on the shared volume).
+    """
+    import yaml
+    from pathlib import Path
+
+    compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    services = yaml.safe_load(compose_path.read_text(encoding="utf-8"))["services"]
+    for service in ("api", "worker"):
+        env = services[service]["environment"]
+        assert env[INIT_DEFAULT_THREAD_TOOLS_ENV] == (
+            "${" + INIT_DEFAULT_THREAD_TOOLS_ENV + ":-}"
+        ), f"{service} must pass the tools carrier through with an inert default"
+        assert env[INIT_ENABLED_GLOBAL_SKILLS_ENV] == (
+            "${" + INIT_ENABLED_GLOBAL_SKILLS_ENV + ":-}"
+        ), f"{service} must pass the skills carrier through with an inert default"

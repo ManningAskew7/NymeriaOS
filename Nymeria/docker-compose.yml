@@ -251,6 +251,11 @@ services:
       # Data directory
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
+      # First-boot pick carriers from `nymeria init` (`:`-joined name lists,
+      # contract in nymeria/config/init_seed_env.py). Read once when the
+      # bootstrap admin profile is first created; inert when unset.
+      NYMERIA_INIT_DEFAULT_THREAD_TOOLS: ${NYMERIA_INIT_DEFAULT_THREAD_TOOLS:-}
+      NYMERIA_INIT_ENABLED_GLOBAL_SKILLS: ${NYMERIA_INIT_ENABLED_GLOBAL_SKILLS:-}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000}
       # User preferences
