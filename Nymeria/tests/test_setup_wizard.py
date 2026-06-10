@@ -2797,9 +2797,7 @@ def test_start_now_step_applies_and_choices_are_shape_aware():
 
     assert start_now_applies(WizardState(hosting=HostingOption.LOCAL)) is True
     assert start_now_applies(WizardState(hosting=HostingOption.DOCKER)) is True
-    # Background-service start is not wired, so the step is skipped there.
-    assert start_now_applies(WizardState(hosting=HostingOption.SERVICE)) is False
-    assert start_now_applies(WizardState()) is False  # no hosting chosen yet
+    assert start_now_applies(WizardState(hosting=HostingOption.SERVICE)) is True
     # A CLI handoff chosen by flag suppresses the start-now question.
     assert (
         start_now_applies(
@@ -2812,7 +2810,11 @@ def test_start_now_step_applies_and_choices_are_shape_aware():
     assert docker[0].value is NextAction.START_API_OPEN_FRONTEND  # docker -> start
     local = start_now_choices(HostingOption.LOCAL)
     assert local[0].value is NextAction.PRINT_COMMANDS  # local -> print
-    for choices in (docker, local):
+    # The service install is detached like Docker, so it defaults to starting.
+    service = start_now_choices(HostingOption.SERVICE)
+    assert service[0].value is NextAction.START_API_OPEN_FRONTEND
+    assert "service install" in service[1].description
+    for choices in (docker, local, service):
         assert {c.value for c in choices} == {
             NextAction.START_API_OPEN_FRONTEND,
             NextAction.PRINT_COMMANDS,
@@ -2836,7 +2838,7 @@ def test_start_now_is_in_default_flow_before_review():
 
     assert "start_now" in applicable(WizardState(hosting=HostingOption.LOCAL))
     assert "start_now" in applicable(WizardState(hosting=HostingOption.DOCKER))
-    assert "start_now" not in applicable(WizardState(hosting=HostingOption.SERVICE))
+    assert "start_now" in applicable(WizardState(hosting=HostingOption.SERVICE))
 
 
 def test_finalize_starts_docker_when_opted_in(monkeypatch, tmp_path, capsys):
@@ -2915,6 +2917,179 @@ def test_finalize_starts_local_foreground_when_opted_in(monkeypatch, tmp_path):
     assert cmd[-1] == "slim"
     assert cwd == str(root)
     assert env.get("NYMERIA_PROJECT_ROOT") == str(root)
+
+
+def test_finalize_installs_service_when_opted_in(monkeypatch, tmp_path, capsys):
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    installs: list[tuple[list[str], object]] = []
+
+    class _FakeManager:
+        name = "systemd user service"
+
+        def install(self, *, exec_argv, root):
+            installs.append((list(exec_argv), root))
+            return si.InstallReport(
+                artifact=tmp_path / "nymeria.service",
+                lines=("Installed systemd user unit: fake",),
+                notes=("Logs: journalctl --user -u nymeria.service",),
+            )
+
+        def log_hint(self):
+            return "journalctl --user -u nymeria.service"
+
+    monkeypatch.setattr(si, "service_manager", lambda: _FakeManager())
+    monkeypatch.setattr(si, "resolve_exec_argv", lambda: ["/usr/bin/python3", "slim"])
+    health: list[dict] = []
+    monkeypatch.setattr(
+        finalize_mod, "wait_for_health", lambda **kw: bool(health.append(kw)) or True
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert installs and installs[0][1] == root  # the unit points at the runtime root
+    assert health  # verified the backend actually came up, not just "active"
+    assert "Nymeria is up" in out
+    assert "nymeria service status" in out
+
+
+def test_finalize_service_unavailable_falls_back_to_foreground(
+    monkeypatch, tmp_path, capsys
+):
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    def unavailable():
+        raise si.ServiceUnavailableError("no user manager", hints=("try lingering",))
+
+    monkeypatch.setattr(si, "service_manager", unavailable)
+    monkeypatch.setattr(
+        finalize_mod,
+        "wait_for_health",
+        lambda **kw: pytest.fail("must not health-poll when install is impossible"),
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0  # config was written fine; the install is the optional part
+    assert "no user manager" in out
+    assert "try lingering" in out
+    assert "nymeria slim" in out
+
+
+def test_finalize_service_print_path_has_real_commands(monkeypatch, tmp_path, capsys):
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    # Keep the host's real unit (if any) out of the summary warning.
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: None)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    # The old placeholder apology is gone; the handoff is the real install
+    # command (pinned to this config's root, since a bare invocation can
+    # resolve a different one) plus the management verbs.
+    assert "not wired up yet" not in out
+    assert "nymeria service install" in out
+    assert "--root" in out
+    assert "nymeria service status" in out
+    assert "nymeria service uninstall" in out
+    # The hosting choice round-trips via the wizard-only marker.
+    assert "NYMERIA_HOSTING=service" in (root / "config.env").read_text()
+
+
+def test_finalize_warns_about_stale_service_artifact(monkeypatch, tmp_path, capsys):
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        si, "installed_artifact_path", lambda: tmp_path / "nymeria.service"
+    )
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "local",
+         "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    # Switching away from SERVICE never tears the unit down silently; the
+    # summary must say it is still installed and how to remove it.
+    assert "nymeria service uninstall" in out
+
+
+def test_hydrate_recovers_service_hosting(monkeypatch, tmp_path):
+    import nymeria.service_install as si
+
+    from nymeria.onboarding import HOSTING_MARKER_ENV
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    assert (
+        setup_main(
+            ["--provider", "anthropic", "--model", "claude-test-model",
+             "--api-key", "sk-ant-test-key", "--hosting", "service",
+             "--root", str(root), "--non-interactive"]
+        )
+        == 0
+    )
+
+    # The marker is authoritative: SERVICE round-trips even with no artifact
+    # installed (and, the important direction, a switch away from SERVICE
+    # sticks while the old unit still exists on disk).
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: None)
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state)
+    assert state.hosting is HostingOption.SERVICE
+
+    # Marker-less configs (written before the marker existed) fall back to
+    # the installed artifact to tell LOCAL from SERVICE.
+    config = root / "config.env"
+    config.write_text(
+        "\n".join(
+            line
+            for line in config.read_text().splitlines()
+            if not line.startswith(HOSTING_MARKER_ENV)
+        )
+        + "\n"
+    )
+    fake_unit = tmp_path / "nymeria.service"
+    fake_unit.write_text("[Unit]\n")
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: fake_unit)
+    legacy = WizardState(root=root)
+    assert hydrate_state_from_disk(legacy)
+    assert legacy.hosting is HostingOption.SERVICE
+
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: None)
+    plain = WizardState(root=root)
+    assert hydrate_state_from_disk(plain)
+    assert plain.hosting is HostingOption.LOCAL
 
 
 def test_finalize_default_does_not_start_a_process(monkeypatch, tmp_path, capsys):

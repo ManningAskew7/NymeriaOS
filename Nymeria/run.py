@@ -21,6 +21,8 @@ Usage:
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
     python run.py service run      # Run gateway in foreground (debug)
+    python run.py service install  # Install the background service (systemd user unit / launchd agent)
+    python run.py service status   # Background-service state + health probe
 """
 
 import argparse
@@ -197,7 +199,13 @@ def _service_token_requirement(args: argparse.Namespace) -> str | None:
     """Return the human-readable role requiring NYMERIA_SERVICE_TOKEN, if any."""
     command = getattr(args, "command", None)
     if command == "service":
-        return "the foreground gateway service"
+        # Only the foreground gateway run needs the token; the service
+        # manager actions (install/uninstall/status/restart) do not talk
+        # to the API as a privileged client. A missing/None action means
+        # the bare `nymeria service` invocation, which runs the gateway.
+        if (getattr(args, "action", None) or "run") == "run":
+            return "the foreground gateway service"
+        return None
     return _SERVICE_TOKEN_REQUIRED_COMMANDS.get(command)
 
 
@@ -592,8 +600,16 @@ def run_slim(args: argparse.Namespace) -> None:
 
 
 def run_service(args: argparse.Namespace) -> None:
-    """Handle service subcommand (foreground gateway mode)."""
-    run_gateway_foreground(args)
+    """Handle service subcommand: manager actions, or the foreground gateway."""
+    action = getattr(args, "action", None) or "run"
+    if action == "run":
+        run_gateway_foreground(args)
+        return
+    from nymeria.service_install import service_cli
+
+    root_arg = getattr(args, "root", None)
+    root = Path(root_arg).expanduser().resolve() if root_arg else None
+    sys.exit(service_cli(action, root=root))
 
 
 def run_init(args: argparse.Namespace) -> int:
@@ -1832,11 +1848,37 @@ Examples:
         help="URL of the running Nymeria API (default: NYMERIA_API_URL, Docker nymeria-api, or localhost:8000)",
     )
 
-    # Service subcommand (foreground gateway)
-    subparsers.add_parser(
+    # Service subcommand: background-service manager + foreground gateway
+    service_parser = subparsers.add_parser(
         "service",
-        help="Run gateway server in foreground",
-        description="Start the GatewayServer (REST transport) in the foreground with graceful Ctrl+C shutdown.",
+        help="Manage the background service (install/uninstall/status/restart), or run the foreground gateway",
+        description=(
+            "Manage the slim backend's background service: a systemd user unit "
+            "on Linux, a launchd agent on macOS. With no action (or `run`), "
+            "start the GatewayServer (REST transport) in the foreground with "
+            "graceful Ctrl+C shutdown."
+        ),
+    )
+    service_parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["install", "uninstall", "status", "restart", "run"],
+        default="run",
+        help=(
+            "install: write the unit/agent, enable it, start it, and verify "
+            "health; uninstall: stop and remove it; status: service state plus "
+            "a health probe; restart: restart the service; run: foreground "
+            "gateway (default)"
+        ),
+    )
+    service_parser.add_argument(
+        "--root",
+        default=None,
+        help=(
+            "Project root the service should run against (where config.env and "
+            "data live). Defaults to NYMERIA_PROJECT_ROOT / auto-discovery; the "
+            "setup wizard prints the matching --root for its config."
+        ),
     )
 
     # Users subcommand (account provisioning)
@@ -1905,8 +1947,14 @@ def main() -> None:
     if args.command == "cli":
         if getattr(args, "transport", "api") == "local":
             validate_config(suppress_service_token_warning=suppress_service_token_warning)
-    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "watchdog", "service"):
+    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "watchdog"):
         validate_config(suppress_service_token_warning=suppress_service_token_warning)
+    elif args.command == "service":
+        # Only the foreground gateway run needs a valid config; the service
+        # manager actions must work before (install) or without (status,
+        # uninstall) a complete configuration.
+        if (getattr(args, "action", None) or "run") == "run":
+            validate_config(suppress_service_token_warning=suppress_service_token_warning)
     elif args.command == "users":
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
         # check so the admin can provision users before the API is configured.

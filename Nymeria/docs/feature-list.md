@@ -450,7 +450,8 @@ CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 
 ### Other Modes
 - **Local dev**  -  `python3 run.py api|cli|worker|mcp`
-- **Foreground gateway**  -  `python3 run.py service` (GatewayServer with graceful shutdown)
+- **Foreground gateway**  -  `python3 run.py service run` (GatewayServer with graceful shutdown)
+- **Background service**  -  `nymeria service install|uninstall|status|restart` (systemd user unit on Linux with lingering, launchd agent on macOS: starts at boot/login, restarts on crash, verified against `/health` after install; the `nymeria init` hosting choice offers the same install at the start-now step)
 - **Interactive CLI**  -  `python3 run.py cli`
 - **Non-interactive CLI**  -  `python3 run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
 - **CLI JSON output**  -  add `--json` to slash-command list/stat commands for machine-readable stdout: `/thread list --json`, `/tools list --json`, `/settings --json`, `/context --json`, and `/usage --json`.

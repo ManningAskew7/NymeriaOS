@@ -382,7 +382,8 @@ Make sure you've set the API key for your chosen provider in your environment fi
 - Read the full documentation in `docs/`
 - Customize Nymeria's personality in `nymeria/config/soul.md`
 - Explore other entry points like `python3 run.py cli`, `python3 run.py worker`, or `python3 run.py mcp`
-- Run as foreground gateway: `python3 run.py service`
+- Run as foreground gateway: `python3 run.py service run`
+- Install the slim backend as a background service (starts at boot/login, restarts on crash): `python3 run.py service install`; manage it with `python3 run.py service status|restart|uninstall` (or the `nymeria service ...` console script)
 - Enable tab completion: `python3 run.py completion bash >> ~/.bashrc && source ~/.bashrc` (also supports `zsh` and `fish`)
 
 ## Getting Help
