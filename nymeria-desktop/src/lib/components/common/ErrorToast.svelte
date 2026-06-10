@@ -50,7 +50,7 @@
       case 'resource_owned':
         return 'Cannot delete';
       default:
-        return 'Something went wrong';
+        return "That didn't work";
     }
   }
 </script>
