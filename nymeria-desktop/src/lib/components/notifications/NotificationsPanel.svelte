@@ -104,7 +104,7 @@
 <section class="notifications-panel">
   <header class="section-header">
     <div>
-      <h2 class="section-title">Notification routing</h2>
+      <h2 class="panel-title">Notification routing</h2>
       <p class="section-blurb">
         Define <strong>destinations</strong> (where messages go) and bundle them
         into <strong>routing profiles</strong> (which the agent picks by name). The
@@ -326,10 +326,11 @@
     gap: var(--spacing-md);
   }
 
-  .section-title {
+  .panel-title {
     margin: 0 0 4px 0;
     font-size: var(--font-size-lg);
     font-weight: 600;
+    color: var(--text-primary);
   }
 
   .section-blurb {

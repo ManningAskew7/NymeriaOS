@@ -81,7 +81,7 @@
 <div class="prompt-editor">
   <header class="editor-header">
     <div class="editor-heading">
-      <h3 class="section-title">System Prompt</h3>
+      <h3 class="section-heading">System Prompt</h3>
       <p class="field-hint">
         The base persona and instructions applied to every thread (soul.md).
         Per-thread custom instructions and overrides still layer on top of this.
@@ -143,9 +143,9 @@
     min-width: 0;
   }
 
-  .section-title {
+  .section-heading {
     margin: 0 0 6px 0;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
   }

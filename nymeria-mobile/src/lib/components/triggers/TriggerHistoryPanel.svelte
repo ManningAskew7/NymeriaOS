@@ -83,15 +83,15 @@
 
     <div class="panel-body">
       {#if loading}
-        <div class="center-state">
+        <div class="empty-state">
           <span class="loading-text">Loading history…</span>
         </div>
       {:else if error}
-        <div class="center-state error">
+        <div class="empty-state error">
           <p>{error}</p>
         </div>
       {:else if executions.length === 0}
-        <div class="center-state">
+        <div class="empty-state">
           <p>No executions yet</p>
           <p class="hint">This trigger hasn't fired. Executions will appear here when it does.</p>
         </div>
@@ -265,23 +265,23 @@
     padding: var(--spacing-sm);
   }
 
-  .center-state {
+  .empty-state {
     text-align: center;
     padding: var(--spacing-xl) var(--spacing-md);
     color: var(--text-muted);
     font-size: var(--font-size-sm);
   }
 
-  .center-state.error {
+  .empty-state.error {
     color: var(--error);
   }
 
-  .center-state .hint {
+  .empty-state .hint {
     font-size: var(--font-size-xs);
     margin-top: var(--spacing-xs);
   }
 
-  .center-state p {
+  .empty-state p {
     margin: 0;
   }
 

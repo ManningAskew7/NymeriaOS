@@ -105,15 +105,15 @@
 
 <div class="activity-feed">
   {#if activityStore.loading && activityStore.entries.length === 0}
-    <div class="feed-state">
+    <div class="empty-state">
       <span>Loading recent activity…</span>
     </div>
   {:else if activityStore.error}
-    <div class="feed-state error">
+    <div class="empty-state error">
       <p>{activityStore.error}</p>
     </div>
   {:else if activityStore.entries.length === 0}
-    <div class="feed-state">
+    <div class="empty-state">
       {#if threadId}
         <p>No activity in this thread</p>
         <span class="hint">Autonomous task activity for this thread will appear here</span>
@@ -167,18 +167,18 @@
     flex-direction: column;
   }
 
-  .feed-state {
+  .empty-state {
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
     font-size: var(--font-size-sm);
   }
 
-  .feed-state.error {
+  .empty-state.error {
     color: var(--error);
   }
 
-  .feed-state p {
+  .empty-state p {
     margin: 0;
   }
 

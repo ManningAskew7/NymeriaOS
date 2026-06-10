@@ -105,7 +105,7 @@
   {#if skillsStore.installedLoading && !skillsStore.installedLoaded}
     <p class="status">Loading skills…</p>
   {:else if skillsStore.installed.length === 0}
-    <div class="empty">
+    <div class="empty-state">
       <p>No skills installed yet.</p>
       <p class="hint">
         Click <strong>Browse Marketplace</strong> to install skills from
@@ -219,7 +219,7 @@
 
   .panel-title {
     margin: 0 0 4px 0;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-lg);
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -249,19 +249,19 @@
     color: var(--error);
   }
 
-  .empty {
+  .empty-state {
     text-align: center;
     padding: var(--spacing-xl);
     color: var(--text-secondary);
   }
-  .empty .hint {
+  .empty-state .hint {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     max-width: 480px;
     margin: var(--spacing-sm) auto 0;
     line-height: 1.5;
   }
-  .empty code {
+  .empty-state code {
     background: var(--bg-base);
     padding: 1px 4px;
     border-radius: var(--radius-sm);

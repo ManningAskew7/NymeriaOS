@@ -449,7 +449,7 @@ https://github.com/example/mcp-server`}
 
         {#if activePlan.required_config.length > 0}
           <div class="config-section">
-            <span class="section-title">Required configuration</span>
+            <span class="section-heading">Required configuration</span>
             <div class="config-fields">
               {#each activePlan.required_config as field}
                 <label class="config-field">
@@ -1017,9 +1017,9 @@ https://github.com/example/mcp-server`}
     }
   }
 
-  .section-title,
+  .section-heading,
   .tools-title {
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
   }

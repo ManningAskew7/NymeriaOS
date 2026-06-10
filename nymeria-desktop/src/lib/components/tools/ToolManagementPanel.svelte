@@ -473,7 +473,7 @@
           <span class="section-chevron" class:open={effectiveDefaultOpen}>
             <Icon name="chevronRight" size={14} />
           </span>
-          <span class="section-title">Default tools</span>
+          <span class="section-heading">Default tools</span>
           <span class="section-count">{sectionCountLabel(defaultMatchCount, defaultCount)}</span>
         </button>
         {#if effectiveDefaultOpen}
@@ -509,7 +509,7 @@
           <span class="section-chevron" class:open={effectiveAvailableOpen}>
             <Icon name="chevronRight" size={14} />
           </span>
-          <span class="section-title">Available Tools</span>
+          <span class="section-heading">Available Tools</span>
           <span class="section-count">{sectionCountLabel(availableMatchCount, availableCount)}</span>
         </button>
         {#if effectiveAvailableOpen}
@@ -1078,15 +1078,9 @@
     transform: rotate(90deg);
   }
 
-  /* Promote the section title so it outweighs the CORE/PROFILE category bars below */
-  .section-toggle .section-title {
+  /* md/600 section-heading tier; still outweighs the CORE/PROFILE category bars below */
+  .section-heading {
     font-size: var(--font-size-md);
-    font-weight: 700;
-    letter-spacing: 0.01em;
-  }
-
-  .section-title {
-    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1118,7 +1112,6 @@
     padding: var(--spacing-md);
     font-size: var(--font-size-sm);
     color: var(--text-muted);
-    font-style: italic;
     text-align: center;
   }
 

@@ -116,7 +116,7 @@
 <div class="dream-editor">
   <header class="editor-header">
     <div class="editor-heading">
-      <h3 class="section-title">Dream Prompts</h3>
+      <h3 class="section-heading">Dream Prompts</h3>
       <p class="field-hint">
         The global defaults for the background dream cycle. The system prompt is the
         dream's role, phases, and rules; the kickoff message is the first message sent
@@ -201,9 +201,9 @@
     min-width: 0;
   }
 
-  .section-title {
+  .section-heading {
     margin: 0 0 6px 0;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
   }

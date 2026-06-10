@@ -57,15 +57,15 @@
   </div>
 
   {#if todosStore.loading && todosStore.todos.length === 0}
-    <div class="feed-state">
+    <div class="empty-state">
       <span>Loading tasks…</span>
     </div>
   {:else if todosStore.error}
-    <div class="feed-state error">
+    <div class="empty-state error">
       <p>{todosStore.error}</p>
     </div>
   {:else if todosStore.todos.length === 0}
-    <div class="feed-state">
+    <div class="empty-state">
       {#if threadId}
         <p>No tasks in this thread</p>
         <span class="hint">Use "Add Task" above to create one for this thread</span>
@@ -167,18 +167,18 @@
     background: var(--accent-tint-bg);
   }
 
-  .feed-state {
+  .empty-state {
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
     font-size: var(--font-size-sm);
   }
 
-  .feed-state.error {
+  .empty-state.error {
     color: var(--error);
   }
 
-  .feed-state p {
+  .empty-state p {
     margin: 0;
   }
 

@@ -85,7 +85,7 @@
       {/each}
 
       {#if filteredGroups.length === 0}
-        <div class="empty">
+        <div class="empty-state">
           {#if searchQuery}
             <p>No threads match "{searchQuery}"</p>
           {:else}
@@ -148,7 +148,7 @@
     z-index: 1;
   }
 
-  .empty {
+  .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -159,12 +159,12 @@
     text-align: center;
   }
 
-  .empty p {
+  .empty-state p {
     font-size: var(--font-size-base);
     color: var(--text-secondary);
   }
 
-  .empty span {
+  .empty-state span {
     font-size: var(--font-size-sm);
   }
 

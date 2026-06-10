@@ -895,7 +895,7 @@
         </div>
 
         <div class="section-divider">
-          <span class="section-title">Advanced</span>
+          <span class="section-heading">Advanced</span>
         </div>
         <div class="setting-group">
           <label class="setting-toggle">
@@ -940,7 +940,7 @@
 
       {:else if activeTab === 'agent'}
         <div class="section-divider">
-          <span class="section-title">Agent Configuration</span>
+          <span class="section-heading">Agent Configuration</span>
         </div>
         <div class="setting-group">
           <label class="setting-toggle">
@@ -976,7 +976,7 @@
 
       {:else if activeTab === 'dream'}
         <div class="section-divider">
-          <span class="section-title">Dreaming</span>
+          <span class="section-heading">Dreaming</span>
           <p class="hint">
             Background self-reflection for this thread. Dream turns run in a shadow thread and write only through the dream tool policy.
           </p>
@@ -1349,7 +1349,7 @@
 
           {#if availableTools.length > 0}
             <div class="section-divider">
-              <span class="section-title">
+              <span class="section-heading">
                 Available to add
                 {#if enabledToolCount > 0}<span class="tab-badge">{enabledToolCount}</span>{/if}
               </span>
@@ -1390,7 +1390,7 @@
           <div class="loading-state">Loading MCP tools…</div>
         {:else}
           <div class="section-divider">
-            <span class="section-title">
+            <span class="section-heading">
               <Icon name="terminal" size={14} />
               MCP Servers
             </span>
@@ -1475,7 +1475,7 @@
             <div class="loading-state">{skillsStore.enabledGlobalError}</div>
           {/if}
           <div class="section-divider">
-            <span class="section-title">Thread Skills</span>
+            <span class="section-heading">Thread Skills</span>
             <p class="hint">Enable or disable installed skills for this thread. Globally enabled and default skills are active unless disabled here.</p>
           </div>
 
@@ -1898,8 +1898,8 @@
     border-top: 1px solid var(--border-subtle);
   }
 
-  .section-title {
-    font-size: var(--font-size-sm);
+  .section-heading {
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
     display: flex;
