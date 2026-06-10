@@ -18,7 +18,7 @@
           ? `Queued · position ${p.position}`
           : 'Queued · will send at next halt';
       case 'error':
-        return p.errorMessage ? `Failed · ${p.errorMessage}` : 'Failed';
+        return p.errorMessage ? `Couldn't send · ${p.errorMessage}` : "Couldn't send";
     }
   }
 

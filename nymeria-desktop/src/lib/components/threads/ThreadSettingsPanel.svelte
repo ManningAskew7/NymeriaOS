@@ -5,6 +5,7 @@
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { trapFocus } from '$lib/actions/focus';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -882,7 +883,7 @@
 
       onClose();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save';
+      error = humanizeErrorText(e, { action: 'save', resource: 'thread settings' });
     } finally {
       saving = false;
     }
@@ -980,7 +981,7 @@
 
       onClose();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to reset';
+      error = humanizeErrorText(e, { action: 'reset', resource: 'thread settings' });
     } finally {
       saving = false;
     }
@@ -997,7 +998,7 @@
       dreamStatus = `Started ${result.shadow_thread_id}`;
       await threadsStore.syncFromBackend();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to start dream';
+      error = humanizeErrorText(e, { action: 'start', resource: 'dreaming' });
     } finally {
       dreamRunning = false;
     }

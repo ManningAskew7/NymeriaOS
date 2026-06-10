@@ -3,6 +3,7 @@
   import { todosStore } from '$lib/stores/todos.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import type { TodoItem } from '$lib/types';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     isOpen: boolean;
@@ -170,7 +171,7 @@
       }
       onClose();
     } catch (e) {
-      formError = e instanceof Error ? e.message : 'Failed to save task';
+      formError = humanizeErrorText(e, { action: 'save', resource: 'the task' });
     } finally {
       saving = false;
     }
@@ -184,7 +185,7 @@
       await todosStore.delete(editTodo.id);
       onClose();
     } catch (e) {
-      formError = e instanceof Error ? e.message : 'Failed to delete task';
+      formError = humanizeErrorText(e, { action: 'delete', resource: 'the task' });
     } finally {
       deleting = false;
       showDeleteConfirm = false;

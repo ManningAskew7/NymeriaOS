@@ -6,6 +6,7 @@
     NotificationDestinationUpdate
   } from '$lib/types';
   import Button from '$lib/components/common/Button.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     channelTypes: NotificationChannelType[];
@@ -87,7 +88,7 @@
         await onSubmit(create);
       }
     } catch (e) {
-      submitError = e instanceof Error ? e.message : 'Save failed';
+      submitError = humanizeErrorText(e, { action: 'save', resource: 'the destination' });
     } finally {
       submitting = false;
     }
@@ -102,7 +103,7 @@
     } catch (e) {
       testResult = {
         ok: false,
-        detail: e instanceof Error ? e.message : 'Test failed'
+        detail: humanizeErrorText(e, { action: 'test', resource: 'the destination' })
       };
     } finally {
       testing = false;

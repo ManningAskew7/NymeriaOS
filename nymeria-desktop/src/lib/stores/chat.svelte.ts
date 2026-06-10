@@ -263,7 +263,7 @@ export function createChatStore() {
 
       if (lastMessage.role === 'assistant') {
         const existing = (lastMessage.content || '').trim();
-        const errorText = (error || 'Unknown error').trim();
+        const errorText = (error || 'The reply could not be completed.').trim();
         let mergedContent = errorText;
         let updatedSteps = lastMessage.steps;
 

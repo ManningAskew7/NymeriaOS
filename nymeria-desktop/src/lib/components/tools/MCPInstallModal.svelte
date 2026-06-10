@@ -5,6 +5,7 @@
   import MCPInstallRecipes from './MCPInstallRecipes.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type {
     MCPInstallConfigField,
     MCPInstallPreviewResponse,
@@ -149,7 +150,7 @@
       seedConfigValues(nextPreview);
       stage = 'preview';
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Preview failed';
+      error = humanizeErrorText(e, { action: 'load', resource: 'the install preview' });
       stage = 'input';
     } finally {
       stopProgress();

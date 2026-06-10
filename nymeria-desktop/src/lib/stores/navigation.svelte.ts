@@ -92,7 +92,7 @@ export async function switchToThread(
       threadsStore.clearCurrent();
       await threadsStore.syncFromBackend();
     }
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const message = error instanceof Error ? error.message : 'Could not open that thread.';
     return { success: false, error: message };
   }
 }

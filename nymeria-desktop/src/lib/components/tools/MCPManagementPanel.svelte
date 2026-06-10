@@ -62,7 +62,7 @@
       saveMessage = 'MCP default tools saved!';
     } else {
       saveStatus = 'error';
-      saveMessage = defaultToolsStore.error || 'Failed to save';
+      saveMessage = defaultToolsStore.error || "Couldn't save your default tools. Try again in a moment.";
     }
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
   }

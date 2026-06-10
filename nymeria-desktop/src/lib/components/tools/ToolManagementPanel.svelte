@@ -263,7 +263,7 @@
       saveMessage = 'Default tools saved!';
     } else {
       saveStatus = 'error';
-      saveMessage = defaultToolsStore.error || 'Failed to save';
+      saveMessage = defaultToolsStore.error || "Couldn't save your default tools. Try again in a moment.";
     }
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
   }
@@ -290,7 +290,7 @@
       saveMessage = 'Reset to NymeriaOS defaults';
     } else {
       saveStatus = 'error';
-      saveMessage = defaultToolsStore.error || 'Failed to reset';
+      saveMessage = defaultToolsStore.error || "Couldn't reset your default tools. Try again in a moment.";
     }
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
   }

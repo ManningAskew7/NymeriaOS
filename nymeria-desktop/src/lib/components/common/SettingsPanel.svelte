@@ -2,6 +2,7 @@
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api, probeConnection } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import type {
     ServerSettings,
@@ -892,7 +893,7 @@
       serverSettingsStore.refresh();
     } catch (e) {
       testStatus = 'error';
-      testMessage = e instanceof Error ? e.message : 'Failed to save settings';
+      testMessage = humanizeErrorText(e, { action: 'save', resource: 'settings' });
     } finally {
       savingSettings = false;
     }
@@ -917,7 +918,7 @@
       });
       ragUserMessage = 'RAG settings saved!';
     } catch (e) {
-      ragUserMessage = e instanceof Error ? e.message : 'Failed to save RAG settings';
+      ragUserMessage = humanizeErrorText(e, { action: 'save', resource: 'the RAG settings' });
     } finally {
       ragUserSaving = false;
     }

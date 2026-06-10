@@ -3,6 +3,7 @@
   import { Icon, Modal } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
   import { formatFileSize } from '$lib/utils/fileProcessing';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     artifact: WorkspaceArtifact | null;
@@ -114,7 +115,7 @@
         }
       } catch (err) {
         if (!cancelled) {
-          error = err instanceof Error ? err.message : 'Failed to load artifact';
+          error = humanizeErrorText(err, { action: 'load', resource: 'the file' });
         }
       } finally {
         if (!cancelled) {

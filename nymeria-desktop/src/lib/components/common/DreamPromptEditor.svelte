@@ -3,6 +3,7 @@
   import { api } from '$lib/services/api.svelte';
   import type { DreamPromptInfo } from '$lib/types';
   import Button from './Button.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   /**
    * Global (admin) editor for the two dream prompts: the dream system prompt and
@@ -63,7 +64,7 @@
       applyInfo('system', info.system);
       applyInfo('kickoff', info.kickoff);
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load dream prompts';
+      loadError = humanizeErrorText(e, { action: 'load', resource: 'the dream prompts' });
     } finally {
       loading = false;
     }
@@ -87,7 +88,7 @@
         : 'Override cleared. Using the shipped default.';
     } catch (e) {
       f.status = 'error';
-      f.message = e instanceof Error ? e.message : 'Failed to save';
+      f.message = humanizeErrorText(e, { action: 'save', resource: 'the dream prompt' });
     } finally {
       f.saving = false;
     }
@@ -105,7 +106,7 @@
       f.message = 'Reset to the shipped default.';
     } catch (e) {
       f.status = 'error';
-      f.message = e instanceof Error ? e.message : 'Failed to reset';
+      f.message = humanizeErrorText(e, { action: 'reset', resource: 'the dream prompt' });
     } finally {
       f.saving = false;
     }
