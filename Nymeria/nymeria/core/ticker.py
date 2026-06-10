@@ -1171,6 +1171,19 @@ class Ticker:
         error: Exception,
     ) -> None:
         import traceback
+
+        import httpx
+
+        if (
+            isinstance(error, httpx.HTTPStatusError)
+            and error.response.status_code == 401
+        ):
+            logger.error(
+                "[TICKER] Service token rejected by API (401) for TODO %s; "
+                "the client's refresh-and-retry did not recover. Check "
+                "NYMERIA_SERVICE_TOKEN or the shared data/SLIM_SERVICE_TOKEN.txt.",
+                todo.id,
+            )
         logger.error(f"[TICKER] === ERROR === TODO {todo.id} failed: {error}")
         logger.error(f"[TICKER] Traceback:\n{traceback.format_exc()}")
         try:
