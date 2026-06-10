@@ -84,8 +84,8 @@
   async function addMemory() {
     const key = newKey.trim();
     const value = newValue.trim();
-    if (!key) { status = 'error'; message = 'Key is required.'; return; }
-    if (!value) { status = 'error'; message = 'Value is required.'; return; }
+    if (!key) { status = 'error'; message = 'Give the memory a key, like "timezone".'; return; }
+    if (!value) { status = 'error'; message = 'Give the memory a value, like "Europe/Berlin".'; return; }
     adding = true;
     clearStatus();
     try {

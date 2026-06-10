@@ -29,10 +29,10 @@ export async function probeConnection(
 ): Promise<ConnectionProbeResult> {
   const base = url.trim().replace(/\/$/, '');
   if (!base) {
-    return { ok: false, reason: 'error', message: 'Server URL is required.' };
+    return { ok: false, reason: 'error', message: 'Enter the server URL, like http://localhost:8000.' };
   }
   if (!key) {
-    return { ok: false, reason: 'error', message: 'Account token is required.' };
+    return { ok: false, reason: 'error', message: 'Enter your account token (nym_...).' };
   }
 
   const authHeaders = {

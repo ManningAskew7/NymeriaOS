@@ -93,7 +93,7 @@
     if (!sourceInfo) return 'No source selected';
     for (const [key, field] of sortedFields) {
       if (field.required && !sourceConfig[key] && sourceConfig[key] !== false && sourceConfig[key] !== 0) {
-        return `${field.description || key} is required`;
+        return `${field.description || key} needs a value.`;
       }
     }
     return null;
@@ -101,11 +101,11 @@
 
   function validateAction(): string | null {
     if (actionType === 'agent_prompt') {
-      if (!actionConfig.prompt_template) return 'Prompt template is required';
+      if (!actionConfig.prompt_template) return 'Prompt template needs a value. Describe what Nymeria should do when this trigger fires.';
     } else if (actionType === 'notify') {
-      if (!actionConfig.message_template) return 'Message template is required';
+      if (!actionConfig.message_template) return 'Message template needs a value. This is the notification text sent when the trigger fires.';
     } else if (actionType === 'create_todo') {
-      if (!actionConfig.task_template) return 'Task template is required';
+      if (!actionConfig.task_template) return 'Task template needs a value. It becomes the description of the task the trigger creates.';
     }
     return null;
   }
@@ -165,7 +165,7 @@
   }
 
   async function handleSave() {
-    if (!triggerName.trim()) { saveError = 'Name is required'; return; }
+    if (!triggerName.trim()) { saveError = 'Give the trigger a name before saving.'; return; }
     saving = true;
     saveError = null;
 
@@ -602,7 +602,7 @@
 
       <div class="footer-right">
         {#if currentStep === 'conditions'}
-          <button class="nav-btn secondary" onclick={next} type="button">Skip</button>
+          <button class="nav-btn secondary" onclick={next} type="button">Skip conditions</button>
         {/if}
 
         {#if currentStep === 'review'}

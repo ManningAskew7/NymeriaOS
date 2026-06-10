@@ -352,12 +352,12 @@
                   </button>
                 {/if}
                 <button class="action-btn" onclick={() => { editingServerId = server.id; editError = null; }}>
-                  Edit
+                  Edit server
                 </button>
                 {#if confirmDeleteId === server.id}
                   <span class="confirm-text">Delete?</span>
-                  <button class="action-btn danger" onclick={() => handleDelete(server.id)}>Yes</button>
-                  <button class="action-btn" onclick={() => confirmDeleteId = null}>No</button>
+                  <button class="action-btn danger" onclick={() => handleDelete(server.id)}>Delete server</button>
+                  <button class="action-btn" onclick={() => confirmDeleteId = null}>Cancel</button>
                 {:else}
                   <button class="action-btn danger" onclick={() => confirmDeleteId = server.id}>
                     <Icon name="trash" size={14} />

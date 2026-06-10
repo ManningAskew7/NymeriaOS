@@ -241,10 +241,10 @@
                 <Icon name="edit" size={15} />
               </button>
             {/if}
-            <button type="button" title="Test" onclick={() => credentialsStore.test(credential.id)}>
+            <button type="button" title="Test credential" onclick={() => credentialsStore.test(credential.id)}>
               <Icon name="check" size={15} />
             </button>
-            <button type="button" title="Disable" onclick={() => credentialsStore.disable(credential.id)}>
+            <button type="button" title="Disable credential" onclick={() => credentialsStore.disable(credential.id)}>
               <Icon name="trash" size={15} />
             </button>
           </div>

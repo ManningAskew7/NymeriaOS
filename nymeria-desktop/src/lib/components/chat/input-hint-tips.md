@@ -26,7 +26,7 @@ Each tip is listed once. The order here matches `InputHintTips.svelte`.
 4. Each thread keeps its own model, tools, and memory.
 5. Switch the model for a thread from its settings.
 6. Schedule a task and Nymeria will run it on its own.
-7. Set up triggers to start threads from email, RSS, and more.
+7. Set up triggers to start threads from email, RSS, webhooks, and HTTP polls.
 8. Give a thread its own custom instructions in settings.
 9. Create callable threads to hand work to a sub-agent.
 10. Click the dot to minimise the context usage above.

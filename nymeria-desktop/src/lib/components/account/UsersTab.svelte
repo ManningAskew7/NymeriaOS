@@ -124,7 +124,7 @@
     const requestedEmail = createEmail.trim().toLowerCase();
     const requestedId = createId.trim();
     if (!requestedEmail) {
-      createError = 'Email is required';
+      createError = 'Enter an email address for the new user.';
       return;
     }
     creating = true;

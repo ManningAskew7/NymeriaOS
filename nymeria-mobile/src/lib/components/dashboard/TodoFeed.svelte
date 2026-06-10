@@ -68,10 +68,10 @@
     <div class="feed-state">
       {#if threadId}
         <p>No tasks in this thread</p>
-        <span class="hint">Tasks created in this thread will appear here</span>
+        <span class="hint">Use "Add Task" above to create one for this thread</span>
       {:else}
         <p>No tasks yet</p>
-        <span class="hint">Tap "Add Task" to create one or let Nymeria add tasks as she works</span>
+        <span class="hint">Tap "Add Task" to create one. Nymeria can also create tasks while working on a thread.</span>
       {/if}
     </div>
   {:else}

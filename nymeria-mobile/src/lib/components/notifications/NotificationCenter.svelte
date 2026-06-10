@@ -69,7 +69,7 @@
         {:else if notificationStore.notifications.length === 0}
           <div class="empty-state">
             <Icon name="bell" size={32} />
-            <p>No notifications</p>
+            <p>No notifications yet. Task and trigger updates will land here.</p>
           </div>
         {:else}
           {#each notificationStore.notifications as notification (notification.id)}

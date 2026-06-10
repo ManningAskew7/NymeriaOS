@@ -105,7 +105,7 @@
   async function handleCreate() {
     if (creating) return;
     if (!createEmail.trim()) {
-      createError = 'Email is required';
+      createError = 'Enter an email address for the new user.';
       return;
     }
     creating = true;

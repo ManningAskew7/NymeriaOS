@@ -198,7 +198,7 @@
         type="button"
         disabled={busy || !botToken.trim()}
         onclick={handleSubmitToken}
-      >{busy ? 'Validating…' : 'Continue'}</button>
+      >{busy ? 'Validating…' : 'Validate token'}</button>
     </div>
   {:else if currentStep === 'starting'}
     <p>

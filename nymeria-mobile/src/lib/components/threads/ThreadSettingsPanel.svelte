@@ -878,7 +878,7 @@
 
     <div class="settings-body">
       {#if loading}
-        <div class="loading-state">Loading settings…</div>
+        <div class="loading-state">Loading thread settings…</div>
 
       {:else if activeTab === 'instructions'}
         <div class="setting-group">
@@ -1398,7 +1398,7 @@
           </div>
 
           {#if mcpServersForThread.length === 0}
-            <div class="loading-state">No MCP servers installed.</div>
+            <div class="loading-state">No MCP servers installed. Install one in Settings → MCP.</div>
           {:else}
             {#each mcpServersForThread as server (server.id)}
               <div class="mcp-server-group">

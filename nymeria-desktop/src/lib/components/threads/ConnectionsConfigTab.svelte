@@ -126,7 +126,7 @@
           <button class="btn btn-secondary" type="button" onclick={() => (showMyBotWizard = true)}>Use my own bot</button>
         </div>
         <p class="field-hint" style="margin: 0.25rem 0 0;">
-          <strong>Shared:</strong> use the existing Nymeria bot for the fastest setup, with no BotFather required.
+          <strong>Shared:</strong> use the existing Nymeria bot. No BotFather token required.
           <br />
           <strong>My own bot:</strong> paste a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> for a branded bot you control. Requires <code>NYMERIA_SECRETS_KEY</code> on the server.
         </p>

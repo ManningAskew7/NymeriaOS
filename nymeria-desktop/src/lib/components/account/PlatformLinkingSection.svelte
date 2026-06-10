@@ -80,7 +80,7 @@
     if (linking) return;
     const trimmed = linkProviderUserId.trim();
     if (!trimmed) {
-      linkError = 'Provider user ID is required';
+      linkError = 'Enter the user ID from the platform you are linking.';
       return;
     }
     linking = true;
