@@ -30,6 +30,7 @@ from ..api.routers.autonomous_stream import create_autonomous_stream_router
 from ..api.routers.browser_commands import create_browser_commands_router
 from ..api.routers.chat import create_chat_router
 from ..api.routers.chat_apps import create_chat_apps_router
+from ..api.routers.cliproxy import create_cliproxy_router
 from ..api.routers.commands import create_commands_router
 from ..api.routers.credentials import create_credentials_router
 from ..api.routers.credential_prompts import create_credential_prompts_router
@@ -953,6 +954,13 @@ def create_api_app(
     app.include_router(
         create_settings_router(
             verify_api_key,
+            require_admin_user,
+            get_agent,
+            get_settings,
+        )
+    )
+    app.include_router(
+        create_cliproxy_router(
             require_admin_user,
             get_agent,
             get_settings,

@@ -24,6 +24,7 @@ from typing import Literal, Optional
 
 OAuthFlow = Literal["browser", "device"]
 UrlShape = Literal["root", "v1"]
+ApiMode = Literal["", "chat_completions", "responses"]
 
 GEMINI_CLI_TOS_WARNING = (
     "Google treats third-party use of the Gemini CLI OAuth client as a policy "
@@ -48,7 +49,7 @@ class CLIProxyProviderSpec:
     nymeria_provider: str
     url_shape: UrlShape
     key_setting: str
-    api_mode: str = ""
+    api_mode: ApiMode = ""
     default_model: str = ""
     tos_warning: str = ""
     # The `provider` string this CLI's entries carry in GET /auth-files.
