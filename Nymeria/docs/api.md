@@ -3489,6 +3489,32 @@ webhook trigger without putting the shared secret in the URL.
 
 ---
 
+## CLIProxy Management API
+
+Admin-only routes for driving a CLIProxy sidecar (subscription OAuth) through
+its remote-management API. All routes require an admin account token and are
+inert until `CLIPROXY_MANAGEMENT_URL` and `CLIPROXY_MANAGEMENT_KEY` are set
+(see the configuration doc). The provider catalog is the single source of
+route shapes; frontends never derive base URLs or key slots themselves.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/cliproxy/catalog` | Static provider catalog (id, label, flow, route shape, default model, ToS warning) |
+| GET | `/cliproxy/status` | Reachability plus per-provider support (live probe, cached 15 min; `?refresh=true` re-probes) and login state. Degrades to `configured/reachable: false` instead of erroring |
+| POST | `/cliproxy/oauth/start` | `{provider}` -> `{url, state, flow}`; open `url` in any browser |
+| GET | `/cliproxy/oauth/status?state=&provider=` | Poll the pending login: `wait` / `ok` / `error`. On `ok` for Claude the backend re-asserts `tool_prefix_disabled` on the auth file |
+| POST | `/cliproxy/oauth/callback` | `{provider, redirect_url}` (or `code`+`state`): deliver a browser callback that landed on a dead localhost page |
+| GET | `/cliproxy/auth-files?provider=` | List the proxy's stored logins with status |
+| PATCH | `/cliproxy/auth-files/{name}` | `{disabled?, priority?}` |
+| DELETE | `/cliproxy/auth-files/{name}` | Remove a login from the proxy |
+| GET / PATCH | `/cliproxy/config` | The surfaced knob subset (`api-keys`, `request-retry`, `max-retry-interval`, `routing/strategy`, `oauth-model-alias`, `oauth-excluded-models`, `quota-exceeded/*`) |
+| POST | `/cliproxy/apply-route` | `{provider, model?, scope: global\|thread, thread_id?, gatekeeper_key?}`: turn a catalog entry into LLM settings. Global scope hot-reloads through the settings applier; thread scope writes the per-thread LLM config |
+
+Status codes: 400 (management not configured / bad request), 404 (unknown
+provider or auth file), 409 (proxy state conflict), 422 (provider unsupported
+by the pinned proxy binary or no gatekeeper key available), 502 (proxy
+unreachable or management key rejected).
+
 ## Error Responses
 
 All errors follow this format:
