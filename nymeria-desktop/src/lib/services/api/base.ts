@@ -140,6 +140,30 @@ export class ApiBase {
   }
 
   /**
+   * Parse the backend's JSON error `detail` string, if present. No side
+   * effects. Returns null when the body is missing, non-JSON, or `detail` is
+   * not a string (FastAPI validation errors arrive as a list, which we
+   * deliberately do not surface verbatim).
+   */
+  protected async _parseDetail(response: Response): Promise<string | null> {
+    const detail = await response.json().catch(() => ({}));
+    return typeof detail?.detail === 'string' ? detail.detail : null;
+  }
+
+  /**
+   * Non-toasting error extractor for endpoints whose callers render an inline
+   * error (most of the app). Surfaces the backend `detail` when present, else
+   * a "<fallback> (status)" string -- use this instead of throwing a bare
+   * `API error: ${status}` so the downstream humanizer has a real message to
+   * work with. For account/admin flows that should also raise a toast, use
+   * _toastAndExtractError instead.
+   */
+  protected async _extractError(response: Response, fallback: string): Promise<string> {
+    const detailMessage = await this._parseDetail(response);
+    return detailMessage || `${fallback} (${response.status})`;
+  }
+
+  /**
    * Surface a structured toast for known account/admin failure modes and then
    * extract a human-readable error message to throw. Called from the new
    * /me/* and /admin/* wrappers — keeps the toast UI in sync with backend
@@ -151,8 +175,7 @@ export class ApiBase {
    * - any other non-2xx → generic toast
    */
   protected async _toastAndExtractError(response: Response, fallback: string): Promise<string> {
-    const detail = await response.json().catch(() => ({}));
-    const detailMessage = typeof detail?.detail === 'string' ? detail.detail : null;
+    const detailMessage = await this._parseDetail(response);
     const message = detailMessage || `${fallback} (${response.status})`;
 
     if (response.status === 401) {

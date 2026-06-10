@@ -103,8 +103,7 @@ export class ThreadConfigApi extends MCPApi {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to save thread settings'));
     }
 
     const data = await response.json();
@@ -145,8 +144,7 @@ export class ThreadConfigApi extends MCPApi {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to save the notepad'));
     }
 
     return this._normalizeThreadNotepad(await response.json());
@@ -163,8 +161,7 @@ export class ThreadConfigApi extends MCPApi {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to start dreaming'));
     }
 
     return response.json();
@@ -208,8 +205,7 @@ export class ThreadConfigApi extends MCPApi {
       body: JSON.stringify(request),
     });
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to create the agent thread'));
     }
     const data = await response.json();
     return this._normalizeThreadConfig(data);
@@ -273,7 +269,7 @@ export class ThreadConfigApi extends MCPApi {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      throw new Error(await this._extractError(response, 'Failed to reset thread settings'));
     }
   }
 
@@ -284,8 +280,7 @@ export class ThreadConfigApi extends MCPApi {
     );
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to export the thread'));
     }
 
     return response.json();
@@ -318,8 +313,7 @@ export class ThreadConfigApi extends MCPApi {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
+      throw new Error(await this._extractError(response, 'Failed to import the thread'));
     }
 
     const data = await response.json();
