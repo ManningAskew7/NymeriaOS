@@ -108,7 +108,7 @@
     font: inherit;
     text-align: left;
     transition: background var(--transition-fast), transform var(--transition-fast);
-    animation: staggerFadeIn 0.3s ease-out backwards;
+    animation: staggerFadeIn var(--transition-slow) backwards;
   }
 
   .activity-item:nth-child(1) { animation-delay: 0.03s; }

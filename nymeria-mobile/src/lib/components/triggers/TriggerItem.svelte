@@ -181,7 +181,7 @@
     display: flex;
     padding: var(--spacing-sm) var(--spacing-md);
     border-bottom: 1px solid var(--glass-border);
-    animation: fadeIn 0.2s ease-out both;
+    animation: fadeIn var(--transition-normal) both;
     transition: opacity var(--transition-fast);
   }
 
@@ -284,7 +284,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    animation: fadeIn 0.2s ease-out;
+    animation: fadeIn var(--transition-normal);
   }
 
   .trigger-actions {

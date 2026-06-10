@@ -329,7 +329,7 @@
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
+    transition: all var(--transition-normal);
   }
 
   .progress-step.active .step-dot {

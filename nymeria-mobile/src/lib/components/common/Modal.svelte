@@ -53,7 +53,7 @@
     display: flex;
     flex-direction: column;
     z-index: 1000;
-    animation: slideIn 200ms ease;
+    animation: slideIn var(--transition-normal);
   }
 
   .modal {

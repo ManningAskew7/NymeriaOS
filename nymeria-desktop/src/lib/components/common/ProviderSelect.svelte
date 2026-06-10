@@ -379,7 +379,7 @@
     flex-shrink: 0;
     color: var(--text-muted);
     font-size: var(--font-size-3xs);
-    transition: transform 120ms;
+    transition: transform var(--transition-fast);
   }
 
   .open .trigger-caret {

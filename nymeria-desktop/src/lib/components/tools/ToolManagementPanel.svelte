@@ -1387,7 +1387,7 @@
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
     margin-bottom: var(--spacing-sm);
   }
 
@@ -1462,7 +1462,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .action-btn:hover {
@@ -1559,7 +1559,7 @@
     font-size: 24px;
     cursor: pointer;
     border-radius: var(--radius-sm);
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .close-btn:hover {

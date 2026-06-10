@@ -589,7 +589,7 @@
     border: 2px solid var(--border-subtle);
     border-radius: var(--radius-md);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .type-btn:hover {

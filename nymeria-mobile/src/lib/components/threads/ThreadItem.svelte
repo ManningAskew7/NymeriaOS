@@ -260,7 +260,7 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fadeIn 150ms ease;
+    animation: fadeIn var(--transition-fast);
   }
 
   .actions-menu {
@@ -270,7 +270,7 @@
     border-top-left-radius: var(--radius-xl);
     border-top-right-radius: var(--radius-xl);
     padding: var(--spacing-md);
-    animation: slideUp 200ms ease;
+    animation: slideUp var(--transition-normal);
   }
 
   .action-item {

@@ -653,7 +653,7 @@
     flex-direction: column;
     max-height: min(720px, calc(100vh - 48px));
     overflow: hidden;
-    animation: slideUp 200ms ease;
+    animation: slideUp var(--transition-normal);
   }
 
   @media (max-width: 600px) {

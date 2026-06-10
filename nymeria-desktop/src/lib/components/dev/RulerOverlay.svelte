@@ -260,7 +260,7 @@
     color: var(--text-muted);
     cursor: pointer;
     opacity: 0.45;
-    transition: opacity 120ms ease, color 120ms ease, transform 120ms ease;
+    transition: opacity var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
     z-index: 99998;
   }
   .ruler-pin:hover {
@@ -436,7 +436,7 @@
     font-size: 11px;
     text-align: left;
     cursor: pointer;
-    transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
   }
   .row-btn:hover {
     background: var(--bg-base);

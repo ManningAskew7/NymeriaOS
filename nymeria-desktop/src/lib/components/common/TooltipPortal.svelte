@@ -171,7 +171,7 @@
     box-shadow: var(--shadow-md);
     opacity: 0;
     transform: translateY(2px);
-    transition: opacity 120ms ease, transform 120ms ease;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
     /* Maximum safe stacking — nothing in the app uses a higher z-index. */
     z-index: 2147483647;
     top: 0;

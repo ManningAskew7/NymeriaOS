@@ -110,7 +110,7 @@
     border-radius: var(--radius-md);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     color: var(--text-primary);
-    animation: toast-in 180ms ease-out both;
+    animation: toast-in var(--transition-normal) both;
   }
 
   .toast.destructive {

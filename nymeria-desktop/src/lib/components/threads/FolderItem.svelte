@@ -219,7 +219,7 @@
     /* Stagger fade-in matching ActivityItem + ThreadItem — folders also
        cascade in from -8px on the X axis when the folders/teams tab
        re-mounts via {#key}. */
-    animation: staggerFadeIn 0.3s ease-out backwards;
+    animation: staggerFadeIn var(--transition-slow) backwards;
   }
   .folder-item:nth-child(1) { animation-delay: 0.03s; }
   .folder-item:nth-child(2) { animation-delay: 0.06s; }
