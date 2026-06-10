@@ -86,6 +86,26 @@ def test_merge_env_lines_replaces_only_first_occurrence():
     assert out == ["DUP=x", "DUP=2"]
 
 
+def test_merge_env_lines_drop_removes_retired_keys():
+    # A drop key's existing line is removed instead of preserved; comments,
+    # blanks, and other keys are untouched.
+    existing = ["# keep", "A=1", "RETIRED=x:y", "B=2"]
+    out = merge_env_lines(existing, [("A", "9")], drop=["RETIRED"])
+    assert out == ["# keep", "A=9", "B=2"]
+    # Dropping a key that is not in the file is a no-op.
+    assert merge_env_lines(["X=1"], [], drop=["RETIRED"]) == ["X=1"]
+
+
+def test_merge_env_lines_produced_wins_over_drop():
+    # A key in both produced and drop is written, so callers can pass a static
+    # drop list and let produced membership decide retire-vs-update.
+    out = merge_env_lines(["K=old"], [("K", "new")], drop=["K"])
+    assert out == ["K=new"]
+    # Drop also removes duplicate occurrences of a retired key.
+    out = merge_env_lines(["GONE=1", "GONE=2"], [], drop=["GONE"])
+    assert out == []
+
+
 def test_write_env_file_fresh_writes_header_and_0600(tmp_path: Path):
     path = tmp_path / "config.env"
     lines = write_env_file(

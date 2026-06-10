@@ -1127,6 +1127,34 @@ def test_hydrate_recovers_picks_and_captures_unmanaged(monkeypatch, tmp_path):
     assert state.unmanaged_tools == ["my_custom_tool"]
 
 
+def test_hydrate_docker_recovers_picks_from_env_carriers(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _first_run(
+        monkeypatch, root, "--hosting", "docker",
+        "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+    )
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in (
+        (root / ".env.docker").read_text(encoding="utf-8")
+    )
+
+    # The container profile is unreadable from the host; the carriers in
+    # .env.docker are the env-file layer's own record of the picks, so a
+    # reconfigure round-trips them instead of starting from defaults.
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.extras.get("web_search") == ["web_search_tavily"]
+
+    # An explicit flag still wins over the hydrated carrier.
+    flagged = WizardState(root=root)
+    flagged.extras["web_search"] = ["web_search_exa"]
+    assert hydrate_state_from_disk(flagged) is True
+    assert flagged.extras["web_search"] == ["web_search_exa"]
+
+
 def test_hydrate_infers_docker_vs_local(monkeypatch, tmp_path):
     from nymeria.onboarding import HostingOption
     from nymeria.setup.hydrate import hydrate_state_from_disk
@@ -1143,7 +1171,8 @@ def test_hydrate_infers_docker_vs_local(monkeypatch, tmp_path):
     from nymeria.onboarding import DockerStack
 
     assert dstate.docker_stack is DockerStack.SLIM
-    # Docker picks live in the container volume, so none are hydrated host-side.
+    # Docker picks hydrate from the NYMERIA_INIT_* carriers in .env.docker; a
+    # no-pick first run wrote none, so nothing is filled.
     assert "web_search" not in dstate.extras
 
     # Local first run writes config.env and is inferred LOCAL.
@@ -1320,6 +1349,63 @@ def test_reconfigure_docker_merges_env_docker_only(monkeypatch, tmp_path):
     assert "LLM_MODEL=claude-docker-new" in content
     # No host-side profile is created for a Docker reconfigure.
     assert not (root / "data" / "users" / "default" / "profile.json").exists()
+
+
+def test_docker_reconfigure_keeps_carrier_when_picks_untouched(monkeypatch, tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _first_run(
+        monkeypatch, root, "--hosting", "docker",
+        "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+    )
+    before = (root / ".env.docker").read_text(encoding="utf-8")
+    carrier = _env_line(before, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
+    assert carrier
+
+    # A reconfigure that only changes the model: hydrate restores the picks, so
+    # the carrier is re-produced with the same value, not retired.
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    state.model = "claude-docker-new"
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=False,
+                    overwrite_confirmed=True, merge=True) == 0
+    after = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(after, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS") == carrier
+    assert "LLM_MODEL=claude-docker-new" in after
+
+
+def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _first_run(
+        monkeypatch, root, "--hosting", "docker",
+        "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+    )
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in (
+        (root / ".env.docker").read_text(encoding="utf-8")
+    )
+
+    # The user deselects the extra pick (back to backend defaults). The stale
+    # carrier must be REMOVED, or a later fresh volume (down -v && up -d with the
+    # same .env.docker) would re-seed the reverted pick.
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.extras.get("web_search") == ["web_search_tavily"]
+    state.extras["web_search"] = []
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=False,
+                    overwrite_confirmed=True, merge=True) == 0
+    after = (root / ".env.docker").read_text(encoding="utf-8")
+    assert "NYMERIA_INIT_" not in after
 
 
 def test_review_summary_markup_surfaces_collected_choices():
