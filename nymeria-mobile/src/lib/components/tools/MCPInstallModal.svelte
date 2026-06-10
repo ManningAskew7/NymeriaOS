@@ -3,6 +3,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { MCPInstallConfigField, MCPInstallPreviewResponse, MCPInstallResponse } from '$lib/types';
 
   interface Props {
@@ -77,7 +78,7 @@
       seedConfigValues(nextPreview);
       stage = 'preview';
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Preview failed';
+      error = humanizeErrorText(e, { action: 'load', resource: 'the install preview' });
       stage = 'input';
     }
   }
@@ -114,7 +115,7 @@
       await defaultToolsStore.load();
       stage = 'success';
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Installation failed';
+      error = humanizeErrorText(e, { action: 'install', resource: 'the server' });
       stage = 'preview';
     }
   }

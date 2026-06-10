@@ -12,6 +12,7 @@
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import Icon from '$lib/components/common/Icon.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
@@ -305,7 +306,7 @@
         enabledTools = next;
       }
     } catch (e) {
-      mcpAddError = e instanceof Error ? e.message : 'Failed to add server';
+      mcpAddError = humanizeErrorText(e, { action: 'create', resource: 'the server' });
     } finally {
       mcpAddLoading = false;
     }
@@ -774,7 +775,7 @@
 
       onClose();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save';
+      error = humanizeErrorText(e, { action: 'save', resource: 'thread settings' });
     } finally {
       saving = false;
     }
@@ -791,7 +792,7 @@
       dreamStatus = `Started ${result.shadow_thread_id}`;
       await threadsStore.syncFromBackend();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to start dream';
+      error = humanizeErrorText(e, { action: 'start', resource: 'dreaming' });
     } finally {
       dreamRunning = false;
     }
@@ -818,7 +819,7 @@
 
       onClose();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to reset';
+      error = humanizeErrorText(e, { action: 'reset', resource: 'thread settings' });
     } finally {
       saving = false;
     }

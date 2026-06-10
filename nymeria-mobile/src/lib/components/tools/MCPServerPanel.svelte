@@ -2,6 +2,7 @@
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
@@ -105,7 +106,7 @@
         await defaultToolsStore.load();
       }
     } catch (e) {
-      addError = e instanceof Error ? e.message : 'Failed to add server';
+      addError = humanizeErrorText(e, { action: 'create', resource: 'the server' });
     } finally {
       addLoading = false;
     }
@@ -131,7 +132,7 @@
         await defaultToolsStore.load();
       }
     } catch (e) {
-      editError = e instanceof Error ? e.message : 'Failed to update server';
+      editError = humanizeErrorText(e, { action: 'update', resource: 'the server' });
     } finally {
       editLoading = false;
     }
@@ -160,7 +161,7 @@
         }
       }, 8000);
     } catch (e) {
-      testResults = { ...testResults, [serverId]: { status: 'error', error: e instanceof Error ? e.message : 'Test failed' } };
+      testResults = { ...testResults, [serverId]: { status: 'error', error: humanizeErrorText(e, { action: 'test', resource: 'the server' }) } };
     } finally {
       testingServer = null;
     }
@@ -199,7 +200,7 @@
       defaultToolsStore.resetLoaded();
       await defaultToolsStore.load();
     } catch (e) {
-      testResults = { ...testResults, [server.id]: { status: 'error', error: e instanceof Error ? e.message : 'Retry failed' } };
+      testResults = { ...testResults, [server.id]: { status: 'error', error: humanizeErrorText(e, { action: 'load', resource: "the server's tools" }) } };
     } finally {
       retryingServer = null;
     }

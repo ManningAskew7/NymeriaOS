@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import type { AdminUser, UserRole } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { configStore } from '$lib/stores/config.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
@@ -64,7 +65,7 @@
     try {
       users = await api.listAdminUsers();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load users';
+      loadError = humanizeErrorText(e, { action: 'load', resource: 'users' });
     } finally {
       loading = false;
     }
@@ -123,7 +124,7 @@
       showCopyDialog = true;
       await load();
     } catch (e) {
-      createError = e instanceof Error ? e.message : 'Failed to create user';
+      createError = humanizeErrorText(e, { action: 'create', resource: 'the user' });
     } finally {
       creating = false;
     }
@@ -159,7 +160,7 @@
       detailDirty = false;
       await load();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : 'Failed to save';
+      saveError = humanizeErrorText(e, { action: 'save', resource: 'the user' });
     } finally {
       saving = false;
     }
@@ -177,7 +178,7 @@
       await api.updateAdminUser(selectedUser.id, { disabled: !selectedUser.disabled });
       await load();
     } catch (e) {
-      saveError = e instanceof Error ? e.message : `Failed to ${action} user`;
+      saveError = humanizeErrorText(e, { action: 'update', resource: 'the user' });
     } finally {
       togglingDisabled = false;
     }
@@ -195,7 +196,7 @@
       selectedId = null;
       await load();
     } catch (e) {
-      deleteError = e instanceof Error ? e.message : 'Failed to delete user';
+      deleteError = humanizeErrorText(e, { action: 'delete', resource: 'the user' });
     } finally {
       deleting = false;
     }

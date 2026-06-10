@@ -2,6 +2,7 @@
   import type { WorkspaceArtifact } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     artifact: WorkspaceArtifact;
@@ -44,7 +45,7 @@
         objectUrl = nextObjectUrl;
       } catch (err) {
         if (!cancelled) {
-          error = err instanceof Error ? err.message : 'Failed to load image';
+          error = humanizeErrorText(err, { action: 'load', resource: 'the image' });
         }
       } finally {
         if (!cancelled) {
