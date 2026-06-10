@@ -134,25 +134,25 @@
 
   // Validation
   function validate(): string | null {
-    if (!formName.trim()) return 'Trigger name is required';
+    if (!formName.trim()) return 'Give the trigger a name before saving.';
     if (formName.length > 200) return 'Name must be under 200 characters';
-    if (!formSourceType) return 'Source type is required';
-    if (!formActionType) return 'Action type is required';
+    if (!formSourceType) return 'Pick a source type. This is the event the trigger listens for.';
+    if (!formActionType) return 'Pick an action type. This is what Nymeria does when the trigger fires.';
     if (currentSourceInfo) {
       for (const [key, schema] of Object.entries(currentSourceInfo.config_schema)) {
         if (schema.required && !formSourceConfig[key]) {
-          return `${fieldLabel(key)} is required`;
+          return `${fieldLabel(key)} needs a value.`;
         }
       }
     }
     if (formActionType === 'agent_prompt' && !formActionConfig.prompt_template && !formActionConfig.prompt) {
-      return 'Prompt template is required';
+      return 'Prompt template needs a value. Describe what Nymeria should do when this trigger fires.';
     }
     if (formActionType === 'notify' && !formActionConfig.message_template) {
-      return 'Message template is required';
+      return 'Message template needs a value. This is the notification text sent when the trigger fires.';
     }
     if (formActionType === 'create_todo' && !formActionConfig.task_template) {
-      return 'Task template is required';
+      return 'Task template needs a value. It becomes the description of the task the trigger creates.';
     }
     return null;
   }

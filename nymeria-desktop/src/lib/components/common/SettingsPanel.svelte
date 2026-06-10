@@ -1200,10 +1200,10 @@
                     {:else}
                       <span class="conn-active-label">Connected</span>
                     {/if}
-                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit" aria-label="Edit connection">
+                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit connection" aria-label="Edit connection">
                       <Icon name="edit" size={14} />
                     </button>
-                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete" aria-label="Delete connection">
+                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete connection" aria-label="Delete connection">
                       <Icon name="trash" size={14} />
                     </button>
                   {/if}
@@ -1224,7 +1224,7 @@
               onkeydown={(e) => e.key === 'Enter' && handleSaveCurrentConnection()}
             />
             <Button variant="primary" size="sm" onclick={handleSaveCurrentConnection} disabled={!saveConnectionName.trim()}>
-              Save
+              Save connection
             </Button>
             <Button variant="secondary" size="sm" onclick={() => { showSaveInput = false; saveConnectionName = ''; }}>
               Cancel
@@ -1292,7 +1292,7 @@
             </Button>
           {:else}
             <Button variant="primary" onclick={handleSaveConnection}>
-              Save
+              Save connection
             </Button>
           {/if}
         </div>
@@ -1431,7 +1431,7 @@
               <button class="color-seg" class:active={logoColor === 'white'} type="button" role="radio" aria-checked={logoColor === 'white'} onclick={() => setLogoColor('white')}>White</button>
               <button class="color-seg" class:active={logoColor === 'black'} type="button" role="radio" aria-checked={logoColor === 'black'} onclick={() => setLogoColor('black')}>Black</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoColor === LOGO_COLOR_DEFAULT} onclick={resetLogoColor}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoColor === LOGO_COLOR_DEFAULT} onclick={resetLogoColor}>Reset color</button>
           </div>
 
           <!-- Size -->
@@ -1442,7 +1442,7 @@
               <span class="stepper-value">{logoSize}px</span>
               <button class="stepper-btn" type="button" aria-label="Increase size" disabled={logoSize >= LOGO_SIZE_MAX} onclick={() => setLogoSize(logoSize + 1)}>+</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoSize === LOGO_SIZE_DEFAULT} onclick={resetLogoSize}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoSize === LOGO_SIZE_DEFAULT} onclick={resetLogoSize}>Reset size</button>
           </div>
 
           <!-- Nymeria weight -->
@@ -1453,7 +1453,7 @@
               <span class="stepper-value">{logoWeightName}</span>
               <button class="stepper-btn" type="button" aria-label="Increase Nymeria weight" disabled={logoWeightName >= LOGO_WEIGHT_STEPS[LOGO_WEIGHT_STEPS.length - 1]} onclick={() => stepLogoWeight('name', 1)}>+</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoWeightName === LOGO_WEIGHT_NAME_DEFAULT} onclick={resetLogoWeightName}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoWeightName === LOGO_WEIGHT_NAME_DEFAULT} onclick={resetLogoWeightName} aria-label='Reset "Nymeria" weight'>Reset weight</button>
           </div>
 
           <!-- Nymeria opacity -->
@@ -1464,7 +1464,7 @@
               <span class="stepper-value">{logoOpacityName}%</span>
               <button class="stepper-btn" type="button" aria-label="Increase Nymeria opacity" disabled={logoOpacityName >= LOGO_OPACITY_MAX} onclick={() => setLogoOpacity('name', logoOpacityName + 10)}>+</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoOpacityName === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityName}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoOpacityName === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityName} aria-label='Reset "Nymeria" opacity'>Reset opacity</button>
           </div>
 
           <!-- OS weight -->
@@ -1475,7 +1475,7 @@
               <span class="stepper-value">{logoWeightOs}</span>
               <button class="stepper-btn" type="button" aria-label="Increase OS weight" disabled={logoWeightOs >= LOGO_WEIGHT_STEPS[LOGO_WEIGHT_STEPS.length - 1]} onclick={() => stepLogoWeight('os', 1)}>+</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoWeightOs === LOGO_WEIGHT_OS_DEFAULT} onclick={resetLogoWeightOs}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoWeightOs === LOGO_WEIGHT_OS_DEFAULT} onclick={resetLogoWeightOs} aria-label='Reset "OS" weight'>Reset weight</button>
           </div>
 
           <!-- OS opacity -->
@@ -1486,7 +1486,7 @@
               <span class="stepper-value">{logoOpacityOs}%</span>
               <button class="stepper-btn" type="button" aria-label="Increase OS opacity" disabled={logoOpacityOs >= LOGO_OPACITY_MAX} onclick={() => setLogoOpacity('os', logoOpacityOs + 10)}>+</button>
             </div>
-            <button class="logo-reset-btn" type="button" disabled={logoOpacityOs === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityOs}>Reset</button>
+            <button class="logo-reset-btn" type="button" disabled={logoOpacityOs === LOGO_OPACITY_DEFAULT} onclick={resetLogoOpacityOs} aria-label='Reset "OS" opacity'>Reset opacity</button>
           </div>
         </div>
       </div>
@@ -1543,7 +1543,7 @@
   {#if activeTab === 'llm' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading settings...</p>
+        <p class="loading">Loading model settings…</p>
       {:else}
         <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
           <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
@@ -2016,7 +2016,7 @@
   {#if activeTab === 'agent' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading settings...</p>
+        <p class="loading">Loading agent settings…</p>
       {:else}
         <div class="field">
           <label for="context-management">Context Management</label>
@@ -2238,7 +2238,7 @@
       {#if isAdmin}
         <div class="section-heading">RAG engine (server-wide)</div>
         {#if loadingSettings}
-          <p class="loading">Loading settings...</p>
+          <p class="loading">Loading RAG settings…</p>
         {:else}
           <div class="field checkbox-field">
             <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
@@ -2301,7 +2301,7 @@
   {#if activeTab === 'dream' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading settings...</p>
+        <p class="loading">Loading dreaming settings…</p>
       {:else}
         <p class="hint" style="margin-bottom: var(--spacing-md);">
           Global defaults for the background dreaming cycle. A thread's own Dreaming
@@ -2417,7 +2417,7 @@
   {#if activeTab === 'voice' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading settings...</p>
+        <p class="loading">Loading voice settings…</p>
       {:else}
         <h3 class="section-heading">Text-to-Speech (TTS)</h3>
 

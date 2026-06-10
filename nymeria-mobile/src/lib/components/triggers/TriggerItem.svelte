@@ -143,7 +143,7 @@
         <span class="toggle-track"></span>
       </label>
 
-      <button class="action-btn" onclick={handleTest} disabled={testing} type="button" title="Test">
+      <button class="action-btn" onclick={handleTest} disabled={testing} type="button" title="Test trigger">
         <Icon name="terminal" size={13} />
       </button>
 
@@ -154,17 +154,17 @@
       {/if}
 
       {#if onEdit}
-        <button class="action-btn" onclick={() => onEdit(trigger)} type="button" title="Edit">
+        <button class="action-btn" onclick={() => onEdit(trigger)} type="button" title="Edit trigger">
           <Icon name="edit" size={13} />
         </button>
       {/if}
 
       {#if !confirmDelete}
-        <button class="action-btn delete-btn" onclick={() => (confirmDelete = true)} type="button" title="Delete">
+        <button class="action-btn delete-btn" onclick={() => (confirmDelete = true)} type="button" title="Delete trigger">
           <Icon name="x" size={13} />
         </button>
       {:else}
-        <button class="action-btn confirm-delete" onclick={handleDelete} type="button" title="Confirm delete">
+        <button class="action-btn confirm-delete" onclick={handleDelete} type="button" title="Delete trigger">
           <Icon name="check" size={13} />
         </button>
         <button class="action-btn" onclick={() => (confirmDelete = false)} type="button" title="Cancel">

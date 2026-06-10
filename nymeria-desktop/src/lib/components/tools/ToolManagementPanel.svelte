@@ -427,7 +427,7 @@
   {#if defaultToolsStore.loading}
     <div class="loading">Loading tools...</div>
   {:else if !defaultToolsStore.loaded}
-    <div class="loading">Connect to the API to configure tools.</div>
+    <div class="loading">Not connected to the backend. Open Settings → Backend to connect, then manage tools here.</div>
   {:else}
     <!-- Summary bar -->
     <div class="summary-bar">
@@ -566,7 +566,7 @@
         <p class="empty-message">
           {searchQuery.trim()
             ? 'Try another search or clear the field to view all custom tools.'
-            : "Create HTTP or MCP tools to extend your assistant's capabilities."}
+            : "You haven't created any custom tools yet. Add an HTTP tool to call a REST endpoint, or register an MCP server to expose its tools to Nymeria."}
         </p>
       </div>
     {:else}

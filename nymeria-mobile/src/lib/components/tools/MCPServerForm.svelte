@@ -54,12 +54,12 @@
     const errors: Record<string, string> = {};
     if (touched || mode === 'edit') {
       if (!formId.trim()) {
-        errors.id = 'ID is required';
+        errors.id = 'Give the server an ID, like "github".';
       } else if (!/^[a-z0-9][a-z0-9_-]*$/.test(formId.trim())) {
-        errors.id = 'Lowercase letters, numbers, hyphens only';
+        errors.id = 'IDs use lowercase letters, numbers, hyphens, and underscores, like "github".';
       }
-      if (!formName.trim()) errors.name = 'Name is required';
-      if (!formCommand.trim()) errors.command = 'Command is required';
+      if (!formName.trim()) errors.name = 'Give the server a display name, like "GitHub".';
+      if (!formCommand.trim()) errors.command = 'Enter the command that launches the server, like "npx" or "docker".';
     }
     return errors;
   });

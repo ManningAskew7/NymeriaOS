@@ -100,7 +100,7 @@
     formError = '';
 
     if (!task.trim()) {
-      formError = 'Task description is required';
+      formError = 'Describe the task before saving.';
       return;
     }
 

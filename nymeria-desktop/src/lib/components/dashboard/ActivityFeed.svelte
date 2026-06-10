@@ -130,7 +130,7 @@
         <p class="hint">Autonomous task activity for this thread will appear here</p>
       {:else}
         <p>No recent activity</p>
-        <p class="hint">Activity will appear here as Nymeria works</p>
+        <p class="hint">Activity from autonomous tasks and trigger runs will appear here</p>
       {/if}
     </div>
   {:else}

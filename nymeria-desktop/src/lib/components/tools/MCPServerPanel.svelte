@@ -493,7 +493,7 @@
                     Rediscover
                   </Button>
                   <Button size="sm" variant="ghost" onclick={() => { editingServerId = server.id; editError = null; }}>
-                    <Icon name="edit" size={14} /> Edit
+                    <Icon name="edit" size={14} /> Edit server
                   </Button>
                   {#if confirmDeleteId === server.id}
                     <div class="confirm-delete">

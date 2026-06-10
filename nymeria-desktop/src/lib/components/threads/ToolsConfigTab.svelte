@@ -407,7 +407,7 @@
             {#if searchActive}
               No other MCP tools match your search.
             {:else if mcpServersForThread.length === 0}
-              No MCP servers installed.
+              No MCP servers installed. Install one in Settings → MCP Servers.
             {:else}
               Every MCP tool is already enabled.
             {/if}

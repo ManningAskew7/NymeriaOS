@@ -576,7 +576,7 @@
               Cancel
             </Button>
             <Button variant="secondary" type="button" onclick={handleTest} disabled={submitting || testing}>
-              {testing ? 'Testing…' : 'Test'}
+              {testing ? 'Testing…' : 'Test credential'}
             </Button>
             <Button type="submit" disabled={submitting}>
               {submitting ? 'Saving…' : 'Save'}

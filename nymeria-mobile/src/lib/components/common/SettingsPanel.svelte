@@ -564,7 +564,7 @@
       <!-- Provider Tab -->
       {:else if activeTab === 'llm' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading settings...</div>
+          <div class="loading-state">Loading model settings…</div>
         {:else}
           <div class="setting-group">
             <label class="setting-label" for="mobile-llm-provider">Provider</label>
@@ -859,7 +859,7 @@
       <!-- Agent Tab -->
       {:else if activeTab === 'agent' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading settings...</div>
+          <div class="loading-state">Loading agent settings…</div>
         {:else}
           <div class="setting-group">
             <label class="setting-label">Context Management</label>
@@ -1067,7 +1067,7 @@
         {#if isAdmin}
           <h3 class="section-heading">RAG engine (server-wide)</h3>
           {#if loadingSettings}
-            <p class="loading">Loading settings...</p>
+            <p class="loading">Loading RAG settings…</p>
           {:else}
             <div class="setting-group">
               <label class="setting-toggle">
@@ -1129,7 +1129,7 @@
 
       {:else if activeTab === 'voice' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading settings...</div>
+          <div class="loading-state">Loading voice settings…</div>
         {:else}
           <h3 class="section-heading">Text-to-Speech (TTS)</h3>
 

@@ -20,7 +20,7 @@
     'Each thread keeps its own model, tools, and memory.',
     'Switch the model for a thread from its settings.',
     'Schedule a task and Nymeria will run it on its own.',
-    'Set up triggers to start threads from email, RSS, and more.',
+    'Set up triggers to start threads from email, RSS, webhooks, and HTTP polls.',
     'Give a thread its own custom instructions in settings.',
     'Create callable threads to hand work to a sub-agent.',
     'Click the dot to minimise the context usage above.',

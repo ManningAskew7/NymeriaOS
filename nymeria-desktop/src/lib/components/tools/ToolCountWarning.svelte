@@ -45,7 +45,7 @@
         Go Back
       </button>
       <button class="btn btn-primary" onclick={onContinue} type="button">
-        Continue Anyway
+        Save Anyway
       </button>
     </div>
   </div>
