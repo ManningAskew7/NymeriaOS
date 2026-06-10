@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { trapFocus } from '$lib/actions/focus';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -28,7 +29,7 @@
 
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
+  <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1" use:trapFocus>
     <div class="modal">
       <div class="modal-header">
         <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
