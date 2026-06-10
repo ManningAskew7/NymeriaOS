@@ -37,6 +37,16 @@ from ..onboarding import (
     HostingOption,
     NextAction,
 )
+from .external_access import (
+    CORS_ORIGINS_ENV,
+    EXTERNAL_ACCESS_ENV,
+    PUBLIC_URL_ENV,
+    check_public_health,
+    check_public_sse,
+    merged_cors_origins,
+    public_origin,
+    qr_ascii,
+)
 from .providers import (
     LLMConnectionError,
     OPTIONAL_ENV_ORDER,
@@ -351,6 +361,7 @@ def finalize(
         full_stack_env=full_stack_env,
         provider_key_env=key_env_override,
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
+        drop_public_url=should_drop_public_url(state),
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -429,6 +440,7 @@ def write_config(
     full_stack_env: Mapping[str, str] | None = None,
     provider_key_env: str | None = None,
     drop_cliproxy_management: bool = False,
+    drop_public_url: bool = False,
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -531,6 +543,12 @@ def write_config(
         # to an abandoned proxy. Never dropped ON the branch (a blank key
         # there means keep the on-disk secret).
         drop_env = drop_env + ("CLIPROXY_MANAGEMENT_URL", "CLIPROXY_MANAGEMENT_KEY")
+    if drop_public_url:
+        # Switching to local-only retires the stale public URL; keeping it
+        # would advertise (and hydrate back) an origin the user abandoned.
+        # CORS_ORIGINS is deliberately NOT dropped: the operator may maintain
+        # it by hand, and a stale extra origin is hygiene, not breakage.
+        drop_env = drop_env + (PUBLIC_URL_ENV,)
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
@@ -816,7 +834,48 @@ def _resolve_extra_env(state: WizardState) -> dict[str, str]:
     # Embedder/reranker choices -> EMBEDDING_* / RAG_RERANK_* env vars (the API
     # keys ride in optional_env). Empty when no embedder was chosen.
     extra.update(rag_env_for_state(state))
+    # External access: persist the choice (the wizard's round-trip marker; the
+    # runtime does not read it) and, when this run stands behind a public
+    # origin (a setup step, --public-url, or hydrate), the real settings: the
+    # public URL plus a CORS list extended with that origin (seeded from the
+    # on-disk list on reconfigure). A LOCAL_ONLY run yields no active URL, so
+    # nothing here writes; the matching retirement drop lives in finalize().
+    if state.external_access is not None:
+        extra[EXTERNAL_ACCESS_ENV] = state.external_access.value
+    active_url = active_public_url(state)
+    if active_url:
+        origin = public_origin(active_url)
+        extra[PUBLIC_URL_ENV] = origin
+        extra[CORS_ORIGINS_ENV] = merged_cors_origins(
+            state.existing_cors_origins, origin
+        )
     return extra
+
+
+def active_public_url(state: WizardState) -> str:
+    """The public origin this run stands behind; empty for a local-only choice.
+
+    `public_url` can hold a stale hydrated value after the user switches the
+    choice to local-only on a reconfigure, so every consumer (env writes,
+    summaries, post-start verification) goes through this gate instead of
+    reading the field directly. CHAT_BOTS keeps the URL: webhook-based bot
+    platforms need NYMERIA_PUBLIC_URL.
+    """
+    if state.external_access is ExternalAccess.LOCAL_ONLY:
+        return ""
+    return state.public_url.strip()
+
+
+def should_drop_public_url(state: WizardState) -> bool:
+    """Retire the NYMERIA_PUBLIC_URL line only when the wizard owns it.
+
+    `external_access_recorded` means the on-disk URL came with the wizard's
+    round-trip marker, so abandoning the choice retires it. A hand-set URL on
+    a pre-marker install (the remote-access doc tells operators to set one
+    for Caddy or an existing tunnel) must survive an unrelated reconfigure
+    that Enters through the local-only default.
+    """
+    return state.external_access_recorded and not active_public_url(state)
 
 
 # --- paths ------------------------------------------------------------------
@@ -1020,39 +1079,126 @@ def print_capability_summary(
 
 
 def print_deployment_summary(state: WizardState, console: Console) -> None:
-    """Echo the deployment-shaping choices the installer cannot fully act on yet.
+    """Echo the security-profile choice and the external-access outcome.
 
-    Security profile and non-local external access are recorded by the wizard but
-    their automation (the approval gate, tunnel setup) is not built, so they are
-    surfaced here rather than silently dropped. The Docker-stack choice is acted
-    on (it selects the compose file and start command), so it is not echoed here.
+    Security profile is recorded but its automation (the approval gate) is not
+    built, so it is surfaced rather than silently dropped. External access
+    reports what the wizard actually did: the configured public origin and its
+    verification state, or the matching manual guidance. The Docker-stack
+    choice is acted on (it selects the compose file), so it is not echoed here.
     """
 
-    rows: list[tuple[str, str, str]] = []
     if state.security_profile is not None:
-        rows.append(
-            (
-                "Security profile",
-                SECURITY_PROFILE_CHOICES[state.security_profile].label,
-                "enforcement is being built out",
-            )
+        console.print(
+            "\n[bold]Security profile[/bold] "
+            f"{SECURITY_PROFILE_CHOICES[state.security_profile].label} "
+            "(recorded; enforcement is being built out)"
         )
-    if (
-        state.external_access is not None
-        and state.external_access is not ExternalAccess.LOCAL_ONLY
-    ):
-        rows.append(
-            (
-                "External access",
-                EXTERNAL_ACCESS_CHOICES[state.external_access].label,
-                "set up separately, see the remote-access doc",
+    print_external_access_summary(state, console)
+
+
+def print_external_access_summary(state: WizardState, console: Console) -> None:
+    """Report the external-access outcome: URL + verification, or guidance."""
+
+    access = state.external_access
+    if access is None or access is ExternalAccess.LOCAL_ONLY:
+        if state.public_url.strip():
+            # An explicit --public-url, or a hand-set/hydrated URL, gated out
+            # by the local-only choice: say so instead of silently dropping.
+            console.print(
+                "\n[yellow]Note:[/yellow] a public URL is known "
+                f"({public_origin(state.public_url)}) but the external-access "
+                "choice is local-only, so this run did not write it."
             )
-        )
-    if not rows:
         return
-    console.print("\n[bold]Deployment choices[/bold] (recorded, not yet automated)")
-    for name, value, note in rows:
-        console.print(f"  {name}: {value} ({note})")
+    label = EXTERNAL_ACCESS_CHOICES[access].label
+    console.print(f"\n[bold]External access[/bold] ({label})")
+    if access is ExternalAccess.CHAT_BOTS:
+        console.print(
+            "  Chat-app bots need no inbound networking: set a bot token and "
+            "start the bot. See the remote-access doc for per-platform steps."
+        )
+        return
+    active_url = active_public_url(state)
+    if active_url:
+        origin = public_origin(active_url)
+        status = (
+            "verified: health and streaming work through it"
+            if state.public_url_verified
+            else (
+                "configured, not fully verified yet; after the backend "
+                f"starts, check {origin}/health/stream (the Docker "
+                "start-now path re-checks automatically)"
+            )
+        )
+        console.print(f"  [green]Public URL:[/green] {origin} ({status})")
+        console.print(
+            "  Written to NYMERIA_PUBLIC_URL, and the origin was added to "
+            "CORS_ORIGINS."
+        )
+        if access is ExternalAccess.CLOUDFLARE:
+            if state.cloudflare_tunnel_token:
+                console.print(
+                    "  The cloudflared connector is running detached; see "
+                    "cloudflared/README.txt to install it as a system service."
+                )
+            console.print(
+                "  Tip: behind a colocated tunnel every request reaches the "
+                "API from one local address, so per-client rate limiting "
+                "collapses; set NYMERIA_FORWARDED_ALLOW_IPS=127.0.0.1 to "
+                "key it on real client IPs (see the configuration doc)."
+            )
+        qr = qr_ascii(origin)
+        if qr:
+            console.print("  Scan to open Nymeria on another device:")
+            console.print(qr, soft_wrap=True)
+    else:
+        console.print(
+            "  Not set up in this run. See the remote-access doc, or re-run "
+            "`nymeria init external_access`."
+        )
+
+
+def verify_public_url_now(state: WizardState, console: Console) -> None:
+    """Check health and streaming through the public URL (backend must be up).
+
+    Runs after a successful start (the Docker start-now path); the local
+    start-now path blocks in the foreground, so it prints the URL to check
+    instead. Updates ``state.public_url_verified`` on success.
+    """
+
+    active_url = active_public_url(state)
+    if not active_url:
+        return
+    import asyncio
+
+    origin = public_origin(active_url)
+    console.print(f"Checking the public URL ({origin})...")
+    try:
+        probe = asyncio.run(check_public_health(origin))
+        if probe.status != "healthy":
+            console.print(
+                f"[yellow]The public URL did not answer healthy:[/yellow] "
+                f"{probe.detail}"
+            )
+            return
+        sse = asyncio.run(check_public_sse(origin))
+    except RuntimeError as exc:
+        # No usable event loop context (embedding callers); skip, not fail.
+        console.print(f"[yellow]Skipped the public URL check ({exc}).[/yellow]")
+        return
+    if sse.ok:
+        state.public_url_verified = True
+        console.print(
+            "[green]Public URL verified:[/green] health and streaming both "
+            "work through it."
+        )
+    else:
+        console.print(
+            "[yellow]The public URL answers, but streaming looks broken "
+            f"through it:[/yellow] {sse.detail}. Chat will not stream until "
+            "this is fixed."
+        )
 
 
 # --- next action and doctor -------------------------------------------------
@@ -1082,6 +1228,11 @@ def print_next_action(state: WizardState, console: Console) -> None:
         console.print("\nStart Nymeria with:")
     _print_command(console, _start_command_for_hosting(state))
     console.print("Then open http://localhost:8000 and paste the bootstrap token.")
+    if active_public_url(state):
+        console.print(
+            f"Remote devices use {public_origin(active_public_url(state))} "
+            "once the backend is up."
+        )
     console.print(
         "\nRe-run setup anytime with `nymeria init`. Check health with "
         "`nymeria doctor`."
@@ -1140,7 +1291,7 @@ def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
         if state.hosting is HostingOption.DOCKER:
             return _start_now_docker(console, state=state, root=root)
         if state.hosting is HostingOption.LOCAL:
-            return _start_now_local(console, root=root)
+            return _start_now_local(console, state=state, root=root)
     print_next_action(state, console)
     return 0
 
@@ -1186,16 +1337,22 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         _print_docker_token_command(console, spec)
         return 0
     console.print("[green]Nymeria is up.[/green]")
+    verify_public_url_now(state, console)
     _print_docker_bootstrap_token(console, spec=spec, root=root)
     return 0
 
 
-def _start_now_local(console: Console, *, root: Path) -> int:
+def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int:
     console.print("\nStarting Nymeria in the foreground (Ctrl+C to stop).")
     console.print(
         "Once it is up, open http://localhost:8000 and paste the bootstrap token "
         "shown above."
     )
+    if active_public_url(state):
+        console.print(
+            f"Remote devices use {public_origin(active_public_url(state))} "
+            "once the backend is up."
+        )
     # Re-invoke this same entry point with the `slim` subcommand so it works from
     # both a source checkout (`python3 run.py init`) and an installed console
     # script (`nymeria init`). Run in the runtime root so slim finds config.env.

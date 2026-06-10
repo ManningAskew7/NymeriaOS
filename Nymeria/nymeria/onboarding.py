@@ -91,11 +91,13 @@ class SecurityProfile(StrEnum):
 
 
 class ExternalAccess(StrEnum):
-    """How the backend is reached from outside this machine (first-run guidance).
+    """How the backend is reached from outside this machine.
 
-    The wizard cannot fully automate Tailscale or Cloudflare (both need
-    interactive browser auth), so this records the chosen path and finalize prints
-    the matching guidance. Placeholder until remote-access automation lands.
+    Tailscale and Cloudflare get a guided setup step in the wizard (detect the
+    tool, drive login/provisioning, expose the backend, verify the public URL
+    end to end including streaming) and the resolved origin is written to
+    NYMERIA_PUBLIC_URL and CORS_ORIGINS at finalize. Chat bots need no inbound
+    networking at all; local-only writes nothing.
     """
 
     LOCAL_ONLY = "local_only"
@@ -336,16 +338,19 @@ EXTERNAL_ACCESS_CHOICES = {
         value=ExternalAccess.TAILSCALE,
         label="Tailscale",
         description=(
-            "Private mesh VPN: zero public exposure, automatic HTTPS, no domain. "
-            "Recommended for single-user remote access. (Set up separately.)"
+            "Private mesh VPN: zero public exposure, automatic HTTPS, no "
+            "domain. Recommended for single-user remote access; your devices "
+            "run the Tailscale app. The wizard sets it up on the next step."
         ),
     ),
     ExternalAccess.CLOUDFLARE: OnboardingChoice(
         value=ExternalAccess.CLOUDFLARE,
         label="Cloudflare tunnel",
         description=(
-            "Public hostname via a Cloudflare named or quick tunnel. Needs a "
-            "Cloudflare account and dashboard ingress. (Set up separately.)"
+            "Public HTTPS hostname via a Cloudflare named tunnel: works in "
+            "any browser with no extra apps. Needs a free Cloudflare account, "
+            "a domain on Cloudflare DNS, and an API token. The wizard drives "
+            "it on the next step (or accepts an existing public URL)."
         ),
     ),
     ExternalAccess.CHAT_BOTS: OnboardingChoice(

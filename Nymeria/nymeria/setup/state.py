@@ -72,9 +72,29 @@ class WizardState:
     # Set by the login step once an active auth file exists for the pick.
     cliproxy_logged_in: bool = False
 
-    # How the backend is reached from outside this machine. Placeholder: the
-    # wizard records the choice and finalize prints the matching guidance.
+    # How the backend is reached from outside this machine. The choice gates
+    # the tailscale/cloudflare setup steps; the resolved public origin lands in
+    # NYMERIA_PUBLIC_URL and CORS_ORIGINS at finalize.
     external_access: ExternalAccess | None = None
+    # Public origin (https://...) resolved by a setup step, --public-url, or
+    # hydrate. Empty means no remote origin is configured.
+    public_url: str = ""
+    # True once /health (and streaming) answered through public_url this run.
+    public_url_verified: bool = False
+    # Tailscale exposure mode from the setup step: "serve" (tailnet-only HTTPS,
+    # the default) or "funnel" (public HTTPS).
+    tailscale_exposure: str = ""
+    # Transient: the Cloudflare named-tunnel connector token minted by the
+    # setup step. Persisted under <root>/cloudflared/ (0600), never in env.
+    cloudflare_tunnel_token: str = ""
+    # CORS_ORIGINS found on disk during a reconfigure, so finalize appends the
+    # public origin to the operator's list instead of resetting to defaults.
+    existing_cors_origins: str = ""
+    # True when hydrate found the NYMERIA_EXTERNAL_ACCESS marker on disk: the
+    # on-disk public URL was wizard-written, so abandoning the choice may
+    # retire it. A hand-set URL (no marker) is never dropped (transient,
+    # hydrated, never persisted itself).
+    external_access_recorded: bool = False
 
     # Optional capability keys (EMBEDDING/OPENAI/GEMINI/PERPLEXITY).
     optional_env: dict[str, str] = field(default_factory=dict)

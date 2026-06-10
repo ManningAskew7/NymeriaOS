@@ -1,10 +1,11 @@
 """Deployment-shaping steps: Docker stack, security profile, remote access.
 
 These mirror the high-level decisions in the setup-wizard plan. The Docker-stack
-choice (slim vs full) is wired through finalize; security profile and remote
-access are framework-real placeholders (single-select, stored on `WizardState`,
-shown in review) until the approval gate and remote-access automation land. Each
-choice carries a sensible default so a quick run can Enter straight through.
+choice (slim vs full) is wired through finalize. The external-access choice
+gates the guided tailscale/cloudflare setup steps (steps/external_access.py).
+Security profile stays a framework-real placeholder (single-select, stored on
+`WizardState`, shown in review) until the approval gate lands. Each choice
+carries a sensible default so a quick run can Enter straight through.
 """
 
 from __future__ import annotations
@@ -91,21 +92,40 @@ def make_security_profile_step() -> Step:
     )
 
 
+def store_external_access_choice(state: WizardState, value: ExternalAccess) -> None:
+    """Store the choice; CHANGING it retires the prior setup's outputs.
+
+    A public URL produced by an earlier tailscale/cloudflare run (or hydrated
+    from disk) must not survive into a different choice, because finalize
+    writes whatever `public_url` holds. An already-enabled tunnel itself is
+    not torn down here; the finalize summary owns telling the user what is
+    still running.
+    """
+    if state.external_access is not None and state.external_access is not value:
+        state.public_url = ""
+        state.public_url_verified = False
+        state.tailscale_exposure = ""
+        state.cloudflare_tunnel_token = ""
+    state.external_access = value
+
+
 def make_external_access_step() -> Step:
-    """How to reach the backend from outside this machine. Placeholder guidance."""
+    """How to reach the backend from outside this machine."""
 
     def get_initial(state: WizardState) -> ExternalAccess:
         return state.external_access or ExternalAccess.LOCAL_ONLY
 
     def store(state: WizardState, value: ExternalAccess) -> None:
-        state.external_access = value
+        store_external_access_choice(state, value)
 
     return single_select_step(
         step_id="external_access",
         title="External access",
         note=(
-            "How you will reach Nymeria remotely. Placeholder: the wizard records "
-            "your choice and prints the matching setup guidance at the end."
+            "How you will reach Nymeria remotely. Tailscale and Cloudflare get "
+            "a guided setup on the next step; the resulting URL is checked "
+            "(health, and streaming once the backend answers) and written to "
+            "the config."
         ),
         choices=_choices(EXTERNAL_ACCESS_ORDER, EXTERNAL_ACCESS_CHOICES),
         get_initial=get_initial,
@@ -117,4 +137,5 @@ __all__ = [
     "make_docker_stack_step",
     "make_security_profile_step",
     "make_external_access_step",
+    "store_external_access_choice",
 ]

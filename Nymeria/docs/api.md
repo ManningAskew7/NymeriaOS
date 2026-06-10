@@ -37,6 +37,7 @@ and includes it in request-scoped logs.
 
 Exceptions without Bearer auth:
 - `GET /health`
+- `GET /health/stream`
 - `GET /ready`
 - `POST /triggers/fire/{trigger_id}` (public callers must provide the trigger's shared `secret`; Bearer auth can be used instead)
 
@@ -58,6 +59,33 @@ No authentication required.
   "status": "ok",
   "version": "<nymeria.__version__>"
 }
+```
+
+---
+
+### Health Stream (SSE probe)
+
+```http
+GET /health/stream
+```
+
+No authentication required. Emits three small SSE events spaced about 0.6s
+apart, then an `event: end` and the stream closes. Exists so tunnels and
+reverse proxies can be verified end to end for streaming, not just request
+relay: a relay that buffers SSE delivers all events in one burst at close,
+which the setup wizard's public-URL check detects (Cloudflare quick tunnels,
+for example, pass `/health` but cannot carry SSE).
+
+**Response** (`text/event-stream`):
+```
+data: {"seq": 0, "ts": "2026-06-10T00:00:00+00:00"}
+
+data: {"seq": 1, "ts": "2026-06-10T00:00:00.6+00:00"}
+
+data: {"seq": 2, "ts": "2026-06-10T00:00:01.2+00:00"}
+
+event: end
+data: {}
 ```
 
 ---

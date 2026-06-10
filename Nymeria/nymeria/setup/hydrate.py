@@ -11,9 +11,11 @@ env file and reads the bootstrap ``profile.json`` directly (not via
 ``get_profile``, which injects default skills and would mask "never customized").
 
 Deliberately NOT round-tripped (see the setup-wizard doc): secrets are recorded
-as present (never re-read into the UI); the recorded-but-never-written deployment
-enums (security_profile/external_access) have no source; LOCAL vs
-SERVICE is indistinguishable on disk (defaults LOCAL). `auth_method` is inferred:
+as present (never re-read into the UI); security_profile is recorded but never
+written, so it has no source; LOCAL vs SERVICE is indistinguishable on disk
+(defaults LOCAL). External access DOES round-trip: finalize writes the choice
+to NYMERIA_EXTERNAL_ACCESS plus the resolved NYMERIA_PUBLIC_URL/CORS_ORIGINS,
+and they hydrate back here. `auth_method` is inferred:
 a CLIProxy-looking LLM_BASE_URL selects the subscription branch (see
 `_hydrate_cliproxy`), anything else stays the API-key default. Tool/skill picks hydrate
 from `profile.json` for local/service installs; for Docker (whose profile lives
@@ -38,8 +40,9 @@ from typing import Optional
 
 from rich.console import Console
 
-from ..onboarding import HostingOption
+from ..onboarding import ExternalAccess, HostingOption
 from . import family_catalog, finalize
+from .external_access import CORS_ORIGINS_ENV, EXTERNAL_ACCESS_ENV, PUBLIC_URL_ENV
 from .providers import OPTIONAL_ENV_ORDER
 from .rag_catalog import embedder_id_for_env, reranker_id_for_env
 from .state import WizardState
@@ -96,6 +99,32 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
         state.base_url = _get(values, "LLM_BASE_URL") or ""
     if not state.api_mode and _get(values, "OPENAI_API_MODE"):
         state.api_mode = _get(values, "OPENAI_API_MODE") or ""
+
+    # External access: the wizard's own round-trip marker plus the real
+    # settings written with it. A bad marker value (hand-edited) is ignored.
+    disk_choice = None
+    if _get(values, EXTERNAL_ACCESS_ENV):
+        try:
+            disk_choice = ExternalAccess(_get(values, EXTERNAL_ACCESS_ENV) or "")
+        except ValueError:
+            pass  # hand-edited marker value; treat as not recorded
+    if disk_choice is not None:
+        state.external_access_recorded = True
+        if state.external_access is None:
+            state.external_access = disk_choice
+    # An explicit --external-access flag that DIFFERS from the recorded choice
+    # is a switch: the old choice's URL must not ride along under the new one
+    # (the flag wins before hydrate runs, so store_external_access_choice's
+    # clearing never sees the change; mirror it here).
+    choice_switched = (
+        disk_choice is not None
+        and state.external_access is not None
+        and state.external_access is not disk_choice
+    )
+    if not state.public_url and not choice_switched and _get(values, PUBLIC_URL_ENV):
+        state.public_url = _get(values, PUBLIC_URL_ENV) or ""
+    if not state.existing_cors_origins and _get(values, CORS_ORIGINS_ENV):
+        state.existing_cors_origins = _get(values, CORS_ORIGINS_ENV) or ""
 
     # RAG: reverse-map the env back to a catalog id (only if not already chosen and
     # not auto-quickstarted, which a flag/quick path may have done).

@@ -1,6 +1,7 @@
 """System and health-check routes."""
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -23,6 +24,13 @@ from ..schemas.system import (
 logger = logging.getLogger(__name__)
 
 _READINESS_CACHE_SECONDS = 1.0
+
+# /health/stream emission shape. The inter-event interval must stay well
+# above the SSE_MIN_SPREAD_SECONDS threshold in setup/external_access.py, or
+# the setup wizard's streaming probe would flag every transparent relay as
+# buffering (a test pins the relationship).
+HEALTH_STREAM_EVENT_COUNT = 3
+HEALTH_STREAM_INTERVAL_SECONDS = 0.6
 
 
 def _dependency_ok(detail: str | None = None) -> DependencyReadiness:
@@ -162,6 +170,36 @@ def create_system_router(
     async def health_check():
         """Health check endpoint."""
         return HealthResponse()
+
+    @router.get("/health/stream")
+    async def health_stream():
+        """Unauthenticated SSE probe: a few spaced events, then the stream ends.
+
+        Exists so tunnels and reverse proxies can be verified end to end for
+        streaming, not just request relay: a relay that buffers SSE delivers
+        these events in one burst at close, which the setup wizard's URL check
+        detects (some relays, like Cloudflare quick tunnels, pass /health but
+        cannot carry the chat stream). Carries no state and costs three tiny
+        events, so it is safe without auth, like /health itself.
+        """
+        from fastapi.responses import StreamingResponse
+
+        async def _events():
+            for seq in range(HEALTH_STREAM_EVENT_COUNT):
+                if seq:
+                    await asyncio.sleep(HEALTH_STREAM_INTERVAL_SECONDS)
+                payload = {"seq": seq, "ts": datetime.now(timezone.utc).isoformat()}
+                yield f"data: {json.dumps(payload)}\n\n"
+            yield "event: end\ndata: {}\n\n"
+
+        return StreamingResponse(
+            _events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.get("/ready", response_model=ReadinessResponse)
     async def ready_check(
