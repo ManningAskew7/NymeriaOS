@@ -7,6 +7,12 @@ export type ThreadDisplayProvider = string;
 
 // Maps each synthetic display value to (backend provider id it resolves to,
 // short descriptive sub-line for the picker row).
+//
+// These are DISPLAY shapes only. The authoritative CLIProxy route math
+// (root-vs-/v1 base URL, which key slot gets the cpx- gatekeeper, API mode)
+// lives in the backend catalog (GET /cliproxy/catalog) and the
+// POST /cliproxy/apply-route endpoint; new code should consume those instead
+// of re-deriving routes from the constants below.
 const SYNTHETIC_DISPLAY_PROVIDERS: Record<string, { backend: string; description: string }> = {
   anthropic_proxy: {
     backend: 'anthropic',
