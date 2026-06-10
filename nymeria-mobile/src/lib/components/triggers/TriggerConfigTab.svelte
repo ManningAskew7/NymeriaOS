@@ -238,7 +238,7 @@
     {#if triggersStore.loading}
       <div class="empty-state">Loading triggers…</div>
     {:else if threadTriggers.length === 0}
-      <div class="empty-state">No triggers for this thread. Create one to automate tasks.</div>
+      <div class="empty-state">No triggers configured for this thread. Create one to automate tasks.</div>
     {:else}
       <div class="trigger-list">
         {#each threadTriggers as trigger (trigger.id)}

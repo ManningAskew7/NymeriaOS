@@ -124,7 +124,7 @@
       <Icon name="refresh" size={14} /> Refresh
     </Button>
     <Button size="sm" variant="primary" onclick={startCreate}>
-      <Icon name="plus" size={14} /> Add
+      <Icon name="plus" size={14} /> Add credential
     </Button>
   </div>
 
