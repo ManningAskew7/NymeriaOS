@@ -134,7 +134,7 @@
     color: var(--text-primary);
     font-size: var(--font-size-xs);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
     white-space: nowrap;
   }
 

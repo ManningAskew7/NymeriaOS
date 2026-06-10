@@ -111,7 +111,7 @@
     background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-primary));
     border: 1px solid var(--border-subtle);
     color: var(--text-secondary);
-    animation: fadeSlide 150ms ease-out;
+    animation: fadeSlide var(--transition-fast);
   }
 
   .reload-header {

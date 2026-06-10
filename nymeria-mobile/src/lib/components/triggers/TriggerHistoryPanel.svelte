@@ -162,7 +162,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn 0.15s ease-out;
+    animation: fadeIn var(--transition-fast);
   }
 
   .history-backdrop {
@@ -187,7 +187,7 @@
        border (hairline --glass-border on a solid background) would be
        redundant chrome. Tokenized to --shadow-lg. */
     box-shadow: var(--shadow-lg);
-    animation: slideUp 0.2s ease-out;
+    animation: slideUp var(--transition-normal);
   }
 
   @keyframes fadeIn {
@@ -292,7 +292,7 @@
 
   .execution-item {
     border-bottom: 1px solid var(--glass-border);
-    animation: itemFadeIn 0.2s ease-out both;
+    animation: itemFadeIn var(--transition-normal) both;
   }
 
   .execution-item:last-child {
@@ -371,7 +371,7 @@
     padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-sm);
     margin-left: 20px;
     border-left: 2px solid var(--glass-border);
-    animation: fadeIn 0.15s ease-out;
+    animation: fadeIn var(--transition-fast);
   }
 
   .detail-section {

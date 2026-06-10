@@ -270,7 +270,7 @@
     cursor: pointer;
     z-index: 10;
     opacity: 0;
-    transition: opacity 200ms ease,
+    transition: opacity var(--transition-normal),
                 background var(--transition-fast),
                 color var(--transition-fast),
                 box-shadow var(--transition-fast);
@@ -310,7 +310,7 @@
     cursor: col-resize;
     z-index: 9;
     background: transparent;
-    transition: background 120ms ease;
+    transition: background var(--transition-fast);
   }
 
   .resize-handle.right-edge {

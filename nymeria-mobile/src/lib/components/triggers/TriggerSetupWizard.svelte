@@ -641,7 +641,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn 0.15s ease-out;
+    animation: fadeIn var(--transition-fast);
   }
 
   .wizard-backdrop {
@@ -662,7 +662,7 @@
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-    animation: slideUp 0.2s ease-out;
+    animation: slideUp var(--transition-normal);
   }
 
   @keyframes fadeIn {

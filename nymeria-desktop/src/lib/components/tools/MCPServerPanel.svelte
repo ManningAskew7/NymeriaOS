@@ -773,7 +773,7 @@
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
-    animation: fadeIn 0.2s ease;
+    animation: fadeIn var(--transition-normal);
   }
 
   .test-ok {
@@ -893,7 +893,7 @@
     gap: 0.4rem;
     font-size: var(--font-size-xs);
     color: var(--error);
-    animation: fadeIn 0.2s ease;
+    animation: fadeIn var(--transition-normal);
   }
 
   .expand-chevron {

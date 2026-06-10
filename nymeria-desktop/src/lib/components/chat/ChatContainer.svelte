@@ -192,7 +192,7 @@
     opacity: 0;
     transform: translateY(8px);
     pointer-events: none;
-    transition: opacity 160ms ease, transform 160ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+    transition: opacity var(--transition-normal), transform var(--transition-normal), color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
     z-index: 5;
   }
   .jump-to-bottom.visible {

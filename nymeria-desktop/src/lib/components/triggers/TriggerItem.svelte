@@ -576,7 +576,7 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     cursor: pointer;
-    animation: cardIn 0.28s ease-out both;
+    animation: cardIn var(--transition-normal) both;
     transition:
       background var(--transition-fast),
       border-color var(--transition-fast),
@@ -1048,7 +1048,7 @@
     padding-top: var(--spacing-sm-plus);
     border-top: 1px dashed var(--border-subtle, var(--border-default));
     cursor: default;
-    animation: detailsIn 0.22s ease-out both;
+    animation: detailsIn var(--transition-normal) both;
   }
 
   @keyframes detailsIn {

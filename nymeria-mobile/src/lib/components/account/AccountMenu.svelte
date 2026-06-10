@@ -124,7 +124,7 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fade-in 140ms ease-out;
+    animation: fade-in var(--transition-fast);
   }
 
   @keyframes fade-in {

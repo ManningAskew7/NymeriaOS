@@ -1706,7 +1706,7 @@
     border-radius: 50%;
     background: var(--accent-primary);
     cursor: pointer;
-    transition: box-shadow 120ms ease;
+    transition: box-shadow var(--transition-fast);
   }
 
   /* §6 — slider thumb glow on keyboard focus. Mobile sliders are usually

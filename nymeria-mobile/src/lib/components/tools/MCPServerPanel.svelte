@@ -513,7 +513,7 @@
     background: var(--bg-base);
     border: 1px solid var(--border-default);
     border-radius: 9px;
-    transition: all 0.15s;
+    transition: all var(--transition-fast);
   }
 
   .toggle-thumb {
@@ -524,7 +524,7 @@
     height: 12px;
     background: var(--text-secondary);
     border-radius: 50%;
-    transition: all 0.15s;
+    transition: all var(--transition-fast);
   }
 
   .toggle-label input:checked + .toggle-track {

@@ -689,7 +689,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn 0.15s ease-out;
+    animation: fadeIn var(--transition-fast);
   }
 
   .wizard-backdrop {
@@ -714,7 +714,7 @@
        hairline --glass-border on a solid background was redundant
        chrome. Tokenized to --shadow-xl. */
     box-shadow: var(--shadow-xl);
-    animation: slideUp 0.2s ease-out;
+    animation: slideUp var(--transition-normal);
   }
 
   @keyframes fadeIn {

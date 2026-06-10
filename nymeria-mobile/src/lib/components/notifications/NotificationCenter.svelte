@@ -94,7 +94,7 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fadeIn 150ms ease;
+    animation: fadeIn var(--transition-fast);
   }
 
   .notification-sheet {
@@ -106,7 +106,7 @@
     border-top-right-radius: var(--radius-xl);
     display: flex;
     flex-direction: column;
-    animation: slideUp 200ms ease;
+    animation: slideUp var(--transition-normal);
   }
 
   .sheet-handle {

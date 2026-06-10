@@ -2902,7 +2902,7 @@
     margin-top: -5px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
     cursor: pointer;
-    transition: transform 120ms ease, box-shadow 120ms ease;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
   }
 
   /* Thumb — Firefox */
@@ -2914,7 +2914,7 @@
     border: 2px solid var(--bg-base);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
     cursor: pointer;
-    transition: transform 120ms ease, box-shadow 120ms ease;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
   }
 
   /* Hover / focus — thumb grows slightly and picks up an accent glow. */
@@ -3139,7 +3139,7 @@
     border: 2px solid var(--border-subtle);
     border-radius: var(--radius-md);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
     text-align: left;
   }
 
@@ -3211,7 +3211,7 @@
     color: var(--text-secondary);
     font-size: var(--font-size-xs);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .logo-reset-all:hover {
@@ -3263,7 +3263,7 @@
     font-size: var(--font-size-base);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: all var(--transition-fast);
   }
 
   .stepper-btn:hover:not(:disabled) {
@@ -3292,7 +3292,7 @@
     color: var(--text-muted);
     font-size: var(--font-size-xs);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .logo-reset-btn:hover:not(:disabled) {
@@ -3324,7 +3324,7 @@
     font-size: var(--font-size-xs);
     line-height: 1.4;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition: background var(--transition-fast), color var(--transition-fast);
   }
 
   .color-seg:last-child {
@@ -3359,7 +3359,7 @@
     border: 2px solid var(--border-subtle);
     border-radius: var(--radius-md);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
     text-align: left;
   }
 
@@ -3436,7 +3436,7 @@
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .advanced-toggle:hover {
@@ -3480,7 +3480,7 @@
     color: var(--text-muted);
     font-size: var(--font-size-sm);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--transition-fast);
   }
 
   .clear-btn:hover {

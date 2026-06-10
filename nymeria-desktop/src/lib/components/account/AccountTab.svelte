@@ -365,7 +365,7 @@
     color: #fff;
     border-radius: 50%;
     opacity: 0;
-    transition: opacity 120ms ease;
+    transition: opacity var(--transition-fast);
     pointer-events: none;
   }
   .avatar-button:hover .avatar-overlay,

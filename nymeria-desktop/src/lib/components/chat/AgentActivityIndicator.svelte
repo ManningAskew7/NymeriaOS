@@ -104,7 +104,7 @@
 
   .phase-label {
     display: inline-block;
-    animation: phaseSwap 280ms ease-out;
+    animation: phaseSwap var(--transition-normal);
   }
 
   .dots {

@@ -263,7 +263,7 @@
     border: 1px solid var(--border-subtle);
     cursor: default;
     font-family: inherit;
-    animation: staggerFadeIn 0.3s ease-out backwards;
+    animation: staggerFadeIn var(--transition-slow) backwards;
   }
 
   .todo-item:focus-visible {
@@ -358,7 +358,7 @@
     border-color: var(--success);
     background: var(--success);
     color: white;
-    animation: checkBounce 0.3s ease-out;
+    animation: checkBounce var(--transition-slow);
   }
 
   .complete-btn:disabled {

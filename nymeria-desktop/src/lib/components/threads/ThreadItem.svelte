@@ -384,7 +384,7 @@
        from -8px on the X axis with a small per-row delay, so switching
        folders<->teams tabs (which re-mounts the list via {#key}) cascades
        the rows in instead of popping them all at once. */
-    animation: staggerFadeIn 0.3s ease-out backwards;
+    animation: staggerFadeIn var(--transition-slow) backwards;
   }
   /* Cap rule first so individual nth-child(1..20) values below override it
      for the first 20 rows. Anything beyond 20 lands at 0.6s and pops in

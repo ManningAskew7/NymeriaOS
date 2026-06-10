@@ -94,7 +94,7 @@
   .progress-fill {
     height: 100%;
     border-radius: 2px;
-    transition: width 0.3s ease, background 0.3s ease;
+    transition: width var(--transition-slow), background var(--transition-slow);
   }
 
   .compaction-count {

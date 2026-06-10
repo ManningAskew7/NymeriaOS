@@ -667,7 +667,7 @@
     border-radius: 11px;
     background: var(--accent-primary);
     position: relative;
-    transition: background 0.2s;
+    transition: background var(--transition-normal);
   }
 
   .toggle-btn.off .toggle-track {
@@ -682,7 +682,7 @@
     height: 18px;
     border-radius: 50%;
     background: white;
-    transition: left 0.2s;
+    transition: left var(--transition-normal);
   }
 
   .toggle-btn.off .toggle-thumb {

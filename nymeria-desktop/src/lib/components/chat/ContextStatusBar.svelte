@@ -140,7 +140,7 @@
     /* Opacity transition uses the shared --sidebar-collapse-* vars so the
        dot's fade-in (when .no-stats falls off) stays in lock step with
        the bar + prompt. */
-    transition: background 120ms ease,
+    transition: background var(--transition-fast),
                 opacity var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
   }
 
@@ -157,7 +157,7 @@
     height: 6px;
     border-radius: 50%;
     background: var(--accent-primary);
-    transition: opacity 120ms ease;
+    transition: opacity var(--transition-fast);
     /* Nudged up 1px from the button's optical center — the button itself
        stays put at top:3px, only the dot moves. */
     transform: translateY(0);
@@ -267,7 +267,7 @@
   .progress-fill {
     height: 100%;
     border-radius: 2px;
-    transition: width 0.3s ease, background 0.3s ease;
+    transition: width var(--transition-slow), background var(--transition-slow);
   }
 
   .compaction-count {

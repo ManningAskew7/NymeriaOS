@@ -159,7 +159,7 @@
        toggled, since border-style isn't an animatable property. */
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    transition: background var(--transition-fast), border-color 120ms ease-out, border-radius 120ms ease-out;
+    transition: background var(--transition-fast), border-color var(--transition-fast), border-radius var(--transition-fast);
   }
 
   .open .header {
@@ -197,7 +197,7 @@
     /* Fade the bottom-border color during the outro so the 1px line doesn't
        visibly slide upward as the slide transition shrinks the content's
        height. Pairs with .closing below. */
-    transition: border-bottom-color 120ms ease-out;
+    transition: border-bottom-color var(--transition-fast);
   }
 
   .content.closing {
