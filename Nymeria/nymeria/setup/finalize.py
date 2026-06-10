@@ -185,6 +185,22 @@ def finalize(
     base_url = state.base_url.strip()
     model = ""
     provider_auth_validated = False
+    if (
+        state.auth_method_is_cliproxy()
+        and state.cliproxy_provider
+        and state.cliproxy_logged_in
+        and not api_key
+        and cliproxy_key_env_override(state) not in state.present_env_keys
+    ):
+        # A completed subscription login with no usable gatekeeper must not
+        # silently downgrade to a no-provider config; the operator would only
+        # see a yellow note while chats stay broken.
+        console.print(
+            "[red]No CLIProxy gatekeeper key is available. Re-run the wizard's "
+            "CLIProxy endpoint/login steps (or pass --cliproxy-gatekeeper-key) "
+            "so the proxy's cpx- api-key can be written as the LLM key.[/red]"
+        )
+        return 2
     # Reconfigure: an empty key field means "keep the key already on disk", so a
     # provider whose key is present must not be downgraded to "unconfigured".
     # On the CLIProxy branch the key lives in the override var, not the
@@ -334,6 +350,7 @@ def finalize(
         init_seed_env=init_seed_env,
         full_stack_env=full_stack_env,
         provider_key_env=key_env_override,
+        drop_cliproxy_management=not state.auth_method_is_cliproxy(),
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -411,6 +428,7 @@ def write_config(
     init_seed_env: Mapping[str, str] | None = None,
     full_stack_env: Mapping[str, str] | None = None,
     provider_key_env: str | None = None,
+    drop_cliproxy_management: bool = False,
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -507,6 +525,12 @@ def write_config(
         )
 
         drop_env = (INIT_DEFAULT_THREAD_TOOLS_ENV, INIT_ENABLED_GLOBAL_SKILLS_ENV)
+    if drop_cliproxy_management:
+        # Leaving the subscription branch retires the management endpoint
+        # lines; keeping them would leave the backend's /cliproxy routes wired
+        # to an abandoned proxy. Never dropped ON the branch (a blank key
+        # there means keep the on-disk secret).
+        drop_env = drop_env + ("CLIPROXY_MANAGEMENT_URL", "CLIPROXY_MANAGEMENT_KEY")
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic

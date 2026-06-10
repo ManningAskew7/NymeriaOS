@@ -27,12 +27,16 @@
   let oauthDetail = $state('');
   let callbackUrl = $state('');
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let statusLoadFailed = $state(false);
+
+  const LOGIN_TIMEOUT_MS = 600_000;
 
   onMount(refresh);
   onDestroy(stopPolling);
 
   async function refresh() {
     status = await api.getCLIProxyStatus();
+    statusLoadFailed = status === null;
   }
 
   function stopPolling() {
@@ -56,7 +60,13 @@
           ? 'Open the link and approve the login; this screen updates by itself.'
           : 'Approve the login in the browser. If it ends on a dead localhost page, paste that page\'s full URL below.';
       window.open(started.url, '_blank', 'noopener');
+      const deadline = Date.now() + LOGIN_TIMEOUT_MS;
       pollTimer = setInterval(async () => {
+        if (Date.now() > deadline) {
+          stopPolling();
+          oauthDetail = 'The login session expired; start it again.';
+          return;
+        }
         try {
           const result = await api.getCLIProxyOAuthStatus(started.state, provider.id);
           if (result === 'ok') {
@@ -90,6 +100,12 @@
     }
   }
 
+  function cancelLogin() {
+    stopPolling();
+    oauthProvider = null;
+    callbackUrl = '';
+  }
+
   async function applyRoute(provider: CLIProxyProviderInfo) {
     error = null;
     message = null;
@@ -102,7 +118,12 @@
   }
 </script>
 
-{#if status?.configured}
+{#if statusLoadFailed}
+  <div class="setting-group">
+    <span class="setting-label">CLIProxy subscriptions</span>
+    <p class="hint">Couldn't load the CLIProxy status from the backend; pull to refresh or try again later.</p>
+  </div>
+{:else if status?.configured}
   <div class="setting-group">
     <span class="setting-label">CLIProxy subscriptions</span>
     {#if !status.reachable}
@@ -112,7 +133,10 @@
 
       {#if oauthProvider}
         <div class="oauth-box">
-          <p class="hint">{oauthDetail}</p>
+          <div class="oauth-head">
+            <p class="hint">{oauthDetail}</p>
+            <Button variant="secondary" onclick={cancelLogin}>Cancel</Button>
+          </div>
           <a class="link" href={oauthUrl} target="_blank" rel="noopener">Open the login page again</a>
           <div class="callback-row">
             <input
@@ -205,6 +229,13 @@
   .link {
     font-size: var(--font-size-xs);
     color: var(--accent);
+  }
+
+  .oauth-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
   }
 
   .oauth-box {

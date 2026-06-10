@@ -3656,7 +3656,10 @@ def test_cliproxy_untouched_reconfigure_rewrites_identical_route(
     monkeypatch, tmp_path
 ):
     """An untouched reconfigure re-derives the same route lines (deterministic
-    from pick + shape), so the merge is byte-stable for the LLM block."""
+    from pick + shape), so the merge is byte-stable for the LLM block. The
+    route must be RE-DERIVED, not accidentally preserved by a no-op write, so
+    this also pins that the provider survives hydration (the keep-existing-key
+    check must see the gatekeeper slot, ANTHROPIC_API_KEY, as present)."""
     from rich.console import Console
 
     from nymeria.setup.finalize import finalize as finalize_fn
@@ -3676,6 +3679,9 @@ def test_cliproxy_untouched_reconfigure_rewrites_identical_route(
 
     state = WizardState(root=root, skip_llm_test=True)
     assert hydrate_state_from_disk(state) is True
+    # The branch must survive hydration as a configured provider, not be
+    # downgraded because the gatekeeper slot was not recorded as present.
+    assert "ANTHROPIC_API_KEY" in state.present_env_keys
     rc = finalize_fn(
         state, console=Console(quiet=True), non_interactive=True, merge=True
     )
@@ -3685,6 +3691,142 @@ def test_cliproxy_untouched_reconfigure_rewrites_identical_route(
                 "ANTHROPIC_API_KEY", "CLIPROXY_MANAGEMENT_URL",
                 "CLIPROXY_MANAGEMENT_KEY"):
         assert _env_line(after, key) == _env_line(before, key), key
+
+
+def test_cliproxy_claude_reconfigure_applies_a_model_change(monkeypatch, tmp_path):
+    """Regression: a Claude-subscription reconfigure must apply edits instead
+    of silently downgrading to 'no provider' (the gatekeeper lives in the
+    SECOND Anthropic key slot, which present-key recording must cover)."""
+    from rich.console import Console
+
+    from nymeria.setup.finalize import finalize as finalize_fn
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root, skip_llm_test=True)
+    assert hydrate_state_from_disk(state) is True
+    state.model = "claude-sonnet-4-6"
+    rc = finalize_fn(
+        state, console=Console(quiet=True), non_interactive=True, merge=True
+    )
+    assert rc == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_MODEL") == "claude-sonnet-4-6"
+    assert _env_line(after, "LLM_PROVIDER") == "anthropic"
+    assert _env_line(after, "ANTHROPIC_API_KEY") == "cpx-gate"
+
+
+def test_hydrate_does_not_infer_cliproxy_from_port_alone(monkeypatch, tmp_path):
+    """A direct-key install pointing at some unrelated 8318 endpoint must stay
+    on the API-key branch: the port heuristic needs a second signal (cliproxy
+    hostname or a recorded management URL)."""
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--provider", "openai", "--model", "m", "--api-key", "sk-x",
+         "--base-url", "http://my-ollama-box:8318/v1",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.auth_method is ProviderAuthMethod.API_KEY
+    assert state.cliproxy_provider is None
+
+
+def test_switching_back_to_api_key_retires_management_lines(monkeypatch, tmp_path):
+    """Leaving the subscription branch must retire CLIPROXY_MANAGEMENT_* so the
+    backend's /cliproxy routes stop pointing at an abandoned proxy."""
+    from rich.console import Console
+
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.finalize import finalize as finalize_fn
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root), "--non-interactive"]
+    )
+
+    state = WizardState(root=root, skip_llm_test=True)
+    assert hydrate_state_from_disk(state) is True
+    state.auth_method = ProviderAuthMethod.API_KEY
+    state.auth_method_explicit = True
+    state.provider = "openai"
+    state.model = "gpt-5.5"
+    state.api_key = "sk-direct"
+    state.base_url = ""
+    rc = finalize_fn(
+        state, console=Console(quiet=True), non_interactive=True, merge=True
+    )
+    assert rc == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert "CLIPROXY_MANAGEMENT_URL" not in after
+    assert "CLIPROXY_MANAGEMENT_KEY" not in after
+    assert _env_line(after, "LLM_PROVIDER") == "openai"
+
+
+def test_finalize_errors_when_login_succeeded_but_no_gatekeeper(monkeypatch, tmp_path):
+    """A completed OAuth login with no usable gatekeeper must hard-stop, not
+    write a silent no-provider config behind a yellow note."""
+    from rich.console import Console
+
+    from nymeria.onboarding import HostingOption, ProviderAuthMethod
+    from nymeria.setup.finalize import finalize as finalize_fn
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    state = WizardState(
+        hosting=HostingOption.LOCAL,
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
+        cliproxy_provider="claude",
+        cliproxy_management_url="http://localhost:8318",
+        cliproxy_management_key="cpm-secret",
+        cliproxy_logged_in=True,
+        root=tmp_path / "init",
+        skip_llm_test=True,
+    )
+    rc = finalize_fn(state, console=Console(quiet=True), non_interactive=True)
+    assert rc == 2
+
+
+def test_read_existing_secrets_round_trips_a_deployment(tmp_path):
+    """A provisioning re-run must reuse the original secrets (the container
+    already bcrypt-hashed the first management secret)."""
+    from nymeria.setup.cliproxy_deploy import (
+        generate_cliproxy_deployment,
+        read_existing_secrets,
+    )
+
+    generate_cliproxy_deployment(
+        tmp_path / "cliproxy",
+        management_secret="cpm-original",
+        gatekeeper_key="cpx-original",
+    )
+    secret, gatekeeper = read_existing_secrets(tmp_path / "cliproxy")
+    assert secret == "cpm-original"
+    assert gatekeeper == "cpx-original"
+    assert read_existing_secrets(tmp_path / "nope") == (None, None)
 
 
 def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):

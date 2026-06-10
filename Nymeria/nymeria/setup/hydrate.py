@@ -165,11 +165,17 @@ def _locate_config(state: WizardState) -> Optional[tuple[Path, bool]]:
 
 
 def _record_present_keys(state: WizardState, values: dict[str, str]) -> None:
-    """Record which secret/credential env vars are already set (presence only)."""
+    """Record which secret/credential env vars are already set (presence only).
+
+    Every provider key slot is recorded, not just the first: the CLIProxy
+    branch writes the gatekeeper into the SECOND Anthropic slot
+    (ANTHROPIC_API_KEY), and finalize's keep-existing-key check must see it
+    or a Claude-subscription reconfigure downgrades to "no provider".
+    """
     secret_vars = set(_SECRET_ENV_VARS)
     spec = state.provider_spec()
     if spec is not None and spec.api_key_env_vars:
-        secret_vars.add(spec.api_key_env_vars[0])
+        secret_vars.update(spec.api_key_env_vars)
     for var in secret_vars:
         if (values.get(var) or "").strip():
             state.present_env_keys.add(var)
@@ -193,6 +199,14 @@ def _hydrate_cliproxy(state: WizardState, values: dict[str, str]) -> None:
     if not state.cliproxy_management_url and _get(values, "CLIPROXY_MANAGEMENT_URL"):
         state.cliproxy_management_url = _get(values, "CLIPROXY_MANAGEMENT_URL") or ""
     if state.auth_method_explicit or not looks_like_cliproxy_url(base_url):
+        return
+    # The port heuristic alone is too coarse for an auth-model rewrite (any
+    # service on 8317/8318 matches it). Require a second signal: either the
+    # install recorded a management endpoint, or the hostname itself says
+    # cliproxy. A direct-key install pointing at some other 8318 endpoint
+    # stays on the API-key branch.
+    host_says_cliproxy = "cli-proxy" in base_url or "cliproxy" in base_url
+    if not host_says_cliproxy and not _get(values, "CLIPROXY_MANAGEMENT_URL"):
         return
     state.auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
     if state.cliproxy_provider is None:

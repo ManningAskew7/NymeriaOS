@@ -47,6 +47,7 @@ from ..cliproxy_deploy import (
     generate_cliproxy_deployment,
     mint_gatekeeper_key,
     mint_management_secret,
+    read_existing_secrets,
 )
 from ..nav import Step
 from ..state import WizardState
@@ -160,6 +161,10 @@ def make_cliproxy_disclaimer_step() -> Step:
         if value == "decline":
             # The API-key trio re-applies and the rest of this branch drops out.
             state.auth_method = ProviderAuthMethod.API_KEY
+        else:
+            # Explicit re-set so accepting again after a decline (e.g. via
+            # back-navigation onto this screen) re-enters the branch.
+            state.auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
 
     def build(wizard: "SetupWizardApp", number: int, total: int) -> SingleSelectStep:
         return SingleSelectStep(
@@ -296,11 +301,15 @@ class CLIProxyEndpointStep(FormStep):
         from ...onboarding import DockerStack, HostingOption
 
         state = self.state
-        secret = mint_management_secret()
-        gatekeeper = mint_gatekeeper_key()
         root = finalize_mod.resolve_runtime_root(
             state, for_docker=state.hosting is HostingOption.DOCKER
         )
+        # Reuse a prior run's secrets: the container (if it came up before a
+        # back-out) already bcrypt-hashed the original management secret, so
+        # minting a fresh one would lock the wizard out of its own proxy.
+        existing_secret, existing_gatekeeper = read_existing_secrets(root / "cliproxy")
+        secret = existing_secret or mint_management_secret()
+        gatekeeper = existing_gatekeeper or mint_gatekeeper_key()
         join_network = (
             "nymeria_edge"
             if state.hosting is HostingOption.DOCKER
@@ -313,6 +322,12 @@ class CLIProxyEndpointStep(FormStep):
             gatekeeper_key=gatekeeper,
             join_network=join_network,
         )
+        # Record the endpoint before the (cancellable) bring-up so a back-out
+        # mid-provision does not lose the credentials of a container that may
+        # still finish starting.
+        state.cliproxy_management_url = deployment.management_url
+        state.cliproxy_management_key = secret
+        state.cliproxy_gatekeeper_key = gatekeeper
         ok, detail = await asyncio.to_thread(compose_up, deployment.directory)
         if not ok:
             self._deploying = False
@@ -334,9 +349,6 @@ class CLIProxyEndpointStep(FormStep):
                     )
                     return
                 await asyncio.sleep(2.0)
-        state.cliproxy_management_url = deployment.management_url
-        state.cliproxy_management_key = secret
-        state.cliproxy_gatekeeper_key = gatekeeper
         state.cliproxy_deploy = True
         self._deploy_done = True
         self._deploying = False
@@ -547,12 +559,18 @@ class CLIProxyLoginStep(WizardStep):
             except CLIProxyManagementError as exc:
                 # Best-effort hardening; never fail a completed login over it.
                 logger.warning("tool_prefix_disabled fixup failed: %s", exc)
+        gatekeeper_warning = ""
         try:
             await ensure_gatekeeper_key(self.state, client)
         except CLIProxyManagementError as exc:
-            # The model step degrades to type-the-id without a gatekeeper.
             logger.warning("could not resolve a gatekeeper api-key: %s", exc)
+            gatekeeper_warning = (
+                " WARNING: no cpx- gatekeeper key could be read or minted from "
+                "the proxy; finalize will stop until one is supplied."
+            )
         self.state.cliproxy_logged_in = True
+        if gatekeeper_warning:
+            self.show_error(gatekeeper_warning.strip())
 
     def collect(self) -> bool:
         pasted = self.query_one("#cliproxy-callback", Input).value.strip()

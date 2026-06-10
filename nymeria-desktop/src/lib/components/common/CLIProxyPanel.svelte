@@ -41,7 +41,9 @@
   }
 
   async function login(provider: CLIProxyProviderInfo) {
-    if (provider.tos_warning && !tosAccepted) return;
+    // Logging in is the action that actually exposes the subscription
+    // account, so the TOS acknowledgment gates it for every provider.
+    if (!tosAccepted) return;
     callbackUrl = '';
     await cliproxyStore.startOAuth(provider);
   }
@@ -78,7 +80,9 @@
         class:stopped={!cliproxyStore.reachable}
       ></span>
       <span class="status-text">
-        {#if !cliproxyStore.configured}
+        {#if !cliproxyStore.status}
+          Couldn't load the CLIProxy status from the backend; check the connection and refresh
+        {:else if !cliproxyStore.configured}
           Not configured on the backend (set CLIPROXY_MANAGEMENT_URL and CLIPROXY_MANAGEMENT_KEY, or run nymeria init)
         {:else if cliproxyStore.reachable}
           Management API reachable
@@ -199,7 +203,7 @@
             <Button
               variant="secondary"
               onclick={() => login(provider)}
-              disabled={provider.supported === false || (!!provider.tos_warning && !tosAccepted)}
+              disabled={provider.supported === false || !tosAccepted}
             >
               <Icon name="key" size={14} />
               {provider.logged_in ? 'Re-login' : 'Log in'}
@@ -207,7 +211,7 @@
             <Button
               variant="primary"
               onclick={() => applyGlobal(provider)}
-              disabled={provider.supported === false || !provider.logged_in || !tosAccepted}
+              disabled={provider.supported === false || !provider.logged_in}
             >
               <Icon name="check" size={14} />
               Use for all chats

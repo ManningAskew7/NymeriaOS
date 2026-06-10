@@ -99,6 +99,15 @@ class FakeThreadConfigManager:
         return True
 
 
+class FakeAgent:
+    def __init__(self):
+        self.thread_config_manager = FakeThreadConfigManager()
+        self.invalidated: list[str] = []
+
+    def invalidate_thread_config_cache(self, thread_id: str) -> None:
+        self.invalidated.append(thread_id)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fake_client(monkeypatch):
     FakeManagementClient.instances = []
@@ -113,14 +122,14 @@ def _reset_fake_client(monkeypatch):
     yield
 
 
-def make_app(*, settings=None, agent=None, admin: bool = True):
+def make_app(*, settings=None, agent=None, admin: bool = True, thread_access=None):
     settings = settings or SimpleNamespace(
         cliproxy_management_url="http://proxy.test:8317",
         cliproxy_management_key="cpm-secret",
         anthropic_api_key=None,
         openai_api_key=None,
     )
-    agent = agent or SimpleNamespace(thread_config_manager=FakeThreadConfigManager())
+    agent = agent or FakeAgent()
 
     def require_admin_user():
         if not admin:
@@ -129,7 +138,12 @@ def make_app(*, settings=None, agent=None, admin: bool = True):
 
     app = FastAPI()
     app.include_router(
-        create_cliproxy_router(require_admin_user, lambda: agent, lambda: settings)
+        create_cliproxy_router(
+            require_admin_user,
+            lambda: agent,
+            lambda: settings,
+            require_thread_access_fn=thread_access,
+        )
     )
     return TestClient(app), settings, agent
 
@@ -393,7 +407,12 @@ def test_apply_route_422_without_any_gatekeeper_key():
 
 
 def test_apply_route_thread_writes_thread_llm_config():
-    client, _, agent = make_app()
+    accessed: list[str] = []
+
+    def thread_access(user, thread_id):
+        accessed.append(thread_id)
+
+    client, _, agent = make_app(thread_access=thread_access)
     response = client.post(
         "/cliproxy/apply-route",
         json={
@@ -411,6 +430,10 @@ def test_apply_route_thread_writes_thread_llm_config():
     assert saved.llm_config.openai_api_mode == "chat_completions"
     assert saved.llm_config.model == "grok-4.3"
     assert saved.active_llm_fallback is None
+    # Same guarantees as PATCH /threads/{id}/config: access checked/claimed,
+    # cached per-thread graph evicted so the route applies to the next turn.
+    assert accessed == ["t-1"]
+    assert agent.invalidated == ["t-1"]
 
 
 def test_apply_route_thread_requires_thread_id():
@@ -454,3 +477,46 @@ def test_router_is_registered_in_app_factory():
 
     source = inspect.getsource(api_module.create_api_app)
     assert "create_cliproxy_router" in source
+
+
+def test_config_masks_gatekeeper_keys():
+    FakeManagementClient.knobs = {
+        "api-keys": ["cpx-aaaaaaaabbbbbbbbcccc", "short"],
+        "request-retry": 1,
+    }
+    client, _, _ = make_app()
+    payload = client.get("/cliproxy/config").json()
+    keys = payload["knobs"]["api-keys"]
+    assert keys[0].startswith("cpx-aaaa") and keys[0].endswith("cc")
+    assert "cpx-aaaaaaaabbbbbbbbcccc" not in str(payload)
+    assert keys[1] == "***"
+    # Non-key knobs pass through untouched.
+    assert payload["knobs"]["request-retry"] == 1
+
+
+def test_management_key_is_masked_in_settings_env():
+    """The CLIProxy management secret must be treated as a secret by
+    GET /settings/env (no bare *_key suffix rule covers it)."""
+    from nymeria.api.routers.settings import _is_secret_setting_key
+
+    assert _is_secret_setting_key("cliproxy_management_key") is True
+    assert _is_secret_setting_key("cliproxy_management_url") is False
+
+
+def test_auth_error_maps_to_502_on_action_routes():
+    FakeManagementClient.raise_on_probe = CLIProxyAuthError("key rejected")
+
+    async def raising_start(self, spec, *, project_id=None):
+        raise CLIProxyAuthError("key rejected")
+
+    original = FakeManagementClient.start_oauth
+    FakeManagementClient.start_oauth = raising_start
+    try:
+        client, _, _ = make_app()
+        response = client.post(
+            "/cliproxy/oauth/start", json={"provider": "claude"}
+        )
+        assert response.status_code == 502
+        assert "rejected" in response.json()["detail"]
+    finally:
+        FakeManagementClient.start_oauth = original

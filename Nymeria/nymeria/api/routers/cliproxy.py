@@ -90,10 +90,13 @@ def create_cliproxy_router(
     require_admin_user: Callable,
     get_agent_fn: Callable[[], Any],
     get_settings_fn: Callable[[], Any],
+    require_thread_access_fn: Optional[Callable[[Any, str], Any]] = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/cliproxy", tags=["CLIProxy"])
 
-    probe_cache: dict[tuple[str, str], tuple[float, dict[str, bool]]] = {}
+    # Keyed by base_url only (never by the secret, so rotated secrets are not
+    # retained in memory) and bounded; one backend talks to one proxy.
+    probe_cache: dict[str, tuple[float, dict[str, bool]]] = {}
 
     def _client_or_none() -> Optional[CLIProxyManagementClient]:
         settings = get_settings_fn()
@@ -118,13 +121,15 @@ def create_cliproxy_router(
     async def _cached_probe(
         client: CLIProxyManagementClient, *, refresh: bool = False
     ) -> dict[str, bool]:
-        key = (client.base_url, client._secret)
+        key = client.base_url
         now = time.monotonic()
         if not refresh:
             cached = probe_cache.get(key)
             if cached and now - cached[0] < _PROBE_CACHE_TTL_SECONDS:
                 return cached[1]
         probed = await client.probe_providers(refresh=True)
+        if len(probe_cache) > 8:
+            probe_cache.clear()
         probe_cache[key] = (now, probed)
         return probed
 
@@ -331,13 +336,26 @@ def create_cliproxy_router(
             raise _raise_for(error) from error
         return {"status": "ok"}
 
+    def _mask_knobs(knobs: dict[str, Any]) -> dict[str, Any]:
+        # The api-keys list holds the cpx- gatekeepers; echoing them verbatim
+        # would bypass the masking discipline /settings/env applies to the
+        # same material. PATCH still accepts full values for replacement.
+        keys = knobs.get("api-keys")
+        if isinstance(keys, list):
+            knobs = dict(knobs)
+            knobs["api-keys"] = [
+                f"{key[:8]}…{key[-2:]}" if isinstance(key, str) and len(key) > 12 else "***"
+                for key in keys
+            ]
+        return knobs
+
     @router.get("/config")
     async def get_config(
         admin=Depends(require_admin_user),
     ) -> dict[str, Any]:
         client = _client_or_400()
         try:
-            return {"knobs": await client.get_config_knobs()}
+            return {"knobs": _mask_knobs(await client.get_config_knobs())}
         except CLIProxyManagementError as error:
             raise _raise_for(error) from error
 
@@ -356,7 +374,7 @@ def create_cliproxy_router(
         try:
             for path, value in request.knobs.items():
                 await client.set_config_knob(path, value)
-            return {"knobs": await client.get_config_knobs()}
+            return {"knobs": _mask_knobs(await client.get_config_knobs())}
         except CLIProxyManagementError as error:
             raise _raise_for(error) from error
 
@@ -408,6 +426,11 @@ def create_cliproxy_router(
                     status_code=400,
                     detail="thread_id is required when scope is 'thread'",
                 )
+            if require_thread_access_fn is not None:
+                # Same gate as PATCH /threads/{id}/config: guards shared-channel
+                # ids and claims a fresh personal thread for the caller so it
+                # cannot be TOFU-claimed by a later user.
+                require_thread_access_fn(admin, request.thread_id)
             manager = agent.thread_config_manager
             config = manager.get_config(request.thread_id) or ThreadConfig(
                 thread_id=request.thread_id
@@ -422,6 +445,11 @@ def create_cliproxy_router(
             llm.api_key = gatekeeper
             llm.openai_api_mode = spec.api_mode or None
             manager.save_config(config)
+            # Evict the cached per-thread graph so the route applies to the
+            # next turn (mirrors PATCH /threads/{id}/config).
+            invalidate = getattr(agent, "invalidate_thread_config_cache", None)
+            if callable(invalidate):
+                invalidate(request.thread_id)
             return CLIProxyApplyRouteResponse(
                 scope="thread",
                 provider=spec.nymeria_provider,
