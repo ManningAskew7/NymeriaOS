@@ -23,7 +23,7 @@
   {:else if !hasScheduledItems}
     <div class="empty-state">
       <p>No scheduled tasks</p>
-      <p class="hint">Add scheduled_for to TODOs to wake up Nymeria</p>
+      <p class="hint">Schedule a task for later to wake Nymeria up automatically.</p>
     </div>
   {:else}
     <div class="tasks-list">

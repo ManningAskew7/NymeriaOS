@@ -952,7 +952,7 @@
               <input type="checkbox" bind:checked={watchdogEnabled} />
               <span>Enable Watchdog</span>
             </label>
-            <p class="hint">Monitor TODO staleness and nudge agent</p>
+            <p class="hint">Monitor task staleness and nudge agent</p>
           </div>
 
           {#if watchdogEnabled}
@@ -1035,7 +1035,7 @@
           <div class="setting-group">
             <label class="setting-toggle">
               <input type="checkbox" bind:checked={ragIncludeTodos} />
-              <span>Search completed TODOs</span>
+              <span>Search completed tasks</span>
             </label>
           </div>
           <div class="setting-group">

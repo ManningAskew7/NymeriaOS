@@ -899,9 +899,9 @@
         <div class="setting-group">
           <label class="setting-toggle">
             <input type="checkbox" bind:checked={injectTodosInPrompt} />
-            <span>Inject TODOs into system prompt</span>
+            <span>Inject tasks into system prompt</span>
           </label>
-          <p class="hint">Include active TODOs in the system prompt so the LLM sees them without tool calls.</p>
+          <p class="hint">Include active tasks in the system prompt so the LLM sees them without tool calls.</p>
         </div>
         <div class="setting-group">
           <label class="setting-toggle">

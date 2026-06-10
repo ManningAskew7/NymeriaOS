@@ -2125,7 +2125,7 @@
             bind:checked={watchdogEnabled}
           />
           <label for="watchdog-enabled">Enable Watchdog</label>
-          <p class="hint">Monitor TODO staleness</p>
+          <p class="hint">Monitor task staleness</p>
         </div>
 
         {#if watchdogEnabled}
@@ -2208,7 +2208,7 @@
         </div>
         <div class="field checkbox-field">
           <input id="rag-inc-todo" type="checkbox" bind:checked={ragIncludeTodos} />
-          <label for="rag-inc-todo">Completed TODOs</label>
+          <label for="rag-inc-todo">Completed tasks</label>
         </div>
         <div class="field checkbox-field">
           <input id="rag-inc-tool" type="checkbox" bind:checked={ragIncludeTools} />

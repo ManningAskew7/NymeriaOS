@@ -71,7 +71,7 @@
     const labels: Record<string, string> = {
       agent_prompt: 'Agent Prompt',
       notify: 'Notification',
-      create_todo: 'Create TODO',
+      create_todo: 'Create task',
     };
     return labels[type] || type;
   }
@@ -418,7 +418,7 @@
       >
         <option value="agent_prompt">Agent Prompt (LLM call)</option>
         <option value="notify">Notification (no LLM)</option>
-        <option value="create_todo">Create TODO (no LLM)</option>
+        <option value="create_todo">Create task (no LLM)</option>
       </select>
     </div>
 

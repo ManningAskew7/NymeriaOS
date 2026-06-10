@@ -23,7 +23,7 @@
   {:else if !hasScheduledItems}
     <div class="feed-state">
       <p>No scheduled tasks</p>
-      <span class="hint">Scheduled TODOs will wake up Nymeria</span>
+      <span class="hint">Schedule a task for later to wake Nymeria up automatically.</span>
     </div>
   {:else}
     <div class="tasks-list">

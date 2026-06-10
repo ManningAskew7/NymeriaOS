@@ -456,7 +456,7 @@
             >
               <Icon name="check" size={16} />
               <span class="at-name">Create Task</span>
-              <span class="at-desc">Add a TODO item automatically</span>
+              <span class="at-desc">Add a task item automatically</span>
             </button>
           </div>
 

@@ -374,7 +374,7 @@
       <div class="section-header"><h3>Delete user</h3></div>
       <p class="section-hint">
         Cleans up tokens and platform identities. Refuses with 409 if this user
-        still owns threads or todos.
+        still owns threads or tasks.
       </p>
       <Button
         variant="ghost"

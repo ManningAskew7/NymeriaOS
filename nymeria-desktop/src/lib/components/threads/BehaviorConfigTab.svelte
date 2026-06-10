@@ -58,10 +58,10 @@
   <ThreadSettingsSection title="Prompt Visibility">
     <label class="toggle-row">
       <input type="checkbox" bind:checked={injectTodosInPrompt} />
-      <span class="toggle-label">Inject TODOs into system prompt</span>
+      <span class="toggle-label">Inject tasks into system prompt</span>
     </label>
     <p class="field-hint indented">
-      Include active TODOs directly in the system prompt so the LLM can see and
+      Include active tasks directly in the system prompt so the LLM can see and
       act on them without tool calls. Uses extra context tokens.
     </p>
 
