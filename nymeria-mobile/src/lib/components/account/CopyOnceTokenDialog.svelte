@@ -2,6 +2,7 @@
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     isOpen: boolean;
@@ -33,7 +34,7 @@
       await navigator.clipboard.writeText(rawToken);
       copied = true;
     } catch (e) {
-      copyError = e instanceof Error ? e.message : 'Clipboard access denied';
+      copyError = humanizeErrorText(e, { action: 'copy', resource: 'the token' });
     }
   }
 </script>

@@ -34,7 +34,10 @@ export type ErrorAction =
   | 'copy'
   | 'run'
   | 'complete'
-  | 'download';
+  | 'download'
+  | 'register'
+  | 'remove'
+  | 'disconnect';
 
 export interface HumanErrorContext {
   /** What the user was trying to do. Drives the verb in the headline. */
@@ -79,6 +82,9 @@ const ACTION_VERB: Record<ErrorAction, string> = {
   run: 'run',
   complete: 'complete',
   download: 'download',
+  register: 'register',
+  remove: 'remove',
+  disconnect: 'disconnect',
 };
 
 // Recovery hint per action -- generic but actionable, which is the §9 bar
@@ -95,6 +101,7 @@ const ACTION_HINT: Partial<Record<ErrorAction, string>> = {
   install: 'Try again, or check that the source is reachable.',
   copy: 'You can copy it manually instead.',
   download: 'Try again, or check your connection to the backend.',
+  register: 'Check the token and try again.',
 };
 
 function rawMessage(e: unknown): string {

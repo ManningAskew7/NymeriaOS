@@ -3,6 +3,7 @@
   import { chatAppBindingsStore } from '$lib/stores/chatAppBindings.svelte';
   import { notificationStore } from '$lib/stores/notifications.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
@@ -53,7 +54,7 @@
     if (!chatAppLoaded) {
       chatAppLoaded = true;
       chatAppBindingsStore.loadBindings(thread.id).catch((err) => {
-        chatAppLoadError = err instanceof Error ? err.message : String(err);
+        chatAppLoadError = humanizeErrorText(err, { action: 'load', resource: 'connected chat apps' });
       });
     }
   });
@@ -63,7 +64,7 @@
       await chatAppBindingsStore.unbind(thread.id, bindingId);
       await threadsStore.syncFromBackend();
     } catch (err) {
-      chatAppLoadError = err instanceof Error ? err.message : String(err);
+      chatAppLoadError = humanizeErrorText(err, { action: 'disconnect', resource: 'the chat app' });
     }
   }
 </script>

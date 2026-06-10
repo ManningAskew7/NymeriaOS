@@ -3,6 +3,7 @@
   import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { onMount } from 'svelte';
 
   interface Props {
@@ -21,7 +22,7 @@
     try {
       executions = await triggersStore.getExecutions(trigger.id);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load history';
+      error = humanizeErrorText(e, { action: 'load', resource: 'the execution history' });
     } finally {
       loading = false;
     }

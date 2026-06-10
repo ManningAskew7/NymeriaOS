@@ -24,6 +24,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import WizardShell from '$lib/components/common/WizardShell.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   type Step = 'token' | 'starting' | 'bind' | 'done';
 
@@ -95,7 +96,7 @@
         startStartingPoll();
       }
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = humanizeErrorText(e, { action: 'register', resource: 'your bot' });
     } finally {
       busy = false;
     }
@@ -124,7 +125,7 @@
     try {
       bindCode = await api.issueChatAppBindCode(threadId, 'telegram');
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = humanizeErrorText(e, { action: 'create', resource: 'a bind code' });
     }
   }
 

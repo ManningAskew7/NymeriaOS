@@ -2,6 +2,7 @@
   import type { Trigger, TriggerSourceInfo } from '$lib/types';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
     trigger: Trigger;
@@ -76,7 +77,7 @@
         : 'Conditions would NOT pass for sample event';
       setTimeout(() => { testResult = null; }, 5000);
     } catch (e) {
-      testResult = `Error: ${e instanceof Error ? e.message : 'test failed'}`;
+      testResult = humanizeErrorText(e, { action: 'test', resource: 'the trigger' });
       setTimeout(() => { testResult = null; }, 5000);
     } finally {
       testing = false;
