@@ -1181,7 +1181,7 @@
                 {/if}
                 <div class="conn-actions">
                   {#if editingConnectionId === conn.id}
-                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save" aria-label="Save connection">
+                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save connection" aria-label="Save connection">
                       <Icon name="check" size={14} />
                     </button>
                     <button type="button" class="conn-action-btn" onclick={handleCancelEdit} title="Cancel" aria-label="Cancel edit">

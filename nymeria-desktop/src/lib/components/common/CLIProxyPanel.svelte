@@ -233,7 +233,7 @@
             <span>Routing strategy</span>
             <input class="text-input" type="text" placeholder="round-robin" bind:value={routingStrategy} />
           </label>
-          <Button variant="secondary" onclick={saveKnobs}>Save</Button>
+          <Button variant="secondary" onclick={saveKnobs}>Save proxy settings</Button>
         </div>
         <p class="hint">
           Model aliases, excluded models, quota behavior, and gatekeeper keys live in the proxy's own panel
