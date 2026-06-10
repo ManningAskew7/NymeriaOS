@@ -30,6 +30,7 @@ from ...core.notification_dispatch import (
 )
 from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from ..schemas.chat import ChatRequest, ChatResponse
+from ..sse import with_sse_keepalive
 
 logger = logging.getLogger(__name__)
 
@@ -489,8 +490,10 @@ def create_chat_router(
                     + "\n\n"
                 )
 
+            # Compaction is an LLM call that can stay silent past tunnel idle
+            # timeouts; keepalive comments hold the connection open.
             return StreamingResponse(
-                compact_command_response(),
+                with_sse_keepalive(compact_command_response()),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1206,8 +1209,11 @@ def create_chat_router(
                         },
                     )
 
+        # Keepalive comments bridge long silent gaps (tool calls that emit
+        # nothing for minutes) so tunnel edges with idle timeouts, like
+        # Cloudflare's ~100s proxy limit, do not cut the turn mid-stream.
         return StreamingResponse(
-            event_generator(),
+            with_sse_keepalive(event_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

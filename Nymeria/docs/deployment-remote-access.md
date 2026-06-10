@@ -180,7 +180,7 @@ NYMERIA_PUBLIC_URL=https://nymeria.yourdomain.com
 - Public traffic flows through Cloudflare's edge; Cloudflare terminates public TLS and proxies through the tunnel to your server.
 - For most personal use this is acceptable. For sensitive deployments consider Tailscale instead.
 - Cloudflare can disconnect your tunnel for policy reasons (rare for legitimate use).
-- Cloudflare's proxy closes connections idle for ~100 seconds. Short chat streams pass fine, but a turn that stays silent for minutes (a long-running tool call between events) can be cut mid-stream until the backend grows SSE keepalives.
+- Cloudflare's proxy closes connections idle for ~100 seconds. The chat stream emits `: keepalive` SSE comments every 25 seconds of silence, so long-running tool calls survive the idle timeout.
 - With a colocated tunnel every request reaches the API from one local address, so the per-IP auth-failure limiter collapses to one bucket. Set `NYMERIA_FORWARDED_ALLOW_IPS=127.0.0.1` so it keys on the real client IPs cloudflared forwards (see [configuration.md](configuration.md)).
 
 ---
