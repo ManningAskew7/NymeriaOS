@@ -5,6 +5,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import type {
   Trigger,
@@ -51,7 +52,7 @@ function createTriggersStore() {
       loaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
-      error = e instanceof Error ? e.message : 'Failed to load triggers';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your triggers' });
       console.error('Failed to load triggers:', e);
       loaded = true;
     } finally {

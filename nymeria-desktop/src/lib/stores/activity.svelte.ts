@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type { ActivityEntry } from '$lib/types';
 
 const POLL_INTERVAL = 45000; // 45 seconds
@@ -27,7 +28,7 @@ function createActivityStore() {
       entries = response.entries;
       lastFetch = new Date();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch activity';
+      error = humanizeErrorText(e, { action: 'load', resource: 'the activity feed' });
       console.error('Failed to fetch activity:', e);
     } finally {
       loading = false;

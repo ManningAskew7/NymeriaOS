@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import type {
   SkillMetadata,
@@ -74,7 +75,7 @@ export function createSkillsStore() {
       installedLoaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
-      installedError = e instanceof Error ? e.message : 'Failed to load skills';
+      installedError = humanizeErrorText(e, { action: 'load', resource: 'your skills' });
       console.error('skills: loadInstalled failed', e);
       // Mark loaded so callers don't re-fire indefinitely on a 404/auth error.
       installedLoaded = true;

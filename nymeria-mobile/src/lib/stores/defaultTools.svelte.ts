@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import type { DefaultToolInfo } from '$lib/types';
 
@@ -61,7 +62,7 @@ function createDefaultToolsStore() {
         loaded = true;
       } catch (e) {
         if (requestGeneration !== identityGeneration) return;
-        error = e instanceof Error ? e.message : 'Failed to load default tools';
+        error = humanizeErrorText(e, { action: 'load', resource: 'your default tools' });
         loaded = true;
       } finally {
         if (requestGeneration === identityGeneration) {
@@ -81,7 +82,7 @@ function createDefaultToolsStore() {
         tools = tools.map(t => ({ ...t, is_default: toolNames.includes(t.name) }));
         return true;
       } catch (e) {
-        error = e instanceof Error ? e.message : 'Failed to save default tools';
+        error = humanizeErrorText(e, { action: 'save', resource: 'your default tools' });
         return false;
       } finally {
         saving = false;
@@ -100,7 +101,7 @@ function createDefaultToolsStore() {
         callableThreadCount = response.callable_thread_count;
         return true;
       } catch (e) {
-        error = e instanceof Error ? e.message : 'Failed to reset default tools';
+        error = humanizeErrorText(e, { action: 'reset', resource: 'your default tools' });
         return false;
       } finally {
         saving = false;

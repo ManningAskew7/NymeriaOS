@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type {
   CustomTool,
   CustomToolCreateRequest,
@@ -67,7 +68,7 @@ function createToolsStore() {
       const response = await api.getCustomTools();
       tools = response.tools;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load tools';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your custom tools' });
       console.error('Failed to load custom tools:', e);
     } finally {
       loading = false;
@@ -88,7 +89,7 @@ function createToolsStore() {
       tools = [...tools, newTool];
       return newTool;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to create tool';
+      error = humanizeErrorText(e, { action: 'create', resource: 'the tool' });
       console.error('Failed to create custom tool:', e);
       return null;
     } finally {
@@ -108,7 +109,7 @@ function createToolsStore() {
       tools = tools.map((t) => (t.id === toolId ? updatedTool : t));
       return updatedTool;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the tool' });
       console.error('Failed to update custom tool:', e);
       return null;
     } finally {
@@ -131,7 +132,7 @@ function createToolsStore() {
 
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to delete tool';
+      error = humanizeErrorText(e, { action: 'delete', resource: 'the tool' });
       console.error('Failed to delete custom tool:', e);
       return false;
     } finally {
@@ -150,7 +151,7 @@ function createToolsStore() {
       const result = await api.testCustomTool(toolId, params);
       return result;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to test tool';
+      error = humanizeErrorText(e, { action: 'test', resource: 'the tool' });
       console.error('Failed to test custom tool:', e);
       return null;
     } finally {

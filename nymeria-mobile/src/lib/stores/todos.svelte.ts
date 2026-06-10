@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type { TodoItem, TodoStatus, TodoCreateRequest, TodoUpdateRequest } from '$lib/types';
 
 interface StatusGroup {
@@ -88,7 +89,7 @@ function createTodosStore() {
       todos = response.items;
       lastFetch = new Date();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch TODOs';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your scheduled tasks' });
       console.error('Failed to fetch TODOs:', e);
     } finally {
       loading = false;
@@ -107,7 +108,7 @@ function createTodosStore() {
       await fetch();
       return newTodo;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to create TODO';
+      error = humanizeErrorText(e, { action: 'create', resource: 'the task' });
       console.error('Failed to create TODO:', e);
       throw e;
     }
@@ -119,7 +120,7 @@ function createTodosStore() {
       await fetch();
       return updatedTodo;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update TODO';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the task' });
       console.error('Failed to update TODO:', e);
       throw e;
     }
@@ -130,7 +131,7 @@ function createTodosStore() {
       await api.deleteTodo(todoId);
       todos = todos.filter((t) => t.id !== todoId);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to delete TODO';
+      error = humanizeErrorText(e, { action: 'delete', resource: 'the task' });
       console.error('Failed to delete TODO:', e);
       throw e;
     }
@@ -142,7 +143,7 @@ function createTodosStore() {
       await fetch();
       return completedTodo;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to complete TODO';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the task' });
       console.error('Failed to complete TODO:', e);
       throw e;
     }

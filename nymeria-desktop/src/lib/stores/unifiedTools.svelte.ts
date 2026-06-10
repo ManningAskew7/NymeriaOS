@@ -6,6 +6,7 @@
  */
 
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { getCategoryInfo as getToolCategoryInfo } from '$lib/utils/toolCategories';
 import { registerIdentityReloadHook } from './config.svelte';
 import { defaultToolsStore } from './defaultTools.svelte';
@@ -109,7 +110,7 @@ function createUnifiedToolsStore() {
       loaded = true;
     } catch (e) {
       if (requestGeneration !== identityGeneration) return;
-      error = e instanceof Error ? e.message : 'Failed to load tools';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your tools' });
       console.error('Failed to load unified tools:', e);
       // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
       // resetLoaded() (called on tool changes) or the identity-reload hook
@@ -154,7 +155,7 @@ function createUnifiedToolsStore() {
       await defaultToolsStore.load(userId);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the tool' });
       console.error('Failed to set tool enabled:', e);
       return false;
     } finally {
@@ -176,7 +177,7 @@ function createUnifiedToolsStore() {
       await loadTools(userId);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool description';
+      error = humanizeErrorText(e, { action: 'save', resource: "the tool's description" });
       console.error('Failed to set tool description:', e);
       return false;
     } finally {
@@ -198,7 +199,7 @@ function createUnifiedToolsStore() {
       await loadTools(userId);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update tool config';
+      error = humanizeErrorText(e, { action: 'save', resource: "the tool's settings" });
       console.error('Failed to set tool config:', e);
       return false;
     } finally {

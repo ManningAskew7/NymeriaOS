@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type {
   MCPDiscoveredTool,
   MCPInstallPreviewRequest,
@@ -31,7 +32,7 @@ function createMCPServersStore() {
         servers = response.servers;
         loaded = true;
       } catch (e) {
-        error = e instanceof Error ? e.message : 'Failed to load MCP servers';
+        error = humanizeErrorText(e, { action: 'load', resource: 'your MCP servers' });
         console.error('Failed to load MCP servers:', e);
       } finally {
         loading = false;

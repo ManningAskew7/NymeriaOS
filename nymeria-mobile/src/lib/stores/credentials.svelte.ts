@@ -1,4 +1,5 @@
 import { api } from '$lib/services/api.svelte';
+import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import type {
   Credential,
   CredentialBinding,
@@ -23,7 +24,7 @@ function createCredentialsStore() {
       credentials = response.credentials;
       loaded = true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load credentials';
+      error = humanizeErrorText(e, { action: 'load', resource: 'your credentials' });
       console.error('Failed to load credentials:', e);
     } finally {
       loading = false;
@@ -43,7 +44,7 @@ function createCredentialsStore() {
       credentials = [credential, ...credentials.filter((c) => c.id !== credential.id)];
       return credential;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to create credential';
+      error = humanizeErrorText(e, { action: 'create', resource: 'the credential' });
       return null;
     } finally {
       loading = false;
@@ -58,7 +59,7 @@ function createCredentialsStore() {
       credentials = credentials.map((c) => c.id === credentialId ? credential : c);
       return credential;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to update credential';
+      error = humanizeErrorText(e, { action: 'update', resource: 'the credential' });
       return null;
     } finally {
       loading = false;
@@ -73,7 +74,7 @@ function createCredentialsStore() {
       credentials = credentials.map((c) => c.id === credentialId ? { ...c, status: 'disabled' } : c);
       return true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to disable credential';
+      error = humanizeErrorText(e, { action: 'disable', resource: 'the credential' });
       return false;
     } finally {
       loading = false;
@@ -86,7 +87,7 @@ function createCredentialsStore() {
       credentials = credentials.map((c) => c.id === credentialId ? credential : c);
       return credential;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to test credential';
+      error = humanizeErrorText(e, { action: 'test', resource: 'the credential' });
       return null;
     }
   }
@@ -97,7 +98,7 @@ function createCredentialsStore() {
       bindings = { ...bindings, [credentialId]: rows };
       return rows;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load credential bindings';
+      error = humanizeErrorText(e, { action: 'load', resource: "the credential's bindings" });
       return [];
     }
   }
@@ -108,7 +109,7 @@ function createCredentialsStore() {
       bindings = { ...bindings, [credentialId]: [row, ...(bindings[credentialId] || [])] };
       return row;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to bind credential';
+      error = humanizeErrorText(e, { action: 'save', resource: 'the credential binding' });
       return null;
     }
   }
