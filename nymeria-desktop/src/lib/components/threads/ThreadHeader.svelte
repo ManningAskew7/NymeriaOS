@@ -565,7 +565,7 @@
   .meta-toggle :global(svg) {
     display: block;
     transform: translateY(2px);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
   }
 
   .meta-toggle.open :global(svg) {

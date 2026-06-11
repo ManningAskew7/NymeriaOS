@@ -3,7 +3,7 @@
   import { fade } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
-  import { OVERLAY_FADE_IN, OVERLAY_FADE_OUT } from '$lib/utils/transitions';
+  import { VIEWER_FADE_IN, VIEWER_FADE_OUT } from '$lib/utils/transitions';
   import { formatFileSize } from '$lib/utils/fileProcessing';
 
   interface Props {
@@ -123,8 +123,8 @@
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     use:trapFocus
-    in:fade={OVERLAY_FADE_IN}
-    out:fade={OVERLAY_FADE_OUT}
+    in:fade={VIEWER_FADE_IN}
+    out:fade={VIEWER_FADE_OUT}
   >
     <div class="modal-content">
       <div class="modal-header">

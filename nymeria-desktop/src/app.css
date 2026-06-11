@@ -194,6 +194,13 @@
   --transition-normal: 250ms ease;
   --transition-slow: 350ms ease;
 
+  /* Easing vocabulary (§8). The --transition-* composites bake in generic
+     `ease`; when a site needs a different curve, pair one of these with a
+     raw duration instead of hand-writing a bezier. */
+  --ease-out: cubic-bezier(0.33, 1, 0.68, 1); /* decelerate into rest: collapse arrows, micro-reveals */
+  --ease-emphasis: cubic-bezier(0.4, 0, 0.2, 1); /* larger layout shifts: sidebar collapse */
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1); /* fast start, long settle: bottom sheets (JS twin: expoOut) */
+
   /* Single source of truth for the sidebar-collapse choreography. The sidebar
      widths, the bottom input-section's sliding background, the "Press
      Ctrl+Enter…" hint that slides with it, and any future element that
@@ -201,7 +208,7 @@
      variables. Changing them here updates every related animation in lock
      step so the halves never desync. */
   --sidebar-collapse-duration: 250ms;
-  --sidebar-collapse-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  --sidebar-collapse-easing: var(--ease-emphasis);
 
   /* Glassmorphism (defaults — overridden per-theme in themes.ts) */
   --glass-bg: rgba(26, 29, 33, 0.7);

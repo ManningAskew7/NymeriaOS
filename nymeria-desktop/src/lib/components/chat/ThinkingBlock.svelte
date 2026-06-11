@@ -96,9 +96,8 @@
     justify-content: center;
     color: var(--text-muted);
     /* Matches the global Collapsible chevron — same 120ms duration and
-       cubic-bezier(0.33, 1, 0.68, 1) easing as every other collapse arrow
-       in the app. */
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+       --ease-out easing as every other collapse arrow in the app. */
+    transition: transform 120ms var(--ease-out);
     flex-shrink: 0;
   }
 

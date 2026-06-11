@@ -707,7 +707,7 @@
     display: inline;
     opacity: 0;
     white-space: pre;
-    animation: triggerNameChar 100ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    animation: triggerNameChar 100ms var(--ease-emphasis) forwards;
     /* Wait long enough for the OUTLOOK chip + toggle to start clearing out
        of the title row (~60ms of the 120ms slide), then cascade fast (10ms
        per char) so the reveal finishes about the same time the box does. */
@@ -865,7 +865,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-muted);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
     cursor: pointer;
   }
 

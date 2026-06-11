@@ -96,7 +96,7 @@
   .ts-chevron {
     display: inline-flex;
     color: var(--text-muted);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
   }
   .ts-chevron.open {
     transform: rotate(90deg);

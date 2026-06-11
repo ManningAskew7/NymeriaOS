@@ -485,7 +485,7 @@
     align-items: center;
     color: var(--text-muted);
     flex-shrink: 0;
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
   }
 
   .expand-icon.rotated {

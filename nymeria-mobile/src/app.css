@@ -87,6 +87,13 @@
   --transition-normal: 250ms ease;
   --transition-slow: 350ms ease;
 
+  /* Easing vocabulary (§8). The --transition-* composites bake in generic
+     `ease`; when a site needs a different curve, pair one of these with a
+     raw duration instead of hand-writing a bezier. */
+  --ease-out: cubic-bezier(0.33, 1, 0.68, 1); /* decelerate into rest: collapse arrows, micro-reveals */
+  --ease-emphasis: cubic-bezier(0.4, 0, 0.2, 1); /* larger layout shifts */
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1); /* fast start, long settle: bottom sheets (JS twin: expoOut) */
+
   /* Glassmorphism */
   --glass-bg: rgba(26, 29, 33, 0.7);
   --glass-bg-strong: rgba(26, 29, 33, 0.85);
