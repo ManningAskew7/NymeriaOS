@@ -26,6 +26,7 @@ from ...config.model_capabilities import (
     get_max_output_tokens,
     list_all_models,
     max_reasoning_effort,
+    parse_anthropic_reasoning_capabilities,
     register_model_metadata,
     supported_reasoning_efforts,
 )
@@ -1321,8 +1322,15 @@ def create_settings_router(
                 model_id = m.get("id", "")
                 if not model_id:
                     continue
-                model_name = m.get("name") or model_id
+                model_name = m.get("name") or m.get("display_name") or model_id
                 metadata = extract_model_metadata(m)
+                # Anthropic publishes a per-model capabilities tree with
+                # per-effort-level support flags; registering it here makes
+                # the advertised ladder exact for newly released models
+                # without a static-table edit.
+                live_efforts = parse_anthropic_reasoning_capabilities(
+                    m.get("capabilities")
+                )
                 register_model_metadata(
                     model_id=model_id,
                     name=model_name,
@@ -1330,6 +1338,7 @@ def create_settings_router(
                     max_completion_tokens=metadata["max_completion_tokens"],
                     input_modalities=set(metadata["input_modalities"]),
                     supported_parameters=set(metadata["supported_parameters"]),
+                    reasoning_efforts=live_efforts,
                     default_temperature=metadata["default_temperature"],
                     default_top_p=metadata["default_top_p"],
                     default_frequency_penalty=metadata["default_frequency_penalty"],

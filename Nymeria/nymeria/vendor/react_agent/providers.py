@@ -1565,9 +1565,10 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
                 "reasoning": {"enabled": False, "effort": "none"}
             }
     # Build OpenRouter chat-completions reasoning config for extra_body.
-    # Only send when extended thinking is explicitly enabled AND the model
-    # supports reasoning (or we have no support data to say otherwise).
-    elif config.extended_thinking:
+    # Sent whenever reasoning is requested (extended thinking on, or an
+    # explicit effort level alone, matching the Responses branch) AND the
+    # model supports reasoning (or we have no support data to say otherwise).
+    elif reasoning_requested:
         if not has_support_data or "reasoning" in supported:
             reasoning_config = {"enabled": True}
             if effort_value:
@@ -1607,6 +1608,7 @@ def _openai_reasoning_effort_value(model: str, effort: str) -> str | None:
     effort_text = (effort or "").strip().lower()
     is_codex = "codex" in model_text
     is_o_series = bool(_OPENAI_O_SERIES_RE.search(model_text))
+    is_pro = "gpt-5" in model_text and "-pro" in model_text
     minor_match = _OPENAI_GPT5_MINOR_RE.search(model_text)
     if minor_match:
         gpt5_minor = int(minor_match.group(1))
@@ -1614,11 +1616,23 @@ def _openai_reasoning_effort_value(model: str, effort: str) -> str | None:
         gpt5_minor = 0
     else:
         gpt5_minor = None
-    supports_xhigh = (
-        "codex-max" in model_text
-        or "gpt-5.5-codex" in model_text
-        or (not is_codex and gpt5_minor is not None and gpt5_minor >= 2)
+    supports_xhigh = "codex-max" in model_text or (
+        gpt5_minor is not None
+        and gpt5_minor >= 2
+        and not (is_codex and ("mini" in model_text or "spark" in model_text))
     )
+
+    if is_pro:
+        # Pro models reject the lower tiers: gpt-5-pro accepts only "high";
+        # gpt-5.2-pro and later list medium/high/xhigh. Reasoning cannot be
+        # disabled, so off/low degrade to the model's floor.
+        if gpt5_minor is not None and gpt5_minor >= 2:
+            if effort_text in {"xhigh", "max"}:
+                return "xhigh"
+            if effort_text in {"off", "low"}:
+                return "medium"
+            return effort_text or "high"
+        return "high"
 
     if effort_text == "off":
         if is_o_series:
@@ -1754,85 +1768,201 @@ def _grok_lacks_reasoning_effort(model_text: str) -> bool:
     return minor < 2
 
 
+def _set_model_kwarg(kwargs: dict[str, Any], key: str, value: Any) -> None:
+    model_kwargs = dict(kwargs.get("model_kwargs") or {})
+    model_kwargs[key] = value
+    kwargs["model_kwargs"] = model_kwargs
+
+
 def _apply_chat_reasoning_toggles(
     kwargs: dict[str, Any], provider: str, config: LLMConfig
 ) -> None:
     """Set chat-completions reasoning params + per-provider passback toggles.
 
-    Called only when reasoning is requested and the provider is using Chat
-    Completions. These toggles tell the provider to retain and reuse prior-turn
-    reasoning so the flat `reasoning_content` replay in
-    `ChatOpenAIWithReasoning._get_request_payload` is honored. Providers not
-    listed here get no toggle (a no-op). Effort "off" keeps the disabled path
-    (no toggles) except on xAI, where it maps to the explicit "none" value,
-    and on Azure, where the OpenAI per-family mapping decides the wire value.
+    Called only when reasoning is requested (an effort level, "off" included,
+    or extended_thinking) and the provider is using Chat Completions. Two
+    jobs: translate the clamped effort onto each partner's wire contract, and
+    set the per-provider passback toggles that make the flat
+    `reasoning_content` replay in `ChatOpenAIWithReasoning._get_request_payload`
+    honored. Effort "off" sends each provider's documented disable form where
+    one exists; providers without one keep the no-toggle path (model default
+    wins). Providers not listed here get no toggle (a no-op).
     """
     effort_text = str(config.reasoning_effort or "").strip().lower()
+    is_off = effort_text == "off"
+    has_effort = config.reasoning_effort is not None
 
     if provider == "azure-openai":
         # Azure serves OpenAI models, so reuse the OpenAI per-family wire
         # mapping: "off" becomes none/minimal/low (or omission) by family,
         # and xhigh passes through on families that support it.
-        if config.reasoning_effort is not None:
+        if has_effort:
             wire_effort = _openai_reasoning_effort_value(
                 config.model,
                 config.reasoning_effort,
             )
             if wire_effort is not None:
-                model_kwargs = dict(kwargs.get("model_kwargs") or {})
-                model_kwargs["reasoning_effort"] = wire_effort
-                kwargs["model_kwargs"] = model_kwargs
+                _set_model_kwarg(kwargs, "reasoning_effort", wire_effort)
         return
 
     if provider == "xai":
         if _grok_lacks_reasoning_effort((config.model or "").lower()):
             # grok-4 / grok-4-fast / grok-4.1 reject the parameter outright.
             return
-        if config.reasoning_effort is not None:
-            if effort_text == "off":
+        if has_effort:
+            if is_off:
                 effort_value = "none"
             elif effort_text in {"xhigh", "max"}:
                 effort_value = "high"
             else:
                 effort_value = effort_text
-            model_kwargs = dict(kwargs.get("model_kwargs") or {})
-            model_kwargs["reasoning_effort"] = effort_value
-            kwargs["model_kwargs"] = model_kwargs
-        return
-
-    if effort_text == "off":
-        # Explicitly disabled: keep the no-toggle (disabled) path even when
-        # extended_thinking is also set.
+            _set_model_kwarg(kwargs, "reasoning_effort", effort_value)
         return
 
     if provider in {"fireworks-ai", "firepass"}:
-        # Fireworks: top-level `reasoning_history="preserved"` keeps prior-turn
-        # reasoning in context (docs.fireworks.ai/guides/reasoning).
+        # Fireworks reasoning_effort accepts none/low/medium/high/xhigh/max
+        # (chat-completions API reference); "none" disables on models that
+        # allow it. reasoning_history="preserved" keeps prior-turn reasoning
+        # in context and only applies while thinking is on.
+        if is_off:
+            _set_model_kwarg(kwargs, "reasoning_effort", "none")
+            return
         model_kwargs = dict(kwargs.get("model_kwargs") or {})
         model_kwargs["reasoning_history"] = "preserved"
-        if config.reasoning_effort is not None:
-            model_kwargs["reasoning_effort"] = (
-                "high" if effort_text in {"xhigh", "max"} else effort_text
-            )
+        if has_effort:
+            model_kwargs["reasoning_effort"] = effort_text
         kwargs["model_kwargs"] = model_kwargs
-    elif provider in {"moonshotai", "moonshotai-cn"}:
-        # Kimi: thinking.keep="all" enables thinking and preserves the chain of
-        # thought across turns (platform.kimi.ai K2 thinking guide).
-        _merge_extra_body(kwargs, {"thinking": {"type": "enabled", "keep": "all"}})
-    elif provider in {
+        return
+
+    if provider in {"moonshotai", "moonshotai-cn"}:
+        # Kimi: thinking.type enabled|disabled; keep="all" preserves the chain
+        # of thought across turns (platform.kimi.ai K2 thinking guide). The
+        # wire has no depth levels: any non-off effort means "enabled".
+        if is_off:
+            _merge_extra_body(kwargs, {"thinking": {"type": "disabled"}})
+        else:
+            _merge_extra_body(
+                kwargs, {"thinking": {"type": "enabled", "keep": "all"}}
+            )
+        return
+
+    if provider in {
         "alibaba",
         "alibaba-cn",
         "alibaba-coding-plan",
         "alibaba-coding-plan-cn",
         "qwen-oauth",
     }:
-        # Alibaba/Qwen3.x: enable_thinking turns on the chain of thought on the
-        # OpenAI-compatible endpoint; reasoning_content then round-trips on
-        # tool-call turns via the "tool_calls_only" flat replay
-        # (alibabacloud.com/help/en/model-studio/deep-thinking). Baseten gets no
-        # blanket toggle: enablement there is per-model (reasoning_effort vs
-        # chat_template_args), so only its passback replay is wired.
-        _merge_extra_body(kwargs, {"enable_thinking": True})
+        # Alibaba/Qwen3.x: enable_thinking toggles the chain of thought on the
+        # DashScope OpenAI-compatible endpoint (false actively disables hybrid
+        # models); reasoning_content then round-trips on tool-call turns via
+        # the "tool_calls_only" flat replay
+        # (alibabacloud.com/help/en/model-studio/deep-thinking). The wire has
+        # no depth levels.
+        _merge_extra_body(kwargs, {"enable_thinking": not is_off})
+        return
+
+    if provider == "deepseek":
+        # DeepSeek V4 thinking contract: thinking.type enabled|disabled plus
+        # reasoning_effort high|max (low/medium coerce to high and xhigh to
+        # max upstream, api-docs.deepseek.com/guides/thinking_mode).
+        if is_off:
+            _merge_extra_body(kwargs, {"thinking": {"type": "disabled"}})
+            return
+        _merge_extra_body(kwargs, {"thinking": {"type": "enabled"}})
+        if has_effort:
+            _set_model_kwarg(
+                kwargs,
+                "reasoning_effort",
+                "max" if effort_text in {"xhigh", "max"} else "high",
+            )
+        return
+
+    if provider == "togetherai":
+        # Together: reasoning.enabled toggles hybrid models; DeepSeek-V4 and
+        # gpt-oss additionally honor reasoning_effort
+        # (docs.together.ai/docs/inference/chat/reasoning).
+        _merge_extra_body(kwargs, {"reasoning": {"enabled": not is_off}})
+        if is_off or not has_effort:
+            return
+        model_text = (config.model or "").lower()
+        if "deepseek-v4" in model_text:
+            _set_model_kwarg(
+                kwargs,
+                "reasoning_effort",
+                "max" if effort_text in {"xhigh", "max"} else "high",
+            )
+        elif "gpt-oss" in model_text:
+            _set_model_kwarg(
+                kwargs,
+                "reasoning_effort",
+                "high" if effort_text in {"xhigh", "max"} else effort_text,
+            )
+        return
+
+    if provider == "novita-ai":
+        # Novita: enable_thinking boolean on supported models; no levels.
+        _merge_extra_body(kwargs, {"enable_thinking": not is_off})
+        return
+
+    if provider == "baseten":
+        # Baseten: thinking-default models cannot be disabled, so "off" sends
+        # nothing; reasoning_effort low/medium/high rides the payload, with
+        # xhigh only on DeepSeek V4 Pro (docs.baseten.co reasoning guide).
+        if is_off or not has_effort:
+            return
+        model_text = (config.model or "").lower()
+        if effort_text in {"xhigh", "max"}:
+            wire_effort = "xhigh" if "deepseek-v4" in model_text else "high"
+        else:
+            wire_effort = effort_text
+        _set_model_kwarg(kwargs, "reasoning_effort", wire_effort)
+        return
+
+    if provider == "litellm":
+        # LiteLLM translates its unified reasoning_effort per backend (budgets
+        # for legacy Claude, output_config for adaptive, passthrough for
+        # OpenAI); "none" disables. Documented set is none|low|medium|high
+        # (docs.litellm.ai/docs/reasoning_content), so higher tiers degrade.
+        if has_effort or config.extended_thinking:
+            if is_off:
+                wire_effort = "none"
+            elif effort_text in {"xhigh", "max"}:
+                wire_effort = "high"
+            else:
+                wire_effort = effort_text or "medium"
+            _set_model_kwarg(kwargs, "reasoning_effort", wire_effort)
+        return
+
+    if provider == "vercel":
+        # Vercel AI Gateway speaks the OpenRouter-style unified reasoning
+        # object on chat completions (effort none..xhigh; "none" disables).
+        if is_off:
+            _merge_extra_body(
+                kwargs, {"reasoning": {"enabled": False, "effort": "none"}}
+            )
+            return
+        reasoning_config: dict[str, Any] = {"enabled": True}
+        if has_effort:
+            reasoning_config["effort"] = (
+                "xhigh" if effort_text == "max" else effort_text
+            )
+        _merge_extra_body(kwargs, {"reasoning": reasoning_config})
+        return
+
+    if provider == "aihubmix":
+        # AIHubMix: unified top-level reasoning_effort none..xhigh on chat
+        # completions (docs.aihubmix.com unified inference); binary-toggle
+        # backends treat any non-none value as "enable thinking".
+        if has_effort or config.extended_thinking:
+            if is_off:
+                wire_effort = "none"
+            elif effort_text in {"xhigh", "max"}:
+                wire_effort = "xhigh"
+            else:
+                wire_effort = effort_text or "medium"
+            _set_model_kwarg(kwargs, "reasoning_effort", wire_effort)
+        return
 
 
 def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
@@ -1894,12 +2024,27 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["use_responses_api"] = True
         kwargs["output_version"] = "responses/v1"
         kwargs["store"] = False
-        # Effort "off" keeps the disabled path (no reasoning config) and wins
-        # over extended_thinking. xhigh/max degrade to "high": no generic
-        # compat provider advertises tiers above high.
-        if (
+        reasoning_requested = (
             config.extended_thinking or config.reasoning_effort is not None
-        ) and effort_text != "off":
+        )
+        if provider == "vercel":
+            # Vercel AI Gateway accepts the OpenRouter-style effort scale
+            # (none..xhigh) on Responses too; "off" sends "none" so thinking
+            # is actively disabled instead of left at the gateway default.
+            if effort_text == "off":
+                # No summary key: there is no reasoning to summarize.
+                kwargs["reasoning"] = {"effort": "none"}
+            elif reasoning_requested:
+                reasoning_config = {"summary": "auto"}
+                if effort_text in {"xhigh", "max"}:
+                    reasoning_config["effort"] = "xhigh"
+                else:
+                    reasoning_config["effort"] = effort_text or "medium"
+                kwargs["reasoning"] = reasoning_config
+        # Effort "off" keeps the disabled path (no reasoning config) and wins
+        # over extended_thinking. xhigh/max degrade to "high": no other
+        # generic compat provider advertises tiers above high.
+        elif reasoning_requested and effort_text != "off":
             reasoning_config = {"summary": "auto"}
             if effort_text in {"xhigh", "max"}:
                 reasoning_config["effort"] = "high"
@@ -2478,21 +2623,19 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     # Determine model family for API compatibility
     model_name = (config.model or "").lower()
+    from nymeria.config.model_capabilities import anthropic_model_version
+
+    model_version = anthropic_model_version(model_name)
     # Claude 4.7+ removes support for sampling params (temperature, top_p, top_k)
     # and extended thinking budgets. Use adaptive thinking only. The 4.8 /
-    # fable / mythos generations share the 4.7 API surface.
-    is_47_plus = any(
-        marker in model_name
-        for marker in (
-            "opus-4-7",
-            "sonnet-4-7",
-            "opus-4-8",
-            "sonnet-4-8",
-            "fable",
-            "mythos",
-        )
+    # fable / mythos generations share the 4.7 API surface, as do future
+    # version bumps (ordinal check, not a marker list).
+    is_47_plus = (
+        (model_version is not None and model_version >= (4, 7))
+        or "fable" in model_name
+        or "mythos" in model_name
     )
-    is_46_model = "opus-4-6" in model_name or "sonnet-4-6" in model_name
+    is_46_model = model_version == (4, 6)
     uses_adaptive = is_47_plus or is_46_model
     # fable/mythos cannot disable thinking; effort "off" degrades to "low".
     thinking_not_disableable = "fable" in model_name or "mythos" in model_name
@@ -2632,8 +2775,11 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         if is_gemini_3_plus:
             # thinking_level tops out at "high"; 3.x cannot fully disable
             # thinking, so "off" maps to the documented "minimal" floor.
+            # The 3.x pro line does not list "minimal" (3.1 Pro is
+            # low/medium/high), so its floor is "low".
+            floor = "low" if "pro" in model_name else "minimal"
             level_map = {
-                "off": "minimal",
+                "off": floor,
                 "low": "low",
                 "medium": "medium",
                 "high": "high",
@@ -2653,7 +2799,12 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
                 "xhigh": 24576,
                 "max": 32768,
             }
-            kwargs["thinking_budget"] = budget_map.get(effort, 4096)
+            budget = budget_map.get(effort, 4096)
+            if "pro" not in model_name and budget > 24576:
+                # 2.5 flash/flash-lite cap thinking_budget at 24576; only
+                # 2.5 pro accepts up to 32768.
+                budget = 24576
+            kwargs["thinking_budget"] = budget
 
     return ChatGoogleGenerativeAI(**kwargs)
 

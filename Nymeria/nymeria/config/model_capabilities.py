@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
-from typing import Dict, List, Optional, Set, TypedDict
+from typing import Any, Dict, List, Optional, Set, TypedDict
 
 import httpx
 
@@ -52,6 +52,9 @@ class ModelInfo:
     max_completion_tokens: Optional[int] = None
     input_modalities: Set[str] = field(default_factory=set)
     supported_parameters: Set[str] = field(default_factory=set)
+    # Provider-published effort ladder (Anthropic /v1/models capabilities tree).
+    # None means the provider reported nothing; the static family table applies.
+    reasoning_efforts: Optional[tuple] = None
     default_temperature: Optional[float] = None
     default_top_p: Optional[float] = None
     default_frequency_penalty: Optional[float] = None
@@ -366,23 +369,40 @@ _OPENAI_O_SERIES_RE = re.compile(r"^o\d")
 _GROK_4_MINOR_RE = re.compile(r"grok-4(?:\.(\d+))?")
 
 
+_ANTHROPIC_MODEL_VERSION_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d+))?"
+)
+
+
+def anthropic_model_version(model_text: str) -> Optional[tuple]:
+    """Parse (major, minor) from a Claude model id, hyphen or dot separated.
+
+    Matches the modern family-first naming only (claude-opus-4-8,
+    claude-sonnet-4.6, claude-opus-5); legacy version-first ids
+    (claude-3-5-sonnet) return None and take the legacy budget path. A
+    missing minor parses as 0 so future major bumps land on the newest API
+    shape instead of the legacy one.
+    """
+    match = _ANTHROPIC_MODEL_VERSION_RE.search(model_text or "")
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2) or 0))
+
+
 def _anthropic_reasoning_efforts(model_text: str) -> tuple:
-    """Effort ladder for Claude models (direct Anthropic API shapes)."""
+    """Effort ladder for Claude models (direct Anthropic API shapes).
+
+    Version-ordinal rules so newly released models land on the right shape
+    without a table edit; exact ladders come from the live /v1/models
+    capabilities tree when available (see _live_reasoning_efforts).
+    """
     if "fable" in model_text or "mythos" in model_text:
         # Thinking cannot be disabled on these models; no "off" tier.
         return ("low", "medium", "high", "xhigh", "max")
-    if any(
-        marker in model_text
-        for marker in (
-            "opus-4-7", "opus-4.7", "sonnet-4-7", "sonnet-4.7",
-            "opus-4-8", "opus-4.8", "sonnet-4-8", "sonnet-4.8",
-        )
-    ):
+    version = anthropic_model_version(model_text)
+    if version is not None and version >= (4, 7):
         return EFFORT_LEVELS
-    if any(
-        marker in model_text
-        for marker in ("opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6")
-    ):
+    if version == (4, 6):
         # 4.6 adaptive supports max but has no xhigh tier.
         return ("off", "low", "medium", "high", "max")
     # Legacy budget-token path (4.5 and older): every tier maps to a budget.
@@ -391,10 +411,20 @@ def _anthropic_reasoning_efforts(model_text: str) -> tuple:
 
 def _openai_reasoning_efforts(model_text: str) -> tuple:
     """Effort ladder for OpenAI models (Responses/Chat Completions)."""
+    minor_match = _OPENAI_GPT5_MINOR_RE.search(model_text)
+    minor = int(minor_match.group(1)) if minor_match else None
     if "codex" in model_text:
-        # Codex models cannot disable reasoning. xhigh ships on the
-        # codex-max / gpt-5.5-codex lineage only.
-        if "codex-max" in model_text or "gpt-5.5-codex" in model_text:
+        # Codex models cannot disable reasoning. xhigh ships on codex-max and
+        # the gpt-5.2+ codex lineage (model pages list it for gpt-5.2-codex,
+        # gpt-5.3-codex, gpt-5.5-codex); the mini/spark variants are not
+        # documented with xhigh.
+        has_xhigh = "codex-max" in model_text or (
+            minor is not None
+            and minor >= 2
+            and "mini" not in model_text
+            and "spark" not in model_text
+        )
+        if has_xhigh:
             return ("low", "medium", "high", "xhigh")
         return ("low", "medium", "high")
     if _OPENAI_O_SERIES_RE.match(model_text):
@@ -403,9 +433,15 @@ def _openai_reasoning_efforts(model_text: str) -> tuple:
         # contradicts "off", so "off" is not in the ladder and the clamp
         # maps it to "low".
         return ("low", "medium", "high")
-    minor_match = _OPENAI_GPT5_MINOR_RE.search(model_text)
-    if minor_match:
-        if int(minor_match.group(1)) >= 2:
+    if "gpt-5" in model_text and "-pro" in model_text:
+        # Pro models reject the lower tiers outright. gpt-5-pro accepts only
+        # "high"; the gpt-5.2-pro page lists medium/high/xhigh and later pro
+        # releases follow that shape. None of them can disable reasoning.
+        if minor is not None and minor >= 2:
+            return ("medium", "high", "xhigh")
+        return ("high",)
+    if minor is not None:
+        if minor >= 2:
             return ("off", "low", "medium", "high", "xhigh")
         return ("off", "low", "medium", "high")
     if "gpt-5" in model_text:
@@ -436,29 +472,141 @@ def _xai_reasoning_efforts(model_text: str) -> tuple:
     return ("off", "low", "medium", "high")
 
 
-def supported_reasoning_efforts(provider: str, model: str) -> tuple:
+# OpenRouter's unified reasoning config normalizes effort across models and
+# accepts up to xhigh; "off" sends effort "none" so thinking is actively
+# disabled rather than left at the upstream default.
+_OPENROUTER_UNIFIED_LADDER: tuple = ("off", "low", "medium", "high", "xhigh")
+
+# Partners whose wire carries only an on/off thinking toggle. "medium" is the
+# single honest "on" tier (mirrors OpenRouter's enabled=true meaning medium).
+_PARTNER_BINARY_THINKING: tuple = ("off", "medium")
+
+# DeepSeek's V4 thinking contract: effort high|max (low/medium coerce to high,
+# xhigh to max upstream); thinking.type=disabled turns it off.
+_DEEPSEEK_V4_LADDER: tuple = ("off", "high", "max")
+
+
+def _partner_wire_reasoning_efforts(
+    provider_text: str,
+    bare_model: str,
+    provider_route: Optional[str] = None,
+) -> Optional[tuple]:
+    """Effort ladders for OpenAI-compatible partner providers (June 2026).
+
+    These reflect what each partner's request builder can actually express on
+    the wire, not the hosted model's family: advertising a tier the request
+    cannot transmit would make the clamp and every "effective" display lie.
+    Returns None for providers whose ladder is decided elsewhere.
+    """
+    if provider_text in {"vercel", "aihubmix"}:
+        # Both speak the OpenRouter-style unified reasoning config.
+        return _OPENROUTER_UNIFIED_LADDER
+    if provider_text in {"fireworks-ai", "firepass"}:
+        # reasoning_effort accepts none/low/medium/high/xhigh/max.
+        return EFFORT_LEVELS
+    if provider_text == "deepseek":
+        return _DEEPSEEK_V4_LADDER
+    if provider_text in {
+        "alibaba",
+        "alibaba-cn",
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn",
+        "qwen-oauth",
+    }:
+        # enable_thinking is a boolean; no level control on the compat path.
+        return _PARTNER_BINARY_THINKING
+    if provider_text in {"moonshotai", "moonshotai-cn"}:
+        # thinking.type enabled|disabled only.
+        return _PARTNER_BINARY_THINKING
+    if provider_text == "togetherai":
+        if "deepseek-v4" in bare_model:
+            return _DEEPSEEK_V4_LADDER
+        # reasoning.enabled boolean for everything else.
+        return _PARTNER_BINARY_THINKING
+    if provider_text == "novita-ai":
+        # enable_thinking boolean.
+        return _PARTNER_BINARY_THINKING
+    if provider_text == "baseten":
+        # Reasoning cannot be disabled on Baseten's thinking-default models;
+        # reasoning_effort low/medium/high, plus xhigh on DeepSeek V4 Pro.
+        if "deepseek-v4" in bare_model:
+            return ("low", "medium", "high", "xhigh")
+        return ("low", "medium", "high")
+    if provider_text == "litellm":
+        if provider_route == "anthropic_messages":
+            # Native Claude shapes flow through _create_anthropic_llm; the
+            # family ladder applies.
+            return None
+        # Unified reasoning_effort none|low|medium|high passthrough.
+        return ("off", "low", "medium", "high")
+    return None
+
+
+def _live_reasoning_efforts(model_text: str) -> Optional[tuple]:
+    """Peek provider-published effort ladders from the live runtime cache.
+
+    Read-only: never triggers a network refresh, so the clamp hot path and
+    offline tests stay deterministic. Populated today by the Anthropic
+    /v1/models fetcher (capabilities.effort tree).
+    """
+    for candidate in _model_id_candidates(model_text):
+        info = _live_model_cache.get(candidate)
+        if info is not None and info.reasoning_efforts:
+            return info.reasoning_efforts
+    return None
+
+
+def _cached_openrouter_reasoning_support(model_text: str) -> Optional[bool]:
+    """Peek whether OpenRouter metadata says a model takes reasoning config.
+
+    Returns None when no metadata is cached (never fetches). False means the
+    catalog positively lists supported_parameters without "reasoning".
+    """
+    for cache in (_live_model_cache, _model_cache):
+        for candidate in _model_id_candidates(model_text):
+            info = cache.get(candidate)
+            if info is not None and info.supported_parameters:
+                return "reasoning" in info.supported_parameters
+    return None
+
+
+def supported_reasoning_efforts(
+    provider: str,
+    model: str,
+    provider_route: Optional[str] = None,
+) -> tuple:
     """Return the effort levels a provider/model pair supports, rank-ordered.
 
-    Static family-pattern knowledge (no network). Unknown models fall back to
-    the conservative ladder ("off", "low", "medium", "high").
+    Resolution order: OpenRouter unified ladder (catalog-aware), gpt-oss
+    floor, partner wire ladders, live provider-published ladders (Anthropic
+    capabilities tree), then static family-pattern knowledge. Unknown models
+    fall back to the conservative ladder ("off", "low", "medium", "high").
+    Never triggers a network fetch.
     """
     provider_text = (provider or "").strip().lower()
     model_text = _REASONING_SUFFIX_RE.sub("", (model or "").strip().lower())
     bare_model = _without_provider_prefix(model_text)
 
     if provider_text == "openrouter":
-        # OpenRouter's unified reasoning config normalizes effort across
-        # models and accepts up to xhigh; "off" omits the config entirely.
-        return ("off", "low", "medium", "high", "xhigh")
+        if _cached_openrouter_reasoning_support(model_text) is False:
+            # Catalog says this model takes no reasoning config at all.
+            return ("off",)
+        return _OPENROUTER_UNIFIED_LADDER
     if "gpt-oss" in bare_model:
-        # gpt-oss (Groq, Ollama, etc.) cannot disable reasoning.
+        # gpt-oss (Groq, Ollama, Fireworks, etc.) cannot disable reasoning.
         return ("low", "medium", "high")
+    partner = _partner_wire_reasoning_efforts(provider_text, bare_model, provider_route)
+    if partner is not None:
+        return partner
     if (
         provider_text == "anthropic"
         or "claude" in bare_model
         or "fable" in bare_model
         or "mythos" in bare_model
     ):
+        live = _live_reasoning_efforts(model_text)
+        if live:
+            return live
         return _anthropic_reasoning_efforts(bare_model)
     if provider_text == "xai" or "grok" in bare_model:
         return _xai_reasoning_efforts(bare_model)
@@ -469,13 +617,22 @@ def supported_reasoning_efforts(provider: str, model: str) -> tuple:
     return _DEFAULT_REASONING_EFFORTS
 
 
-def max_reasoning_effort(provider: str, model: str) -> str:
+def max_reasoning_effort(
+    provider: str,
+    model: str,
+    provider_route: Optional[str] = None,
+) -> str:
     """Return the highest-ranked effort level the provider/model supports."""
-    supported = supported_reasoning_efforts(provider, model)
+    supported = supported_reasoning_efforts(provider, model, provider_route)
     return max(supported, key=lambda level: _EFFORT_RANK[level])
 
 
-def clamp_reasoning_effort(provider: str, model: str, effort: str) -> str:
+def clamp_reasoning_effort(
+    provider: str,
+    model: str,
+    effort: str,
+    provider_route: Optional[str] = None,
+) -> str:
     """Clamp a requested effort level onto the provider/model's ladder.
 
     Rules (in order):
@@ -493,7 +650,7 @@ def clamp_reasoning_effort(provider: str, model: str, effort: str) -> str:
     if requested not in _EFFORT_RANK:
         return requested
 
-    supported = supported_reasoning_efforts(provider, model)
+    supported = supported_reasoning_efforts(provider, model, provider_route)
     if requested in supported:
         return requested
 
@@ -620,6 +777,7 @@ def _fetch_anthropic_models(
             input_modalities.add("image")
         if (capabilities_obj.get("pdf_input") or {}).get("supported"):
             input_modalities.add("file")
+        reasoning_efforts = parse_anthropic_reasoning_capabilities(capabilities_obj)
 
         context_length = int(model.get("max_input_tokens") or 0)
         max_output = model.get("max_output_tokens")
@@ -635,6 +793,7 @@ def _fetch_anthropic_models(
             context_length=context_length,
             max_completion_tokens=max_completion_tokens,
             input_modalities=input_modalities,
+            reasoning_efforts=reasoning_efforts,
             max_images_per_request=family_limits.get("max_images_per_request"),
             max_image_bytes=family_limits.get("max_image_bytes"),
             max_pdf_pages=family_limits.get("max_pdf_pages"),
@@ -644,6 +803,37 @@ def _fetch_anthropic_models(
 
     logger.info(f"Fetched metadata for {len(cache)} models from Anthropic")
     return cache
+
+
+def parse_anthropic_reasoning_capabilities(capabilities: Any) -> Optional[tuple]:
+    """Extract a rank-ordered effort ladder from an Anthropic capabilities tree.
+
+    Anthropic's /v1/models response carries per-effort-level support booleans
+    (``capabilities.effort.<level>.supported``) plus thinking-type flags
+    (``capabilities.thinking.types.<type>.supported``). "off" is derived from
+    the ``disabled`` thinking type since it never appears in the effort tree.
+    Returns None when the response has no effort tree (older proxies, missing
+    capabilities) so the static family table applies.
+    """
+    if not isinstance(capabilities, dict):
+        return None
+    effort_tree = capabilities.get("effort")
+    if not isinstance(effort_tree, dict) or not effort_tree:
+        return None
+    levels = {
+        level
+        for level in EFFORT_LEVELS
+        if isinstance(effort_tree.get(level), dict)
+        and effort_tree[level].get("supported")
+    }
+    if not levels:
+        return None
+    thinking_types = (capabilities.get("thinking") or {}).get("types")
+    if isinstance(thinking_types, dict) and (
+        (thinking_types.get("disabled") or {}).get("supported")
+    ):
+        levels.add("off")
+    return tuple(level for level in EFFORT_LEVELS if level in levels)
 
 
 def refresh_anthropic_models(
@@ -1015,6 +1205,7 @@ def register_model_metadata(
     max_completion_tokens: int | None = None,
     input_modalities: Set[str] | None = None,
     supported_parameters: Set[str] | None = None,
+    reasoning_efforts: tuple | None = None,
     default_temperature: float | None = None,
     default_top_p: float | None = None,
     default_frequency_penalty: float | None = None,
@@ -1058,6 +1249,11 @@ def register_model_metadata(
             supported_parameters=supported_parameters
             if supported_parameters is not None
             else (existing.supported_parameters.copy() if existing else set()),
+            reasoning_efforts=(
+                reasoning_efforts
+                if reasoning_efforts is not None
+                else (existing.reasoning_efforts if existing else None)
+            ),
             default_temperature=(
                 default_temperature
                 if default_temperature is not None

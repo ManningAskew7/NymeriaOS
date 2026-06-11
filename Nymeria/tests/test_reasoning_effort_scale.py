@@ -124,12 +124,108 @@ def test_effort_levels_rank_order():
         ("ollama", "gpt-oss:20b", ("low", "medium", "high")),
         # OpenRouter normalizes effort across models.
         ("openrouter", "anthropic/claude-opus-4.7", ("off", "low", "medium", "high", "xhigh")),
+        # 5.2+ codex models list xhigh; mini/spark variants do not.
+        ("openai", "gpt-5.2-codex", ("low", "medium", "high", "xhigh")),
+        ("openai", "gpt-5.3-codex", ("low", "medium", "high", "xhigh")),
+        ("openai", "gpt-5.3-codex-spark", ("low", "medium", "high")),
+        # Pro models reject the lower tiers and cannot disable reasoning.
+        ("openai", "gpt-5-pro", ("high",)),
+        ("openai", "gpt-5.2-pro", ("medium", "high", "xhigh")),
+        ("openai", "gpt-5.5-pro", ("medium", "high", "xhigh")),
+        # Partner wire ladders: only tiers each request builder can express.
+        ("vercel", "anthropic/claude-opus-4.6", ("off", "low", "medium", "high", "xhigh")),
+        ("aihubmix", "claude-opus-4.6", ("off", "low", "medium", "high", "xhigh")),
+        ("fireworks-ai", "accounts/fireworks/models/deepseek-v4", EFFORT_LEVELS),
+        ("firepass", "kimi-k2.6", EFFORT_LEVELS),
+        ("deepseek", "deepseek-v4-pro", ("off", "high", "max")),
+        ("deepseek", "deepseek-reasoner", ("off", "high", "max")),
+        ("alibaba", "qwen3.5-plus", ("off", "medium")),
+        ("qwen-oauth", "qwen3.5-flash", ("off", "medium")),
+        ("moonshotai", "kimi-k2-thinking", ("off", "medium")),
+        ("moonshotai-cn", "kimi-k2.6", ("off", "medium")),
+        ("togetherai", "zai-org/GLM-5", ("off", "medium")),
+        ("togetherai", "deepseek-ai/DeepSeek-V4-Pro", ("off", "high", "max")),
+        ("togetherai", "openai/gpt-oss-120b", ("low", "medium", "high")),
+        ("novita-ai", "deepseek/deepseek-v3.1", ("off", "medium")),
+        ("baseten", "gpt-oss-120b", ("low", "medium", "high")),
+        ("baseten", "deepseek-v4-pro", ("low", "medium", "high", "xhigh")),
+        ("baseten", "kimi-k2.6", ("low", "medium", "high")),
+        # LiteLLM default route: unified reasoning_effort passthrough; model
+        # substrings must not inflate the ladder past what the wire carries.
+        ("litellm", "claude-opus-4-8", ("off", "low", "medium", "high")),
+        ("litellm", "some-model", ("off", "low", "medium", "high")),
         # Unknown model/provider: conservative ladder.
         ("acme", "wizard-1", ("off", "low", "medium", "high")),
     ],
 )
 def test_supported_reasoning_efforts(provider, model, expected):
     assert supported_reasoning_efforts(provider, model) == expected
+
+
+def test_litellm_anthropic_messages_route_uses_family_ladder():
+    assert supported_reasoning_efforts(
+        "litellm", "claude-opus-4-8", provider_route="anthropic_messages"
+    ) == EFFORT_LEVELS
+
+
+def test_live_anthropic_capabilities_override_static_family_table():
+    from nymeria.config import model_capabilities as mc
+
+    parsed = mc.parse_anthropic_reasoning_capabilities(
+        {
+            "effort": {
+                "low": {"supported": True},
+                "medium": {"supported": True},
+                "high": {"supported": True},
+                "xhigh": {"supported": False},
+                "max": {"supported": True},
+            },
+            "thinking": {
+                "types": {
+                    "adaptive": {"supported": True},
+                    "disabled": {"supported": True},
+                }
+            },
+        }
+    )
+    assert parsed == ("off", "low", "medium", "high", "max")
+
+    # No effort tree (older proxies) keeps the static family table in charge.
+    assert mc.parse_anthropic_reasoning_capabilities({}) is None
+    assert mc.parse_anthropic_reasoning_capabilities(None) is None
+    assert (
+        mc.parse_anthropic_reasoning_capabilities({"effort": {"low": True}}) is None
+    )
+
+    info = mc.ModelInfo(id="claude-test-9", reasoning_efforts=parsed)
+    mc._live_model_cache["claude-test-9"] = info
+    try:
+        assert supported_reasoning_efforts("anthropic", "claude-test-9") == parsed
+    finally:
+        mc._live_model_cache.pop("claude-test-9", None)
+
+
+def test_openrouter_ladder_collapses_when_catalog_lacks_reasoning():
+    from nymeria.config import model_capabilities as mc
+
+    info = mc.ModelInfo(
+        id="acme/plain-chat",
+        supported_parameters={"temperature", "top_p"},
+    )
+    mc._live_model_cache["acme/plain-chat"] = info
+    try:
+        assert supported_reasoning_efforts("openrouter", "acme/plain-chat") == ("off",)
+    finally:
+        mc._live_model_cache.pop("acme/plain-chat", None)
+
+    # No cached metadata: the unified ladder applies (never fetches).
+    assert supported_reasoning_efforts("openrouter", "acme/uncached-model") == (
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
 
 
 @pytest.mark.parametrize(
@@ -206,8 +302,20 @@ def test_clamp_reasoning_effort(provider, model, requested, expected):
         ("gpt-5.5", "max", "xhigh"),
         ("gpt-5.1", "xhigh", "high"),
         ("gpt-5.1-codex-max", "max", "xhigh"),
-        ("gpt-5.3-codex", "xhigh", "high"),
+        # 5.2+ codex models list xhigh on their model pages; mini/spark
+        # variants are not documented with it.
+        ("gpt-5.2-codex", "xhigh", "xhigh"),
+        ("gpt-5.3-codex", "xhigh", "xhigh"),
+        ("gpt-5.3-codex-spark", "xhigh", "high"),
         ("gpt-5.5", "medium", "medium"),
+        # Pro models reject the lower tiers: floor is medium on 5.2+,
+        # high-only on the base gpt-5-pro. Reasoning cannot be disabled.
+        ("gpt-5-pro", "low", "high"),
+        ("gpt-5-pro", "xhigh", "high"),
+        ("gpt-5.5-pro", "off", "medium"),
+        ("gpt-5.5-pro", "low", "medium"),
+        ("gpt-5.5-pro", "high", "high"),
+        ("gpt-5.5-pro", "max", "xhigh"),
     ],
 )
 def test_openai_reasoning_effort_wire_value(model, effort, expected):
@@ -493,7 +601,7 @@ def test_azure_openai_routes_effort_through_openai_family_mapping(
         assert kwargs["model_kwargs"]["reasoning_effort"] == expected
 
 
-def test_chat_compat_off_keeps_disabled_path_and_high_tiers_degrade():
+def test_fireworks_full_scale_passes_through_and_off_sends_none():
     config_off = LLMConfig(
         provider="fireworks-ai",
         model="some-model",
@@ -505,14 +613,219 @@ def test_chat_compat_off_keeps_disabled_path_and_high_tiers_degrade():
         model="some-model",
         reasoning_effort="xhigh",
     )
+    config_max = LLMConfig(
+        provider="fireworks-ai",
+        model="some-model",
+        reasoning_effort="max",
+    )
 
     kwargs_off: dict = {}
     kwargs_xhigh: dict = {}
+    kwargs_max: dict = {}
     _apply_chat_reasoning_toggles(kwargs_off, "fireworks-ai", config_off)
     _apply_chat_reasoning_toggles(kwargs_xhigh, "fireworks-ai", config_xhigh)
+    _apply_chat_reasoning_toggles(kwargs_max, "fireworks-ai", config_max)
 
+    # Fireworks accepts none/low/medium/high/xhigh/max: "off" actively
+    # disables, the high tiers pass through, and reasoning_history is only
+    # set while thinking is on.
+    assert kwargs_off == {"model_kwargs": {"reasoning_effort": "none"}}
+    assert kwargs_xhigh["model_kwargs"]["reasoning_effort"] == "xhigh"
+    assert kwargs_xhigh["model_kwargs"]["reasoning_history"] == "preserved"
+    assert kwargs_max["model_kwargs"]["reasoning_effort"] == "max"
+
+
+@pytest.mark.parametrize(
+    ("provider", "effort", "expected_extra_body"),
+    [
+        # Binary thinking toggles: any non-off level enables, off actively
+        # disables with each provider's documented form.
+        ("alibaba", "medium", {"enable_thinking": True}),
+        ("alibaba", "off", {"enable_thinking": False}),
+        ("qwen-oauth", "off", {"enable_thinking": False}),
+        ("novita-ai", "medium", {"enable_thinking": True}),
+        ("novita-ai", "off", {"enable_thinking": False}),
+        ("moonshotai", "medium", {"thinking": {"type": "enabled", "keep": "all"}}),
+        ("moonshotai", "off", {"thinking": {"type": "disabled"}}),
+        ("moonshotai-cn", "off", {"thinking": {"type": "disabled"}}),
+    ],
+)
+def test_binary_thinking_partners_send_disable_form_on_off(
+    provider, effort, expected_extra_body
+):
+    kwargs: dict = {}
+    config = LLMConfig(provider=provider, model="some-model", reasoning_effort=effort)
+
+    _apply_chat_reasoning_toggles(kwargs, provider, config)
+
+    assert kwargs["extra_body"] == expected_extra_body
+
+
+def test_deepseek_sends_thinking_toggle_and_coerced_effort():
+    kwargs_off: dict = {}
+    kwargs_medium: dict = {}
+    kwargs_xhigh: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "deepseek",
+        LLMConfig(provider="deepseek", model="deepseek-v4-pro", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_medium,
+        "deepseek",
+        LLMConfig(provider="deepseek", model="deepseek-v4-pro", reasoning_effort="medium"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_xhigh,
+        "deepseek",
+        LLMConfig(provider="deepseek", model="deepseek-v4-pro", reasoning_effort="xhigh"),
+    )
+
+    assert kwargs_off["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert kwargs_medium["extra_body"] == {"thinking": {"type": "enabled"}}
+    # DeepSeek's contract: low/medium coerce to high, xhigh to max.
+    assert kwargs_medium["model_kwargs"]["reasoning_effort"] == "high"
+    assert kwargs_xhigh["model_kwargs"]["reasoning_effort"] == "max"
+
+
+def test_togetherai_sends_reasoning_enabled_and_per_model_effort():
+    kwargs_off: dict = {}
+    kwargs_glm: dict = {}
+    kwargs_oss: dict = {}
+    kwargs_dsv4: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "togetherai",
+        LLMConfig(provider="togetherai", model="zai-org/GLM-5", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_glm,
+        "togetherai",
+        LLMConfig(provider="togetherai", model="zai-org/GLM-5", reasoning_effort="medium"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_oss,
+        "togetherai",
+        LLMConfig(
+            provider="togetherai",
+            model="openai/gpt-oss-120b",
+            reasoning_effort="high",
+        ),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_dsv4,
+        "togetherai",
+        LLMConfig(
+            provider="togetherai",
+            model="deepseek-ai/DeepSeek-V4-Pro",
+            reasoning_effort="max",
+        ),
+    )
+
+    assert kwargs_off["extra_body"] == {"reasoning": {"enabled": False}}
+    assert kwargs_glm["extra_body"] == {"reasoning": {"enabled": True}}
+    assert "model_kwargs" not in kwargs_glm
+    assert kwargs_oss["model_kwargs"]["reasoning_effort"] == "high"
+    assert kwargs_dsv4["model_kwargs"]["reasoning_effort"] == "max"
+
+
+def test_baseten_sends_effort_and_cannot_disable():
+    kwargs_off: dict = {}
+    kwargs_high: dict = {}
+    kwargs_xhigh_oss: dict = {}
+    kwargs_xhigh_dsv4: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "baseten",
+        LLMConfig(provider="baseten", model="deepseek-v4-pro", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_high,
+        "baseten",
+        LLMConfig(provider="baseten", model="gpt-oss-120b", reasoning_effort="high"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_xhigh_oss,
+        "baseten",
+        LLMConfig(provider="baseten", model="gpt-oss-120b", reasoning_effort="xhigh"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_xhigh_dsv4,
+        "baseten",
+        LLMConfig(provider="baseten", model="deepseek-v4-pro", reasoning_effort="xhigh"),
+    )
+
+    # Baseten has no disable form; "off" keeps the no-toggle path.
     assert kwargs_off == {}
-    assert kwargs_xhigh["model_kwargs"]["reasoning_effort"] == "high"
+    assert kwargs_high["model_kwargs"]["reasoning_effort"] == "high"
+    assert kwargs_xhigh_oss["model_kwargs"]["reasoning_effort"] == "high"
+    assert kwargs_xhigh_dsv4["model_kwargs"]["reasoning_effort"] == "xhigh"
+
+
+def test_litellm_passes_unified_effort_and_none_disables():
+    kwargs_off: dict = {}
+    kwargs_high: dict = {}
+    kwargs_max: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "litellm",
+        LLMConfig(provider="litellm", model="claude-opus-4-8", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_high,
+        "litellm",
+        LLMConfig(provider="litellm", model="claude-opus-4-8", reasoning_effort="high"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_max,
+        "litellm",
+        LLMConfig(provider="litellm", model="claude-opus-4-8", reasoning_effort="max"),
+    )
+
+    assert kwargs_off["model_kwargs"]["reasoning_effort"] == "none"
+    assert kwargs_high["model_kwargs"]["reasoning_effort"] == "high"
+    # LiteLLM's documented set caps at high.
+    assert kwargs_max["model_kwargs"]["reasoning_effort"] == "high"
+
+
+def test_vercel_chat_sends_unified_reasoning_object():
+    kwargs_off: dict = {}
+    kwargs_max: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "vercel",
+        LLMConfig(provider="vercel", model="anthropic/claude-opus-4.6", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_max,
+        "vercel",
+        LLMConfig(provider="vercel", model="anthropic/claude-opus-4.6", reasoning_effort="max"),
+    )
+
+    assert kwargs_off["extra_body"] == {
+        "reasoning": {"enabled": False, "effort": "none"}
+    }
+    assert kwargs_max["extra_body"] == {
+        "reasoning": {"enabled": True, "effort": "xhigh"}
+    }
+
+
+def test_aihubmix_sends_unified_reasoning_effort():
+    kwargs_off: dict = {}
+    kwargs_xhigh: dict = {}
+    _apply_chat_reasoning_toggles(
+        kwargs_off,
+        "aihubmix",
+        LLMConfig(provider="aihubmix", model="claude-opus-4.6", reasoning_effort="off"),
+    )
+    _apply_chat_reasoning_toggles(
+        kwargs_xhigh,
+        "aihubmix",
+        LLMConfig(provider="aihubmix", model="claude-opus-4.6", reasoning_effort="xhigh"),
+    )
+
+    assert kwargs_off["model_kwargs"]["reasoning_effort"] == "none"
+    assert kwargs_xhigh["model_kwargs"]["reasoning_effort"] == "xhigh"
 
 
 def test_generic_compat_responses_off_omits_reasoning_and_max_degrades(monkeypatch):
@@ -738,3 +1051,75 @@ def test_cli_reasoning_off_still_persists_explicit_off():
     update = next(call for call in client.calls if call[0] == "update_settings")[1]
     assert update["llm_extended_thinking"] is False
     assert update["llm_reasoning_effort"] == "off"
+
+
+def test_cli_reasoning_over_ask_reports_clamped_level():
+    client = _CliReasoningFakeClient(
+        settings={"llm_provider": "openai", "llm_model": "gpt-5.1"},
+    )
+
+    result = _run_cli_reasoning(client, ["xhigh"])
+
+    assert result.ok is True
+    assert "this model runs at high" in result.messages[0].content
+    assert result.payload["effort_effective"] == "high"
+
+
+def test_cli_reasoning_supported_level_has_no_clamp_note():
+    client = _CliReasoningFakeClient(
+        settings={"llm_provider": "anthropic", "llm_model": "claude-opus-4-8"},
+    )
+
+    result = _run_cli_reasoning(client, ["max"])
+
+    assert result.ok is True
+    assert "runs at" not in result.messages[0].content
+    assert result.payload["effort_effective"] == "max"
+
+
+def test_cli_reasoning_off_on_undisableable_model_reports_floor():
+    client = _CliReasoningFakeClient(
+        settings={"llm_provider": "anthropic", "llm_model": "claude-fable-5"},
+    )
+
+    result = _run_cli_reasoning(client, ["off"])
+
+    assert result.ok is True
+    assert "cannot disable thinking" in result.messages[0].content
+    assert result.payload["effort_effective"] == "low"
+
+
+def test_cli_reasoning_thread_clamp_uses_thread_model_override():
+    client = _CliReasoningFakeClient(
+        settings={"llm_provider": "openai", "llm_model": "gpt-5.5"},
+        thread_config={"llm_config": {"model": "gpt-5.1"}},
+    )
+
+    result = _run_cli_reasoning(client, ["xhigh"], thread_id="thread-1")
+
+    assert result.ok is True
+    assert "this model runs at high" in result.messages[0].content
+
+
+def test_cli_reasoning_show_state_lists_supported_levels():
+    client = _CliReasoningFakeClient(
+        settings={
+            "llm_provider": "anthropic",
+            "llm_model": "claude-fable-5",
+            "llm_extended_thinking": True,
+            "llm_reasoning_effort": "high",
+        },
+    )
+
+    result = _run_cli_reasoning(client, [])
+
+    assert result.ok is True
+    content = result.messages[0].content
+    assert "Supported  low, medium, high, xhigh, max (claude-fable-5)" in content
+    assert result.payload["supported_efforts"] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]

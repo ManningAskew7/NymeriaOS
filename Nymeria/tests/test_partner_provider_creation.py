@@ -174,13 +174,18 @@ def test_google_genai_thinking_budget_for_gemini_2(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("effort", "budget"),
-    [("xhigh", 24576), ("max", 32768)],
+    ("model", "effort", "budget"),
+    [
+        ("gemini-2.5-flash", "xhigh", 24576),
+        # 2.5 flash caps thinking_budget at 24576; only 2.5 pro takes 32768.
+        ("gemini-2.5-flash", "max", 24576),
+        ("gemini-2.5-pro", "max", 32768),
+    ],
 )
 def test_google_genai_extended_thinking_budgets_for_gemini_2(
-    monkeypatch, effort, budget
+    monkeypatch, model, effort, budget
 ):
-    """Gemini 2.5 budget map covers the xhigh and max tiers."""
+    """Gemini 2.5 budget map covers the xhigh and max tiers per model caps."""
     capture = _fresh_capture()
     import sys
     import types
@@ -189,7 +194,7 @@ def test_google_genai_extended_thinking_budgets_for_gemini_2(
     fake_module.ChatGoogleGenerativeAI = capture
     monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
 
-    create_llm(_google_config(model="gemini-2.5-flash", reasoning_effort=effort))
+    create_llm(_google_config(model=model, reasoning_effort=effort))
 
     assert capture.captured[0].get("thinking_budget") == budget
 
@@ -211,8 +216,12 @@ def test_google_genai_effort_off_budget_zero_on_flash_and_128_on_pro(monkeypatch
     assert capture.captured[1].get("thinking_budget") == 128
 
 
-def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_minimal(monkeypatch):
-    """Gemini 3 thinking_level tops out at high; off maps to minimal."""
+def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_floor(monkeypatch):
+    """Gemini 3 thinking_level tops out at high; off maps to the model floor.
+
+    The 3.x pro line does not list "minimal" (3.1 Pro is low/medium/high), so
+    its floor is "low"; flash keeps the documented "minimal" floor.
+    """
     capture = _fresh_capture()
     import sys
     import types
@@ -224,10 +233,12 @@ def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_minimal(monkeyp
     create_llm(_google_config(model="gemini-3-pro", reasoning_effort="xhigh"))
     create_llm(_google_config(model="gemini-3-pro", reasoning_effort="max"))
     create_llm(_google_config(model="gemini-3-pro", reasoning_effort="off"))
+    create_llm(_google_config(model="gemini-3-flash", reasoning_effort="off"))
 
     assert capture.captured[0].get("thinking_level") == "high"
     assert capture.captured[1].get("thinking_level") == "high"
-    assert capture.captured[2].get("thinking_level") == "minimal"
+    assert capture.captured[2].get("thinking_level") == "low"
+    assert capture.captured[3].get("thinking_level") == "minimal"
     assert all("thinking_budget" not in kwargs for kwargs in capture.captured)
 
 

@@ -438,6 +438,75 @@ def test_think_on_without_persisted_off_leaves_effort_untouched() -> None:
     ]
 
 
+class _ModeledCommandApi(FakeCommandApi):
+    """FakeCommandApi reporting a global provider/model for clamp notes."""
+
+    def __init__(self, provider: str, model: str) -> None:
+        super().__init__()
+        self.provider = provider
+        self.model = model
+
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        data = await super().get_settings(user_id=user_id)
+        data["llm_provider"] = self.provider
+        data["llm_model"] = self.model
+        return data
+
+
+def _run_think(api: FakeCommandApi, command: str):
+    return run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            command,
+            api=api,
+        )
+    )
+
+
+def test_think_over_ask_reports_clamped_level() -> None:
+    api = _ModeledCommandApi("openai", "gpt-5.1")
+
+    result = _run_think(api, "/think xhigh")
+
+    assert result.success is True
+    assert "effort: xhigh" in result.markdown
+    assert "gpt-5.1 runs at high" in result.markdown
+
+
+def test_think_supported_level_has_no_clamp_note() -> None:
+    api = _ModeledCommandApi("anthropic", "claude-opus-4-8")
+
+    result = _run_think(api, "/think max")
+
+    assert result.success is True
+    assert "runs at" not in result.markdown
+
+
+def test_think_off_on_undisableable_model_reports_floor() -> None:
+    api = _ModeledCommandApi("anthropic", "claude-fable-5")
+
+    result = _run_think(api, "/think off")
+
+    assert result.success is True
+    assert "cannot disable thinking" in result.markdown
+    assert "runs at low" in result.markdown
+
+
+def test_think_show_lists_supported_levels() -> None:
+    api = _ModeledCommandApi("anthropic", "claude-fable-5")
+
+    result = _run_think(api, "/think")
+
+    assert result.success is True
+    assert "claude-fable-5 supports: low, medium, high, xhigh, max" in result.markdown
+
+
 def test_default_execution_uses_current_agent_backend_without_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1778,16 +1778,19 @@ def test_novita_strips_reasoning_content_on_non_tool_turn():
     assert "reasoning_content" not in payload["messages"][1]
 
 
-def test_gateways_apply_no_enable_toggle():
-    # Enablement behind a gateway is per-model, so the client sets no blanket
-    # toggle: only the passback replay is wired.
-    for config in (
-        _litellm_config(extended_thinking=True),
-        _together_config(extended_thinking=True),
-        _novita_config(extended_thinking=True),
-    ):
-        llm = create_llm(config)
-        assert not (llm.extra_body or {}).get("enable_thinking")
+def test_gateways_send_their_documented_enable_toggles():
+    # Each gateway's documented enable form goes on the wire when reasoning is
+    # requested: LiteLLM takes the unified reasoning_effort, Together takes
+    # reasoning.enabled, Novita takes enable_thinking.
+    litellm_llm = create_llm(_litellm_config(extended_thinking=True))
+    together_llm = create_llm(_together_config(extended_thinking=True))
+    novita_llm = create_llm(_novita_config(extended_thinking=True))
+
+    # langchain-openai promotes reasoning_effort from model_kwargs to the
+    # explicit field.
+    assert litellm_llm.reasoning_effort == "medium"
+    assert (together_llm.extra_body or {}).get("reasoning") == {"enabled": True}
+    assert (novita_llm.extra_body or {}).get("enable_thinking") is True
 
 
 def test_nymeria_provider_threaded_and_absent_from_request_payload():

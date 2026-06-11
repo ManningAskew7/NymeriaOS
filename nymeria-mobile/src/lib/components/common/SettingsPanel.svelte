@@ -7,7 +7,13 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
-  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
+  import {
+    REASONING_EFFORT_LEVELS,
+    effortExceedsModelMax,
+    effortOptionDisabled,
+    reasoningEffortLabel,
+    supportedEffortSet,
+  } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
@@ -176,9 +182,11 @@
   let selectedTheme = $state<ThemeName>(configStore.theme);
   const themeList = getThemeList();
 
-  // Model metadata (reactive)
-  const currentModelMeta = $derived(
-    llmProvider === 'openrouter' ? modelsStore.getById(llmModel) : undefined
+  // Model metadata (reactive). Every provider's /models listing is merged
+  // into the store by loadAvailableModels, so this works beyond OpenRouter.
+  const currentModelMeta = $derived(modelsStore.getById(llmModel));
+  const currentEffortSet = $derived(
+    supportedEffortSet(currentModelMeta?.supported_reasoning_efforts)
   );
 
   let availableModelsState = $state<AvailableModelsState>({
@@ -804,12 +812,12 @@
                   <label class="setting-label">Reasoning Effort</label>
                   <select class="setting-input" bind:value={llmReasoningEffort}>
                     <option value={null}>Default</option>
-                    <option value="off">Off</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="xhigh">Extra high</option>
-                    <option value="max">Max</option>
+                    {#each REASONING_EFFORT_LEVELS as level (level)}
+                      {@const unsupported = effortOptionDisabled(level, currentEffortSet, llmReasoningEffort)}
+                      <option value={level} disabled={unsupported}>
+                        {reasoningEffortLabel(level)}{unsupported ? ' (not supported)' : ''}
+                      </option>
+                    {/each}
                   </select>
                   {#if effortExceedsModelMax(llmReasoningEffort, currentModelMeta?.max_reasoning_effort)}
                     <div class="effort-clamp-note">
