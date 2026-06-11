@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Thread, Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerActionType, TriggerSourceInfo } from '$lib/types';
-  import { Icon, ToggleSwitch } from '$lib/components/common';
+  import { Button, Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
@@ -249,9 +249,9 @@
     <p class="field-hint">
       Automate actions when events occur (new emails, webhooks, etc.).
     </p>
-    <button class="btn btn-primary btn-sm" onclick={openCreate} type="button">
+    <Button variant="primary" size="sm" onclick={openCreate}>
       <Icon name="plus" size={14} /> New Trigger
-    </button>
+    </Button>
   </div>
 
   {#if error}
@@ -541,12 +541,12 @@
   </div>
 
   <div class="form-footer">
-    <button class="btn btn-ghost" onclick={closeForm} disabled={saving} type="button">
+    <Button variant="ghost" onclick={closeForm} disabled={saving}>
       Cancel
-    </button>
-    <button class="btn btn-primary" onclick={handleSave} disabled={saving} type="button">
+    </Button>
+    <Button variant="primary" onclick={handleSave} disabled={saving}>
       {saving ? 'Saving…' : view === 'create' ? 'Create Trigger' : 'Save Changes'}
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -557,14 +557,6 @@
     align-items: center;
     justify-content: space-between;
     margin-bottom: var(--spacing-sm);
-  }
-
-  .btn-sm {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    font-size: var(--font-size-xs);
   }
 
   /* Triggers list */
@@ -901,38 +893,4 @@
     border-top: 1px solid var(--border-default);
   }
 
-  .btn {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-ghost {
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
 </style>

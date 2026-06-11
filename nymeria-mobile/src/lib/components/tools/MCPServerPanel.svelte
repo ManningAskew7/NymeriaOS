@@ -616,17 +616,21 @@
   }
 
   .action-btn {
-    padding: 0.3rem 0.6rem;
+    padding: var(--spacing-xs) var(--spacing-sm);
     border: none;
     background: var(--bg-elevated);
     color: var(--text-primary);
-    font-size: 0.8rem;
-    border-radius: 4px;
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: flex;
     align-items: center;
     gap: 0.2rem;
     min-height: var(--touch-target-min);
+  }
+
+  .action-btn:active:not(:disabled) {
+    background: var(--bg-hover);
   }
 
   .action-btn:disabled {

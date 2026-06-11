@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, ProviderRoute } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Button, Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
@@ -1191,21 +1191,20 @@
     {/if}
 
     <div class="modal-footer">
-      <button class="btn btn-ghost btn-reset" onclick={handleReset} disabled={saving} type="button">
+      <button class="btn-reset" onclick={handleReset} disabled={saving} type="button">
         Reset thread to defaults
       </button>
       <div class="footer-right">
-        <button class="btn btn-ghost" onclick={onClose} disabled={saving} type="button">
+        <Button variant="ghost" onclick={onClose} disabled={saving}>
           Cancel
-        </button>
-        <button
-          class="btn btn-primary"
+        </Button>
+        <Button
+          variant="primary"
           onclick={checkToolCountAndSave}
           disabled={saving || !hasChanges()}
-          type="button"
         >
           {saving ? 'Saving…' : 'Save Changes'}
-        </button>
+        </Button>
       </div>
     </div>
   </div>
@@ -1482,44 +1481,37 @@
     gap: var(--spacing-sm);
   }
 
-  .btn {
+  /* The one footer action the shared <Button> can't express: ghost anatomy
+     with a danger hover. Values mirror the component's .btn/.btn-md/.btn-ghost. */
+  .btn-reset {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-base);
     font-weight: 500;
-    border-radius: var(--radius-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all var(--transition-fast);
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-ghost {
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text-primary);
-    background: var(--bg-hover);
+    white-space: nowrap;
   }
 
   .btn-reset:hover:not(:disabled) {
     color: var(--error);
-    border-color: color-mix(in srgb, var(--error) 45%, var(--border-default));
+    background: color-mix(in srgb, var(--error) 8%, transparent);
   }
 
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
+  .btn-reset:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
+  .btn-reset:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 
   .error-bar {

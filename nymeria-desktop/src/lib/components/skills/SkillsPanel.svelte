@@ -4,6 +4,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMetadata, SkillScope } from '$lib/types';
   import SkillsMarketplacePanel from './SkillsMarketplacePanel.svelte';
+  import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
 
   let showMarketplace = $state(false);
@@ -85,9 +86,9 @@
         Both stay hidden until the agent calls <code>Skill(name)</code>.
       </p>
     </div>
-    <button class="btn btn-primary" onclick={() => (showMarketplace = true)} type="button">
+    <Button variant="primary" onclick={() => (showMarketplace = true)}>
       Browse Marketplace
-    </button>
+    </Button>
   </div>
 
   {#if skillsStore.installedError}
@@ -178,7 +179,7 @@
                         </label>
                         {#if skill.scope !== 'bundled'}
                           <button
-                            class="btn btn-danger-ghost"
+                            class="btn-danger-ghost"
                             onclick={() => handleUninstall(skill)}
                             disabled={pendingState === 'uninstalling'}
                             type="button"
@@ -433,37 +434,33 @@
     user-select: none;
   }
 
-  .btn {
-    padding: 4px 10px;
-    font-size: var(--font-size-xs);
+  /* The one footer action the shared <Button> can't express: a danger-ghost
+     variant. Anatomy mirrors the component's .btn/.btn-sm; the error border
+     is this variant's identity. */
+  .btn-danger-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
     font-weight: 500;
-    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--error);
     cursor: pointer;
     transition: all var(--transition-fast);
-    border: 1px solid transparent;
-  }
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
-    padding: 6px 14px;
-    font-size: var(--font-size-sm);
-  }
-  .btn-primary:hover {
-    filter: brightness(1.1);
-  }
-
-  .btn-danger-ghost {
-    color: var(--error);
-    background: transparent;
-    border-color: color-mix(in srgb, var(--error) 30%, transparent);
+    white-space: nowrap;
   }
   .btn-danger-ghost:hover:not(:disabled) {
     background: color-mix(in srgb, var(--error) 8%, transparent);
+  }
+  .btn-danger-ghost:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  .btn-danger-ghost:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 </style>

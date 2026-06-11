@@ -364,19 +364,19 @@
     width: 22px;
     height: 22px;
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
     transition: all var(--transition-fast);
   }
 
-  .action-btn:hover {
-    background: var(--bg-elevated-2);
+  .action-btn:active {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .delete-btn:hover {
+  .delete-btn:active {
     color: var(--error);
   }
 

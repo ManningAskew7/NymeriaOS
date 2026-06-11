@@ -4,6 +4,7 @@
   import { notificationStore } from '$lib/stores/notifications.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
+  import { Button } from '$lib/components/common';
   import ConnectTelegramWizard from './ConnectTelegramWizard.svelte';
   import ConnectMyTelegramBotWizard from './ConnectMyTelegramBotWizard.svelte';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
@@ -123,8 +124,8 @@
       <div class="chatapp-cta">
         <p>No chats bound to this thread yet. Pick how you want to connect:</p>
         <div class="chatapp-cta-buttons">
-          <button class="btn btn-primary" type="button" onclick={() => (showChatAppWizard = true)}>Connect via shared bot</button>
-          <button class="btn btn-secondary" type="button" onclick={() => (showMyBotWizard = true)}>Use my own bot</button>
+          <Button variant="primary" onclick={() => (showChatAppWizard = true)}>Connect via shared bot</Button>
+          <Button variant="secondary" onclick={() => (showMyBotWizard = true)}>Use my own bot</Button>
         </div>
         <p class="field-hint" style="margin: 0.25rem 0 0;">
           <strong>Shared:</strong> use the existing Nymeria bot. No BotFather token required.
@@ -144,7 +145,7 @@
                 &middot; since {new Date(binding.created_at).toLocaleString()}
               </span>
             </div>
-            <button class="btn btn-ghost" type="button" onclick={() => handleUnbindChatApp(binding.id)}>Unbind</button>
+            <Button variant="ghost" onclick={() => handleUnbindChatApp(binding.id)}>Unbind</Button>
           </li>
         {/each}
       </ul>
@@ -243,34 +244,6 @@
     border-radius: var(--radius-sm);
     margin-bottom: var(--spacing-sm);
   }
-
-  .btn {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-  }
-  .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
-  .btn-secondary {
-    color: var(--text-primary);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-  .btn-secondary:hover:not(:disabled) { background: var(--bg-hover); }
-  .btn-ghost {
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-  .btn-ghost:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-hover); }
 
   .binding-list {
     list-style: none;
