@@ -9,6 +9,9 @@ LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
 ProviderRoute = Literal["native", "openai_compat", "anthropic_messages"]
 ProviderTier = Literal["native", "gateway", "unverified"]
+# Mirrors nymeria.config.settings.ReasoningEffort (re-declared so schemas stay
+# import-light). "off" explicitly disables thinking; None = unset/inherit.
+ReasoningEffortName = Literal["off", "low", "medium", "high", "xhigh", "max"]
 
 
 class LLMProviderSpecResponse(BaseModel):
@@ -115,8 +118,8 @@ class ServerSettingsResponse(BaseModel):
     llm_fallback_hold_seconds: int
     context_management: str
     compact_threshold: float
-    compact_threshold_mode: str = "percentage"
-    compact_threshold_tokens: int = 100_000
+    compact_threshold_mode: str = "tokens"
+    compact_threshold_tokens: int = 200_000
     compact_keep_messages: int
     compact_model: Optional[str] = None
     fetch_summary_provider: Optional[str] = None
@@ -125,6 +128,9 @@ class ServerSettingsResponse(BaseModel):
     sliding_window_cycles: int
     tool_output_max_chars: int
     memory_char_limit: int = 8000
+    memory_max_entries: int = 100
+    memory_value_max_chars: int = 1000
+    agent_max_iterations: int = 500
     log_level: str
     watchdog_enabled: bool
     watchdog_interval_minutes: int
@@ -169,7 +175,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_top_k: Optional[int] = None
     llm_frequency_penalty: Optional[float] = None
     llm_presence_penalty: Optional[float] = None
-    llm_reasoning_effort: Optional[str] = None
+    llm_reasoning_effort: Optional[ReasoningEffortName] = None
     llm_extended_thinking: Optional[bool] = None
     dynamic_tool_binding: Optional[bool] = None
     llm_use_model_defaults: Optional[bool] = None
@@ -752,6 +758,9 @@ class ServerSettingsUpdate(BaseModel):
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
+    memory_max_entries: Optional[int] = Field(default=None, ge=1, le=10_000)
+    memory_value_max_chars: Optional[int] = Field(default=None, ge=50, le=100_000)
+    agent_max_iterations: Optional[int] = Field(default=None, ge=10, le=10_000)
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
@@ -772,6 +781,15 @@ class ServerSettingsUpdate(BaseModel):
     stt_model: Optional[str] = None
     stt_language: Optional[str] = None
     voice_default_thread_id: Optional[str] = None
+
+    @field_validator("llm_reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value):
+        """Treat empty/blank strings as None (unset) and normalize case."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or None
+        return value
 
 
 # Settings fields whose dotenv var is not simply the uppercased field name. Only the

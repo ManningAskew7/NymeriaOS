@@ -13,7 +13,7 @@ from .system import (
     CommandClientMethodUnavailable,
 )
 
-VALID_EFFORTS = {"low", "medium", "high"}
+VALID_EFFORTS = {"off", "low", "medium", "high", "xhigh", "max"}
 
 
 async def _handle_reasoning(
@@ -28,12 +28,14 @@ async def _handle_reasoning(
     if token == "on":
         return await _set_reasoning(context, enabled=True)
     if token == "off":
-        return await _set_reasoning(context, enabled=False)
+        # Explicit "off" persists effort="off" so a thread-level off can win
+        # over a global effort, and vice versa.
+        return await _set_reasoning(context, enabled=False, effort="off")
     if token in VALID_EFFORTS:
         return await _set_reasoning(context, enabled=True, effort=token)
 
     return CommandResult.failed(
-        "Usage: /reasoning [on|off|low|medium|high]",
+        "Usage: /reasoning [on|off|low|medium|high|xhigh|max]",
         error_code="usage_error",
     )
 
@@ -62,6 +64,9 @@ async def _show_reasoning_state(context: CommandContext) -> CommandResult:
 
     effective_thinking = override_thinking if override_thinking is not None else global_thinking
     effective_effort = override_effort if override_effort is not None else global_effort
+    if str(effective_effort or "").casefold() == "off":
+        # Explicit effort "off" wins over extended_thinking.
+        effective_thinking = False
 
     state_label = "on" if effective_thinking else "off"
     effort_label = effective_effort or "default"
@@ -102,8 +107,15 @@ async def _set_reasoning_global(
     effort: str | None,
 ) -> CommandResult:
     patch: dict[str, Any] = {"llm_extended_thinking": enabled}
+    cleared_off = False
     if effort:
         patch["llm_reasoning_effort"] = effort
+    elif enabled and await _global_effort_is_off(context):
+        # A persisted effort "off" wins over extended_thinking, so plain
+        # "on" must also clear it (explicit null) back to provider-default
+        # behavior; otherwise thinking would stay disabled.
+        patch["llm_reasoning_effort"] = None
+        cleared_off = True
 
     try:
         await call_client_method(
@@ -120,7 +132,7 @@ async def _set_reasoning_global(
         "enabled": enabled,
         "effort": effort or "",
     })
-    return _success_message(enabled, effort, scope="global")
+    return _success_message(enabled, effort, scope="global", cleared_off=cleared_off)
 
 
 async def _set_reasoning_thread(
@@ -130,8 +142,14 @@ async def _set_reasoning_thread(
     effort: str | None,
 ) -> CommandResult:
     llm_config: dict[str, Any] = {"extended_thinking": enabled}
+    cleared_off = False
     if effort:
         llm_config["reasoning_effort"] = effort
+    elif enabled and await _thread_effort_is_off(context):
+        # A persisted thread-level "off" wins over extended_thinking; ""
+        # marks explicit inherit so the global effort applies again.
+        llm_config["reasoning_effort"] = ""
+        cleared_off = True
 
     try:
         await call_client_method(
@@ -149,7 +167,26 @@ async def _set_reasoning_thread(
         "enabled": enabled,
         "effort": effort or "",
     })
-    return _success_message(enabled, effort, scope="thread")
+    return _success_message(enabled, effort, scope="thread", cleared_off=cleared_off)
+
+
+async def _global_effort_is_off(context: CommandContext) -> bool:
+    settings = await _settings_or_none(context)
+    if not settings:
+        return False
+    effort = str(mapping_get(settings, "llm_reasoning_effort", "") or "")
+    return effort.casefold() == "off"
+
+
+async def _thread_effort_is_off(context: CommandContext) -> bool:
+    config = await _thread_config_or_none(context)
+    if not config:
+        return False
+    llm_config = mapping_get(config, "llm_config", {}) or {}
+    if not isinstance(llm_config, Mapping):
+        return False
+    effort = str(llm_config.get("reasoning_effort") or "")
+    return effort.casefold() == "off"
 
 
 def _success_message(
@@ -157,17 +194,23 @@ def _success_message(
     effort: str | None,
     *,
     scope: str,
+    cleared_off: bool = False,
 ) -> CommandResult:
     if enabled:
         label = f"Reasoning on ({scope})"
         if effort:
             label += f", effort: {effort}"
+        elif cleared_off:
+            label += ", effort reset to default"
     else:
         label = f"Reasoning off ({scope})"
 
+    payload = {"enabled": enabled, "effort": effort or "", "scope": scope}
+    if cleared_off:
+        payload["effort_cleared"] = True
     return CommandResult.completed(
         CommandMessage(label, level="success"),
-        payload={"enabled": enabled, "effort": effort or "", "scope": scope},
+        payload=payload,
     )
 
 
@@ -209,7 +252,7 @@ def register(registry: CommandRegistry) -> None:
         name="reasoning",
         aliases=["/thinking"],
         description="Toggle extended thinking mode",
-        usage="/reasoning [on|off|low|medium|high]",
+        usage="/reasoning [on|off|low|medium|high|xhigh|max]",
         handler=_handle_reasoning,
         handler_mode="context",
         category="Model",

@@ -173,6 +173,20 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
     if _get(values, "STT_BASE_URL"):
         state.extras["stt_base_url_on_disk"] = _get(values, "STT_BASE_URL")
 
+    # Agent tuning (context strategy, limits, effort + sampling): round-trip
+    # the on-disk lines into the wizard's raw input strings so a reconfigure
+    # shows current values and an untouched walk-through re-produces them.
+    # The seeded keys are recorded so finalize can tell a CLEARED field
+    # (blank now means "retire the line, back to default") from a step that
+    # was never visited (tuning_catalog.tuning_drop_env).
+    from .tuning_catalog import tuning_extras_from_env
+
+    hydrated_tuning = tuning_extras_from_env(lambda var: _get(values, var))
+    for key, value in hydrated_tuning.items():
+        state.extras.setdefault(key, value)
+    if hydrated_tuning:
+        state.extras["tuning_on_disk_keys"] = sorted(hydrated_tuning)
+
     if state.data_dir is None and not for_docker and _get(values, "NYMERIA_DATA_DIR"):
         state.data_dir = Path(_get(values, "NYMERIA_DATA_DIR") or "")
 

@@ -688,3 +688,41 @@ def test_full_screen_shell_core_commands_update_runtime_context() -> None:
     assert shell.config.model == "gpt-new"
     assert "Switched to thread-2 Next" in shell.transcript.text
     assert "Model set to: gpt-new" in shell.transcript.text
+
+
+def test_format_settings_view_renders_compact_trigger_by_mode() -> None:
+    base = {
+        "llm_provider": "openai",
+        "llm_model": "gpt-global",
+        "compact_threshold": 0.8,
+        "compact_threshold_mode": "percentage",
+        "compact_threshold_tokens": 200_000,
+    }
+
+    percent_view = system.format_settings_view(base)
+    tokens_view = system.format_settings_view(
+        {**base, "compact_threshold_mode": "tokens"}
+    )
+
+    assert "Compact at" in percent_view
+    assert "80%" in percent_view
+    assert "200000 tokens" in tokens_view
+    assert "80%" not in tokens_view
+
+
+def test_format_thread_usage_compact_cap_honors_trigger_tokens() -> None:
+    stats = {
+        "model": "gpt-thread",
+        "input_tokens": 80,
+        "output_tokens": 40,
+        "total_tokens": 120_000,
+        "context_limit": 400_000,
+        "usage_percentage": 30,
+    }
+
+    tokens_view = usage._format_thread_usage(stats, compact_trigger=200_000)
+    unscaled_view = usage._format_thread_usage(stats, compact_trigger=400_000)
+
+    assert "Until compact" in tokens_view
+    assert "of 200.0k" in tokens_view
+    assert "Until compact" not in unscaled_view

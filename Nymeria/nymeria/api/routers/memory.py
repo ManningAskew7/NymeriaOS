@@ -10,6 +10,9 @@ from pydantic import BaseModel, Field
 from ...core.accounts import AuthenticatedUser
 from ...core.memory_limits import (
     get_global_memory_char_limit,
+    get_memory_max_entries,
+    get_memory_value_max_chars,
+    memory_entries_full_error,
     validate_profile_memory_write,
 )
 
@@ -18,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class MemorySaveRequest(BaseModel):
     key: str = Field(..., description="Memory key identifier")
-    value: str = Field(..., max_length=1000, description="Memory content")
+    value: str = Field(..., description="Memory content")
 
 
 def create_memory_router(
@@ -90,22 +93,32 @@ def create_memory_router(
         """Save or update a memory for a user."""
         require_same_user_or_admin_fn(user, user_id)
         agent = get_agent_fn()
+        agent_settings = getattr(agent, "settings", None)
+        max_entries = get_memory_max_entries(agent_settings)
+        value_cap = get_memory_value_max_chars(agent_settings)
         with agent.profile_manager.atomic_update(user_id) as profile:
             limit_error = validate_profile_memory_write(
                 profile,
                 key=request.key,
                 value=request.value,
-                limit=get_global_memory_char_limit(getattr(agent, "settings", None)),
+                limit=get_global_memory_char_limit(agent_settings),
+                max_entries=max_entries,
+                max_value_chars=value_cap,
             )
             if limit_error:
                 raise HTTPException(status_code=400, detail=limit_error)
-            success = profile.add_memory(request.key, request.value)
+            success = profile.add_memory(
+                request.key,
+                request.value,
+                max_entries=max_entries,
+                max_value_chars=value_cap,
+            )
             stored = profile.get_memory(request.key)
             stored_value = stored.value if stored else request.value
         if not success:
             raise HTTPException(
                 status_code=400,
-                detail=f"Memory limit reached ({profile.MAX_MEMORIES})",
+                detail=memory_entries_full_error(max_entries),
             )
         _upsert_memory_rag_chunk(user_id, request.key, stored_value)
         return {"status": "ok", "key": request.key}

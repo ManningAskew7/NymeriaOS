@@ -173,6 +173,64 @@ def test_google_genai_thinking_budget_for_gemini_2(monkeypatch):
     assert "thinking_level" not in kwargs
 
 
+@pytest.mark.parametrize(
+    ("effort", "budget"),
+    [("xhigh", 24576), ("max", 32768)],
+)
+def test_google_genai_extended_thinking_budgets_for_gemini_2(
+    monkeypatch, effort, budget
+):
+    """Gemini 2.5 budget map covers the xhigh and max tiers."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = capture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    create_llm(_google_config(model="gemini-2.5-flash", reasoning_effort=effort))
+
+    assert capture.captured[0].get("thinking_budget") == budget
+
+
+def test_google_genai_effort_off_budget_zero_on_flash_and_128_on_pro(monkeypatch):
+    """Effort "off" disables via budget 0 on 2.5 flash; 2.5 pro rejects 0 -> 128."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = capture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    create_llm(_google_config(model="gemini-2.5-flash", reasoning_effort="off"))
+    create_llm(_google_config(model="gemini-2.5-pro", reasoning_effort="off"))
+
+    assert capture.captured[0].get("thinking_budget") == 0
+    assert capture.captured[1].get("thinking_budget") == 128
+
+
+def test_google_genai_gemini_3_clamps_above_high_and_maps_off_to_minimal(monkeypatch):
+    """Gemini 3 thinking_level tops out at high; off maps to minimal."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_google_genai")
+    fake_module.ChatGoogleGenerativeAI = capture
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", fake_module)
+
+    create_llm(_google_config(model="gemini-3-pro", reasoning_effort="xhigh"))
+    create_llm(_google_config(model="gemini-3-pro", reasoning_effort="max"))
+    create_llm(_google_config(model="gemini-3-pro", reasoning_effort="off"))
+
+    assert capture.captured[0].get("thinking_level") == "high"
+    assert capture.captured[1].get("thinking_level") == "high"
+    assert capture.captured[2].get("thinking_level") == "minimal"
+    assert all("thinking_budget" not in kwargs for kwargs in capture.captured)
+
+
 def test_bedrock_dispatches_to_converse_partner_package(monkeypatch):
     """provider="bedrock" routes to ChatBedrockConverse from langchain-aws."""
     capture = _fresh_capture()
@@ -253,6 +311,46 @@ def test_ollama_native_max_tokens_maps_to_num_predict(monkeypatch):
     kwargs = capture.captured[0]
     assert kwargs.get("num_predict") == 2048
     assert "max_tokens" not in kwargs
+
+
+def test_ollama_native_gpt_oss_effort_translation(monkeypatch):
+    """gpt-oss accepts low/medium/high only: off -> low, xhigh/max -> high."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_ollama")
+    fake_module.ChatOllama = capture
+    monkeypatch.setitem(sys.modules, "langchain_ollama", fake_module)
+
+    create_llm(_ollama_native_config(model="gpt-oss:20b", reasoning_effort="off"))
+    create_llm(_ollama_native_config(model="gpt-oss:20b", reasoning_effort="max"))
+    create_llm(_ollama_native_config(model="gpt-oss:20b", reasoning_effort="high"))
+
+    assert capture.captured[0].get("reasoning") == "low"
+    assert capture.captured[1].get("reasoning") == "high"
+    assert capture.captured[2].get("reasoning") == "high"
+
+
+def test_ollama_native_effort_off_disables_reasoning_for_toggle_models(monkeypatch):
+    """Non-gpt-oss models get reasoning=False on explicit off (wins over extended)."""
+    capture = _fresh_capture()
+    import sys
+    import types
+
+    fake_module = types.ModuleType("langchain_ollama")
+    fake_module.ChatOllama = capture
+    monkeypatch.setitem(sys.modules, "langchain_ollama", fake_module)
+
+    create_llm(
+        _ollama_native_config(
+            model="qwen3",
+            extended_thinking=True,
+            reasoning_effort="off",
+        )
+    )
+
+    assert capture.captured[0].get("reasoning") is False
 
 
 def test_ollama_route_toggle_switches_between_native_and_openai_compat(monkeypatch):

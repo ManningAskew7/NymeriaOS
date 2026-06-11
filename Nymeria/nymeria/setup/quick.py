@@ -79,6 +79,7 @@ _LLM_SECTION_STEPS = frozenset(
         "provider",
         "connection",
         "model",
+        "llm_tuning",
         "cliproxy_disclaimer",
         "cliproxy_endpoint",
         "cliproxy_provider",
@@ -116,6 +117,10 @@ SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
     # retired by voice_drop_env).
     "tts": frozenset({"tts", "backend_keys"}),
     "stt": frozenset({"stt", "backend_keys"}),
+    # A tuning-only jump re-runs just itself (the LLM unit pulls it along on
+    # its own jumps via _LLM_SECTION_STEPS; hydrate restores the provider its
+    # applies predicate needs).
+    "llm_tuning": frozenset({"llm_tuning"}),
     "embedder": frozenset({"embedder", "reranker"}),
     "reranker": frozenset({"embedder", "reranker"}),
     # The external-access choice gates the guided tailscale/cloudflare setup

@@ -31,7 +31,11 @@ from ..config.local_llm import (
     query_local_context_length,
     query_ollama_num_ctx,
 )
-from ..config.model_capabilities import register_model_metadata
+from ..config.model_capabilities import (
+    clamp_reasoning_effort,
+    register_model_metadata,
+    supported_reasoning_efforts,
+)
 from ..vendor.react_agent import LLMConfig, LLMFallbackConfig
 from .llm_credentials import (
     get_llm_provider_credential,
@@ -105,6 +109,47 @@ def _split_llm_fallback_ref(
 
 def _active_fallback_is_expired(active: ActiveLLMFallback) -> bool:
     return ensure_aware_utc(active.expires_at) <= utc_now()
+
+
+# Dedup set for the one-shot clamp warning. Keyed on (provider, model,
+# requested effort) so a saved over-ask logs once, not once per chat turn.
+# Mirrors the _DOWNGRADED_ROUTE_WARNED pattern in config/llm_providers.py.
+_CLAMPED_EFFORT_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _clamp_reasoning_effort_for_model(
+    provider: str,
+    model: Any,
+    effort: Any,
+) -> Any:
+    """Clamp the resolved reasoning effort onto the model's supported ladder.
+
+    None/empty stays "unset/inherit" and is passed through untouched. When the
+    requested level is unsupported, the clamped value is returned and a
+    one-shot warning is logged per (provider, model, requested effort).
+    """
+    effort_text = str(effort or "").strip().lower()
+    if not effort_text:
+        return effort
+
+    model_text = str(model or "")
+    clamped = clamp_reasoning_effort(provider, model_text, effort_text)
+    if clamped != effort_text:
+        warn_key = (provider, model_text, effort_text)
+        if warn_key not in _CLAMPED_EFFORT_WARNED:
+            _CLAMPED_EFFORT_WARNED.add(warn_key)
+            supported = supported_reasoning_efforts(provider, model_text)
+            logger.warning(
+                "[LLM] Model %s (%s) does not support reasoning effort %r "
+                "(supported: %s). Clamping to %r.",
+                model_text or "unknown",
+                provider,
+                effort_text,
+                ", ".join(supported) or "none",
+                clamped,
+            )
+        return clamped
+    return effort_text
 
 
 def _thread_is_busy(agent: "NymeriaAgent", thread_id: str) -> bool:
@@ -248,6 +293,14 @@ def get_llm_config_for_thread(
     max_tokens = resolve("max_tokens", agent.settings.llm_max_tokens)
     extended_thinking = resolve("extended_thinking", agent.settings.llm_extended_thinking)
     reasoning_effort = resolve("reasoning_effort", agent.settings.llm_reasoning_effort)
+    # Clamp onto the resolved model's supported ladder so LLMConfig always
+    # carries an effort value the provider can honor ("off" stays explicit and
+    # wins over extended_thinking inside the provider factories).
+    reasoning_effort = _clamp_reasoning_effort_for_model(
+        provider,
+        model,
+        reasoning_effort,
+    )
     use_model_defaults = resolve("use_model_defaults", agent.settings.llm_use_model_defaults)
     context_length_override = _positive_int(
         resolve("context_length", getattr(agent.settings, "llm_context_length", None))

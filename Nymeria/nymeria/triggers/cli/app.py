@@ -265,7 +265,7 @@ class _RichReplRuntime:
             queued_count=len(self._pending_submissions),
             notice=self._status_notice,
             busy=self._busy,
-            compact_threshold=self.app._compact_threshold(),
+            compact_settings=self.app._compact_settings(),
         )
 
     def prompt_kwargs(self) -> dict[str, Any]:
@@ -1859,9 +1859,10 @@ class CLIApp:
             return await self._resolve_startup_thread_ref(resume_ref)
         return None
 
-    def _compact_threshold(self) -> float | None:
+    def _compact_settings(self) -> Any | None:
+        """Settings-like object for resolving the compact trigger in displays."""
         try:
-            return float(self.state.settings.compact_threshold)
+            return self.state.settings
         except Exception:  # noqa: BLE001
             return None
 

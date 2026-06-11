@@ -8,6 +8,10 @@ from typing import Any
 
 DEFAULT_MEMORY_CHAR_LIMIT = 8000
 MAX_MEMORY_CHAR_LIMIT = 2_000_000
+DEFAULT_MEMORY_MAX_ENTRIES = 100
+MAX_MEMORY_MAX_ENTRIES = 10_000
+DEFAULT_MEMORY_VALUE_MAX_CHARS = 1000
+MAX_MEMORY_VALUE_MAX_CHARS = 100_000
 
 
 def normalize_memory_char_limit(value: Any) -> int:
@@ -19,6 +23,54 @@ def normalize_memory_char_limit(value: Any) -> int:
     if limit < 1:
         return DEFAULT_MEMORY_CHAR_LIMIT
     return min(limit, MAX_MEMORY_CHAR_LIMIT)
+
+
+def _normalize_positive_int(value: Any, default: int, ceiling: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    if normalized < 1:
+        return default
+    return min(normalized, ceiling)
+
+
+def _resolve_settings(settings: Any | None) -> Any:
+    if settings is None:
+        from ..config import get_settings
+
+        return get_settings()
+    return settings
+
+
+def get_memory_max_entries(settings: Any | None = None) -> int:
+    """Resolve the global key-value memory entry cap."""
+    settings = _resolve_settings(settings)
+    if isinstance(settings, Mapping):
+        raw = settings.get("memory_max_entries", DEFAULT_MEMORY_MAX_ENTRIES)
+    else:
+        raw = getattr(settings, "memory_max_entries", DEFAULT_MEMORY_MAX_ENTRIES)
+    return _normalize_positive_int(raw, DEFAULT_MEMORY_MAX_ENTRIES, MAX_MEMORY_MAX_ENTRIES)
+
+
+def get_memory_value_max_chars(settings: Any | None = None) -> int:
+    """Resolve the per-memory-value character cap."""
+    settings = _resolve_settings(settings)
+    if isinstance(settings, Mapping):
+        raw = settings.get("memory_value_max_chars", DEFAULT_MEMORY_VALUE_MAX_CHARS)
+    else:
+        raw = getattr(settings, "memory_value_max_chars", DEFAULT_MEMORY_VALUE_MAX_CHARS)
+    return _normalize_positive_int(
+        raw, DEFAULT_MEMORY_VALUE_MAX_CHARS, MAX_MEMORY_VALUE_MAX_CHARS
+    )
+
+
+def memory_entries_full_error(limit: int) -> str:
+    """Return the agent-facing error for the entry-count cap."""
+    return (
+        f"[Error]: Memory limit reached ({limit} memories). "
+        "Delete or consolidate some first."
+    )
 
 
 def get_global_memory_char_limit(settings: Any | None = None) -> int:
@@ -87,12 +139,19 @@ def profile_memory_char_count(profile: Any) -> int:
     return len(profile_memory_text_from_records(getattr(profile, "memories", [])))
 
 
-def proposed_profile_memory_char_count(profile: Any, key: str, value: str) -> int:
+def proposed_profile_memory_char_count(
+    profile: Any,
+    key: str,
+    value: str,
+    *,
+    max_value_chars: int | None = None,
+) -> int:
     """Count global memory characters after upserting ``key`` to ``value``."""
     records: list[dict[str, str]] = []
     replaced = False
-    max_value_length = int(getattr(profile, "MAX_VALUE_LENGTH", 1000))
-    stored_value = value[:max_value_length]
+    if max_value_chars is None:
+        max_value_chars = int(getattr(profile, "MAX_VALUE_LENGTH", 1000))
+    stored_value = value[:max_value_chars]
 
     for mem in getattr(profile, "memories", []):
         mem_key = getattr(mem, "key", "")
@@ -123,10 +182,21 @@ def validate_profile_memory_write(
     key: str,
     value: str,
     limit: int,
+    max_entries: int | None = None,
+    max_value_chars: int | None = None,
 ) -> str | None:
-    """Return an error if a global memory upsert would grow beyond the limit."""
+    """Return an error if a global memory upsert would exceed any cap.
+
+    Checks the aggregate character budget and, when ``max_entries`` is given,
+    the entry-count cap (only for new keys; upserts of existing keys pass).
+    """
+    if max_entries is not None and profile.get_memory(key) is None:
+        if len(getattr(profile, "memories", [])) >= max_entries:
+            return memory_entries_full_error(max_entries)
     current_chars = profile_memory_char_count(profile)
-    proposed_chars = proposed_profile_memory_char_count(profile, key, value)
+    proposed_chars = proposed_profile_memory_char_count(
+        profile, key, value, max_value_chars=max_value_chars
+    )
     if proposed_chars > limit and proposed_chars > current_chars:
         return memory_full_error("Global memory", limit, proposed_chars)
     return None

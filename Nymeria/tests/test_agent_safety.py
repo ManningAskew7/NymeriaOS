@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 from nymeria.core.agent_safety import (
     check_iteration_limit_hit,
     graph_run_config,
+    main_iterations_cap,
     turn_safety_event,
 )
 from nymeria.vendor.react_agent.nodes import (
@@ -47,6 +49,38 @@ class _EventFacadeAgent:
     def _turn_safety_content(self, safety: TurnSafetyResult) -> str:
         self.calls.append(("content", safety))
         return "facade content"
+
+
+class _CapAgent:
+    MAIN_AGENT_MAX_ITERATIONS = 500
+
+    def __init__(self, settings: Any = None) -> None:
+        if settings is not None:
+            self.settings = settings
+
+
+def test_main_iterations_cap_prefers_settings_value():
+    agent = _CapAgent(SimpleNamespace(agent_max_iterations=42))
+    assert main_iterations_cap(cast(Any, agent)) == 42
+
+    string_agent = _CapAgent(SimpleNamespace(agent_max_iterations="17"))
+    assert main_iterations_cap(cast(Any, string_agent)) == 17
+
+
+def test_main_iterations_cap_falls_back_to_class_constant():
+    assert main_iterations_cap(cast(Any, _CapAgent())) == 500
+
+    mock_settings_agent = _CapAgent(MagicMock())
+    assert main_iterations_cap(cast(Any, mock_settings_agent)) == 500
+
+    zero_agent = _CapAgent(SimpleNamespace(agent_max_iterations=0))
+    assert main_iterations_cap(cast(Any, zero_agent)) == 500
+
+    bool_agent = _CapAgent(SimpleNamespace(agent_max_iterations=True))
+    assert main_iterations_cap(cast(Any, bool_agent)) == 500
+
+    garbage_agent = _CapAgent(SimpleNamespace(agent_max_iterations="garbage"))
+    assert main_iterations_cap(cast(Any, garbage_agent)) == 500
 
 
 def test_check_iteration_limit_hit_uses_agent_analyze_facade():

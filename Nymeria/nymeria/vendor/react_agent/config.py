@@ -43,7 +43,7 @@ class LLMConfig:
     top_k: Optional[int] = None  # Top-k sampling (1-100)
     frequency_penalty: Optional[float] = None  # Reduce repetition (-2.0 to 2.0)
     presence_penalty: Optional[float] = None  # Encourage new topics (-2.0 to 2.0)
-    reasoning_effort: Optional[str] = None  # For reasoning models: "low", "medium", "high"
+    reasoning_effort: Optional[str] = None  # "off", "low", "medium", "high", "xhigh", "max" (None = unset/inherit; "off" wins over extended_thinking)
     extended_thinking: bool = False  # Enable extended thinking/reasoning tokens
     provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     # Adapter route for providers with both a native partner package and an

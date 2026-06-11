@@ -142,6 +142,8 @@ class NymeriaAgent:
     - User memories automatically injected into system prompt
     """
 
+    # Fallback when settings.agent_max_iterations is unavailable; the runtime
+    # cap resolves through agent_safety.main_iterations_cap().
     MAIN_AGENT_MAX_ITERATIONS = 500
     CALLABLE_DEFAULT_MAX_ITERATIONS = 300
     TURN_SAME_TOOL_RESULT_LIMIT = 5
@@ -899,8 +901,8 @@ class NymeriaAgent:
         model_limit: int,
         threshold: float = 0.8,
         *,
-        mode: str = "percentage",
-        tokens: int = 100_000,
+        mode: str = "tokens",
+        tokens: int = 200_000,
     ) -> int:
         """Return the input-token count that should trigger auto-compaction."""
         return CompactionManager.compact_trigger_tokens(

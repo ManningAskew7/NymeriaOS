@@ -20,8 +20,8 @@ A thread's conversation lives in three places:
 
 Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. Auto-compaction fires at three points: **pre-flight** (before a new user turn), **sub-turn** (mid-loop, after a tool batch, see "Sub-turn trigger" below), and as a last resort on a context-overflow exception. The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
 
-- **`percentage`** (default): fires when input tokens reach `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95`.
-- **`tokens`**: fires when input tokens reach the absolute count `COMPACT_THRESHOLD_TOKENS` (1,000–2,000,000), clamped at runtime to the model's context window so an oversized setting never disables compaction.
+- **`tokens`** (default): fires when input tokens reach the absolute count `COMPACT_THRESHOLD_TOKENS` (1,000–2,000,000, default 200,000), clamped at runtime to the model's context window so an oversized setting never disables compaction. Absolute counts stay put when you switch models with different context windows, which is why this is the default.
+- **`percentage`**: fires when input tokens reach `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95` (default 0.8).
 
 The check uses **real provider-reported input tokens**, not character estimates. `core/token_tracker.py` records `last_input_tokens` from each AIMessage via `core/token_usage.py::extract_from_message`, which reads LangChain's `usage_metadata` (`input_tokens` / `prompt_tokens`) and falls back to the Anthropic-native `response_metadata.usage` block. `should_auto_compact_now` compares that value directly against the trigger. The `estimate_tokens()` helper in `agent_compaction.py` is only used by the context-overflow rewind fallback to size the prefix trim  -  never for the primary compaction trigger.
 

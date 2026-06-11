@@ -55,6 +55,7 @@ from .providers import (
     valid_key_format_for_spec,
 )
 from .rag_catalog import apply_quickstart_rag, rag_env_for_state
+from .tuning_catalog import tuning_drop_env, tuning_env_for_state
 from .voice_catalog import (
     needs_local_voice_extra,
     uses_voice_sidecar,
@@ -370,6 +371,7 @@ def finalize(
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
         drop_public_url=should_drop_public_url(state),
         drop_stale_voice=voice_drop_env(state),
+        drop_stale_tuning=tuning_drop_env(state),
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -460,6 +462,7 @@ def write_config(
     drop_cliproxy_management: bool = False,
     drop_public_url: bool = False,
     drop_stale_voice: tuple[str, ...] = (),
+    drop_stale_tuning: tuple[str, ...] = (),
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -572,6 +575,10 @@ def write_config(
     # lines (computed in voice_catalog.voice_drop_env); anything this run
     # re-collects is in `produced` and wins over the drop.
     drop_env = drop_env + drop_stale_voice
+    # Agent-tuning lines: cleared hydrated fields and abandoned context
+    # strategies' trigger lines (tuning_catalog.tuning_drop_env); same
+    # produced-wins-over-drop semantics.
+    drop_env = drop_env + drop_stale_tuning
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
@@ -861,6 +868,9 @@ def _resolve_extra_env(state: WizardState) -> dict[str, str]:
     # the keys ride in optional_env via the backend-keys step. Empty when the
     # voice steps were never reached.
     extra.update(voice_env_for_state(state))
+    # Agent tuning (context strategy, limits, reasoning effort + sampling).
+    # Blank fields write nothing, so settings defaults stay in charge.
+    extra.update(tuning_env_for_state(state))
     # External access: persist the choice (the wizard's round-trip marker; the
     # runtime does not read it) and, when this run stands behind a public
     # origin (a setup step, --public-url, or hydrate), the real settings: the

@@ -872,11 +872,16 @@ class CommandBackendClient:
             "llm_stream_retry_max_delay": settings.llm_stream_retry_max_delay,
             "context_management": settings.context_management,
             "compact_threshold": settings.compact_threshold,
+            "compact_threshold_mode": settings.compact_threshold_mode,
+            "compact_threshold_tokens": settings.compact_threshold_tokens,
             "compact_keep_messages": settings.compact_keep_messages,
             "compact_model": settings.compact_model,
             "sliding_window_cycles": settings.sliding_window_cycles,
             "tool_output_max_chars": settings.tool_output_max_chars,
             "memory_char_limit": settings.memory_char_limit,
+            "memory_max_entries": settings.memory_max_entries,
+            "memory_value_max_chars": settings.memory_value_max_chars,
+            "agent_max_iterations": settings.agent_max_iterations,
             "log_level": settings.log_level,
             "watchdog_enabled": settings.watchdog_enabled,
             "watchdog_interval_minutes": settings.watchdog_interval_minutes,
@@ -1028,25 +1033,33 @@ class CommandBackendClient:
     async def save_memory(self, user_id: str, key: str, value: str) -> dict:
         from .memory_limits import (
             get_global_memory_char_limit,
+            get_memory_max_entries,
+            get_memory_value_max_chars,
             validate_profile_memory_write,
         )
 
         target_user_id = self._checked_user_id(user_id)
+        agent_settings = getattr(self.agent, "settings", None)
+        max_entries = get_memory_max_entries(agent_settings)
+        value_cap = get_memory_value_max_chars(agent_settings)
         with self.agent.profile_manager.atomic_update(target_user_id) as profile:
             limit_error = validate_profile_memory_write(
                 profile,
                 key=key,
                 value=value,
-                limit=get_global_memory_char_limit(getattr(self.agent, "settings", None)),
+                limit=get_global_memory_char_limit(agent_settings),
+                max_entries=max_entries,
+                max_value_chars=value_cap,
             )
             if limit_error:
                 _raise_http_status(400, limit_error)
-            success = profile.add_memory(key, value)
-            max_memories = profile.MAX_MEMORIES
+            success = profile.add_memory(
+                key, value, max_entries=max_entries, max_value_chars=value_cap
+            )
             stored = profile.get_memory(key)
             stored_value = stored.value if stored else value
         if not success:
-            _raise_http_status(400, f"Memory limit reached ({max_memories})")
+            _raise_http_status(400, f"Memory limit reached ({max_entries})")
         self._upsert_memory_rag_chunk(target_user_id, key, stored_value)
         return {"status": "ok", "key": key}
 
@@ -1585,7 +1598,7 @@ class CommandService:
             "think",
             description="Show or change thinking mode",
             category="LLM",
-            usage="/think [off|on|low|medium|high]",
+            usage="/think [off|on|low|medium|high|xhigh|max]",
             mutates_state=True,
             danger_level="normal",
         )
@@ -3832,7 +3845,7 @@ class _CommandExecutor:
         thinking = settings.get("llm_extended_thinking", False)
         effort = settings.get("llm_reasoning_effort")
         think_str = "off"
-        if thinking:
+        if thinking and str(effort or "").lower() != "off":
             think_str = f"on ({effort})" if effort else "on"
 
         total = ctx.get("total_tokens", 0)
@@ -4078,32 +4091,45 @@ class _CommandExecutor:
             settings = await self.api.get_settings()
             thinking = settings.get("llm_extended_thinking", False)
             effort = settings.get("llm_reasoning_effort")
-            if not thinking:
+            if not thinking or str(effort or "").lower() == "off":
                 return "[Info]: Thinking is off."
             if effort:
                 return f"[Info]: Thinking is on (effort: {effort})."
             return "[Info]: Thinking is on."
         value = args[0].lower()
         if value == "off":
+            # Persist effort="off" so the explicit off wins over any saved
+            # effort level (and over extended_thinking on other surfaces).
             await self.api.update_settings(
                 user_id=self.user_id,
                 llm_extended_thinking=False,
-                llm_reasoning_effort=None,
+                llm_reasoning_effort="off",
             )
             return "[Success]: Thinking disabled."
         if value == "on":
+            settings = await self.api.get_settings()
+            effort = str(settings.get("llm_reasoning_effort") or "").lower()
+            if effort == "off":
+                # A persisted effort "off" wins over extended_thinking, so
+                # clear it (explicit null) back to provider-default behavior.
+                await self.api.update_settings(
+                    user_id=self.user_id,
+                    llm_extended_thinking=True,
+                    llm_reasoning_effort=None,
+                )
+                return "[Success]: Thinking enabled (effort reset to default)."
             await self.api.update_settings(
                 user_id=self.user_id, llm_extended_thinking=True
             )
             return "[Success]: Thinking enabled."
-        if value in ("low", "medium", "high"):
+        if value in ("low", "medium", "high", "xhigh", "max"):
             await self.api.update_settings(
                 user_id=self.user_id,
                 llm_extended_thinking=True,
                 llm_reasoning_effort=value,
             )
             return f"[Success]: Thinking enabled, effort: {value}."
-        return "[Error]: Usage: /think [off|on|low|medium|high]"
+        return "[Error]: Usage: /think [off|on|low|medium|high|xhigh|max]"
 
     # ── Config ────────────────────────────────────────────────────────────
 
@@ -4125,10 +4151,16 @@ class _CommandExecutor:
         lines.append("")
         lines.append("Context")
         lines.append(f"  mode: {settings.get('context_management', '?')}")
-        threshold = settings.get("compact_threshold", 0) or 0
-        lines.append(f"  compact threshold: {int(threshold * 100)}%")
+        if settings.get("compact_threshold_mode") == "percentage":
+            threshold = settings.get("compact_threshold", 0) or 0
+            lines.append(f"  compact threshold: {int(threshold * 100)}%")
+        else:
+            lines.append(
+                f"  compact threshold: {settings.get('compact_threshold_tokens', '?')} tokens"
+            )
         lines.append(f"  keep messages: {settings.get('compact_keep_messages', '?')}")
         lines.append(f"  memory char limit: {settings.get('memory_char_limit', '?')}")
+        lines.append(f"  memory max entries: {settings.get('memory_max_entries', '?')}")
         compact_model = settings.get("compact_model")
         if compact_model:
             lines.append(f"  compact model: {compact_model}")

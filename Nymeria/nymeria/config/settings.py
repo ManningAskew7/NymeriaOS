@@ -78,7 +78,7 @@ DEFAULT_CORS_ORIGINS = (
 DEFAULT_USER_TIMEZONE = "UTC"
 MAX_LLM_OUTPUT_TOKENS = 1_000_000
 DEFAULT_LLM_FALLBACK_MODELS = "anthropic:claude-haiku-4-5-20251001"
-ReasoningEffort = Literal["low", "medium", "high"]
+ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh", "max"]
 
 
 def get_env_file_paths(project_root: Path | None = None) -> Tuple[Path, ...]:
@@ -622,7 +622,13 @@ class Settings(BaseSettings):
         default=None, ge=-2.0, le=2.0, description="Encourage new topics"
     )
     llm_reasoning_effort: Optional[ReasoningEffort] = Field(
-        default=None, description="Reasoning effort for compatible models: low, medium, high"
+        default=None,
+        description=(
+            "Reasoning effort for compatible models: off, low, medium, high, "
+            "xhigh, max. 'off' explicitly disables thinking and wins over "
+            "llm_extended_thinking; unset (None) inherits provider defaults. "
+            "Values above a model's ladder are clamped per-model at run time."
+        ),
     )
     llm_extended_thinking: bool = Field(
         default=False, description="Enable extended thinking/reasoning for compatible models"
@@ -1476,11 +1482,11 @@ class Settings(BaseSettings):
         description="Trigger auto-compact at this percentage of context window (used when compact_threshold_mode='percentage')"
     )
     compact_threshold_mode: Literal["percentage", "tokens"] = Field(
-        default="percentage",
+        default="tokens",
         description="Whether auto-compact trigger uses 'percentage' of context window or an absolute 'tokens' count"
     )
     compact_threshold_tokens: int = Field(
-        default=100_000,
+        default=200_000,
         ge=1_000,
         le=2_000_000,
         description="Trigger auto-compact when input tokens reach this absolute count (used when compact_threshold_mode='tokens'); clamped to model context limit at runtime"
@@ -1527,6 +1533,24 @@ class Settings(BaseSettings):
         ge=1,
         le=2000000,
         description="Maximum persisted characters for global memories and per-thread notepads"
+    )
+    memory_max_entries: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="Maximum number of global key-value memories per user"
+    )
+    memory_value_max_chars: int = Field(
+        default=1000,
+        ge=50,
+        le=100000,
+        description="Maximum characters stored per global memory value; longer values are truncated"
+    )
+    agent_max_iterations: int = Field(
+        default=500,
+        ge=10,
+        le=10000,
+        description="Maximum agent loop iterations per turn (safety backstop; callable threads use their own per-thread cap)"
     )
 
     # Watchdog/TODO Configuration

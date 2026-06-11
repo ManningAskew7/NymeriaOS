@@ -16,6 +16,7 @@
   } from '$lib/types';
   import { getThemeList, getThemePreviewColors } from '$lib/themes';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import Button from './Button.svelte';
@@ -1858,11 +1859,19 @@
                 <label for="llm-reasoning">Reasoning Effort</label>
                 <select id="llm-reasoning" bind:value={llmReasoningEffort}>
                   <option value={null}>Default</option>
+                  <option value="off">Off</option>
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
                 </select>
-                <p class="hint">For reasoning models (o1, Claude with thinking)</p>
+                {#if effortExceedsModelMax(llmReasoningEffort, currentModelMeta?.max_reasoning_effort)}
+                  <div class="effort-clamp-note">
+                    This model supports up to {reasoningEffortLabel(currentModelMeta?.max_reasoning_effort ?? '')}. Higher settings are reduced automatically.
+                  </div>
+                {/if}
+                <p class="hint">For reasoning models (o1, Claude with thinking). Off disables thinking where the model allows it.</p>
               </div>
 
               <div class="field">
@@ -3040,6 +3049,17 @@
     margin: 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+  }
+
+  .effort-clamp-note {
+    margin: var(--spacing-xs) 0;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--warning-rgb), 0.08);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    line-height: 1.45;
   }
 
   .model-meta-hint {

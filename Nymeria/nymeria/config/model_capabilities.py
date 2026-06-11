@@ -146,7 +146,7 @@ DEFAULT_CONTEXT_LIMITS = {
 
 _OPENAI_SNAPSHOT_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 _CAPABILITY_SNAPSHOT_SUFFIX_RE = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
-_REASONING_SUFFIX_RE = re.compile(r"\((?:none|minimal|low|medium|high|xhigh)\)$")
+_REASONING_SUFFIX_RE = re.compile(r"\((?:none|minimal|low|medium|high|xhigh|max|off)\)$")
 
 
 def _dedupe_preserving_order(values: List[str]) -> List[str]:
@@ -340,6 +340,171 @@ def _resolve_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
         if any(p in lowered for p in patterns):
             return dict(limits)
     return dict(_DEFAULT_ATTACHMENT_LIMITS)
+
+
+# ============================================================================
+# Reasoning-effort capability table
+# ============================================================================
+#
+# Nymeria's reasoning-effort axis is a six-step scale. "off" means thinking is
+# explicitly disabled (and wins over extended_thinking=True); None stays
+# "unset/inherit" and never reaches these helpers. Per-model support is static
+# family knowledge (research brief 2026-06): provider /models endpoints do not
+# report effort ladders, so the table is hardcoded like the attachment limits
+# above. Family matching is substring/pattern based on the lowercased model id
+# with any CLIProxy effort suffix (e.g. "(xhigh)") stripped first.
+
+EFFORT_LEVELS: tuple = ("off", "low", "medium", "high", "xhigh", "max")
+
+_EFFORT_RANK: Dict[str, int] = {level: rank for rank, level in enumerate(EFFORT_LEVELS)}
+
+# Unknown model/provider: assume the common ladder but nothing above "high".
+_DEFAULT_REASONING_EFFORTS: tuple = ("off", "low", "medium", "high")
+
+_OPENAI_GPT5_MINOR_RE = re.compile(r"gpt-5\.(\d+)")
+_OPENAI_O_SERIES_RE = re.compile(r"^o\d")
+_GROK_4_MINOR_RE = re.compile(r"grok-4(?:\.(\d+))?")
+
+
+def _anthropic_reasoning_efforts(model_text: str) -> tuple:
+    """Effort ladder for Claude models (direct Anthropic API shapes)."""
+    if "fable" in model_text or "mythos" in model_text:
+        # Thinking cannot be disabled on these models; no "off" tier.
+        return ("low", "medium", "high", "xhigh", "max")
+    if any(
+        marker in model_text
+        for marker in (
+            "opus-4-7", "opus-4.7", "sonnet-4-7", "sonnet-4.7",
+            "opus-4-8", "opus-4.8", "sonnet-4-8", "sonnet-4.8",
+        )
+    ):
+        return EFFORT_LEVELS
+    if any(
+        marker in model_text
+        for marker in ("opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6")
+    ):
+        # 4.6 adaptive supports max but has no xhigh tier.
+        return ("off", "low", "medium", "high", "max")
+    # Legacy budget-token path (4.5 and older): every tier maps to a budget.
+    return EFFORT_LEVELS
+
+
+def _openai_reasoning_efforts(model_text: str) -> tuple:
+    """Effort ladder for OpenAI models (Responses/Chat Completions)."""
+    if "codex" in model_text:
+        # Codex models cannot disable reasoning. xhigh ships on the
+        # codex-max / gpt-5.5-codex lineage only.
+        if "codex-max" in model_text or "gpt-5.5-codex" in model_text:
+            return ("low", "medium", "high", "xhigh")
+        return ("low", "medium", "high")
+    if _OPENAI_O_SERIES_RE.match(model_text):
+        # o-series accepts low/medium/high only. Omitting the reasoning
+        # parameter lets the model reason at its default (medium), which
+        # contradicts "off", so "off" is not in the ladder and the clamp
+        # maps it to "low".
+        return ("low", "medium", "high")
+    minor_match = _OPENAI_GPT5_MINOR_RE.search(model_text)
+    if minor_match:
+        if int(minor_match.group(1)) >= 2:
+            return ("off", "low", "medium", "high", "xhigh")
+        return ("off", "low", "medium", "high")
+    if "gpt-5" in model_text:
+        # gpt-5 base lineage: "off" maps to effort "minimal" on the wire.
+        return ("off", "low", "medium", "high")
+    return _DEFAULT_REASONING_EFFORTS
+
+
+def _google_reasoning_efforts(model_text: str) -> tuple:
+    """Effort ladder for Gemini models."""
+    if "gemini-3" in model_text or "gemini-4" in model_text:
+        # thinking_level tops out at high; "off" maps to "minimal" (cannot
+        # fully disable thinking on 3.x+).
+        return ("off", "low", "medium", "high")
+    # Gemini <= 2.5 thinking_budget: every tier maps to a budget value.
+    return EFFORT_LEVELS
+
+
+def _xai_reasoning_efforts(model_text: str) -> tuple:
+    """Effort ladder for xAI Grok models."""
+    minor_match = _GROK_4_MINOR_RE.search(model_text)
+    if minor_match:
+        minor = int(minor_match.group(1)) if minor_match.group(1) else 0
+        if minor < 2:
+            # grok-4 / grok-4-fast / grok-4.1-fast 400 on any reasoning_effort
+            # value; the only honest tier is "off" (param omitted entirely).
+            return ("off",)
+    return ("off", "low", "medium", "high")
+
+
+def supported_reasoning_efforts(provider: str, model: str) -> tuple:
+    """Return the effort levels a provider/model pair supports, rank-ordered.
+
+    Static family-pattern knowledge (no network). Unknown models fall back to
+    the conservative ladder ("off", "low", "medium", "high").
+    """
+    provider_text = (provider or "").strip().lower()
+    model_text = _REASONING_SUFFIX_RE.sub("", (model or "").strip().lower())
+    bare_model = _without_provider_prefix(model_text)
+
+    if provider_text == "openrouter":
+        # OpenRouter's unified reasoning config normalizes effort across
+        # models and accepts up to xhigh; "off" omits the config entirely.
+        return ("off", "low", "medium", "high", "xhigh")
+    if "gpt-oss" in bare_model:
+        # gpt-oss (Groq, Ollama, etc.) cannot disable reasoning.
+        return ("low", "medium", "high")
+    if (
+        provider_text == "anthropic"
+        or "claude" in bare_model
+        or "fable" in bare_model
+        or "mythos" in bare_model
+    ):
+        return _anthropic_reasoning_efforts(bare_model)
+    if provider_text == "xai" or "grok" in bare_model:
+        return _xai_reasoning_efforts(bare_model)
+    if provider_text == "google" or "gemini" in bare_model:
+        return _google_reasoning_efforts(bare_model)
+    if provider_text == "openai" or _looks_like_openai_model(bare_model):
+        return _openai_reasoning_efforts(bare_model)
+    return _DEFAULT_REASONING_EFFORTS
+
+
+def max_reasoning_effort(provider: str, model: str) -> str:
+    """Return the highest-ranked effort level the provider/model supports."""
+    supported = supported_reasoning_efforts(provider, model)
+    return max(supported, key=lambda level: _EFFORT_RANK[level])
+
+
+def clamp_reasoning_effort(provider: str, model: str, effort: str) -> str:
+    """Clamp a requested effort level onto the provider/model's ladder.
+
+    Rules (in order):
+    - Supported as requested: returned unchanged.
+    - Requested at or above the model's highest tier: the model's highest tier
+      (an over-ask means "most thinking available", e.g. xhigh on an Anthropic
+      4.6 model clamps UP to max).
+    - Unsupported mid-ladder or below-floor (e.g. "off" on a model that cannot
+      disable thinking): the next supported tier above the request.
+
+    Unknown tokens are returned unchanged; the provider factories keep their
+    defensive ``.get(effort, default)`` fallbacks.
+    """
+    requested = str(effort or "").strip().lower()
+    if requested not in _EFFORT_RANK:
+        return requested
+
+    supported = supported_reasoning_efforts(provider, model)
+    if requested in supported:
+        return requested
+
+    requested_rank = _EFFORT_RANK[requested]
+    supported_ranks = sorted(_EFFORT_RANK[level] for level in supported)
+    if requested_rank >= supported_ranks[-1]:
+        return EFFORT_LEVELS[supported_ranks[-1]]
+    for rank in supported_ranks:
+        if rank > requested_rank:
+            return EFFORT_LEVELS[rank]
+    return EFFORT_LEVELS[supported_ranks[0]]
 
 
 def _fetch_openrouter_models() -> Dict[str, ModelInfo]:

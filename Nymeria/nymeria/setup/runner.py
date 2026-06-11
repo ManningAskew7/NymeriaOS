@@ -27,7 +27,7 @@ from ..onboarding import (
 )
 from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
-from . import voice_catalog
+from . import tuning_catalog, voice_catalog
 from .finalize import finalize
 from .quick import apply_quick_defaults
 from .state import WizardState
@@ -224,6 +224,23 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         "--tts-voice", default=None,
         help="TTS voice identifier (required for cartesia: a voice UUID)",
     )
+    # Agent tuning (single picks; numeric fine-tuning is wizard/settings-only).
+    parser.add_argument(
+        "--context",
+        choices=tuple(choice.value for choice in tuning_catalog.CONTEXT_CHOICES),
+        default=None,
+        help="Context-management strategy (compact_tokens recommended)",
+    )
+    parser.add_argument(
+        "--timezone", default=None, metavar="TZ",
+        help="Your IANA timezone (e.g. Australia/Sydney); written as USER_TIMEZONE",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=tuple(choice.value for choice in tuning_catalog.EFFORT_CHOICES),
+        default=None,
+        help="Reasoning effort for the primary model (medium recommended)",
+    )
     parser.add_argument(
         "--root",
         default=None,
@@ -299,6 +316,24 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         value = getattr(args, attr, None)
         if value:
             extras[attr] = str(value)
+    for attr, key in (
+        ("context", "context_strategy"),
+        ("timezone", "user_timezone"),
+        ("reasoning_effort", "llm_effort"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            extras[key] = str(value)
+    timezone = extras.get("user_timezone")
+    if isinstance(timezone, str):
+        tz_field = next(
+            field
+            for field in tuning_catalog.LIMIT_FIELDS
+            if field.key == "user_timezone"
+        )
+        _, error = tuning_catalog.parse_field(tz_field, timezone)
+        if error:
+            raise SystemExit(f"--timezone: {error}")
 
     hosting = None
     if getattr(args, "hosting", None):

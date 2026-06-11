@@ -1641,7 +1641,7 @@ Authorization: Bearer <admin-token>
 | `llm_top_k` | int | 1-100 | Top-k sampling |
 | `llm_frequency_penalty` | float | -2.0-2.0 | Reduce repetition |
 | `llm_presence_penalty` | float | -2.0-2.0 | Encourage new topics |
-| `llm_reasoning_effort` | string | low/medium/high | For reasoning models |
+| `llm_reasoning_effort` | string | off/low/medium/high/xhigh/max | Reasoning effort for compatible models. `off` explicitly disables thinking; unsupported levels are adjusted onto the model's supported range at request time (over-asks drop to its ceiling) |
 | `llm_use_model_defaults` | bool | true/false | Use model-specific defaults for temperature/top_p/frequency_penalty |
 | `llm_context_length` | int | 1000-2000000 | Manual context-window override for local endpoints or proxies that do not report context metadata |
 | `llm_ollama_num_ctx` | int | 1000-2000000 | Ollama runtime context override sent as `extra_body.options.num_ctx` on Chat Completions requests |
@@ -1713,6 +1713,8 @@ Returns cached OpenRouter model metadata. The backend fetches model data from th
 | `pricing_prompt` | float \| null | Cost per input token in USD |
 | `pricing_completion` | float \| null | Cost per output token in USD |
 | `supported_parameters` | string[] | API parameters the model accepts (used for smart parameter gating) |
+| `supported_reasoning_efforts` | string[] | Reasoning-effort levels this model accepts (subset of off/low/medium/high/xhigh/max); requests outside the set are adjusted server-side (over-asks drop to the ceiling) |
+| `max_reasoning_effort` | string | Highest supported reasoning-effort level; frontends warn when the configured effort exceeds it |
 | `input_modalities` | string[] | Supported input types: `text`, `image`, `file` |
 | `tokenizer` | string \| null | Tokenizer family: `Claude`, `GPT`, `Llama3`, etc. |
 | `default_temperature` | float \| null | Model's default temperature (shown when "Use model defaults" is enabled) |

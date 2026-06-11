@@ -1076,6 +1076,8 @@ export interface AvailableModel {
   default_frequency_penalty?: number | null;
   pricing_prompt?: number | null;
   pricing_completion?: number | null;
+  supported_reasoning_efforts?: string[];
+  max_reasoning_effort?: string;
 }
 
 // OpenRouter model metadata (from GET /models)
@@ -1092,6 +1094,10 @@ export interface ModelMetadata {
   default_temperature: number | null;
   default_top_p: number | null;
   default_frequency_penalty: number | null;
+  // Rank-ordered reasoning-effort ladder for this model and its highest
+  // supported level; unsupported asks are clamped server-side.
+  supported_reasoning_efforts?: string[];
+  max_reasoning_effort?: string;
 }
 
 // Per-user RAG settings (GET/PUT /users/{id}/rag/settings). Distinct from the

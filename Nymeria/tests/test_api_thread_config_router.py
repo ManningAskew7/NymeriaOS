@@ -193,6 +193,43 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert saved.memory_char_limit is None
 
 
+def test_thread_config_reasoning_effort_validation_and_legacy_coercion(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-effort"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    accepted = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"llm_config": {"reasoning_effort": "xhigh"}},
+    )
+    assert accepted.status_code == 200
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved.llm_config.reasoning_effort == "xhigh"
+
+    rejected = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"llm_config": {"reasoning_effort": "ultra"}},
+    )
+    assert rejected.status_code == 422
+
+    # Legacy garbage persisted on disk must not break the config load: it is
+    # coerced to None (inherit) by the before-mode validator.
+    config_path = tmp_path / "thread_configs" / f"{thread_id}.json"
+    assert config_path.exists(), "expected a persisted thread config file"
+    raw = config_path.read_text(encoding="utf-8")
+    config_path.write_text(raw.replace('"xhigh"', '"turbo"'), encoding="utf-8")
+
+    reloaded = agent.thread_config_manager.get_config(thread_id)
+    assert reloaded is not None
+    assert reloaded.llm_config.reasoning_effort is None
+
+
 def test_thread_config_rejects_invalid_core_and_duplicate_callable_names(
     tmp_path: Path,
     api_client_builder,

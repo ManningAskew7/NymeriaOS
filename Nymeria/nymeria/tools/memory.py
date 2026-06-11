@@ -30,6 +30,9 @@ from ..core.user_profile import UserProfileManager
 from ..core.memory_index import MemoryIndex, parse_anchor_string
 from ..core.memory_limits import (
     get_global_memory_char_limit,
+    get_memory_max_entries,
+    get_memory_value_max_chars,
+    memory_entries_full_error,
     validate_profile_memory_write,
 )
 from . import thread_notes
@@ -165,18 +168,24 @@ def memory_add(
                 return f"[Info]: No memory with key '{key}' to delete."
 
         with manager.atomic_update(user_id) as profile:
-            stored_content = content[: profile.MAX_VALUE_LENGTH]
+            max_entries = get_memory_max_entries()
+            value_cap = get_memory_value_max_chars()
+            stored_content = content[:value_cap]
             limit_error = validate_profile_memory_write(
                 profile,
                 key=key,
                 value=stored_content,
                 limit=get_global_memory_char_limit(),
+                max_entries=max_entries,
+                max_value_chars=value_cap,
             )
             if limit_error:
                 return limit_error
-            ok = profile.add_memory(key, content)
+            ok = profile.add_memory(
+                key, content, max_entries=max_entries, max_value_chars=value_cap
+            )
             if not ok:
-                return f"[Error]: Memory limit reached ({profile.MAX_MEMORIES} memories). Delete some first."
+                return memory_entries_full_error(max_entries)
             logger.info(f"Memory saved for user {user_id}: {key}={stored_content[:50]}")
             _rag_index_global(user_id, key, stored_content)
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
@@ -249,16 +258,18 @@ def memory_edit(
                 _rag_remove_global(user_id, key)
                 return f"[Deleted]: Edit emptied '{key}'; entry removed."
 
-            stored_value = updated_value[: profile.MAX_VALUE_LENGTH]
+            value_cap = get_memory_value_max_chars()
+            stored_value = updated_value[:value_cap]
             limit_error = validate_profile_memory_write(
                 profile,
                 key=key,
                 value=stored_value,
                 limit=get_global_memory_char_limit(),
+                max_value_chars=value_cap,
             )
             if limit_error:
                 return limit_error
-            profile.add_memory(key, updated_value)
+            profile.add_memory(key, updated_value, max_value_chars=value_cap)
             logger.info(f"Memory '{key}' edited for user {user_id}")
             _rag_index_global(user_id, key, stored_value)
             return f"[Saved]: Updated '{key}'."
