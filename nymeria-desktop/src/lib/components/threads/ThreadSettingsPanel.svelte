@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fly } from 'svelte/transition';
+  import { TAB_FADE } from '$lib/utils/transitions';
   import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, ProviderRoute } from '$lib/types';
   import { Button, Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -1079,7 +1081,7 @@
           tabindex="0"
         >
         {#key contentKey}
-          <div class="tab-fade">
+          <div class="tab-fade" in:fly={TAB_FADE}>
             {#if activeTab === 'behavior'}
               <BehaviorConfigTab
                 bind:instructions
@@ -1454,15 +1456,6 @@
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-  }
-
-  .tab-fade {
-    animation: threadTabFade 180ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  @keyframes threadTabFade {
-    from { opacity: 0; transform: translateY(3px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   /* Footer */

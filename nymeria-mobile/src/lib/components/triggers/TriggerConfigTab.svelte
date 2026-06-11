@@ -674,19 +674,22 @@
     background: var(--text-muted);
   }
 
+  /* Knob travels via transform (compositor-only) at the shared toggle speed
+     (150ms, matching desktop's ToggleSwitch), not `left` at 250ms. */
   .toggle-thumb {
     position: absolute;
     top: 2px;
-    left: 20px;
+    left: 2px;
     width: 18px;
     height: 18px;
     border-radius: 50%;
     background: white;
-    transition: left var(--transition-normal);
+    transform: translateX(18px);
+    transition: transform var(--transition-fast);
   }
 
   .toggle-btn.off .toggle-thumb {
-    left: 2px;
+    transform: translateX(0);
   }
 
   /* Form */

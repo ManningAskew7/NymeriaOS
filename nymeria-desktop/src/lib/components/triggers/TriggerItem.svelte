@@ -2,6 +2,7 @@
   import type { Trigger, TriggerSourceInfo } from '$lib/types';
   import { slide, crossfade } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import { Icon, ToggleSwitch } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -375,7 +376,7 @@
   </div>
 
   {#if expanded}
-  <div class="expanded-wrap" transition:slide={{ duration: 120, easing: cubicOut, axis: 'y' }}>
+  <div class="expanded-wrap" transition:slide={DROPDOWN_TRANSITION}>
     <!-- Thread pill + chip + toggle + action preview -->
     <div class="thread-action-row">
       {#if threadTitle}
