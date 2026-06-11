@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.widgets import Static
 
@@ -62,7 +63,7 @@ def _summary_markup(state: WizardState) -> str:
     if spec is not None:
         lines.append(f"[bold]Provider[/bold]  {spec.label}  ({spec.tier})")
         model = state.model or spec.default_model or "(choose on next run)"
-        lines.append(f"[bold]Model[/bold]     {model}")
+        lines.append(f"[bold]Model[/bold]     {escape(model)}")
         if state.api_key:
             lines.append("[bold]API key[/bold]   set")
         if state.api_mode:

@@ -79,6 +79,10 @@ Screen {
     padding: 1 0 0 0;
 }
 
+.field-note {
+    color: #aab4c3;
+}
+
 RadioSet,
 SelectionList,
 .radio-group {

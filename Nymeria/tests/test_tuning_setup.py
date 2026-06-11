@@ -18,7 +18,11 @@ from nymeria.setup.state import WizardState
 from nymeria.setup.tuning_catalog import (
     CONTEXT_FIELDS,
     LIMIT_FIELDS,
+    annotated_effort_choices,
+    effective_effort_for_state,
+    effort_ladder_note,
     parse_field,
+    plain_effort_label,
     tuning_drop_env,
     tuning_env_for_state,
     tuning_summary_lines,
@@ -418,3 +422,182 @@ def test_review_summary_lines():
     assert any("MEMORY_MAX_ENTRIES=250" in line for line in lines)
     assert any("Reasoning effort: Max" in line and "LLM_MAX_TOKENS=32000" in line
                for line in lines)
+
+
+# ── model-aware effort annotations ───────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _static_capability_tables(monkeypatch):
+    """The wizard preview reads the static tables; stay deterministic even if
+    another suite leaks entries into the live capability cache."""
+    monkeypatch.setattr(
+        "nymeria.config.model_capabilities._live_model_cache", {}
+    )
+
+
+def _choice(choices, value):
+    return next(c for c in choices if c.value == value)
+
+
+def test_annotated_choices_identity_without_model():
+    """No provider and no cliproxy branch: the generic catalog is returned
+    unchanged (fail open), and there is no ladder note."""
+    state = WizardState()
+    assert annotated_effort_choices(state) is tuning_catalog.EFFORT_CHOICES
+    assert effort_ladder_note(state) is None
+    assert effective_effort_for_state(state, "xhigh") is None
+
+
+def test_annotated_choices_off_floor_wording():
+    """A model that cannot disable thinking gets the floor wording on "off",
+    and supported levels drop the generic clamp prose."""
+    state = WizardState(provider="anthropic", model="claude-fable-5")
+    choices = annotated_effort_choices(state)
+    assert [c.value for c in choices] == [
+        c.value for c in tuning_catalog.EFFORT_CHOICES
+    ]
+    off = _choice(choices, "off")
+    assert off.label == "Off (runs at Low)"
+    assert "claude-fable-5 cannot disable thinking; runs at Low." in off.description
+    # xhigh is supported on fable-5: plain label, no generic fallback prose.
+    xhigh = _choice(choices, "xhigh")
+    assert xhigh.label == "Extra high"
+    assert "fall back" not in xhigh.description
+
+
+def test_annotated_choices_mid_ladder_clamps_up():
+    """An xhigh ask on a model whose ladder tops out differently shows the
+    real clamp target (sonnet-4-6 runs xhigh at max)."""
+    state = WizardState(provider="anthropic", model="claude-sonnet-4-6")
+    choices = annotated_effort_choices(state)
+    xhigh = _choice(choices, "xhigh")
+    assert xhigh.label == "Extra high (runs at Max)"
+    assert "Not supported by claude-sonnet-4-6; runs at Max." in xhigh.description
+    assert _choice(choices, "max").label == "Max"
+    assert _choice(choices, "medium").label == "Medium (recommended)"
+
+
+def test_annotated_choices_unknown_model_uses_conservative_ladder():
+    """Unknown models annotate from the same conservative ladder the runtime
+    clamp uses, so the preview stays wire-honest."""
+    state = WizardState(provider="acme", model="wizard-1")
+    choices = annotated_effort_choices(state)
+    assert _choice(choices, "xhigh").label == "Extra high (runs at High)"
+    assert _choice(choices, "max").label == "Max (runs at High)"
+    assert _choice(choices, "off").label == "Off"
+
+
+def test_cliproxy_branch_resolves_catalog_default_model():
+    """First-run CLIProxy branch: provider/model come from the catalog spec
+    (state.provider is filled only at finalize), matching what finalize
+    writes and the runtime clamps."""
+    from nymeria.onboarding import ProviderAuthMethod
+
+    state = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH, cliproxy_provider="codex"
+    )
+    assert effort_ladder_note(state) == (
+        "gpt-5.5 supports Off, Low, Medium, High, Extra high."
+    )
+    choices = annotated_effort_choices(state)
+    assert _choice(choices, "max").label == "Max (runs at Extra high)"
+    # A model picked on the cliproxy model step wins over the catalog default.
+    state.model = "claude-opus-4-7"
+    state.cliproxy_provider = "claude"
+    assert effort_ladder_note(state) == (
+        "claude-opus-4-7 supports Off, Low, Medium, High, Extra high, Max."
+    )
+    # Every level is supported: no clamp suffix anywhere.
+    assert all(
+        "(runs at" not in c.label for c in annotated_effort_choices(state)
+    )
+
+
+def test_cliproxy_branch_wins_over_stale_hydrated_provider():
+    """A hydrated provider from a previous install must not leak into the
+    preview when the active branch is CLIProxy: _apply_cliproxy_route
+    overwrites the provider unconditionally at finalize, so the preview
+    does too."""
+    from nymeria.onboarding import ProviderAuthMethod
+
+    state = WizardState(
+        provider="deepseek",
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH,
+        cliproxy_provider="claude",
+    )
+    # anthropic/claude-opus-4-7 supports all six levels; the stale deepseek
+    # provider's wire ladder (off/high/max) must not shape the preview.
+    assert effort_ladder_note(state) == (
+        "claude-opus-4-7 supports Off, Low, Medium, High, Extra high, Max."
+    )
+    assert all(
+        "runs at" not in c.label for c in annotated_effort_choices(state)
+    )
+
+
+def test_recommended_marker_merges_with_clamp_note():
+    """When the recommended level itself clamps, the two markers share one
+    parenthetical instead of stacking."""
+    state = WizardState(provider="deepseek", model="deepseek-reasoner")
+    choices = annotated_effort_choices(state)
+    assert _choice(choices, "medium").label == "Medium (recommended, runs at High)"
+    assert _choice(choices, "low").label == "Low (runs at High)"
+
+
+def test_api_key_path_falls_back_to_registry_default_model():
+    """Blank model mirrors finalize: the registry spec's default model is
+    what gets written, so it is what gets annotated."""
+    state = WizardState(provider="anthropic")
+    note = effort_ladder_note(state)
+    assert note is not None and note.startswith("claude-sonnet-4-6 supports ")
+
+
+def test_review_summary_includes_clamp_note():
+    state = WizardState(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        extras={"llm_effort": "xhigh"},
+    )
+    lines = tuning_summary_lines(state)
+    assert "Reasoning effort: Extra high (runs at Max)" in lines
+    state.extras["llm_effort"] = "medium"
+    lines = tuning_summary_lines(state)
+    assert "Reasoning effort: Medium (recommended)" in lines
+    assert not any("runs at" in line for line in lines)
+
+
+def test_capability_lookup_failure_fails_open(monkeypatch):
+    """A capability-table exception must never break the wizard: the generic
+    catalog and an unannotated review line are the fallback."""
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("capability table unavailable")
+
+    monkeypatch.setattr(
+        "nymeria.config.model_capabilities.supported_reasoning_efforts", _boom
+    )
+    monkeypatch.setattr(
+        "nymeria.config.model_capabilities.clamp_reasoning_effort", _boom
+    )
+    state = WizardState(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        extras={"llm_effort": "xhigh"},
+    )
+    assert annotated_effort_choices(state) is tuning_catalog.EFFORT_CHOICES
+    assert effort_ladder_note(state) is None
+    assert effective_effort_for_state(state, "xhigh") is None
+    assert "Reasoning effort: Extra high" in tuning_summary_lines(state)
+
+
+def test_effort_labels_derive_from_plain_labels():
+    """Drift guard: every choice label is the plain label plus the
+    "(recommended)" marker on exactly the recommended level."""
+    for choice in tuning_catalog.EFFORT_CHOICES:
+        plain = plain_effort_label(choice.value)
+        if choice.value == tuning_catalog.RECOMMENDED_EFFORT:
+            assert choice.label == f"{plain} (recommended)"
+        else:
+            assert choice.label == plain
+    assert plain_effort_label("bananas") == "bananas"

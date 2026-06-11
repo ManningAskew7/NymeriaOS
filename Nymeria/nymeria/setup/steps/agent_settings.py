@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
@@ -27,6 +28,8 @@ from ..tuning_catalog import (
     SAMPLING_FIELDS,
     TuningChoice,
     TuningField,
+    annotated_effort_choices,
+    effort_ladder_note,
     parse_field,
 )
 from .base import CircleRadioButton, FormStep
@@ -66,8 +69,10 @@ class _TuningFormStep(FormStep):
         if focused in buttons:
             i = buttons.index(focused)  # type: ignore[arg-type]
             if 0 <= i < len(self._choices):
+                # Annotated effort descriptions carry the raw model id, which
+                # is user-typed and must not be parsed as markup.
                 self.query_one("#choice-desc", Static).update(
-                    self._choices[i].description
+                    escape(self._choices[i].description)
                 )
 
     def _selected_choice(self) -> str | None:
@@ -195,9 +200,16 @@ class _LLMTuningStep(_TuningFormStep):
     _choices = EFFORT_CHOICES
 
     def compose_body(self) -> ComposeResult:
+        # Screens are rebuilt on every forward navigation, so the annotations
+        # always reflect the model picked on the preceding steps (or hydrated
+        # from disk on a section jump).
+        self._choices = annotated_effort_choices(self.state)
         initial = self.state.extras.get("llm_effort")
         if not isinstance(initial, str) or initial not in EFFORT_VALUES:
             initial = RECOMMENDED_EFFORT
+        ladder = effort_ladder_note(self.state)
+        if ladder:
+            yield Static(escape(ladder), classes="field-note")
         yield from self._compose_choices(initial)
         yield Static(
             "Optional sampling overrides. Blank keeps the provider default.",

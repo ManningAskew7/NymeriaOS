@@ -51,8 +51,10 @@ on/off toggle (Alibaba/Qwen, Moonshot, Novita, Together non-effort models)
 advertise just `off` and `medium`, and Anthropic ladders come live from the
 `/v1/models` capabilities tree when available. The thread overview exposes the
 post-clamp value as `reasoning_effort_effective`, `/reasoning` and `/think`
-report "runs at X" when a request was clamped, and the status bar shows the
-effective `thinking: <effort>`.
+report "runs at X" when a request was clamped, the status bar shows the
+effective `thinking: <effort>`, and the `nymeria init` model-tuning step
+shows the configured model's supported ladder and annotates clamped levels
+with their effective target.
 
 ## Wire formats by provider
 
