@@ -773,7 +773,7 @@
     padding: 0.4rem 0.6rem;
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
-    animation: fadeIn var(--transition-normal);
+    animation: dropIn var(--transition-normal);
   }
 
   .test-ok {
@@ -797,7 +797,8 @@
     font-size: var(--font-size-xs);
   }
 
-  @keyframes fadeIn {
+  /* Intentional variant of the global fadeIn: drops in 4px from above. */
+  @keyframes dropIn {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
   }
@@ -893,7 +894,7 @@
     gap: 0.4rem;
     font-size: var(--font-size-xs);
     color: var(--error);
-    animation: fadeIn var(--transition-normal);
+    animation: dropIn var(--transition-normal);
   }
 
   .expand-chevron {

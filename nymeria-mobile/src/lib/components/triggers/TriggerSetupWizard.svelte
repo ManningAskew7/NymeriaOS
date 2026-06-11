@@ -662,15 +662,12 @@
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-    animation: slideUp var(--transition-normal);
+    animation: wizardUp var(--transition-normal);
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
+  /* Intentional variant of the global slideUp: 12px rise instead of 10px.
+     The overlay's fadeIn comes from the global app.css keyframes. */
+  @keyframes wizardUp {
     from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: translateY(0); }
   }
