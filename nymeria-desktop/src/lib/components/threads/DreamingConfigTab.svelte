@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button } from '$lib/components/common';
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
 
   /**
@@ -111,15 +112,14 @@
     {/if}
 
     <div class="dream-actions">
-      <button
-        class="btn btn-primary"
-        type="button"
+      <Button
+        variant="primary"
         onclick={onRunDream}
         disabled={runDisabled}
         title={hasUnsavedChanges ? 'Save changes before running a dream' : 'Run dream now'}
       >
         {dreamRunning ? 'Starting…' : 'Run Dream'}
-      </button>
+      </Button>
       {#if dreamStatus}
         <span class="dream-status">{dreamStatus}</span>
       {/if}
@@ -259,19 +259,4 @@
     color: var(--text-muted);
   }
 
-  .btn {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-  }
-  .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
 </style>

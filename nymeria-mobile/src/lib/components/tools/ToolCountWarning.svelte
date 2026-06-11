@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button } from '$lib/components/common';
   import { trapFocus } from '$lib/actions/focus';
 
   interface Props {
@@ -40,12 +41,12 @@
       Consider creating specialized callable threads to keep each thread's tool list focused.
     </p>
     <div class="warning-actions">
-      <button class="btn btn-secondary" onclick={onGoBack} type="button">
+      <Button variant="secondary" onclick={onGoBack}>
         Go Back
-      </button>
-      <button class="btn btn-primary" onclick={onContinue} type="button">
+      </Button>
+      <Button variant="primary" onclick={onContinue}>
         Save Anyway
-      </button>
+      </Button>
     </div>
   </div>
 </div>
@@ -113,33 +114,4 @@
     justify-content: center;
   }
 
-  .btn {
-    padding: var(--spacing-sm) var(--spacing-lg);
-    font-size: var(--font-size-base);
-    font-weight: 500;
-    border-radius: var(--radius-md);
-    min-height: var(--touch-target-min);
-    min-width: 120px;
-  }
-
-  .btn-secondary {
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-
-  .btn-secondary:active {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-  }
-
-  .btn-primary:active {
-    filter: brightness(0.9);
-  }
 </style>

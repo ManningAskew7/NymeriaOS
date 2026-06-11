@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
+  import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import MCPServerPanel from './MCPServerPanel.svelte';
 
@@ -102,22 +103,12 @@
 
   {#if defaultToolsStore.loaded}
     <div class="panel-footer panel-footer-pinned">
-      <button
-        class="btn btn-ghost"
-        onclick={discardChanges}
-        disabled={defaultToolsStore.saving || !hasChanges}
-        type="button"
-      >
+      <Button variant="ghost" onclick={discardChanges} disabled={defaultToolsStore.saving || !hasChanges}>
         Discard Changes
-      </button>
-      <button
-        class="btn btn-primary"
-        onclick={handleSave}
-        disabled={defaultToolsStore.saving || !hasChanges}
-        type="button"
-      >
+      </Button>
+      <Button variant="primary" onclick={handleSave} disabled={defaultToolsStore.saving || !hasChanges}>
         {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
-      </button>
+      </Button>
     </div>
 
     {#if saveMessage}
@@ -218,34 +209,6 @@
     /* No border / background — buttons float against whatever sits behind
        the panel so the bar doesn't read as a separate dark strip. */
     background: transparent;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 34px;
-    padding: 0.45rem 0.85rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-  }
-
-  .btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
-  .btn-ghost {
-    color: var(--text-secondary);
-    background: transparent;
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
   }
 
   .save-message {

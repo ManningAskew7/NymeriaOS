@@ -245,11 +245,9 @@
   }
 
   .new-thread-wrap :global(.btn) {
-    padding: 4px 10px;
-    font-size: var(--font-size-xs);
-    gap: 5px;
     /* Nudge the whole pill (background, + icon, and label) 1px down for
-       optical alignment with neighbouring sidebar elements. */
+       optical alignment with neighbouring sidebar elements. Size stays the
+       component's btn-sm; no token overrides. */
     transform: translateY(1px);
   }
 

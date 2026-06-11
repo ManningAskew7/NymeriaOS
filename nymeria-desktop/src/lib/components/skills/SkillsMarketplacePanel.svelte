@@ -1,6 +1,6 @@
 <script lang="ts">
   import { trapFocus } from '$lib/actions/focus';
-  import { Icon } from '$lib/components/common';
+  import { Button, Icon } from '$lib/components/common';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMarketplaceSource } from '$lib/types';
@@ -136,17 +136,13 @@
             </div>
             <div class="result-actions">
               {#if installed}
-                <button class="btn btn-ghost" disabled type="button">Installed</button>
+                <Button variant="ghost" size="sm" disabled>Installed</Button>
               {:else if pendingState === 'installing'}
-                <button class="btn btn-primary" disabled type="button">Installing…</button>
+                <Button variant="primary" size="sm" disabled>Installing…</Button>
               {:else}
-                <button
-                  class="btn btn-primary"
-                  onclick={() => handleInstall(entry.name)}
-                  type="button"
-                >
+                <Button variant="primary" size="sm" onclick={() => handleInstall(entry.name)}>
                   Install
-                </button>
+                </Button>
               {/if}
             </div>
           </div>
@@ -341,36 +337,4 @@
     flex-shrink: 0;
   }
 
-  .btn {
-    padding: 6px 12px;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    border: 1px solid transparent;
-  }
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-
-  .btn-ghost {
-    color: var(--text-muted);
-    background: transparent;
-    border-color: var(--border-default);
-  }
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
 </style>

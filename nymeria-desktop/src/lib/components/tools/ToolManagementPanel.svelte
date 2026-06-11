@@ -627,22 +627,12 @@
   <!-- Pinned footer: Save/Reset for the default-tools selection -->
   {#if defaultToolsStore.loaded}
     <div class="panel-footer panel-footer-pinned">
-      <button
-        class="btn btn-ghost"
-        onclick={handleReset}
-        disabled={defaultToolsStore.saving}
-        type="button"
-      >
+      <Button variant="ghost" onclick={handleReset} disabled={defaultToolsStore.saving}>
         Reset to NymeriaOS Defaults
-      </button>
-      <button
-        class="btn btn-primary"
-        onclick={handleSave}
-        disabled={defaultToolsStore.saving || !hasChanges}
-        type="button"
-      >
+      </Button>
+      <Button variant="primary" onclick={handleSave} disabled={defaultToolsStore.saving || !hasChanges}>
         {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
-      </button>
+      </Button>
     </div>
 
     {#if saveMessage}
@@ -1218,41 +1208,6 @@
     flex-shrink: 0;
     padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-sm) 0;
     margin-top: 0;
-  }
-
-  .btn {
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-ghost {
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border-default);
-  }
-
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .btn-primary {
-    color: var(--text-on-accent);
-    background: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.1);
   }
 
   .save-message {

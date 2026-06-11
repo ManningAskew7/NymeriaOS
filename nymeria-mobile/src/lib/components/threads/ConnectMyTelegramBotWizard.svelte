@@ -364,7 +364,7 @@
   }
 
   .action-btn {
-    padding: 12px 20px;
+    padding: 12px 16px;
     min-height: var(--touch-target-min);
     border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
@@ -375,13 +375,17 @@
   }
 
   .action-btn.primary {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border-color: var(--border-subtle);
+    background: var(--accent-primary);
+    color: var(--text-on-accent);
+    border-color: var(--accent-primary);
   }
 
   .action-btn:active:not(:disabled) {
     background: var(--bg-hover);
+  }
+
+  .action-btn.primary:active:not(:disabled) {
+    background: var(--accent-hover);
   }
 
   .action-btn:disabled {
