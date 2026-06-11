@@ -1606,25 +1606,31 @@ In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TTS_PROVIDER` | `none` | TTS provider: `none`, `cartesia`, `gemini`, `openai`, `qwen3` |
-| `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini or Cartesia. Defaults: OpenAI=`https://api.openai.com/v1`, Qwen3=`http://localhost:8880/v1` |
-| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for OpenAI/Qwen3 TTS. Gemini uses `GEMINI_API_KEY`; Cartesia requires `TTS_API_KEY` set to a Cartesia key |
-| `TTS_MODEL` | `tts-1-hd` | Model name. Cartesia: `sonic-3`; Gemini: `gemini-3.1-flash-tts-preview`; OpenAI: `tts-1` / `tts-1-hd` |
-| `TTS_VOICE` | `nova` | Voice identifier. Cartesia uses a voice UUID from play.cartesia.ai; Gemini: `Kore`, `Puck`, `Charon`, `Algenib`, `Leda`, `Orus`, `Zephyr` (30 total). OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` |
-| `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini and Cartesia return MP3 |
-| `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0; Cartesia clamps to 0.6-1.5; not applicable for Gemini |
-| `STT_PROVIDER` | `none` | STT provider: `none`, `openai`, `faster-whisper` |
-| `STT_BASE_URL` | (per provider) | STT API base URL |
-| `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for STT |
-| `STT_MODEL` | `gpt-4o-mini-transcribe` | STT model name |
+| `TTS_PROVIDER` | `none` | TTS provider: `none`, `openai`, `kokoro` (local), `qwen3` (local GPU), `gemini`, `cartesia`, `elevenlabs`, `edge` (free, keyless) |
+| `TTS_BASE_URL` | (per provider) | TTS API base URL. Not used for Gemini, Cartesia, ElevenLabs, or Edge. OpenAI defaults to `https://api.openai.com/v1`; `kokoro` unset runs in-process (`nymeriaos[voice-local]` extra), set it to use the speaches sidecar (`http://speaches:8000/v1` in the Docker stack); `qwen3` defaults to `http://localhost:8880/v1` |
+| `TTS_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted TTS. Gemini uses `GEMINI_API_KEY`; Cartesia and ElevenLabs require `TTS_API_KEY` set to their own key. Local providers (kokoro, qwen3) need no key |
+| `TTS_MODEL` | (per provider) | Defaults when unset: OpenAI `gpt-4o-mini-tts`; Cartesia `sonic-3.5`; ElevenLabs `eleven_flash_v2_5`; Gemini `gemini-3.1-flash-tts-preview`; Qwen3 `Qwen3-TTS-0.6B`; kokoro via speaches `speaches-ai/Kokoro-82M-v1.0-ONNX` |
+| `TTS_VOICE` | (per provider) | Defaults when unset: OpenAI `nova` (also `alloy`, `echo`, `fable`, `onyx`, `shimmer`); kokoro `af_heart`; Gemini `Kore` (also `Puck`, `Charon`, 30 total); Edge `en-US-AriaNeural`; ElevenLabs Rachel. Cartesia has no default: set a voice UUID from play.cartesia.ai |
+| `TTS_OUTPUT_FORMAT` | `mp3` | Output format: mp3, wav, opus, aac. Gemini, Cartesia, and Edge always return MP3 |
+| `TTS_SPEED` | `1.0` | Playback speed 0.25-4.0; Cartesia clamps to 0.6-1.5, ElevenLabs to 0.7-1.2, Edge to 0.5-2.0; not applicable for Gemini, and OpenAI's `gpt-4o-mini-tts` accepts but ignores it |
+| `STT_PROVIDER` | `none` | STT provider: `none`, `openai`, `groq`, `faster-whisper` (local) |
+| `STT_BASE_URL` | (per provider) | STT API base URL. `faster-whisper` unset runs in-process (`nymeriaos[voice-local]` extra), set it to use the speaches sidecar |
+| `STT_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for hosted STT. Groq also reads `GROQ_API_KEY`. Local faster-whisper needs no key |
+| `GROQ_API_KEY` | - | Groq key (STT at roughly $0.04 per audio hour; shared with the Groq LLM provider) |
+| `STT_MODEL` | (per provider) | Defaults when unset: OpenAI `gpt-4o-mini-transcribe`; Groq `whisper-large-v3-turbo`; in-process faster-whisper `small` (CPU-sized); via speaches `Systran/faster-whisper-small` |
 | `STT_LANGUAGE` | - | Language hint (ISO 639-1, e.g., `en`) |
 | `VOICE_DEFAULT_THREAD_ID` | - | Default thread for voice/watch interactions (falls back to `watch-default`) |
 
-The optional local voice Docker profile publishes `qwen3-tts` and
-`faster-whisper` on `127.0.0.1` only. Operators must set
-`QWEN3_TTS_IMAGE` and `FASTER_WHISPER_IMAGE` to digest-pinned image
-references (`repo@sha256:...`) before starting `--profile voice`; the compose
-defaults are invalid placeholders to avoid pulling mutable `:latest` images.
+Local voice has two shapes. Bare-metal installs run the engines in-process via
+the `nymeriaos[voice-local]` extra (kokoro-onnx + faster-whisper, CPU-friendly;
+model weights download on first use into `data/voice/`). The Docker full stack
+runs the `speaches` sidecar instead (`--profile voice`, digest-pinned CPU
+image, published on `127.0.0.1:8970` only): one container serves both
+faster-whisper STT and Kokoro TTS over OpenAI-compatible endpoints, and the
+init wizard points `TTS_BASE_URL`/`STT_BASE_URL` at it. Pull its models once
+with `uvx speaches-cli` (see the compose comments). The GPU-tier `qwen3-tts`
+sidecar moved to `--profile voice-gpu` and still requires an operator-pinned
+`QWEN3_TTS_IMAGE` digest (the compose default is an invalid placeholder).
 
 **Gemini TTS** requires `GEMINI_API_KEY` (also used for document extraction). Supports 200+ inline audio tags for expressive speech  -  e.g., `[whispers]`, `[excitedly]`, `[sighs]`. See [Gemini TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
 

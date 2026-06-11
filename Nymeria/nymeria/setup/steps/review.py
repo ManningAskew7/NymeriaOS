@@ -80,9 +80,16 @@ def _summary_markup(state: WizardState) -> str:
     seeded = seeded_tool_names(state)
     if seeded:
         tool_lines.append(f"Picked backends: {', '.join(seeded)}")
+    from ..tool_keys import VOICE_KEY_SPECS
+
     collected_keys = [
         spec.env_var
         for spec in BACKEND_KEY_SPECS.values()
+        if state.optional_env.get(spec.env_var)
+    ] + [
+        spec.env_var
+        for specs in VOICE_KEY_SPECS.values()
+        for spec in specs
         if state.optional_env.get(spec.env_var)
     ]
     if collected_keys:
@@ -95,14 +102,17 @@ def _summary_markup(state: WizardState) -> str:
     kits = seeded_global_skills(state)
     if kits:
         tool_lines.append(f"Skill kits: {', '.join(kits)} (self-improve stays on)")
-    placeholder_caps = [
-        ("TTS", state.extras.get("tts")),
-        ("STT", state.extras.get("stt")),
-        ("Agent settings", state.extras.get("agent_settings")),
-    ]
-    for name, value in placeholder_caps:
-        if value and value != "__skip__":
-            tool_lines.append(f"{name}: {value}")
+    from .. import voice_catalog
+
+    for name, value, label_fn in (
+        ("TTS", state.extras.get("tts"), voice_catalog.tts_label),
+        ("STT", state.extras.get("stt"), voice_catalog.stt_label),
+    ):
+        if isinstance(value, str) and value not in ("__skip__", "none"):
+            tool_lines.append(f"{name}: {label_fn(value)}")
+    agent_settings = state.extras.get("agent_settings")
+    if agent_settings and agent_settings != "__skip__":
+        tool_lines.append(f"Agent settings: {agent_settings}")
     lines.append("")
     lines.append("[bold]Tools and capabilities[/bold]")
     for line in tool_lines:

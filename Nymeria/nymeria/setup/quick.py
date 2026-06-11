@@ -111,6 +111,11 @@ SECTION_DEPENDENCIES: dict[str, frozenset[str]] = {
     "web_search": frozenset({"web_search", "backend_keys"}),
     "fetch_url": frozenset({"fetch_url", "backend_keys"}),
     "image_gen": frozenset({"image_gen", "backend_keys"}),
+    # Voice picks collect their provider key on the keys screen; a scoped
+    # provider switch must be able to re-ask it (the old provider's key is
+    # retired by voice_drop_env).
+    "tts": frozenset({"tts", "backend_keys"}),
+    "stt": frozenset({"stt", "backend_keys"}),
     "embedder": frozenset({"embedder", "reranker"}),
     "reranker": frozenset({"embedder", "reranker"}),
     # The external-access choice gates the guided tailscale/cloudflare setup

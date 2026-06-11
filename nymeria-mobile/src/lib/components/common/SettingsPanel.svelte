@@ -249,13 +249,13 @@
       // Voice
       ttsProvider = serverSettings.tts_provider ?? 'none';
       ttsBaseUrl = serverSettings.tts_base_url ?? '';
-      ttsModel = serverSettings.tts_model ?? 'tts-1-hd';
-      ttsVoice = serverSettings.tts_voice ?? 'nova';
+      ttsModel = serverSettings.tts_model ?? '';
+      ttsVoice = serverSettings.tts_voice ?? '';
       ttsOutputFormat = serverSettings.tts_output_format ?? 'mp3';
       ttsSpeed = serverSettings.tts_speed ?? 1.0;
       sttProvider = serverSettings.stt_provider ?? 'none';
       sttBaseUrl = serverSettings.stt_base_url ?? '';
-      sttModel = serverSettings.stt_model ?? 'gpt-4o-mini-transcribe';
+      sttModel = serverSettings.stt_model ?? '';
       sttLanguage = serverSettings.stt_language ?? '';
       voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
       embeddingProvider = serverSettings.embedding_provider ?? 'openai';
@@ -396,13 +396,14 @@
         // Voice
         tts_provider: ttsProvider,
         tts_base_url: ttsBaseUrl || null,
-        tts_model: ttsModel,
-        tts_voice: ttsVoice,
+        // Blank model/voice = per-provider default on the backend
+        tts_model: ttsModel.trim() || null,
+        tts_voice: ttsVoice.trim() || null,
         tts_output_format: ttsOutputFormat,
         tts_speed: ttsSpeed,
         stt_provider: sttProvider,
         stt_base_url: sttBaseUrl || null,
-        stt_model: sttModel,
+        stt_model: sttModel.trim() || null,
         stt_language: sttLanguage || null,
         voice_default_thread_id: voiceDefaultThreadId || null,
         embedding_provider: embeddingProvider,

@@ -109,13 +109,19 @@ def create_voice_router(
         request: Request,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Text-to-Speech: accepts JSON {text: string}, returns audio bytes."""
+        """Text-to-Speech: accepts JSON {text: string, voice_note?: bool}, returns audio bytes.
+
+        ``voice_note: true`` asks for a container chat platforms accept as a
+        voice message (Ogg/Opus or MP3); the response Content-Type tells the
+        caller what it got.
+        """
         from ...core.voice import get_tts_service, VoiceServiceError
 
         body = await request.json()
         text = body.get("text", "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="'text' field is required")
+        voice_note = body.get("voice_note") is True
 
         settings = get_settings_fn()
         try:
@@ -124,7 +130,7 @@ def create_voice_router(
             raise HTTPException(status_code=503, detail=str(e))
 
         try:
-            audio_bytes, content_type = await tts.synthesize(text)
+            audio_bytes, content_type = await tts.synthesize(text, voice_note=voice_note)
         except VoiceServiceError as e:
             raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
 

@@ -3,7 +3,8 @@
 import asyncio
 import io
 import logging
-from typing import Any, Optional, Tuple, Union, cast
+import os
+from typing import Any, Optional, Protocol, Tuple, cast
 
 import httpx
 
@@ -14,9 +15,30 @@ logger = logging.getLogger(__name__)
 # Timeout: 60s for TTS/STT (model inference can take a while)
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
+# Containers Telegram/Discord-style voice messages accept (sendVoice takes
+# OGG/Opus, MP3, M4A). A voice_note=True synthesis must land in this set.
+_VOICE_NOTE_FORMATS = {"mp3", "opus"}
+
 
 class VoiceServiceError(Exception):
     """Raised when a voice service call fails."""
+
+
+class SupportsSynthesize(Protocol):
+    """Common TTS contract: every provider returns (audio_bytes, content_type).
+
+    ``voice_note=True`` asks for a container that chat platforms accept as a
+    voice message (OGG/Opus or MP3); providers that already emit MP3 ignore it.
+    """
+
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]: ...
+
+
+class SupportsTranscribe(Protocol):
+    """Common STT contract: audio bytes in, transcript string out."""
+
+    async def transcribe(self, audio_bytes: bytes, filename: str,
+                         content_type: str = "audio/wav") -> str: ...
 
 
 class TTSService:
@@ -31,33 +53,39 @@ class TTSService:
         self.output_format = output_format
         self.speed = speed
 
-    async def synthesize(self, text: str) -> Tuple[bytes, str]:
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]:
         """Convert text to audio. Returns (audio_bytes, content_type)."""
         url = f"{self.base_url}/audio/speech"
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        output_format = self.output_format
+        if voice_note and output_format not in _VOICE_NOTE_FORMATS:
+            # wav/flac/pcm/aac are rejected as voice messages; mp3 is the safe
+            # request because every OpenAI-compatible server supports it
+            # (speaches, notably, supports mp3/wav but NOT opus).
+            output_format = "mp3"
         payload = {
             "model": self.model,
             "input": text,
             "voice": self.voice,
-            "response_format": self.output_format,
+            "response_format": output_format,
             "speed": self.speed,
         }
 
         format_to_mime = {
             "mp3": "audio/mpeg",
             "wav": "audio/wav",
-            "opus": "audio/opus",
+            "opus": "audio/ogg",
             "aac": "audio/aac",
             "flac": "audio/flac",
             "pcm": "audio/pcm",
         }
-        content_type = format_to_mime.get(self.output_format, "audio/mpeg")
+        content_type = format_to_mime.get(output_format, "audio/mpeg")
 
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             try:
                 resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
-                logger.info(f"TTS synthesized {len(resp.content)} bytes ({self.output_format})")
+                logger.info(f"TTS synthesized {len(resp.content)} bytes ({output_format})")
                 return resp.content, content_type
             except httpx.HTTPStatusError as e:
                 detail = e.response.text[:500] if e.response else str(e)
@@ -138,8 +166,11 @@ class GeminiTTSService:
         logger.debug(f"Gemini TTS returned {len(audio_part.inline_data.data)} bytes, mime={mime}")
         return audio_part.inline_data.data, mime
 
-    async def synthesize(self, text: str) -> Tuple[bytes, str]:
-        """Convert text to MP3 audio. Returns (audio_bytes, content_type)."""
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]:
+        """Convert text to MP3 audio. Returns (audio_bytes, content_type).
+
+        Always MP3, which is voice-note compatible, so ``voice_note`` is moot.
+        """
         try:
             raw_bytes, mime_type = await asyncio.to_thread(self._generate, text)
         except VoiceServiceError:
@@ -147,7 +178,11 @@ class GeminiTTSService:
         except Exception as e:
             raise VoiceServiceError(f"Gemini TTS failed: {e}")
 
-        mp3_bytes = _audio_to_mp3(raw_bytes, mime_type)
+        try:
+            # pydub blocks on an ffmpeg subprocess; keep it off the event loop.
+            mp3_bytes = await asyncio.to_thread(_audio_to_mp3, raw_bytes, mime_type)
+        except Exception as e:
+            raise VoiceServiceError(f"Gemini TTS audio conversion failed (is ffmpeg installed?): {e}")
         logger.info(f"TTS synthesized {len(mp3_bytes)} bytes (mp3 from Gemini {mime_type})")
         return mp3_bytes, "audio/mpeg"
 
@@ -164,8 +199,11 @@ class CartesiaTTSService:
         self.voice = voice
         self.speed = max(0.6, min(1.5, speed))
 
-    async def synthesize(self, text: str) -> Tuple[bytes, str]:
-        """Convert text to MP3 audio. Returns (audio_bytes, content_type)."""
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]:
+        """Convert text to MP3 audio. Returns (audio_bytes, content_type).
+
+        Always MP3, which is voice-note compatible, so ``voice_note`` is moot.
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Cartesia-Version": self._API_VERSION,
@@ -196,6 +234,80 @@ class CartesiaTTSService:
                 raise VoiceServiceError(f"Cartesia TTS failed ({e.response.status_code}): {detail}")
             except httpx.RequestError as e:
                 raise VoiceServiceError(f"Cartesia TTS connection error: {e}")
+
+
+class ElevenLabsTTSService:
+    """Text-to-Speech via the ElevenLabs REST API.
+
+    Emits Ogg/Opus for voice notes (native support) and MP3 otherwise.
+    """
+
+    _BASE_URL = "https://api.elevenlabs.io/v1"
+
+    def __init__(self, api_key: str, model: str, voice: str, speed: float = 1.0):
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+        # ElevenLabs voice_settings.speed accepts 0.7-1.2
+        self.speed = max(0.7, min(1.2, speed))
+
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]:
+        """Convert text to audio. Returns (audio_bytes, content_type)."""
+        url = f"{self._BASE_URL}/text-to-speech/{self.voice}"
+        headers = {"xi-api-key": self.api_key, "Content-Type": "application/json"}
+        params = {"output_format": "opus_48000_64" if voice_note else "mp3_44100_128"}
+        payload: dict[str, Any] = {"text": text, "model_id": self.model}
+        if self.speed != 1.0:
+            payload["voice_settings"] = {"speed": self.speed}
+
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            try:
+                resp = await client.post(url, json=payload, params=params, headers=headers)
+                resp.raise_for_status()
+                content_type = "audio/ogg" if voice_note else "audio/mpeg"
+                logger.info(f"TTS synthesized {len(resp.content)} bytes ({params['output_format']} via ElevenLabs)")
+                return resp.content, content_type
+            except httpx.HTTPStatusError as e:
+                detail = e.response.text[:500] if e.response else str(e)
+                raise VoiceServiceError(f"ElevenLabs TTS failed ({e.response.status_code}): {detail}")
+            except httpx.RequestError as e:
+                raise VoiceServiceError(f"ElevenLabs TTS connection error: {e}")
+
+
+class EdgeTTSService:
+    """Text-to-Speech via Microsoft Edge's neural voices (edge-tts package).
+
+    Free and keyless, but an unofficial endpoint: useful as a zero-config
+    default, not something to depend on contractually. Always returns MP3.
+    """
+
+    def __init__(self, voice: str, speed: float = 1.0):
+        self.voice = voice
+        # edge-tts expresses speed as a signed percentage rate offset.
+        clamped = max(0.5, min(2.0, speed))
+        self._rate = f"{int(round((clamped - 1.0) * 100)):+d}%"
+
+    async def synthesize(self, text: str, *, voice_note: bool = False) -> Tuple[bytes, str]:
+        """Convert text to MP3 audio. Returns (audio_bytes, content_type)."""
+        try:
+            import edge_tts  # pyrefly: ignore[missing-import]
+        except ImportError:
+            raise VoiceServiceError("Edge TTS selected but the edge-tts package is not installed (pip install edge-tts).")
+
+        buf = io.BytesIO()
+        try:
+            communicate = edge_tts.Communicate(text, self.voice, rate=self._rate)
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    buf.write(chunk["data"])
+        except Exception as e:
+            raise VoiceServiceError(f"Edge TTS failed: {e}")
+
+        audio = buf.getvalue()
+        if not audio:
+            raise VoiceServiceError("Edge TTS returned no audio")
+        logger.info(f"TTS synthesized {len(audio)} bytes (mp3 via Edge)")
+        return audio, "audio/mpeg"
 
 
 class STTService:
@@ -234,10 +346,18 @@ class STTService:
                 raise VoiceServiceError(f"STT connection error: {e}")
 
 
-def _resolve_api_key(provider_key: Optional[str], settings: Settings) -> str:
-    """Resolve API key: use provider-specific key, fall back to OpenAI key."""
+def _resolve_api_key(provider_key: Optional[str], settings: Settings,
+                     *, keyless_ok: bool = False) -> str:
+    """Resolve API key: provider-specific key, then the OpenAI key.
+
+    Local sidecars (speaches, qwen3) ignore the bearer token, so ``keyless_ok``
+    providers get a placeholder when no provider key is set; never forward the
+    real OpenAI key to a local sidecar.
+    """
     if provider_key:
         return provider_key
+    if keyless_ok:
+        return "local"
     if settings.openai_api_key:
         return settings.openai_api_key
     raise VoiceServiceError("No API key configured for voice service. Set TTS_API_KEY/STT_API_KEY or OPENAI_API_KEY.")
@@ -260,58 +380,138 @@ _TTS_URL_DEFAULTS = {
 
 _STT_URL_DEFAULTS = {
     "openai": "https://api.openai.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
     "faster-whisper": "http://localhost:8003/v1",
 }
 
+# Per-provider model/voice defaults, applied when TTS_MODEL / TTS_VOICE /
+# STT_MODEL are unset. The kokoro and faster-whisper entries are the speaches
+# sidecar ids (HTTP path); the in-process path has its own defaults in
+# voice_local.py. Cartesia has no default voice on purpose: its voices are
+# account-scoped UUIDs from play.cartesia.ai.
+_TTS_MODEL_DEFAULTS = {
+    "openai": "gpt-4o-mini-tts",
+    "kokoro": "speaches-ai/Kokoro-82M-v1.0-ONNX",
+    "qwen3": "Qwen3-TTS-0.6B",
+    "gemini": "gemini-3.1-flash-tts-preview",
+    "cartesia": "sonic-3.5",
+    "elevenlabs": "eleven_flash_v2_5",
+}
+_TTS_VOICE_DEFAULTS = {
+    "openai": "nova",
+    "kokoro": "af_heart",
+    "qwen3": "default",
+    "gemini": "Kore",
+    "elevenlabs": "21m00Tcm4TlvDq8ikWAM",  # Rachel
+    "edge": "en-US-AriaNeural",
+}
+_STT_MODEL_DEFAULTS = {
+    "openai": "gpt-4o-mini-transcribe",
+    "groq": "whisper-large-v3-turbo",
+    "faster-whisper": "Systran/faster-whisper-small",
+}
 
-def get_tts_service(settings: Settings) -> Union[TTSService, GeminiTTSService, CartesiaTTSService]:
+
+def get_tts_service(settings: Settings) -> SupportsSynthesize:
     """Build a TTS service from current settings. Raises VoiceServiceError if not configured."""
-    if settings.tts_provider == "none":
+    provider = settings.tts_provider
+    if provider == "none":
         raise VoiceServiceError("TTS is not configured. Set TTS_PROVIDER in settings.")
 
-    if settings.tts_provider == "gemini":
+    model = settings.tts_model or _TTS_MODEL_DEFAULTS.get(provider, "")
+    voice = settings.tts_voice or _TTS_VOICE_DEFAULTS.get(provider, "")
+
+    if provider == "gemini":
         if not settings.gemini_api_key:
             raise VoiceServiceError("GEMINI_API_KEY is required for Gemini TTS provider.")
         return GeminiTTSService(
             api_key=settings.gemini_api_key,
-            model=settings.tts_model,
-            voice=settings.tts_voice,
+            model=model,
+            voice=voice,
         )
 
-    if settings.tts_provider == "cartesia":
+    if provider == "cartesia":
         if not settings.tts_api_key:
             raise VoiceServiceError("TTS_API_KEY is required for Cartesia TTS provider (set to your Cartesia API key).")
+        if not voice:
+            raise VoiceServiceError("TTS_VOICE is required for Cartesia (a voice UUID from play.cartesia.ai).")
         return CartesiaTTSService(
             api_key=settings.tts_api_key,
-            model=settings.tts_model,
-            voice=settings.tts_voice,
+            model=model,
+            voice=voice,
             speed=settings.tts_speed,
         )
 
-    base_url = _resolve_base_url(settings.tts_provider, settings.tts_base_url, _TTS_URL_DEFAULTS)
-    api_key = _resolve_api_key(settings.tts_api_key, settings)
+    if provider == "elevenlabs":
+        if not settings.tts_api_key:
+            raise VoiceServiceError("TTS_API_KEY is required for ElevenLabs TTS (set to your ElevenLabs API key).")
+        return ElevenLabsTTSService(
+            api_key=settings.tts_api_key,
+            model=model,
+            voice=voice,
+            speed=settings.tts_speed,
+        )
+
+    if provider == "edge":
+        return EdgeTTSService(voice=voice, speed=settings.tts_speed)
+
+    if provider == "kokoro" and not settings.tts_base_url:
+        # No sidecar URL: run Kokoro in-process (nymeriaos[voice-local] extra).
+        from .voice_local import LocalKokoroTTSService
+
+        return LocalKokoroTTSService(
+            voice=voice,
+            speed=settings.tts_speed,
+            models_dir=settings.data_dir / "voice",
+        )
+
+    # openai / qwen3 / kokoro-with-base-url: OpenAI-compatible HTTP.
+    base_url = _resolve_base_url(provider, settings.tts_base_url, _TTS_URL_DEFAULTS)
+    api_key = _resolve_api_key(
+        settings.tts_api_key, settings, keyless_ok=provider in ("qwen3", "kokoro")
+    )
 
     return TTSService(
         base_url=base_url,
         api_key=api_key,
-        model=settings.tts_model,
-        voice=settings.tts_voice,
+        model=model,
+        voice=voice,
         output_format=settings.tts_output_format,
         speed=settings.tts_speed,
     )
 
 
-def get_stt_service(settings: Settings) -> STTService:
-    """Build an STTService from current settings. Raises VoiceServiceError if not configured."""
-    if settings.stt_provider == "none":
+def get_stt_service(settings: Settings) -> SupportsTranscribe:
+    """Build an STT service from current settings. Raises VoiceServiceError if not configured."""
+    provider = settings.stt_provider
+    if provider == "none":
         raise VoiceServiceError("STT is not configured. Set STT_PROVIDER in settings.")
 
-    base_url = _resolve_base_url(settings.stt_provider, settings.stt_base_url, _STT_URL_DEFAULTS)
-    api_key = _resolve_api_key(settings.stt_api_key, settings)
+    if provider == "faster-whisper" and not settings.stt_base_url:
+        # No sidecar URL: run whisper in-process (nymeriaos[voice-local] extra).
+        from .voice_local import LocalFasterWhisperSTTService
+
+        return LocalFasterWhisperSTTService(
+            model=settings.stt_model or "",
+            language=settings.stt_language,
+            download_root=settings.data_dir / "voice" / "whisper",
+        )
+
+    base_url = _resolve_base_url(provider, settings.stt_base_url, _STT_URL_DEFAULTS)
+    if provider == "groq":
+        # Prefer the shared Groq key (also used by the LLM registry); the env
+        # fallback covers shells where only GROQ_API_KEY is exported.
+        api_key = settings.stt_api_key or settings.groq_api_key or os.environ.get("GROQ_API_KEY") or ""
+        if not api_key:
+            raise VoiceServiceError("STT_API_KEY or GROQ_API_KEY is required for Groq STT.")
+    else:
+        api_key = _resolve_api_key(
+            settings.stt_api_key, settings, keyless_ok=provider == "faster-whisper"
+        )
 
     return STTService(
         base_url=base_url,
         api_key=api_key,
-        model=settings.stt_model,
+        model=settings.stt_model or _STT_MODEL_DEFAULTS.get(provider, ""),
         language=settings.stt_language,
     )

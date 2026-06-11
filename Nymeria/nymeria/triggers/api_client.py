@@ -139,7 +139,11 @@ class NymeriaAPIClient:
         params: Optional[dict] = None,
         act_as: Optional[str] = None,
         timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
+        files: Optional[dict] = None,
+        raw: bool = False,
     ) -> Any:
+        """``files`` sends a multipart body; ``raw`` returns the httpx.Response
+        instead of parsed JSON (for binary payloads like TTS audio)."""
         retried = False
         while True:
             attempt_token = self.api_key
@@ -149,6 +153,7 @@ class NymeriaAPIClient:
                 headers=self._headers_for(act_as),
                 json=json_body,
                 params=params,
+                files=files,
                 timeout=timeout,
             )
             try:
@@ -165,6 +170,8 @@ class NymeriaAPIClient:
                     retried = True
                     continue
                 raise
+        if raw:
+            return resp
         if getattr(resp, "status_code", None) == 204:
             return {}
         return resp.json()
@@ -202,6 +209,7 @@ class NymeriaAPIClient:
         user_id: str,
         attachments: Optional[List[Dict[str, Any]]] = None,
         force_unsupported_attachments: bool = False,
+        trigger_override: Optional[str] = None,
     ) -> dict:
         """Send a message and get a response (non-streaming).
 
@@ -225,7 +233,54 @@ class NymeriaAPIClient:
             body["attachments"] = attachments
         if force_unsupported_attachments:
             body["force_unsupported_attachments"] = True
+        if trigger_override:
+            body["trigger_override"] = trigger_override
         return await self._post("/chat/sync", json=body, act_as=user_id)
+
+    # ── Voice ─────────────────────────────────────────────────────────────
+
+    async def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str,
+        user_id: Optional[str] = None,
+    ) -> str:
+        """Transcribe audio via ``POST /voice/stt``. Returns the transcript.
+
+        Raises ``httpx.HTTPStatusError`` on failure; 503 means the backend has
+        no STT provider configured.
+        """
+        data = await self._request(
+            "POST",
+            "/voice/stt",
+            files={"audio": (filename, audio_bytes, content_type)},
+            act_as=user_id,
+            timeout=_CHAT_TIMEOUT,
+        )
+        return (data or {}).get("text", "")
+
+    async def synthesize_speech(
+        self,
+        text: str,
+        voice_note: bool = False,
+        user_id: Optional[str] = None,
+    ) -> "tuple[bytes, str]":
+        """Synthesize speech via ``POST /voice/tts``.
+
+        Returns ``(audio_bytes, content_type)``. ``voice_note=True`` asks for
+        a chat-platform voice-message container (Ogg/Opus or MP3); check the
+        returned content type rather than assuming. 503 means no TTS provider.
+        """
+        resp = await self._request(
+            "POST",
+            "/voice/tts",
+            json_body={"text": text, "voice_note": voice_note},
+            act_as=user_id,
+            timeout=_CHAT_TIMEOUT,
+            raw=True,
+        )
+        return resp.content, resp.headers.get("content-type", "audio/mpeg")
 
     async def chat_stream(
         self,

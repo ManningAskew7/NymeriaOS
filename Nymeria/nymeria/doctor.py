@@ -374,6 +374,23 @@ def _check_voice(settings: Any) -> CheckResult:
             from .core.voice import get_tts_service
 
             get_tts_service(settings)
+            # Providers import their engine lazily on first synthesis, so the
+            # factory succeeds even without the package; check importability here.
+            if settings.tts_provider == "kokoro" and not settings.tts_base_url:
+                from .core.voice_local import INSTALL_HINT, local_tts_importable
+
+                if not local_tts_importable():
+                    raise RuntimeError(f"kokoro-onnx is not installed. {INSTALL_HINT}")
+            if settings.tts_provider == "edge":
+                try:
+                    import edge_tts  # noqa: F401  # pyrefly: ignore[missing-import]
+                except ImportError:
+                    raise RuntimeError("the edge-tts package is not installed (pip install edge-tts)")
+            if settings.tts_provider == "gemini":
+                try:
+                    from google import genai  # noqa: F401
+                except ImportError:
+                    raise RuntimeError("the google-genai package is not installed (pip install google-genai)")
             configured.append(f"TTS={settings.tts_provider}")
         except Exception as exc:  # noqa: BLE001 - diagnostics must report all failures.
             failures.append(f"TTS={settings.tts_provider}: {_compact_error(exc)}")
@@ -383,6 +400,11 @@ def _check_voice(settings: Any) -> CheckResult:
             from .core.voice import get_stt_service
 
             get_stt_service(settings)
+            if settings.stt_provider == "faster-whisper" and not settings.stt_base_url:
+                from .core.voice_local import INSTALL_HINT, local_stt_importable
+
+                if not local_stt_importable():
+                    raise RuntimeError(f"faster-whisper is not installed. {INSTALL_HINT}")
             configured.append(f"STT={settings.stt_provider}")
         except Exception as exc:  # noqa: BLE001 - diagnostics must report all failures.
             failures.append(f"STT={settings.stt_provider}: {_compact_error(exc)}")

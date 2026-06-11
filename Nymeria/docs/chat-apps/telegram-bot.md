@@ -346,6 +346,27 @@ When Nymeria writes a file with `file_write(..., attach=True)`, the bot automati
 
 **Limits:** Files over 50 MB (Telegram bot limit) are silently skipped. Only files within `/workspace/` can be downloaded  -  the API rejects paths outside the workspace directory.
 
+### Voice messages (voice-in, voice-out)
+
+Voice notes and audio files are transcribed through the backend's STT
+(`POST /voice/stt`) and fed into the normal chat pipeline as the message text
+(prepended with the caption when both exist), so thread history reads
+naturally. The agent is told via a trigger note that the message was spoken
+and that its reply will be spoken too.
+
+After the streamed text reply finishes, the bot synthesizes the response
+(`POST /voice/tts` with `voice_note: true`, markdown flattened, capped at
+4000 chars) and sends it with `send_voice`; Ogg/Opus and MP3 render as round
+voice bubbles. If the recipient blocks voice messages or the container is not
+voice-compatible, it falls back to `send_audio`. Voice replies are
+best-effort: a missing TTS provider (HTTP 503) or any send failure never
+degrades the already-delivered text reply.
+
+Requirements and limits: `STT_PROVIDER` must be configured on the backend (the
+bot replies with a setup hint when it is not); `TTS_PROVIDER` is optional and
+only gates the spoken reply. Audio over 20 MB (the Bot API download cap) is
+rejected before download. Other platform bots do not handle voice yet.
+
 ### HTML Formatting
 
 All bot output uses Telegram's HTML parse mode. The bot converts markdown from the AI model to Telegram HTML:

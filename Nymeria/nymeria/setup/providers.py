@@ -45,6 +45,11 @@ OPTIONAL_ENV_ORDER = (
     "BFL_API_KEY",
     "REPLICATE_API_KEY",
     "FAL_API_KEY",
+    # Voice backends (setup/tool_keys.py VOICE_KEY_SPECS). TTS_VOICE is a
+    # non-secret provider voice id (Cartesia UUIDs), like SEARXNG_BASE_URL.
+    "GROQ_API_KEY",
+    "TTS_API_KEY",
+    "TTS_VOICE",
 )
 
 # Tier grouping, mirroring how nymeria-desktop's buildProviderGroups() orders

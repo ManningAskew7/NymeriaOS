@@ -377,19 +377,24 @@ services:
       TEAMS_CHANNEL_ID: ${TEAMS_CHANNEL_ID:-}
       TEAMS_ACCOUNT_ID: ${TEAMS_ACCOUNT_ID:-}
       OUTLOOK_DEFAULT_ACCOUNT_ID: ${OUTLOOK_DEFAULT_ACCOUNT_ID:-}
-      # Voice (TTS/STT)
+      # Voice (TTS/STT). Base URLs default EMPTY on purpose: an unconditional
+      # sidecar default here would hijack hosted providers (an explicit base
+      # URL beats the provider's own default in core/voice.py). The init
+      # wizard writes the speaches/qwen3 sidecar URLs when a local provider is
+      # chosen; models and voices default per provider in code when unset.
       TTS_PROVIDER: ${TTS_PROVIDER:-none}
-      TTS_BASE_URL: ${TTS_BASE_URL:-http://qwen3-tts:8000/v1}
+      TTS_BASE_URL: ${TTS_BASE_URL:-}
       TTS_API_KEY: ${TTS_API_KEY:-}
-      TTS_MODEL: ${TTS_MODEL:-Qwen3-TTS-0.6B}
-      TTS_VOICE: ${TTS_VOICE:-default}
+      TTS_MODEL: ${TTS_MODEL:-}
+      TTS_VOICE: ${TTS_VOICE:-}
       TTS_OUTPUT_FORMAT: ${TTS_OUTPUT_FORMAT:-mp3}
       TTS_SPEED: ${TTS_SPEED:-1.0}
       STT_PROVIDER: ${STT_PROVIDER:-none}
-      STT_BASE_URL: ${STT_BASE_URL:-http://faster-whisper:8000/v1}
+      STT_BASE_URL: ${STT_BASE_URL:-}
       STT_API_KEY: ${STT_API_KEY:-}
-      STT_MODEL: ${STT_MODEL:-large-v3-turbo}
+      STT_MODEL: ${STT_MODEL:-}
       STT_LANGUAGE: ${STT_LANGUAGE:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     volumes:
       - nymeria_data:/data
       - nymeria_workspace:/workspace
@@ -798,20 +803,56 @@ services:
       - edge
 
   # ============================================================================
-  # Voice Services (optional, GPU required)
-  # Start with: docker compose --env-file .env.docker --profile voice up -d
+  # Voice Services (optional)
+  # CPU default: docker compose --env-file .env.docker --profile voice up -d
+  # GPU extra:   docker compose --env-file .env.docker --profile voice-gpu up -d
   # ============================================================================
 
-  # Qwen3-TTS - Local text-to-speech with OpenAI-compatible API
+  # speaches - the local voice sidecar. One CPU-friendly container serves both
+  # OpenAI-compatible endpoints: faster-whisper STT (/v1/audio/transcriptions)
+  # and Kokoro TTS (/v1/audio/speech). The init wizard points TTS_BASE_URL /
+  # STT_BASE_URL at http://speaches:8000/v1 when a local provider is chosen.
+  # Pull the models once into the cache volume (speaches-cli talks to the
+  # running server; it reads the target from SPEACHES_BASE_URL, not a flag):
+  #   SPEACHES_BASE_URL=http://127.0.0.1:8970 uvx speaches-cli model download speaches-ai/Kokoro-82M-v1.0-ONNX
+  #   SPEACHES_BASE_URL=http://127.0.0.1:8970 uvx speaches-cli model download Systran/faster-whisper-small
+  speaches:
+    <<: *security-hardening
+    # Digest-pinned from ghcr.io/speaches-ai/speaches:latest-cpu (2026-06-10);
+    # bump by re-inspecting the tag and updating the digest.
+    image: "${SPEACHES_IMAGE:-ghcr.io/speaches-ai/speaches@sha256:1d4f852ff5b148d675bcd751f414835c0bcef2541c1df8ffdeb43714968aafe6}"
+    container_name: nymeria-speaches
+    restart: unless-stopped
+    # Whisper small int8 + Kokoro both resident peaks around 2.5 GB.
+    mem_limit: 3g
+    pids_limit: 256
+    profiles:
+      - voice
+    ports:
+      - "127.0.0.1:${SPEACHES_PORT:-8970}:8000"
+    volumes:
+      - speaches_models:/home/ubuntu/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    networks:
+      - edge
+
+  # Qwen3-TTS - GPU-tier local text-to-speech (voice cloning) with an
+  # OpenAI-compatible API. Its own profile so the CPU voice profile never
+  # drags in an NVIDIA device reservation.
   qwen3-tts:
     <<: *security-hardening
-    # Placeholder digest intentionally fails if the voice profile is started
+    # Placeholder digest intentionally fails if the voice-gpu profile is started
     # without an operator-pinned image. Set QWEN3_TTS_IMAGE=repo@sha256:...
     image: "${QWEN3_TTS_IMAGE:-ghcr.io/groxaxo/qwen3-tts-openai-fastapi@sha256:0000000000000000000000000000000000000000000000000000000000000000}"
     container_name: nymeria-qwen3-tts
     restart: unless-stopped
     profiles:
-      - voice
+      - voice-gpu
     ports:
       - "127.0.0.1:${TTS_PORT:-8880}:8000"
     deploy:
@@ -830,38 +871,6 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 120s
-      retries: 3
-    networks:
-      - edge
-
-  # Faster-Whisper - Local speech-to-text with OpenAI-compatible API
-  faster-whisper:
-    <<: *security-hardening
-    # Placeholder digest intentionally fails if the voice profile is started
-    # without an operator-pinned image. Set FASTER_WHISPER_IMAGE=repo@sha256:...
-    image: "${FASTER_WHISPER_IMAGE:-fedirz/faster-whisper-server@sha256:0000000000000000000000000000000000000000000000000000000000000000}"
-    container_name: nymeria-faster-whisper
-    restart: unless-stopped
-    profiles:
-      - voice
-    ports:
-      - "127.0.0.1:${STT_PORT:-8003}:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    environment:
-      WHISPER__MODEL: ${STT_MODEL:-large-v3-turbo}
-    volumes:
-      - whisper_models:/root/.cache/huggingface
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
       retries: 3
     networks:
       - edge
@@ -936,7 +945,7 @@ volumes:
     driver: local
   qwen3_tts_models:
     driver: local
-  whisper_models:
+  speaches_models:
     driver: local
 
 # ============================================================================

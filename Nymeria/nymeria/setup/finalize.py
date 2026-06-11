@@ -55,6 +55,12 @@ from .providers import (
     valid_key_format_for_spec,
 )
 from .rag_catalog import apply_quickstart_rag, rag_env_for_state
+from .voice_catalog import (
+    needs_local_voice_extra,
+    uses_voice_sidecar,
+    voice_drop_env,
+    voice_env_for_state,
+)
 from .state import WizardState
 from .tool_seed import docker_init_seed_env
 
@@ -363,6 +369,7 @@ def finalize(
         provider_key_env=key_env_override,
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
         drop_public_url=should_drop_public_url(state),
+        drop_stale_voice=voice_drop_env(state),
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
@@ -452,6 +459,7 @@ def write_config(
     provider_key_env: str | None = None,
     drop_cliproxy_management: bool = False,
     drop_public_url: bool = False,
+    drop_stale_voice: tuple[str, ...] = (),
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
@@ -560,6 +568,10 @@ def write_config(
         # CORS_ORIGINS is deliberately NOT dropped: the operator may maintain
         # it by hand, and a stale extra origin is hygiene, not breakage.
         drop_env = drop_env + (PUBLIC_URL_ENV,)
+    # Voice provider switches retire the old provider's model/voice/URL/key
+    # lines (computed in voice_catalog.voice_drop_env); anything this run
+    # re-collects is in `produced` and wins over the drop.
+    drop_env = drop_env + drop_stale_voice
 
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
@@ -845,6 +857,10 @@ def _resolve_extra_env(state: WizardState) -> dict[str, str]:
     # Embedder/reranker choices -> EMBEDDING_* / RAG_RERANK_* env vars (the API
     # keys ride in optional_env). Empty when no embedder was chosen.
     extra.update(rag_env_for_state(state))
+    # Voice picks -> TTS_PROVIDER / STT_PROVIDER (+ Docker sidecar base URLs);
+    # the keys ride in optional_env via the backend-keys step. Empty when the
+    # voice steps were never reached.
+    extra.update(voice_env_for_state(state))
     # External access: persist the choice (the wizard's round-trip marker; the
     # runtime does not read it) and, when this run stands behind a public
     # origin (a setup step, --public-url, or hydrate), the real settings: the
@@ -1114,6 +1130,65 @@ def print_deployment_summary(state: WizardState, console: Console) -> None:
         )
     print_external_access_summary(state, console)
     _warn_stale_service_artifact(state, console)
+    _print_voice_hints(state, console)
+
+
+def _print_voice_hints(state: WizardState, console: Console) -> None:
+    """Surface what a voice pick still needs to actually run.
+
+    Bare-metal local engines need the optional pip extra (checked live so a
+    ready install prints nothing); the Docker full stack needs the matching
+    compose profile up (speaches for kokoro/faster-whisper, voice-gpu for
+    qwen3); the slim single container supports neither shape of local voice,
+    so that combo gets an explicit warning instead of silently dead config.
+    Hosted picks need nothing beyond their key.
+    """
+    from .voice_catalog import (
+        LOCAL_STT_PROVIDERS,
+        LOCAL_TTS_PROVIDERS,
+        selected_stt,
+        selected_tts,
+        slim_docker_local_voice,
+        uses_qwen3_sidecar,
+    )
+
+    if needs_local_voice_extra(state):
+        from nymeria.core.voice_local import local_stt_importable, local_tts_importable
+
+        missing = []
+        if selected_tts(state) in LOCAL_TTS_PROVIDERS and not local_tts_importable():
+            missing.append("kokoro-onnx")
+        if selected_stt(state) in LOCAL_STT_PROVIDERS and not local_stt_importable():
+            missing.append("faster-whisper")
+        if missing:
+            # \[ stops rich from eating [voice-local] as a markup tag.
+            console.print(
+                "\n[yellow]Local voice needs the voice extra "
+                f"({' and '.join(missing)} not installed): "
+                "pip install 'nymeriaos\\[voice-local]'. Models download on "
+                "first use.[/yellow]"
+            )
+    if uses_voice_sidecar(state):
+        console.print(
+            "\n[bold]Voice sidecar[/bold] The local voice picks use the "
+            "speaches container: start the stack with the voice profile, "
+            "e.g. `docker compose --env-file .env.docker --profile voice up -d`, "
+            "then pull its models once (see the compose file's speaches comments)."
+        )
+    if uses_qwen3_sidecar(state):
+        console.print(
+            "\n[bold]Voice sidecar[/bold] Qwen3-TTS runs in the GPU profile: "
+            "pin QWEN3_TTS_IMAGE to a digest, then start it with "
+            "`docker compose --env-file .env.docker --profile voice-gpu up -d`."
+        )
+    if slim_docker_local_voice(state):
+        console.print(
+            "\n[yellow]The single-container Docker image includes neither the "
+            "in-process voice engines nor the speaches sidecar, so the local "
+            "voice pick will not work as written. Run a speaches container "
+            "yourself and set TTS_BASE_URL / STT_BASE_URL to it, or pick a "
+            "hosted provider.[/yellow]"
+        )
 
 
 def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:

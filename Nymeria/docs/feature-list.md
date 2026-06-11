@@ -305,18 +305,24 @@ total).
 ## 10. Voice
 
 ### Text-to-Speech
-- **OpenAI-compatible**  -  tts-1, tts-1-hd with 6 voices, speed 0.25–4.0x
+- **Local Kokoro**  -  free, CPU-friendly; in-process (`voice-local` extra) or the speaches Docker sidecar
+- **Microsoft Edge**  -  free hosted neural voices, no API key (unofficial endpoint)
+- **OpenAI-compatible**  -  gpt-4o-mini-tts (default), tts-1/tts-1-hd, speed 0.25–4.0x
+- **ElevenLabs**  -  eleven_flash_v2_5 default, highest quality tier
 - **Google Gemini TTS**  -  200+ inline audio tags ([whispers], [excitedly], [sighs])
-- **Cartesia Sonic**  -  High-quality 44.1kHz output
-- **Formats**: MP3, WAV, Opus, AAC, FLAC, PCM
+- **Cartesia Sonic**  -  sonic-3.5, very low latency
+- **Qwen3-TTS**  -  self-hosted GPU sidecar with voice cloning
+- **Formats**: MP3, WAV, Opus, AAC, FLAC, PCM; voice-note (Ogg/Opus or MP3) negotiation for chat platforms
 
 ### Speech-to-Text
-- **OpenAI Whisper**  -  whisper-1 with language hints
-- **faster-whisper**  -  Local inference option
+- **Local faster-whisper**  -  in-process (`voice-local` extra) or the speaches Docker sidecar
+- **OpenAI**  -  gpt-4o-mini-transcribe (default) with language hints
+- **Groq**  -  hosted whisper-large-v3-turbo at roughly $0.04 per audio hour
 - **Formats**: WAV, MP3, M4A, FLAC, OGG, Opus
 
 ### Voice Chat
 - `/voice/chat`  -  Audio in → STT → agent processing → TTS → audio out
+- **Telegram voice notes**  -  inbound voice messages are transcribed into the chat; replies come back as voice notes (voice-in, voice-out)
 
 ---
 
@@ -443,8 +449,8 @@ total).
 | nymeria-zulip-bot |  -  | Zulip bot |
 | nymeria-rocketchat-bot |  -  | Rocket.Chat bot |
 | nymeria-signal-bot |  -  | Signal bot |
-| nymeria-qwen3-tts |  -  | TTS service |
-| nymeria-faster-whisper |  -  | STT service |
+| nymeria-speaches | 8970 (loopback) | Local voice sidecar: faster-whisper STT + Kokoro TTS (profile `voice`) |
+| nymeria-qwen3-tts |  -  | GPU TTS service (profile `voice-gpu`) |
 
 CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 

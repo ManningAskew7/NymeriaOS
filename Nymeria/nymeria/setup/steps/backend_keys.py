@@ -48,8 +48,8 @@ class BackendKeysStep(FormStep):
             yield Static(spec.label, classes="field-label")
             yield Input(
                 value=self.state.optional_env.get(spec.env_var, ""),
-                password=(spec.kind != "url"),
-                placeholder=(
+                password=(spec.kind not in ("url", "text")),
+                placeholder=spec.placeholder or (
                     "https://your-searxng.example" if spec.kind == "url"
                     else f"Paste your {spec.label}"
                 ),
@@ -104,7 +104,7 @@ def make_backend_keys_step() -> Step:
             total,
             step_id="backend_keys",
             title="Backend API keys",
-            note="Keys for the search, fetch, and image backends you selected.",
+            note="Keys for the search, fetch, image, and voice backends you selected.",
         ),
     )
 
