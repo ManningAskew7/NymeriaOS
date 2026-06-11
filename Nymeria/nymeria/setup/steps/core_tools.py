@@ -18,7 +18,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from ..nav import Step
-from .base import WizardStep
+from .base import ACCENT, WizardStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -52,7 +52,7 @@ def _core_tools_markup() -> str:
     for name in core_seed_tool_names():
         note = notes.get(name, "")
         suffix = f"  [#8a93a3]{note}[/#8a93a3]" if note else ""
-        lines.append(f"  [#bbddfb]{name}[/#bbddfb]{suffix}")
+        lines.append(f"  [{ACCENT}]{name}[/]{suffix}")
     lines.append("")
     lines.append(
         "Next you pick which web search, web fetch, RAG, and image tools to add "

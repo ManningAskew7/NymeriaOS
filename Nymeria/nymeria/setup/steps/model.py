@@ -54,7 +54,10 @@ class ModelStep(WizardStep):
             list_id="model-options",
             empty_text="No models listed - type the exact model id",
         )
-        yield Static("", id="model-hint")
+        # Hidden while empty so it does not reserve rows (padding included).
+        hint = Static("", id="model-hint")
+        hint.display = False
+        yield hint
 
     def on_mount(self) -> None:
         self.query_one(SearchableList).focus()
@@ -94,8 +97,10 @@ class ModelStep(WizardStep):
 
     def on_searchable_list_highlighted(self, event: SearchableList.Highlighted) -> None:
         choice = self._models_by_id.get(event.value or "")
-        hint = _context_label(choice.context_length) if choice else ""
-        self.query_one("#model-hint", Static).update(hint)
+        hint_text = _context_label(choice.context_length) if choice else ""
+        hint = self.query_one("#model-hint", Static)
+        hint.update(hint_text)
+        hint.display = bool(hint_text)
 
     def collect(self) -> bool:
         picker = self.query_one(SearchableList)
