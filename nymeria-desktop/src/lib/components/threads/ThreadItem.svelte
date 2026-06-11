@@ -422,7 +422,10 @@
     background: var(--accent-primary);
     border-radius: 0 2px 2px 0;
     transform: translateY(-50%);
-    transition: height var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+    /* Not var(--transition-normal): that composite already carries `ease`,
+       and a second easing makes the whole declaration invalid (the bar
+       snapped instead of growing). Duration + curve spelled separately. */
+    transition: height 250ms var(--ease-emphasis);
   }
 
   .thread-item.active::before {

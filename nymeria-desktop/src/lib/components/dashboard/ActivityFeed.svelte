@@ -287,7 +287,7 @@
     display: flex;
     align-items: center;
     color: var(--text-muted);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
     flex-shrink: 0;
   }
 

@@ -110,9 +110,21 @@ export const OVERLAY_FADE_OUT = gatedDuration(160, { easing: cubicIn });
 export const DIALOG_RISE_IN = gatedDuration(250, { y: 12, easing: cubicOut });
 export const DIALOG_RISE_OUT = gatedDuration(160, { y: 12, easing: cubicIn });
 
-/** Image-viewer content: fade + slight scale. Use with `scale`. */
-export const DIALOG_SCALE_IN = gatedDuration(150, { start: 0.95, easing: cubicOut });
-export const DIALOG_SCALE_OUT = gatedDuration(100, { start: 0.95, easing: cubicIn });
+/**
+ * Image-viewer content: fade + slight scale. Use with `scale`. Paced at
+ * 250ms, not the 150ms dialog scrim speed — a fullscreen photo is a large
+ * surface and the guide puts those at the slower end.
+ */
+export const DIALOG_SCALE_IN = gatedDuration(250, { start: 0.95, easing: cubicOut });
+export const DIALOG_SCALE_OUT = gatedDuration(160, { start: 0.95, easing: cubicIn });
+
+/**
+ * Fullscreen image viewer where the whole surface (backdrop + image) is a
+ * single fade with no scale (mobile). Same 250ms large-surface pace as
+ * DIALOG_SCALE_IN. Use with `fade`.
+ */
+export const VIEWER_FADE_IN = gatedDuration(250, { easing: cubicOut });
+export const VIEWER_FADE_OUT = gatedDuration(160, { easing: cubicIn });
 
 /**
  * Mobile fullscreen page: slides in from the right and returns to the right

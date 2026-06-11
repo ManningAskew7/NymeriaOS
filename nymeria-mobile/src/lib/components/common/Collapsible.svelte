@@ -71,7 +71,7 @@
 
     const dur = slideOptions.duration ?? 120;
     requestAnimationFrame(() => {
-      bubble.style.transition = `width ${dur}ms cubic-bezier(0.33, 1, 0.68, 1)`;
+      bubble.style.transition = `width ${dur}ms var(--ease-out)`;
       bubble.style.width = `${newWidth}px`;
     });
     setTimeout(() => {
@@ -176,7 +176,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
-    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+    transition: transform 120ms var(--ease-out);
   }
 
   .open .chevron {
