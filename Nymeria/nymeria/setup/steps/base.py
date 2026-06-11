@@ -17,12 +17,13 @@ plain `WizardStep` so the list keeps its internal arrow navigation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import RadioButton, RadioSet, SelectionList, Static
@@ -33,6 +34,26 @@ from ..nav import Step
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
     from ..state import WizardState
+
+
+ACCENT = "#bbddfb"
+_HINT_TEXT = "#6b7280"
+
+
+def hint_markup(hint: str) -> str:
+    """Style a 'key action   key action' hint line: accent keys, grey actions.
+
+    Segments are split on runs of 2+ spaces; the first word of each segment is
+    the key. Plain text in, markup out, so callers keep writing plain hints.
+    """
+    parts: list[str] = []
+    for segment in re.split(r"\s{2,}", hint.strip()):
+        key, _, action = segment.partition(" ")
+        if action:
+            parts.append(f"[{ACCENT}]{key}[/] [{_HINT_TEXT}]{action}[/]")
+        elif key:
+            parts.append(f"[{ACCENT}]{key}[/]")
+    return "   ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -148,8 +169,9 @@ class WizardStep(Screen):
         return self._wizard.state
 
     def compose(self) -> ComposeResult:
-        yield Static(self._title, id="wizard-title")
-        yield Static(f"Step {self._number} of {self._total}", id="wizard-step")
+        with Horizontal(id="wizard-header"):
+            yield Static(self._title, id="wizard-title")
+            yield Static(f"Step {self._number} of {self._total}", id="wizard-step")
         if self._note:
             yield Static(self._note, id="wizard-note")
         # can_focus=False keeps the scroll container out of the arrow-key focus
@@ -159,7 +181,7 @@ class WizardStep(Screen):
             yield from self.compose_body()
         yield Static("", id="wizard-error")
         yield Static("", id="wizard-scroll-hint")
-        yield Static(self._hint, id="wizard-hint")
+        yield Static(hint_markup(self._hint), id="wizard-hint")
 
     def compose_body(self) -> ComposeResult:
         return iter(())
@@ -188,7 +210,7 @@ class WizardStep(Screen):
             parts.append("▲ more above")
         if body.scroll_y < body.max_scroll_y - 0.5:
             parts.append("▼ more below")
-        hint.update(f"[#fcd34d]{'    '.join(parts)}[/#fcd34d]" if parts else "")
+        hint.update(f"[{ACCENT}]{'    '.join(parts)}[/]" if parts else "")
 
     # --- navigation ---------------------------------------------------------
 
@@ -522,6 +544,8 @@ def placeholder_step(
 
 
 __all__ = [
+    "ACCENT",
+    "hint_markup",
     "Choice",
     "WizardStep",
     "FormStep",

@@ -1852,6 +1852,49 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
     assert state.model == "claude-sonnet-4-6"  # provider default model filled in
 
 
+def test_hint_markup_accents_keys_and_preserves_text():
+    from textual.content import Content
+
+    from nymeria.setup.steps.base import ACCENT, hint_markup
+
+    hint = "up/down move   space select   enter next   ctrl+q quit"
+    markup = hint_markup(hint)
+    assert f"[{ACCENT}]up/down[/]" in markup  # first word of each pair is the key
+    assert f"[{ACCENT}]ctrl+q[/]" in markup
+    # The styling is presentation-only: the plain text survives unchanged.
+    assert Content.from_markup(markup).plain == hint
+
+
+def test_wizard_pilot_provider_note_follows_highlight_and_clears(monkeypatch):
+    """The note under the provider list shows the highlighted provider's
+    registry note and clears when the filter has no matches (no stale prose
+    for a provider that is no longer shown)."""
+    from textual.widgets import Static
+
+    from nymeria.config.llm_providers import get_llm_provider_spec
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    monkeypatch.setattr("nymeria.setup.steps.model.fetch_models_for_spec", _no_models)
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await _advance_to_provider(pilot)
+            spec = get_llm_provider_spec("aihubmix")
+            assert spec is not None and spec.notes_for_user
+            await pilot.press(*"aihubmix")  # filter to a provider with a note
+            await pilot.pause()
+            note = str(app.screen.query_one("#provider-note", Static).render())
+            assert "Reasoning round-trips" in note
+            await pilot.press(*"zzz")  # no matches
+            await pilot.pause()
+            note = str(app.screen.query_one("#provider-note", Static).render())
+            assert note == ""
+
+    asyncio.run(drive())
+
+
 def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
     """Arrow keys move focus (and the per-option description) WITHOUT changing the
     selection; Space selects the focused option. The selection dot only moves on
