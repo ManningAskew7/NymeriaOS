@@ -3,9 +3,10 @@
 These mirror the high-level decisions in the setup-wizard plan. The Docker-stack
 choice (slim vs full) is wired through finalize. The external-access choice
 gates the guided tailscale/cloudflare setup steps (steps/external_access.py).
-Security profile stays a framework-real placeholder (single-select, stored on
-`WizardState`, shown in review) until the approval gate lands. Each choice
-carries a sensible default so a quick run can Enter straight through.
+Security profile offers Unleashed only for now: Secure and Standard render
+greyed out as "to come" until the approval gate lands (design:
+docs/private/security-profiles.md). Each choice carries a sensible default so
+a quick run can Enter straight through.
 """
 
 from __future__ import annotations
@@ -35,7 +36,18 @@ def _choices(order: tuple, table: Mapping) -> list[Choice]:
     for option in order:
         meta: OnboardingChoice = table[option]
         label = meta.label + (" (recommended)" if meta.recommended else "")
-        out.append(Choice(value=option, label=label, description=meta.description))
+        # The "(to come)" suffix lives here, in the wizard layer, so review and
+        # finalize echoes of the clean OnboardingChoice label stay unsuffixed.
+        if meta.coming_soon:
+            label += " (to come)"
+        out.append(
+            Choice(
+                value=option,
+                label=label,
+                description=meta.description,
+                disabled=meta.coming_soon,
+            )
+        )
     return out
 
 
@@ -71,10 +83,14 @@ def make_docker_stack_step() -> Step:
 
 
 def make_security_profile_step() -> Step:
-    """First-run security posture. Recorded now; enforcement is built out later."""
+    """First-run security posture. Unleashed-only until the approval gate lands.
+
+    Secure and Standard are shown greyed out with a "(to come)" suffix; their
+    enforcement design lives in docs/private/security-profiles.md.
+    """
 
     def get_initial(state: WizardState) -> SecurityProfile:
-        return state.security_profile or SecurityProfile.STANDARD
+        return state.security_profile or SecurityProfile.UNLEASHED
 
     def store(state: WizardState, value: SecurityProfile) -> None:
         state.security_profile = value
@@ -83,8 +99,9 @@ def make_security_profile_step() -> Step:
         step_id="security_profile",
         title="Security profile",
         note=(
-            "How much the agent can do without approval. Recorded now; the "
-            "approval gate and tool defaults read it as they are built."
+            "How much the agent can do without approval. Unleashed is the "
+            "current behavior and for now the only selectable profile; Secure "
+            "and Standard arrive with the per-tool approval gate."
         ),
         choices=_choices(SECURITY_PROFILE_ORDER, SECURITY_PROFILE_CHOICES),
         get_initial=get_initial,

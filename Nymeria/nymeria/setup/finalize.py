@@ -1125,8 +1125,9 @@ def print_capability_summary(
 def print_deployment_summary(state: WizardState, console: Console) -> None:
     """Echo the security-profile choice and the external-access outcome.
 
-    Security profile is recorded but its automation (the approval gate) is not
-    built, so it is surfaced rather than silently dropped. External access
+    Security profile is recorded but not persisted, so it is surfaced rather
+    than silently dropped. Only Unleashed (current behavior) is selectable;
+    the approval-gated profiles are still being built. External access
     reports what the wizard actually did: the configured public origin and its
     verification state, or the matching manual guidance. The Docker-stack
     choice is acted on (it selects the compose file), so it is not echoed here.
@@ -1136,7 +1137,7 @@ def print_deployment_summary(state: WizardState, console: Console) -> None:
         console.print(
             "\n[bold]Security profile[/bold] "
             f"{SECURITY_PROFILE_CHOICES[state.security_profile].label} "
-            "(recorded; enforcement is being built out)"
+            "(recorded; approval-gated profiles are still being built)"
         )
     print_external_access_summary(state, console)
     _warn_stale_service_artifact(state, console)

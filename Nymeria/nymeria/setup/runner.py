@@ -137,7 +137,10 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         "--security-profile",
         choices=choice_values(SecurityProfile),
         default=None,
-        help="First-run security posture (recorded; enforcement is built out later)",
+        help=(
+            "First-run security posture. Only 'unleashed' (the current "
+            "behavior) is accepted until the approval gate ships"
+        ),
     )
     parser.add_argument(
         "--external-access",
@@ -363,6 +366,15 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     if getattr(args, "security_profile", None):
         security_profile = parse_choice(
             SecurityProfile, args.security_profile, option_name="--security-profile"
+        )
+    if security_profile in (SecurityProfile.SECURE, SecurityProfile.STANDARD):
+        # Recording an unenforced profile would hand scripted installs a false
+        # sense of security; fail loudly until the approval gate exists.
+        raise SystemExit(
+            f"--security-profile {args.security_profile} is not available yet: "
+            "the approval gate that enforces it is not built. Only 'unleashed' "
+            "(the current behavior) is selectable for now; the design lives in "
+            "docs/private/security-profiles.md"
         )
 
     external_access = None

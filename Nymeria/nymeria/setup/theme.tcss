@@ -136,6 +136,17 @@ RadioButton.-on > .toggle--button {
     color: #ffffff;
 }
 
+/* Disabled (greyed-out) choices: visible but clearly inert. Textual already
+   makes them unfocusable; this dims the text and glyph (the app-level
+   disabled opacity fade still composes on top). */
+.radio-group > RadioButton:disabled > .toggle--label {
+    color: #5a6372;
+}
+
+.radio-group > RadioButton:disabled > .toggle--button {
+    color: #5a6372;
+}
+
 /* No selection bar: the highlighted option is marked by bold + brighter text
    alone, not a background. Stock RadioSet tints `.toggle--label`; we override
    that to transparent and instead lift the selected row's text. The filled white
