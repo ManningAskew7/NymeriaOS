@@ -186,47 +186,73 @@ LIMIT_FIELDS: tuple[TuningField, ...] = (
 
 # --- llm_tuning step -----------------------------------------------------------
 
-EFFORT_CHOICES: tuple[TuningChoice, ...] = (
-    TuningChoice(
+RECOMMENDED_EFFORT = "medium"
+
+# Value, plain label, core description, and the generic clamp prose. The plain
+# label and core description are shared by both rendering modes; the generic
+# prose appears only when the wizard cannot resolve the active model (the
+# model-aware path replaces it with the actual clamp target per level).
+_EFFORT_BASE: tuple[tuple[str, str, str, str], ...] = (
+    (
         "off",
         "Off",
         "No extended thinking. Fastest and cheapest; fine for chat and "
-        "simple tool use. Models that cannot fully disable thinking use "
-        "their lowest level.",
+        "simple tool use.",
+        "Models that cannot fully disable thinking use their lowest level.",
     ),
-    TuningChoice(
+    (
         "low",
         "Low",
         "A little thinking for harder requests.",
+        "",
     ),
-    TuningChoice(
+    (
         "medium",
-        "Medium (recommended)",
+        "Medium",
         "Balanced thinking on capable models. Good default for an assistant "
         "that plans and uses tools.",
+        "",
     ),
-    TuningChoice(
+    (
         "high",
         "High",
         "Thorough reasoning; slower and more tokens.",
+        "",
     ),
-    TuningChoice(
+    (
         "xhigh",
         "Extra high",
-        "Maximum-depth reasoning on frontier models. Models without this "
-        "level fall back to their highest supported level automatically.",
+        "Maximum-depth reasoning on frontier models.",
+        "Models without this level fall back to their highest supported "
+        "level automatically.",
     ),
-    TuningChoice(
+    (
         "max",
         "Max",
-        "Unconstrained thinking where the provider supports it. Models "
-        "without it fall back to their highest supported level automatically.",
+        "Unconstrained thinking where the provider supports it.",
+        "Models without it fall back to their highest supported level "
+        "automatically.",
     ),
+)
+
+_EFFORT_PLAIN_LABELS = {value: plain for value, plain, _, _ in _EFFORT_BASE}
+
+
+def _effort_choice_label(value: str, plain: str) -> str:
+    return f"{plain} (recommended)" if value == RECOMMENDED_EFFORT else plain
+
+
+EFFORT_CHOICES: tuple[TuningChoice, ...] = tuple(
+    TuningChoice(
+        value,
+        _effort_choice_label(value, plain),
+        f"{core} {generic}" if generic else core,
+    )
+    for value, plain, core, generic in _EFFORT_BASE
 )
 
 EFFORT_VALUES = frozenset(choice.value for choice in EFFORT_CHOICES)
 _EFFORT_LABELS = {choice.value: choice.label for choice in EFFORT_CHOICES}
-RECOMMENDED_EFFORT = "medium"
 
 SAMPLING_FIELDS: tuple[TuningField, ...] = (
     TuningField(
@@ -341,6 +367,139 @@ def context_label(value: str) -> str:
 
 def effort_label(value: str) -> str:
     return _EFFORT_LABELS.get(value, value)
+
+
+def plain_effort_label(value: str) -> str:
+    """The choice label without the "(recommended)" marker, for clamp notes."""
+    return _EFFORT_PLAIN_LABELS.get(value, value)
+
+
+# --- model-aware effort annotations ----------------------------------------------
+
+
+def _effort_provider_model(state: "WizardState") -> Optional[tuple[str, str]]:
+    """The (provider, model) pair finalize will write, or None when unknown.
+
+    Mirrors finalize so the wizard's clamp preview matches the runtime clamp
+    in ``core/agent_llm_config.py``: the API-key path falls back to the
+    registry spec's default model, and the first-run CLIProxy branch derives
+    both from the catalog spec (``_apply_cliproxy_route`` fills state.provider
+    only at finalize time). Hydrated reconfigures already carry the written
+    values. None means "show the generic catalog text instead".
+    """
+    provider = (state.provider or "").strip()
+    model = (state.model or "").strip()
+    if state.auth_method_is_cliproxy() and state.cliproxy_provider:
+        try:
+            from ..cliproxy.catalog import get_cliproxy_provider
+
+            cspec = get_cliproxy_provider(state.cliproxy_provider)
+        except Exception:  # noqa: BLE001 (annotations are a hint, fail open)
+            cspec = None
+        if cspec is not None:
+            # _apply_cliproxy_route overwrites the provider unconditionally
+            # and fills the model only when the step left it unset; a stale
+            # hydrated provider must not win over the active branch.
+            provider = cspec.nymeria_provider
+            model = model or (cspec.default_model or "").strip()
+    if provider and not model:
+        spec = state.provider_spec()
+        model = ((spec.default_model if spec else None) or "").strip()
+    if not model:
+        return None
+    return provider, model
+
+
+def _effort_capabilities(state: "WizardState") -> Optional[tuple[str, str, tuple]]:
+    """(provider, model, supported ladder) for the configured model, or None.
+
+    The lookup is offline-safe (`supported_reasoning_efforts` never fetches)
+    and omits provider_route: the wizard does not write LLM_PROVIDER_ROUTE,
+    so the runtime resolves the same registry default. Ladders come from the
+    static capability tables; the live provider-published ladders the runtime
+    may merge at startup are not populated in the wizard process, so the
+    annotations are a preview, not a guarantee.
+    """
+    resolved = _effort_provider_model(state)
+    if resolved is None:
+        return None
+    provider, model = resolved
+    try:
+        from ..config.model_capabilities import supported_reasoning_efforts
+
+        levels = supported_reasoning_efforts(provider, model)
+    except Exception:  # noqa: BLE001 (fail open)
+        return None
+    if not levels:
+        return None
+    return provider, model, levels
+
+
+def effective_effort_for_state(state: "WizardState", effort: str) -> Optional[str]:
+    """The post-clamp level the runtime will run `effort` at, or None."""
+    resolved = _effort_provider_model(state)
+    if resolved is None:
+        return None
+    provider, model = resolved
+    try:
+        from ..config.model_capabilities import clamp_reasoning_effort
+
+        return clamp_reasoning_effort(provider, model, effort)
+    except Exception:  # noqa: BLE001 (fail open)
+        return None
+
+
+def effort_ladder_note(state: "WizardState") -> Optional[str]:
+    """One-line supported-levels note for the tuning screen, or None."""
+    caps = _effort_capabilities(state)
+    if caps is None:
+        return None
+    _, model, levels = caps
+    supported = ", ".join(plain_effort_label(level) for level in levels)
+    return f"{model} supports {supported}."
+
+
+def annotated_effort_choices(state: "WizardState") -> tuple[TuningChoice, ...]:
+    """EFFORT_CHOICES annotated with the configured model's clamp targets.
+
+    Levels the model clamps gain a "(runs at X)" label suffix and a specific
+    description sentence; supported levels drop the generic clamp prose. All
+    six levels stay selectable (clamping is server-side; the note is a hint,
+    matching the frontend dropdowns). An unresolvable model or a failed
+    lookup returns EFFORT_CHOICES unchanged.
+    """
+    caps = _effort_capabilities(state)
+    if caps is None:
+        return EFFORT_CHOICES
+    provider, model, levels = caps
+    choices: list[TuningChoice] = []
+    for value, plain, core, generic in _EFFORT_BASE:
+        marks = ["recommended"] if value == RECOMMENDED_EFFORT else []
+        description = core
+        if value not in levels:
+            try:
+                from ..config.model_capabilities import clamp_reasoning_effort
+
+                effective = clamp_reasoning_effort(provider, model, value)
+            except Exception:  # noqa: BLE001 (fail open)
+                effective = None
+            if effective and effective != value:
+                target = plain_effort_label(effective)
+                marks.append(f"runs at {target}")
+                if value == "off":
+                    description = (
+                        f"{core} {model} cannot disable thinking; "
+                        f"runs at {target}."
+                    )
+                else:
+                    description = (
+                        f"{core} Not supported by {model}; runs at {target}."
+                    )
+            elif generic:
+                description = f"{core} {generic}"
+        label = f"{plain} ({', '.join(marks)})" if marks else plain
+        choices.append(TuningChoice(value, label, description))
+    return tuple(choices)
 
 
 def _field_env(state: "WizardState", field: TuningField) -> dict[str, str]:
@@ -478,13 +637,17 @@ def tuning_summary_lines(state: "WizardState") -> list[str]:
         lines.append(f"Agent limits: {', '.join(limit_bits)}")
     effort = selected_effort(state)
     if effort is not None:
+        effective = effective_effort_for_state(state, effort)
+        clamp = ""
+        if effective and effective != effort:
+            clamp = f" (runs at {plain_effort_label(effective)})"
         sampling_bits = []
         for field in SAMPLING_FIELDS:
             env = _field_env(state, field)
             if env:
                 sampling_bits.append(f"{field.env_var}={env[field.env_var]}")
         suffix = f" ({', '.join(sampling_bits)})" if sampling_bits else ""
-        lines.append(f"Reasoning effort: {effort_label(effort)}{suffix}")
+        lines.append(f"Reasoning effort: {effort_label(effort)}{clamp}{suffix}")
     return lines
 
 
@@ -500,10 +663,14 @@ __all__ = [
     "SAMPLING_FIELDS",
     "TuningChoice",
     "TuningField",
+    "annotated_effort_choices",
     "context_label",
+    "effective_effort_for_state",
     "effort_label",
+    "effort_ladder_note",
     "field_error",
     "parse_field",
+    "plain_effort_label",
     "selected_context",
     "selected_effort",
     "tuning_drop_env",
