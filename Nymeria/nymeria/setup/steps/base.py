@@ -40,6 +40,9 @@ class Choice:
     value: Any
     label: str
     description: str = ""
+    # Rendered greyed-out and unfocusable; the choice stays visible so users
+    # see what exists, but it cannot be selected (e.g. "to come" options).
+    disabled: bool = False
 
 
 def commit_radio_highlight(radio_set: RadioSet) -> int:
@@ -320,15 +323,23 @@ class SingleSelectStep(FormStep):
     def _initial_index(self) -> int:
         initial = self._get_initial(self.state)
         for i, choice in enumerate(self._choices):
-            if choice.value == initial:
+            if choice.value == initial and not choice.disabled:
                 return i
-        return 0
+        # Steps must keep at least one enabled choice; the trailing 0 is a
+        # defensive fallback only (an all-disabled step cannot be advanced).
+        return next(
+            (i for i, choice in enumerate(self._choices) if not choice.disabled), 0
+        )
 
     def compose_body(self) -> ComposeResult:
         sel = self._initial_index()
         with Vertical(classes="radio-group"):
+            # Disabled choices still yield a button: collect() and
+            # _sync_description map button index to choice index positionally.
             for i, choice in enumerate(self._choices):
-                yield CircleRadioButton(choice.label, value=(i == sel))
+                yield CircleRadioButton(
+                    choice.label, value=(i == sel), disabled=choice.disabled
+                )
         yield Static("", id="choice-desc")
 
     def _buttons(self) -> list[RadioButton]:
@@ -336,8 +347,9 @@ class SingleSelectStep(FormStep):
 
     def on_mount(self) -> None:
         buttons = self._buttons()
-        if buttons:
-            selected = next((b for b in buttons if b.value), buttons[0])
+        focusable = [b for b in buttons if not b.disabled]
+        if focusable:
+            selected = next((b for b in focusable if b.value), focusable[0])
             selected.focus()
         self.call_after_refresh(self._refresh_focus_view)
 
@@ -355,6 +367,9 @@ class SingleSelectStep(FormStep):
         sel = next((i for i, b in enumerate(buttons) if b.value), None)
         if sel is None or sel >= len(self._choices):
             self.show_error("Select an option, then press Enter.")
+            return False
+        if self._choices[sel].disabled:
+            self.show_error("That option is not available yet; pick another.")
             return False
         self._store(self.state, self._choices[sel].value)
         return True

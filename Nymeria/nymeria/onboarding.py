@@ -80,9 +80,10 @@ class DockerStack(StrEnum):
 class SecurityProfile(StrEnum):
     """First-run security posture. Recorded now; enforcement is built out later.
 
-    Per-tool-call approval gating does not exist yet, so this is a design-forward
-    placeholder: the wizard captures the operator's intent so the future approval
-    gate, default-bound tools, and bash sandboxing can each read it as built.
+    Per-tool-call approval gating does not exist yet, so the wizard offers only
+    UNLEASHED (the current behavior) and shows SECURE and STANDARD greyed out
+    as "to come". The full enforcement design (approval gate, always-allow
+    lists, slimmed Secure defaults) lives in docs/private/security-profiles.md.
     """
 
     SECURE = "secure"
@@ -122,6 +123,9 @@ class OnboardingChoice:
     description: str
     recommended: bool = False
     advanced: bool = False
+    # Shown greyed-out and unselectable in the wizard with a "(to come)" label
+    # suffix: the choice exists in the design but its enforcement is not built.
+    coming_soon: bool = False
 
 
 @dataclass(frozen=True)
@@ -300,17 +304,19 @@ SECURITY_PROFILE_CHOICES = {
         label="Secure",
         description=(
             "Dangerous tools disabled by default, medium-risk tools require "
-            "approval. Strictest posture. (Enforcement is being built out.)"
+            "approval. Strictest posture. (Not selectable yet; ships with the "
+            "approval gate.)"
         ),
+        coming_soon=True,
     ),
     SecurityProfile.STANDARD: OnboardingChoice(
         value=SecurityProfile.STANDARD,
         label="Standard",
         description=(
             "Full toolset, approval prompts only for risky tools. Balanced "
-            "default. (Enforcement is being built out.)"
+            "default. (Not selectable yet; ships with the approval gate.)"
         ),
-        recommended=True,
+        coming_soon=True,
     ),
     SecurityProfile.UNLEASHED: OnboardingChoice(
         value=SecurityProfile.UNLEASHED,
@@ -318,7 +324,8 @@ SECURITY_PROFILE_CHOICES = {
         description=(
             "No approval gates, full autonomy, and the capability-expansion kits "
             "(tool, skill, MCP, and credential management) enabled by default. Use "
-            "only inside a sandbox. (Enforcement is being built out.)"
+            "only inside a sandbox. Currently the only selectable profile; Secure "
+            "and Standard arrive with the approval gate."
         ),
         advanced=True,
     ),

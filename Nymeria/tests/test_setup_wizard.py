@@ -44,7 +44,7 @@ def test_parse_choice_rejects_retired_hosting_value():
         parse_choice(HostingOption, "venv", option_name="--hosting")
 
 
-def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
+def test_new_deployment_enums_have_ordered_choices_and_recommended_markers():
     from nymeria.onboarding import (
         DOCKER_STACK_CHOICES,
         DOCKER_STACK_ORDER,
@@ -57,14 +57,12 @@ def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
         SecurityProfile,
     )
 
+    # SecurityProfile carries no recommended marker while Unleashed is the
+    # only selectable profile ("(recommended)" implies alternatives; Secure
+    # and Standard are greyed out until the approval gate ships).
     for order, table, enum_type, recommended in (
         (DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES, DockerStack, DockerStack.SLIM),
-        (
-            SECURITY_PROFILE_ORDER,
-            SECURITY_PROFILE_CHOICES,
-            SecurityProfile,
-            SecurityProfile.STANDARD,
-        ),
+        (SECURITY_PROFILE_ORDER, SECURITY_PROFILE_CHOICES, SecurityProfile, None),
         (
             EXTERNAL_ACCESS_ORDER,
             EXTERNAL_ACCESS_CHOICES,
@@ -75,7 +73,29 @@ def test_new_deployment_enums_have_ordered_choices_and_one_recommended():
         assert set(order) == set(enum_type)  # every member is ordered
         assert set(table) == set(enum_type)  # every member has a choice
         flagged = [opt for opt in order if table[opt].recommended]
-        assert flagged == [recommended]  # exactly one, the expected default
+        expected = [recommended] if recommended is not None else []
+        assert flagged == expected  # at most one, the expected default
+
+    coming_soon = {opt for opt in SecurityProfile if SECURITY_PROFILE_CHOICES[opt].coming_soon}
+    assert coming_soon == {SecurityProfile.SECURE, SecurityProfile.STANDARD}
+    for table in (DOCKER_STACK_CHOICES, EXTERNAL_ACCESS_CHOICES):
+        assert not any(meta.coming_soon for meta in table.values())
+
+
+def test_security_profile_choices_disable_coming_soon_rows():
+    """Secure and Standard render greyed out with a "(to come)" suffix until
+    the approval gate ships (docs/private/security-profiles.md); Unleashed is
+    the only selectable row and carries no "(recommended)" marker.
+    """
+    from nymeria.onboarding import SECURITY_PROFILE_CHOICES, SECURITY_PROFILE_ORDER
+    from nymeria.setup.steps.deployment import _choices
+
+    by_label = {c.label: c for c in _choices(SECURITY_PROFILE_ORDER, SECURITY_PROFILE_CHOICES)}
+    assert set(by_label) == {"Secure (to come)", "Standard (to come)", "Unleashed"}
+    assert by_label["Secure (to come)"].disabled
+    assert by_label["Standard (to come)"].disabled
+    assert not by_label["Unleashed"].disabled
+    assert not any("(recommended)" in label for label in by_label)
 
 
 def test_core_tools_match_plan_section_a():
@@ -880,7 +900,7 @@ def test_noninteractive_records_deployment_choices_without_dead_config(
             "--provider", "anthropic",
             "--model", "claude-test-model",
             "--api-key", "sk-ant-test-key",
-            "--security-profile", "secure",
+            "--security-profile", "unleashed",
             "--external-access", "tailscale",
             "--root", str(root),
             "--non-interactive",
@@ -893,7 +913,7 @@ def test_noninteractive_records_deployment_choices_without_dead_config(
     assert rc == 0
     # Both choices are surfaced to the operator...
     assert "Security profile" in out
-    assert "Secure" in out
+    assert "Unleashed" in out
     assert "External access" in out and "Tailscale" in out
     # ...security profile stays recorded-only (no dead config), while the
     # external-access choice round-trips through its env marker so a
@@ -901,6 +921,29 @@ def test_noninteractive_records_deployment_choices_without_dead_config(
     assert "SECURITY_PROFILE" not in config
     assert "NYMERIA_EXTERNAL_ACCESS=tailscale" in config
     assert "NYMERIA_PUBLIC_URL" not in config
+
+
+@pytest.mark.parametrize("profile", ["secure", "standard"])
+def test_security_profile_flag_rejects_unbuilt_profiles(tmp_path, profile):
+    """secure/standard enforce nothing yet; accepting them would hand scripted
+    installs a false sense of security, so the flag fails loudly.
+    """
+    root = tmp_path / "runtime"
+    with pytest.raises(SystemExit) as exc_info:
+        setup_main(
+            [
+                "--provider", "anthropic",
+                "--model", "claude-test-model",
+                "--api-key", "sk-ant-test-key",
+                "--security-profile", profile,
+                "--root", str(root),
+                "--non-interactive",
+                "--skip-llm-test",
+            ]
+        )
+    assert "not available yet" in str(exc_info.value)
+    assert "unleashed" in str(exc_info.value)
+    assert not (root / "config.env").exists()
 
 
 def _read_secrets_key(text: str) -> str | None:
@@ -1481,7 +1524,7 @@ def test_print_deployment_summary_suppresses_local_only_and_omits_docker_stack()
     state = WizardState(
         hosting=HostingOption.DOCKER,
         docker_stack=DockerStack.FULL,  # acted on, not a "recorded only" placeholder
-        security_profile=SecurityProfile.STANDARD,
+        security_profile=SecurityProfile.UNLEASHED,  # the only selectable profile
         external_access=ExternalAccess.LOCAL_ONLY,  # the recommended default
     )
     print_deployment_summary(state, console)
@@ -1489,8 +1532,8 @@ def test_print_deployment_summary_suppresses_local_only_and_omits_docker_stack()
 
     assert "Stack" not in out  # the docker stack is wired, so it is not echoed here
     assert "External access" not in out  # suppressed: local-only is the default
-    assert "Security profile" in out and "Standard" in out
-    assert "enforcement is being built out" in out  # honest placeholder framing
+    assert "Security profile" in out and "Unleashed" in out
+    assert "still being built" in out  # honest placeholder framing
 
 
 def test_print_deployment_summary_is_silent_without_recorded_choices():
@@ -1669,7 +1712,7 @@ def test_run_init_parser_accepts_new_flags():
             "--hosting", "local",
             "--auth-method", "api_key",
             "--docker-stack", "full",
-            "--security-profile", "secure",
+            "--security-profile", "unleashed",
             "--external-access", "tailscale",
             "--provider", "anthropic",
             "--model", "claude-test-model",
@@ -1689,7 +1732,7 @@ def test_run_init_parser_accepts_new_flags():
     assert args.hosting == "local"
     assert args.auth_method == "api_key"
     assert args.docker_stack == "full"
-    assert args.security_profile == "secure"
+    assert args.security_profile == "unleashed"
     assert args.external_access == "tailscale"
     assert args.provider == "anthropic"
     assert args.base_url == "http://localhost:8317/v1"
@@ -1745,9 +1788,9 @@ _CONNECTION_STEP = 11
 async def _advance_to_provider(pilot) -> None:
     """Walk welcome -> hosting -> security -> auth on the default (local) path.
 
-    Accepts every default (local hosting, Standard security, Direct API key) and
-    leaves the provider picker focused. docker_stack is skipped because the
-    default hosting is not Docker.
+    Accepts every default (local hosting, Unleashed security profile, Direct
+    API key) and leaves the provider picker focused. docker_stack is skipped
+    because the default hosting is not Docker.
     """
     await pilot.press("enter")  # welcome -> hosting
     await pilot.pause()
@@ -1885,6 +1928,45 @@ def test_wizard_radio_renders_bare_circles_without_box():
             )
 
     asyncio.run(drive())
+
+
+def test_wizard_pilot_security_step_unleashed_only():
+    """Secure and Standard render disabled (greyed out, unfocusable); the dot
+    and focus land on Unleashed, arrows never reach a disabled row, and Enter
+    stores UNLEASHED.
+    """
+    from nymeria.onboarding import SecurityProfile
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import CircleRadioButton
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            await pilot.press("enter")  # accept default hosting (local) -> security
+            await pilot.pause()
+            assert app.nav.current() == _SECURITY_STEP
+            scr = app.screen
+            buttons = list(scr.query(CircleRadioButton))
+            assert [b.disabled for b in buttons] == [True, True, False]
+            assert buttons[2].value is True  # dot pre-selected on Unleashed
+            assert scr.focused is buttons[2]
+            for key in ("up", "down"):
+                await pilot.press(key)
+                await pilot.pause()
+                assert scr.focused is not buttons[0]
+                assert scr.focused is not buttons[1]
+            await pilot.press("enter")  # lock Unleashed, advance to auth method
+            await pilot.pause()
+            assert app.nav.current() == _AUTH_STEP
+        return state
+
+    state = asyncio.run(drive())
+    assert state.security_profile is SecurityProfile.UNLEASHED
 
 
 def test_wizard_radio_focused_label_is_bold_and_bright_no_bar():
