@@ -16,7 +16,7 @@ from textual.widgets import Static
 from ...onboarding import HOSTING_CHOICES
 from ..environment import EnvironmentReport, detect_environment
 from ..nav import Step
-from .base import WizardStep
+from .base import ACCENT, WizardStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -27,17 +27,16 @@ def _ok(flag: bool) -> str:
 
 
 def _report_markup(report: EnvironmentReport) -> str:
-    lines = [
-        "[bold]Detected environment[/bold]",
-        f"  Operating system   {report.os_label}",
-        f"  Docker available   {_ok(report.docker_available)}",
-        f"  Port 8000 free     {_ok(report.port_8000_free)}",
-        "",
+    rows = [
+        ("Operating system", report.os_label),
+        ("Docker available", _ok(report.docker_available)),
+        ("Port 8000 free", _ok(report.port_8000_free)),
         (
-            "[bold]Recommended hosting[/bold]   "
-            f"{HOSTING_CHOICES[report.recommended_hosting].label}"
+            "Recommended hosting",
+            f"[bold {ACCENT}]{HOSTING_CHOICES[report.recommended_hosting].label}[/]",
         ),
     ]
+    lines = [f"[#aab4c3]{label:<19}[/]  {value}" for label, value in rows]
     for note in report.notes:
         lines.append("")
         lines.append(f"[#fcd34d]Note:[/#fcd34d] {note}")
@@ -48,7 +47,9 @@ class WelcomeStep(WizardStep):
     """Informational front door: show what we detected and the recommendation."""
 
     def compose_body(self) -> ComposeResult:
-        yield Static(_report_markup(detect_environment()))
+        report = Static(_report_markup(detect_environment()), id="env-report")
+        report.border_title = "Detected environment"
+        yield report
 
     def collect(self) -> bool:
         # Nothing to store; the hosting step owns the deployment-target choice.

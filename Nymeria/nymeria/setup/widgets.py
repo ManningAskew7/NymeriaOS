@@ -71,6 +71,9 @@ def _header_prompt(label: str) -> Text:
 
 
 def _row_prompt(item: ListItem) -> Text:
+    # Secondaries are short tags (e.g. a context size). Long prose belongs in a
+    # hint below the list (see the provider/model steps), not in the row, where
+    # it would wrap back to column 0 and read as noise.
     prompt = Text(item.primary)
     if item.secondary:
         prompt.append(f"  {item.secondary}", style="#8a93a3")
@@ -249,6 +252,10 @@ class SearchableList(Widget):
                 option_list.highlighted = index
                 return
         option_list.highlighted = None
+        # OptionList suppresses its highlight watcher for None, so surface the
+        # empty state ourselves; steps rely on Highlighted(None) to clear any
+        # per-row hint they render below the list.
+        self.post_message(self.Highlighted(None))
 
     # --- events -------------------------------------------------------------
 

@@ -23,7 +23,7 @@ from ..rag_catalog import get_embedder, get_reranker
 from ..state import WizardState
 from ..tool_keys import BACKEND_KEY_SPECS
 from ..tool_seed import default_thread_tools_for_state
-from .base import WizardStep
+from .base import ACCENT, WizardStep
 from .placeholders import seeded_global_skills, seeded_tool_names, unmet_fetch_dependency
 
 if TYPE_CHECKING:
@@ -39,37 +39,42 @@ class ReviewStep(WizardStep):
         return True
 
 
+def _row(label: str, value: str) -> str:
+    """One aligned summary row: grey label column, white value."""
+    return f"[#aab4c3]{label:<10}[/]{value}"
+
+
+def _heading(text: str) -> str:
+    return f"[bold {ACCENT}]{text}[/]"
+
+
 def _summary_markup(state: WizardState) -> str:
     lines: list[str] = []
 
     if state.hosting is not None:
-        lines.append(f"[bold]Hosting[/bold]   {HOSTING_CHOICES[state.hosting].label}")
+        lines.append(_row("Hosting", HOSTING_CHOICES[state.hosting].label))
     if state.docker_stack is not None and state.hosting is HostingOption.DOCKER:
-        lines.append(
-            f"[bold]Stack[/bold]     {DOCKER_STACK_CHOICES[state.docker_stack].label}"
-        )
+        lines.append(_row("Stack", DOCKER_STACK_CHOICES[state.docker_stack].label))
     if state.security_profile is not None:
         lines.append(
-            "[bold]Security[/bold]  "
-            f"{SECURITY_PROFILE_CHOICES[state.security_profile].label}"
+            _row("Security", SECURITY_PROFILE_CHOICES[state.security_profile].label)
         )
     if state.auth_method is not None:
         lines.append(
-            "[bold]LLM auth[/bold]  "
-            f"{PROVIDER_AUTH_METHOD_CHOICES[state.auth_method].label}"
+            _row("LLM auth", PROVIDER_AUTH_METHOD_CHOICES[state.auth_method].label)
         )
 
     spec = get_llm_provider_spec(state.provider)
     if spec is not None:
-        lines.append(f"[bold]Provider[/bold]  {spec.label}  ({spec.tier})")
+        lines.append(_row("Provider", f"{spec.label}  ({spec.tier})"))
         model = state.model or spec.default_model or "(choose on next run)"
-        lines.append(f"[bold]Model[/bold]     {escape(model)}")
+        lines.append(_row("Model", escape(model)))
         if state.api_key:
-            lines.append("[bold]API key[/bold]   set")
+            lines.append(_row("API key", "set"))
         if state.api_mode:
-            lines.append(f"[bold]API mode[/bold]  {state.api_mode}")
+            lines.append(_row("API mode", state.api_mode))
         if state.base_url:
-            lines.append(f"[bold]Base URL[/bold]  {state.base_url}")
+            lines.append(_row("Base URL", state.base_url))
 
     # Tools: the default (seed) set plus the concrete family members seeded at
     # init (web_search_* / fetch_url_* / image_gen_*), written to the bootstrap
@@ -115,7 +120,7 @@ def _summary_markup(state: WizardState) -> str:
 
     tool_lines.extend(tuning_summary_lines(state))
     lines.append("")
-    lines.append("[bold]Tools and capabilities[/bold]")
+    lines.append(_heading("Tools and capabilities"))
     for line in tool_lines:
         lines.append(f"  {line}")
 
@@ -123,7 +128,7 @@ def _summary_markup(state: WizardState) -> str:
     if emb is not None:
         rer = get_reranker(state.reranker)
         lines.append("")
-        lines.append("[bold]Semantic memory (RAG)[/bold]")
+        lines.append(_heading("Semantic memory (RAG)"))
         lines.append(f"  Embedder: {emb.label}")
         if rer is not None:
             lines.append(f"  Reranker: {rer.label}")
@@ -140,7 +145,7 @@ def _summary_markup(state: WizardState) -> str:
 
             verified = "verified" if state.public_url_verified else "unverified"
             external += f" at {public_origin(active_public_url(state))} ({verified})"
-        lines.append(f"[bold]External[/bold]  {external}")
+        lines.append(_row("External", external))
 
     # Post-setup handoff (set by the start-now step or the --start/--next-action
     # flags). Surfaced so the final Enter's effect is no surprise.
@@ -152,7 +157,7 @@ def _summary_markup(state: WizardState) -> str:
         else:
             nxt = "print the start command"
         lines.append("")
-        lines.append(f"[bold]Next[/bold]      {nxt}")
+        lines.append(_row("Next", nxt))
 
     if not lines:
         lines.append("Nothing selected yet.")

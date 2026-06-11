@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.widgets import Input, RadioSet, Static
 
@@ -43,7 +44,11 @@ _API_MODE_CHOICES = [
 
 
 def _provider_items() -> list[ListItem]:
-    """Flatten the tier-grouped registry into header + selectable rows."""
+    """Flatten the tier-grouped registry into header + selectable rows.
+
+    Provider notes are prose, so they are NOT row secondaries (those would wrap
+    inside the list); the highlighted provider's note renders below the list.
+    """
     items: list[ListItem] = []
     for tier_label, specs in grouped_provider_specs():
         items.append(ListItem(value="", primary=tier_label, is_header=True))
@@ -52,11 +57,16 @@ def _provider_items() -> list[ListItem]:
                 ListItem(
                     value=spec.id,
                     primary=spec.label,
-                    secondary=spec.notes_for_user,
                     search_text=f"{spec.label} {spec.id} {tier_label}",
                 )
             )
     return items
+
+
+def _provider_note(provider_id: str | None) -> str:
+    spec = get_llm_provider_spec(provider_id) if provider_id else None
+    # Escaped: the note Static parses markup, and registry notes are prose.
+    return escape(spec.notes_for_user) if spec else ""
 
 
 def _first_provider_id() -> str | None:
@@ -99,6 +109,7 @@ class ProviderStep(WizardStep):
             search_id="provider-search",
             list_id="provider-options",
         )
+        yield Static(_provider_note(initial), id="provider-note")
         yield Static("API key", classes="field-label")
         yield Input(
             value=self.state.api_key,
@@ -118,12 +129,16 @@ class ProviderStep(WizardStep):
         self.query_one(SearchableList).focus()
 
     def on_searchable_list_highlighted(self, event: SearchableList.Highlighted) -> None:
-        # Update the key-field hint to match the highlighted provider. We do not
-        # write state.provider here, so skipping the step leaves it unset.
+        # Update the key-field hint and the provider note to match the
+        # highlighted provider. We do not write state.provider here, so
+        # skipping the step leaves it unset.
         if event.value:
             self.query_one("#api-key", Input).placeholder = self._key_field_placeholder(
                 event.value
             )
+        # value is None when the filter has no matches: clear the note so it
+        # cannot describe a provider that is no longer shown.
+        self.query_one("#provider-note", Static).update(_provider_note(event.value))
 
     def on_searchable_list_selected(self, event: SearchableList.Selected) -> None:
         # Mouse click on a provider: update the hint and move to the key field.
