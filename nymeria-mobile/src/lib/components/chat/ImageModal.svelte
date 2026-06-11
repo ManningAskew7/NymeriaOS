@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { FileAttachment } from '$lib/types';
+  import { fade } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
+  import { OVERLAY_FADE_IN, OVERLAY_FADE_OUT } from '$lib/utils/transitions';
   import { formatFileSize } from '$lib/utils/fileProcessing';
 
   interface Props {
@@ -121,6 +123,8 @@
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     use:trapFocus
+    in:fade={OVERLAY_FADE_IN}
+    out:fade={OVERLAY_FADE_OUT}
   >
     <div class="modal-content">
       <div class="modal-header">
@@ -177,12 +181,6 @@
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    animation: fadeIn var(--transition-fast);
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 
   .modal-content {
@@ -190,7 +188,6 @@
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    animation: fadeIn var(--transition-fast);
   }
 
   .modal-header {

@@ -1,6 +1,13 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import { Button } from '$lib/components/common';
   import { trapFocus } from '$lib/actions/focus';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    DIALOG_RISE_IN,
+    DIALOG_RISE_OUT,
+  } from '$lib/utils/transitions';
 
   interface Props {
     toolCount: number;
@@ -20,7 +27,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="warning-backdrop">
+<div class="warning-backdrop" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
   <button
     class="warning-backdrop-button"
     type="button"
@@ -28,7 +35,7 @@
     aria-label="Go back from high tool count warning"
     onclick={onGoBack}
   ></button>
-  <div class="warning-panel" role="dialog" aria-modal="true" aria-labelledby="tool-count-warning-title" tabindex="-1" use:trapFocus>
+  <div class="warning-panel" role="dialog" aria-modal="true" aria-labelledby="tool-count-warning-title" tabindex="-1" use:trapFocus in:fly={DIALOG_RISE_IN} out:fly={DIALOG_RISE_OUT}>
     <div class="warning-icon">!</div>
     <h3 id="tool-count-warning-title">High Tool Count</h3>
     <p class="warning-count">

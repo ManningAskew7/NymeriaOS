@@ -1,5 +1,12 @@
 <script lang="ts">
   import type { Notification } from '$lib/types';
+  import { fade, fly } from 'svelte/transition';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    SHEET_RISE_IN,
+    SHEET_RISE_OUT,
+  } from '$lib/utils/transitions';
   import { notificationStore } from '$lib/stores/notifications.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import NotificationItem from './NotificationItem.svelte';
@@ -47,8 +54,8 @@
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="notification-overlay" onclick={handleOverlayClick} role="presentation">
-    <div class="notification-sheet">
+  <div class="notification-overlay" onclick={handleOverlayClick} role="presentation" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
+    <div class="notification-sheet" in:fly={SHEET_RISE_IN} out:fly={SHEET_RISE_OUT}>
       <div class="sheet-handle"></div>
 
       <div class="sheet-header">
@@ -94,7 +101,6 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fadeIn var(--transition-fast);
   }
 
   .notification-sheet {
@@ -106,7 +112,6 @@
     border-top-right-radius: var(--radius-xl);
     display: flex;
     flex-direction: column;
-    animation: slideUp var(--transition-normal);
   }
 
   .sheet-handle {
@@ -165,13 +170,4 @@
     color: var(--text-secondary);
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
-  }
 </style>

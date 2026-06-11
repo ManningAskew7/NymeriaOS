@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import type { ErrorKind } from '$lib/stores/errors.svelte';
   import { errorsStore } from '$lib/stores/errors.svelte';
+  import { TOAST_DROP_IN, TOAST_DROP_OUT, TOAST_FLIP } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   function iconFor(kind: ErrorKind): string {
@@ -55,6 +58,9 @@
       class:warning={severity(toast.kind) === 'warning'}
       class:info={severity(toast.kind) === 'info'}
       role="status"
+      in:fly={TOAST_DROP_IN}
+      out:fly={TOAST_DROP_OUT}
+      animate:flip={TOAST_FLIP}
     >
       <Icon name={iconFor(toast.kind)} size={18} />
       <div class="toast-body">
@@ -110,7 +116,6 @@
     border-radius: var(--radius-md);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     color: var(--text-primary);
-    animation: toast-in var(--transition-normal) both;
   }
 
   .toast.destructive {
@@ -132,10 +137,6 @@
     color: var(--accent-primary);
   }
 
-  @keyframes toast-in {
-    from { opacity: 0; transform: translateY(-8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
 
   .toast-body {
     flex: 1;

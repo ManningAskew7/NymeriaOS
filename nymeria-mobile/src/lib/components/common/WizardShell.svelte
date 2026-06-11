@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import { PAGE_SLIDE_IN, PAGE_SLIDE_OUT } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -21,7 +23,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="wizard-backdrop" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" use:trapFocus>
+<div class="wizard-backdrop" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" use:trapFocus in:fly={PAGE_SLIDE_IN} out:fly={PAGE_SLIDE_OUT}>
   <div class="wizard">
     <header class="wizard-header">
       <button class="back-btn" type="button" onclick={onClose} aria-label="Close">

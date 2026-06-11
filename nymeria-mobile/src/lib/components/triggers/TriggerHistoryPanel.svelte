@@ -1,6 +1,13 @@
 <script lang="ts">
   import type { TriggerExecution, Trigger } from '$lib/types';
+  import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    DIALOG_RISE_IN,
+    DIALOG_RISE_OUT,
+  } from '$lib/utils/transitions';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -59,7 +66,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="history-overlay">
+<div class="history-overlay" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
   <button
     class="history-backdrop"
     type="button"
@@ -67,7 +74,7 @@
     aria-label="Close execution history"
     onclick={onClose}
   ></button>
-  <div class="history-panel" role="dialog" aria-modal="true" aria-labelledby="trigger-history-title" tabindex="-1" use:trapFocus>
+  <div class="history-panel" role="dialog" aria-modal="true" aria-labelledby="trigger-history-title" tabindex="-1" use:trapFocus in:fly={DIALOG_RISE_IN} out:fly={DIALOG_RISE_OUT}>
     <div class="panel-header">
       <div class="header-left">
         <Icon name="clock" size={16} />
@@ -162,7 +169,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn var(--transition-fast);
   }
 
   .history-backdrop {
@@ -187,17 +193,13 @@
        border (hairline --glass-border on a solid background) would be
        redundant chrome. Tokenized to --shadow-lg. */
     box-shadow: var(--shadow-lg);
-    animation: slideUp var(--transition-normal);
   }
 
+  /* Kept for .exec-details below — the overlay entrance/exit itself moved
+     to Svelte transitions (in:/out: above). */
   @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .panel-header {

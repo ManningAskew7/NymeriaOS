@@ -1,5 +1,12 @@
 <script lang="ts">
   import type { Thread } from '$lib/types';
+  import { fade, fly } from 'svelte/transition';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    SHEET_RISE_IN,
+    SHEET_RISE_OUT,
+  } from '$lib/utils/transitions';
   import Icon from '$lib/components/common/Icon.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
 
@@ -146,9 +153,9 @@
 
   {#if showActions}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="actions-overlay" onclick={handleOverlayClick} role="presentation">
+    <div class="actions-overlay" onclick={handleOverlayClick} role="presentation" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-      <div class="actions-menu" onclick={stopProp}>
+      <div class="actions-menu" onclick={stopProp} in:fly={SHEET_RISE_IN} out:fly={SHEET_RISE_OUT}>
         <button class="action-item" onclick={handleRename}>
           <Icon name="edit" size={18} />
           <span>Rename</span>
@@ -260,7 +267,6 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fadeIn var(--transition-fast);
   }
 
   .actions-menu {
@@ -270,7 +276,6 @@
     border-top-left-radius: var(--radius-xl);
     border-top-right-radius: var(--radius-xl);
     padding: var(--spacing-md);
-    animation: slideUp var(--transition-normal);
   }
 
   .action-item {
@@ -293,13 +298,4 @@
     color: var(--error);
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
-  }
 </style>

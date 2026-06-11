@@ -1,5 +1,12 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    SHEET_RISE_IN,
+    SHEET_RISE_OUT,
+  } from '$lib/utils/transitions';
   import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
@@ -68,8 +75,8 @@
 
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="account-backdrop" onclick={handleBackdropClick}>
-    <div class="account-sheet" role="dialog" aria-modal="true" aria-label="Account" tabindex="-1" use:trapFocus>
+  <div class="account-backdrop" onclick={handleBackdropClick} in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
+    <div class="account-sheet" role="dialog" aria-modal="true" aria-label="Account" tabindex="-1" use:trapFocus in:fly={SHEET_RISE_IN} out:fly={SHEET_RISE_OUT}>
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-header">
         <Avatar {identity} size={56} state={identity ? 'connected' : 'unverified'} />
@@ -124,12 +131,6 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    animation: fade-in var(--transition-fast);
-  }
-
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 
   .account-sheet {
@@ -140,15 +141,9 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
-    animation: sheet-up 220ms cubic-bezier(0.16, 1, 0.3, 1);
     border-top: 1px solid var(--border-subtle);
     max-height: 80dvh;
     overflow-y: auto;
-  }
-
-  @keyframes sheet-up {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
   }
 
   .sheet-handle {
