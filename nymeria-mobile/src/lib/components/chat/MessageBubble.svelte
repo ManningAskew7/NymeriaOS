@@ -507,7 +507,7 @@
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bg-elevated) 88%, var(--accent-primary));
     color: var(--text-primary);
-    animation: slideUp var(--transition-normal);
+    animation: msgIn var(--transition-normal);
   }
 
   .command-result {
@@ -521,7 +521,7 @@
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
     color: var(--text-primary);
-    animation: slideUp var(--transition-normal);
+    animation: msgIn var(--transition-normal);
   }
 
   .command-icon {
@@ -592,7 +592,7 @@
     flex-direction: column;
     max-width: 85%;
     margin-bottom: var(--spacing-md);
-    animation: slideUp var(--transition-normal);
+    animation: msgIn var(--transition-normal);
   }
 
   .message-bubble.user {
@@ -966,7 +966,8 @@
     text-align: right;
   }
 
-  @keyframes slideUp {
+  /* Intentional variant of the global slideUp: adds a scale-in from 0.98. */
+  @keyframes msgIn {
     from {
       opacity: 0;
       transform: translateY(10px) scale(0.98);

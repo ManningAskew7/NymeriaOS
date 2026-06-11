@@ -219,7 +219,7 @@
   }
 
   .empty-state {
-    animation: fadeIn 600ms ease-out;
+    animation: emptyStateIn 600ms ease-out;
   }
 
   .loading-state p {
@@ -249,7 +249,8 @@
     color: var(--text-muted);
   }
 
-  @keyframes fadeIn {
+  /* Intentional variant of the global fadeIn: adds an 8px rise. */
+  @keyframes emptyStateIn {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
   }
@@ -258,16 +259,5 @@
     display: flex;
     flex-direction: column;
     min-height: 100%;
-  }
-
-  @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 </style>

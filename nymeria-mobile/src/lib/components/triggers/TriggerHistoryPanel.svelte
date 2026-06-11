@@ -195,13 +195,6 @@
     box-shadow: var(--shadow-lg);
   }
 
-  /* Kept for .exec-details below — the overlay entrance/exit itself moved
-     to Svelte transitions (in:/out: above). */
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
   .panel-header {
     display: flex;
     align-items: center;

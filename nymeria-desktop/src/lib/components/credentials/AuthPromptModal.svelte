@@ -1214,17 +1214,7 @@
   }
 
   /* ---- animations ---- */
-
-  @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
+  /* slideUp comes from the global app.css keyframes. */
 
   @keyframes skeletonShimmer {
     0% { background-position: 200% 0; }

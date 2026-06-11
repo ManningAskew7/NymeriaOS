@@ -181,7 +181,7 @@
     display: flex;
     padding: var(--spacing-sm) var(--spacing-md);
     border-bottom: 1px solid var(--glass-border);
-    animation: fadeIn var(--transition-normal) both;
+    animation: itemIn var(--transition-normal) both;
     transition: opacity var(--transition-fast);
   }
 
@@ -193,7 +193,8 @@
     border-bottom: none;
   }
 
-  @keyframes fadeIn {
+  /* Intentional variant of the global fadeIn: adds a 4px rise. */
+  @keyframes itemIn {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
@@ -284,7 +285,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    animation: fadeIn var(--transition-normal);
+    animation: itemIn var(--transition-normal);
   }
 
   .trigger-actions {
