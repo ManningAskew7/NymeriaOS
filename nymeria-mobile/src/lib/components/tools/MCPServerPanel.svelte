@@ -516,6 +516,7 @@
     transition: all var(--transition-fast);
   }
 
+  /* Knob travels via transform (compositor-only), not `left`. */
   .toggle-thumb {
     position: absolute;
     top: 2px;
@@ -524,7 +525,9 @@
     height: 12px;
     background: var(--text-secondary);
     border-radius: 50%;
-    transition: all var(--transition-fast);
+    transition:
+      transform var(--transition-fast),
+      background var(--transition-fast);
   }
 
   .toggle-label input:checked + .toggle-track {
@@ -533,7 +536,7 @@
   }
 
   .toggle-label input:checked + .toggle-track .toggle-thumb {
-    left: 16px;
+    transform: translateX(14px);
     background: white;
   }
 

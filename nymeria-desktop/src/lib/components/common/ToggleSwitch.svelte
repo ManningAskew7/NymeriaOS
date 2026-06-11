@@ -67,11 +67,14 @@
       border-color var(--transition-fast);
   }
 
+  /* The knob travels via transform (compositor-only), not `left` (layout),
+     so the slide stays smooth. Checked states below set translateX to the
+     track width minus thumb and inset. */
   .toggle-thumb {
     position: absolute;
     border-radius: 50%;
     transition:
-      left var(--transition-fast),
+      transform var(--transition-fast),
       background var(--transition-fast);
   }
 
@@ -104,7 +107,7 @@
   }
 
   .toggle-switch-solid.checked .toggle-thumb {
-    left: 16px;
+    transform: translateX(14px);
   }
 
   .toggle-switch-sm.toggle-switch-solid .toggle-thumb {
@@ -114,7 +117,7 @@
   }
 
   .toggle-switch-sm.toggle-switch-solid.checked .toggle-thumb {
-    left: 13px;
+    transform: translateX(11px);
   }
 
   .toggle-switch-outlined .toggle-track {
@@ -143,7 +146,7 @@
   }
 
   .toggle-switch-md.toggle-switch-outlined.checked .toggle-thumb {
-    left: 16px;
+    transform: translateX(14px);
   }
 
   .toggle-switch-sm.toggle-switch-outlined .toggle-thumb {
@@ -154,6 +157,6 @@
   }
 
   .toggle-switch-sm.toggle-switch-outlined.checked .toggle-thumb {
-    left: 13px;
+    transform: translateX(12px);
   }
 </style>

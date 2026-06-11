@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fade } from 'svelte/transition';
+  import { fly } from 'svelte/transition';
+  import { TAB_FADE } from '$lib/utils/transitions';
   import { Collapsible } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
@@ -27,8 +28,8 @@
     if (activeTab === 'thread') {
       suppressScrollbar = true;
       if (suppressTimer) clearTimeout(suppressTimer);
-      // Slightly longer than the 120ms fade to be safe.
-      suppressTimer = setTimeout(() => (suppressScrollbar = false), 180);
+      // Slightly longer than TAB_FADE's 160ms to be safe.
+      suppressTimer = setTimeout(() => (suppressScrollbar = false), 220);
     }
   });
 
@@ -130,8 +131,8 @@
       role="tabpanel"
       aria-labelledby={`dashboard-tab-${activeTab}`}
       tabindex="0"
-      in:fade={{ duration: 120 }}
-      out:fade={{ duration: 120 }}
+      in:fly={TAB_FADE}
+      out:fly={TAB_FADE}
     >
       <!-- Tasks Section -->
       <Collapsible title="Tasks" defaultOpen={true}>
@@ -260,7 +261,7 @@
 
   /* When switching INTO the 'thread' tab, hide every scrollbar inside the
      panel-body for the duration of the fade. No transition — they just
-     vanish for ~180ms and come back once the new tab is settled. */
+     vanish for ~220ms and come back once the new tab is settled. */
   .panel-body.suppress-scrollbar .dashboard-sections {
     scrollbar-width: none;
   }

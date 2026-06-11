@@ -1061,7 +1061,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
-    transition: transform var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .section-chevron.open {

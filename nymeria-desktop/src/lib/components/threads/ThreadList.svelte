@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fade } from 'svelte/transition';
+  import { fly } from 'svelte/transition';
+  import { TAB_FADE } from '$lib/utils/transitions';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -762,15 +763,15 @@
         <p class="hint">Start a new thread to begin</p>
       </div>
     {:else}
-    <!-- Tab content (folders <-> teams) crossfades via {#key} + transition:fade,
-         matching the right sidebar's tab-switch effect. The wrapping .tab-content
-         is a single-cell grid so the outgoing and incoming keyed panes occupy
-         the same slot during the fade — they overlap instead of stacking
-         vertically, which is what would otherwise cause the threads-container
-         scrollbar to flicker. -->
+    <!-- Tab content (folders <-> teams) crossfades via {#key} + the shared
+         TAB_FADE recipe, matching the right sidebar's tab-switch effect. The
+         wrapping .tab-content is a single-cell grid so the outgoing and
+         incoming keyed panes occupy the same slot during the fade — they
+         overlap instead of stacking vertically, which is what would otherwise
+         cause the threads-container scrollbar to flicker. -->
     <div class="tab-content">
     {#key threadsStore.organizationMode}
-    <div class="tab-pane" in:fade={{ duration: 120 }} out:fade={{ duration: 120 }}>
+    <div class="tab-pane" in:fly={TAB_FADE} out:fly={TAB_FADE}>
     {#if threadsStore.organizationMode === 'teams'}
       {#each threadsStore.threadTeams as team (team.id)}
         <FolderItem

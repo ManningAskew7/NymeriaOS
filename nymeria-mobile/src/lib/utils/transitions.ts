@@ -82,6 +82,15 @@ export const TALL_DROPDOWN_TRANSITION = gatedDuration(260, {
   axis: 'y' as const,
 });
 
+/**
+ * Tab-content swap: fade + 3px rise, the one recipe for every tab-pane
+ * swap (RightPanel, ThreadList, SettingsPanel, ThreadSettingsPanel). Use
+ * with `in:fly`; containers built to overlap their keyed panes (RightPanel,
+ * ThreadList) also pass it to `out:fly` for a symmetric crossfade — don't
+ * add `out:` where the container would stack the panes vertically instead.
+ */
+export const TAB_FADE = gatedDuration(160, { y: 3, easing: cubicOut });
+
 /* ------------------------------------------------------------------------
  * Overlay vocabulary (§8 phase 2). Pairs are listed together; a surface
  * that uses DIALOG_RISE_IN must use DIALOG_RISE_OUT, and so on.

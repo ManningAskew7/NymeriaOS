@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
+  import { TAB_FADE } from '$lib/utils/transitions';
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { api, probeConnection } from '$lib/services/api.svelte';
@@ -1156,7 +1158,7 @@
 
     <main class="settings-content">
       {#key activeTab}
-      <div class="tab-fade">
+      <div class="tab-fade" in:fly={TAB_FADE}>
 
   <!-- Connection Tab -->
   {#if activeTab === 'connection'}
@@ -2738,20 +2740,14 @@
   }
 
   /* Wrapper around all tab content. `{#key activeTab}` re-mounts this on
-     every tab change, which fires the animation below — giving a subtle
-     fade + slight upward slide so the swap feels smooth rather than
-     snapping. Matches the right-panel tab swap pattern. */
+     every tab change, firing the shared TAB_FADE entrance (in:fly above) —
+     a subtle fade + slight upward slide so the swap feels smooth rather
+     than snapping. Same recipe as the right-panel tab swap. */
   .tab-fade {
-    animation: tabFade 160ms cubic-bezier(0.4, 0, 0.2, 1);
     height: 100%;
     display: flex;
     flex-direction: column;
     min-height: 0;
-  }
-
-  @keyframes tabFade {
-    from { opacity: 0; transform: translateY(3px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .tab-content {
