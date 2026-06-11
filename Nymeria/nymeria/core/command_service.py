@@ -4086,16 +4086,53 @@ class _CommandExecutor:
             lines.append(f"(showing 25 of {len(models)})")
         return "[Info]: " + "\n".join(lines)
 
+    @staticmethod
+    def _think_clamp_note(settings: dict, effort: str) -> tuple[str, str]:
+        """Return (effective effort, human note) for the global model.
+
+        The note is empty when the requested level is honored as-is; otherwise
+        it names the level the model actually runs at.
+        """
+        try:
+            from ..config.model_capabilities import clamp_reasoning_effort
+
+            provider = str(settings.get("llm_provider") or "")
+            model = str(settings.get("llm_model") or "")
+            if not model:
+                return effort, ""
+            effective = clamp_reasoning_effort(provider, model, effort)
+        except Exception:
+            return effort, ""
+        if not effective or effective == effort:
+            return effort, ""
+        if effort == "off":
+            return effective, (
+                f" Note: {model} cannot disable thinking; it runs at {effective}."
+            )
+        return effective, f" Note: {model} runs at {effective}."
+
     async def _cmd_think(self, args: list[str], rest: str) -> str:
         if not args:
             settings = await self.api.get_settings()
             thinking = settings.get("llm_extended_thinking", False)
             effort = settings.get("llm_reasoning_effort")
+            supported = ""
+            try:
+                from ..config.model_capabilities import supported_reasoning_efforts
+
+                provider = str(settings.get("llm_provider") or "")
+                model = str(settings.get("llm_model") or "")
+                if model:
+                    ladder = supported_reasoning_efforts(provider, model)
+                    supported = f" {model} supports: {', '.join(ladder)}."
+            except Exception:
+                supported = ""
             if not thinking or str(effort or "").lower() == "off":
-                return "[Info]: Thinking is off."
+                return f"[Info]: Thinking is off.{supported}"
             if effort:
-                return f"[Info]: Thinking is on (effort: {effort})."
-            return "[Info]: Thinking is on."
+                _, note = self._think_clamp_note(settings, str(effort).lower())
+                return f"[Info]: Thinking is on (effort: {effort}).{note}{supported}"
+            return f"[Info]: Thinking is on.{supported}"
         value = args[0].lower()
         if value == "off":
             # Persist effort="off" so the explicit off wins over any saved
@@ -4105,7 +4142,9 @@ class _CommandExecutor:
                 llm_extended_thinking=False,
                 llm_reasoning_effort="off",
             )
-            return "[Success]: Thinking disabled."
+            settings = await self.api.get_settings()
+            _, note = self._think_clamp_note(settings, "off")
+            return f"[Success]: Thinking disabled.{note}"
         if value == "on":
             settings = await self.api.get_settings()
             effort = str(settings.get("llm_reasoning_effort") or "").lower()
@@ -4128,7 +4167,9 @@ class _CommandExecutor:
                 llm_extended_thinking=True,
                 llm_reasoning_effort=value,
             )
-            return f"[Success]: Thinking enabled, effort: {value}."
+            settings = await self.api.get_settings()
+            _, note = self._think_clamp_note(settings, value)
+            return f"[Success]: Thinking enabled, effort: {value}.{note}"
         return "[Error]: Usage: /think [off|on|low|medium|high|xhigh|max]"
 
     # ── Config ────────────────────────────────────────────────────────────

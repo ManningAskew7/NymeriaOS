@@ -45,3 +45,34 @@ export function effortExceedsModelMax(
   if (selectedIdx < 0 || maxIdx < 0) return false;
   return selectedIdx > maxIdx;
 }
+
+/**
+ * Per-model supported set for filtering effort selects. Returns null when the
+ * model's capability data is missing or malformed (fail open: every level
+ * stays selectable and the over-ask warning covers the gap).
+ */
+export function supportedEffortSet(
+  supported: readonly string[] | null | undefined
+): Set<string> | null {
+  if (!supported || supported.length === 0) return null;
+  const known = supported.filter((level) =>
+    REASONING_EFFORT_LEVELS.includes(level)
+  );
+  if (known.length === 0) return null;
+  return new Set(known);
+}
+
+/**
+ * True when a level should be disabled in the select: the model publishes a
+ * supported ladder and this level is not on it. The currently saved value
+ * stays enabled even when unsupported so users can see and change it.
+ */
+export function effortOptionDisabled(
+  level: string,
+  supported: Set<string> | null,
+  currentValue: string | null | undefined
+): boolean {
+  if (!supported) return false;
+  if (level === currentValue) return false;
+  return !supported.has(level);
+}

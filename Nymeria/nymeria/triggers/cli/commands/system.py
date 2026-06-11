@@ -88,7 +88,7 @@ def _handle_help(state: "CLIState", args: List[str]) -> None:
             ("/provider [list|set|test|switch]", "Manage LLM providers"),
             ("/fallback [list|add|remove|clear|set]", "Manage model fallbacks"),
             ("/fast [prompt]", "Toggle or use the fast model for one turn"),
-            ("/reasoning [on|off|low|medium|high]", "Toggle extended thinking"),
+            ("/reasoning [on|off|low|medium|high|xhigh|max]", "Toggle extended thinking"),
         ],
         "Tools": [
             ("/tools", "List tools for current thread"),

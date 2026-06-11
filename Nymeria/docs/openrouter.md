@@ -50,7 +50,7 @@ Important fields:
 | `OPENAI_API_MODE=responses` | Default OpenRouter mode. Uses `/api/v1/responses`. |
 | `OPENAI_API_MODE=chat_completions` | Opt out of Responses beta. Uses `/api/v1/chat/completions`. |
 | `LLM_EXTENDED_THINKING=true` | Request reasoning when the selected model supports it. |
-| `LLM_REASONING_EFFORT=off|low|medium|high|xhigh|max` | Reasoning effort sent to OpenRouter when supported. `off` omits the reasoning config entirely; `max` is sent as `xhigh` (OpenRouter's ceiling). |
+| `LLM_REASONING_EFFORT=off|low|medium|high|xhigh|max` | Reasoning effort sent to OpenRouter when supported. `off` sends effort `none` (Responses) or `enabled: false` plus effort `none` (Chat Completions) so thinking is actively disabled; `max` is sent as `xhigh` (OpenRouter's ceiling). Models whose catalog entry lists no `reasoning` parameter advertise only `off`. |
 | `LLM_USE_MODEL_DEFAULTS=true` | Suppress sampling parameters and let the provider/model decide defaults. |
 | `LLM_BASE_URL` | Normally not set for OpenRouter. If set globally for another provider, per-thread OpenRouter should resolve back to `https://openrouter.ai/api/v1` unless explicitly overridden. |
 

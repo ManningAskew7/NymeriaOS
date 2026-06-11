@@ -9,7 +9,13 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
-  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
+  import {
+    REASONING_EFFORT_LEVELS,
+    effortExceedsModelMax,
+    effortOptionDisabled,
+    reasoningEffortLabel,
+    supportedEffortSet,
+  } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
@@ -143,6 +149,9 @@
     modelsStore.getById(llmModel || serverSettingsStore.model || '')
   );
   const effortClampMax = $derived(effortModelMeta?.max_reasoning_effort ?? '');
+  const effortSet = $derived(
+    supportedEffortSet(effortModelMeta?.supported_reasoning_efforts)
+  );
   const showEffortClampHint = $derived(
     effortExceedsModelMax(llmReasoningEffort, effortClampMax)
   );
@@ -1275,12 +1284,12 @@
           <label class="setting-label">Reasoning Effort</label>
           <select class="setting-input" bind:value={llmReasoningEffort}>
             <option value="">Default (inherit global)</option>
-            <option value="off">Off</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="xhigh">Extra high</option>
-            <option value="max">Max</option>
+            {#each REASONING_EFFORT_LEVELS as level (level)}
+              {@const unsupported = effortOptionDisabled(level, effortSet, llmReasoningEffort)}
+              <option value={level} disabled={unsupported}>
+                {reasoningEffortLabel(level)}{unsupported ? ' (not supported)' : ''}
+              </option>
+            {/each}
           </select>
           {#if showEffortClampHint}
             <div class="effort-clamp-note">

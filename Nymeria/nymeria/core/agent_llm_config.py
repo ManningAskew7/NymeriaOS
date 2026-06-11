@@ -121,6 +121,7 @@ def _clamp_reasoning_effort_for_model(
     provider: str,
     model: Any,
     effort: Any,
+    provider_route: Any = None,
 ) -> Any:
     """Clamp the resolved reasoning effort onto the model's supported ladder.
 
@@ -133,12 +134,12 @@ def _clamp_reasoning_effort_for_model(
         return effort
 
     model_text = str(model or "")
-    clamped = clamp_reasoning_effort(provider, model_text, effort_text)
+    clamped = clamp_reasoning_effort(provider, model_text, effort_text, provider_route)
     if clamped != effort_text:
         warn_key = (provider, model_text, effort_text)
         if warn_key not in _CLAMPED_EFFORT_WARNED:
             _CLAMPED_EFFORT_WARNED.add(warn_key)
-            supported = supported_reasoning_efforts(provider, model_text)
+            supported = supported_reasoning_efforts(provider, model_text, provider_route)
             logger.warning(
                 "[LLM] Model %s (%s) does not support reasoning effort %r "
                 "(supported: %s). Clamping to %r.",
@@ -300,6 +301,7 @@ def get_llm_config_for_thread(
         provider,
         model,
         reasoning_effort,
+        provider_route,
     )
     use_model_defaults = resolve("use_model_defaults", agent.settings.llm_use_model_defaults)
     context_length_override = _positive_int(

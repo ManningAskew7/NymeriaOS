@@ -42,10 +42,17 @@ Use the `/reasoning` command (alias `/thinking`) instead of manually patching tw
 ```
 
 Valid efforts are `off|low|medium|high|xhigh|max`. Levels a model does not
-support are clamped to its highest supported level before the request is sent
-(`config/model_capabilities.py::clamp_reasoning_effort`); the thread overview
-exposes the post-clamp value as `reasoning_effort_effective`. The status bar
-shows `thinking: <effort>` when reasoning is active.
+support are clamped onto its supported ladder before the request is sent
+(`config/model_capabilities.py::clamp_reasoning_effort`): over-asks drop to the
+model's highest tier, and below-floor requests clamp up to the next supported
+tier (`off` on a model that cannot disable thinking runs at its lowest level).
+Ladders are wire-honest per provider: partners whose request only carries an
+on/off toggle (Alibaba/Qwen, Moonshot, Novita, Together non-effort models)
+advertise just `off` and `medium`, and Anthropic ladders come live from the
+`/v1/models` capabilities tree when available. The thread overview exposes the
+post-clamp value as `reasoning_effort_effective`, `/reasoning` and `/think`
+report "runs at X" when a request was clamped, and the status bar shows the
+effective `thinking: <effort>`.
 
 ## Wire formats by provider
 

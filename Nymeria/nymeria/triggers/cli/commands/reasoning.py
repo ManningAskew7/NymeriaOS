@@ -40,6 +40,47 @@ async def _handle_reasoning(
     )
 
 
+def _resolve_provider_model(
+    settings: Mapping[str, Any] | None,
+    config: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    """Resolve the active provider/model from thread overrides over globals."""
+    provider = ""
+    model = ""
+    if settings:
+        provider = str(mapping_get(settings, "llm_provider", "") or "")
+        model = str(mapping_get(settings, "llm_model", "") or "")
+    if config:
+        llm_config = mapping_get(config, "llm_config", {}) or {}
+        if isinstance(llm_config, Mapping):
+            provider = str(llm_config.get("provider") or "") or provider
+            model = str(llm_config.get("model") or "") or model
+    return provider, model
+
+
+def _model_ladder(provider: str, model: str) -> tuple | None:
+    """Supported effort levels for the active model; None when unresolvable."""
+    if not model:
+        return None
+    try:
+        from nymeria.config.model_capabilities import supported_reasoning_efforts
+
+        return supported_reasoning_efforts(provider, model)
+    except Exception:
+        return None
+
+
+def _clamp_for_model(provider: str, model: str, effort: str) -> str:
+    if not model or not effort:
+        return effort
+    try:
+        from nymeria.config.model_capabilities import clamp_reasoning_effort
+
+        return clamp_reasoning_effort(provider, model, effort)
+    except Exception:
+        return effort
+
+
 async def _show_reasoning_state(context: CommandContext) -> CommandResult:
     settings = await _settings_or_none(context)
     config = await _thread_config_or_none(context)
@@ -68,8 +109,14 @@ async def _show_reasoning_state(context: CommandContext) -> CommandResult:
         # Explicit effort "off" wins over extended_thinking.
         effective_thinking = False
 
+    provider, model = _resolve_provider_model(settings, config)
+    runs_at = _clamp_for_model(provider, model, effective_effort)
+    ladder = _model_ladder(provider, model)
+
     state_label = "on" if effective_thinking else "off"
     effort_label = effective_effort or "default"
+    if runs_at and effective_effort and runs_at != effective_effort:
+        effort_label = f"{effective_effort} (runs at {runs_at})"
 
     rows = [
         f"Reasoning: {state_label}",
@@ -82,10 +129,17 @@ async def _show_reasoning_state(context: CommandContext) -> CommandResult:
     else:
         rows.append("  Override   None (using global)")
     rows.append(f"  Effective  {state_label}, effort: {effort_label}")
+    if ladder:
+        rows.append(f"  Supported  {', '.join(ladder)} ({model})")
 
     return CommandResult.completed(
         CommandMessage("\n".join(rows), title="Reasoning"),
-        payload={"enabled": effective_thinking, "effort": effective_effort},
+        payload={
+            "enabled": effective_thinking,
+            "effort": effective_effort,
+            "effort_effective": runs_at or effective_effort,
+            "supported_efforts": list(ladder) if ladder else None,
+        },
     )
 
 
@@ -98,6 +152,19 @@ async def _set_reasoning(
     if not context.thread_id:
         return await _set_reasoning_global(context, enabled=enabled, effort=effort)
     return await _set_reasoning_thread(context, enabled=enabled, effort=effort)
+
+
+async def _effective_effort_for_set(
+    context: CommandContext,
+    effort: str | None,
+) -> str:
+    """Clamp a just-requested effort onto the active model's ladder."""
+    if not effort:
+        return ""
+    settings = await _settings_or_none(context)
+    config = await _thread_config_or_none(context)
+    provider, model = _resolve_provider_model(settings, config)
+    return _clamp_for_model(provider, model, effort)
 
 
 async def _set_reasoning_global(
@@ -127,12 +194,20 @@ async def _set_reasoning_global(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/reasoning", method_name=exc.method_name)
 
+    effective = await _effective_effort_for_set(context, effort)
     await context.dispatch({
         "type": "set_reasoning",
         "enabled": enabled,
-        "effort": effort or "",
+        # The status bar shows the level the model will actually run at.
+        "effort": effective or effort or "",
     })
-    return _success_message(enabled, effort, scope="global", cleared_off=cleared_off)
+    return _success_message(
+        enabled,
+        effort,
+        scope="global",
+        cleared_off=cleared_off,
+        effective=effective,
+    )
 
 
 async def _set_reasoning_thread(
@@ -162,12 +237,20 @@ async def _set_reasoning_thread(
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/reasoning", method_name=exc.method_name)
 
+    effective = await _effective_effort_for_set(context, effort)
     await context.dispatch({
         "type": "set_reasoning",
         "enabled": enabled,
-        "effort": effort or "",
+        # The status bar shows the level the model will actually run at.
+        "effort": effective or effort or "",
     })
-    return _success_message(enabled, effort, scope="thread", cleared_off=cleared_off)
+    return _success_message(
+        enabled,
+        effort,
+        scope="thread",
+        cleared_off=cleared_off,
+        effective=effective,
+    )
 
 
 async def _global_effort_is_off(context: CommandContext) -> bool:
@@ -195,17 +278,26 @@ def _success_message(
     *,
     scope: str,
     cleared_off: bool = False,
+    effective: str = "",
 ) -> CommandResult:
+    clamped = bool(effort and effective and effective != effort)
     if enabled:
         label = f"Reasoning on ({scope})"
         if effort:
             label += f", effort: {effort}"
+            if clamped:
+                label += f" (this model runs at {effective})"
         elif cleared_off:
             label += ", effort reset to default"
     else:
         label = f"Reasoning off ({scope})"
+        if clamped:
+            # e.g. "off" on a model that cannot disable thinking.
+            label += f" (this model cannot disable thinking; runs at {effective})"
 
     payload = {"enabled": enabled, "effort": effort or "", "scope": scope}
+    if effective:
+        payload["effort_effective"] = effective
     if cleared_off:
         payload["effort_cleared"] = True
     return CommandResult.completed(
