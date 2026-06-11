@@ -367,3 +367,27 @@ html[data-theme="platinum"] .sidebar-header .logo {
   color: #e0f0ff;
   letter-spacing: 0.02em;
 }
+
+/* ============================================================
+ * REDUCED MOTION — Global floor for the OS-level preference.
+ * Animations complete instantly rather than being removed, so end
+ * states stay correct: spinners degrade to static icons, entrances
+ * land settled, backwards-fill staggers don't hold rows invisible
+ * (hence the zeroed delay). Also stills the scroll-snap pager's
+ * CSS smooth scrolling (MobileShell); the programmatic counterpart
+ * is handled in stores/ui.svelte.ts goToPanel. JS-driven Svelte
+ * transitions are gated separately in utils/transitions.ts.
+ * ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
