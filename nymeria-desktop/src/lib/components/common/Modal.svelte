@@ -1,6 +1,13 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    DIALOG_RISE_IN,
+    DIALOG_RISE_OUT,
+  } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -29,7 +36,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if isOpen}
-  <div class="modal-backdrop">
+  <div class="modal-backdrop" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
     <button
       class="modal-backdrop-button"
       type="button"
@@ -37,7 +44,7 @@
       aria-label="Close {title}"
       onclick={handleBackdropClick}
     ></button>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" use:trapFocus>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" use:trapFocus in:fly={DIALOG_RISE_IN} out:fly={DIALOG_RISE_OUT}>
       <div class="modal-header">
         <h2 id={titleId}>{title}</h2>
         <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
@@ -62,7 +69,6 @@
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    animation: fadeIn var(--transition-fast);
   }
 
   .modal-backdrop-button {
@@ -91,7 +97,6 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    animation: slideUp var(--transition-normal);
   }
 
   .modal-header {
@@ -123,19 +128,4 @@
     min-height: 0;
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
 </style>

@@ -1,7 +1,14 @@
 <script lang="ts">
   import type { FileAttachment } from '$lib/types';
+  import { fade, scale } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
   import { Icon } from '$lib/components/common';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    DIALOG_SCALE_IN,
+    DIALOG_SCALE_OUT,
+  } from '$lib/utils/transitions';
   import { formatFileSize } from '$lib/utils/fileProcessing';
 
   interface Props {
@@ -24,6 +31,8 @@
 {#if image}
   <div
     class="modal-backdrop"
+    in:fade={OVERLAY_FADE_IN}
+    out:fade={OVERLAY_FADE_OUT}
   >
     <button
       class="modal-backdrop-button"
@@ -32,7 +41,7 @@
       aria-label="Close image preview"
       onclick={onClose}
     ></button>
-    <div class="modal-content" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" use:trapFocus>
+    <div class="modal-content" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" use:trapFocus in:scale={DIALOG_SCALE_IN} out:scale={DIALOG_SCALE_OUT}>
       <div class="modal-header">
         <span class="image-info">
           {image.name} ({formatFileSize(image.size)})
@@ -66,7 +75,6 @@
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    animation: fadeIn var(--transition-fast);
   }
 
   .modal-backdrop-button {
@@ -75,15 +83,6 @@
     padding: 0;
     border: 0;
     background: transparent;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
   }
 
   .modal-content {
@@ -95,18 +94,6 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    animation: scaleIn var(--transition-fast);
-  }
-
-  @keyframes scaleIn {
-    from {
-      transform: scale(0.95);
-      opacity: 0;
-    }
-    to {
-      transform: scale(1);
-      opacity: 1;
-    }
   }
 
   .modal-header {

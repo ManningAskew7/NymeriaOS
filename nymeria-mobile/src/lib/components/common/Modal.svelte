@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import { PAGE_SLIDE_IN, PAGE_SLIDE_OUT } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -29,7 +31,7 @@
 
 {#if isOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1" use:trapFocus>
+  <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1" use:trapFocus in:fly={PAGE_SLIDE_IN} out:fly={PAGE_SLIDE_OUT}>
     <div class="modal">
       <div class="modal-header">
         <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
@@ -53,7 +55,6 @@
     display: flex;
     flex-direction: column;
     z-index: 1000;
-    animation: slideIn var(--transition-normal);
   }
 
   .modal {
@@ -108,12 +109,4 @@
     padding: var(--spacing-md);
   }
 
-  @keyframes slideIn {
-    from {
-      transform: translateX(100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
 </style>

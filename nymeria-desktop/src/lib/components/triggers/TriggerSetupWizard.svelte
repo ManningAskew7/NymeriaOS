@@ -8,7 +8,14 @@
     TriggerUpdateRequest,
     Trigger,
   } from '$lib/types';
+  import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import {
+    OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT,
+    DIALOG_RISE_IN,
+    DIALOG_RISE_OUT,
+  } from '$lib/utils/transitions';
   import { Icon } from '$lib/components/common';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -264,7 +271,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="wizard-overlay">
+<div class="wizard-overlay" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
   <button
     class="wizard-backdrop"
     type="button"
@@ -272,7 +279,7 @@
     aria-label={isEditing ? 'Close edit trigger dialog' : 'Close new trigger dialog'}
     onclick={onClose}
   ></button>
-  <div class="wizard-modal" role="dialog" aria-modal="true" aria-labelledby="trigger-wizard-title" tabindex="-1" use:trapFocus>
+  <div class="wizard-modal" role="dialog" aria-modal="true" aria-labelledby="trigger-wizard-title" tabindex="-1" use:trapFocus in:fly={DIALOG_RISE_IN} out:fly={DIALOG_RISE_OUT}>
     <!-- Header -->
     <div class="wizard-header">
       <h2 id="trigger-wizard-title">{isEditing ? 'Edit Trigger' : 'New Trigger'}</h2>
@@ -689,7 +696,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn var(--transition-fast);
   }
 
   .wizard-backdrop {
@@ -714,17 +720,6 @@
        hairline --glass-border on a solid background was redundant
        chrome. Tokenized to --shadow-xl. */
     box-shadow: var(--shadow-xl);
-    animation: slideUp var(--transition-normal);
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .wizard-header {

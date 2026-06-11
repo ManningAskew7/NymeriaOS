@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import type { ErrorKind } from '$lib/stores/errors.svelte';
   import { errorsStore } from '$lib/stores/errors.svelte';
+  import { TOAST_SLIDE_IN, TOAST_SLIDE_OUT, TOAST_FLIP } from '$lib/utils/transitions';
   import Icon from './Icon.svelte';
 
   function iconFor(kind: ErrorKind): string {
@@ -63,6 +66,9 @@
       class:warning={severity(toast.kind) === 'warning'}
       class:info={severity(toast.kind) === 'info'}
       role="status"
+      in:fly={TOAST_SLIDE_IN}
+      out:fly={TOAST_SLIDE_OUT}
+      animate:flip={TOAST_FLIP}
     >
       <Icon name={iconFor(toast.kind)} size={18} />
       <div class="toast-body">
@@ -121,7 +127,6 @@
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg);
     color: var(--text-primary);
-    animation: toast-in var(--transition-normal) both;
   }
 
   .toast.destructive {
@@ -147,17 +152,6 @@
 
   .toast.info :global(svg) {
     color: var(--accent-primary);
-  }
-
-  @keyframes toast-in {
-    from {
-      opacity: 0;
-      transform: translateX(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
   }
 
   .toast-body {
