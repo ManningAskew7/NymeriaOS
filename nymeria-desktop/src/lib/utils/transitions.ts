@@ -21,6 +21,23 @@
 import { cubicOut } from 'svelte/easing';
 
 /**
+ * OS-level "reduce motion" preference. Svelte transitions are JS-driven, so
+ * the CSS `prefers-reduced-motion` floor in app.css cannot stop them; instead
+ * the shared constants below collapse to zero duration when the preference is
+ * on. `duration` is a getter so the preference is read each time a transition
+ * actually runs (live, like a CSS media query), not once at module load.
+ */
+const reducedMotionQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+
+/** True when the OS asks for reduced motion. Read at call time. */
+export function prefersReducedMotion(): boolean {
+  return reducedMotionQuery?.matches ?? false;
+}
+
+/**
  * Slide-open / slide-close parameters used by every dropdown, menu, popover,
  * and collapsible panel in the app.
  *
@@ -30,7 +47,9 @@ import { cubicOut } from 'svelte/easing';
  * need horizontal slide should declare their own params.
  */
 export const DROPDOWN_TRANSITION = {
-  duration: 120,
+  get duration() {
+    return prefersReducedMotion() ? 0 : 120;
+  },
   easing: cubicOut,
   axis: 'y' as const,
 };
@@ -43,7 +62,9 @@ export const DROPDOWN_TRANSITION = {
  * keeps the bubble's height change smooth without dragging.
  */
 export const TALL_DROPDOWN_TRANSITION = {
-  duration: 260,
+  get duration() {
+    return prefersReducedMotion() ? 0 : 260;
+  },
   easing: cubicOut,
   axis: 'y' as const,
 };

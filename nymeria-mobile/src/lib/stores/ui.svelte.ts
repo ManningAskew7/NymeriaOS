@@ -7,6 +7,7 @@
  */
 
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
+import { prefersReducedMotion } from '$lib/utils/transitions';
 
 export type ActivePanel = 'left' | 'chat' | 'right';
 
@@ -109,7 +110,9 @@ function createUIStore() {
         const index = panel === 'left' ? 0 : panel === 'chat' ? 1 : 2;
         scrollContainer.scrollTo({
           left: index * scrollContainer.clientWidth,
-          behavior: 'smooth',
+          // An explicit 'smooth' bypasses the CSS scroll-behavior override in
+          // app.css, so the reduced-motion preference must be honored here.
+          behavior: prefersReducedMotion() ? 'auto' : 'smooth',
         });
       }
     },
