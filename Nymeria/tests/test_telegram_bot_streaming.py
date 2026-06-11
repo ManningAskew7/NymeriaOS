@@ -30,6 +30,8 @@ class _FakeMessage:
         self.caption = None
         self.photo = []
         self.document = None
+        self.voice = None
+        self.audio = None
         self.reply_markup = reply_markup
         self.chat = SimpleNamespace(id=chat_id, type="private")
         self.replies: list[str] = []
@@ -635,6 +637,7 @@ def test_telegram_plain_message_preserves_thread_mention_for_backend_dispatch():
             "message": '@"Research Notes" summarize this',
             "thread_id": "telegram_123",
             "user_id": "user-1",
+            "trigger_override": None,
             "attachments": None,
             "force_unsupported_attachments": False,
         }

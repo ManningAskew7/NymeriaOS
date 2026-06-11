@@ -1168,13 +1168,13 @@ export interface ServerSettings {
   // Voice settings
   tts_provider: string;
   tts_base_url: string | null;
-  tts_model: string;
-  tts_voice: string;
+  tts_model: string | null;
+  tts_voice: string | null;
   tts_output_format: string;
   tts_speed: number;
   stt_provider: string;
   stt_base_url: string | null;
-  stt_model: string;
+  stt_model: string | null;
   stt_language: string | null;
   voice_default_thread_id: string | null;
   // RAG / semantic memory
@@ -1677,13 +1677,13 @@ export interface ServerSettingsUpdate {
   // Voice settings
   tts_provider?: string;
   tts_base_url?: string | null;
-  tts_model?: string;
-  tts_voice?: string;
+  tts_model?: string | null;
+  tts_voice?: string | null;
   tts_output_format?: string;
   tts_speed?: number;
   stt_provider?: string;
   stt_base_url?: string | null;
-  stt_model?: string;
+  stt_model?: string | null;
   stt_language?: string | null;
   voice_default_thread_id?: string | null;
 }

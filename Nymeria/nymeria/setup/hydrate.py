@@ -151,6 +151,28 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
                 if rer_id is not None:
                     state.reranker = rer_id
 
+    # Voice: round-trip the provider picks (the env values ARE the choice
+    # values). The on-disk provider is also recorded under *_on_disk so
+    # finalize and the backend-keys step can tell a provider SWITCH (retire
+    # stale provider-scoped lines, re-ask the key) from an untouched
+    # reconfigure. Unknown hand-edited values are treated as not recorded.
+    from .voice_catalog import STT_VALUES, TTS_VALUES
+
+    tts_on_disk = (_get(values, "TTS_PROVIDER") or "").strip()
+    if tts_on_disk in TTS_VALUES:
+        state.extras["tts_on_disk"] = tts_on_disk
+        state.extras.setdefault("tts", tts_on_disk)
+    stt_on_disk = (_get(values, "STT_PROVIDER") or "").strip()
+    if stt_on_disk in STT_VALUES:
+        state.extras["stt_on_disk"] = stt_on_disk
+        state.extras.setdefault("stt", stt_on_disk)
+    # Base URLs recorded so a hosting-shape switch can retire a wizard-written
+    # sidecar URL that no longer resolves (voice_catalog.voice_drop_env).
+    if _get(values, "TTS_BASE_URL"):
+        state.extras["tts_base_url_on_disk"] = _get(values, "TTS_BASE_URL")
+    if _get(values, "STT_BASE_URL"):
+        state.extras["stt_base_url_on_disk"] = _get(values, "STT_BASE_URL")
+
     if state.data_dir is None and not for_docker and _get(values, "NYMERIA_DATA_DIR"):
         state.data_dir = Path(_get(values, "NYMERIA_DATA_DIR") or "")
 

@@ -67,6 +67,13 @@ _CLEARABLE_NULL_SETTINGS = {
     "llm_provider_route",
     "embedding_dimensions",
     "rag_rerank_model",
+    # Voice model/voice/base-URL cleared = back to the per-provider default
+    # (core/voice.py); a stale explicit value breaks provider switches.
+    "tts_model",
+    "tts_voice",
+    "tts_base_url",
+    "stt_model",
+    "stt_base_url",
 }
 
 
@@ -181,6 +188,7 @@ def _env_categories() -> dict[str, list[str]]:
             "stt_provider",
             "stt_base_url",
             "stt_api_key",
+            "groq_api_key",
             "stt_model",
             "stt_language",
             "voice_default_thread_id",

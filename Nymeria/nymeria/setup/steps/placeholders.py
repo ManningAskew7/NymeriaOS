@@ -1,4 +1,4 @@
-"""Init-chosen tool-family steps and capability placeholders.
+"""Init-chosen tool-family steps and voice (TTS/STT) provider steps.
 
 These follow Section B of `docs/private/core-toolset-plan.md`: at init the user
 seeds members of real tool families on top of the default (seed) core set. The
@@ -6,17 +6,18 @@ seeds members of real tool families on top of the default (seed) core set. The
 real multi-selects over the actual registered tool names, and the picks are
 written to the bootstrap admin's `default_thread_tools` at finalize (via
 `tool_seed.default_thread_tools_for_state` and `finalize.seed_bootstrap_profile`)
-so a new thread inherits them. Text-to-speech and speech-to-text stay
-placeholders: their options are recorded on `WizardState`, but nothing consumes
-them yet.
+so a new thread inherits them. The text-to-speech and speech-to-text picks are
+single-selects over `setup/voice_catalog.py`; finalize writes them as
+`TTS_PROVIDER` / `STT_PROVIDER` (plus Docker sidecar base URLs), and the keys
+they need ride the shared backend-keys step.
 """
 
 from __future__ import annotations
 
-from .. import family_catalog
+from .. import family_catalog, voice_catalog
 from ..nav import Step
 from ..state import WizardState
-from .base import Choice, multi_select_step, placeholder_step
+from .base import Choice, multi_select_step, single_select_step
 
 
 def _choices(family_choices) -> list[Choice]:
@@ -131,29 +132,58 @@ def make_image_gen_step() -> Step:
     )
 
 
+def _voice_step(step_id: str, title: str, note: str,
+                choices: "tuple[voice_catalog.VoiceChoice, ...]") -> Step:
+    """Single-select over the voice catalog; the pick lands in extras[step_id].
+
+    Initial value: this run's pick, else the on-disk provider recorded by
+    hydrate (so a reconfigure shows the current setting), else off.
+    """
+
+    def get_initial(state: WizardState):
+        value = state.extras.get(step_id)
+        if isinstance(value, str):
+            return value
+        on_disk = state.extras.get(f"{step_id}_on_disk")
+        return on_disk if isinstance(on_disk, str) else "none"
+
+    def store(state: WizardState, value) -> None:
+        state.extras[step_id] = value
+
+    return single_select_step(
+        step_id=step_id,
+        title=title,
+        note=note,
+        choices=[Choice(c.value, c.label, c.description) for c in choices],
+        get_initial=get_initial,
+        store=store,
+    )
+
+
 def make_tts_step() -> Step:
-    return placeholder_step(
+    return _voice_step(
         step_id="tts",
         title="Text-to-speech",
-        note="Placeholder. Voice synthesis options are not wired up yet.",
-        options=[
-            Choice("cartesia", "Cartesia Sonic", "Hosted (key required)."),
-            Choice("openai", "OpenAI TTS", "Hosted (key required)."),
-            Choice("gemini", "Gemini TTS", "Hosted (key required)."),
-            Choice("qwen3", "Qwen3-TTS", "Runs locally."),
-        ],
+        note=(
+            "Pick the voice Nymeria speaks with (watch replies, Telegram voice "
+            "notes). Local Kokoro is free and CPU-friendly; hosted picks "
+            "collect their key on the next screen. Bare-metal local voice "
+            "needs the voice extra: pip install 'nymeriaos\\[voice-local]'."
+        ),
+        choices=voice_catalog.TTS_CHOICES,
     )
 
 
 def make_stt_step() -> Step:
-    return placeholder_step(
+    return _voice_step(
         step_id="stt",
         title="Speech-to-text",
-        note="Placeholder. Transcription options are not wired up yet.",
-        options=[
-            Choice("openai", "OpenAI", "Hosted (key required)."),
-            Choice("faster-whisper", "Faster-Whisper", "Runs locally."),
-        ],
+        note=(
+            "Pick how Nymeria transcribes voice messages (watch mic, Telegram "
+            "voice notes). Local faster-whisper is free and CPU-friendly; "
+            "hosted picks collect their key on the next screen."
+        ),
+        choices=voice_catalog.STT_CHOICES,
     )
 
 

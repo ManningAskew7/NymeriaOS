@@ -87,6 +87,8 @@ google-auth-oauthlib>=1.1.0
 # Document extraction (email attachments, user file attachments) + Gemini TTS
 google-genai>=1.0.0
 pydub>=0.25.1
+# Edge TTS (free, keyless hosted voice; tiny pure-python client)
+edge-tts>=7.0.0
 openpyxl>=3.1.0
 pypdf>=4.0.0
 python-docx>=1.1.0

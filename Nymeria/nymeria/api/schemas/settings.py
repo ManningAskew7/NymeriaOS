@@ -136,13 +136,13 @@ class ServerSettingsResponse(BaseModel):
     dream_default_model: Optional[str] = None
     tts_provider: str = "none"
     tts_base_url: Optional[str] = None
-    tts_model: str = "tts-1-hd"
-    tts_voice: str = "nova"
+    tts_model: Optional[str] = None
+    tts_voice: Optional[str] = None
     tts_output_format: str = "mp3"
     tts_speed: float = 1.0
     stt_provider: str = "none"
     stt_base_url: Optional[str] = None
-    stt_model: str = "gpt-4o-mini-transcribe"
+    stt_model: Optional[str] = None
     stt_language: Optional[str] = None
     voice_default_thread_id: Optional[str] = None
     # RAG / semantic memory (see config/settings.py and the desktop RAG tab).

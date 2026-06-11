@@ -1619,36 +1619,61 @@ class Settings(BaseSettings):
     )
 
     # Voice / TTS Configuration
-    tts_provider: Literal["none", "openai", "qwen3", "gemini", "cartesia"] = Field(  # type: ignore[assignment]
+    tts_provider: Literal["none", "openai", "kokoro", "qwen3", "gemini", "cartesia", "elevenlabs", "edge"] = Field(  # type: ignore[assignment]
         default="none",
-        description="TTS provider: none, openai, qwen3, gemini, cartesia",
+        description=(
+            "TTS provider: none, openai, kokoro (local CPU or speaches sidecar), "
+            "qwen3 (local GPU sidecar), gemini, cartesia, elevenlabs, edge (free, keyless)"
+        ),
     )
     tts_base_url: Optional[str] = Field(
         default=None,
-        description="TTS API base URL (e.g., https://api.openai.com/v1 or http://localhost:8880/v1)"
+        description=(
+            "TTS API base URL. For kokoro: unset runs in-process "
+            "(nymeriaos[voice-local]); set it to use a speaches sidecar"
+        )
     )
     tts_api_key: Optional[str] = Field(
         default=None, description="TTS API key (falls back to OPENAI_API_KEY if not set)"
     )
-    tts_model: str = Field(default="tts-1-hd", description="TTS model name")
-    tts_voice: str = Field(default="nova", description="TTS voice identifier")
+    tts_model: Optional[str] = Field(
+        default=None,
+        description="TTS model name (per-provider default when unset, e.g. gpt-4o-mini-tts for openai)",
+    )
+    tts_voice: Optional[str] = Field(
+        default=None,
+        description="TTS voice identifier (per-provider default when unset; Cartesia requires a voice UUID)",
+    )
     tts_output_format: str = Field(default="mp3", description="TTS output format: mp3, wav, opus, aac")
     tts_speed: float = Field(default=1.0, ge=0.25, le=4.0, description="TTS playback speed")
 
     # Voice / STT Configuration
-    stt_provider: Literal["none", "openai", "faster-whisper"] = Field(
-        default="none", description="STT provider: none, openai, faster-whisper"
+    stt_provider: Literal["none", "openai", "groq", "faster-whisper"] = Field(
+        default="none", description="STT provider: none, openai, groq, faster-whisper (local CPU or speaches sidecar)"
     )
     stt_base_url: Optional[str] = Field(
         default=None,
-        description="STT API base URL (e.g., https://api.openai.com/v1 or http://localhost:8003/v1)"
+        description=(
+            "STT API base URL. For faster-whisper: unset runs in-process "
+            "(nymeriaos[voice-local]); set it to use a speaches sidecar"
+        )
     )
     stt_api_key: Optional[str] = Field(
-        default=None, description="STT API key (falls back to OPENAI_API_KEY if not set)"
+        default=None, description="STT API key (falls back to OPENAI_API_KEY; Groq also reads GROQ_API_KEY)"
     )
-    stt_model: str = Field(default="gpt-4o-mini-transcribe", description="STT model name")
+    stt_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "STT model name (per-provider default when unset: gpt-4o-mini-transcribe "
+            "for openai, whisper-large-v3-turbo for groq, small for local faster-whisper)"
+        ),
+    )
     stt_language: Optional[str] = Field(
         default=None, description="STT language hint (ISO 639-1, e.g., 'en')"
+    )
+    groq_api_key: Optional[str] = Field(
+        default=None,
+        description="Groq API key (Groq STT; the LLM provider registry reads the same env var)",
     )
 
     # Voice default thread

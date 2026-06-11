@@ -3333,8 +3333,13 @@ Authorization: Bearer <token>
 ```
 
 - `/voice/chat` accepts audio upload, runs STT -> agent -> TTS, and returns audio.
-- `/voice/tts` accepts JSON text and returns synthesized audio.
+- `/voice/tts` accepts JSON `{"text": "...", "voice_note": false}` and returns
+  synthesized audio. `voice_note: true` requests a chat-platform voice-message
+  container (Ogg/Opus or MP3); check the response `Content-Type` for what was
+  produced. Used by the Telegram bot for voice-note replies.
 - `/voice/stt` accepts audio and returns transcribed text.
+- Errors: `503` when the provider is not configured (`TTS_PROVIDER`/`STT_PROVIDER`),
+  `502` when the provider call fails.
 
 ## Tool Categories API
 

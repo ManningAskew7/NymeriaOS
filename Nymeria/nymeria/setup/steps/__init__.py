@@ -95,18 +95,18 @@ def _default_step_list() -> list[Step]:
         make_connection_step(),
         make_model_step(),
         # Tool families seeded on top of the default (seed) core set (core-toolset
-        # plan, Sections A-C), the keys those backends need, then the remaining
-        # capability placeholders.
+        # plan, Sections A-C) and the voice providers, then the keys those
+        # backends need, then the remaining capability placeholders.
         make_core_tools_step(),
         make_web_search_step(),
         make_fetch_url_step(),
         make_embedder_step(),
         make_reranker_step(),
         make_image_gen_step(),
-        make_backend_keys_step(),
-        make_skill_kits_step(),
         make_tts_step(),
         make_stt_step(),
+        make_backend_keys_step(),
+        make_skill_kits_step(),
         make_agent_settings_step(),
         # External access (the choice, then the guided tailscale/cloudflare
         # setup), then offer to start the backend, then review and write.

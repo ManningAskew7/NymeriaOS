@@ -28,14 +28,17 @@ class KeySpec:
 
     ``kind`` drives the wizard widget and validation: ``key`` and
     ``optional_key`` render a password input (optional_key may be left blank);
-    ``url`` renders a plain input for a base URL, not a secret.
+    ``url`` and ``text`` render a plain input for a non-secret value.
+    ``placeholder`` overrides the input's hint text when the default
+    ("Paste your <label>") fits poorly.
     """
 
     tool: str
     env_var: str
     label: str
-    kind: str  # key | optional_key | url
+    kind: str  # key | optional_key | url | text
     note: str = ""
+    placeholder: str = ""
 
     @property
     def required(self) -> bool:
@@ -99,6 +102,50 @@ BACKEND_KEY_SPECS: dict[str, KeySpec] = {
 }
 
 
+# Voice picks (single strings in extras["tts"]/extras["stt"], values matching
+# the settings Literals) that need a credential collected. The TTS_API_KEY /
+# TTS_VOICE slots are provider-specific: a Cartesia key in TTS_API_KEY is
+# useless to ElevenLabs, so a provider SWITCH re-asks even when the var is
+# already on disk (see required_backend_credentials).
+VOICE_KEY_SPECS: dict[str, tuple[KeySpec, ...]] = {
+    "tts:openai": (
+        KeySpec("tts:openai", "OPENAI_API_KEY", "OpenAI API key", "key"),
+    ),
+    "tts:gemini": (
+        KeySpec("tts:gemini", "GEMINI_API_KEY", "Google AI (Gemini) API key", "key"),
+    ),
+    "tts:cartesia": (
+        KeySpec(
+            "tts:cartesia", "TTS_API_KEY", "Cartesia API key", "key",
+            note="Stored as TTS_API_KEY.",
+        ),
+        KeySpec(
+            "tts:cartesia", "TTS_VOICE", "Cartesia voice UUID", "text",
+            note="Required: Cartesia voices are account-scoped UUIDs from play.cartesia.ai.",
+            placeholder="e.g. 694f9389-aac1-45b6-b726-9d9369183238",
+        ),
+    ),
+    "tts:elevenlabs": (
+        KeySpec(
+            "tts:elevenlabs", "TTS_API_KEY", "ElevenLabs API key", "key",
+            note="Stored as TTS_API_KEY.",
+        ),
+    ),
+    "stt:openai": (
+        KeySpec("stt:openai", "OPENAI_API_KEY", "OpenAI API key", "key"),
+    ),
+    "stt:groq": (
+        KeySpec("stt:groq", "GROQ_API_KEY", "Groq API key", "key"),
+    ),
+}
+
+# Env vars whose on-disk value belongs to the previously configured provider.
+_VOICE_PROVIDER_SCOPED_VARS = {
+    "tts": ("TTS_API_KEY", "TTS_VOICE"),
+    "stt": ("STT_API_KEY",),
+}
+
+
 def _selected_backends(state: "WizardState") -> list[str]:
     """Concrete backend tool names selected across the keyed families, in order."""
     names: list[str] = []
@@ -107,6 +154,33 @@ def _selected_backends(state: "WizardState") -> list[str]:
         if isinstance(value, list):
             names.extend(str(item) for item in value)
     return names
+
+
+def _voice_key_specs(state: "WizardState") -> list[KeySpec]:
+    """KeySpecs for the voice picks, in TTS-then-STT order."""
+    specs: list[KeySpec] = []
+    for kind in ("tts", "stt"):
+        value = state.extras.get(kind)
+        if isinstance(value, str):
+            specs.extend(VOICE_KEY_SPECS.get(f"{kind}:{value}", ()))
+    return specs
+
+
+def _stale_voice_env(state: "WizardState") -> set[str]:
+    """Provider-scoped voice vars whose on-disk value predates a provider switch.
+
+    These must not count as "already provided": the old provider's key/voice
+    is wrong for the new one, and finalize retires the stale lines anyway
+    (``voice_catalog.voice_drop_env``). Values typed THIS run (optional_env)
+    still satisfy.
+    """
+    from .voice_catalog import voice_provider_changed
+
+    stale: set[str] = set()
+    for kind, env_vars in _VOICE_PROVIDER_SCOPED_VARS.items():
+        if voice_provider_changed(state, kind):
+            stale.update(env_vars)
+    return stale - {env for env, value in state.optional_env.items() if value}
 
 
 def already_provided_env(state: "WizardState") -> set[str]:
@@ -130,15 +204,22 @@ def already_provided_env(state: "WizardState") -> set[str]:
 def required_backend_credentials(state: "WizardState") -> list[KeySpec]:
     """KeySpecs to prompt for, given the selected backends and what's already set.
 
-    Deduped by env var, in family order. Excludes any credential already
-    provided (``already_provided_env``) and backends with no credential need.
+    Deduped by env var, in family-then-voice order. Excludes any credential
+    already provided (``already_provided_env``) and backends with no
+    credential need; provider-scoped voice vars stop counting as provided
+    when the voice provider switched this run (``_stale_voice_env``).
     """
-    provided = already_provided_env(state)
+    provided = already_provided_env(state) - _stale_voice_env(state)
+    candidates: list[KeySpec] = [
+        spec
+        for tool in _selected_backends(state)
+        if (spec := BACKEND_KEY_SPECS.get(tool)) is not None
+    ]
+    candidates.extend(_voice_key_specs(state))
     seen: set[str] = set()
     specs: list[KeySpec] = []
-    for tool in _selected_backends(state):
-        spec = BACKEND_KEY_SPECS.get(tool)
-        if spec is None or spec.env_var in provided or spec.env_var in seen:
+    for spec in candidates:
+        if spec.env_var in provided or spec.env_var in seen:
             continue
         seen.add(spec.env_var)
         specs.append(spec)
@@ -153,6 +234,7 @@ def backend_keys_needed(state: "WizardState") -> bool:
 __all__ = [
     "KeySpec",
     "BACKEND_KEY_SPECS",
+    "VOICE_KEY_SPECS",
     "already_provided_env",
     "required_backend_credentials",
     "backend_keys_needed",

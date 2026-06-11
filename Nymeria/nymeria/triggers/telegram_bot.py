@@ -36,6 +36,7 @@ from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, http_error_detail
 from .message_splitter import split_telegram_message as split_message
+from .voice_helpers import is_voice_message_mime, strip_markdown_for_speech
 from .sse_consumer import (
     consume_sse_stream,
     format_auth_prompt_message,
@@ -1076,11 +1077,13 @@ class NymeriaTelegramBot:
         # Callback query handler (stop button)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
 
-        # Plain text messages, photos, and document uploads
-        # (DMs and replies-to-bot in groups). Captions on photos/documents
-        # are surfaced via update.message.caption inside the handler.
+        # Plain text messages, photos, document uploads, voice notes, and
+        # audio files (DMs and replies-to-bot in groups). Captions on
+        # photos/documents are surfaced via update.message.caption inside
+        # the handler; voice/audio is transcribed via the backend STT.
         app.add_handler(MessageHandler(
-            (filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
+            (filters.TEXT | filters.PHOTO | filters.Document.ALL
+             | filters.VOICE | filters.AUDIO) & ~filters.COMMAND,
             self._on_message,
         ))
 
@@ -1315,6 +1318,12 @@ class NymeriaTelegramBot:
             self._stop_button_msg: Optional[Message] = None
             self._last_edit = 0.0
             self._first_msg_sent = False
+            # Full response text across all flushes (no tool-call footers),
+            # kept for the optional voice-note reply after the stream ends.
+            self._full_response = ""
+            # An error event mid-stream means _full_response is a truncated
+            # non-answer; the voice reply is skipped in that case.
+            self._saw_error = False
 
             self._typing_task: Optional[asyncio.Task] = asyncio.create_task(
                 self._keep_typing()
@@ -1427,6 +1436,7 @@ class NymeriaTelegramBot:
 
         async def on_response_chunk(self, content: str) -> None:
             self._text_buffer += content
+            self._full_response += content
             if len(self._text_buffer) > TELEGRAM_SAFE_CHUNK_LENGTH:
                 await self.flush_text(final=True)
             elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
@@ -1509,7 +1519,18 @@ class NymeriaTelegramBot:
                 self._chat_id, path, self._context,
             )
 
+        async def on_auth_prompt(self, event: Dict[str, Any]) -> None:
+            # Own message, never part of the response buffer: a voice reply
+            # must not read a one-time credential link aloud.
+            try:
+                await self._context.bot.send_message(
+                    chat_id=self._chat_id, text=format_auth_prompt_message(event)
+                )
+            except Exception:
+                logger.warning("Failed to send auth prompt to Telegram", exc_info=True)
+
         async def on_error(self, content: str) -> None:
+            self._saw_error = True
             try:
                 await self._context.bot.send_message(
                     chat_id=self._chat_id,
@@ -1554,11 +1575,14 @@ class NymeriaTelegramBot:
         context: ContextTypes.DEFAULT_TYPE,
         attachments: Optional[List[Dict[str, Any]]] = None,
         telegram_user_id: Optional[int] = None,
+        voice_reply: bool = False,
     ) -> None:
         """Stream SSE chat events to a Telegram chat with progressive editing.
 
         Text segments are sent as separate messages at tool boundaries,
         giving natural visual separation via Telegram's chat bubbles.
+        ``voice_reply=True`` (set when the user sent a voice message) also
+        sends the final response as a voice note, best-effort.
         """
         handler = self._ChatSSEHandler(
             self,
@@ -1568,17 +1592,26 @@ class NymeriaTelegramBot:
             telegram_user_id,
             context,
         )
+        trigger_override = (
+            "The user sent this as a voice message; your reply will also be "
+            "spoken aloud as a voice note, so keep it conversational."
+            if voice_reply
+            else None
+        )
+        streamed_ok = False
         try:
             await consume_sse_stream(
                 self.api.chat_stream(
                     message,
                     thread_id,
                     user_id,
+                    trigger_override=trigger_override,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
                 ),
                 handler,
             )
+            streamed_ok = True
         except Exception as e:
             logger.error(f"Streaming failed, falling back to sync: {e}", exc_info=True)
             try:
@@ -1586,6 +1619,7 @@ class NymeriaTelegramBot:
                     message,
                     thread_id,
                     user_id,
+                    trigger_override=trigger_override,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
                 )
@@ -1595,6 +1629,10 @@ class NymeriaTelegramBot:
                     response += f"\n\nTool calls: {tc}"
                 for chunk in split_message(response, 4096):
                     await context.bot.send_message(chat_id=chat_id, text=chunk)
+                if voice_reply:
+                    await self._send_voice_reply(
+                        chat_id, data.get("response", ""), user_id, context
+                    )
             except Exception as e2:
                 logger.error(f"Sync fallback also failed: {e2}", exc_info=True)
                 try:
@@ -1605,6 +1643,68 @@ class NymeriaTelegramBot:
                     logger.warning("Failed to send last-resort error notification to Telegram", exc_info=True)
         finally:
             handler.cleanup()
+        # Outside the try block: a voice-send hiccup must never trip the
+        # sync fallback into re-running the whole turn. Skipped after a
+        # mid-stream error event: _full_response would be a truncated
+        # non-answer delivered right after an error notice.
+        if voice_reply and streamed_ok and not handler._saw_error:
+            await self._send_voice_reply(
+                chat_id, handler._full_response, user_id, context
+            )
+
+    async def _send_voice_reply(
+        self,
+        chat_id: int,
+        response_text: str,
+        user_id: str,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Speak the final response as a Telegram voice note (best-effort).
+
+        The text reply has already been delivered, so every failure here only
+        logs: a missing TTS provider (503) must not degrade text chat.
+        """
+        spoken = strip_markdown_for_speech(response_text or "")
+        if not spoken:
+            return
+        try:
+            await context.bot.send_chat_action(
+                chat_id=chat_id, action=ChatAction.RECORD_VOICE
+            )
+        except Exception:
+            logger.debug("Failed to send record-voice indicator")
+        try:
+            audio, content_type = await self.api.synthesize_speech(
+                spoken, voice_note=True, user_id=user_id
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503:
+                logger.info("Voice reply skipped: no TTS provider configured")
+            else:
+                logger.warning(f"Voice reply synthesis failed: {e}")
+            return
+        except Exception as e:
+            logger.warning(f"Voice reply synthesis failed: {e}")
+            return
+        if not audio:
+            return
+
+        mime = (content_type or "").split(";")[0].strip().lower()
+        filename = "reply.ogg" if mime in ("audio/ogg", "audio/opus") else "reply.mp3"
+        try:
+            if is_voice_message_mime(content_type):
+                try:
+                    await context.bot.send_voice(chat_id=chat_id, voice=audio)
+                    return
+                except Exception:
+                    # Some recipients block voice messages (privacy setting);
+                    # an audio file is the closest fallback.
+                    logger.info("send_voice failed; retrying as audio file", exc_info=True)
+            await context.bot.send_audio(
+                chat_id=chat_id, audio=audio, filename=filename, title="Nymeria"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send voice reply to Telegram: {e}")
 
 
     # =========================================================================
@@ -2567,17 +2667,20 @@ class NymeriaTelegramBot:
     # =========================================================================
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages, photos, and document uploads.
+        """Handle text messages, photos, documents, voice notes, and audio.
 
         In DMs: respond to all messages.
         In groups: only respond to replies to the bot's messages.
 
         Photos and documents are downloaded, validated against the same
         MIME / size constraints the desktop frontend enforces, and sent
-        to the API as ``attachments``. The message text is taken from the
-        message's ``text`` if present, else its ``caption``; if neither
-        exists we substitute a placeholder so the API's ``min_length=1``
-        check on ``message`` is satisfied.
+        to the API as ``attachments``. Voice notes and audio (including
+        audio sent as a document) are transcribed via the backend STT and
+        become the message text; the reply is then also spoken back as a
+        voice note. The message text is taken from the message's ``text``
+        if present, else its ``caption``; if neither exists we substitute
+        a placeholder so the API's ``min_length=1`` check on ``message``
+        is satisfied.
         """
         if not update.message:
             return
@@ -2614,6 +2717,18 @@ class NymeriaTelegramBot:
         text = (update.message.text or update.message.caption or "").strip()
         attachments, errors = await self._collect_attachments(update, context)
 
+        # Voice notes / audio files: transcribe via the backend STT and feed
+        # the transcript through the normal chat pipeline. A voice message in
+        # also means a voice note back (voice-in, voice-out).
+        voice_reply = False
+        transcript, voice_errors = await self._transcribe_inbound_audio(
+            update, context, user_id=nymeria_user_id
+        )
+        errors.extend(voice_errors)
+        if transcript:
+            voice_reply = True
+            text = f"{text}\n\n{transcript}" if text else transcript
+
         for err in errors:
             try:
                 await context.bot.send_message(chat_id=chat_id, text=err)
@@ -2636,6 +2751,7 @@ class NymeriaTelegramBot:
             context=context,
             attachments=attachments or None,
             telegram_user_id=telegram_user_id,
+            voice_reply=voice_reply,
         )
 
     async def _collect_attachments(
@@ -2681,7 +2797,9 @@ class NymeriaTelegramBot:
                     errors.append("Couldn't download that photo. Try resending.")
 
         # ---- Document (image-as-file, PDF, txt, md, csv) -------------------
-        if msg.document:
+        # Audio documents are handled by the voice path (_transcribe_inbound_audio),
+        # so they must not fall through to the image/doc MIME allowlist here.
+        if msg.document and not (msg.document.mime_type or "").startswith("audio/"):
             doc = msg.document
             ok, size_err = attachment_helpers.size_within_limit(
                 doc.file_size, doc.mime_type, doc.file_name
@@ -2712,6 +2830,82 @@ class NymeriaTelegramBot:
             )
 
         return attachments, errors
+
+    # Telegram's Bot API refuses getFile downloads above 20 MB, and STT
+    # providers cap uploads around 25 MB, so gate at the Bot API limit.
+    MAX_VOICE_BYTES = 20 * 1024 * 1024
+
+    async def _transcribe_inbound_audio(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: str,
+    ) -> "tuple[Optional[str], List[str]]":
+        """Download and transcribe a voice note or audio file, if present.
+
+        Returns ``(transcript, errors)``. ``transcript`` is ``None`` when the
+        message has no audio, the server has no STT configured, or
+        transcription failed; ``errors`` carries the user-facing explanation.
+        """
+        msg = update.message
+        if msg is None:
+            return None, []
+
+        if msg.voice:
+            media = msg.voice
+            filename = "voice.ogg"
+            mime = media.mime_type or "audio/ogg"
+        elif msg.audio:
+            media = msg.audio
+            filename = msg.audio.file_name or "audio.mp3"
+            mime = media.mime_type or "audio/mpeg"
+        elif msg.document and (msg.document.mime_type or "").startswith("audio/"):
+            # Forwarded/shared audio often arrives as a document.
+            media = msg.document
+            filename = msg.document.file_name or "audio"
+            mime = msg.document.mime_type or "audio/mpeg"
+        else:
+            return None, []
+
+        if media.file_size and media.file_size > self.MAX_VOICE_BYTES:
+            max_mb = self.MAX_VOICE_BYTES // (1024 * 1024)
+            return None, [f"That audio is too large to transcribe (max {max_mb} MB)."]
+
+        try:
+            await context.bot.send_chat_action(chat_id=msg.chat.id, action=ChatAction.TYPING)
+        except Exception:
+            logger.debug("Failed to send typing indicator before transcription")
+
+        try:
+            tg_file = await context.bot.get_file(media.file_id)
+            raw = bytes(await tg_file.download_as_bytearray())
+        except Exception as e:
+            logger.warning(f"Failed to download Telegram voice/audio: {e}")
+            return None, [
+                "Couldn't download that audio (Telegram bots can only fetch "
+                "files up to 20 MB)."
+            ]
+
+        try:
+            transcript = await self.api.transcribe_audio(
+                raw, filename=filename, content_type=mime, user_id=user_id
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503:
+                return None, [
+                    "Voice messages aren't enabled on this server yet: no "
+                    "speech-to-text provider is configured (STT_PROVIDER)."
+                ]
+            logger.warning(f"Voice transcription failed: {e}")
+            return None, ["Couldn't transcribe that voice message."]
+        except Exception as e:
+            logger.warning(f"Voice transcription failed: {e}")
+            return None, ["Couldn't transcribe that voice message."]
+
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return None, ["I couldn't make out any speech in that audio."]
+        return transcript, []
 
     # =========================================================================
     # Autonomous SSE Listener

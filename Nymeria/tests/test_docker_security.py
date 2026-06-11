@@ -163,8 +163,9 @@ THIN_CLIENT_SERVICES = {
 INFRA_SERVICES = {"postgres", "redis"}
 # Services not subject to the standard hardening contract (operator-installed
 # optional add-ons that come from external images with their own deployment
-# stories — currently the GPU voice services).
-EXEMPT_SERVICES = {"qwen3-tts", "faster-whisper"}
+# stories — currently the GPU voice service). The CPU speaches sidecar is NOT
+# exempt: it is the recommended voice profile, so it carries real limits.
+EXEMPT_SERVICES = {"qwen3-tts"}
 SOURCE_BIND_MOUNT_TARGETS = (
     "/app/nymeria",
     "/app/run.py",
@@ -395,9 +396,13 @@ def test_no_floating_latest_tag() -> None:
         )
 
 
-def test_voice_images_default_to_digest_pinned_placeholders() -> None:
+def test_voice_images_are_digest_pinned() -> None:
+    """qwen3-tts (GPU add-on) keeps the fail-fast placeholder digest; the
+    recommended CPU sidecar (speaches) defaults to a real pinned digest so
+    the voice profile works out of the box without drifting on a tag.
+    """
     services = _load_compose("docker-compose.yml")["services"]
-    for name in ("qwen3-tts", "faster-whisper"):
+    for name in ("qwen3-tts", "speaches"):
         image = services[name].get("image", "")
         assert "@sha256:" in image, f"{name} must use digest-pinned image syntax"
         assert ":latest" not in image, f"{name} must not default to :latest"

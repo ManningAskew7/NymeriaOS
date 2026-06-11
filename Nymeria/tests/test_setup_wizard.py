@@ -1913,9 +1913,9 @@ def test_wizard_radio_focused_label_is_bold_and_bright_no_bar():
     asyncio.run(drive())
 
 
-def test_wizard_pilot_placeholder_default_preserved_and_enter_locks_focus():
-    """A placeholder step's stored default is the trailing "Skip" row. Entering
-    keeps that default selected and focused; Enter without moving records "Skip".
+def test_wizard_pilot_voice_default_preserved_and_enter_locks_focus():
+    """The TTS step's default is "Off" (first row) on a fresh run. Entering
+    keeps that default selected and focused; Enter without moving records it.
     Arrowing moves focus (not selection); Enter then locks the focused option in.
     """
     from textual.widgets import Static
@@ -1924,10 +1924,12 @@ def test_wizard_pilot_placeholder_default_preserved_and_enter_locks_focus():
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.base import CircleRadioButton
     from nymeria.setup.steps.placeholders import make_tts_step
+    from nymeria.setup.voice_catalog import TTS_CHOICES
 
-    # tts options (cartesia, openai, gemini, qwen3), with the appended "Skip for
-    # now" row last (index 4).
-    skip_index = 4
+    # The catalog order drives the rows: "none" first, then the providers.
+    assert TTS_CHOICES[0].value == "none"
+    assert TTS_CHOICES[1].value == "kokoro"
+    none_index = 0
 
     async def drive_enter_only() -> dict:
         app = SetupWizardApp(WizardState(), steps=[make_tts_step()])
@@ -1937,9 +1939,9 @@ def test_wizard_pilot_placeholder_default_preserved_and_enter_locks_focus():
             buttons = list(scr.query(CircleRadioButton))
             panel = scr.query_one("#choice-desc", Static)
             # Selection, focus, and description all sit on the stored default.
-            assert buttons[skip_index].value is True
-            assert scr.focused is buttons[skip_index]
-            assert str(panel.render()) == "Configure this later."
+            assert buttons[none_index].value is True
+            assert scr.focused is buttons[none_index]
+            assert str(panel.render()) == TTS_CHOICES[0].description
             await pilot.press("enter")  # commit without moving
             await pilot.pause()
         return dict(app.state.extras)
@@ -1950,16 +1952,16 @@ def test_wizard_pilot_placeholder_default_preserved_and_enter_locks_focus():
             await pilot.pause()
             scr = app.screen
             buttons = list(scr.query(CircleRadioButton))
-            await pilot.press("down")  # Skip is last, so focus_next wraps to first
+            await pilot.press("down")  # focus moves to the next row (kokoro)
             await pilot.pause()
-            assert scr.focused is buttons[0]  # focus moved...
-            assert buttons[skip_index].value is True  # ...but selection did not
+            assert scr.focused is buttons[1]  # focus moved...
+            assert buttons[none_index].value is True  # ...but selection did not
             await pilot.press("enter")  # Enter locks the focused option in + advances
             await pilot.pause()
         return dict(app.state.extras)
 
-    assert asyncio.run(drive_enter_only()) == {"tts": "__skip__"}
-    assert asyncio.run(drive_down_then_enter()) == {"tts": "cartesia"}
+    assert asyncio.run(drive_enter_only()) == {"tts": "none"}
+    assert asyncio.run(drive_down_then_enter()) == {"tts": "kokoro"}
 
 
 def test_wizard_pilot_selects_non_default_provider(monkeypatch):

@@ -107,6 +107,15 @@ redis = [
 ]
 voice = [
   "pydub>=0.25.1",
+  "edge-tts>=7.0.0",
+]
+# In-process local voice engines (TTS_PROVIDER=kokoro / STT_PROVIDER=faster-whisper
+# with no base URL set). CPU-friendly; model weights download on first use.
+# faster-whisper bundles PyAV, which also provides the no-ffmpeg Ogg/Opus encode
+# for voice notes (core/voice_local.py).
+voice-local = [
+  "kokoro-onnx>=0.5.0",
+  "faster-whisper>=1.2.0",
 ]
 browser = [
   "playwright",

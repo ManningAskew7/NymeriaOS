@@ -27,6 +27,7 @@ from ..onboarding import (
 )
 from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
+from . import voice_catalog
 from .finalize import finalize
 from .quick import apply_quick_defaults
 from .state import WizardState
@@ -48,6 +49,10 @@ _OPTIONAL_KEY_FLAGS = (
     ("bfl_api_key", "BFL_API_KEY"),
     ("replicate_api_key", "REPLICATE_API_KEY"),
     ("fal_api_key", "FAL_API_KEY"),
+    # Voice backends (--tts / --stt picks).
+    ("groq_api_key", "GROQ_API_KEY"),
+    ("tts_api_key", "TTS_API_KEY"),
+    ("tts_voice", "TTS_VOICE"),
 )
 
 # CLI flag -> state.extras family key, for seeding tool families non-interactively.
@@ -200,6 +205,25 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         "--skill-kit", action="append", default=None, metavar="KIT",
         help="Seed a default-on capability kit into enabled_global_skills (repeatable)",
     )
+    # Voice providers (single picks; values match TTS_PROVIDER/STT_PROVIDER).
+    parser.add_argument(
+        "--tts",
+        choices=tuple(choice.value for choice in voice_catalog.TTS_CHOICES),
+        default=None,
+        help="Text-to-speech provider (kokoro runs locally; none disables)",
+    )
+    parser.add_argument(
+        "--stt",
+        choices=tuple(choice.value for choice in voice_catalog.STT_CHOICES),
+        default=None,
+        help="Speech-to-text provider (faster-whisper runs locally; none disables)",
+    )
+    parser.add_argument("--groq-api-key", default=None)
+    parser.add_argument("--tts-api-key", default=None)
+    parser.add_argument(
+        "--tts-voice", default=None,
+        help="TTS voice identifier (required for cartesia: a voice UUID)",
+    )
     parser.add_argument(
         "--root",
         default=None,
@@ -271,6 +295,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         value = getattr(args, attr, None)
         if value:
             extras[family] = [str(item) for item in value]
+    for attr in ("tts", "stt"):
+        value = getattr(args, attr, None)
+        if value:
+            extras[attr] = str(value)
 
     hosting = None
     if getattr(args, "hosting", None):
