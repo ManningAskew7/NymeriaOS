@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 
 
 ACCENT = "#bbddfb"
+# Secondary text: dimmer than the lavender primary, bright enough to read
+# comfortably. Keep in sync with the secondary color in theme.tcss.
+SECONDARY = "#c3bedd"
 _HINT_TEXT = "#6b7280"
 
 
@@ -179,8 +182,15 @@ class WizardStep(Screen):
         # child still auto-scrolls it into view.
         with VerticalScroll(id="wizard-body", can_focus=False):
             yield from self.compose_body()
-        yield Static("", id="wizard-error")
-        yield Static("", id="wizard-scroll-hint")
+        # Both start hidden: an empty Static still reserves a row, and on a
+        # small terminal that row is the difference between fitting and
+        # scrolling. show_error/_update_scroll_hint toggle visibility.
+        error = Static("", id="wizard-error")
+        error.display = False
+        yield error
+        scroll_hint = Static("", id="wizard-scroll-hint")
+        scroll_hint.display = False
+        yield scroll_hint
         yield Static(hint_markup(self._hint), id="wizard-hint")
 
     def compose_body(self) -> ComposeResult:
@@ -191,11 +201,29 @@ class WizardStep(Screen):
         return True
 
     def show_error(self, message: str) -> None:
-        self.query_one("#wizard-error", Static).update(message)
+        error = self.query_one("#wizard-error", Static)
+        error.update(message)
+        error.display = bool(message)
+        # Toggling the error row resizes the body without a Resize reaching
+        # this screen: re-derive the scroll cue and keep the focused widget
+        # (usually the offending field) in view once geometry settles.
+        self.call_after_refresh(self._settle_after_layout_shift)
+
+    def _settle_after_layout_shift(self) -> None:
+        self._update_scroll_hint()
+        focused = self.focused
+        if focused is not None:
+            focused.scroll_visible()
 
     # --- scroll affordance --------------------------------------------------
 
     def on_resize(self, _event: object) -> None:
+        # Screens always receive Resize; child widgets do NOT when only their
+        # container's height changes, so picker lists are re-fit from here.
+        from ..widgets import SearchableList
+
+        for picker in self.query(SearchableList):
+            picker.fit_list()
         self._update_scroll_hint()
 
     def _update_scroll_hint(self) -> None:
@@ -211,6 +239,7 @@ class WizardStep(Screen):
         if body.scroll_y < body.max_scroll_y - 0.5:
             parts.append("▼ more below")
         hint.update(f"[{ACCENT}]{'    '.join(parts)}[/]" if parts else "")
+        hint.display = bool(parts)
 
     # --- navigation ---------------------------------------------------------
 
@@ -545,6 +574,7 @@ def placeholder_step(
 
 __all__ = [
     "ACCENT",
+    "SECONDARY",
     "hint_markup",
     "Choice",
     "WizardStep",

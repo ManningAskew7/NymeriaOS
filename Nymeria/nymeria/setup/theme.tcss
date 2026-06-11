@@ -1,18 +1,19 @@
-/* First-run wizard theme, styled after the chat CLI's Rich look: white
-   primary text, one light-blue accent (#bbddfb, the CLI status accent), grey
-   secondary text, and square corners everywhere (solid borders, no rounded
-   glyphs). Boxes are unfilled outlines so the screen reads as one surface. */
+/* First-run wizard theme, styled after the chat CLI's Rich look: light
+   lavender primary text, one light-blue accent (#bbddfb, the CLI status
+   accent), dimmer lavender-grey secondary text, and square corners everywhere
+   (solid borders, no rounded glyphs). Boxes are unfilled outlines, and all
+   loose text starts at column 2, flush with the boxes' left edges. */
 
 Screen {
     background: #121620;
-    color: #e8eaed;
+    color: #dad4f0;
 }
 
 /* --- header: title + step counter on one line, ruled off from the body --- */
 
 #wizard-header {
     height: auto;
-    padding: 1 2 0 2;
+    padding: 0 2;
     border-bottom: solid #3a4251;
 }
 
@@ -27,14 +28,17 @@ Screen {
     color: #6b7280;
 }
 
+/* Secondary text is #c3bedd: clearly dimmer than the lavender primary text
+   but bright enough to read comfortably (the original #aab4c3 was too dark). */
+
 #wizard-note {
-    color: #aab4c3;
-    padding: 1 2 0 2;
+    color: #c3bedd;
+    padding: 0 2;
 }
 
 #wizard-body {
     height: 1fr;
-    padding: 1 2;
+    padding: 0 2;
     /* A readable scrollbar: a visibly darker track with a lighter thumb, so it
        reads as a scrollbar (not an indistinct block) and signals that the step
        scrolls. The thumb brightens on hover/drag. */
@@ -47,9 +51,10 @@ Screen {
     scrollbar-color-active: #bbddfb;
 }
 
+/* Hugs the option box above it: the description belongs to that box. */
 #choice-desc {
-    color: #aab4c3;
-    padding: 1 1 0 1;
+    color: #c3bedd;
+    padding: 0;
 }
 
 /* Welcome panel: the detected-environment report, framed like a Rich panel
@@ -62,17 +67,23 @@ Screen {
     padding: 0 2;
 }
 
-/* Recommended embedder+reranker combos (embedder step) and the dynamic
-   per-embedder pairing hint (reranker step): secondary text in a quiet box so
-   the guidance reads as help, not a selectable option. */
-#combo-hint,
+/* The reranker step's dynamic per-embedder pairing hint: secondary text in a
+   quiet box so the guidance reads as help, not a selectable option. */
 #combo-rec {
-    color: #aab4c3;
+    color: #c3bedd;
     background: transparent;
     border: solid #2a3140;
     height: auto;
     padding: 0 1;
     margin: 0 0 1 0;
+}
+
+/* Inline help under the RAG key/retrieval fields. */
+#key-status,
+#retrieval-help {
+    color: #c3bedd;
+    height: auto;
+    padding: 0;
 }
 
 #wizard-error {
@@ -97,13 +108,36 @@ Screen {
 }
 
 .field-label {
-    color: #aab4c3;
+    color: #c3bedd;
     text-style: bold;
     padding: 1 0 0 0;
 }
 
 .field-note {
-    color: #aab4c3;
+    color: #c3bedd;
+    padding: 0;
+}
+
+/* A field-note that opens a new section gets a blank line above it. */
+.section-note {
+    color: #c3bedd;
+    padding: 1 0 0 0;
+}
+
+/* Two-up grid of labeled inputs: halves the vertical footprint so the tuning
+   steps fit a standard terminal without scrolling. */
+.field-grid {
+    layout: grid;
+    grid-size: 2;
+    grid-gutter: 0 2;
+    grid-rows: auto;
+    height: auto;
+    width: 1fr;
+}
+
+.field-cell {
+    height: auto;
+    width: 1fr;
 }
 
 RadioSet,
@@ -186,7 +220,7 @@ RadioSet > RadioButton.-selected {
 
 RadioSet > RadioButton.-selected > .toggle--label {
     background: transparent;
-    color: #cdd6e3;
+    color: #cfc9e8;
     text-style: bold;
 }
 
@@ -254,10 +288,13 @@ SelectionList > .selection-list--button-selected-highlighted {
 
 #model-hint,
 #provider-note {
-    color: #aab4c3;
+    color: #c3bedd;
     height: auto;
-    padding: 1 1 0 1;
+    padding: 1 0 0 0;
 }
+
+/* Picker lists size to the terminal in code (SearchableList._fit_list): a CSS
+   vh max-height is not resolved when the parent measures its auto height. */
 
 Input {
     background: #151a24;
@@ -277,7 +314,7 @@ Button {
     margin: 1 1 0 0;
     border: solid #3a4251;
     background: #1a2230;
-    color: #e8eaed;
+    color: #dad4f0;
     text-style: none;
 }
 

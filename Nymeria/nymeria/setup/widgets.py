@@ -177,7 +177,23 @@ class SearchableList(Widget):
     def on_mount(self) -> None:
         self._populate(self._items)
         self._highlight_value(self._initial_value)
+        self.fit_list()
         self._input.focus()
+
+    def fit_list(self) -> None:
+        """Cap the list to roughly 30% of the terminal height.
+
+        Set in code rather than as a CSS vh max-height: Textual does not
+        resolve vh units when measuring the parent's auto height, which left
+        a dead gap below the list and pushed later fields off-screen. Called
+        on mount and from the owning screen's on_resize (this widget itself
+        receives no Resize when only its container's height changes).
+        """
+        try:
+            rows = max(5, self.app.size.height * 3 // 10)
+            self._option_list.styles.max_height = rows
+        except Exception:  # noqa: BLE001 (not mounted or attached yet)
+            return
 
     # --- public API ---------------------------------------------------------
 

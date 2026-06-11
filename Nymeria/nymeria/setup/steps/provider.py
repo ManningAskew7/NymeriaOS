@@ -109,7 +109,10 @@ class ProviderStep(WizardStep):
             search_id="provider-search",
             list_id="provider-options",
         )
-        yield Static(_provider_note(initial), id="provider-note")
+        note_text = _provider_note(initial)
+        note = Static(note_text, id="provider-note")
+        note.display = bool(note_text)
+        yield note
         yield Static("API key", classes="field-label")
         yield Input(
             value=self.state.api_key,
@@ -137,8 +140,12 @@ class ProviderStep(WizardStep):
                 event.value
             )
         # value is None when the filter has no matches: clear the note so it
-        # cannot describe a provider that is no longer shown.
-        self.query_one("#provider-note", Static).update(_provider_note(event.value))
+        # cannot describe a provider that is no longer shown. Hidden when
+        # empty, so providers without notes do not leave a gap.
+        note_text = _provider_note(event.value)
+        note = self.query_one("#provider-note", Static)
+        note.update(note_text)
+        note.display = bool(note_text)
 
     def on_searchable_list_selected(self, event: SearchableList.Selected) -> None:
         # Mouse click on a provider: update the hint and move to the key field.

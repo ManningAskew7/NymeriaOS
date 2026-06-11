@@ -1895,6 +1895,56 @@ def test_wizard_pilot_provider_note_follows_highlight_and_clears(monkeypatch):
     asyncio.run(drive())
 
 
+def test_show_error_toggles_error_row_visibility():
+    """The error Static is hidden while empty (an empty Static still reserves
+    a row, which matters on small terminals) and shown with a message."""
+    from textual.widgets import Static
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            scr = app.screen
+            error = scr.query_one("#wizard-error", Static)
+            assert error.display is False
+            scr.show_error("boom")
+            await pilot.pause()
+            assert error.display is True
+            assert "boom" in str(error.render())
+            scr.show_error("")
+            await pilot.pause()
+            assert error.display is False
+
+    asyncio.run(drive())
+
+
+def test_wizard_pilot_provider_step_fits_without_scrolling(monkeypatch):
+    """At a standard terminal size the picker list is capped (fit_list), so
+    the API key field stays fully on screen. Regression test for the dead-gap
+    bug where the list's uncapped measured height pushed the field below the
+    fold even though the rendered list was short."""
+    from textual.widgets import Input
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    monkeypatch.setattr("nymeria.setup.steps.model.fetch_models_for_spec", _no_models)
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState())
+        async with app.run_test(size=(110, 30)) as pilot:
+            await _advance_to_provider(pilot)
+            key = app.screen.query_one("#api-key", Input)
+            assert key.region.height > 0  # rendered at all
+            assert key.region.y + key.region.height <= 30  # fully on screen
+
+    asyncio.run(drive())
+
+
 def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
     """Arrow keys move focus (and the per-option description) WITHOUT changing the
     selection; Space selects the focused option. The selection dot only moves on

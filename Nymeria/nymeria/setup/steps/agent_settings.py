@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Container, Vertical
 from textual.screen import Screen
 from textual.widgets import Input, RadioButton, Static
 
@@ -106,6 +106,14 @@ class _TuningFormStep(FormStep):
             id=_field_id(field),
         )
 
+    def _compose_field_grid(self, fields: tuple[TuningField, ...]) -> ComposeResult:
+        # Two-up grid (see .field-grid): focus order stays the field order
+        # (left to right, then down), so up/down arrows still reach every box.
+        with Container(classes="field-grid"):
+            for field in fields:
+                with Vertical(classes="field-cell"):
+                    yield from self._compose_field(field)
+
     def _collect_fields(self, fields: tuple[TuningField, ...]) -> bool:
         # Two phases: validate everything first, mutate extras only when the
         # whole set passes. Otherwise a failed later field would leave earlier
@@ -185,10 +193,10 @@ class _AgentLimitsStep(_TuningFormStep):
 
     def compose_body(self) -> ComposeResult:
         yield Static(
-            "All optional: leave a field blank to keep the default shown."
+            "All optional: leave a field blank to keep the default shown.",
+            classes="field-note",
         )
-        for field in LIMIT_FIELDS:
-            yield from self._compose_field(field)
+        yield from self._compose_field_grid(LIMIT_FIELDS)
 
     def collect(self) -> bool:
         return self._collect_fields(LIMIT_FIELDS)
@@ -213,10 +221,9 @@ class _LLMTuningStep(_TuningFormStep):
         yield from self._compose_choices(initial)
         yield Static(
             "Optional sampling overrides. Blank keeps the provider default.",
-            classes="field-note",
+            classes="section-note",
         )
-        for field in SAMPLING_FIELDS:
-            yield from self._compose_field(field)
+        yield from self._compose_field_grid(SAMPLING_FIELDS)
 
     def collect(self) -> bool:
         effort = self._selected_choice()

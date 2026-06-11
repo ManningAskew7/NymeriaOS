@@ -23,7 +23,7 @@ from ..rag_catalog import get_embedder, get_reranker
 from ..state import WizardState
 from ..tool_keys import BACKEND_KEY_SPECS
 from ..tool_seed import default_thread_tools_for_state
-from .base import ACCENT, WizardStep
+from .base import ACCENT, SECONDARY, WizardStep
 from .placeholders import seeded_global_skills, seeded_tool_names, unmet_fetch_dependency
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class ReviewStep(WizardStep):
 
 def _row(label: str, value: str) -> str:
     """One aligned summary row: grey label column, white value."""
-    return f"[#aab4c3]{label:<10}[/]{value}"
+    return f"[{SECONDARY}]{label:<10}[/]{value}"
 
 
 def _heading(text: str) -> str:

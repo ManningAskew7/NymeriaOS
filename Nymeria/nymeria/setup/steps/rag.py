@@ -31,7 +31,6 @@ from textual.widgets import Input, RadioButton, Static
 from ..nav import Step
 from ..rag_catalog import (
     EMBEDDERS,
-    RECOMMENDED_COMBOS,
     RERANKERS,
     TIER_LABELS,
     EmbedderOption,
@@ -47,31 +46,23 @@ if TYPE_CHECKING:
     from ..app import SetupWizardApp
 
 
+_TIER_COLOR = "#8a93a3"
+
+
 def _tagged_label(option) -> str:
+    # The tier is a dim fixed-width markup column, so model names align.
+    # (Literal "[Premium]" brackets would be swallowed by markup parsing.)
     tag = TIER_LABELS.get(option.tier, option.tier.title())
-    label = f"[{tag}] {option.label}"
+    label = f"[{_TIER_COLOR}]{tag:<8}[/]{option.label}"
     if getattr(option, "recommended", False):
         label += " (recommended)"
     return label
 
 
 def _describe(option) -> str:
-    """The focused option's description plus its one-line internal-eval metric."""
-    text = option.description
-    metrics = getattr(option, "metrics", "")
-    return f"{text}\n{metrics}" if metrics else text
-
-
-def _combos_markup() -> str:
-    """The recommended embedder + reranker pairings, one line per tier."""
-    lines = ["Recommended combos (embedder + reranker):"]
-    for tier, emb_id, rer_id, blurb in RECOMMENDED_COMBOS:
-        emb = get_embedder(emb_id)
-        rer = get_reranker(rer_id)
-        if emb is None or rer is None:
-            continue
-        lines.append(f"  {tier}: {emb.label} + {rer.label}, {blurb}")
-    return "\n".join(lines)
+    """The focused option's description (the eval metrics line stays in the
+    catalog and docs; on screen it read as noise)."""
+    return option.description
 
 
 class EmbedderStep(FormStep):
@@ -85,19 +76,15 @@ class EmbedderStep(FormStep):
             step_id="embedder",
             title="Semantic memory: embedding model",
             note=(
-                "rag_search embeds your conversations, tool results, and notes for "
-                "recall. Premium = best quality, Value = best per dollar, Local = "
-                "free and private. Arrow through the fields, Space to pick, Enter to "
-                "confirm. Ctrl+S skips with the free local stack (granite + Ettin), "
-                "no key, no cost."
+                "rag_search recalls past conversations, tool results, and notes. "
+                "Premium = best quality, Value = best per dollar, Local = free "
+                "and private. Ctrl+S picks the local stack (no key, no cost)."
             ),
         )
         self._options: list[EmbedderOption] = list(EMBEDDERS)
 
     def compose_body(self) -> ComposeResult:
         initial = self.state.embedder or self._options[0].id
-        yield Static(_combos_markup(), id="combo-hint")
-        yield Static("Embedding model", classes="field-label")
         with Vertical(classes="radio-group", id="model-group"):
             for o in self._options:
                 yield CircleRadioButton(_tagged_label(o), value=(o.id == initial))
@@ -119,8 +106,8 @@ class EmbedderStep(FormStep):
                 "Vector-only", value=(self.state.rag_retrieval_mode == "vector")
             )
         yield Static(
-            "Hybrid keeps a BM25 keyword failsafe. Vector-only is often higher "
-            "quality but relies entirely on the embedder.",
+            "Hybrid keeps a BM25 keyword failsafe; vector-only relies entirely "
+            "on the embedder.",
             id="retrieval-help",
         )
 
@@ -174,6 +161,7 @@ class EmbedderStep(FormStep):
             label.update(opt.key_label)
             key_input.placeholder = f"Paste your {opt.key_label}"
             status.update("")
+            status.display = False
         else:
             key_input.display = False
             label.display = False
@@ -181,6 +169,7 @@ class EmbedderStep(FormStep):
                 "No API key needed: runs on this machine "
                 "(install the optional local-rag extra)."
             )
+            status.display = True
 
     def collect(self) -> bool:
         buttons = self._model_buttons()
@@ -222,10 +211,9 @@ class RerankerStep(FormStep):
             step_id="reranker",
             title="Semantic memory: reranker (optional)",
             note=(
-                "A reranker reorders rag_search results for accuracy. It adds a "
-                "little latency, so it is optional. Arrow to one, Space to pick, "
-                "Enter to confirm; it only asks for a key when it cannot reuse the "
-                "embedding key you just entered."
+                "Reorders rag_search results for accuracy at the cost of a "
+                "little latency. A key is only requested when the embedding "
+                "key cannot be reused."
             ),
         )
         self._options: list[RerankerOption] = list(RERANKERS)
@@ -304,18 +292,23 @@ class RerankerStep(FormStep):
             label.update(opt.key_label)
             key_input.placeholder = f"Paste your {opt.key_label}"
             status.update("")
+            status.display = False
         else:
             key_input.display = False
             label.display = False
             if mode == "reuse":
                 status.update(f"Reuses your {detail} API key from the previous step.")
+                status.display = True
             elif opt.provider == "none":
-                status.update("Vector-only: no reranker, lowest latency.")
+                # The choice description already explains vector-only.
+                status.update("")
+                status.display = False
             else:
                 status.update(
                     "No API key needed: runs on this machine "
                     "(install the optional local-rag extra)."
                 )
+                status.display = True
 
     def collect(self) -> bool:
         buttons = self._reranker_buttons()
