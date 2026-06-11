@@ -590,7 +590,9 @@ def build_agent_config(
     if tc and tc.callable and tc.callable_name:
         max_iters = tc.callable_max_iterations or agent.CALLABLE_DEFAULT_MAX_ITERATIONS
     else:
-        max_iters = agent.MAIN_AGENT_MAX_ITERATIONS
+        from .agent_safety import main_iterations_cap
+
+        max_iters = main_iterations_cap(agent)
 
     return AgentConfig(
         llm=llm_config,

@@ -36,6 +36,7 @@ class ThreadLLMConfig(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     extended_thinking: Optional[bool] = None
+    # "off", "low", "medium", "high", "xhigh", "max"; "" = inherit global.
     reasoning_effort: Optional[str] = None
     use_model_defaults: Optional[bool] = None
     provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
@@ -50,6 +51,28 @@ class ThreadLLMConfig(BaseModel):
     compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None
     compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_tokens: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _coerce_reasoning_effort(cls, value):
+        """Normalize the effort scale, tolerating legacy persisted values.
+
+        Configs on disk may carry values written before the off/low/medium/
+        high/xhigh/max scale existed; coerce anything unrecognized to None
+        (inherit) instead of failing the whole config load. "" stays ""
+        (explicit inherit marker).
+        """
+        if value is None or value == "":
+            return value
+        text = str(value).strip().lower()
+        if text in {"off", "low", "medium", "high", "xhigh", "max"}:
+            return text
+        logger.warning(
+            "Ignoring invalid persisted reasoning_effort %r "
+            "(expected off, low, medium, high, xhigh, or max)",
+            value,
+        )
+        return None
 
 
 class ActiveLLMFallback(BaseModel):

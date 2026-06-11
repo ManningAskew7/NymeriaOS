@@ -312,3 +312,46 @@ def test_context_usage_and_duration_format_helpers() -> None:
     assert format_duration(4.24) == "4.2s"
     assert format_duration(12.6) == "13s"
     assert format_duration(65.0) == "1m05s"
+
+
+def test_context_usage_label_caps_bar_at_compact_trigger_by_mode() -> None:
+    from types import SimpleNamespace
+
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "context_stats": {"total_tokens": 100, "context_window": 1000},
+        },
+        now=1.1,
+    )
+
+    tokens_settings = SimpleNamespace(
+        compact_threshold_mode="tokens",
+        compact_threshold_tokens=500,
+        compact_threshold=0.8,
+    )
+    tokens_label = context_usage_label(state, compact_settings=tokens_settings)
+    assert tokens_label.startswith("ctx 100/500 [")
+    assert tokens_label.endswith("] 10%")
+
+    oversized_settings = SimpleNamespace(
+        compact_threshold_mode="tokens",
+        compact_threshold_tokens=5_000,
+        compact_threshold=0.8,
+    )
+    clamped_label = context_usage_label(state, compact_settings=oversized_settings)
+    assert clamped_label.startswith("ctx 100/1.0k [")
+
+    percent_settings = SimpleNamespace(
+        compact_threshold_mode="percentage",
+        compact_threshold=0.5,
+        compact_threshold_tokens=200_000,
+    )
+    percent_label = context_usage_label(state, compact_settings=percent_settings)
+    assert percent_label.startswith("ctx 100/500 [")
+
+    no_settings_label = context_usage_label(state)
+    assert no_settings_label.startswith("ctx 100/1.0k [")

@@ -45,19 +45,30 @@ def _handle_memory_save(state: "CLIState", args: List[str]) -> None:
     profile = state.profile_manager.get_profile(state.user_id)
     from ....core.memory_limits import (
         get_global_memory_char_limit,
+        get_memory_max_entries,
+        get_memory_value_max_chars,
+        memory_entries_full_error,
         validate_profile_memory_write,
     )
 
+    max_entries = get_memory_max_entries(state.settings)
+    value_cap = get_memory_value_max_chars(state.settings)
     limit_error = validate_profile_memory_write(
         profile,
         key=key,
         value=value,
         limit=get_global_memory_char_limit(state.settings),
+        max_entries=max_entries,
+        max_value_chars=value_cap,
     )
     if limit_error:
         state.console.print(f"[red]{limit_error}[/red]")
         return
-    profile.add_memory(key, value)
+    if not profile.add_memory(
+        key, value, max_entries=max_entries, max_value_chars=value_cap
+    ):
+        state.console.print(f"[red]{memory_entries_full_error(max_entries)}[/red]")
+        return
     state.profile_manager.save_profile(profile)
     state.console.print(f"[green]Saved memory: {key}[/green]")
 

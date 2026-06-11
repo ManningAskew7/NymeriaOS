@@ -267,6 +267,64 @@ def test_active_fallback_temporarily_overrides_thread_llm_config():
     assert config.fallback_hold_seconds == 7200
 
 
+def test_reasoning_effort_clamped_to_model_ladder_at_choke_point():
+    # gpt-5.1 tops out at "high": an xhigh thread override is clamped.
+    agent = _make_agent(
+        ThreadLLMConfig(reasoning_effort="xhigh"),
+        llm_provider="openai",
+        llm_model="gpt-5.1",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.reasoning_effort == "high"
+
+
+def test_reasoning_effort_xhigh_clamps_up_to_max_on_anthropic_46():
+    agent = _make_agent(
+        ThreadLLMConfig(reasoning_effort="xhigh"),
+        llm_provider="anthropic",
+        llm_model="claude-sonnet-4-6",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.reasoning_effort == "max"
+
+
+def test_reasoning_effort_off_clamps_to_floor_on_undisableable_model():
+    agent = _make_agent(
+        ThreadLLMConfig(reasoning_effort="off"),
+        llm_provider="anthropic",
+        llm_model="claude-fable-5",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.reasoning_effort == "low"
+
+
+def test_reasoning_effort_off_passes_through_when_supported():
+    agent = _make_agent(
+        ThreadLLMConfig(reasoning_effort="off", extended_thinking=True),
+        llm_provider="openai",
+        llm_model="gpt-5.5",
+    )
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.reasoning_effort == "off"
+    assert config.extended_thinking is True
+
+
+def test_reasoning_effort_none_is_not_clamped():
+    agent = _make_agent(llm_reasoning_effort=None)
+
+    config = agent._get_llm_config_for_thread("thread-1")
+
+    assert config.reasoning_effort is None
+
+
 def test_expired_fallback_is_cleared_when_thread_idle():
     active = ActiveLLMFallback(
         provider="openai",

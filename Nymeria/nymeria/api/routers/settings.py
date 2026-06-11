@@ -25,7 +25,9 @@ from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import (
     get_max_output_tokens,
     list_all_models,
+    max_reasoning_effort,
     register_model_metadata,
+    supported_reasoning_efforts,
 )
 from ...core.accounts import AuthenticatedUser
 from ...core.llm_credentials import get_llm_provider_credential
@@ -65,6 +67,9 @@ _CLEARABLE_NULL_SETTINGS = {
     "llm_context_length",
     "llm_ollama_num_ctx",
     "llm_provider_route",
+    # Effort cleared = back to provider-default reasoning behavior; without
+    # this the frontend "Default" option could never unset a saved effort.
+    "llm_reasoning_effort",
     "embedding_dimensions",
     "rag_rerank_model",
     # Voice model/voice/base-URL cleared = back to the per-provider default
@@ -159,6 +164,8 @@ def _env_categories() -> dict[str, list[str]]:
             "compact_model",
             "sliding_window_cycles",
             "memory_char_limit",
+            "memory_max_entries",
+            "memory_value_max_chars",
         ],
         "System": [
             "log_level",
@@ -168,6 +175,7 @@ def _env_categories() -> dict[str, list[str]]:
             "nymeria_data_dir",
             "tool_timeout",
             "tool_output_max_chars",
+            "agent_max_iterations",
             "lock_timeout",
         ],
         "Tasks": [
@@ -766,6 +774,9 @@ def create_settings_router(
             sliding_window_cycles=settings.sliding_window_cycles,
             tool_output_max_chars=settings.tool_output_max_chars,
             memory_char_limit=settings.memory_char_limit,
+            memory_max_entries=settings.memory_max_entries,
+            memory_value_max_chars=settings.memory_value_max_chars,
+            agent_max_iterations=settings.agent_max_iterations,
             log_level=settings.log_level,
             watchdog_enabled=settings.watchdog_enabled,
             watchdog_interval_minutes=settings.watchdog_interval_minutes,
@@ -1188,8 +1199,14 @@ def create_settings_router(
     ):
         """Return cached model metadata for frontend enrichment."""
         models = list_all_models()
-        return [
-            {
+        result = []
+        for m in models:
+            # Provider-qualified ids (e.g. "x-ai/grok-4") come from the
+            # OpenRouter catalog, where OpenRouter's unified reasoning config
+            # decides the ladder; bare ids keep the per-family lookup. This
+            # matches what the runtime clamp does for openrouter threads.
+            provider_hint = "openrouter" if "/" in m.id else ""
+            result.append({
                 "id": m.id,
                 "name": m.name,
                 "context_length": m.context_length,
@@ -1202,9 +1219,14 @@ def create_settings_router(
                 "default_temperature": m.default_temperature,
                 "default_top_p": m.default_top_p,
                 "default_frequency_penalty": m.default_frequency_penalty,
-            }
-            for m in models
-        ]
+                # Static reasoning-effort ladder (rank-ordered) so frontends
+                # can warn before a per-model clamp kicks in.
+                "supported_reasoning_efforts": list(
+                    supported_reasoning_efforts(provider_hint, m.id)
+                ),
+                "max_reasoning_effort": max_reasoning_effort(provider_hint, m.id),
+            })
+        return result
 
     @router.get("/models/available")
     async def get_available_models(
@@ -1321,6 +1343,15 @@ def create_settings_router(
                     "owned_by": m.get("owned_by", ""),
                     "created": m.get("created"),
                     **metadata,
+                    # Effort ladder computed with the provider this listing was
+                    # proxied for, so it matches the runtime clamp for threads
+                    # routed through that provider.
+                    "supported_reasoning_efforts": list(
+                        supported_reasoning_efforts(effective_provider, model_id)
+                    ),
+                    "max_reasoning_effort": max_reasoning_effort(
+                        effective_provider, model_id
+                    ),
                 })
             return result
         except Exception as e:

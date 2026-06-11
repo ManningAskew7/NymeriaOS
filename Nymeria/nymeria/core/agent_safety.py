@@ -70,19 +70,41 @@ def recursion_limit_for_iterations(max_iterations: int) -> int:
     return max(150, (max_iterations * 2) + 25)
 
 
+def main_iterations_cap(agent: "NymeriaAgent") -> int:
+    """Resolve the main-agent iteration cap.
+
+    ``settings.agent_max_iterations`` wins when available; the class constant
+    is the fallback for agents constructed without settings (tests, stubs).
+    Only genuine int/str values count, so mock settings objects fall through.
+    """
+    settings = getattr(agent, "settings", None)
+    raw = getattr(settings, "agent_max_iterations", None)
+    configured = 0
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        configured = raw
+    elif isinstance(raw, str):
+        try:
+            configured = int(raw)
+        except ValueError:
+            configured = 0
+    if configured > 0:
+        return configured
+    return agent.MAIN_AGENT_MAX_ITERATIONS
+
+
 def max_iterations_for_thread(
     agent: "NymeriaAgent",
     thread_id: Optional[str],
 ) -> int:
     if not thread_id:
-        return agent.MAIN_AGENT_MAX_ITERATIONS
+        return main_iterations_cap(agent)
     try:
         tc = agent.thread_config_manager.get_config(thread_id)
         if tc and tc.callable and tc.callable_name:
             return tc.callable_max_iterations or agent.CALLABLE_DEFAULT_MAX_ITERATIONS
     except Exception as e:
         logger.debug(f"Could not resolve max iterations for thread {thread_id}: {e}")
-    return agent.MAIN_AGENT_MAX_ITERATIONS
+    return main_iterations_cap(agent)
 
 
 def graph_run_config(

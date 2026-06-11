@@ -199,6 +199,11 @@ def _handle_settings(state: "CLIState", args: List[str]) -> None:
     """Display current global settings."""
     s = state.settings
 
+    if getattr(s, "compact_threshold_mode", "") == "percentage":
+        compact_label = f"{int(s.compact_threshold * 100)}%"
+    else:
+        compact_label = f"{getattr(s, 'compact_threshold_tokens', '?')} tokens"
+
     lines = [
         f"  Provider        {s.llm_provider}",
         f"  Model           {s.llm_model}",
@@ -207,7 +212,7 @@ def _handle_settings(state: "CLIState", args: List[str]) -> None:
         f"  Temperature     {s.llm_temperature}",
         f"  Extended think  {s.llm_extended_thinking}",
         f"  Context mgmt    {s.context_management}",
-        f"  Compact at      {int(s.compact_threshold * 100)}%",
+        f"  Compact at      {compact_label}",
         f"  Database        {s.database_backend}",
         f"  Watchdog        {'on' if s.watchdog_enabled else 'off'} (every {s.watchdog_interval_minutes}m)",
         f"  Timezone        {s.user_timezone}",
@@ -417,7 +422,7 @@ def format_settings_view(settings: Mapping[str, Any]) -> str:
         ("Extended thinking", format_bool(settings.get("llm_extended_thinking", ""))),
         ("Model defaults", format_bool(settings.get("llm_use_model_defaults", ""))),
         ("Context mgmt", settings.get("context_management", "")),
-        ("Compact at", _percent(settings.get("compact_threshold"))),
+        ("Compact at", _compact_at_label(settings)),
         ("Keep messages", settings.get("compact_keep_messages", "")),
         ("Memory chars", settings.get("memory_char_limit", "")),
         ("Tool output chars", settings.get("tool_output_max_chars", "")),
@@ -456,6 +461,14 @@ def _percent(value: Any) -> str:
         return f"{float(value) * 100:.0f}%"
     except (TypeError, ValueError):
         return str(value or "")
+
+
+def _compact_at_label(settings: Mapping[str, Any]) -> str:
+    """Render the compact trigger per compact_threshold_mode."""
+
+    if settings.get("compact_threshold_mode") == "percentage":
+        return _percent(settings.get("compact_threshold"))
+    return f"{settings.get('compact_threshold_tokens', '?')} tokens"
 
 
 async def _handle_history_context(

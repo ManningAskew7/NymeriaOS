@@ -369,6 +369,75 @@ def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
     assert api.thread_config["memory_char_limit"] is None
 
 
+class _OffEffortCommandApi(FakeCommandApi):
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        data = await super().get_settings(user_id=user_id)
+        data["llm_reasoning_effort"] = "off"
+        return data
+
+
+def test_think_on_clears_persisted_off_effort() -> None:
+    """/think on after /think off must clear effort="off" (explicit null)."""
+    api = _OffEffortCommandApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/think on",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "effort reset to default" in result.markdown
+    updates = [call for call in api.calls if call[0] == "update_settings"]
+    assert updates == [
+        (
+            "update_settings",
+            (),
+            {
+                "user_id": "alice",
+                "llm_extended_thinking": True,
+                "llm_reasoning_effort": None,
+            },
+        )
+    ]
+
+
+def test_think_on_without_persisted_off_leaves_effort_untouched() -> None:
+    api = FakeCommandApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/think on",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    updates = [call for call in api.calls if call[0] == "update_settings"]
+    assert updates == [
+        (
+            "update_settings",
+            (),
+            {"user_id": "alice", "llm_extended_thinking": True},
+        )
+    ]
+
+
 def test_default_execution_uses_current_agent_backend_without_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

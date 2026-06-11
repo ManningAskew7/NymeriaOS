@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -87,7 +87,7 @@ class Memory(BaseModel):
     """A single memory/fact about the user."""
 
     key: str = Field(..., description="Memory identifier (e.g., 'favorite_language')")
-    value: str = Field(..., max_length=1000, description="Memory content")
+    value: str = Field(..., description="Memory content")
     created_at: datetime = Field(default_factory=utc_now)
     accessed_at: datetime = Field(default_factory=utc_now)
     access_count: int = Field(default=0, ge=0)
@@ -245,9 +245,13 @@ class UserProfile(BaseModel):
         ),
     )
 
-    # Limits
-    MAX_MEMORIES: int = 100
-    MAX_VALUE_LENGTH: int = 1000
+    # Fallback limits when no Settings-resolved caps are passed in. ClassVar
+    # keeps them out of the Pydantic field set; older profile.json files that
+    # persisted them as fields load fine (extras are ignored) and drop the
+    # keys on next save. Configurable via Settings memory_max_entries /
+    # memory_value_max_chars.
+    MAX_MEMORIES: ClassVar[int] = 100
+    MAX_VALUE_LENGTH: ClassVar[int] = 1000
 
     def get_memory(self, key: str) -> Optional[Memory]:
         """Get a memory by key."""
@@ -256,15 +260,28 @@ class UserProfile(BaseModel):
                 return mem
         return None
 
-    def add_memory(self, key: str, value: str) -> bool:
+    def add_memory(
+        self,
+        key: str,
+        value: str,
+        *,
+        max_entries: Optional[int] = None,
+        max_value_chars: Optional[int] = None,
+    ) -> bool:
         """
         Add or update a memory.
+
+        Callers should pass the Settings-resolved caps; the class constants
+        are only a fallback for direct/legacy callers.
 
         Returns:
             True if successful, False if at limit
         """
+        entry_cap = self.MAX_MEMORIES if max_entries is None else max_entries
+        value_cap = self.MAX_VALUE_LENGTH if max_value_chars is None else max_value_chars
+
         # Truncate value if too long
-        value = value[:self.MAX_VALUE_LENGTH]
+        value = value[:value_cap]
 
         # Check if memory exists
         existing = self.get_memory(key)
@@ -276,7 +293,7 @@ class UserProfile(BaseModel):
             return True
 
         # Check limit
-        if len(self.memories) >= self.MAX_MEMORIES:
+        if len(self.memories) >= entry_cap:
             return False
 
         # Add new memory

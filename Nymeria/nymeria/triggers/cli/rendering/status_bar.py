@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -49,7 +50,7 @@ class StatusBarContext:
     queued_count: int = 0
     notice: StatusNotice | None = None
     busy: bool = False
-    compact_threshold: float | None = None
+    compact_settings: Any | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -173,7 +174,7 @@ class StatusBarRenderer:
         thread = context.thread_label or state.thread_id or ""
         model = state.active_model or context.model
         context_usage = context_usage_label(
-            state, compact_threshold=context.compact_threshold,
+            state, compact_settings=context.compact_settings,
         )
         cwd = cwd_label(context.cwd)
 
@@ -328,6 +329,72 @@ def _fmt_tokens(n: float) -> str:
     return f"{n:.0f}"
 
 
+def _setting_value(settings: Any, key: str, default: Any = None) -> Any:
+    """Read one field from a live Settings object or a settings mapping."""
+
+    if isinstance(settings, Mapping):
+        return settings.get(key, default)
+    return getattr(settings, key, default)
+
+
+def compact_trigger_display_tokens(
+    settings: Any,
+    context_limit: float | int | None,
+) -> int | None:
+    """Resolve the auto-compact trigger (in tokens) for display surfaces.
+
+    Mirrors ``core/agent_compaction.py::compact_trigger_tokens`` semantics:
+    ``compact_threshold_mode="percentage"`` multiplies the context limit by
+    ``compact_threshold``; ``"tokens"`` clamps ``compact_threshold_tokens``
+    to the context limit. Accepts a live Settings object or a settings
+    mapping snapshot. Returns ``None`` when the trigger cannot be resolved
+    (missing settings, unusable values, or an unknown context limit).
+    """
+
+    if settings is None or not context_limit or context_limit <= 0:
+        return None
+    mode = _setting_value(settings, "compact_threshold_mode", "tokens")
+    if mode == "percentage":
+        try:
+            threshold = float(_setting_value(settings, "compact_threshold", 0.0))
+        except (TypeError, ValueError):
+            return None
+        if not 0 < threshold < 1:
+            return None
+        return max(1, int(context_limit * threshold))
+    try:
+        tokens = int(_setting_value(settings, "compact_threshold_tokens", 0))
+    except (TypeError, ValueError):
+        return None
+    if tokens <= 0:
+        return None
+    return max(1, min(tokens, int(context_limit)))
+
+
+def _trigger_fraction(trigger: int | None, limit: float | None) -> float | None:
+    """Bar-scaling fraction when the trigger sits below the context limit."""
+
+    if trigger is None or not limit or limit <= 0:
+        return None
+    if 0 < trigger < limit:
+        return trigger / limit
+    return None
+
+
+def _percentage_mode_fraction(settings: Any | None) -> float | None:
+    """Raw percentage threshold for bars rendered without a known limit."""
+
+    if settings is None:
+        return None
+    if _setting_value(settings, "compact_threshold_mode", "tokens") != "percentage":
+        return None
+    try:
+        threshold = float(_setting_value(settings, "compact_threshold", 0.0))
+    except (TypeError, ValueError):
+        return None
+    return threshold if 0 < threshold < 1 else None
+
+
 def _ctx_bar(
     percent: float,
     width: int = 10,
@@ -352,7 +419,7 @@ def _ctx_bar(
 def context_usage_label(
     state: CLIUIState,
     *,
-    compact_threshold: float | None = None,
+    compact_settings: Any | None = None,
 ) -> str:
     """Return compact context usage with graphical bar when stats are available."""
 
@@ -362,12 +429,15 @@ def context_usage_label(
     limit = _first_number(usage, "max_tokens", "context_limit", "context_window", "limit")
 
     if used is not None and limit and isinstance(percent, (int, float)):
-        bar = _ctx_bar(percent, compact_threshold=compact_threshold)
-        cap = _bar_cap_label(limit, compact_threshold)
+        trigger = compact_trigger_display_tokens(compact_settings, limit)
+        bar = _ctx_bar(percent, compact_threshold=_trigger_fraction(trigger, limit))
+        cap = _bar_cap_label(limit, trigger)
         return f"ctx {_fmt_tokens(used)}/{cap} [{bar}] {percent:.0f}%"
 
     if isinstance(percent, (int, float)):
-        bar = _ctx_bar(percent, compact_threshold=compact_threshold)
+        bar = _ctx_bar(
+            percent, compact_threshold=_percentage_mode_fraction(compact_settings)
+        )
         return f"ctx [{bar}] {percent:.0f}%"
 
     if used is not None:
@@ -375,11 +445,11 @@ def context_usage_label(
     return ""
 
 
-def _bar_cap_label(limit: float, compact_threshold: float | None) -> str:
+def _bar_cap_label(limit: float, trigger: int | None) -> str:
     """Label for the bar's right edge: the compact point or the full limit."""
 
-    if compact_threshold is not None and 0 < compact_threshold < 1:
-        return _fmt_tokens(limit * compact_threshold)
+    if trigger is not None and 0 < trigger < limit:
+        return _fmt_tokens(trigger)
     return _fmt_tokens(limit)
 
 

@@ -19,6 +19,7 @@
     providerSpecFor,
     supportedRoutesForProvider,
   } from '$lib/utils/providerRoutes';
+  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
 
   interface Props {
     /** Which model section this pane renders. */
@@ -77,6 +78,15 @@
 
   const inheritsGlobalModel = $derived(!llmModel);
   const globalModel = $derived(serverSettingsStore.model || '');
+
+  // Effort-clamp warning targets the model this thread will actually use
+  // (the override, else the inherited global default). Unsupported levels
+  // are clamped server-side, so this is a hint, not an error.
+  const effortModelMeta = $derived(modelsStore.getById(llmModel || globalModel));
+  const effortClampMax = $derived(effortModelMeta?.max_reasoning_effort ?? '');
+  const showEffortClampHint = $derived(
+    effortExceedsModelMax(llmReasoningEffort, effortClampMax)
+  );
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
@@ -309,10 +319,18 @@
         <label class="field-label" for="llm-reasoning">Reasoning effort</label>
         <select id="llm-reasoning" class="field-select" bind:value={llmReasoningEffort}>
           <option value="">Default (inherit global)</option>
+          <option value="off">Off</option>
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
+          <option value="xhigh">Extra high</option>
+          <option value="max">Max</option>
         </select>
+        {#if showEffortClampHint}
+          <div class="effort-clamp-note">
+            This model supports up to {reasoningEffortLabel(effortClampMax)}. Higher settings are reduced automatically.
+          </div>
+        {/if}
       </div>
     </div>
   {:else if section === 'context'}
@@ -419,6 +437,17 @@
   }
   .route-nudge-button:hover {
     border-color: var(--accent-primary);
+  }
+
+  .effort-clamp-note {
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--warning-rgb), 0.08);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    line-height: 1.45;
   }
 
   .field-input,

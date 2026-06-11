@@ -84,8 +84,8 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_TOP_K` | (provider default) | 1 - 100 | Top-k sampling (limits vocabulary per step) |
 | `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
 | `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
-| `LLM_REASONING_EFFORT` | (none) | low/medium/high | For reasoning models (o1, Claude with thinking); invalid values fail settings validation |
-| `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. |
+| `LLM_REASONING_EFFORT` | (none) | off/low/medium/high/xhigh/max | Reasoning effort for compatible models. `off` explicitly disables thinking; unset inherits provider behavior. Levels a model does not support are adjusted onto its supported range before the request is sent (over-asks drop to the model's ceiling; an unsupported `off` rises to its lowest level); invalid values fail settings validation |
+| `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high\|xhigh\|max` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API  -  the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for native Anthropic or OpenAI-compatible providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for OpenAI-compatible endpoints, use the provider's documented base URL, usually ending in `/v1`. Leave unset to use the registry default or a credential-vault base URL. |
 | `LLM_CONTEXT_LENGTH` | auto | 1,000 - 2,000,000 | Manual context-window override for local endpoints or proxies that do not report context metadata. Also available per thread as `context_length`. |
@@ -696,6 +696,8 @@ or tool explicitly requires them.
 | `MAUTIC_USERNAME` | - | Mautic basic-auth username fallback |
 | `MCP_REGISTRY_URL` | `https://registry.modelcontextprotocol.io` | Official MCP registry base URL used by `search_mcp` and `install_mcp_server` |
 | `MEMORY_CHAR_LIMIT` | `8000` | Default aggregate character budget for global profile memories and per-thread notepads. Threads can override their notepad limit in thread settings |
+| `MEMORY_MAX_ENTRIES` | `100` | Max number of global key-value memories per user (1-10,000). Upserts of existing keys always pass; only new keys are blocked at the cap |
+| `MEMORY_VALUE_MAX_CHARS` | `1000` | Max characters stored per global memory value (50-100,000); longer values are truncated |
 | `MICROSOFT_GRAPH_ACCESS_TOKEN` | - | Microsoft Graph OAuth access token fallback for native productivity tools |
 | `MICROSOFT_GRAPH_BASE_URL` | `https://graph.microsoft.com/v1.0` | Microsoft Graph API base URL |
 | `OKTA_ACCESS_TOKEN` | - | Okta SSWS API token fallback |
@@ -1529,6 +1531,7 @@ closing DNS-rebinding gaps.
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
 | `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
+| `AGENT_MAX_ITERATIONS` | `500` | Max agent loop iterations per turn (10-10,000); a safety backstop, not a tuning knob. Callable threads use their own per-thread cap |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
 
@@ -1539,11 +1542,11 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGEMENT` | `auto_compact` | Strategy: `auto_compact`, `sliding_window`, or `none` |
-| `COMPACT_THRESHOLD_MODE` | `percentage` | Trigger mode: `percentage` (of context window) or `tokens` (absolute input-token count) |
+| `COMPACT_THRESHOLD_MODE` | `tokens` | Trigger mode: `tokens` (absolute input-token count, default) or `percentage` (of context window) |
 | `COMPACT_THRESHOLD` | `0.8` | Used when `COMPACT_THRESHOLD_MODE=percentage`. Trigger compaction at this fraction of the model context window (0.05-0.95). Example: `0.38` is about 400k tokens on GPT-5.5's 1.05M window. |
-| `COMPACT_THRESHOLD_TOKENS` | `100000` | Used when `COMPACT_THRESHOLD_MODE=tokens`. Trigger compaction at this absolute input-token count (1,000-2,000,000). Clamped to the model's context window at runtime. Token counts come from the most recent provider response (`usage_metadata`), not character estimates. |
+| `COMPACT_THRESHOLD_TOKENS` | `200000` | Used when `COMPACT_THRESHOLD_MODE=tokens`. Trigger compaction at this absolute input-token count (1,000-2,000,000). Clamped to the model's context window at runtime. Token counts come from the most recent provider response (`usage_metadata`), not character estimates. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
-| `COMPACT_MODEL` | (main model) | Optional cheaper model for summarization |
+| `COMPACT_MODEL` | (main model) | Reserved: accepted and persisted, but not consumed by the runtime yet (summarization always runs on the thread's own model) |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
 
 **Context Management Modes:**
@@ -1716,9 +1719,12 @@ ANTHROPIC_API_KEY=sk-ant-...
 # LLM_TOP_K=40
 # LLM_FREQUENCY_PENALTY=0.0
 # LLM_PRESENCE_PENALTY=0.0
-# LLM_REASONING_EFFORT=medium  # For reasoning models
+# LLM_REASONING_EFFORT=medium  # off|low|medium|high|xhigh|max (clamped per model)
 # LLM_USE_MODEL_DEFAULTS=false # Let provider use model-specific optimal defaults
 # MEMORY_CHAR_LIMIT=8000       # Global/default persisted memory character budget
+# MEMORY_MAX_ENTRIES=100       # Max global key-value memories per user
+# MEMORY_VALUE_MAX_CHARS=1000  # Max characters per global memory value
+# AGENT_MAX_ITERATIONS=500     # Agent loop safety backstop per turn
 
 # Web search (optional but recommended)
 PERPLEXITY_API_KEY=pplx-...
@@ -1736,6 +1742,8 @@ NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 # Public browser URL for one-time credential setup links in chat bots.
 # Localhost HTTP is fine for local development; production should use HTTPS.
 # NYMERIA_PUBLIC_URL=https://nymeria.example.com
+# Destination for the desktop "Report problem" button. Use a dedicated inbox,
+# not a personal one. Sent via the Outlook email tool. Unset = /report 503s.
 API_HOST=0.0.0.0
 API_PORT=8000
 # NYMERIA_API_DOCS=false            # Set true only in trusted local development
@@ -1763,9 +1771,9 @@ AUDIT_LOG_ENABLED=true
 
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact      # auto_compact, sliding_window, or none
-# COMPACT_THRESHOLD_MODE=percentage    # percentage | tokens
+# COMPACT_THRESHOLD_MODE=tokens        # tokens (default) | percentage
 # COMPACT_THRESHOLD=0.8                # When mode=percentage: trigger at this fraction of context limit (0.05-0.95)
-# COMPACT_THRESHOLD_TOKENS=100000      # When mode=tokens: absolute input-token trigger (1000-2000000)
+# COMPACT_THRESHOLD_TOKENS=200000      # When mode=tokens: absolute input-token trigger (1000-2000000)
 # COMPACT_MODEL=                       # Use cheaper model for summarization
 # SLIDING_WINDOW_CYCLES=5              # For legacy sliding_window mode
 

@@ -33,13 +33,19 @@ Use the `/reasoning` command (alias `/thinking`) instead of manually patching tw
 
 ```
 /reasoning on          # enable extended thinking (per-thread or global)
-/reasoning off         # disable
+/reasoning off         # disable (persists effort "off", which wins over a global level)
 /reasoning high        # enable + set effort to high
 /reasoning low         # enable + set effort to low
+/reasoning xhigh       # enable + set effort to xhigh (frontier models)
+/reasoning max         # enable + set effort to max (clamped to the model's ceiling)
 /reasoning             # show current state (global, override, effective)
 ```
 
-The status bar shows `thinking: <effort>` when reasoning is active.
+Valid efforts are `off|low|medium|high|xhigh|max`. Levels a model does not
+support are clamped to its highest supported level before the request is sent
+(`config/model_capabilities.py::clamp_reasoning_effort`); the thread overview
+exposes the post-clamp value as `reasoning_effort_effective`. The status bar
+shows `thinking: <effort>` when reasoning is active.
 
 ## Wire formats by provider
 

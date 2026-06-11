@@ -29,6 +29,8 @@ function createModelsStore() {
       default_temperature: model.default_temperature ?? existing?.default_temperature ?? null,
       default_top_p: model.default_top_p ?? existing?.default_top_p ?? null,
       default_frequency_penalty: model.default_frequency_penalty ?? existing?.default_frequency_penalty ?? null,
+      supported_reasoning_efforts: model.supported_reasoning_efforts ?? existing?.supported_reasoning_efforts,
+      max_reasoning_effort: model.max_reasoning_effort ?? existing?.max_reasoning_effort,
     };
   }
 

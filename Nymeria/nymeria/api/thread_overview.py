@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..config.model_capabilities import clamp_reasoning_effort
 from ..core.accounts import AuthenticatedUser
 from ..core.checkpoint_status import (
     get_graph_state_revision,
@@ -428,12 +429,24 @@ def _config_summary(tc: ThreadConfig, *, tc_saved: ThreadConfig | None) -> dict[
     }
 
 
+def _effective_reasoning_effort(provider: str, model: str, effort: Any) -> Any:
+    """Clamp an effort value onto the model's ladder for display (None passes)."""
+    effort_text = str(effort or "").strip().casefold()
+    if not effort_text:
+        return None if effort in (None, "") else effort
+    try:
+        return clamp_reasoning_effort(provider, model, effort_text)
+    except Exception:  # noqa: BLE001
+        return effort
+
+
 def _llm_defaults(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
     provider = str(getattr(settings, "llm_provider", "") or "")
     model = str(context.get("model") or getattr(settings, "llm_model", "") or "")
     mode = getattr(settings, "openai_api_mode", None)
     extended = bool(getattr(settings, "llm_extended_thinking", False))
     effort = getattr(settings, "llm_reasoning_effort", None)
+    effort_effective = _effective_reasoning_effort(provider, model, effort)
     return {
         "provider": provider,
         "provider_label": _provider_label(provider, getattr(settings, "llm_base_url", None)),
@@ -444,10 +457,11 @@ def _llm_defaults(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
             provider=provider,
             model=model,
             extended=extended,
-            effort=effort,
+            effort=effort_effective,
         ),
         "extended_thinking": extended,
         "reasoning_effort": effort,
+        "reasoning_effort_effective": effort_effective,
         "temperature": getattr(settings, "llm_temperature", None),
         "max_tokens": getattr(settings, "llm_max_tokens", None),
         "use_model_defaults": getattr(settings, "llm_use_model_defaults", None),
@@ -474,6 +488,10 @@ def _llm_section(
         mode = getattr(effective, "openai_api_mode", None)
         extended = bool(getattr(effective, "extended_thinking", False))
         effort = getattr(effective, "reasoning_effort", None)
+        # The resolver clamps at the choke point already; re-applying the
+        # clamp is idempotent and keeps the field correct if a caller built
+        # the LLMConfig without going through agent_llm_config.
+        effort_effective = _effective_reasoning_effort(provider, model, effort)
         data = {
             "provider": provider,
             "provider_label": _provider_label(provider, base_url),
@@ -484,10 +502,11 @@ def _llm_section(
                 provider=provider,
                 model=model,
                 extended=extended,
-                effort=effort,
+                effort=effort_effective,
             ),
             "extended_thinking": extended,
             "reasoning_effort": effort,
+            "reasoning_effort_effective": effort_effective,
             "temperature": getattr(effective, "temperature", None),
             "max_tokens": getattr(effective, "max_tokens", None),
             "use_model_defaults": getattr(effective, "temperature", None) is None,
@@ -555,15 +574,32 @@ def _thinking_label(
     effort: Any = None,
 ) -> str:
     effort_text = str(effort or "").strip().casefold()
+    if effort_text == "off":
+        # Explicit off wins over extended_thinking.
+        return "off"
     if not extended and not effort_text:
         return "off"
     model_text = model.casefold()
     provider_text = provider.casefold()
     adaptive = (
-        ("anthropic" in provider_text or "claude" in model_text)
+        (
+            "anthropic" in provider_text
+            or "claude" in model_text
+            or "fable" in model_text
+            or "mythos" in model_text
+        )
         and any(
             marker in model_text
-            for marker in ("opus-4-6", "sonnet-4-6", "opus-4-7", "sonnet-4-7")
+            for marker in (
+                "opus-4-6",
+                "sonnet-4-6",
+                "opus-4-7",
+                "sonnet-4-7",
+                "opus-4-8",
+                "sonnet-4-8",
+                "fable",
+                "mythos",
+            )
         )
     )
     if adaptive:
@@ -593,7 +629,12 @@ def _callable_section(
     tc: ThreadConfig,
 ) -> dict[str, Any]:
     visible = _visible_callable_threads(agent, user_id, thread_id, tc)
-    main_default = getattr(agent, "MAIN_AGENT_MAX_ITERATIONS", None)
+    try:
+        from ..core.agent_safety import main_iterations_cap
+
+        main_default = main_iterations_cap(agent)
+    except Exception:  # noqa: BLE001
+        main_default = getattr(agent, "MAIN_AGENT_MAX_ITERATIONS", None)
     callable_default = getattr(agent, "CALLABLE_DEFAULT_MAX_ITERATIONS", None)
     effective = (
         (tc.callable_max_iterations or callable_default)

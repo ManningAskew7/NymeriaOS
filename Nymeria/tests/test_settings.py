@@ -96,7 +96,7 @@ def test_llm_max_tokens_rejects_values_above_config_guardrail():
         Settings(_env_file=None, llm_max_tokens=MAX_LLM_OUTPUT_TOKENS + 1)
 
 
-@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+@pytest.mark.parametrize("effort", ["off", "low", "medium", "high", "xhigh", "max"])
 def test_reasoning_effort_accepts_documented_values(effort):
     settings = Settings(_env_file=None, llm_reasoning_effort=effort)
 

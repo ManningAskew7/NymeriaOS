@@ -49,7 +49,7 @@ def _agent_with_compaction(
 def test_auto_compact_uses_percentage_threshold_only_for_large_models():
     agent = _agent_with_compaction()
 
-    assert agent._compact_trigger_tokens(1_050_000, 0.8) == 840_000
+    assert agent._compact_trigger_tokens(1_050_000, 0.8, mode="percentage") == 840_000
 
     agent._token_tracker.record_usage("thread-a", 134_000, 10)
     assert agent._should_auto_compact_now("thread-a", "user-a") is False

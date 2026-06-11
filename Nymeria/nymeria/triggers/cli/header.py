@@ -733,9 +733,22 @@ def thinking_mode(
     extended: bool,
     effort: Any = None,
 ) -> str:
-    """Return the concise thinking-mode label used in the CLI header."""
+    """Return the concise thinking-mode label used in the CLI header.
+
+    Renders the effective effort: the requested level is clamped onto the
+    model's supported ladder, and explicit "off" wins over extended thinking.
+    """
 
     effort_text = str(effort or "").strip().casefold()
+    if effort_text:
+        try:
+            from nymeria.config.model_capabilities import clamp_reasoning_effort
+
+            effort_text = clamp_reasoning_effort(provider, model, effort_text)
+        except Exception:  # noqa: BLE001
+            pass
+    if effort_text == "off":
+        return "off"
     enabled = bool(extended) or bool(effort_text)
     if not enabled:
         return "off"
@@ -747,11 +760,25 @@ def thinking_mode(
 def _uses_adaptive_thinking(*, provider: str, model: str) -> bool:
     provider_text = provider.casefold()
     model_text = model.casefold()
-    if "anthropic" not in provider_text and "claude" not in model_text:
+    if (
+        "anthropic" not in provider_text
+        and "claude" not in model_text
+        and "fable" not in model_text
+        and "mythos" not in model_text
+    ):
         return False
     return any(
         marker in model_text
-        for marker in ("opus-4-6", "sonnet-4-6", "opus-4-7", "sonnet-4-7")
+        for marker in (
+            "opus-4-6",
+            "sonnet-4-6",
+            "opus-4-7",
+            "sonnet-4-7",
+            "opus-4-8",
+            "sonnet-4-8",
+            "fable",
+            "mythos",
+        )
     )
 
 

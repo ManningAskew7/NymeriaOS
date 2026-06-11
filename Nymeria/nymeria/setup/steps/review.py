@@ -110,9 +110,9 @@ def _summary_markup(state: WizardState) -> str:
     ):
         if isinstance(value, str) and value not in ("__skip__", "none"):
             tool_lines.append(f"{name}: {label_fn(value)}")
-    agent_settings = state.extras.get("agent_settings")
-    if agent_settings and agent_settings != "__skip__":
-        tool_lines.append(f"Agent settings: {agent_settings}")
+    from ..tuning_catalog import tuning_summary_lines
+
+    tool_lines.extend(tuning_summary_lines(state))
     lines.append("")
     lines.append("[bold]Tools and capabilities[/bold]")
     for line in tool_lines:

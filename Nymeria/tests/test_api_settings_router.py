@@ -65,6 +65,9 @@ class FakeSettings:
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
     memory_char_limit: int = 8000
+    memory_max_entries: int = 100
+    memory_value_max_chars: int = 1000
+    agent_max_iterations: int = 500
     log_level: str = "INFO"
     watchdog_enabled: bool = True
     watchdog_interval_minutes: int = 5
@@ -213,9 +216,17 @@ class FakeSettingsProvider:
             value = os.environ.get(name)
             return default if value is None else int(value) if value else None
 
+        def env_optional_str(name: str, default: str | None) -> str | None:
+            value = os.environ.get(name)
+            return default if value is None else (value or None)
+
         self.settings = replace(
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
+            llm_reasoning_effort=env_optional_str(
+                "LLM_REASONING_EFFORT",
+                self.settings.llm_reasoning_effort,
+            ),
             llm_fast_model=os.environ.get(
                 "LLM_FAST_MODEL",
                 self.settings.llm_fast_model,
@@ -603,6 +614,12 @@ def test_available_models_uses_provider_endpoint_and_caches_metadata(
     assert body[0]["default_temperature"] == 0.7
     assert body[0]["default_top_p"] == 0.95
     assert body[0]["default_frequency_penalty"] == 0.2
+    # Effort ladder computed with the effective provider of the listing
+    # (lmstudio here: unknown family, conservative default ladder).
+    assert body[0]["supported_reasoning_efforts"] == [
+        "off", "low", "medium", "high",
+    ]
+    assert body[0]["max_reasoning_effort"] == "high"
     assert get_context_limit("provider/test-context-model") == 64000
     assert get_model_defaults("provider/test-context-model") == {
         "temperature": 0.7,
@@ -803,6 +820,41 @@ def test_patch_settings_can_clear_local_llm_context_overrides(
     assert provider.cache_clear_count == 1
     assert agent.settings.llm_context_length is None
     assert agent.settings.llm_ollama_num_ctx is None
+    assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_can_clear_reasoning_effort(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Explicit null resets a saved effort (e.g. "off") to provider defaults."""
+    (tmp_path / ".env").write_text("LLM_REASONING_EFFORT=off\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "off")
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        llm_reasoning_effort="off",
+    )
+    client, agent, token, provider = _client(
+        monkeypatch,
+        tmp_path,
+        settings=settings,
+    )
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_reasoning_effort": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["llm_reasoning_effort"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LLM_REASONING_EFFORT=off" not in env_text
+    assert "LLM_REASONING_EFFORT=" in env_text
+    assert os.environ["LLM_REASONING_EFFORT"] == ""
+    assert provider.cache_clear_count == 1
+    assert agent.settings.llm_reasoning_effort is None
     assert agent.graph_rebuilds == ["sync", "async"]
 
 
@@ -1310,3 +1362,44 @@ def test_command_backend_update_settings_reports_restart_and_rebuilds_graph(
 
     assert result["restart_required"] is True
     assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_get_cached_models_includes_reasoning_effort_ladder(
+    tmp_path: Path, monkeypatch
+):
+    """GET /models surfaces the static effort ladder for frontend warnings."""
+    from nymeria.api.routers import settings as settings_router
+    from nymeria.config.model_capabilities import ModelInfo
+
+    monkeypatch.setattr(
+        settings_router,
+        "list_all_models",
+        lambda: [
+            ModelInfo(id="openai/gpt-5.5", name="GPT-5.5"),
+            ModelInfo(id="x-ai/grok-4", name="Grok 4"),
+            ModelInfo(id="claude-opus-4-8", name="Claude Opus 4.8"),
+        ],
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/models", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = {entry["id"]: entry for entry in response.json()}
+    # Provider-qualified ids are OpenRouter catalog entries: the ladder must
+    # match the runtime clamp for openrouter threads (unified config), not
+    # the native family ladder. x-ai/grok-4 would otherwise advertise a
+    # max effort of "off" and trip a false frontend warning.
+    assert body["openai/gpt-5.5"]["supported_reasoning_efforts"] == [
+        "off", "low", "medium", "high", "xhigh",
+    ]
+    assert body["openai/gpt-5.5"]["max_reasoning_effort"] == "xhigh"
+    assert body["x-ai/grok-4"]["supported_reasoning_efforts"] == [
+        "off", "low", "medium", "high", "xhigh",
+    ]
+    assert body["x-ai/grok-4"]["max_reasoning_effort"] == "xhigh"
+    # Bare ids (native catalogs, e.g. Anthropic) keep the family ladder.
+    assert body["claude-opus-4-8"]["supported_reasoning_efforts"] == [
+        "off", "low", "medium", "high", "xhigh", "max",
+    ]
+    assert body["claude-opus-4-8"]["max_reasoning_effort"] == "max"

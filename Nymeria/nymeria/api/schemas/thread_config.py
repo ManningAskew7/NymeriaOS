@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "xhigh", "max"}
 
 
 class ThreadLLMConfigRequest(BaseModel):
@@ -13,6 +15,7 @@ class ThreadLLMConfigRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     extended_thinking: bool | None = None
+    # "off", "low", "medium", "high", "xhigh", "max"; "" = inherit global.
     reasoning_effort: str | None = None
     use_model_defaults: bool | None = None
     provider_route: Literal["native", "openai_compat", "anthropic_messages"] | None = None
@@ -24,6 +27,19 @@ class ThreadLLMConfigRequest(BaseModel):
     compact_threshold_mode: Literal["percentage", "tokens"] | None = None
     compact_threshold: float | None = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_tokens: int | None = Field(default=None, ge=1_000, le=2_000_000)
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _validate_reasoning_effort(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return value
+        normalized = value.strip().lower()
+        if normalized not in _VALID_REASONING_EFFORTS:
+            raise ValueError(
+                "reasoning_effort must be one of: off, low, medium, high, "
+                "xhigh, max (or '' to inherit the global setting)"
+            )
+        return normalized
 
 
 class DreamingConfigRequest(BaseModel):

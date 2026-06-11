@@ -7,6 +7,7 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { modelOptions } from '$lib/utils/modelOptions';
+  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
@@ -803,11 +804,19 @@
                   <label class="setting-label">Reasoning Effort</label>
                   <select class="setting-input" bind:value={llmReasoningEffort}>
                     <option value={null}>Default</option>
+                    <option value="off">Off</option>
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
+                    <option value="xhigh">Extra high</option>
+                    <option value="max">Max</option>
                   </select>
-                  <p class="hint">For reasoning models (o1, Claude with thinking)</p>
+                  {#if effortExceedsModelMax(llmReasoningEffort, currentModelMeta?.max_reasoning_effort)}
+                    <div class="effort-clamp-note">
+                      This model supports up to {reasoningEffortLabel(currentModelMeta?.max_reasoning_effort ?? '')}. Higher settings are reduced automatically.
+                    </div>
+                  {/if}
+                  <p class="hint">For reasoning models (o1, Claude with thinking). Off disables thinking where the model allows it.</p>
                 </div>
 
                 <div class="setting-group">
@@ -1499,6 +1508,17 @@
     margin: 0;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .effort-clamp-note {
+    margin: var(--spacing-xs) 0;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
     line-height: 1.4;
   }
 

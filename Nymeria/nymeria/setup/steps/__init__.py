@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from ..nav import Step
 from ..quick import QUICK_KEEP_STEP_IDS, section_keep_ids
-from .agent_settings import make_agent_settings_step
+from .agent_settings import (
+    make_agent_limits_step,
+    make_context_step,
+    make_llm_tuning_step,
+)
 from .auth import make_auth_method_step
 from .backend_keys import make_backend_keys_step
 from .cliproxy import (
@@ -94,6 +98,7 @@ def _default_step_list() -> list[Step]:
         make_provider_step(),
         make_connection_step(),
         make_model_step(),
+        make_llm_tuning_step(),
         # Tool families seeded on top of the default (seed) core set (core-toolset
         # plan, Sections A-C) and the voice providers, then the keys those
         # backends need, then the remaining capability placeholders.
@@ -107,7 +112,8 @@ def _default_step_list() -> list[Step]:
         make_stt_step(),
         make_backend_keys_step(),
         make_skill_kits_step(),
-        make_agent_settings_step(),
+        make_context_step(),
+        make_agent_limits_step(),
         # External access (the choice, then the guided tailscale/cloudflare
         # setup), then offer to start the backend, then review and write.
         make_external_access_step(),

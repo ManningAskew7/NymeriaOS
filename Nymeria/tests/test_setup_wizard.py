@@ -448,8 +448,8 @@ def test_quick_path_gates_steps_to_essentials():
     skippable = (
         "docker_stack", "security_profile", "auth_method", "core_tools",
         "web_search", "fetch_url", "embedder", "reranker", "image_gen",
-        "backend_keys", "skill_kits", "tts", "stt", "agent_settings",
-        "external_access",
+        "backend_keys", "skill_kits", "tts", "stt", "llm_tuning",
+        "context", "agent_limits", "external_access",
     )
 
     # Full (default) path keeps the optional/placeholder steps. (reranker and
@@ -1229,13 +1229,21 @@ def test_build_section_steps_filters_to_section_plus_deps():
     ]
 
     # The LLM unit stays together (auth_method included so a jump can flip
-    # between the API-key trio and the CLIProxy branch); connection drops out
-    # for a provider that needs no base URL, and the cliproxy_* steps drop out
-    # on the API-key path.
+    # between the API-key trio and the CLIProxy branch, llm_tuning because a
+    # model switch changes what effort/sampling make sense); connection drops
+    # out for a provider that needs no base URL, and the cliproxy_* steps drop
+    # out on the API-key path.
     s2 = WizardState(provider="anthropic")
     nav2 = Navigator(build_section_steps("model"), s2)
     kept = [build_section_steps("model")[i].id for i in nav2.applicable_indices()]
-    assert kept == ["welcome", "auth_method", "provider", "model", "review"]
+    assert kept == ["welcome", "auth_method", "provider", "model", "llm_tuning", "review"]
+
+    # A tuning-only jump re-runs just itself (hydrated provider satisfies its
+    # applies predicate) without dragging the whole LLM unit back up.
+    s3 = WizardState(provider="anthropic")
+    nav3 = Navigator(build_section_steps("llm_tuning"), s3)
+    kept3 = [build_section_steps("llm_tuning")[i].id for i in nav3.applicable_indices()]
+    assert kept3 == ["welcome", "llm_tuning", "review"]
 
 
 def test_run_init_rejects_unknown_section(monkeypatch, tmp_path):
@@ -1435,7 +1443,9 @@ def test_review_summary_markup_surfaces_collected_choices():
         external_access=ExternalAccess.TAILSCALE,
         extras={
             "web_search": ["web_search_perplexity"],
-            "agent_settings": "thorough",
+            "context_strategy": "compact_tokens",
+            "compact_threshold_tokens": "200000",
+            "llm_effort": "medium",
             "rag_search": "__skip__",
         },
     )
@@ -1447,7 +1457,9 @@ def test_review_summary_markup_surfaces_collected_choices():
     assert "claude-opus-4-8" in markup
     assert "Default thread tools:" in markup  # core seed + picks, now written
     assert "web_search_perplexity" in markup  # picked family member
-    assert "Agent settings: thorough" in markup
+    assert "Context: Auto-compact at a token count" in markup
+    assert "COMPACT_THRESHOLD_TOKENS=200000" in markup
+    assert "Reasoning effort: Medium" in markup
     assert "RAG search" not in markup  # a skipped placeholder is not shown
     assert "Tailscale" in markup
     # The post-setup handoff is surfaced (default is print, not start).

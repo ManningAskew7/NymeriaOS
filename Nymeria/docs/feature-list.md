@@ -34,8 +34,8 @@ The core differentiating feature. Any conversation thread can be made "callable"
 
 ### Learning & Improvement
 Each thread improves as it's used through two knowledge systems:
-- **Notepad** (thread-local)  -  Persistent markdown scratchpad (50KB) that survives context compaction. The agent writes findings, decisions, project state, and strategy. Re-injected into the system prompt after every compaction. Acts as the thread's isolated, evolving knowledge base.
-- **Profile** (shared)  -  Key-value store shared across ALL threads (100 entries, 1000 chars each). Contains universal facts about the user: name, preferences, API keys, communication style. Every thread sees this context.
+- **Notepad** (thread-local)  -  Persistent markdown scratchpad (`MEMORY_CHAR_LIMIT`, default 8000 chars, per-thread overridable) that survives context compaction. The agent writes findings, decisions, project state, and strategy. Re-injected into the conversation context after every compaction. Acts as the thread's isolated, evolving knowledge base.
+- **Profile** (shared)  -  Key-value store shared across ALL threads (`MEMORY_MAX_ENTRIES`, default 100 entries; `MEMORY_VALUE_MAX_CHARS`, default 1000 chars per value; the same `MEMORY_CHAR_LIMIT` aggregate budget binds first). Contains universal facts about the user: name, preferences, API keys, communication style. Every thread sees this context.
 
 ### Concurrency & Safety
 - **Per-thread locking**  -  `ThreadLockManager` prevents concurrent access to the same thread
@@ -52,16 +52,16 @@ NymeriaOS threads don't just respond  -  they learn. Three interconnected system
 ### Profile (Shared Knowledge Base)
 - **Scope**: Global  -  shared across ALL threads for a user
 - **Purpose**: Universal facts (name, role, preferences, API keys, communication style)
-- **Auto-injected**: Into every thread's system prompt (configurable per-thread)
+- **Auto-injected**: Into every thread's conversation context as a `memory_read` exchange (configurable per-thread)
 - **Tools**: `memory_add(scope="global", ...)`, `memory_edit(scope="global", ...)`, `memory_read(scope="global", ...)`, `personality_set`
-- **Limits**: 100 memories, 1000 chars each
+- **Limits**: configurable; defaults 100 memories (`MEMORY_MAX_ENTRIES`), 1000 chars per value (`MEMORY_VALUE_MAX_CHARS`), 8000-char aggregate budget (`MEMORY_CHAR_LIMIT`)
 
 ### Notepad (Per-Thread Knowledge Base)
 - **Scope**: Thread-local  -  isolated to one conversation
 - **Purpose**: Thread-specific state: project context, decisions, findings, strategy, file paths
 - **Survives compaction**: Automatically re-injected after context summarization
 - **Tools**: `memory_add(scope="thread", ...)`, `memory_edit(scope="thread", ...)`, `memory_read(scope="thread", ...)` (same unified verbs as profile, just `scope="thread"`)
-- **Limit**: 50KB per thread
+- **Limit**: `MEMORY_CHAR_LIMIT` (default 8000 chars), per-thread overridable
 - **Used by autonomous tasks**: Ticker reads notepad for context continuity
 
 ### RAG (Nothing Gets Forgotten)
@@ -521,11 +521,11 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 
 | Feature | Limit | Configurable |
 |---------|-------|:---:|
-| User memories (profile) | 100 per user, 1000 chars each | No |
-| Thread notepad | 50 KB | No |
+| User memories (profile) | 100 per user, 1000 chars each (8000-char aggregate budget) | Yes (`MEMORY_MAX_ENTRIES`, `MEMORY_VALUE_MAX_CHARS`, `MEMORY_CHAR_LIMIT`) |
+| Thread notepad | 8000 chars | Yes (`MEMORY_CHAR_LIMIT`, per-thread override) |
 | Thread instructions | 5000 chars | No |
 | System prompt override | 50,000 chars | No |
-| Agent tool calls per turn | 500 (main), 300 (callable) | Callable override 1–1000 |
+| Agent tool calls per turn | 500 (main), 300 (callable) | Yes (`AGENT_MAX_ITERATIONS`; callable override 1–1000) |
 | Spawn depth | 3 levels | Yes |
 | Spawns per hour | 10 per parent | Yes |
 | Tool reloads per turn | 3 | No |
@@ -534,7 +534,7 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Ticker poll interval | 5 seconds | Yes (1–60s) |
 | Lock timeout | 120 seconds | Yes |
 | Tool timeout | 300 seconds | Yes |
-| Compact threshold | 80% | Yes (5–95%) |
+| Compact threshold | 200,000 tokens (tokens mode, default) | Yes (tokens 1k–2M, or percentage 5–95%) |
 | Graph cache | 50 entries | No |
 | Active TODOs | 50 per user | No |
 | TODO auto-archive | 7 days | Yes (1–30) |

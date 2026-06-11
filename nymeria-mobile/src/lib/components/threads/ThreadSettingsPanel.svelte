@@ -9,6 +9,7 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { effortExceedsModelMax, reasoningEffortLabel } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { api } from '$lib/services/api.svelte';
@@ -134,6 +135,18 @@
 
   // Model metadata (reactive)
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
+
+  // Effort-clamp warning targets the model this thread will actually use
+  // (the override, else the inherited global default). Unsupported levels
+  // are clamped server-side, so this is a hint, not an error.
+  const effortModelMeta = $derived(
+    modelsStore.getById(llmModel || serverSettingsStore.model || '')
+  );
+  const effortClampMax = $derived(effortModelMeta?.max_reasoning_effort ?? '');
+  const showEffortClampHint = $derived(
+    effortExceedsModelMax(llmReasoningEffort, effortClampMax)
+  );
+
   let availableModelsState = $state<AvailableModelsState>({
     models: [],
     provider: '',
@@ -1262,10 +1275,18 @@
           <label class="setting-label">Reasoning Effort</label>
           <select class="setting-input" bind:value={llmReasoningEffort}>
             <option value="">Default (inherit global)</option>
+            <option value="off">Off</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+            <option value="max">Max</option>
           </select>
+          {#if showEffortClampHint}
+            <div class="effort-clamp-note">
+              This model supports up to {reasoningEffortLabel(effortClampMax)}. Higher settings are reduced automatically.
+            </div>
+          {/if}
         </div>
 
         <div class="setting-group">
@@ -1884,6 +1905,17 @@
     border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
     cursor: pointer;
+  }
+
+  .effort-clamp-note {
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    line-height: 1.4;
   }
 
   .char-count {

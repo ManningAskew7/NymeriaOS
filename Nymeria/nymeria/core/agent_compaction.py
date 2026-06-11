@@ -224,8 +224,8 @@ class CompactionManager:
         model_limit: int,
         threshold: float = 0.8,
         *,
-        mode: str = "percentage",
-        tokens: int = 100_000,
+        mode: str = "tokens",
+        tokens: int = 200_000,
     ) -> int:
         """Return the input-token count that should trigger auto-compaction.
 

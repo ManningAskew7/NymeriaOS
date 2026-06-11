@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
+from ..rendering.status_bar import compact_trigger_display_tokens
 from .system import (
     call_client_method,
     unsupported_transport_result,
@@ -106,26 +107,33 @@ async def _show_thread_usage(context: CommandContext) -> CommandResult:
     if not isinstance(stats, Mapping):
         return CommandResult.failed("Could not retrieve usage statistics.")
 
-    compact_threshold = _get_compact_threshold(context)
+    compact_trigger = _get_compact_trigger(context, stats)
 
     return CommandResult.completed(
         CommandMessage(
-            _format_thread_usage(stats, compact_threshold=compact_threshold),
+            _format_thread_usage(stats, compact_trigger=compact_trigger),
             title="Usage",
         ),
         payload=dict(stats),
-        json_payload=_thread_usage_payload(stats, compact_threshold=compact_threshold),
+        json_payload=_thread_usage_payload(stats, compact_trigger=compact_trigger),
     )
 
 
-def _get_compact_threshold(context: CommandContext) -> float | None:
+def _get_compact_trigger(
+    context: CommandContext,
+    stats: Mapping[str, Any],
+) -> int | None:
+    """Resolve the auto-compact trigger tokens from global settings, if known."""
     legacy = context.legacy_state
-    if legacy is not None:
-        try:
-            return float(legacy.settings.compact_threshold)
-        except Exception:  # noqa: BLE001
-            pass
-    return None
+    if legacy is None:
+        return None
+    try:
+        return compact_trigger_display_tokens(
+            legacy.settings,
+            _int_or(stats, "context_limit", 0) or None,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def _show_session_usage(
@@ -212,7 +220,7 @@ async def _show_session_usage(
 def _format_thread_usage(
     stats: Mapping[str, Any],
     *,
-    compact_threshold: float | None = None,
+    compact_trigger: int | None = None,
 ) -> str:
     model = stats.get("model", "")
     input_tokens = _int_or(stats, "input_tokens", 0)
@@ -223,7 +231,10 @@ def _format_thread_usage(
     cumulative = _int_or(stats, "cumulative_tokens", 0)
     compactions = _int_or(stats, "compaction_count", 0)
 
-    bar = _ctx_bar(usage_pct, compact_threshold=compact_threshold) if context_limit else ""
+    trigger_fraction: float | None = None
+    if compact_trigger and context_limit and 0 < compact_trigger < context_limit:
+        trigger_fraction = compact_trigger / context_limit
+    bar = _ctx_bar(usage_pct, compact_threshold=trigger_fraction) if context_limit else ""
     limit_label = _fmt_tokens(context_limit) if context_limit else "?"
     pct_label = f"{usage_pct}%" if context_limit else "?"
 
@@ -234,8 +245,8 @@ def _format_thread_usage(
         f"  Context         {_fmt_tokens(total_tokens)} / {limit_label}"
     )
     if bar:
-        if compact_threshold is not None and 0 < compact_threshold < 1:
-            compact_cap = _fmt_tokens(context_limit * compact_threshold)
+        if trigger_fraction is not None and compact_trigger:
+            compact_cap = _fmt_tokens(compact_trigger)
             lines.append(
                 f"  Until compact   [{bar}] {pct_label} of {compact_cap}"
             )
@@ -274,7 +285,7 @@ def _format_thread_usage(
 def _thread_usage_payload(
     stats: Mapping[str, Any],
     *,
-    compact_threshold: float | None = None,
+    compact_trigger: int | None = None,
 ) -> dict[str, Any]:
     payload = dict(stats)
     model = str(stats.get("model", ""))
@@ -283,8 +294,8 @@ def _thread_usage_payload(
     cost = _estimate_cost(input_tokens, output_tokens, model)
     if cost is not None:
         payload["estimated_cost"] = cost
-    if compact_threshold is not None:
-        payload["compact_threshold"] = compact_threshold
+    if compact_trigger is not None:
+        payload["compact_trigger_tokens"] = compact_trigger
     return payload
 
 
