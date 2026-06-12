@@ -96,6 +96,12 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
             DockerStack.FULL if _get(values, "POSTGRES_PASSWORD") else DockerStack.SLIM
         )
 
+    if state.api_port is None and _get(values, "API_PORT"):
+        try:
+            state.api_port = int((_get(values, "API_PORT") or "").strip())
+        except ValueError:
+            pass  # hand-edited junk; keep the default
+
     if state.provider is None and _get(values, "LLM_PROVIDER"):
         state.provider = _get(values, "LLM_PROVIDER")
     if not state.model and _get(values, "LLM_MODEL"):

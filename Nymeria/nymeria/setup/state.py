@@ -40,6 +40,10 @@ class WizardState:
     # First-run security posture. Recorded now; enforcement is built out later.
     security_profile: SecurityProfile | None = None
 
+    # API listen port, written as API_PORT; printed URLs, health checks, and
+    # the remote-access ingress all follow it. None means the default 8000.
+    api_port: int | None = None
+
     # How the primary LLM is authenticated: a direct API key, or the
     # provider-generic subscription branch through CLIProxy.
     auth_method: ProviderAuthMethod = ProviderAuthMethod.API_KEY
@@ -151,6 +155,10 @@ class WizardState:
     # nor a known init family member (user-added). Carried through a reconfigure so
     # the profile-pick update never silently drops them.
     unmanaged_tools: list[str] = field(default_factory=list)
+
+    def resolved_api_port(self) -> int:
+        """The chosen API port with the default applied."""
+        return self.api_port or 8000
 
     def provider_spec(self) -> LLMProviderSpec | None:
         """Return the registry LLMProviderSpec for the chosen provider, or None."""

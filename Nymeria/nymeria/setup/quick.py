@@ -74,6 +74,7 @@ QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 DEFAULT_STEP_IDS: tuple[str, ...] = (
     "welcome",
     "hosting",
+    "api_port",
     "docker_stack",
     "security_profile",
     "auth_method",

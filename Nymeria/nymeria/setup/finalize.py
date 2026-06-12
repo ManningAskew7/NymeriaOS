@@ -104,19 +104,32 @@ class _DockerStackSpec:
     health_timeout: float = 40.0
 
 
-_DOCKER_STACK_SPECS: dict[DockerStack, _DockerStackSpec] = {
-    DockerStack.SLIM: _DockerStackSpec(
-        compose_args=("-f", DOCKER_SINGLE_COMPOSE),
-        service=DOCKER_SINGLE_SERVICE,
-        health_url="http://localhost:8000/health",
-        label="single-container Docker",
-    ),
-    DockerStack.FULL: _DockerStackSpec(
+def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
+    """The stack descriptor for this install (defaults to slim).
+
+    Built per-state because the host-side port follows `API_PORT`: both compose
+    files map `127.0.0.1:${API_PORT:-8000}:8000` (the container side stays
+    8000), interpolated from `.env.docker` via `--env-file`. The full stack
+    always passes `--env-file`; the slim spec adds it only for a non-default
+    port so the default compose command stays the documented short form.
+    """
+    port = state.resolved_api_port()
+    if (state.docker_stack or DockerStack.SLIM) is DockerStack.SLIM:
+        compose_args: tuple[str, ...] = ("-f", DOCKER_SINGLE_COMPOSE)
+        if port != 8000:
+            compose_args += ("--env-file", ".env.docker")
+        return _DockerStackSpec(
+            compose_args=compose_args,
+            service=DOCKER_SINGLE_SERVICE,
+            health_url=f"http://localhost:{port}/health",
+            label="single-container Docker",
+        )
+    return _DockerStackSpec(
         compose_args=("--env-file", ".env.docker"),
         service=DOCKER_FULL_SERVICE,
         # The full stack's /ready is a deep check (503 until Postgres + Redis
         # connect), exactly the "the stack is up" signal we want to wait on.
-        health_url="http://localhost:8000/ready",
+        health_url=f"http://localhost:{port}/ready",
         label="full Docker stack (Postgres + Redis)",
         # No DISCORD_BOT_TOKEN sentinel: docker-compose.yml fully defaults it
         # (`${DISCORD_BOT_TOKEN:-}`), so compose validates without it and the api
@@ -125,13 +138,12 @@ _DOCKER_STACK_SPECS: dict[DockerStack, _DockerStackSpec] = {
         # First boot builds the image and waits on a deep Postgres + Redis check,
         # so allow longer than the single container.
         health_timeout=120.0,
-    ),
-}
+    )
 
 
-def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
-    """The stack descriptor for this install (defaults to slim)."""
-    return _DOCKER_STACK_SPECS[state.docker_stack or DockerStack.SLIM]
+def local_base_url(state: WizardState) -> str:
+    """The localhost origin the chosen API port answers on."""
+    return f"http://localhost:{state.resolved_api_port()}"
 
 
 def _compose_argv(spec: _DockerStackSpec, *subcommand: str) -> list[str]:
@@ -310,8 +322,9 @@ def finalize(
         console.print(f"[red]Cannot write setup files: {exc}[/red]")
         return 2
 
-    if port_in_use(8000):
-        console.print("[yellow]Warning:[/yellow] port 8000 is already in use.")
+    api_port = state.resolved_api_port()
+    if port_in_use(api_port):
+        console.print(f"[yellow]Warning:[/yellow] port {api_port} is already in use.")
 
     config_path = root / (".env.docker" if for_docker else "config.env")
     if merge and not config_path.exists():
@@ -376,6 +389,7 @@ def finalize(
         extra_env=extra_env,
         secrets_key=secrets_key,
         for_docker=for_docker,
+        api_port=api_port,
         merge=merge,
         init_seed_env=init_seed_env,
         full_stack_env=full_stack_env,
@@ -467,6 +481,7 @@ def write_config(
     extra_env: Mapping[str, str] | None = None,
     secrets_key: str = "",
     for_docker: bool = False,
+    api_port: int = 8000,
     merge: bool = False,
     init_seed_env: Mapping[str, str] | None = None,
     full_stack_env: Mapping[str, str] | None = None,
@@ -541,7 +556,9 @@ def write_config(
         # passwords (already in format_env_value's safe set) write unquoted.
         if value:
             produced.append((env_var, _env_value(value)))
-    produced.append(("API_PORT", "8000"))
+    # Written for every shape: slim/local read it at startup, and both Docker
+    # compose files interpolate it into the host-side port binding.
+    produced.append(("API_PORT", str(api_port)))
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
@@ -1229,7 +1246,7 @@ def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
 
     The wizard never tears the service down on a hosting switch (that is the
     user's call), but staying silent would leave the old unit running and,
-    for a Docker switch, fighting the new stack for port 8000.
+    for a Docker switch, fighting the new stack for the API port.
     """
     if state.hosting in (HostingOption.SERVICE, None):
         return
@@ -1239,7 +1256,7 @@ def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
         return
     console.print(
         "\n[yellow]A background service from a previous setup is still "
-        "installed and may be running (it binds port 8000). Remove it with "
+        "installed and may be running (it binds the API port). Remove it with "
         "`nymeria service uninstall`.[/yellow]"
     )
 
@@ -1371,6 +1388,7 @@ def print_next_action(state: WizardState, console: Console) -> None:
                 spec, "exec", "-T", spec.service, "cat",
                 f"/data/{SLIM_SERVICE_TOKEN_FILENAME}",
             ),
+            base_url=local_base_url(state),
         )
         return
 
@@ -1385,7 +1403,9 @@ def print_next_action(state: WizardState, console: Console) -> None:
     else:
         console.print("\nStart Nymeria with:")
         _print_command(console, _start_command_for_hosting(state))
-    console.print("Then open http://localhost:8000 and paste the bootstrap token.")
+    console.print(
+        f"Then open {local_base_url(state)} and paste the bootstrap token."
+    )
     if active_public_url(state):
         console.print(
             f"Remote devices use {public_origin(active_public_url(state))} "
@@ -1396,7 +1416,9 @@ def print_next_action(state: WizardState, console: Console) -> None:
         / SLIM_SERVICE_TOKEN_FILENAME
     )
     _print_chat_smoke_recipe(
-        console, token_command=f"cat {shlex.quote(str(token_path))}"
+        console,
+        token_command=f"cat {shlex.quote(str(token_path))}",
+        base_url=local_base_url(state),
     )
     console.print(
         "\nRe-run setup anytime with `nymeria init`. Check health with "
@@ -1517,15 +1539,17 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             spec=spec, root=root, filename=SLIM_SERVICE_TOKEN_FILENAME
         )
     _run_inline_chat_smoke(state, console, token=smoke_token)
-    _print_docker_bootstrap_token(console, spec=spec, root=root)
+    _print_docker_bootstrap_token(
+        console, spec=spec, root=root, base_url=local_base_url(state)
+    )
     return 0
 
 
 def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int:
     console.print("\nStarting Nymeria in the foreground (Ctrl+C to stop).")
     console.print(
-        "Once it is up, open http://localhost:8000 and paste the bootstrap token "
-        "shown above."
+        f"Once it is up, open {local_base_url(state)} and paste the bootstrap "
+        "token shown above."
     )
     if active_public_url(state):
         console.print(
@@ -1615,14 +1639,14 @@ def _start_now_service(console: Console, *, state: WizardState, root: Path) -> i
         console.print(f"[yellow]{escape(warning)}[/yellow]")
     for note in report.notes:
         console.print(escape(note))
-    if not wait_for_health(console=console):
+    if not wait_for_health(console=console, url=f"{local_base_url(state)}/health"):
         console.print(
             "[yellow]Installed, but the health check has not passed yet. It "
             f"may still be coming up; check `{escape(manager.log_hint())}` "
             "and `nymeria service status`.[/yellow]"
         )
         console.print(
-            "Once it answers, open http://localhost:8000 and finish in the "
+            f"Once it answers, open {local_base_url(state)} and finish in the "
             "browser (the one-time bootstrap token, if any, was printed above)."
         )
         return 0
@@ -1633,7 +1657,7 @@ def _start_now_service(console: Console, *, state: WizardState, root: Path) -> i
         smoke_token = _wait_for_host_service_token(resolve_data_dir(state, root=root))
     _run_inline_chat_smoke(state, console, token=smoke_token)
     console.print(
-        "\nOpen http://localhost:8000 to finish in the browser (paste the "
+        f"\nOpen {local_base_url(state)} to finish in the browser (paste the "
         "one-time bootstrap token if one was printed above). The service "
         "starts on login from now on; check it with `nymeria service status`."
     )
@@ -1807,7 +1831,7 @@ def _run_inline_chat_smoke(
     console.print(
         "Running a chat smoke test (one real chat turn; may take a minute)..."
     )
-    ok, detail = run_chat_smoke_test(token=token)
+    ok, detail = run_chat_smoke_test(token=token, base_url=local_base_url(state))
     if ok:
         console.print(f"[green]Chat smoke test passed:[/green] {escape(detail)}")
     else:
@@ -1825,7 +1849,7 @@ def _spawn_local_smoke_thread(
         return None
     thread = threading.Thread(
         target=_local_smoke_worker,
-        args=(resolve_data_dir(state, root=root), stop),
+        args=(resolve_data_dir(state, root=root), stop, local_base_url(state)),
         daemon=True,
         name="init-chat-smoke",
     )
@@ -1833,7 +1857,9 @@ def _spawn_local_smoke_thread(
     return thread
 
 
-def _local_smoke_worker(data_dir: Path, stop: threading.Event) -> None:
+def _local_smoke_worker(
+    data_dir: Path, stop: threading.Event, base_url: str = "http://localhost:8000"
+) -> None:
     """Body of the foreground shape's smoke thread.
 
     The wizard blocks while the slim server owns the terminal, so this daemon
@@ -1849,7 +1875,7 @@ def _local_smoke_worker(data_dir: Path, stop: threading.Event) -> None:
         while True:
             if stop.is_set():
                 return
-            if _smoke_health_ok("http://localhost:8000/health"):
+            if _smoke_health_ok(f"{base_url}/health"):
                 break
             if time.monotonic() >= deadline:
                 # Never healthy: the user is watching the server output
@@ -1866,7 +1892,7 @@ def _local_smoke_worker(data_dir: Path, stop: threading.Event) -> None:
                 flush=True,
             )
             return
-        ok, detail = run_chat_smoke_test(token=token)
+        ok, detail = run_chat_smoke_test(token=token, base_url=base_url)
         if stop.is_set():
             return
         if ok:
@@ -1881,7 +1907,9 @@ def _local_smoke_worker(data_dir: Path, stop: threading.Event) -> None:
         return
 
 
-def _print_chat_smoke_recipe(console: Console, *, token_command: str) -> None:
+def _print_chat_smoke_recipe(
+    console: Console, *, token_command: str, base_url: str = "http://localhost:8000"
+) -> None:
     """The copy-paste smoke turn for the manual (print-commands) handoff."""
     console.print(
         "\nVerify a real chat turn once the backend is up (the deepest health "
@@ -1889,7 +1917,7 @@ def _print_chat_smoke_recipe(console: Console, *, token_command: str) -> None:
     )
     _print_command(
         console,
-        "curl -s -X POST http://localhost:8000/chat/sync "
+        f"curl -s -X POST {base_url}/chat/sync "
         f'-H "Authorization: Bearer $({token_command})" '
         '-H "Content-Type: application/json" '
         "--data '{\"message\":\"Reply with exactly: INIT SMOKE OK\"}'",
@@ -1953,7 +1981,11 @@ def _read_docker_token_file(
 
 
 def _print_docker_bootstrap_token(
-    console: Console, *, spec: _DockerStackSpec, root: Path
+    console: Console,
+    *,
+    spec: _DockerStackSpec,
+    root: Path,
+    base_url: str = "http://localhost:8000",
 ) -> None:
     token = _read_docker_bootstrap_token(spec=spec, root=root)
     if token:
@@ -1963,7 +1995,7 @@ def _print_docker_bootstrap_token(
             "Wizard (it is consumed on first use). It is NOT your provider API key."
         )
         console.print(
-            "\nOpen http://localhost:8000 to use the web UI. Re-run setup anytime "
+            f"\nOpen {base_url} to use the web UI. Re-run setup anytime "
             "with `nymeria init`."
         )
     else:

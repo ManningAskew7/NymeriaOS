@@ -101,6 +101,31 @@ def test_run_cli_parser_accepts_tui_contract_defaults(monkeypatch):
     assert runtime_config.list_threads_on_startup is False
 
 
+def test_resolve_slim_port_precedence(monkeypatch):
+    """Explicit --port wins, then the config/env API_PORT, then 8000.
+
+    Both resolution sites (main()'s early env pin and run_slim) must share
+    this helper: if only one changed, the early pin would force API_PORT=8000
+    into the env before run_slim resolves, silently defeating a configured
+    port. Dockerfile.single relies on explicit-flag-wins (it pins --port 8000
+    so an API_PORT injected via the compose env_file cannot move the
+    container's internal bind).
+    """
+    import argparse
+
+    import run as run_module
+
+    monkeypatch.setenv("API_PORT", "8010")
+    assert run_module._resolve_slim_port(argparse.Namespace(port=None)) == 8010
+    assert run_module._resolve_slim_port(argparse.Namespace(port=8123)) == 8123
+    monkeypatch.setenv("API_PORT", "junk")
+    assert run_module._resolve_slim_port(argparse.Namespace(port=None)) == 8000
+    monkeypatch.delenv("API_PORT", raising=False)
+    assert run_module._resolve_slim_port(argparse.Namespace(port=None)) == 8000
+    args = run_module.build_parser().parse_args(["slim"])
+    assert args.port is None  # default defers to API_PORT from the config
+
+
 def test_run_cli_parser_accepts_positional_list_command():
     import run as run_module
 
