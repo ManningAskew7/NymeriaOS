@@ -29,7 +29,7 @@ from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from . import tuning_catalog, voice_catalog
 from .finalize import finalize
-from .quick import apply_quick_defaults
+from .quick import apply_quick_defaults, validate_section_id
 from .state import WizardState
 
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
@@ -125,7 +125,34 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cliproxy-gatekeeper-key",
         default=None,
-        help="CLIProxy data-plane api-key (cpx-...) written as the LLM key",
+        help=(
+            "CLIProxy data-plane api-key (cpx-...) written as the LLM key. "
+            "Optional when --cliproxy-management-key is given: setup then "
+            "reads or mints one through the management API"
+        ),
+    )
+    parser.add_argument(
+        "--cliproxy-login",
+        action="store_true",
+        help=(
+            "Log in to the subscription from this terminal without the TUI "
+            "(with --non-interactive): prints the OAuth URL, reads a pasted "
+            "redirect URL from stdin for browser flows, and polls device "
+            "flows to completion. Blocks until the login finishes or the "
+            "10-minute session expires"
+        ),
+    )
+    parser.add_argument(
+        "--cliproxy-auth-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Upload an auth-file JSON to the proxy and register it without a "
+            "restart (with --non-interactive). For restoring or MOVING a "
+            "login only: OAuth refresh tokens are single-use per machine, so "
+            "never upload a copy another live proxy still uses (both ends "
+            "start failing with invalid_grant)"
+        ),
     )
     parser.add_argument(
         "--docker-stack",
@@ -191,22 +218,36 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--replicate-api-key", default=None)
     parser.add_argument("--fal-api-key", default=None)
     # Seed tool families non-interactively (repeatable), e.g.
-    # --web-search web_search_tavily --image-gen image_gen_gemini.
+    # --web-search web_search_tavily --image-gen image_gen_gemini. The literal
+    # value `none` clears the family (the scripted way to revert a reconfigured
+    # install's picks back to empty).
     parser.add_argument(
         "--web-search", action="append", default=None, metavar="TOOL",
-        help="Seed a web_search_* backend into the default tools (repeatable)",
+        help=(
+            "Seed a web_search_* backend into the default tools (repeatable); "
+            "'none' clears the family on a reconfigure"
+        ),
     )
     parser.add_argument(
         "--fetch-url", action="append", default=None, metavar="TOOL",
-        help="Seed a fetch_url backend into the default tools (repeatable)",
+        help=(
+            "Seed a fetch_url backend into the default tools (repeatable); "
+            "'none' clears the family on a reconfigure"
+        ),
     )
     parser.add_argument(
         "--image-gen", action="append", default=None, metavar="TOOL",
-        help="Seed an image_gen_* backend into the default tools (repeatable)",
+        help=(
+            "Seed an image_gen_* backend into the default tools (repeatable); "
+            "'none' clears the family on a reconfigure"
+        ),
     )
     parser.add_argument(
         "--skill-kit", action="append", default=None, metavar="KIT",
-        help="Seed a default-on capability kit into enabled_global_skills (repeatable)",
+        help=(
+            "Seed a default-on capability kit into enabled_global_skills "
+            "(repeatable); 'none' clears the kit picks on a reconfigure"
+        ),
     )
     # Voice providers (single picks; values match TTS_PROVIDER/STT_PROVIDER).
     parser.add_argument(
@@ -259,7 +300,9 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "Ask only the essentials (hosting + LLM) and default the rest with "
-            "no-extra-auth picks (free local RAG, keyless web fetch, all skill kits)"
+            "no-extra-auth picks (free local RAG, keyless web fetch, all skill "
+            "kits); with --non-interactive, applies the same defaults to the "
+            "flag-driven setup"
         ),
     )
     parser.add_argument(
@@ -270,17 +313,27 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite config.env if it exists",
+        help=(
+            "Overwrite an existing config from scratch instead of "
+            "reconfiguring it (skips the hydrate-and-merge path)"
+        ),
     )
     parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="Require flags instead of prompting",
+        help=(
+            "Require flags instead of prompting. Against an existing install "
+            "this reconfigures: current values hydrate from disk and only the "
+            "flags given change"
+        ),
     )
     parser.add_argument(
         "--skip-llm-test",
         action="store_true",
-        help="Write config without the provider smoke-test API call",
+        help=(
+            "Skip the connection checks: the pre-write provider API call, the "
+            "CLIProxy login preflight, and the post-start chat smoke test"
+        ),
     )
     parser.add_argument(
         "--run-doctor",
@@ -313,8 +366,21 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     extras: dict[str, object] = {}
     for attr, family in _FAMILY_FLAGS:
         value = getattr(args, attr, None)
-        if value:
-            extras[family] = [str(item) for item in value]
+        if value is None:
+            continue
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if any(item.lower() == "none" for item in items):
+            # Explicit "no picks": the empty list reverts profile picks and
+            # retires the Docker carrier lines on a reconfigure. No catalog
+            # choice is named "none", so the sentinel cannot collide.
+            if len(items) > 1:
+                flag = "--" + attr.replace("_", "-")
+                raise SystemExit(
+                    f"{flag} none cannot be combined with other {flag} picks"
+                )
+            extras[family] = []
+        else:
+            extras[family] = items
     for attr in ("tts", "stt"):
         value = getattr(args, attr, None)
         if value:
@@ -462,40 +528,98 @@ def run_init(args: argparse.Namespace) -> int:
     non_interactive = bool(getattr(args, "non_interactive", False))
     state = _build_state(args)
 
+    # The headless CLIProxy auth flags are run-mode directives (like
+    # --non-interactive itself), validated up front so a misplaced flag fails
+    # before anything touches disk or the proxy.
+    cliproxy_login_flag = bool(getattr(args, "cliproxy_login", False))
+    cliproxy_auth_file = getattr(args, "cliproxy_auth_file", None)
+    if cliproxy_login_flag and cliproxy_auth_file:
+        raise SystemExit(
+            "pass either --cliproxy-login or --cliproxy-auth-file, not both"
+        )
+    if (cliproxy_login_flag or cliproxy_auth_file) and not non_interactive:
+        raise SystemExit(
+            "--cliproxy-login and --cliproxy-auth-file require "
+            "--non-interactive; the interactive wizard has its own login step"
+        )
+
     if non_interactive:
-        if state.auth_method_is_cliproxy():
-            # No interactive OAuth is possible here: the proxy must already
-            # hold the subscription login, and every endpoint detail must be
-            # explicit (finalize derives provider/model/base_url from them).
-            if not state.cliproxy_provider:
-                raise SystemExit(
-                    "--cliproxy-provider is required with --non-interactive "
-                    "--auth-method cliproxy_oauth"
-                )
-            if not state.cliproxy_management_url:
-                raise SystemExit(
-                    "--cliproxy-management-url is required with "
-                    "--non-interactive --auth-method cliproxy_oauth"
-                )
-            if not state.cliproxy_gatekeeper_key:
-                raise SystemExit(
-                    "--cliproxy-gatekeeper-key is required with "
-                    "--non-interactive --auth-method cliproxy_oauth (run "
-                    "`nymeria init` interactively to complete the OAuth login)"
-                )
-            return finalize(state, console=console, non_interactive=True)
-        if not state.provider:
-            raise SystemExit("--provider is required with --non-interactive")
-        spec = get_llm_provider_spec(state.provider)
-        if not state.model:
-            raise SystemExit("--model is required with --non-interactive")
-        if spec is not None and spec.requires_api_key and not state.api_key:
-            raise SystemExit("--api-key is required with --non-interactive")
-        if spec is not None and spec.requires_base_url and not state.base_url:
+        # Scripted reconfigure: against an existing install, hydrate the
+        # current values from disk (fill-only-if-unset, so explicit flags win)
+        # and merge-write only what changed, mirroring the interactive path.
+        # --force keeps meaning a destructive fresh write: no hydrate, no merge.
+        section = getattr(args, "section", None)
+        if section:
+            validate_section_id(section)
+        reconfigure = False
+        if not state.force:
+            from .hydrate import hydrate_state_from_disk
+
+            reconfigure = hydrate_state_from_disk(state, console=console)
+        if section and not reconfigure:
+            # A scoped run skips the bootstrap-token handoff a fresh install
+            # needs, so sections only make sense against an existing config.
             raise SystemExit(
-                "--base-url is required with --non-interactive for this provider"
+                f"Section '{section}' edits an existing install, but no "
+                "config was found to reconfigure (--force also skips the "
+                "reconfigure path). Run a full non-interactive init first, "
+                "without a section argument."
             )
-        return finalize(state, console=console, non_interactive=True)
+        if state.quick:
+            # Same defaults the interactive quick path seeds. The LLM flags
+            # below stay required: quick never defaults provider/model/key.
+            apply_quick_defaults(state)
+        if (
+            cliproxy_login_flag or cliproxy_auth_file
+        ) and not state.auth_method_is_cliproxy():
+            raise SystemExit(
+                "--cliproxy-login and --cliproxy-auth-file require "
+                "--auth-method cliproxy_oauth (or an existing CLIProxy-routed "
+                "install to reconfigure)"
+            )
+        if state.auth_method_is_cliproxy():
+            from .cliproxy_login import prepare_headless_cliproxy
+
+            rc = prepare_headless_cliproxy(
+                state,
+                console=console,
+                login=cliproxy_login_flag,
+                auth_file=cliproxy_auth_file,
+            )
+            if rc != 0:
+                return rc
+        else:
+            if not state.provider:
+                raise SystemExit("--provider is required with --non-interactive")
+            spec = get_llm_provider_spec(state.provider)
+            if not state.model:
+                raise SystemExit("--model is required with --non-interactive")
+            # Reconfigure: a key already on disk satisfies the requirement
+            # (finalize's keep-existing-key path preserves the line). Mirrors
+            # finalize's own key_present check.
+            key_present = bool(
+                spec is not None
+                and spec.api_key_env_vars
+                and spec.api_key_env_vars[0] in state.present_env_keys
+            )
+            if (
+                spec is not None
+                and spec.requires_api_key
+                and not state.api_key
+                and not key_present
+            ):
+                raise SystemExit("--api-key is required with --non-interactive")
+            if spec is not None and spec.requires_base_url and not state.base_url:
+                raise SystemExit(
+                    "--base-url is required with --non-interactive for this provider"
+                )
+        return finalize(
+            state,
+            console=console,
+            non_interactive=True,
+            merge=reconfigure,
+            scoped_section=section,
+        )
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         console.print(
@@ -517,14 +641,9 @@ def run_init(args: argparse.Namespace) -> int:
     section = getattr(args, "section", None)
     steps = None
     if section:
-        from .steps import build_section_steps, default_step_ids
+        from .steps import build_section_steps
 
-        valid = default_step_ids()
-        if section not in valid:
-            jumpable = ", ".join(s for s in valid if s not in {"welcome", "review"})
-            raise SystemExit(
-                f"Unknown section '{section}'. Choose one of: {jumpable}"
-            )
+        validate_section_id(section)
         steps = build_section_steps(section)
 
     # Quick path: seed the skipped steps' no-extra-auth defaults (free local RAG,

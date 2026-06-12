@@ -624,6 +624,113 @@ def _stub_llm(monkeypatch):
     return calls
 
 
+def _active_auth(provider: str, *, account: str = "user@example.com") -> dict:
+    """An enabled, available auth-file entry as `list_auth_files` reports it.
+
+    `provider` is the proxy's auth-file provider name (claude/codex/xai/...),
+    not necessarily the catalog spec id (grok's entries report as xai).
+    """
+    return {
+        "provider": provider,
+        "name": f"{provider}-test.json",
+        "account": account,
+        "disabled": False,
+        "unavailable": False,
+    }
+
+
+class _FakeCLIProxyClient:
+    """Scripted stand-in for CLIProxyManagementClient in headless wizard tests.
+
+    The non-interactive CLIProxy branch now verifies the proxy login through
+    the management API, so every test that runs it must patch this in (via
+    `_fake_cliproxy_client`) or the suite would hit whatever real proxy
+    answers on the test URL; the real proxy IP-bans after 5 bad management
+    attempts. Class-level knobs script the behavior; `calls` records traffic.
+    """
+
+    auth_files: list[dict] = []
+    knobs: dict = {}
+    start_result: dict = {"url": "https://auth.example/login", "state": "s1"}
+    status_script: list[str] = []
+    login_lands: dict | None = None
+    raise_on_list: Exception | None = None
+    calls: list[tuple] = []
+
+    def __init__(self, base_url: str, secret: str, **kwargs) -> None:
+        self.base_url = (base_url or "").strip().rstrip("/")
+        self._secret = secret
+
+    async def list_auth_files(self):
+        cls = type(self)
+        cls.calls.append(("list_auth_files", None))
+        if cls.raise_on_list is not None:
+            raise cls.raise_on_list
+        return [dict(entry) for entry in cls.auth_files]
+
+    async def start_oauth(self, spec, *, project_id=None):
+        cls = type(self)
+        cls.calls.append(("start_oauth", spec.id))
+        return dict(cls.start_result)
+
+    async def oauth_callback(self, spec, *, redirect_url=None, code=None, state=None):
+        type(self).calls.append(("oauth_callback", (spec.id, redirect_url)))
+
+    async def auth_status(self, state):
+        cls = type(self)
+        cls.calls.append(("auth_status", state))
+        status = cls.status_script.pop(0) if cls.status_script else "wait"
+        if status == "ok" and cls.login_lands is not None:
+            # The login landing server-side makes the auth file appear.
+            cls.auth_files = [*cls.auth_files, dict(cls.login_lands)]
+        return status
+
+    async def upload_auth_file(self, name, content):
+        cls = type(self)
+        cls.calls.append(("upload_auth_file", (name, content)))
+        if cls.login_lands is not None:
+            cls.auth_files = [*cls.auth_files, dict(cls.login_lands)]
+
+    async def ensure_tool_prefix_disabled(self, name):
+        type(self).calls.append(("ensure_tool_prefix_disabled", name))
+
+    async def get_config_knobs(self, paths=None):
+        type(self).calls.append(("get_config_knobs", paths))
+        return dict(type(self).knobs)
+
+    async def set_config_knob(self, path, value):
+        cls = type(self)
+        cls.calls.append(("set_config_knob", (path, value)))
+        cls.knobs[path] = value
+
+
+def _fake_cliproxy_client(
+    monkeypatch,
+    *,
+    auth_files=None,
+    knobs=None,
+    status_script=None,
+    login_lands=None,
+    raise_on_list=None,
+    start_result=None,
+):
+    """Reset and patch the fake client into the headless CLIProxy path."""
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    cls = _FakeCLIProxyClient
+    cls.auth_files = [dict(entry) for entry in (auth_files or [])]
+    cls.knobs = dict(knobs or {})
+    cls.status_script = list(status_script or [])
+    cls.login_lands = dict(login_lands) if login_lands else None
+    cls.raise_on_list = raise_on_list
+    cls.start_result = dict(
+        start_result or {"url": "https://auth.example/login", "state": "s1"}
+    )
+    cls.calls = []
+    monkeypatch.setattr(cliproxy_login_mod, "CLIProxyManagementClient", cls)
+    return cls
+
+
 def test_noninteractive_writes_config_and_bootstrap_token(monkeypatch, tmp_path, capsys):
     calls = _stub_llm(monkeypatch)
     root = tmp_path / "runtime"
@@ -1499,6 +1606,252 @@ def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_
                     overwrite_confirmed=True, merge=True) == 0
     after = (root / ".env.docker").read_text(encoding="utf-8")
     assert "NYMERIA_INIT_" not in after
+
+
+# --- scripted reconfigure (--non-interactive against an existing install) ----
+
+
+def test_noninteractive_reconfigure_merges_without_force(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root)
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "MY_CUSTOM=1\n", encoding="utf-8"
+    )
+    capsys.readouterr()
+
+    # No --force needed: the run hydrates from disk and merge-writes only the
+    # flags given, exactly like an interactive reconfigure.
+    rc = setup_main(
+        ["--model", "claude-new-model", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Reconfiguring" in out
+    content = config.read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_MODEL") == "claude-new-model"
+    # Untouched lines survive: the hand-added one and the original key.
+    assert _env_line(content, "MY_CUSTOM") == "1"
+    assert _env_line(content, "ANTHROPIC_DIRECT_API_KEY") == "sk-ant-x"
+
+
+def test_noninteractive_reconfigure_keeps_key_and_skips_pre_write_test(
+    monkeypatch, tmp_path, capsys
+):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root)
+    capsys.readouterr()
+
+    # A fresh stub for the second run: no --api-key flag means "keep the key
+    # on disk", which must also skip the pre-write provider test (there is no
+    # key value in hand to test with).
+    calls = _stub_llm(monkeypatch)
+    rc = setup_main(
+        ["--model", "claude-new-model", "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Skipping LLM connection test" in out
+    assert calls == []
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "ANTHROPIC_DIRECT_API_KEY") == "sk-ant-x"
+
+
+def test_noninteractive_reconfigure_does_not_reprint_bootstrap_token(
+    monkeypatch, tmp_path, capsys
+):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root)
+    assert "Bootstrap token" in capsys.readouterr().out
+
+    rc = setup_main(
+        ["--model", "claude-new-model", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The one-time token handoff belongs to the first run only.
+    assert "Bootstrap token" not in out
+
+
+def test_noninteractive_force_skips_hydrate_and_overwrites(monkeypatch, tmp_path):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root)
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "MY_CUSTOM=1\n", encoding="utf-8"
+    )
+
+    # --force keeps its destructive meaning: no hydrate, so the on-disk key
+    # does not satisfy the requirement...
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--provider", "anthropic", "--model", "m", "--root", str(root),
+             "--non-interactive", "--skip-llm-test", "--force"]
+        )
+    assert "--api-key" in str(exc.value)
+
+    # ...and a complete flag set rewrites the file from scratch.
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-2",
+         "--root", str(root), "--non-interactive", "--skip-llm-test", "--force"]
+    )
+    assert rc == 0
+    content = config.read_text(encoding="utf-8")
+    assert "MY_CUSTOM" not in content
+    assert _env_line(content, "ANTHROPIC_DIRECT_API_KEY") == "sk-ant-2"
+
+
+def test_noninteractive_section_jump_updates_scoped(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "init"
+    _first_run(monkeypatch, root)
+    capsys.readouterr()
+
+    rc = setup_main(
+        ["model", "--model", "claude-scoped-model", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Updated the model settings" in out
+    # The scoped outcome is concise: no token handoff, no capability summary.
+    assert "Bootstrap token" not in out
+    assert "Capabilities" not in out
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "LLM_MODEL") == "claude-scoped-model"
+
+
+def test_noninteractive_section_rejects_fresh_install(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["model", "--provider", "anthropic", "--model", "m",
+             "--api-key", "sk-ant-x", "--root", str(tmp_path / "fresh"),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert "existing install" in str(exc.value)
+
+
+def test_noninteractive_rejects_unknown_section(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["bogus", "--provider", "anthropic", "--model", "m",
+             "--api-key", "k", "--root", str(tmp_path / "a"),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert "Unknown section 'bogus'" in str(exc.value)
+    assert "model" in str(exc.value)
+
+
+def test_family_flag_none_sentinel():
+    from nymeria.setup.runner import _build_state, build_parser
+
+    base = ["--provider", "anthropic", "--model", "m", "--api-key", "k"]
+
+    state = _build_state(build_parser().parse_args(base + ["--web-search", "none"]))
+    assert state.extras["web_search"] == []
+
+    # The sentinel cannot be combined with real picks for the same flag.
+    with pytest.raises(SystemExit) as exc:
+        _build_state(
+            build_parser().parse_args(
+                base + ["--web-search", "none", "--web-search", "web_search_tavily"]
+            )
+        )
+    assert "--web-search none" in str(exc.value)
+
+    # Other families are independent.
+    state = _build_state(
+        build_parser().parse_args(
+            base + ["--skill-kit", "none", "--web-search", "web_search_tavily"]
+        )
+    )
+    assert state.extras["skill_kits"] == []
+    assert state.extras["web_search"] == ["web_search_tavily"]
+
+
+def test_noninteractive_web_search_none_retires_docker_carrier(monkeypatch, tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _first_run(
+        monkeypatch, root, "--hosting", "docker",
+        "--web-search", "web_search_tavily", "--tavily-api-key", "k",
+    )
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" in (
+        (root / ".env.docker").read_text(encoding="utf-8")
+    )
+
+    # The CLI-level twin of the revert-to-defaults carrier test: `none` is the
+    # scripted way to deselect the family, and the stale carrier must go.
+    rc = setup_main(
+        ["--web-search", "none", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    after = (root / ".env.docker").read_text(encoding="utf-8")
+    assert "NYMERIA_INIT_" not in after
+
+
+def test_noninteractive_quick_seeds_fetch_default_and_local_rag(monkeypatch, tmp_path):
+    import json
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--quick", "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "EMBEDDING_PROVIDER") == "local"
+    profile = json.loads(
+        (root / "data" / "users" / "default" / "profile.json").read_text("utf-8")
+    )
+    assert "fetch_url_nymeria" in profile["tool_preferences"]["default_thread_tools"]
+
+
+def test_noninteractive_quick_docker_seeds_slim_and_carrier(monkeypatch, tmp_path):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--quick", "--hosting", "docker", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    # Quick defaults the Docker shape to slim: no full-stack passwords minted.
+    assert "POSTGRES_PASSWORD" not in content
+    carrier = _env_line(content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
+    assert carrier is not None and "fetch_url_nymeria" in carrier
+
+
+def test_noninteractive_quick_still_requires_llm_flags(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--quick", "--root", str(tmp_path / "a"),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert "--provider" in str(exc.value)
+
+
+def test_noninteractive_quick_respects_explicit_fetch_none(monkeypatch, tmp_path):
+    import json
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--quick", "--fetch-url", "none", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    profile = json.loads(
+        (root / "data" / "users" / "default" / "profile.json").read_text("utf-8")
+    )
+    assert "fetch_url_nymeria" not in profile["tool_preferences"]["default_thread_tools"]
 
 
 def test_review_summary_markup_surfaces_collected_choices():
@@ -3982,6 +4335,7 @@ def test_finalize_cliproxy_claude_local_writes_root_url_and_gatekeeper(
     gatekeeper in ANTHROPIC_API_KEY (never the DIRECT slot), and the management
     endpoint persisted for the backend's /cliproxy routes."""
     calls = _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     rc = setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -4010,6 +4364,7 @@ def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
     in OPENAI_API_KEY, and the backend-facing URLs use the docker network
     alias while the live test used the host URL."""
     calls = _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("codex")])
     root = tmp_path / "checkout"
     root.mkdir()
     rc = setup_main(
@@ -4033,6 +4388,8 @@ def test_finalize_cliproxy_codex_full_stack_writes_v1_responses(
 
 def test_finalize_cliproxy_slim_docker_uses_host_gateway(monkeypatch, tmp_path):
     _stub_llm(monkeypatch)
+    # Grok's auth files report under the xai provider name.
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("xai")])
     root = tmp_path / "checkout"
     root.mkdir()
     rc = setup_main(
@@ -4054,6 +4411,7 @@ def test_legacy_auth_method_flags_map_to_generic_branch(monkeypatch, tmp_path):
     """--auth-method cliproxy_claude_oauth (desktop back-compat) behaves as the
     generic branch pinned to Claude."""
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     rc = setup_main(
         ["--auth-method", "cliproxy_claude_oauth",
@@ -4091,7 +4449,316 @@ def test_noninteractive_cliproxy_requires_provider_and_endpoint(tmp_path):
              "--hosting", "local", "--root", str(tmp_path / "c"),
              "--non-interactive"]
         )
+    # Either the gatekeeper itself or a management key (which lets setup read
+    # or mint one) satisfies the branch now.
     assert "--cliproxy-gatekeeper-key" in str(exc.value)
+    assert "--cliproxy-management-key" in str(exc.value)
+
+
+# --- headless CLIProxy: preflight, gatekeeper fill, auth-file import, login --
+
+
+_CLIPROXY_BASE_ARGS = [
+    "--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
+    "--cliproxy-management-url", "http://localhost:8318",
+    "--cliproxy-management-key", "cpm-secret",
+    "--hosting", "local", "--non-interactive",
+]
+
+
+def test_noninteractive_cliproxy_gatekeeper_optional_with_management_key(
+    monkeypatch, tmp_path, capsys
+):
+    """With a management key, setup reads the proxy's existing cpx- key itself."""
+    calls = _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[_active_auth("claude")],
+        knobs={"api-keys": ["cpx-existing"]},
+    )
+    root = tmp_path / "init"
+    rc = setup_main(_CLIPROXY_BASE_ARGS + ["--root", str(root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Verified" in out
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-existing"
+    assert calls and calls[0][2] == "cpx-existing"
+
+
+def test_noninteractive_cliproxy_mints_gatekeeper_when_proxy_has_none(
+    monkeypatch, tmp_path
+):
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[_active_auth("claude")],
+        knobs={"api-keys": []},
+    )
+    root = tmp_path / "init"
+    rc = setup_main(_CLIPROXY_BASE_ARGS + ["--root", str(root)])
+    assert rc == 0
+    knob_calls = [c for c in fake.calls if c[0] == "set_config_knob"]
+    assert knob_calls and knob_calls[0][1][0] == "api-keys"
+    minted_keys = knob_calls[0][1][1]
+    assert minted_keys and minted_keys[0].startswith("cpx-")
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "ANTHROPIC_API_KEY") == minted_keys[0]
+
+
+def test_noninteractive_cliproxy_preflight_blocks_when_not_logged_in(
+    monkeypatch, tmp_path, capsys
+):
+    """An unauthenticated proxy fails the run with the remedies listed, instead
+    of writing a config whose chats are broken."""
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[])
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate",
+                               "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "No active Claude" in out
+    assert "--cliproxy-login" in out
+    assert "--cliproxy-auth-file" in out
+    assert "--skip-llm-test" in out
+    assert not (root / "config.env").exists()
+
+
+def test_noninteractive_cliproxy_preflight_warns_on_unreachable_with_gatekeeper(
+    monkeypatch, tmp_path, capsys
+):
+    from nymeria.cliproxy.management_client import CLIProxyUnreachable
+
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch, raise_on_list=CLIProxyUnreachable("proxy down")
+    )
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate",
+                               "--root", str(root), "--skip-llm-test"]
+    )
+    out = capsys.readouterr().out
+    # The proxy URL may be backend-facing (a docker alias); with an explicit
+    # gatekeeper the run can still produce a working config.
+    assert rc == 0
+    assert "Could not reach the proxy" not in out or "unverified" in out
+    assert (root / "config.env").exists()
+
+
+def test_noninteractive_cliproxy_unreachable_fatal_when_gatekeeper_needed(
+    monkeypatch, tmp_path, capsys
+):
+    from nymeria.cliproxy.management_client import CLIProxyUnreachable
+
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch, raise_on_list=CLIProxyUnreachable("proxy down")
+    )
+    root = tmp_path / "init"
+    rc = setup_main(_CLIPROXY_BASE_ARGS + ["--root", str(root)])
+    out = capsys.readouterr().out
+    # No gatekeeper flag means the management API must answer; it cannot.
+    assert rc == 2
+    assert "gatekeeper" in out
+
+
+def test_noninteractive_cliproxy_skip_llm_test_bypasses_preflight(
+    monkeypatch, tmp_path
+):
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch, raise_on_list=RuntimeError("must not be called")
+    )
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate",
+                               "--root", str(root), "--skip-llm-test"]
+    )
+    assert rc == 0
+    assert fake.calls == []
+
+
+def test_cliproxy_auth_file_uploads_verifies_and_fixes_claude(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[],
+        knobs={"api-keys": ["cpx-existing"]},
+        login_lands=_active_auth("claude"),
+    )
+    auth_path = tmp_path / "claude-backup.json"
+    auth_path.write_text('{"type": "claude", "refresh_token": "rt"}', "utf-8")
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-auth-file", str(auth_path),
+                               "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Imported claude-backup.json" in out
+    uploads = [c for c in fake.calls if c[0] == "upload_auth_file"]
+    assert uploads and uploads[0][1][0] == "claude-backup.json"
+    # The Claude rollback guard ran against the registered file.
+    assert any(c[0] == "ensure_tool_prefix_disabled" for c in fake.calls)
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-existing"
+
+
+def test_cliproxy_auth_file_rejects_unverified_upload(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[], login_lands=None)
+    auth_path = tmp_path / "claude-backup.json"
+    auth_path.write_text('{"type": "claude"}', "utf-8")
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-auth-file", str(auth_path),
+                               "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "lists no active" in out
+    assert not (root / "config.env").exists()
+
+
+def test_cliproxy_console_login_browser_paste_flow(monkeypatch, tmp_path, capsys):
+    import queue as queue_mod
+
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[],
+        knobs={"api-keys": ["cpx-existing"]},
+        status_script=["wait", "ok"],
+        login_lands=_active_auth("claude", account="max@example.com"),
+    )
+    pasted = queue_mod.Queue()
+    pasted.put("http://localhost:54545/callback?code=abc&state=s1")
+    monkeypatch.setattr(cliproxy_login_mod, "_start_paste_reader", lambda: pasted)
+    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(cliproxy_login_mod, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-login", "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "https://auth.example/login" in out
+    assert "Logged in to Claude" in out and "max@example.com" in out
+    callbacks = [c for c in fake.calls if c[0] == "oauth_callback"]
+    assert callbacks and callbacks[0][1][1].startswith("http://localhost:54545/")
+    content = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(content, "ANTHROPIC_API_KEY") == "cpx-existing"
+
+
+def test_cliproxy_console_login_device_flow_polls_only(monkeypatch, tmp_path, capsys):
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    _stub_llm(monkeypatch)
+    fake = _fake_cliproxy_client(
+        monkeypatch,
+        auth_files=[],
+        status_script=["wait", "ok"],
+        login_lands=_active_auth("kimi"),
+    )
+    monkeypatch.setattr(
+        cliproxy_login_mod, "_start_paste_reader",
+        lambda: pytest.fail("device flows must not read stdin"),
+    )
+    monkeypatch.setattr(cliproxy_login_mod, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "kimi",
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--cliproxy-login", "--hosting", "local",
+         "--root", str(root), "--non-interactive"]
+    )
+    assert rc == 0
+    assert not any(c[0] == "oauth_callback" for c in fake.calls)
+    assert "approve the login" in capsys.readouterr().out
+
+
+def test_cliproxy_console_login_go_quirk_false_ok(monkeypatch, tmp_path, capsys):
+    """The proxy's status endpoint answers ok for unknown/expired sessions, so
+    a bare ok with no auth file must fail, not declare success."""
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch, auth_files=[], status_script=["ok"], login_lands=None
+    )
+    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(
+        cliproxy_login_mod, "_start_paste_reader", lambda: __import__("queue").Queue()
+    )
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-login", "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "lists no active" in out or "answers ok for unknown" in out
+
+
+def test_cliproxy_console_login_timeout(monkeypatch, tmp_path, capsys):
+    from nymeria.setup import cliproxy_login as cliproxy_login_mod
+
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[], status_script=[])
+    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(
+        cliproxy_login_mod, "_start_paste_reader", lambda: __import__("queue").Queue()
+    )
+    monkeypatch.setattr(cliproxy_login_mod, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(cliproxy_login_mod, "LOGIN_TIMEOUT_SECONDS", 0.05)
+
+    root = tmp_path / "init"
+    rc = setup_main(
+        _CLIPROXY_BASE_ARGS + ["--cliproxy-login", "--root", str(root)]
+    )
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "expired" in out
+
+
+def test_cliproxy_login_flags_require_non_interactive(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        setup_main(["--cliproxy-login", "--root", str(tmp_path / "a")])
+    assert "--non-interactive" in str(exc.value)
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--cliproxy-auth-file", "x.json", "--root", str(tmp_path / "b")]
+        )
+    assert "--non-interactive" in str(exc.value)
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--cliproxy-login", "--cliproxy-auth-file", "x.json",
+             "--root", str(tmp_path / "c"), "--non-interactive"]
+        )
+    assert "not both" in str(exc.value)
+
+    # The flags are CLIProxy-branch directives; the API-key branch rejects them.
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--cliproxy-login", "--provider", "anthropic", "--model", "m",
+             "--api-key", "k", "--root", str(tmp_path / "d"),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert "cliproxy_oauth" in str(exc.value)
 
 
 def test_hydrate_infers_cliproxy_branch_from_base_url(monkeypatch, tmp_path):
@@ -4100,6 +4767,7 @@ def test_hydrate_infers_cliproxy_branch_from_base_url(monkeypatch, tmp_path):
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -4125,6 +4793,7 @@ def test_hydrate_infers_codex_from_v1_responses_shape(monkeypatch, tmp_path):
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("codex")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "codex",
@@ -4146,6 +4815,7 @@ def test_hydrate_explicit_api_key_flag_wins_over_inference(monkeypatch, tmp_path
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -4175,6 +4845,7 @@ def test_cliproxy_untouched_reconfigure_rewrites_identical_route(
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -4212,6 +4883,7 @@ def test_cliproxy_claude_reconfigure_applies_a_model_change(monkeypatch, tmp_pat
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
@@ -4267,6 +4939,7 @@ def test_switching_back_to_api_key_retires_management_lines(monkeypatch, tmp_pat
     from nymeria.setup.state import WizardState
 
     _stub_llm(monkeypatch)
+    _fake_cliproxy_client(monkeypatch, auth_files=[_active_auth("claude")])
     root = tmp_path / "init"
     setup_main(
         ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", "claude",
