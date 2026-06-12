@@ -481,6 +481,15 @@ def test_suggest_free_port_returns_next_free(monkeypatch):
     assert env_mod.suggest_free_port(8000, tries=5) is None
 
 
+def test_suggest_free_port_skips_the_mcp_port(monkeypatch):
+    """8001 only looks free: the full stack publishes the MCP server there."""
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: True)
+    assert env_mod.suggest_free_port(8000) == 8002
+    assert env_mod.suggest_free_port(9000) == 9001
+
+
 def test_ram_and_disk_probes_never_raise(monkeypatch, tmp_path):
     from nymeria.setup import environment as env_mod
 
@@ -540,6 +549,137 @@ def test_recommend_hosting_in_container_prefers_local():
     )
 
 
+def test_recommend_hosting_prefers_docker_when_native_deps_missing():
+    from nymeria.setup.environment import recommend_hosting
+
+    assert (
+        recommend_hosting(
+            is_windows=False, has_docker=True, native_deps_missing=True
+        )
+        is HostingOption.DOCKER
+    )
+    # Without docker there is nothing better to recommend than LOCAL.
+    assert (
+        recommend_hosting(
+            is_windows=False, has_docker=False, native_deps_missing=True
+        )
+        is HostingOption.LOCAL
+    )
+    # In-container still wins: the foreground process is the only shape there.
+    assert (
+        recommend_hosting(
+            is_windows=False,
+            has_docker=True,
+            in_container=True,
+            native_deps_missing=True,
+        )
+        is HostingOption.LOCAL
+    )
+
+
+def test_browser_launch_blocked_reason_matrix(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    for var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION", "BROWSER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(env_mod, "_detect_in_container", lambda: False)
+    monkeypatch.setattr(env_mod, "_detect_wsl", lambda: False)
+
+    # Desktop OSes are assumed to have a default browser.
+    assert env_mod.browser_launch_blocked_reason(platform_name="win32") == ""
+    assert env_mod.browser_launch_blocked_reason(platform_name="darwin") == ""
+
+    # SSH always blocks, regardless of platform: the browser would open on
+    # the wrong machine.
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")
+    assert (
+        env_mod.browser_launch_blocked_reason(platform_name="darwin")
+        == "SSH session"
+    )
+    monkeypatch.delenv("SSH_CONNECTION")
+
+    # A container has nowhere to open a browser.
+    monkeypatch.setattr(env_mod, "_detect_in_container", lambda: True)
+    assert (
+        env_mod.browser_launch_blocked_reason(platform_name="linux")
+        == "running inside a container"
+    )
+    monkeypatch.setattr(env_mod, "_detect_in_container", lambda: False)
+
+    # Display-less Linux without WSL interop is headless.
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: None)
+    assert (
+        env_mod.browser_launch_blocked_reason(platform_name="linux")
+        == "no graphical session"
+    )
+
+    # WSL interop opens URLs in the Windows-side browser, display or not
+    # (marker-based: wslview-on-PATH misfires both ways).
+    monkeypatch.setattr(env_mod, "_detect_wsl", lambda: True)
+    assert env_mod.browser_launch_blocked_reason(platform_name="linux") == ""
+    monkeypatch.setattr(env_mod, "_detect_wsl", lambda: False)
+
+    # A graphical session still needs some browser or opener binary.
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert (
+        env_mod.browser_launch_blocked_reason(platform_name="linux")
+        == "no web browser found"
+    )
+    # An explicit $BROWSER launcher counts even with no known binary on PATH.
+    monkeypatch.setenv("BROWSER", "my-flatpak-wrapper")
+    assert env_mod.browser_launch_blocked_reason(platform_name="linux") == ""
+    monkeypatch.delenv("BROWSER")
+    monkeypatch.setattr(
+        env_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None,
+    )
+    assert env_mod.browser_launch_blocked_reason(platform_name="linux") == ""
+
+
+def test_missing_python_deps_locates_without_importing():
+    from nymeria.setup import environment as env_mod
+
+    assert env_mod.missing_python_deps(modules=("os", "json")) == ()
+    assert env_mod.missing_python_deps(
+        modules=("os", "definitely_not_a_real_module_xyz")
+    ) == ("definitely_not_a_real_module_xyz",)
+    # The real marker set is importable wherever the suite runs (the tests
+    # need those packages themselves).
+    assert env_mod.missing_python_deps() == ()
+
+
+def test_detect_environment_reports_browser_and_deps_signals(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod, "_detect_in_container", lambda: False)
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        env_mod, "browser_launch_blocked_reason", lambda **_k: "SSH session"
+    )
+    monkeypatch.setattr(env_mod, "missing_python_deps", lambda: ("langgraph",))
+    monkeypatch.setattr(env_mod, "docker_available", lambda: True)
+
+    report = env_mod.detect_environment()
+    assert report.browser_blocked_reason == "SSH session"
+    assert report.missing_python_deps == ("langgraph",)
+    # Missing native deps push the recommendation to the container shape.
+    assert report.recommended_hosting is HostingOption.DOCKER
+    assert any(
+        "langgraph" in note and "Docker" in note for note in report.notes
+    )
+
+    monkeypatch.setattr(env_mod, "docker_available", lambda: False)
+    report = env_mod.detect_environment()
+    assert report.recommended_hosting is HostingOption.LOCAL
+    assert any(
+        "install the project's Python dependencies" in note
+        for note in report.notes
+    )
+
+
 def test_hosting_gates_matrix():
     from nymeria.setup.environment import hosting_gates
 
@@ -563,6 +703,31 @@ def test_hosting_gates_matrix():
     assert hosting_gates(_env_report()) == {}
 
 
+def test_hosting_gates_warn_on_missing_python_deps():
+    from nymeria.setup.environment import hosting_gates
+
+    gates = hosting_gates(
+        _env_report(missing_python_deps=("fastapi", "langgraph"))
+    )
+    # Both native shapes run this interpreter: warn, never disable (LOCAL
+    # must stay an enabled choice).
+    assert not gates[HostingOption.LOCAL].disabled
+    assert "fastapi, langgraph" in gates[HostingOption.LOCAL].warning
+    assert not gates[HostingOption.SERVICE].disabled
+    assert gates[HostingOption.SERVICE].warning == gates[HostingOption.LOCAL].warning
+    assert HostingOption.DOCKER not in gates
+
+    # A disabled SERVICE gate is not clobbered by the deps warning.
+    gates = hosting_gates(
+        _env_report(
+            missing_python_deps=("fastapi",),
+            service_blocked_reason="systemd is not running",
+        )
+    )
+    assert gates[HostingOption.SERVICE].disabled
+    assert gates[HostingOption.LOCAL].warning
+
+
 def test_stack_resource_warnings_thresholds():
     from nymeria.onboarding import DockerStack
     from nymeria.setup.environment import stack_resource_warnings
@@ -574,6 +739,25 @@ def test_stack_resource_warnings_thresholds():
     assert len(slim) == 1 and "GB of disk" in slim[0]
     healthy = _env_report(total_ram_gb=16.0, free_disk_gb=100.0, mcp_port_free=True)
     assert stack_resource_warnings(healthy, DockerStack.FULL) == []
+
+
+def test_stack_resource_warnings_never_round_up_to_the_threshold():
+    """A sub-threshold value floors in the message: 9.96 GB free must not
+    read as "10 GB free; needs roughly 10 GB"."""
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.environment import stack_resource_warnings
+
+    nearly = _env_report(total_ram_gb=3.97, free_disk_gb=9.96)
+    slim = stack_resource_warnings(nearly, DockerStack.SLIM)
+    assert len(slim) == 1
+    assert "9.9 GB of disk" in slim[0] and "roughly 10 GB" in slim[0]
+
+    nearly_full = _env_report(total_ram_gb=3.97, free_disk_gb=24.96)
+    full = stack_resource_warnings(nearly_full, DockerStack.FULL)
+    ram = [w for w in full if "RAM" in w]
+    assert ram and "3.9 GB RAM" in ram[0] and "4 GB or more" in ram[0]
+    disk = [w for w in full if "disk" in w]
+    assert disk and "24.9 GB of disk" in disk[0] and "roughly 25 GB" in disk[0]
 
 
 # --- detection-driven wizard wiring -------------------------------------------
@@ -661,6 +845,25 @@ def test_welcome_report_markup_light_hides_unprobed_rows():
     assert "Docker daemon running" not in markup
     assert "Compose plugin" not in markup
     assert "Port 8000 free" in markup
+
+
+def test_welcome_report_markup_flags_browser_and_deps_only_when_bad():
+    """The browser/deps rows render only in the bad case so the common
+    desktop run keeps the screen compact (it must fit without scrolling)."""
+    from nymeria.setup.steps.welcome import _report_markup
+
+    healthy = _report_markup(_env_report())
+    assert "Local browser" not in healthy
+    assert "Python packages" not in healthy
+
+    degraded = _report_markup(
+        _env_report(
+            browser_blocked_reason="SSH session",
+            missing_python_deps=("fastapi",),
+        )
+    )
+    assert "Local browser" in degraded and "SSH session" in degraded
+    assert "Python packages" in degraded and "missing: fastapi" in degraded
 
 
 def test_review_heads_up_lines_for_degraded_conditions():
@@ -780,6 +983,90 @@ def test_headless_warns_on_low_resources_for_full_stack(
     out = capsys.readouterr().out
     assert rc == 0
     assert "GB RAM" in out and "GB of disk" in out
+
+
+def test_headless_warns_on_missing_python_deps_for_native_hosting(
+    tmp_path, monkeypatch, capsys
+):
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(missing_python_deps=("langgraph",)),
+    )
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+            "--hosting", "local",
+        ]
+    )
+    out = capsys.readouterr().out
+    # Warn-only: a pip install between now and launch fixes it.
+    assert rc == 0
+    assert "langgraph" in out and "not importable" in out
+
+
+def test_doctor_runs_against_the_just_written_config(monkeypatch, tmp_path):
+    """run.py loads the pre-wizard config into os.environ at import time
+    (override=True), and pydantic-settings reads the live env over the env
+    files, so doctor would validate stale values after a reconfigure (the old
+    API_PORT was the visible symptom). finalize must replay the freshly
+    written files around the doctor call and restore the env afterwards."""
+    import os
+
+    from rich.console import Console
+
+    import nymeria.doctor as doctor_mod
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "init"
+    root.mkdir()
+    (root / "config.env").write_text("API_PORT=8010\n", encoding="utf-8")
+    monkeypatch.setenv("API_PORT", "8000")  # the stale pre-wizard value
+    # A key the rewrite REMOVED (e.g. leaving the CLIProxy branch drops
+    # LLM_BASE_URL): a replay alone cannot clear it, so finalize passes the
+    # pre-write file-key snapshot and doctor must not see it.
+    monkeypatch.setenv("LLM_BASE_URL", "http://old-proxy:8318/v1")
+
+    captured = {}
+
+    def fake_run_doctor(_args):
+        captured["api_port"] = os.environ.get("API_PORT")
+        captured["llm_base_url"] = os.environ.get("LLM_BASE_URL")
+        return 0
+
+    monkeypatch.setattr(doctor_mod, "run_doctor", fake_run_doctor)
+
+    state = WizardState()
+    state.run_doctor = True
+    rc = finalize_mod._maybe_run_doctor(
+        state,
+        root=root,
+        console=Console(),
+        provider_auth_validated=True,
+        stale_env_keys=frozenset({"API_PORT", "LLM_BASE_URL"}),
+    )
+    assert rc == 0
+    assert captured["api_port"] == "8010"
+    assert captured["llm_base_url"] is None
+    # The replay is scoped to the doctor call; nothing leaks past it.
+    assert os.environ.get("API_PORT") == "8000"
+    assert os.environ.get("LLM_BASE_URL") == "http://old-proxy:8318/v1"
+
+
+def test_file_defined_env_keys_covers_target_root(tmp_path):
+    """The pre-write snapshot must include the target root's file keys (it
+    also unions the runtime root's, which may carry the host's own config)."""
+    root = tmp_path / "init"
+    root.mkdir()
+    (root / "config.env").write_text(
+        "API_PORT=8010\nLLM_BASE_URL=http://proxy/v1\n# COMMENT=x\n",
+        encoding="utf-8",
+    )
+    keys = finalize_mod._file_defined_env_keys(root)
+    assert {"API_PORT", "LLM_BASE_URL"} <= keys
+    assert "COMMENT" not in keys
 
 
 # --- alternate API port -------------------------------------------------------
@@ -5779,7 +6066,7 @@ def test_cliproxy_console_login_browser_paste_flow(monkeypatch, tmp_path, capsys
     pasted = queue_mod.Queue()
     pasted.put("http://localhost:54545/callback?code=abc&state=s1")
     monkeypatch.setattr(cliproxy_login_mod, "_start_paste_reader", lambda: pasted)
-    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(cliproxy_login_mod, "_browser_launch_blocked", lambda: True)
     monkeypatch.setattr(cliproxy_login_mod, "LOGIN_POLL_INTERVAL_SECONDS", 0.01)
 
     root = tmp_path / "init"
@@ -5835,7 +6122,7 @@ def test_cliproxy_console_login_go_quirk_false_ok(monkeypatch, tmp_path, capsys)
     _fake_cliproxy_client(
         monkeypatch, auth_files=[], status_script=["ok"], login_lands=None
     )
-    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(cliproxy_login_mod, "_browser_launch_blocked", lambda: True)
     monkeypatch.setattr(
         cliproxy_login_mod, "_start_paste_reader", lambda: __import__("queue").Queue()
     )
@@ -5854,7 +6141,7 @@ def test_cliproxy_console_login_timeout(monkeypatch, tmp_path, capsys):
 
     _stub_llm(monkeypatch)
     _fake_cliproxy_client(monkeypatch, auth_files=[], status_script=[])
-    monkeypatch.setattr(cliproxy_login_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(cliproxy_login_mod, "_browser_launch_blocked", lambda: True)
     monkeypatch.setattr(
         cliproxy_login_mod, "_start_paste_reader", lambda: __import__("queue").Queue()
     )

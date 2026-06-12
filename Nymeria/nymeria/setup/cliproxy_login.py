@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import queue
 import sys
 import threading
@@ -37,6 +36,7 @@ from ..cliproxy.management_client import (
     CLIProxyUnsupported,
 )
 from .cliproxy_deploy import mint_gatekeeper_key
+from .environment import browser_launch_blocked_reason
 from .state import WizardState
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,14 @@ LOGIN_POLL_INTERVAL_SECONDS = 2.0
 LOGIN_TIMEOUT_SECONDS = 600.0
 
 
-def _is_remote_session() -> bool:
-    """SSH session heuristic (hermes-agent's signal set): never auto-open a browser."""
-    return any(os.environ.get(var) for var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"))
+def _browser_launch_blocked() -> bool:
+    """Never auto-open a browser the user cannot see.
+
+    SSH sessions (hermes-agent's signal set) plus the headless-host signals
+    from setup.environment (container, no graphical session, no browser).
+    The printed URL and the paste flow cover those hosts.
+    """
+    return bool(browser_launch_blocked_reason())
 
 
 def management_credentials(state: WizardState) -> tuple[str, str]:
@@ -281,7 +286,7 @@ async def _login_console(
             "polls until it completes."
         )
     else:
-        if not _is_remote_session():
+        if not _browser_launch_blocked():
             try:
                 webbrowser.open(started["url"])
             except Exception as exc:  # noqa: BLE001 (best-effort; URL is printed)

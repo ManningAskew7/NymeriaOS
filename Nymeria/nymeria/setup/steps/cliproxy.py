@@ -57,7 +57,7 @@ from ..cliproxy_deploy import (
 from ..cliproxy_login import (
     LOGIN_POLL_INTERVAL_SECONDS,
     LOGIN_TIMEOUT_SECONDS,
-    _is_remote_session,
+    _browser_launch_blocked,
     active_login_entry,
     ensure_claude_tool_prefix_disabled,
     ensure_gatekeeper_key,
@@ -466,7 +466,7 @@ class CLIProxyLoginStep(WizardStep):
                 "Approve the login in your browser. If it ends on an "
                 "unreachable localhost page, paste that page's full URL below."
             )
-            if not _is_remote_session():
+            if not _browser_launch_blocked():
                 try:
                     webbrowser.open(url)
                 except Exception as exc:

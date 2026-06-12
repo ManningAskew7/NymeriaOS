@@ -17,6 +17,8 @@ heads-ups, and the headless gating in the runner. Never raises.
 
 from __future__ import annotations
 
+import importlib.util
+import math
 import os
 import platform
 import re
@@ -49,6 +51,28 @@ MCP_PORT = 8001
 # Module-level so tests can point it at a temp file (service_install pattern).
 _MEMINFO_PATH = Path("/proc/meminfo")
 
+# GUI browsers (plus the xdg-open/sensible-browser dispatchers) that make a
+# DISPLAY-bearing Linux session able to land an OAuth page in front of the
+# user. Windows and macOS are assumed to have a default browser.
+_BROWSER_BINARIES = (
+    "xdg-open",
+    "sensible-browser",
+    "firefox",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "brave-browser",
+)
+
+# Marker set for the native-deps check: heavyweight runtime requirements that
+# any pip install carries (hard requirements). Honest limitation: the wizard's
+# own import chain currently pulls in langgraph and langchain_core, so those
+# two can only report missing if the wizard's imports slim down later; the
+# live signal today is fastapi/uvicorn absent (a partial install). The full
+# set stays as cheap insurance for both futures.
+_RUNTIME_DEP_MODULES = ("fastapi", "uvicorn", "langgraph", "langchain_core")
+
 
 @dataclass(frozen=True)
 class EnvironmentReport:
@@ -79,6 +103,12 @@ class EnvironmentReport:
     total_ram_gb: float | None = None
     free_disk_gb: float | None = None
     mcp_port_free: bool | None = None
+    # Why webbrowser.open() would not land in front of this user ("" = it
+    # would): SSH session, container, display-less host. Light signal.
+    browser_blocked_reason: str = ""
+    # Backend runtime packages this interpreter cannot import (light signal;
+    # empty for any pip install, non-empty in an uninstalled source checkout).
+    missing_python_deps: tuple[str, ...] = ()
     deep: bool = False
 
     @property
@@ -122,8 +152,14 @@ def port_free(port: int, *, host: str = "127.0.0.1", timeout: float = 0.2) -> bo
 
 
 def suggest_free_port(start: int, *, tries: int = 20) -> int | None:
-    """First free port above `start`, or None when the next `tries` are all busy."""
+    """First free port above `start`, or None when the next `tries` are all busy.
+
+    Never suggests the MCP port: the full stack publishes it even when nothing
+    is listening there yet, so it only looks free.
+    """
     for candidate in range(start + 1, min(start + 1 + tries, 65536)):
+        if candidate == MCP_PORT:
+            continue
         if port_free(candidate):
             return candidate
     return None
@@ -264,6 +300,57 @@ def free_disk_gb(path: Path | None = None) -> float | None:
     return usage.free / (1024**3)
 
 
+def browser_launch_blocked_reason(*, platform_name: str | None = None) -> str:
+    """Why opening a URL would not land in front of this user ("" = it would).
+
+    Light heuristics only (env vars, file markers, PATH lookups, no
+    subprocess): an SSH session would open the browser on the wrong machine
+    (hermes-agent's signal set), a container or a display-less Linux host has
+    nowhere to open one. WSL interop opens the Windows-side browser even
+    without a display. Windows and macOS are assumed to have a usable default
+    browser.
+    """
+    if any(os.environ.get(var) for var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION")):
+        return "SSH session"
+    plat = platform_name or sys.platform
+    if plat.startswith("win") or plat == "darwin":
+        return ""
+    if _detect_in_container():
+        return "running inside a container"
+    if _detect_wsl():
+        return ""
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return "no graphical session"
+    if os.environ.get("BROWSER"):
+        # The user explicitly configured a launcher; webbrowser honors it.
+        return ""
+    if not any(shutil.which(binary) for binary in _BROWSER_BINARIES):
+        return "no web browser found"
+    return ""
+
+
+def missing_python_deps(
+    modules: tuple[str, ...] = _RUNTIME_DEP_MODULES,
+) -> tuple[str, ...]:
+    """Backend runtime packages this interpreter cannot import.
+
+    ``find_spec`` locates without importing, so the check is cheap. The same
+    interpreter that runs the wizard runs the backend in every native shape
+    (local foreground, background service), so a miss here means those shapes
+    fail at launch. Best effort: a broken finder counts as present so the
+    wizard never warns on its own machinery.
+    """
+    missing: list[str] = []
+    for module in modules:
+        try:
+            spec = importlib.util.find_spec(module)
+        except Exception:  # noqa: BLE001 (best effort; never block the wizard)
+            continue
+        if spec is None:
+            missing.append(module)
+    return tuple(missing)
+
+
 def _detect_in_container() -> bool:
     """Whether this process runs inside a container (docker/podman markers)."""
     try:
@@ -272,6 +359,22 @@ def _detect_in_container() -> bool:
         from ..service_install import _in_container
 
         return _in_container()
+    except Exception:
+        return False
+
+
+def _detect_wsl() -> bool:
+    """Whether this is WSL (interop opens URLs in the Windows-side browser).
+
+    Uses the WSL_DISTRO_NAME / /proc/version markers via service_install
+    (function-local import for the same monkeypatch-at-call-time reason);
+    a wslview-on-PATH check would misfire both ways (wslu installs fine on
+    plain servers, and real WSL works without it via explorer.exe).
+    """
+    try:
+        from ..service_install import _is_wsl
+
+        return _is_wsl()
     except Exception:
         return False
 
@@ -301,18 +404,24 @@ def service_manager_block(*, platform_name: str | None = None) -> tuple[str, str
 
 
 def recommend_hosting(
-    *, is_windows: bool, has_docker: bool, in_container: bool = False
+    *,
+    is_windows: bool,
+    has_docker: bool,
+    in_container: bool = False,
+    native_deps_missing: bool = False,
 ) -> HostingOption:
     """Pick a default hosting shape from what we detected.
 
     Windows native installs are painful (no project deps, no venv, `sqlite-vec`
-    to build), so a container is preferred there when Docker exists. Inside a
-    container the foreground process is the only sensible shape. Everywhere
-    else a plain local process is the simplest starting point.
+    to build), so a container is preferred there when Docker exists; the same
+    holds anywhere the runtime's Python packages are missing (the container
+    image carries them). Inside a container the foreground process is the only
+    sensible shape. Everywhere else a plain local process is the simplest
+    starting point.
     """
     if in_container:
         return HostingOption.LOCAL
-    if is_windows and has_docker:
+    if has_docker and (is_windows or native_deps_missing):
         return HostingOption.DOCKER
     return HostingOption.LOCAL
 
@@ -320,8 +429,9 @@ def recommend_hosting(
 def hosting_gates(report: EnvironmentReport) -> dict[HostingOption, HostingGate]:
     """Detection-driven gate per hosting option (absent key = fully available).
 
-    LOCAL is never gated: every host can run a foreground process, and the
-    picker must keep at least one enabled choice.
+    LOCAL is never disabled: every host can run a foreground process, and the
+    picker must keep at least one enabled choice (it can still carry a
+    warning, e.g. missing runtime packages).
     """
     gates: dict[HostingOption, HostingGate] = {}
     if not report.docker_available:
@@ -343,7 +453,24 @@ def hosting_gates(report: EnvironmentReport) -> dict[HostingOption, HostingGate]
         gates[HostingOption.SERVICE] = HostingGate(
             disabled=True, reason=report.service_blocked_reason
         )
+    if report.missing_python_deps:
+        # Both native shapes run this interpreter; warn, never block (a pip
+        # install between now and launch fixes it).
+        deps_warning = (
+            "the backend's Python packages are not importable here (missing: "
+            f"{', '.join(report.missing_python_deps)}); install the project "
+            "dependencies before launching."
+        )
+        gates[HostingOption.LOCAL] = HostingGate(warning=deps_warning)
+        if HostingOption.SERVICE not in gates:
+            gates[HostingOption.SERVICE] = HostingGate(warning=deps_warning)
     return gates
+
+
+def _floor1(value: float) -> float:
+    """Round down to one decimal: a sub-threshold value must never display as
+    the threshold itself (9.96 GB free reading as "10 GB free; needs 10 GB")."""
+    return math.floor(value * 10) / 10
 
 
 def stack_resource_warnings(
@@ -358,8 +485,8 @@ def stack_resource_warnings(
             and report.total_ram_gb < FULL_STACK_MIN_RAM_GB
         ):
             warnings.append(
-                f"this machine has {report.total_ram_gb:.1f} GB RAM; the full "
-                f"stack (Postgres + Redis + API) wants "
+                f"this machine has {_floor1(report.total_ram_gb):.1f} GB RAM; "
+                f"the full stack (Postgres + Redis + API) wants "
                 f"{FULL_STACK_MIN_RAM_GB:.0f} GB or more."
             )
         if (
@@ -367,8 +494,9 @@ def stack_resource_warnings(
             and report.free_disk_gb < FULL_STACK_MIN_DISK_GB
         ):
             warnings.append(
-                f"only {report.free_disk_gb:.0f} GB of disk is free; the full "
-                f"image build needs roughly {FULL_STACK_MIN_DISK_GB:.0f} GB."
+                f"only {_floor1(report.free_disk_gb):.1f} GB of disk is free; "
+                f"the full image build needs roughly "
+                f"{FULL_STACK_MIN_DISK_GB:.0f} GB."
             )
         if report.mcp_port_free is False:
             warnings.append(
@@ -380,8 +508,8 @@ def stack_resource_warnings(
         and report.free_disk_gb < SLIM_DOCKER_MIN_DISK_GB
     ):
         warnings.append(
-            f"only {report.free_disk_gb:.0f} GB of disk is free; the container "
-            f"build needs roughly {SLIM_DOCKER_MIN_DISK_GB:.0f} GB."
+            f"only {_floor1(report.free_disk_gb):.1f} GB of disk is free; the "
+            f"container build needs roughly {SLIM_DOCKER_MIN_DISK_GB:.0f} GB."
         )
     return warnings
 
@@ -398,8 +526,13 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
     free = port_free(port)
     in_container = _detect_in_container()
     service_label, service_reason = service_manager_block()
+    browser_reason = browser_launch_blocked_reason()
+    missing_deps = missing_python_deps()
     recommended = recommend_hosting(
-        is_windows=is_windows, has_docker=has_docker, in_container=in_container
+        is_windows=is_windows,
+        has_docker=has_docker,
+        in_container=in_container,
+        native_deps_missing=bool(missing_deps),
     )
 
     daemon: bool | None = None
@@ -434,6 +567,18 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
         notes.append(
             "Native Windows installs are painful (no venv, sqlite-vec to build). "
             "Install Docker Desktop to use the recommended container shape."
+        )
+    if missing_deps:
+        # In-container the recommendation stays LOCAL, so do not point at the
+        # Docker shape there.
+        remedy = (
+            "the Docker shape avoids a native install"
+            if has_docker and not in_container
+            else "install the project's Python dependencies before a native launch"
+        )
+        notes.append(
+            f"Backend Python packages are missing ({', '.join(missing_deps)}); "
+            f"{remedy}."
         )
     if not free:
         busy = f"Port {port} is already in use"
@@ -474,6 +619,8 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
         total_ram_gb=total_ram_gb(),
         free_disk_gb=free_disk_gb(),
         mcp_port_free=mcp_free,
+        browser_blocked_reason=browser_reason,
+        missing_python_deps=missing_deps,
         deep=deep,
     )
 
@@ -481,6 +628,7 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
 __all__ = [
     "EnvironmentReport",
     "HostingGate",
+    "browser_launch_blocked_reason",
     "detect_environment",
     "docker_available",
     "docker_compose_available",
@@ -489,6 +637,7 @@ __all__ = [
     "hosting_gates",
     "identify_port_owner",
     "list_nymeria_containers",
+    "missing_python_deps",
     "port_free",
     "recommend_hosting",
     "service_manager_block",

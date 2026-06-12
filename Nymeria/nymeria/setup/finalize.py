@@ -419,6 +419,12 @@ def finalize(
 
     if not for_docker:
         data_dir.mkdir(parents=True, exist_ok=True)
+    # Snapshot the keys the PRE-write env files define while they are still on
+    # disk: run.py loaded those into os.environ at import, and a key the
+    # rewrite REMOVES (e.g. leaving the CLIProxy branch drops LLM_BASE_URL)
+    # cannot be cleared by replaying the new files, so the doctor run needs
+    # this set to drop the removed ones first.
+    pre_write_env_keys = _file_defined_env_keys(root)
     console.print("\n[bold]Configuration[/bold]")
     write_config(
         config_path,
@@ -501,6 +507,7 @@ def finalize(
         root=root,
         console=console,
         provider_auth_validated=provider_auth_validated,
+        stale_env_keys=pre_write_env_keys,
     )
     if doctor_status != 0:
         return doctor_status
@@ -2084,12 +2091,34 @@ def _warn_shadowing_process_env(console: Console, written: Mapping[str, str]) ->
     _print_command(console, f"unset {' '.join(clashes)}")
 
 
+def _file_defined_env_keys(root: Path) -> frozenset[str]:
+    """Keys the on-disk env files define right now. Never raises.
+
+    Covers both the runtime root run.py loaded its import-time environment
+    from (the source of the process-env pollution) and the target ``root``;
+    they differ when a packaged install reconfigures an alternate ``--root``.
+    """
+    from dotenv import dotenv_values
+
+    from ..config.settings import get_env_file_paths
+
+    keys: set[str] = set()
+    for path in (*get_env_file_paths(), *get_env_file_paths(root)):
+        try:
+            if path.is_file():
+                keys.update(key for key in dotenv_values(str(path)) if key)
+        except (OSError, UnicodeDecodeError):
+            continue
+    return frozenset(keys)
+
+
 def _maybe_run_doctor(
     state: WizardState,
     *,
     root: Path,
     console: Console,
     provider_auth_validated: bool,
+    stale_env_keys: frozenset[str] | None = None,
 ) -> int:
     if not (state.run_doctor or state.full_doctor):
         return 0
@@ -2098,7 +2127,31 @@ def _maybe_run_doctor(
     if skip_llm_test:
         command += " --skip-llm-test"
     console.print(f"\nRunning final validation: [bold]{command}[/bold]")
-    result = run_doctor_for_root(root, skip_llm_test=skip_llm_test)
+    # run.py loaded the PRE-wizard config into os.environ at import time
+    # (override=True), and pydantic-settings reads the live env over
+    # `_env_file`, so doctor would validate the old values after a reconfigure
+    # (a stale API_PORT probe was the visible symptom). Drop the keys the old
+    # files defined (a replay cannot clear a key the rewrite REMOVED), then
+    # replay the files this run just wrote. Scoped to the doctor call and
+    # restored afterwards so nothing leaks past it.
+    from dotenv import load_dotenv
+
+    from ..config.settings import get_env_file_paths
+
+    saved_env = os.environ.copy()
+    try:
+        for key in stale_env_keys or ():
+            os.environ.pop(key, None)
+        for path in get_env_file_paths(root):
+            try:
+                if path.is_file():
+                    load_dotenv(path, override=True)
+            except (OSError, UnicodeDecodeError):
+                continue
+        result = run_doctor_for_root(root, skip_llm_test=skip_llm_test)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
     if result != 0:
         console.print(
             "[yellow]Doctor reported failed checks. Fix those before starting "
