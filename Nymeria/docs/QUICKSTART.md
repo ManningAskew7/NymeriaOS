@@ -219,7 +219,9 @@ For scripted setup in CI or an offline support session, `nymeria init` accepts
 required for a fresh install), and `--root` / `--data-dir` to control where
 config and data are written. Optional connection flags are `--base-url` and
 `--api-mode responses|chat_completions` for OpenAI-compatible providers, plus
-`--hosting local|service|docker`. `--next-action print_commands|cli|start_api_open_frontend`
+`--hosting local|service|docker` and `--port` (the API listen port, default
+8000; the wizard asks the same question interactively and warns when the port
+is already in use). `--next-action print_commands|cli|start_api_open_frontend`
 selects the closing handoff. Optional capability keys can be supplied with
 `--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, and
 `--perplexity-api-key`. Add `--quick` to apply the interactive quick path's
@@ -375,7 +377,8 @@ Make sure you've set the API key for your chosen provider in your environment fi
 
 1. Check the backend is running: `python3 run.py api`
 2. Check the URL in the desktop app matches the backend
-3. Check firewall isn't blocking port 8000
+3. Check firewall isn't blocking the API port (8000 by default; `API_PORT`
+   in your config if you chose another at setup)
 
 ### Desktop app shows blank screen
 
