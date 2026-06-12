@@ -25,14 +25,18 @@ curl -fsSL https://get.nymeriaos.com/install.sh | sh
 ```
 
 It asks whether you want **Slim** (simpler, best for a few users; single process
-on SQLite via `uv`, no Docker) or **Full** (more robust, multi-user; runs in
-Docker, and the script can install Docker for you on Linux). Non-interactive use:
-`... | sh -s -- --slim` or `--full`. Cautious users can download and read it
-first (`curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh`).
+on SQLite via `uv`, no Docker), **Full** (more robust, multi-user; runs in
+Docker, and the script can install Docker for you on Linux), or **Source**
+(hackable: a git checkout with an editable install, for working on Nymeria or
+letting the agent modify its own source). Non-interactive use:
+`... | sh -s -- --slim`, `--full`, or `--source`. Cautious users can download
+and read it first
+(`curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh`).
 
 Note: the one-line installer requires the hosted endpoint
-(`get.nymeriaos.com`, plus the published container images for the Full track) to
-be live. Until then, use the manual commands below, which work today.
+(`get.nymeriaos.com`, plus the published container images for the Full track
+and the public repo for the Source track) to be live. Until then, use the
+manual commands below, which work today.
 
 ### Manual install
 
@@ -60,6 +64,20 @@ nymeria doctor
 nymeria api
 ```
 
+From source (the hackable install; edits under the checkout, yours or the
+agent's own, apply on the next restart, and git gives you diff/branch/revert
+safety):
+
+```bash
+git clone https://github.com/ManningAskew7/NymeriaOS.git ~/NymeriaOS
+uv tool install --editable ~/NymeriaOS/Nymeria
+nymeria init
+```
+
+A source install also unlocks the Docker shapes that build from the checkout
+(including the full Postgres + Redis stack); the wizard detects the checkout
+automatically.
+
 The default install is lean. Optional chat-platform bots and heavy integrations
 install as extras, for example `uv tool install "nymeriaos[discord]"` (or
 `pipx install "nymeriaos[discord]"`). Use `nymeriaos[bots]` for every chat platform,
@@ -69,8 +87,12 @@ or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 
 `nymeria init` opens an interactive setup wizard. Step 1 chooses how to host the
 slim backend on this machine (run it directly, install a background service, or
-run a single Docker container). Step 2 chooses your LLM provider, API key, and
-model. Further capability steps (web search, embeddings, image generation,
+run a single Docker container). The Docker option works without a source
+checkout: the wizard writes the published-image compose file and `.env.docker`
+into its config dir, pins the image tag to your installed version, and can
+start the container for you (it needs the published images to be live; the
+full Postgres + Redis stack still requires a source checkout). Step 2
+chooses your LLM provider, API key, and model. Further capability steps (web search, embeddings, image generation,
 speech, tool selection, and agent settings) are being built out and can be
 skipped for now. Move with the arrow keys, Enter to advance, Esc to go back a
 step, and Ctrl+Q to quit. A review screen confirms before anything is written.
