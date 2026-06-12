@@ -24,11 +24,12 @@ from `profile.json` for local/service installs; for Docker (whose profile lives
 in the container volume) they hydrate from the `NYMERIA_INIT_*` carrier lines in
 `.env.docker` instead. The carriers record first-boot intent at the env-file
 layer, which is what finalize re-writes, so an untouched interactive reconfigure
-round-trips them verbatim. Two bounded deviations: quick mode and the
-interactive family steps default-check the keyless `fetch_url_nymeria` when the
-hydrated state holds no fetch_url pick, so those paths can (re)seed that one
-default into the carrier; harmless, since it is what a fresh first run would
-seed anyway. Settings edits made inside a running container are invisible here,
+round-trips them verbatim. One bounded deviation: the interactive fetch step
+default-checks the keyless `fetch_url_nymeria` when the hydrated state holds no
+fetch_url pick, so that path can (re)seed that one default into the carrier;
+harmless, since it is what a fresh first run would seed anyway (quick mode used
+to share this deviation, but its fill check is now key-presence, so a hydrated
+empty fetch family survives a quick reconfigure). Settings edits made inside a running container are invisible here,
 and that is fine because the carriers only ever matter to a future fresh volume. The Docker
 stack IS recoverable (the full stack writes POSTGRES_PASSWORD; the slim shape
 never does).
