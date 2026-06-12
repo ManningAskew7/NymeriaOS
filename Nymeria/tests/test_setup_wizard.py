@@ -573,6 +573,43 @@ def test_quick_and_custom_flags_resolve_on_state():
     assert _build_state(build_parser().parse_args(base)).quick is False
 
 
+def test_quick_defaults_respect_explicit_empty_family():
+    from nymeria.setup.quick import apply_quick_defaults
+    from nymeria.setup.state import WizardState
+
+    # An explicit "no fetch tools" pick (`--fetch-url none` -> empty list) must
+    # survive quick mode: the fill check is key-presence, not truthiness.
+    state = WizardState(quick=True, extras={"fetch_url": []})
+    apply_quick_defaults(state)
+    assert state.extras["fetch_url"] == []
+
+
+def test_default_step_ids_matches_tui_free_list():
+    from nymeria.setup.quick import DEFAULT_STEP_IDS
+    from nymeria.setup.steps import default_step_ids
+
+    # quick.DEFAULT_STEP_IDS is the TUI-free copy the non-interactive path
+    # validates section jumps against; it must mirror the real step list.
+    assert list(DEFAULT_STEP_IDS) == default_step_ids()
+
+
+def test_steps_cliproxy_reexports_pure_helpers():
+    from nymeria.setup import cliproxy_login
+    from nymeria.setup.steps import cliproxy as cliproxy_steps
+
+    # The step module re-imports the moved TUI-free helpers, not copies.
+    assert cliproxy_steps.management_credentials is cliproxy_login.management_credentials
+    assert cliproxy_steps.make_management_client is cliproxy_login.make_management_client
+    assert cliproxy_steps.ensure_gatekeeper_key is cliproxy_login.ensure_gatekeeper_key
+
+
+def test_cliproxy_login_module_is_tui_free():
+    from nymeria.setup import cliproxy_login
+
+    # The headless path imports this module; it must never pull in Textual.
+    assert "textual" not in Path(cliproxy_login.__file__).read_text()
+
+
 # --- headless finalize ------------------------------------------------------
 
 

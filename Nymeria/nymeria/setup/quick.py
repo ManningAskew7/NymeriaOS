@@ -67,6 +67,58 @@ QUICK_KEEP_STEP_IDS = frozenset(
 QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 
 
+# Ordered ids of every wizard step, kept TUI-free so the non-interactive path can
+# validate `init <section>` jumps without importing the Textual step modules.
+# Must mirror `steps.__init__._default_step_list()` exactly; a parity test pins
+# the two lists together.
+DEFAULT_STEP_IDS: tuple[str, ...] = (
+    "welcome",
+    "hosting",
+    "docker_stack",
+    "security_profile",
+    "auth_method",
+    "cliproxy_disclaimer",
+    "cliproxy_endpoint",
+    "cliproxy_provider",
+    "cliproxy_login",
+    "cliproxy_model",
+    "provider",
+    "connection",
+    "model",
+    "llm_tuning",
+    "core_tools",
+    "web_search",
+    "fetch_url",
+    "embedder",
+    "reranker",
+    "image_gen",
+    "tts",
+    "stt",
+    "backend_keys",
+    "skill_kits",
+    "context",
+    "agent_limits",
+    "external_access",
+    "external_access_tailscale",
+    "external_access_cloudflare",
+    "start_now",
+    "review",
+)
+
+
+def validate_section_id(section: str) -> None:
+    """Reject an unknown `init <section>` name with the jumpable-id listing.
+
+    Shared by the interactive and non-interactive paths so both produce the
+    same error message.
+    """
+    if section not in DEFAULT_STEP_IDS:
+        jumpable = ", ".join(
+            s for s in DEFAULT_STEP_IDS if s not in {"welcome", "review"}
+        )
+        raise SystemExit(f"Unknown section '{section}'. Choose one of: {jumpable}")
+
+
 # Section-jump (`nymeria init <section>`) dependency closure: steps that must stay
 # resolvable when jumping to a section, beyond the section itself plus the welcome
 # and review bookends. The provider/connection/model trio is one LLM unit; the
@@ -151,8 +203,10 @@ def apply_quick_defaults(state: "WizardState") -> None:
     # an explicit embedder pick or embedding key untouched.
     if state.embedder is None and not state.optional_env.get("EMBEDDING_API_KEY"):
         apply_quickstart_rag(state)
-    # Keyless web fetch, unless a flag already seeded the fetch family.
-    if not state.extras.get("fetch_url"):
+    # Keyless web fetch, unless the fetch family was already decided (a flag
+    # pick, a hydrated reconfigure value, or an explicit `--fetch-url none`
+    # empty list; key presence, not truthiness, so an empty pick survives).
+    if "fetch_url" not in state.extras:
         state.extras["fetch_url"] = list(QUICK_FETCH_DEFAULT)
     # Default the Docker shape to slim (simplest single-user container); the
     # docker_stack step is gated off in quick mode, so seed it for review.
@@ -161,9 +215,11 @@ def apply_quick_defaults(state: "WizardState") -> None:
 
 
 __all__ = [
+    "DEFAULT_STEP_IDS",
     "QUICK_KEEP_STEP_IDS",
     "QUICK_FETCH_DEFAULT",
     "apply_quick_defaults",
     "SECTION_DEPENDENCIES",
     "section_keep_ids",
+    "validate_section_id",
 ]
