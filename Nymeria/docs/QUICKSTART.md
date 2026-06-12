@@ -216,21 +216,29 @@ OpenAI-backed features.
 
 For scripted setup in CI or an offline support session, `nymeria init` accepts
 `--non-interactive` plus `--provider`, `--model`, and `--api-key` (all three are
-required in non-interactive mode), and `--root` / `--data-dir` to control where
+required for a fresh install), and `--root` / `--data-dir` to control where
 config and data are written. Optional connection flags are `--base-url` and
 `--api-mode responses|chat_completions` for OpenAI-compatible providers, plus
 `--hosting local|service|docker`. `--next-action print_commands|cli|start_api_open_frontend`
 selects the closing handoff. Optional capability keys can be supplied with
 `--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, and
-`--perplexity-api-key`.
+`--perplexity-api-key`. Add `--quick` to apply the interactive quick path's
+no-extra-auth defaults (free local RAG, keyless web fetch) to the scripted
+setup, for example:
 
-Add `--skip-llm-test` to write config without validating provider access, and
-`--force` to overwrite an existing `config.env`. Add `--run-doctor` for the quick
-post-init doctor check, or `--full-doctor` when you also want doctor to make its
-own live LLM check.
+```bash
+nymeria init --non-interactive --quick --provider anthropic \
+  --model claude-opus-4-8 --api-key sk-ant-... --start
+```
 
-CLIProxy subscription-OAuth provider routing is deferred and is not part of
-`nymeria init` in this phase. Use a direct provider API key.
+Re-running `nymeria init --non-interactive` against an existing install
+reconfigures it: the current values load from disk and only the flags you pass
+change, so omitted flags (including `--api-key`) keep their current values.
+Add `--skip-llm-test` to write config without the live checks (the provider
+key test and the post-start chat smoke test), and `--force` to discard the
+existing `config.env` and rebuild it from flags alone. Add `--run-doctor` for
+the quick post-init doctor check, or `--full-doctor` when you also want doctor
+to make its own live LLM check.
 
 To diagnose an existing install without changing files, run:
 
