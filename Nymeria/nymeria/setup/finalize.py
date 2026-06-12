@@ -575,8 +575,18 @@ def write_config(
         # Leaving the subscription branch retires the management endpoint
         # lines; keeping them would leave the backend's /cliproxy routes wired
         # to an abandoned proxy. Never dropped ON the branch (a blank key
-        # there means keep the on-disk secret).
-        drop_env = drop_env + ("CLIPROXY_MANAGEMENT_URL", "CLIPROXY_MANAGEMENT_KEY")
+        # there means keep the on-disk secret). LLM_BASE_URL/OPENAI_API_MODE
+        # ride along: when the run clears them on a branch exit (the hydrated
+        # values described the proxy route), the stale lines would otherwise
+        # survive the merge and keep routing chats through the proxy. Inert
+        # for every other non-CLIProxy reconfigure: a hydrated or flagged
+        # value is in `produced`, which always wins over the drop.
+        drop_env = drop_env + (
+            "CLIPROXY_MANAGEMENT_URL",
+            "CLIPROXY_MANAGEMENT_KEY",
+            "LLM_BASE_URL",
+            "OPENAI_API_MODE",
+        )
     if drop_public_url:
         # Switching to local-only retires the stale public URL; keeping it
         # would advertise (and hydrate back) an origin the user abandoned.
@@ -1547,7 +1557,10 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
     finally:
         stop.set()
         if smoke_thread is not None:
-            smoke_thread.join(timeout=2.0)
+            try:
+                smoke_thread.join(timeout=2.0)
+            except KeyboardInterrupt:
+                pass  # second Ctrl+C during the bounded join: just leave
     return result.returncode
 
 
@@ -1695,13 +1708,17 @@ def run_chat_smoke_test(
     try:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310
-                payload = json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace").strip()[:200]
             return False, f"HTTP {exc.code} from /chat/sync: {detail}"
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # ValueError covers urllib's own rejects (e.g. a token with
+            # control characters failing header validation).
             return False, f"could not reach /chat/sync: {exc}"
-        except ValueError:
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
             return False, "/chat/sync returned a non-JSON body"
         response_text = ""
         if isinstance(payload, dict):
@@ -1782,8 +1799,9 @@ def _run_inline_chat_smoke(
         return
     if not token:
         console.print(
-            "[yellow]Could not read the service token yet; skipping the chat "
-            "smoke test.[/yellow]"
+            "[yellow]Could not read the service token, skipping the chat "
+            "smoke test (the file is not minted when an operator-set "
+            "NYMERIA_SERVICE_TOKEN is in use).[/yellow]"
         )
         return
     console.print(
