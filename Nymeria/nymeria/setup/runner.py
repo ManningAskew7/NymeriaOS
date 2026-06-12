@@ -556,8 +556,11 @@ def enforce_hosting_gates(
     An impossible shape (the picker would grey it out) is rejected when the
     value came from an explicit --hosting flag, and only warned about when it
     was hydrated from disk: a scripted edit of an unrelated section must not
-    die because, say, the docker CLI is missing right now. Degraded states
-    (daemon stopped, low RAM/disk for the chosen stack) warn on both paths.
+    die because, say, the docker CLI is missing right now. Degraded warnings
+    here cover what light detection can see (low RAM/disk for the chosen
+    stack); the subprocess-probed degradations (daemon stopped, compose
+    missing) are interactive-only signals, since headless runs never probe
+    deep.
     """
     report = state.env_report
     if report is None:

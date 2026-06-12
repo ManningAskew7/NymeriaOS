@@ -183,6 +183,35 @@ def _offline_tool_search_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `nymeria init` runs from probing the real host.
+
+    Every init run (`setup_main`/`run_init`) caches a detection report on the
+    wizard state: loopback socket probes, /proc/meminfo, docker/systemd
+    markers, and in interactive mode real `docker info` subprocesses. Stubbed
+    suite-wide so no test depends on this machine's docker/systemd/port state
+    (a `--hosting docker` test must not fail on a host without docker).
+    Gating tests re-patch `runner.detect_environment` with crafted reports;
+    detection unit tests call `nymeria.setup.environment` directly, which this
+    does not touch.
+    """
+    from nymeria.onboarding import HostingOption
+    from nymeria.setup import runner as runner_module
+    from nymeria.setup.environment import EnvironmentReport
+
+    monkeypatch.setattr(
+        runner_module,
+        "detect_environment",
+        lambda **_kw: EnvironmentReport(
+            os_label="Linux test",
+            is_windows=False,
+            docker_available=True,
+            recommended_hosting=HostingOption.LOCAL,
+        ),
+    )
+
+
 @pytest.fixture
 def api_client_builder(monkeypatch: pytest.MonkeyPatch) -> ApiTestClientBuilder:
     api_module._reset_auth_failure_rate_limiter_for_tests()

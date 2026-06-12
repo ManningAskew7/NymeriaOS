@@ -73,4 +73,7 @@ docs/
 .env.docker
 .env.docker.*
 .env.docker.example
+# A leftover local-install config would bake into the image (secrets included)
+# and load inside the container with override=True.
+config.env
 tests/

@@ -96,11 +96,19 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
             DockerStack.FULL if _get(values, "POSTGRES_PASSWORD") else DockerStack.SLIM
         )
 
-    if state.api_port is None and _get(values, "API_PORT"):
+    if _get(values, "API_PORT"):
         try:
-            state.api_port = int((_get(values, "API_PORT") or "").strip())
+            disk_port = int((_get(values, "API_PORT") or "").strip())
         except ValueError:
-            pass  # hand-edited junk; keep the default
+            disk_port = None  # hand-edited junk; keep the default
+        # Out-of-range values are junk too: socket probes raise OverflowError
+        # past 65535, so an unvalidated hand-edit would crash detection.
+        if disk_port is not None and 1 <= disk_port <= 65535:
+            # Stashed so finalize can warn when the port CHANGES on an install
+            # whose tunnel ingress still forwards to the old one.
+            state.extras.setdefault("api_port_on_disk", disk_port)
+            if state.api_port is None:
+                state.api_port = disk_port
 
     if state.provider is None and _get(values, "LLM_PROVIDER"):
         state.provider = _get(values, "LLM_PROVIDER")

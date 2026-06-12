@@ -38,18 +38,10 @@ def _env_report(**overrides) -> EnvironmentReport:
     return EnvironmentReport(**base)
 
 
-@pytest.fixture(autouse=True)
-def _hermetic_environment_detection(monkeypatch):
-    """Never probe the real host from wizard runs.
-
-    The runner caches a detection report on state for every init run; without
-    this stub, --hosting docker tests would start failing on machines without
-    docker, and host state (a busy port 8000) would leak into assertions.
-    Gating tests override by re-patching runner_mod.detect_environment with a
-    crafted _env_report; detection unit tests call the environment module
-    directly, which this does not touch.
-    """
-    monkeypatch.setattr(runner_mod, "detect_environment", lambda **_kw: _env_report())
+# The suite-wide hermetic detection stub lives in tests/conftest.py
+# (`_offline_environment_detection`): every init-driving test file needs it,
+# not just this one. Gating tests below re-patch runner_mod.detect_environment
+# with crafted _env_report values on top of it.
 
 
 # --- onboarding data model --------------------------------------------------
@@ -880,6 +872,83 @@ def test_docker_stack_spec_honors_alt_port():
     )
     assert alt_full.compose_args == ("--env-file", ".env.docker")
     assert alt_full.health_url == "http://localhost:8010/ready"
+
+    # The printed manual command carries a protective env prefix (a shell with
+    # a stale API_PORT would otherwise win over --env-file); the default-port
+    # commands stay the documented short form.
+    assert default_slim.command_env == ()
+    assert alt_slim.command_env == (("API_PORT", "8010"),)
+    assert finalize_mod._compose_command_str(alt_slim, "up", "-d") == (
+        "API_PORT=8010 docker compose -f docker-compose.single.yml "
+        "--env-file .env.docker up -d"
+    )
+
+
+def test_compose_env_pins_api_port_over_stale_process_env(monkeypatch):
+    from nymeria.setup.state import WizardState
+
+    # run.py's import-time dotenv load leaves the OLD config's port in the
+    # process env; compose resolves ${API_PORT} from there BEFORE --env-file,
+    # so the wizard's own `up -d` must pin the freshly chosen port.
+    monkeypatch.setenv("API_PORT", "8000")
+    alt = finalize_mod._docker_stack_spec(WizardState(api_port=8010))
+    assert finalize_mod._compose_env(alt)["API_PORT"] == "8010"
+
+    monkeypatch.setenv("API_PORT", "8010")  # foreign checkout's config
+    default = finalize_mod._docker_stack_spec(WizardState())
+    assert finalize_mod._compose_env(default)["API_PORT"] == "8000"
+
+
+def test_hydrate_rejects_out_of_range_api_port(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root)
+    config = root / "config.env"
+    config.write_text(
+        config.read_text().replace("API_PORT=8000", "API_PORT=99999")
+    )
+
+    # int("99999") parses fine but overflows the socket probes; hydrate must
+    # treat it as junk so `nymeria init` does not crash at detection.
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.api_port is None
+    assert "api_port_on_disk" not in state.extras
+
+
+def test_port_change_with_active_public_url_warns(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "runtime"
+    _first_run(
+        monkeypatch, root,
+        "--external-access", "cloudflare",
+        "--public-url", "https://nym.example.com",
+    )
+    capsys.readouterr()
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "claude-test-model",
+            "--root", str(root), "--non-interactive", "--skip-llm-test",
+            "--port", "8010",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "changing from 8000 to 8010" in out
+    assert "ingress" in out
+
+    # A re-run on the SAME port stays quiet.
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "claude-test-model",
+            "--root", str(root), "--non-interactive", "--skip-llm-test",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ingress" not in out
 
 
 def test_port_flag_rejects_out_of_range(tmp_path):
