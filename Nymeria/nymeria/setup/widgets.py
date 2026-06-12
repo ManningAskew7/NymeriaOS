@@ -15,13 +15,21 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from rich.color import Color
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.events import Key
 from textual.message import Message
+from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Input, OptionList
-from textual.widgets.option_list import Option
+from textual.widgets import Input, OptionList, SelectionList
+
+# ToggleButton is not re-exported from textual.widgets; the upstream
+# SelectionList imports it from the same private module.
+from textual.widgets._toggle_button import ToggleButton
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,51 @@ def filter_items(items: list[ListItem], query: str) -> list[ListItem]:
 
 def _header_prompt(label: str) -> Text:
     return Text(label.upper(), style="bold #bbddfb")
+
+
+class BracketSelectionList(SelectionList):
+    """A `SelectionList` whose checkboxes render as [x] / [ ].
+
+    The stock widget draws a half-block button (▐X▌) whose X is always present
+    and only changes color with selection; against this theme it reads as a
+    solid square, not a checkbox. The upstream `render_line` prepends exactly
+    three segments (left cap, X, right cap) carrying the click metadata, so
+    this override rewrites those segments in place: literal brackets (grey,
+    accent on the highlighted row, like the radio circles) and an x only when
+    the row is actually selected. Styles are rebuilt on top of the originals,
+    keeping the option metadata and the row's own background.
+    """
+
+    _BRACKET = "#6b7280"  # idle radio-circle grey (see theme.tcss)
+    _BRACKET_HIGHLIGHTED = "#bbddfb"  # the accent, mirroring the focused circle
+
+    def render_line(self, y: int) -> Strip:
+        line = super().render_line(y)
+        segments = list(line)
+        if len(segments) < 4 or segments[0].text != ToggleButton.BUTTON_LEFT:
+            return line  # blank filler line below the last option
+        _, scroll_y = self.scroll_offset
+        index = scroll_y + y
+        try:
+            selection = self.get_option_at_index(index)
+        except OptionDoesNotExist:
+            return line
+        # The separator space after the button carries the row's own style.
+        row_style = segments[3].style or self.rich_style
+        bracket_color = (
+            self._BRACKET_HIGHLIGHTED if self.highlighted == index else self._BRACKET
+        )
+        bracket_style = (segments[0].style or self.rich_style) + Style.from_color(
+            Color.parse(bracket_color), row_style.bgcolor
+        )
+        inner_style = (segments[1].style or self.rich_style) + Style.from_color(
+            None, row_style.bgcolor
+        )
+        inner = "x" if selection.value in self._selected else " "
+        segments[0] = Segment("[", bracket_style)
+        segments[1] = Segment(inner, inner_style)
+        segments[2] = Segment("]", bracket_style)
+        return Strip(segments)
 
 
 def _row_prompt(item: ListItem) -> Text:
@@ -311,4 +364,4 @@ class SearchableList(Widget):
                 event.prevent_default()
 
 
-__all__ = ["ListItem", "SearchableList", "filter_items"]
+__all__ = ["BracketSelectionList", "ListItem", "SearchableList", "filter_items"]

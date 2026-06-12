@@ -268,25 +268,20 @@ OptionList:focus > .option-list--option-highlighted {
     color: #ffffff;
 }
 
-/* Checkbox glyphs in multi-select lists: a dark square with an accent X. */
-SelectionList > .selection-list--button {
-    background: #2a3140;
-    color: #2a3140;
-}
-
+/* Checkboxes in multi-select lists render as [x] / [ ]
+   (widgets.BracketSelectionList): no background block, just an accent x when
+   selected. The brackets themselves are colored in the widget (grey, accent
+   on the highlighted row, mirroring the radio circles). */
+SelectionList > .selection-list--button,
 SelectionList > .selection-list--button-highlighted {
-    background: #3a4251;
-    color: #3a4251;
+    background: transparent;
 }
 
-SelectionList > .selection-list--button-selected {
-    background: #2a3140;
-    color: #bbddfb;
-}
-
+SelectionList > .selection-list--button-selected,
 SelectionList > .selection-list--button-selected-highlighted {
-    background: #3a4251;
+    background: transparent;
     color: #bbddfb;
+    text-style: bold;
 }
 
 #model-hint,

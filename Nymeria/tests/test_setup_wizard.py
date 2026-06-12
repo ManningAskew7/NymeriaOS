@@ -2021,6 +2021,48 @@ def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
     asyncio.run(drive())
 
 
+def test_multi_select_checkboxes_render_as_brackets():
+    """Multi-select rows draw real [x] / [ ] checkboxes, not the stock
+    half-block button whose X is always present and only changes color."""
+    from textual.widgets import SelectionList
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.nav import Step
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.base import Choice, MultiSelectStep
+
+    def build(wizard, number, total):
+        return MultiSelectStep(
+            wizard,
+            number,
+            total,
+            step_id="multi",
+            title="Pick things",
+            choices=[Choice("a", "Alpha"), Choice("b", "Beta")],
+            get_initial=lambda _state: ["a"],
+            store=lambda _state, _values: None,
+        )
+
+    step = Step(id="multi", applies=lambda _state: True, build=build)
+
+    async def drive() -> None:
+        app = SetupWizardApp(WizardState(), steps=[step])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            picker = app.screen.query_one(SelectionList)
+
+            def row(index: int) -> str:
+                return "".join(seg.text for seg in picker.render_line(index))
+
+            assert row(0).startswith("[x] Alpha")  # initial selection
+            assert row(1).startswith("[ ] Beta")
+            await pilot.press("space")  # toggle the highlighted first row off
+            await pilot.pause()
+            assert row(0).startswith("[ ] Alpha")
+
+    asyncio.run(drive())
+
+
 def test_wizard_radio_renders_bare_circles_without_box():
     """The radio indicator is a bare circle (outline when off, filled when on),
     never the stock ``BUTTON_LEFT/RIGHT`` half-block box. Regression for removing
