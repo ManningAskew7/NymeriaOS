@@ -11,6 +11,7 @@ a quick run can Enter straight through.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Mapping
 
 from ...onboarding import (
@@ -51,6 +52,31 @@ def _choices(order: tuple, table: Mapping) -> list[Choice]:
     return out
 
 
+def _docker_stack_choices() -> list[Choice]:
+    """The stack choices, with Full gated on a source checkout.
+
+    A clone-free (pip/uv) install can run the slim shape from the wheel-bundled
+    published-image compose, but the full Postgres + Redis compose builds its
+    images from the repo, so without a checkout it is shown greyed out (the
+    same rendering as "to come" choices) instead of failing in finalize.
+    """
+    from ..finalize import source_checkout_root
+
+    choices = _choices(DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES)
+    if source_checkout_root() is not None:
+        return choices
+    return [
+        replace(
+            choice,
+            label=choice.label + " (needs a source checkout)",
+            disabled=True,
+        )
+        if choice.value is DockerStack.FULL
+        else choice
+        for choice in choices
+    ]
+
+
 def make_docker_stack_step() -> Step:
     """Docker runtime shape: slim single container vs full Postgres+Redis stack.
 
@@ -75,7 +101,7 @@ def make_docker_stack_step() -> Step:
             "Full runs the Postgres + Redis stack for multi-user support and "
             "scaling. Same features either way."
         ),
-        choices=_choices(DOCKER_STACK_ORDER, DOCKER_STACK_CHOICES),
+        choices=_docker_stack_choices(),
         get_initial=get_initial,
         store=store,
         applies=applies,

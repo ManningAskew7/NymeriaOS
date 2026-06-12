@@ -51,7 +51,13 @@ the workflow ran on a `v*` tag; otherwise it builds without pushing as a
 smoke test. The image namespace defaults to
 `ghcr.io/${{ github.repository_owner }}` and can be overridden via the
 `IMAGE_NAMESPACE` repository variable. The `nymeria-single` image is what
-the clone-free `install.sh --full` track pulls.
+the clone-free `install.sh --full` track pulls, and what a clone-free
+`nymeria init` Docker setup pulls: the published compose file also ships
+inside the wheel (`nymeria/setup/assets/`, kept byte-identical to
+`Nymeria/docker-compose.single.published.yml` by a drift test in
+`tests/test_setup_wizard.py`), and init pins `NYMERIA_VERSION` in
+`.env.docker` to the installed package version, which matches the image tag
+(the release tag with `v` stripped).
 
 ## Release Steps
 
