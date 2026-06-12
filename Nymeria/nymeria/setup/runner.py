@@ -29,7 +29,7 @@ from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from . import tuning_catalog, voice_catalog
 from .finalize import finalize
-from .quick import apply_quick_defaults, validate_section_id
+from .quick import SECTION_DEPENDENCIES, apply_quick_defaults, validate_section_id
 from .state import WizardState
 
 DEFAULT_NEXT_ACTION = NextAction.PRINT_COMMANDS
@@ -369,6 +369,11 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         if value is None:
             continue
         items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            flag = "--" + attr.replace("_", "-")
+            raise SystemExit(
+                f"{flag} got an empty value; pass '{flag} none' to clear the family"
+            )
         if any(item.lower() == "none" for item in items):
             # Explicit "no picks": the empty list reverts profile picks and
             # retires the Docker carrier lines on a reconfigure. No catalog
@@ -414,6 +419,13 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         auth_method = parse_choice(
             ProviderAuthMethod, args.auth_method, option_name="--auth-method"
         )
+    elif getattr(args, "provider", None) or (getattr(args, "api_key", None) or "").strip():
+        # An explicit direct-provider flag pins the API-key branch: a scripted
+        # reconfigure that names --provider/--api-key must never be re-routed
+        # onto the CLIProxy branch by hydrate's base-URL inference, which would
+        # ignore the flags and write the direct key into the proxy's
+        # gatekeeper slot.
+        auth_method_explicit = True
     cliproxy_provider = getattr(args, "cliproxy_provider", None)
     legacy_provider = legacy_cliproxy_provider(auth_method)
     if legacy_provider is not None:
@@ -577,18 +589,75 @@ def run_init(args: argparse.Namespace) -> int:
                 "--auth-method cliproxy_oauth (or an existing CLIProxy-routed "
                 "install to reconfigure)"
             )
-        if state.auth_method_is_cliproxy():
-            from .cliproxy_login import prepare_headless_cliproxy
+        # A scoped jump to a non-LLM section edits only that section: the LLM
+        # branch checks (and the CLIProxy login preflight, a network call) are
+        # skipped, and finalize re-derives the LLM lines from the hydrated
+        # state unchanged. This also lets a provider-less install take scoped
+        # edits.
+        llm_scoped = (
+            section is None
+            or section in SECTION_DEPENDENCIES["auth_method"]
+            or cliproxy_login_flag
+            or bool(cliproxy_auth_file)
+        )
+        leaving_cliproxy = False
+        if reconfigure and not state.auth_method_is_cliproxy():
+            from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 
-            rc = prepare_headless_cliproxy(
-                state,
-                console=console,
-                login=cliproxy_login_flag,
-                auth_file=cliproxy_auth_file,
+            base_url_hydrated = not (getattr(args, "base_url", None) or "").strip()
+            # Mirror hydrate's two-signal heuristic so a direct-key install
+            # pointing at some unrelated 8318 endpoint keeps its base URL.
+            second_signal = (
+                "cli-proxy" in state.base_url
+                or "cliproxy" in state.base_url
+                or bool(state.cliproxy_management_url)
             )
-            if rc != 0:
-                return rc
-        else:
+            if (
+                base_url_hydrated
+                and looks_like_cliproxy_url(state.base_url)
+                and second_signal
+            ):
+                # Leaving the subscription branch: the hydrated base URL and
+                # API mode describe the abandoned proxy route, not user data,
+                # and the on-disk key slot holds the proxy's cpx- gatekeeper,
+                # not a provider key. Clear the route fields (finalize's
+                # leaving-cliproxy drop list retires the stale env lines) and
+                # require a real key for the new direct provider.
+                state.base_url = ""
+                state.api_mode = ""
+                leaving_cliproxy = True
+        if state.auth_method_is_cliproxy():
+            # Explicit intent means the user is setting up or changing the
+            # subscription route this run. A branch merely inferred from disk
+            # on a plain reconfigure keeps its working route untouched: when
+            # hydrate could not name the CLI (every non-claude/codex route
+            # shares the openai+/v1 shape) the preparation step is skipped
+            # entirely rather than demanding --cliproxy-provider for an
+            # unrelated edit, and when it could, the login preflight runs in
+            # lenient mode (warn, never block the edit).
+            explicit_cliproxy_intent = bool(
+                getattr(args, "cliproxy_provider", None)
+                or cliproxy_login_flag
+                or cliproxy_auth_file
+                or state.auth_method_explicit
+            )
+            if llm_scoped and (
+                not reconfigure
+                or explicit_cliproxy_intent
+                or state.cliproxy_provider is not None
+            ):
+                from .cliproxy_login import prepare_headless_cliproxy
+
+                rc = prepare_headless_cliproxy(
+                    state,
+                    console=console,
+                    login=cliproxy_login_flag,
+                    auth_file=cliproxy_auth_file,
+                    strict=not reconfigure or explicit_cliproxy_intent,
+                )
+                if rc != 0:
+                    return rc
+        elif llm_scoped:
             if not state.provider:
                 raise SystemExit("--provider is required with --non-interactive")
             spec = get_llm_provider_spec(state.provider)
@@ -596,8 +665,9 @@ def run_init(args: argparse.Namespace) -> int:
                 raise SystemExit("--model is required with --non-interactive")
             # Reconfigure: a key already on disk satisfies the requirement
             # (finalize's keep-existing-key path preserves the line). Mirrors
-            # finalize's own key_present check.
-            key_present = bool(
+            # finalize's own key_present check. Not honored when leaving the
+            # CLIProxy branch: the present key is the proxy gatekeeper.
+            key_present = not leaving_cliproxy and bool(
                 spec is not None
                 and spec.api_key_env_vars
                 and spec.api_key_env_vars[0] in state.present_env_keys

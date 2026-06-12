@@ -3622,7 +3622,12 @@ def _serve_chat_sync(respond):
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    return f"http://127.0.0.1:{server.server_address[1]}", seen, server.shutdown
+
+    def _stop() -> None:
+        server.shutdown()
+        server.server_close()
+
+    return f"http://127.0.0.1:{server.server_address[1]}", seen, _stop
 
 
 def test_run_chat_smoke_test_round_trips_and_deletes_thread():
@@ -4908,13 +4913,14 @@ def test_noninteractive_cliproxy_preflight_warns_on_unreachable_with_gatekeeper(
     root = tmp_path / "init"
     rc = setup_main(
         _CLIPROXY_BASE_ARGS + ["--cliproxy-gatekeeper-key", "cpx-gate",
-                               "--root", str(root), "--skip-llm-test"]
+                               "--root", str(root)]
     )
     out = capsys.readouterr().out
     # The proxy URL may be backend-facing (a docker alias); with an explicit
     # gatekeeper the run can still produce a working config.
     assert rc == 0
-    assert "Could not reach the proxy" not in out or "unverified" in out
+    assert "Could not reach the proxy" in out
+    assert "unverified" in out
     assert (root / "config.env").exists()
 
 
@@ -5130,6 +5136,190 @@ def test_cliproxy_login_flags_require_non_interactive(tmp_path):
     assert "cliproxy_oauth" in str(exc.value)
 
 
+# --- scripted reconfigure across the CLIProxy branch boundary ----------------
+
+
+def _cliproxy_first_run(monkeypatch, root, *, provider="claude", auth_provider=None):
+    """A completed CLIProxy install under ``root`` (local hosting)."""
+    _stub_llm(monkeypatch)
+    _fake_cliproxy_client(
+        monkeypatch, auth_files=[_active_auth(auth_provider or provider)]
+    )
+    assert setup_main(
+        ["--auth-method", "cliproxy_oauth", "--cliproxy-provider", provider,
+         "--cliproxy-management-url", "http://localhost:8318",
+         "--cliproxy-management-key", "cpm-secret",
+         "--cliproxy-gatekeeper-key", "cpx-gate",
+         "--hosting", "local", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    ) == 0
+
+
+def test_provider_flag_pins_api_key_branch():
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.runner import _build_state, build_parser
+
+    # An explicit --provider (or --api-key) is a statement of the API-key
+    # branch: hydrate's CLIProxy inference must not override it (it would
+    # write the direct key into the proxy's gatekeeper slot).
+    state = _build_state(build_parser().parse_args(["--provider", "anthropic"]))
+    assert state.auth_method is ProviderAuthMethod.API_KEY
+    assert state.auth_method_explicit is True
+
+    state = _build_state(build_parser().parse_args(["--api-key", "sk-x"]))
+    assert state.auth_method_explicit is True
+
+    # Without either, inference stays available (reconfigure of a routed install).
+    state = _build_state(build_parser().parse_args([]))
+    assert state.auth_method_explicit is False
+
+
+def test_noninteractive_switch_to_direct_provider_exits_cliproxy_route(
+    monkeypatch, tmp_path
+):
+    """Leaving the subscription branch by flags retires the proxy route: the
+    hydrated base URL/API mode came from the route, not the user, and keeping
+    them would leave chats silently flowing through the abandoned proxy."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root)
+    before = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(before, "LLM_BASE_URL") == "http://localhost:8318"
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-direct",
+         "--api-key", "sk-ant-direct", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_PROVIDER") == "anthropic"
+    assert _env_line(after, "LLM_MODEL") == "claude-direct"
+    assert _env_line(after, "ANTHROPIC_DIRECT_API_KEY") == "sk-ant-direct"
+    # The proxy route lines retire with the branch.
+    assert "LLM_BASE_URL" not in after
+    assert "CLIPROXY_MANAGEMENT_URL" not in after
+    assert "CLIPROXY_MANAGEMENT_KEY" not in after
+    # Known residue: the old gatekeeper line stays but is inert without the
+    # proxy base URL (the direct route reads the DIRECT slot).
+    assert _env_line(after, "ANTHROPIC_API_KEY") == "cpx-gate"
+
+
+def test_noninteractive_leaving_cliproxy_requires_api_key(monkeypatch, tmp_path):
+    """On a branch exit the on-disk key slot holds the cpx- gatekeeper, not a
+    provider key, so it must not satisfy the --api-key requirement (for codex
+    the gatekeeper sits in OPENAI_API_KEY, the exact slot the relaxed check
+    would otherwise accept, making the switch a silent no-op)."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root, provider="codex")
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--provider", "openai", "--model", "gpt-5.5", "--root", str(root),
+             "--non-interactive", "--skip-llm-test"]
+        )
+    assert "--api-key" in str(exc.value)
+
+
+def test_noninteractive_keeps_custom_base_url_on_non_cliproxy_install(
+    monkeypatch, tmp_path
+):
+    """The branch-exit clearing needs hydrate's second signal: a direct-key
+    install pointing at some unrelated 8318 endpoint keeps its base URL."""
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    assert setup_main(
+        ["--provider", "openai", "--model", "m", "--api-key", "sk-x",
+         "--base-url", "http://my-ollama-box:8318/v1",
+         "--api-mode", "chat_completions",
+         "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    ) == 0
+
+    rc = setup_main(
+        ["--model", "m2", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_BASE_URL") == "http://my-ollama-box:8318/v1"
+    assert _env_line(after, "LLM_MODEL") == "m2"
+
+
+def test_noninteractive_reconfigure_ambiguous_cliproxy_provider_skips_prep(
+    monkeypatch, tmp_path, capsys
+):
+    """Every non-claude/codex CLI shares the openai+/v1 route shape, so hydrate
+    infers the branch but not the CLI. A plain reconfigure must keep the
+    working route untouched instead of demanding --cliproxy-provider."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root, provider="grok", auth_provider="xai")
+    before = (root / "config.env").read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    fake = _fake_cliproxy_client(
+        monkeypatch, raise_on_list=RuntimeError("must not be called")
+    )
+    rc = setup_main(
+        ["--reasoning-effort", "high", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    assert fake.calls == []
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_BASE_URL") == _env_line(before, "LLM_BASE_URL")
+    assert _env_line(after, "LLM_REASONING_EFFORT") == "high"
+
+
+def test_noninteractive_scoped_non_llm_section_skips_llm_checks(
+    monkeypatch, tmp_path, capsys
+):
+    """A scoped jump to a non-LLM section edits only that section: no login
+    preflight (a network call) and no LLM required-flag checks."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root)
+    capsys.readouterr()
+
+    fake = _fake_cliproxy_client(
+        monkeypatch, raise_on_list=RuntimeError("must not be called")
+    )
+    rc = setup_main(
+        ["tts", "--tts", "none", "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert fake.calls == []
+    assert "Updated the tts settings" in out
+
+
+def test_noninteractive_lenient_preflight_warns_on_plain_reconfigure(
+    monkeypatch, tmp_path, capsys
+):
+    """A reconfigure that does not touch the subscription must not be blocked
+    by a lapsed login: the preflight downgrades to a warning."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root)
+    capsys.readouterr()
+
+    _fake_cliproxy_client(monkeypatch, auth_files=[])  # login lapsed
+    rc = setup_main(
+        ["--reasoning-effort", "high", "--root", str(root), "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No active Claude" in out
+    assert "Continuing anyway" in out
+    after = (root / "config.env").read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_REASONING_EFFORT") == "high"
+
+
+def test_family_flag_empty_value_rejected():
+    from nymeria.setup.runner import _build_state, build_parser
+
+    with pytest.raises(SystemExit) as exc:
+        _build_state(build_parser().parse_args(["--web-search", ""]))
+    assert "empty value" in str(exc.value)
+    assert "none" in str(exc.value)
+
+
 def test_hydrate_infers_cliproxy_branch_from_base_url(monkeypatch, tmp_path):
     from nymeria.onboarding import ProviderAuthMethod
     from nymeria.setup.hydrate import hydrate_state_from_disk
@@ -5333,6 +5523,8 @@ def test_switching_back_to_api_key_retires_management_lines(monkeypatch, tmp_pat
     after = (root / "config.env").read_text(encoding="utf-8")
     assert "CLIPROXY_MANAGEMENT_URL" not in after
     assert "CLIPROXY_MANAGEMENT_KEY" not in after
+    # The proxy base URL retires with the branch (it described the route).
+    assert "LLM_BASE_URL" not in after
     assert _env_line(after, "LLM_PROVIDER") == "openai"
 
 

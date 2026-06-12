@@ -305,6 +305,15 @@ async def _login_console(
             if pasted:
                 try:
                     await client.oauth_callback(spec, redirect_url=pasted)
+                except CLIProxyAuthError as exc:
+                    # A management-auth failure is never retried (the proxy
+                    # bans the IP after 5); inviting a re-paste would burn
+                    # the remaining budget.
+                    console.print(
+                        f"[red]{escape(str(exc))}[/red] Check "
+                        "--cliproxy-management-key."
+                    )
+                    return False
                 except CLIProxyManagementError as exc:
                     # Non-fatal: a mangled paste can be retried.
                     console.print(
@@ -430,6 +439,7 @@ def prepare_headless_cliproxy(
     console: Console,
     login: bool = False,
     auth_file: str | Path | None = None,
+    strict: bool = True,
 ) -> int:
     """Headless CLIProxy preparation for `--non-interactive` runs.
 
@@ -439,6 +449,10 @@ def prepare_headless_cliproxy(
     through the management API when it was not supplied. Returns 0 to proceed
     to finalize and 2 on a fatal error (message already printed); raises
     SystemExit for missing-flag errors, matching the runner's style.
+
+    `strict=False` (a plain reconfigure of an already-routed install) turns a
+    failed preflight into a warning instead of a failure: the run is editing
+    something else and must not be blocked by a lapsed subscription login.
     """
     spec = get_cliproxy_provider(state.cliproxy_provider or "")
     if spec is None:
@@ -495,7 +509,12 @@ def prepare_headless_cliproxy(
                 gatekeeper_available=gatekeeper_available,
             )
             if rc != 0:
-                return rc
+                if strict:
+                    return rc
+                console.print(
+                    "[yellow]Continuing anyway: this reconfigure leaves the "
+                    "LLM route unchanged.[/yellow]"
+                )
         if (
             client is not None
             and not state.cliproxy_gatekeeper_key.strip()

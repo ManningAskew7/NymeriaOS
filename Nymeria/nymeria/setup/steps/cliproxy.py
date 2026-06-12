@@ -51,7 +51,9 @@ from ..cliproxy_deploy import (
 
 # The pure (TUI-free) login helpers live in setup.cliproxy_login so the
 # headless path can use them without importing Textual; re-imported here for
-# the step classes and the module's historical import surface.
+# the step classes and the module's historical import surface. These are
+# by-value bindings: a test that wants to affect THIS module's behavior must
+# monkeypatch nymeria.setup.steps.cliproxy, not nymeria.setup.cliproxy_login.
 from ..cliproxy_login import (
     LOGIN_POLL_INTERVAL_SECONDS,
     LOGIN_TIMEOUT_SECONDS,
