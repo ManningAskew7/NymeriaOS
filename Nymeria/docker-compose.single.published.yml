@@ -38,8 +38,11 @@ services:
       - "host.docker.internal:host-gateway"
     # Published on loopback only by default; front it with a reverse proxy/tunnel
     # for remote access rather than exposing the port to the LAN.
+    # Host side follows API_PORT (set it in the shell or pass
+    # `--env-file .env.docker` so compose interpolates it); the container side
+    # stays 8000 (the image's CMD pins `--port 8000`).
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - nymeria_single_data:/data
       - nymeria_single_workspace:/workspace

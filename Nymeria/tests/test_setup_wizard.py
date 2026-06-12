@@ -790,6 +790,237 @@ def test_headless_warns_on_low_resources_for_full_stack(
     assert "GB RAM" in out and "GB of disk" in out
 
 
+# --- alternate API port -------------------------------------------------------
+
+
+def test_finalize_writes_chosen_api_port_and_prints_urls(
+    monkeypatch, tmp_path, capsys
+):
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+            "--port", "8010",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    content = (tmp_path / "config.env").read_text()
+    assert _env_line(content, "API_PORT") == "8010"
+    # Every printed URL (open-the-browser line, smoke curl recipe) follows it.
+    assert "localhost:8010" in out
+    assert "localhost:8000" not in out
+
+
+def test_noninteractive_reconfigure_keeps_port_and_flag_overrides(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root, "--port", "8010")
+
+    # An unrelated scripted edit keeps the configured port.
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "other-model",
+            "--root", str(root), "--non-interactive", "--skip-llm-test",
+        ]
+    )
+    assert rc == 0
+    assert _env_line((root / "config.env").read_text(), "API_PORT") == "8010"
+
+    # An explicit --port on a reconfigure moves it.
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "other-model",
+            "--root", str(root), "--non-interactive", "--skip-llm-test",
+            "--port", "8020",
+        ]
+    )
+    assert rc == 0
+    assert _env_line((root / "config.env").read_text(), "API_PORT") == "8020"
+
+
+def test_hydrate_reads_api_port_and_flag_wins(monkeypatch, tmp_path):
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root, "--port", "8010")
+
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.api_port == 8010
+
+    flagged = WizardState(root=root, api_port=8123)
+    hydrate_state_from_disk(flagged)
+    assert flagged.api_port == 8123
+
+
+def test_docker_stack_spec_honors_alt_port():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+
+    # Default-port specs are byte-identical to the documented short commands.
+    default_slim = finalize_mod._docker_stack_spec(WizardState())
+    assert default_slim.compose_args == ("-f", finalize_mod.DOCKER_SINGLE_COMPOSE)
+    assert default_slim.health_url == "http://localhost:8000/health"
+
+    # A non-default port adds --env-file so compose interpolates API_PORT into
+    # the host-side binding, and the health probe follows the host port.
+    alt_slim = finalize_mod._docker_stack_spec(WizardState(api_port=8010))
+    assert alt_slim.compose_args == (
+        "-f", finalize_mod.DOCKER_SINGLE_COMPOSE, "--env-file", ".env.docker",
+    )
+    assert alt_slim.health_url == "http://localhost:8010/health"
+
+    alt_full = finalize_mod._docker_stack_spec(
+        WizardState(docker_stack=DockerStack.FULL, api_port=8010)
+    )
+    assert alt_full.compose_args == ("--env-file", ".env.docker")
+    assert alt_full.health_url == "http://localhost:8010/ready"
+
+
+def test_port_flag_rejects_out_of_range(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            [
+                "--provider", "anthropic", "--model", "m", "--api-key", "k",
+                "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+                "--port", "70000",
+            ]
+        )
+    assert "--port must be between" in str(exc.value)
+
+
+def test_port_busy_warning_names_chosen_port(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "port_in_use", lambda port: port == 8010)
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+            "--port", "8010",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "port 8010 is already in use" in out
+
+
+def test_local_smoke_worker_uses_alt_port(monkeypatch, tmp_path, capsys):
+    import threading as threading_mod
+
+    seen: dict[str, str] = {}
+
+    def fake_health(url):
+        seen["health"] = url
+        return True
+
+    monkeypatch.setattr(finalize_mod, "_smoke_health_ok", fake_health)
+    monkeypatch.setattr(
+        finalize_mod, "_wait_for_host_service_token", lambda *_a, **_k: "nym_token"
+    )
+
+    def fake_smoke(*, token, base_url="http://localhost:8000"):
+        seen["smoke"] = base_url
+        return True, "ok"
+
+    monkeypatch.setattr(finalize_mod, "run_chat_smoke_test", fake_smoke)
+    finalize_mod._local_smoke_worker(
+        tmp_path, threading_mod.Event(), "http://localhost:8010"
+    )
+    assert seen["health"] == "http://localhost:8010/health"
+    assert seen["smoke"] == "http://localhost:8010"
+
+
+def test_single_compose_files_interpolate_api_port():
+    repo = Path(__file__).resolve().parents[1]
+    for name in ("docker-compose.single.yml", "docker-compose.single.published.yml"):
+        content = (repo / name).read_text()
+        # Host side follows API_PORT; the container side (and its internal
+        # healthcheck) stays pinned to 8000.
+        assert '"127.0.0.1:${API_PORT:-8000}:8000"' in content, name
+        assert "http://localhost:8000/health" in content, name
+
+
+def test_review_shows_api_port_row():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _summary_markup
+
+    markup = _summary_markup(
+        WizardState(hosting=HostingOption.LOCAL, api_port=8010)
+    )
+    assert "API port" in markup and "8010" in markup
+
+
+def test_wizard_pilot_api_port_step_validates_and_stores():
+    from textual.widgets import Input
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            await pilot.press("enter")  # accept default hosting -> api port
+            await pilot.pause()
+            assert app.nav.current() == _API_PORT_STEP
+            field = app.screen.query_one("#api-port", Input)
+            assert field.value == "8000"
+            field.value = "70000"
+            await pilot.press("enter")  # out of range: stays with an error
+            await pilot.pause()
+            assert app.nav.current() == _API_PORT_STEP
+            field.value = "8010"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.nav.current() == _SECURITY_STEP
+        return state
+
+    state = asyncio.run(drive())
+    assert state.api_port == 8010
+
+
+def test_wizard_pilot_api_port_step_warns_busy_and_refreshes_report(monkeypatch):
+    from textual.widgets import Input, Static
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    # steps/port.py binds port_free by value at import; patch THAT module.
+    monkeypatch.setattr("nymeria.setup.steps.port.port_free", lambda *_a, **_k: True)
+
+    async def drive() -> WizardState:
+        state = WizardState()
+        state.env_report = _env_report(
+            api_port_free=False, port_owner="uvicorn", suggested_port=8002
+        )
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await pilot.press("enter")  # welcome -> hosting
+            await pilot.pause()
+            await pilot.press("enter")  # accept default hosting -> api port
+            await pilot.pause()
+            warning = str(app.screen.query_one("#port-warning", Static).render())
+            assert "uvicorn" in warning and "8002" in warning
+            app.screen.query_one("#api-port", Input).value = "8002"
+            await pilot.press("enter")
+            await pilot.pause()
+        return state
+
+    state = asyncio.run(drive())
+    assert state.api_port == 8002
+    # The cached report follows the chosen port so review checks the right one.
+    assert state.env_report is not None
+    assert state.env_report.api_port == 8002
+    assert state.env_report.api_port_free is True
+
+
 # --- pure navigation model --------------------------------------------------
 
 
@@ -2611,28 +2842,32 @@ async def _no_models(*_args, **_kwargs):
     return []
 
 
-# Step indices in the default flow (welcome, hosting, docker_stack, security,
-# auth, the five cliproxy_* branch steps, provider, connection, model, ...).
-# docker_stack (2) only applies to a Docker host and the cliproxy_* steps
-# (5-9) only to the subscription branch, so on the default local API-key path
-# the provider step is index 10.
+# Step indices in the default flow (welcome, hosting, api_port, docker_stack,
+# security, auth, the five cliproxy_* branch steps, provider, connection,
+# model, ...). docker_stack (3) only applies to a Docker host and the
+# cliproxy_* steps (6-10) only to the subscription branch, so on the default
+# local API-key path the provider step is index 11.
 _HOSTING_STEP = 1
-_SECURITY_STEP = 3
-_AUTH_STEP = 4
-_PROVIDER_STEP = 10
-_CONNECTION_STEP = 11
+_API_PORT_STEP = 2
+_SECURITY_STEP = 4
+_AUTH_STEP = 5
+_PROVIDER_STEP = 11
+_CONNECTION_STEP = 12
 
 
 async def _advance_to_provider(pilot) -> None:
-    """Walk welcome -> hosting -> security -> auth on the default (local) path.
+    """Walk welcome -> hosting -> api_port -> security -> auth on the default
+    (local) path.
 
-    Accepts every default (local hosting, Unleashed security profile, Direct
-    API key) and leaves the provider picker focused. docker_stack is skipped
-    because the default hosting is not Docker.
+    Accepts every default (local hosting, port 8000, Unleashed security
+    profile, Direct API key) and leaves the provider picker focused.
+    docker_stack is skipped because the default hosting is not Docker.
     """
     await pilot.press("enter")  # welcome -> hosting
     await pilot.pause()
-    await pilot.press("enter")  # accept default hosting (local) -> security
+    await pilot.press("enter")  # accept default hosting (local) -> api port
+    await pilot.pause()
+    await pilot.press("enter")  # accept default port (8000) -> security
     await pilot.pause()
     await pilot.press("enter")  # accept default security profile -> auth method
     await pilot.pause()
@@ -2659,13 +2894,16 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
             await pilot.press("enter")  # accept default hosting (local), advance
             await pilot.pause()
             assert state.hosting is HostingOption.LOCAL
-            # docker_stack (index 2) is skipped for a non-Docker host.
-            assert app.nav.current() == _SECURITY_STEP
+            assert app.nav.current() == _API_PORT_STEP
             await pilot.press("escape")  # back to hosting (does not exit)
             await pilot.pause()
             assert app.nav.current() == _HOSTING_STEP
-            await pilot.press("enter")  # hosting -> security profile
+            await pilot.press("enter")  # hosting -> api port
             await pilot.pause()
+            await pilot.press("enter")  # accept default port (8000) -> security
+            await pilot.pause()
+            # docker_stack (index 3) is skipped for a non-Docker host.
+            assert app.nav.current() == _SECURITY_STEP
             await pilot.press("enter")  # accept default security -> auth method
             await pilot.pause()
             assert app.nav.current() == _AUTH_STEP
@@ -2950,7 +3188,9 @@ def test_wizard_pilot_security_step_unleashed_only():
             await pilot.pause()
             await pilot.press("enter")  # welcome -> hosting
             await pilot.pause()
-            await pilot.press("enter")  # accept default hosting (local) -> security
+            await pilot.press("enter")  # accept default hosting (local) -> api port
+            await pilot.pause()
+            await pilot.press("enter")  # accept default port (8000) -> security
             await pilot.pause()
             assert app.nav.current() == _SECURITY_STEP
             scr = app.screen
@@ -3166,10 +3406,13 @@ def test_wizard_pilot_ctrl_s_skips_without_recording():
             await pilot.pause()
             await pilot.press("ctrl+s")  # skip hosting without choosing
             await pilot.pause()
+            await pilot.press("ctrl+s")  # skip the api port without typing
+            await pilot.pause()
         return app
 
     app = asyncio.run(drive())
     assert app.state.hosting is None
+    assert app.state.api_port is None
     # Hosting unset means a non-Docker host, so docker_stack is skipped and the
     # security profile step is next.
     assert app.nav.current() == _SECURITY_STEP
@@ -3507,7 +3750,9 @@ def test_wizard_pilot_auth_step_enters_cliproxy_branch():
         async with app.run_test() as pilot:
             await pilot.press("enter")  # welcome -> hosting
             await pilot.pause()
-            await pilot.press("enter")  # accept hosting -> security profile
+            await pilot.press("enter")  # accept hosting -> api port
+            await pilot.pause()
+            await pilot.press("enter")  # accept default port -> security profile
             await pilot.pause()
             await pilot.press("enter")  # accept security profile -> auth method
             await pilot.pause()
@@ -3520,8 +3765,8 @@ def test_wizard_pilot_auth_step_enters_cliproxy_branch():
 
     app = asyncio.run(drive())
     assert app.state.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
-    # Index 5 is cliproxy_disclaimer, the first step of the branch.
-    assert app.nav.current() == 5
+    # Index 6 is cliproxy_disclaimer, the first step of the branch.
+    assert app.nav.current() == 6
 
 
 def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
@@ -4273,7 +4518,7 @@ def test_finalize_local_start_spawns_smoke_thread_and_stops_it(monkeypatch, tmp_
     worker_dirs: list = []
     stopped = threading.Event()
 
-    def fake_worker(data_dir, stop):
+    def fake_worker(data_dir, stop, base_url="http://localhost:8000"):
         worker_dirs.append(data_dir)
         if stop.wait(5.0):
             stopped.set()

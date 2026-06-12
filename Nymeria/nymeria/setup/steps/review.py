@@ -72,6 +72,7 @@ def _summary_markup(state: WizardState) -> str:
 
     if state.hosting is not None:
         lines.append(_row("Hosting", HOSTING_CHOICES[state.hosting].label))
+    lines.append(_row("API port", str(state.resolved_api_port())))
     if state.docker_stack is not None and state.hosting is HostingOption.DOCKER:
         lines.append(_row("Stack", DOCKER_STACK_CHOICES[state.docker_stack].label))
     for warning in _environment_heads_up(state):

@@ -539,10 +539,27 @@ def _apply_slim_runtime_env(
     return base_url
 
 
+def _resolve_slim_port(args: argparse.Namespace) -> int:
+    """The slim listen port: explicit --port, else API_PORT from the loaded
+    config (``_load_environment`` already merged config.env/.env.docker into
+    the process env), else 8000. Used by BOTH resolution sites (main()'s early
+    env pin and run_slim); if only one changed, the early pin would force
+    API_PORT=8000 into the env before run_slim resolves, silently defeating a
+    configured port.
+    """
+    explicit = getattr(args, "port", None)
+    if explicit:
+        return int(explicit)
+    env_port = (os.environ.get("API_PORT") or "").strip()
+    if env_port.isdigit():
+        return int(env_port)
+    return 8000
+
+
 def run_slim(args: argparse.Namespace) -> None:
     """Run the single-process slim launcher (API + ticker + MCP + watchdog)."""
     host = getattr(args, "host", None) or "127.0.0.1"
-    port = int(getattr(args, "port", None) or 8000)
+    port = _resolve_slim_port(args)
     data_dir = getattr(args, "data_dir", None)
     missed_work_policy = getattr(args, "missed_work_policy", None)
     active_execution_stale_minutes = getattr(
@@ -1639,8 +1656,8 @@ Examples:
         "--port",
         "-p",
         type=int,
-        default=8000,
-        help="Port to listen on (default: 8000)",
+        default=None,
+        help="Port to listen on (default: API_PORT from the config, else 8000)",
     )
     slim_parser.add_argument(
         "--data-dir",
@@ -1912,7 +1929,7 @@ def main() -> None:
     if args.command == "slim":
         _apply_slim_runtime_env(
             host=getattr(args, "host", None) or "127.0.0.1",
-            port=int(getattr(args, "port", None) or 8000),
+            port=_resolve_slim_port(args),
             data_dir=getattr(args, "data_dir", None),
             missed_work_policy=getattr(args, "missed_work_policy", None),
             active_execution_stale_minutes=getattr(

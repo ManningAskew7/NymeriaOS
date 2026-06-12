@@ -98,6 +98,15 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         help="How to host the slim backend (local, service, docker)",
     )
     parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "API port the backend listens on (default 8000; written as "
+            "API_PORT, followed by printed URLs and health checks)"
+        ),
+    )
+    parser.add_argument(
         "--auth-method",
         choices=choice_values(ProviderAuthMethod),
         default=None,
@@ -414,6 +423,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     if getattr(args, "hosting", None):
         hosting = parse_choice(HostingOption, args.hosting, option_name="--hosting")
 
+    api_port = getattr(args, "port", None)
+    if api_port is not None and not 1 <= api_port <= 65535:
+        raise SystemExit("--port must be between 1 and 65535")
+
     auth_method = ProviderAuthMethod.API_KEY
     auth_method_explicit = bool(getattr(args, "auth_method", None))
     if auth_method_explicit:
@@ -498,6 +511,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
 
     return WizardState(
         hosting=hosting,
+        api_port=api_port,
         docker_stack=docker_stack,
         security_profile=security_profile,
         auth_method=auth_method,
@@ -618,7 +632,9 @@ def run_init(args: argparse.Namespace) -> int:
             apply_quick_defaults(state)
         # Light detection only (no subprocess probes): scripted runs stay fast,
         # and the gates still catch a hosting choice this host cannot run.
-        state.env_report = detect_environment(deep=False)
+        state.env_report = detect_environment(
+            port=state.resolved_api_port(), deep=False
+        )
         enforce_hosting_gates(
             state, console, hosting_explicit=bool(getattr(args, "hosting", None))
         )
@@ -750,7 +766,7 @@ def run_init(args: argparse.Namespace) -> int:
     # owner) runs once here, before the TUI starts, and is cached on state: the
     # welcome screen renders it and the hosting step gates its choices from it.
     console.print("Detecting environment...")
-    state.env_report = detect_environment(deep=True)
+    state.env_report = detect_environment(port=state.resolved_api_port(), deep=True)
 
     # Section jump (`nymeria init <section>`): run only that section (plus its
     # dependency closure and the welcome/review bookends). Validated against the

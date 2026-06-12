@@ -31,7 +31,6 @@ from textual.widgets import Input, RadioButton, Static
 from ...onboarding import ExternalAccess
 from ..external_access import (
     CLOUDFLARED_DOWNLOAD_URL,
-    DEFAULT_BACKEND_PORT,
     TAILSCALE_INSTALL_COMMAND,
     CloudflareError,
     CloudflareTunnelClient,
@@ -356,9 +355,10 @@ class TailscaleSetupStep(_TunnelStepBase):
                 return
 
         mode = "funnel (public)" if funnel else "serve (tailnet-only)"
-        self.set_status(f"Enabling tailscale {mode} for port {DEFAULT_BACKEND_PORT}...")
+        backend_port = self.state.resolved_api_port()
+        self.set_status(f"Enabling tailscale {mode} for port {backend_port}...")
         ok, detail = await asyncio.to_thread(
-            enable_tailscale_serve, binary, DEFAULT_BACKEND_PORT, funnel=funnel
+            enable_tailscale_serve, binary, backend_port, funnel=funnel
         )
         if not ok:
             self.set_status(
@@ -541,7 +541,7 @@ class CloudflareSetupStep(_TunnelStepBase):
                 account_id,
                 tunnel_id,
                 hostname,
-                service=f"http://localhost:{DEFAULT_BACKEND_PORT}",
+                service=f"http://localhost:{self.state.resolved_api_port()}",
             )
             await client.ensure_dns_record(zone_id, hostname, tunnel_id)
             self.state.cloudflare_tunnel_token = tunnel_token

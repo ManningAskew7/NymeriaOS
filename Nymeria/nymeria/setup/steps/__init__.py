@@ -38,6 +38,7 @@ from .placeholders import (
     make_web_search_step,
 )
 from .model import make_model_step
+from .port import make_api_port_step
 from .rag import make_embedder_step, make_reranker_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
@@ -82,8 +83,10 @@ def _default_step_list() -> list[Step]:
     return [
         # Detect environment.
         make_welcome_step(),
-        # Choose a deployment target, then the Docker stack and security posture.
+        # Choose a deployment target, then the API port, the Docker stack, and
+        # the security posture.
         make_hosting_step(),
+        make_api_port_step(),
         make_docker_stack_step(),
         make_security_profile_step(),
         # Choose LLM auth, then the provider, connection, and model. The

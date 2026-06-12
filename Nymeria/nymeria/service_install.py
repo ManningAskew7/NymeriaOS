@@ -211,15 +211,38 @@ def wait_for_backend_health(
     return False
 
 
-def default_health_url() -> str:
+def _read_env_port(root: Path) -> int | None:
+    """API_PORT from the root's config files, highest precedence last.
+
+    A tiny local parser (quotes stripped, comments skipped) instead of a
+    dotenv/setup import: this module must stay importable with zero deps.
+    """
+    port: int | None = None
+    for name in (".env", "config.env", ".env.docker"):
+        try:
+            lines = (root / name).read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("API_PORT="):
+                continue
+            value = stripped.split("=", 1)[1].strip().strip("'\"")
+            if value.isdigit():
+                port = int(value)
+    return port
+
+
+def default_health_url(root: Path | None = None) -> str:
     """The health URL the installed service actually answers on.
 
-    The unit runs bare `... slim`, and slim force-overrides API_PORT to its
-    own default (run.py pins the env before settings load), so the truthful
-    probe target is the slim default port, NOT settings.api_port; a
-    hand-edited API_PORT in config.env does not move the service.
+    The unit runs bare `... slim` with NYMERIA_PROJECT_ROOT set, and slim
+    resolves its port from the config that root points at (explicit --port >
+    API_PORT > 8000; see run.py `_resolve_slim_port`), so the truthful probe
+    target follows the root's API_PORT when a root is known.
     """
-    return "http://127.0.0.1:8000/health"
+    port = (_read_env_port(root) if root is not None else None) or 8000
+    return f"http://127.0.0.1:{port}/health"
 
 
 # Host markers, module-level so tests can point them at temp paths.
@@ -804,7 +827,7 @@ def service_cli(action: str, *, root: Path | None = None) -> int:
         print("Service restarted.")
         return 0
     if action == "status":
-        return _cli_status(manager)
+        return _cli_status(manager, root)
     print(f"Unknown service action: {action}")
     return 2
 
@@ -837,7 +860,7 @@ def _cli_install(manager: ServiceManager, root: Path) -> int:
         print(f"Warning: {warning}")
     for note in report.notes:
         print(note)
-    url = default_health_url()
+    url = default_health_url(root)
     print("Waiting for the backend to become healthy...")
     if wait_for_backend_health(url):
         print(f"Backend is up: {url}")
@@ -849,13 +872,13 @@ def _cli_install(manager: ServiceManager, root: Path) -> int:
     return 1
 
 
-def _cli_status(manager: ServiceManager) -> int:
+def _cli_status(manager: ServiceManager, root: Path) -> int:
     status = manager.status()
     print(f"{manager.name}: {status.detail} ({manager.artifact_path})")
     if not status.installed:
         print("Install it with: nymeria service install")
         return 1
-    url = default_health_url()
+    url = default_health_url(root)
     if probe_health(url):
         print(f"Backend health: ok ({url})")
         return 0

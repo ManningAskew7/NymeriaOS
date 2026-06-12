@@ -34,9 +34,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Published on loopback only. The Cloudflare tunnel (cloudflared runs on the
-    # host) reaches it at localhost:8000; nothing is exposed to the LAN.
+    # host) reaches it at localhost:<API_PORT>; nothing is exposed to the LAN.
+    # Host side follows API_PORT (interpolated from .env.docker when compose is
+    # invoked with `--env-file .env.docker`, as `nymeria init` does for a
+    # non-default port); the container side stays 8000 (Dockerfile.single pins
+    # `--port 8000`, so an API_PORT injected via env_file cannot move it).
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - nymeria_single_data:/data
       - nymeria_single_workspace:/workspace

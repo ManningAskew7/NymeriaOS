@@ -492,12 +492,26 @@ def test_service_cli_install_reports_health(linux_host, monkeypatch, tmp_path, c
     monkeypatch.setattr(si, "service_manager", lambda: manager)
     monkeypatch.setattr(si, "resolve_exec_argv", lambda: ["/usr/bin/python3", "slim"])
     monkeypatch.setattr(si, "wait_for_backend_health", lambda _url: True)
-    monkeypatch.setattr(si, "default_health_url", lambda: "http://127.0.0.1:8000/health")
+    monkeypatch.setattr(
+        si, "default_health_url", lambda _root=None: "http://127.0.0.1:8000/health"
+    )
 
     rc = si.service_cli("install", root=tmp_path)
     out = capsys.readouterr().out
     assert rc == 0
     assert "Backend is up" in out
+
+
+def test_default_health_url_reads_config_port(tmp_path):
+    # No root (or no config) keeps the slim default.
+    assert si.default_health_url() == "http://127.0.0.1:8000/health"
+    assert si.default_health_url(tmp_path) == "http://127.0.0.1:8000/health"
+    (tmp_path / "config.env").write_text("# comment\nAPI_PORT=8010\n")
+    assert si.default_health_url(tmp_path) == "http://127.0.0.1:8010/health"
+    (tmp_path / "config.env").write_text('API_PORT="8011"\n')
+    assert si.default_health_url(tmp_path) == "http://127.0.0.1:8011/health"
+    (tmp_path / "config.env").write_text("API_PORT=junk\n")
+    assert si.default_health_url(tmp_path) == "http://127.0.0.1:8000/health"
 
 
 def test_service_cli_install_refuses_without_config(monkeypatch, tmp_path, capsys):
