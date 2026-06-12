@@ -16,7 +16,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from ...onboarding import HOSTING_CHOICES
-from ..environment import EnvironmentReport, detect_environment
+from ..environment import EnvironmentReport, _floor1, detect_environment
 from ..nav import Step
 from .base import ACCENT, SECONDARY, WizardStep
 
@@ -52,10 +52,28 @@ def _report_markup(report: EnvironmentReport) -> str:
     if not report.api_port_free and report.port_owner:
         port_value += f" [{SECONDARY}](held by {report.port_owner})[/]"
     rows.append((f"Port {report.api_port} free", port_value))
+    # Light-signal rows render only in the bad case so the common desktop run
+    # stays compact (the screen must fit without scrolling).
+    if report.browser_blocked_reason:
+        rows.append(
+            (
+                "Local browser",
+                f"[#fca5a5]no ({report.browser_blocked_reason})[/#fca5a5]",
+            )
+        )
+    if report.missing_python_deps:
+        rows.append(
+            (
+                "Python packages",
+                f"[#fca5a5]missing: {', '.join(report.missing_python_deps)}[/#fca5a5]",
+            )
+        )
+    # Floored to one decimal like the stack warnings, so this screen and a
+    # later "only N GB free" warning can never contradict each other.
     if report.total_ram_gb is not None:
-        rows.append(("Memory", f"{report.total_ram_gb:.1f} GB"))
+        rows.append(("Memory", f"{_floor1(report.total_ram_gb):.1f} GB"))
     if report.free_disk_gb is not None:
-        rows.append(("Free disk", f"{report.free_disk_gb:.0f} GB"))
+        rows.append(("Free disk", f"{_floor1(report.free_disk_gb):.1f} GB"))
     rows.append(
         (
             "Recommended hosting",
