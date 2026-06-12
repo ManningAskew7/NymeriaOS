@@ -745,6 +745,8 @@ Use `--data-dir` when `NYMERIA_DATA_DIR` should differ from the runtime root's
 `data/` directory, and `--root` to relocate both. Non-interactive setup accepts
 `--provider`, `--model`, `--api-key` (all required), `--base-url`,
 `--api-mode responses|chat_completions`, `--hosting local|service|docker`,
+`--port` (writes `API_PORT`; printed URLs, health waits, and the post-start
+smoke test follow it),
 `--next-action print_commands|cli|start_api_open_frontend`, `--force`, and
 `--skip-llm-test`. Add `--run-doctor` (quick) or `--full-doctor` (with a live LLM
 check) to validate after writing config. CLIProxy subscription-OAuth provider
@@ -772,8 +774,9 @@ provider API key.
 | `ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS` | `24` | Lifetime for the first-run bootstrap admin token. The plaintext bootstrap token file is also deleted after first successful auth. |
 | `NYMERIA_API_URL` | auto | Local API URL for thin clients and in-process tools (MCP server, `slash_command`). Defaults to Docker service URLs when applicable, otherwise `http://localhost:8000` |
 | `NYMERIA_PUBLIC_URL` | - | Browser-reachable public API origin used to build one-time credential setup links for chat bots and OAuth authorization-code redirects, e.g. `https://nymeria.example.com`. Desktop modal prompts still work when unset; chat bots will report that a public URL is required. OAuth `request_credential` calls return `status="missing_public_url"` when unset unless the agent retries with `use_localhost=True` (only safe when the user's browser is on the same machine) or the provider supports device-code (currently Outlook). |
+| `NYMERIA_ERROR_REPORT_EMAIL` | - | Destination for the desktop "Report problem" button (`POST /report`). The report (thread ID, last 10 messages, client info, optional description) is emailed here via the Outlook email tool, sent from your connected Outlook account. Use a dedicated inbox, not a personal one, since reports carry other users' message content. If unset, `/report` returns 503 and emails no one. |
 | `API_HOST` | `0.0.0.0` | Server bind address |
-| `API_PORT` | `8000` | Server port |
+| `API_PORT` | `8000` | Server port. `nymeria init` writes it (the API port wizard step, or `--port` in scripted runs). `run.py slim` resolves an explicit `--port` flag first, then this value, then 8000; the installed background service health-probes the configured port, and the single-container Docker shape publishes it as the host-side port while the container keeps listening on 8000 internally. |
 | `NYMERIA_API_DOCS` | `false` | Expose FastAPI Swagger UI, ReDoc, and `/openapi.json`. Disabled by default for beta deployments; changing it requires an API restart |
 | `NYMERIA_DEBUG` | `false` | Enables debug-only server behavior, including API docs/schema routes. Use only in trusted local development |
 | `CORS_ORIGINS` | `http://localhost:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:8000` | Comma-separated allowed CORS origins. Wildcard origins are rejected because credentialed CORS is enabled. The setup wizard's external-access step appends the configured public origin automatically |
@@ -1744,6 +1747,7 @@ NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 # NYMERIA_PUBLIC_URL=https://nymeria.example.com
 # Destination for the desktop "Report problem" button. Use a dedicated inbox,
 # not a personal one. Sent via the Outlook email tool. Unset = /report 503s.
+# NYMERIA_ERROR_REPORT_EMAIL=reports@example.com
 API_HOST=0.0.0.0
 API_PORT=8000
 # NYMERIA_API_DOCS=false            # Set true only in trusted local development
