@@ -53,7 +53,8 @@ class EmbedderOption:
     input_type: Optional[str] = None  # EMBEDDING_INPUT_TYPE
     recommended: bool = False
     key_label: str = "API key"
-    metrics: str = ""  # one-line internal-eval summary, shown under the description
+    metrics: str = ""  # fuller one-line internal-eval summary (reference/docs)
+    eval_tag: str = ""  # short eval summary, rendered dim inline in the picker row
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,8 @@ class RerankerOption:
     onnx_file: Optional[str] = None  # RAG_RERANK_LOCAL_ONNX_FILE
     recommended: bool = False
     key_label: str = "API key"
-    metrics: str = ""  # one-line internal-eval summary, shown under the description
+    metrics: str = ""  # fuller one-line internal-eval summary (reference/docs)
+    eval_tag: str = ""  # short eval summary, rendered dim inline in the picker row
 
 
 # Embedders, in display order (premium, value, local). Vector-only quality on the
@@ -96,6 +98,7 @@ EMBEDDERS: list[EmbedderOption] = [
         recommended=True,
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.71 (tool 0.66 / prose 0.63 / code 0.84): #1 of every embedder tested.",
+        eval_tag="nDCG@5 0.71, #1 overall",
     ),
     EmbedderOption(
         id="premium-cohere-1536",
@@ -113,6 +116,7 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="cohere",
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.70: statistically tied with 1024-d, which edges it on tool and prose.",
+        eval_tag="nDCG@5 0.70, ties 1024-d",
     ),
     EmbedderOption(
         id="premium-voyage-large",
@@ -132,6 +136,7 @@ EMBEDDERS: list[EmbedderOption] = [
         input_type="voyage",
         key_label="Voyage API key",
         metrics="Internal eval avg nDCG@5 0.67 (tool 0.59 / prose 0.61 / code 0.81): premium #2, just behind Cohere.",
+        eval_tag="nDCG@5 0.67, premium #2",
     ),
     EmbedderOption(
         id="value-gemini",
@@ -150,6 +155,7 @@ EMBEDDERS: list[EmbedderOption] = [
         recommended=True,
         key_label="Google AI (Gemini) API key",
         metrics="Internal eval avg nDCG@5 0.68 (tool 0.59 / prose 0.61 / code 0.82): #2 overall, free.",
+        eval_tag="nDCG@5 0.68, #2 overall, free",
     ),
     EmbedderOption(
         id="value-voyage-lite",
@@ -169,6 +175,7 @@ EMBEDDERS: list[EmbedderOption] = [
         input_type="voyage",
         key_label="Voyage API key",
         metrics="Internal eval avg nDCG@5 0.64: the weakest API embedder tested; prefer Gemini unless free-tier caps bite.",
+        eval_tag="nDCG@5 0.64",
     ),
     EmbedderOption(
         id="value-openai-small",
@@ -187,6 +194,7 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="openai",
         key_label="OpenAI API key",
         metrics="Internal eval avg nDCG@5 0.60 (tool 0.55 / prose 0.51 / code 0.74): below the free local Granite.",
+        eval_tag="nDCG@5 0.60, below local",
     ),
     EmbedderOption(
         id="local-granite",
@@ -203,6 +211,7 @@ EMBEDDERS: list[EmbedderOption] = [
         requires_key=False,
         recommended=True,
         metrics="Internal eval avg nDCG@5 0.61 (code 0.79, within 0.03 of premium): best on-device embedder.",
+        eval_tag="nDCG@5 0.61, code 0.79",
     ),
 ]
 
@@ -243,6 +252,7 @@ RERANKERS: list[RerankerOption] = [
         recommended=True,
         key_label="Voyage API key",
         metrics="Internal eval avg nDCG@5 0.77 on the premium pool (tool 0.73 / prose 0.72 / code 0.86): best all-rounder.",
+        eval_tag="nDCG@5 0.77, best overall",
     ),
     RerankerOption(
         id="premium-cohere-pro",
@@ -259,6 +269,7 @@ RERANKERS: list[RerankerOption] = [
         key_vendor="cohere",
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.76 on the premium pool; best on code (0.87), behind Voyage on prose.",
+        eval_tag="nDCG@5 0.76, best code 0.87",
     ),
     RerankerOption(
         id="value-voyage-2.5-lite",
@@ -275,6 +286,7 @@ RERANKERS: list[RerankerOption] = [
         recommended=True,
         key_label="Voyage API key",
         metrics="Internal eval: within ~0.01 nDCG@5 of the full rerank-2.5, at ~40% of the cost.",
+        eval_tag="matches 2.5 at ~40% cost",
     ),
     RerankerOption(
         id="value-zerank-2",
@@ -291,6 +303,7 @@ RERANKERS: list[RerankerOption] = [
         key_vendor="zeroentropy",
         key_label="ZeroEntropy API key",
         metrics="Internal eval: best on CODE (~0.87, top of all rerankers) but worst on prose; code-only winner.",
+        eval_tag="code 0.87, weak prose/tool",
     ),
     RerankerOption(
         id="local-ettin",
@@ -306,6 +319,7 @@ RERANKERS: list[RerankerOption] = [
         requires_key=False,
         recommended=True,
         metrics="Internal eval: +0.07 to +0.10 nDCG@5 on local/cheap embeddings, small lift on premium; ~3-5s/query CPU.",
+        eval_tag="up to +0.10 nDCG@5, free",
     ),
     RerankerOption(
         id="local-ettin-32m",
@@ -320,6 +334,7 @@ RERANKERS: list[RerankerOption] = [
         model="cross-encoder/ettin-reranker-32m-v1",
         requires_key=False,
         metrics="Internal eval: ~0.035 nDCG@5 below the 68m but ~2.7x faster on CPU.",
+        eval_tag="2.7x faster, -0.035 vs 68m",
     ),
 ]
 

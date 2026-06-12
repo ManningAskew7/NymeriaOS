@@ -1,12 +1,12 @@
-/* First-run wizard theme, styled after the chat CLI's Rich look: light
-   lavender primary text, one light-blue accent (#bbddfb, the CLI status
-   accent), dimmer lavender-grey secondary text, and square corners everywhere
-   (solid borders, no rounded glyphs). Boxes are unfilled outlines, and all
-   loose text starts at column 2, flush with the boxes' left edges. */
+/* First-run wizard theme, styled after the chat CLI's Rich look: white
+   primary text, one light-blue accent (#bbddfb, the CLI status accent),
+   grey-blue secondary text, and square corners everywhere (solid borders, no
+   rounded glyphs). Boxes are unfilled outlines, and all loose text starts at
+   column 2, flush with the boxes' left edges. */
 
 Screen {
     background: #121620;
-    color: #dad4f0;
+    color: #e8e8e8;
 }
 
 /* --- header: title + step counter on one line, ruled off from the body --- */
@@ -28,12 +28,15 @@ Screen {
     color: #6b7280;
 }
 
-/* Secondary text is #c3bedd: clearly dimmer than the lavender primary text
-   but bright enough to read comfortably (the original #aab4c3 was too dark). */
+/* Secondary text is #b6c1ce: a grey-blue clearly dimmer than the white
+   primary text but bright enough to read comfortably. Keep in sync with
+   SECONDARY in steps/base.py. */
 
 #wizard-note {
-    color: #c3bedd;
-    padding: 0 2;
+    color: #b6c1ce;
+    /* One row of air below the header rule; the note then hugs the content
+       it introduces. */
+    padding: 1 2 0 2;
 }
 
 #wizard-body {
@@ -53,7 +56,7 @@ Screen {
 
 /* Hugs the option box above it: the description belongs to that box. */
 #choice-desc {
-    color: #c3bedd;
+    color: #b6c1ce;
     padding: 0;
 }
 
@@ -70,7 +73,7 @@ Screen {
 /* The reranker step's dynamic per-embedder pairing hint: secondary text in a
    quiet box so the guidance reads as help, not a selectable option. */
 #combo-rec {
-    color: #c3bedd;
+    color: #b6c1ce;
     background: transparent;
     border: solid #2a3140;
     height: auto;
@@ -81,7 +84,7 @@ Screen {
 /* Inline help under the RAG key/retrieval fields. */
 #key-status,
 #retrieval-help {
-    color: #c3bedd;
+    color: #b6c1ce;
     height: auto;
     padding: 0;
 }
@@ -108,19 +111,19 @@ Screen {
 }
 
 .field-label {
-    color: #c3bedd;
+    color: #ffffff;
     text-style: bold;
     padding: 1 0 0 0;
 }
 
 .field-note {
-    color: #c3bedd;
+    color: #b6c1ce;
     padding: 0;
 }
 
 /* A field-note that opens a new section gets a blank line above it. */
 .section-note {
-    color: #c3bedd;
+    color: #b6c1ce;
     padding: 1 0 0 0;
 }
 
@@ -220,7 +223,7 @@ RadioSet > RadioButton.-selected {
 
 RadioSet > RadioButton.-selected > .toggle--label {
     background: transparent;
-    color: #cfc9e8;
+    color: #d8dde4;
     text-style: bold;
 }
 
@@ -288,7 +291,7 @@ SelectionList > .selection-list--button-selected-highlighted {
 
 #model-hint,
 #provider-note {
-    color: #c3bedd;
+    color: #b6c1ce;
     height: auto;
     padding: 1 0 0 0;
 }
@@ -314,7 +317,7 @@ Button {
     margin: 1 1 0 0;
     border: solid #3a4251;
     background: #1a2230;
-    color: #dad4f0;
+    color: #e8e8e8;
     text-style: none;
 }
 

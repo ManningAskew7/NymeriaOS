@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -37,10 +38,22 @@ if TYPE_CHECKING:
 
 
 ACCENT = "#bbddfb"
-# Secondary text: dimmer than the lavender primary, bright enough to read
-# comfortably. Keep in sync with the secondary color in theme.tcss.
-SECONDARY = "#c3bedd"
+# Secondary text: a grey-blue dimmer than the white primary, bright enough to
+# read comfortably. Keep in sync with the secondary color in theme.tcss.
+SECONDARY = "#b6c1ce"
 _HINT_TEXT = "#6b7280"
+
+_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+
+
+def code_markup(text: str) -> str:
+    """Escape prose for Rich markup, rendering `code` spans in the accent color.
+
+    The wizard's prose widgets (notes, choice descriptions, errors) parse Rich
+    markup, not markdown, so literal backticks would otherwise show through.
+    Plain text in, markup out: commands like `nymeria slim` read as commands.
+    """
+    return _CODE_SPAN.sub(lambda m: f"[{ACCENT}]{m.group(1)}[/]", escape(text))
 
 
 def hint_markup(hint: str) -> str:
@@ -176,7 +189,7 @@ class WizardStep(Screen):
             yield Static(self._title, id="wizard-title")
             yield Static(f"Step {self._number} of {self._total}", id="wizard-step")
         if self._note:
-            yield Static(self._note, id="wizard-note")
+            yield Static(code_markup(self._note), id="wizard-note")
         # can_focus=False keeps the scroll container out of the arrow-key focus
         # chain (so focus moves option->option, not onto the body); focusing a
         # child still auto-scrolls it into view.
@@ -202,7 +215,7 @@ class WizardStep(Screen):
 
     def show_error(self, message: str) -> None:
         error = self.query_one("#wizard-error", Static)
-        error.update(message)
+        error.update(code_markup(message))
         error.display = bool(message)
         # Toggling the error row resizes the body without a Resize reaching
         # this screen: re-derive the scroll cue and keep the focused widget
@@ -410,7 +423,7 @@ class SingleSelectStep(FormStep):
             i = buttons.index(focused)  # type: ignore[arg-type]
             if 0 <= i < len(self._choices):
                 self.query_one("#choice-desc", Static).update(
-                    self._choices[i].description
+                    code_markup(self._choices[i].description)
                 )
 
     def collect(self) -> bool:
@@ -575,6 +588,7 @@ def placeholder_step(
 __all__ = [
     "ACCENT",
     "SECONDARY",
+    "code_markup",
     "hint_markup",
     "Choice",
     "WizardStep",
