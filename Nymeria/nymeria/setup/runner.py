@@ -28,6 +28,7 @@ from ..onboarding import (
 from ..cliproxy.catalog import list_cliproxy_providers
 from ..config.llm_providers import get_llm_provider_spec, list_llm_provider_specs
 from . import tuning_catalog, voice_catalog
+from .environment import detect_environment, hosting_gates, stack_resource_warnings
 from .finalize import finalize
 from .quick import SECTION_DEPENDENCIES, apply_quick_defaults, validate_section_id
 from .state import WizardState
@@ -533,6 +534,40 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     )
 
 
+def enforce_hosting_gates(
+    state: WizardState, console: Console, *, hosting_explicit: bool
+) -> None:
+    """Headless mirror of the hosting picker's detection gates (hybrid policy).
+
+    An impossible shape (the picker would grey it out) is rejected when the
+    value came from an explicit --hosting flag, and only warned about when it
+    was hydrated from disk: a scripted edit of an unrelated section must not
+    die because, say, the docker CLI is missing right now. Degraded states
+    (daemon stopped, low RAM/disk for the chosen stack) warn on both paths.
+    """
+    report = state.env_report
+    if report is None:
+        return
+    hosting = state.hosting or HostingOption.LOCAL
+    gate = hosting_gates(report).get(hosting)
+    if gate is not None and gate.disabled:
+        message = (
+            f"The '{hosting.value}' hosting shape is unavailable on this "
+            f"machine: {gate.reason}."
+        )
+        if hosting_explicit:
+            raise SystemExit(message)
+        console.print(
+            f"[yellow]{message} Continuing anyway: this run leaves the "
+            "hosting shape unchanged.[/yellow]"
+        )
+    elif gate is not None and gate.warning:
+        console.print(f"[yellow]Warning:[/yellow] {gate.warning}")
+    if hosting is HostingOption.DOCKER:
+        for warning in stack_resource_warnings(report, state.docker_stack):
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
 def run_init(args: argparse.Namespace) -> int:
     """Run the interactive wizard or the flag-driven headless setup."""
 
@@ -581,6 +616,12 @@ def run_init(args: argparse.Namespace) -> int:
             # Same defaults the interactive quick path seeds. The LLM flags
             # below stay required: quick never defaults provider/model/key.
             apply_quick_defaults(state)
+        # Light detection only (no subprocess probes): scripted runs stay fast,
+        # and the gates still catch a hosting choice this host cannot run.
+        state.env_report = detect_environment(deep=False)
+        enforce_hosting_gates(
+            state, console, hosting_explicit=bool(getattr(args, "hosting", None))
+        )
         if (
             cliproxy_login_flag or cliproxy_auth_file
         ) and not state.auth_method_is_cliproxy():
@@ -704,6 +745,12 @@ def run_init(args: argparse.Namespace) -> int:
     from .hydrate import hydrate_state_from_disk
 
     reconfigure = hydrate_state_from_disk(state, console=console)
+
+    # Deep detection (docker daemon, compose plugin, running containers, port
+    # owner) runs once here, before the TUI starts, and is cached on state: the
+    # welcome screen renders it and the hosting step gates its choices from it.
+    console.print("Detecting environment...")
+    state.env_report = detect_environment(deep=True)
 
     # Section jump (`nymeria init <section>`): run only that section (plus its
     # dependency closure and the welcome/review bookends). Validated against the

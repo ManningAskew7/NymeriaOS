@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..config.llm_providers import LLMProviderSpec, get_llm_provider_spec
+
+if TYPE_CHECKING:
+    from .environment import EnvironmentReport
 from ..onboarding import (
     DockerStack,
     ExternalAccess,
@@ -135,6 +138,10 @@ class WizardState:
     # True when `nymeria init` ran against an existing install (see setup/hydrate).
     # Switches finalize to a merge-write and lets steps show "keep existing" copy.
     reconfigure: bool = False
+    # Host detection snapshot (see setup/environment.py), cached once by the
+    # runner so the welcome screen, the hosting gates, and the review heads-ups
+    # all read one consistent report (transient, never persisted).
+    env_report: EnvironmentReport | None = None
     # Secret env vars found set on disk (provider key, *_API_KEY, NYMERIA_SECRETS_KEY,
     # SEARXNG_BASE_URL). Their VALUES are deliberately never read into state; this
     # records presence so a blank field means "keep" and finalize does not blank a

@@ -20,8 +20,36 @@ from nymeria.onboarding import (
     parse_choice,
 )
 from nymeria.setup import finalize as finalize_mod
+from nymeria.setup import runner as runner_mod
+from nymeria.setup.environment import EnvironmentReport
 from nymeria.setup.providers import LLMConnectionError, LLMConnectionResult
 from nymeria.setup.runner import main as setup_main
+
+
+def _env_report(**overrides) -> EnvironmentReport:
+    """A crafted detection report with benign defaults for gating tests."""
+    base: dict = dict(
+        os_label="Linux test",
+        is_windows=False,
+        docker_available=True,
+        recommended_hosting=HostingOption.LOCAL,
+    )
+    base.update(overrides)
+    return EnvironmentReport(**base)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_environment_detection(monkeypatch):
+    """Never probe the real host from wizard runs.
+
+    The runner caches a detection report on state for every init run; without
+    this stub, --hosting docker tests would start failing on machines without
+    docker, and host state (a busy port 8000) would leak into assertions.
+    Gating tests override by re-patching runner_mod.detect_environment with a
+    crafted _env_report; detection unit tests call the environment module
+    directly, which this does not touch.
+    """
+    monkeypatch.setattr(runner_mod, "detect_environment", lambda **_kw: _env_report())
 
 
 # --- onboarding data model --------------------------------------------------
@@ -340,6 +368,426 @@ def test_detect_environment_returns_a_report(monkeypatch):
     assert report.recommended_hosting in tuple(HostingOption)
     # A busy port is surfaced as a note rather than silently dropped.
     assert any("8000" in note for note in report.notes)
+
+
+def test_detect_environment_light_skips_subprocess_probes(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    def _no_subprocess(*_a, **_k):
+        raise AssertionError("light detection must not spawn subprocesses")
+
+    monkeypatch.setattr(env_mod.subprocess, "run", _no_subprocess)
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: True)
+    report = env_mod.detect_environment()
+    assert report.deep is False
+    assert report.docker_daemon_running is None
+    assert report.docker_compose_available is None
+    assert report.nymeria_containers == ()
+    assert report.mcp_port_free is None
+    assert report.port_owner == ""
+
+
+def test_detect_environment_deep_probes_docker(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: "/usr/bin/mock")
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: True)
+    monkeypatch.setattr(env_mod, "docker_daemon_running", lambda **_k: True)
+    monkeypatch.setattr(env_mod, "docker_compose_available", lambda **_k: True)
+    monkeypatch.setattr(
+        env_mod, "list_nymeria_containers", lambda **_k: ("nymeria-api",)
+    )
+    report = env_mod.detect_environment(deep=True)
+    assert report.deep is True
+    assert report.docker_daemon_running is True
+    assert report.docker_compose_available is True
+    assert report.nymeria_containers == ("nymeria-api",)
+    assert any("existing install" in note for note in report.notes)
+    assert report.mcp_port_free is True
+
+
+def test_detect_environment_deep_survives_probe_failures(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: "/usr/bin/mock")
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: False)
+
+    def _boom(*_a, **_k):
+        raise FileNotFoundError("docker vanished mid-probe")
+
+    monkeypatch.setattr(env_mod.subprocess, "run", _boom)
+    report = env_mod.detect_environment(deep=True)
+    # FileNotFoundError is an OSError: every probe degrades to unknown/empty
+    # instead of raising.
+    assert report.docker_daemon_running is None
+    assert report.docker_compose_available is None
+    assert report.nymeria_containers == ()
+    assert report.port_owner == ""
+    assert any("already in use" in note for note in report.notes)
+
+
+def test_docker_probes_handle_timeouts(monkeypatch):
+    import subprocess as sp
+
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: "/usr/bin/mock")
+
+    def _slow(cmd, **_k):
+        raise sp.TimeoutExpired(cmd, 0.1)
+
+    monkeypatch.setattr(env_mod.subprocess, "run", _slow)
+    assert env_mod.docker_daemon_running() is None
+    assert env_mod.docker_compose_available() is None
+    assert env_mod.list_nymeria_containers() == ()
+    assert env_mod.identify_port_owner(8000) == ""
+
+
+def test_identify_port_owner_parses_ss_and_falls_back_to_lsof(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: "/usr/bin/mock")
+
+    class _Result:
+        def __init__(self, stdout: str):
+            self.returncode = 0
+            self.stdout = stdout
+
+    ss_line = (
+        'LISTEN 0 2048 127.0.0.1:8000 0.0.0.0:* users:(("uvicorn",pid=4242,fd=13))'
+    )
+
+    def via_ss(cmd, **_k):
+        assert cmd[0] == "ss", "ss answered; lsof must not run"
+        return _Result(ss_line + "\n")
+
+    monkeypatch.setattr(env_mod.subprocess, "run", via_ss)
+    assert env_mod.identify_port_owner(8000) == "uvicorn"
+
+    def via_lsof(cmd, **_k):
+        if cmd[0] == "ss":
+            return _Result("")  # owner not visible to ss without root
+        assert cmd[0] == "lsof"
+        return _Result("p4242\ncuvicorn\n")
+
+    monkeypatch.setattr(env_mod.subprocess, "run", via_lsof)
+    assert env_mod.identify_port_owner(8000) == "uvicorn"
+
+    def nothing_visible(cmd, **_k):
+        return _Result("")
+
+    monkeypatch.setattr(env_mod.subprocess, "run", nothing_visible)
+    assert env_mod.identify_port_owner(8000) == ""
+
+
+def test_suggest_free_port_returns_next_free(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod, "port_free", lambda p, **_k: p >= 8003)
+    assert env_mod.suggest_free_port(8000) == 8003
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: False)
+    assert env_mod.suggest_free_port(8000, tries=5) is None
+
+
+def test_ram_and_disk_probes_never_raise(monkeypatch, tmp_path):
+    from nymeria.setup import environment as env_mod
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:        8000000 kB\n")
+    monkeypatch.setattr(env_mod, "_MEMINFO_PATH", meminfo)
+    ram = env_mod.total_ram_gb()
+    assert ram is not None and 7.0 < ram < 8.0
+
+    # Unreadable meminfo falls back to os.sysconf (real values) or None;
+    # either way it must not raise.
+    monkeypatch.setattr(env_mod, "_MEMINFO_PATH", tmp_path / "missing")
+    env_mod.total_ram_gb()
+
+    assert env_mod.free_disk_gb(tmp_path) is not None
+    assert env_mod.free_disk_gb(tmp_path / "nope") is None
+
+
+def test_service_manager_block_matrix(monkeypatch, tmp_path):
+    from nymeria import service_install as si
+    from nymeria.setup import environment as env_mod
+
+    _label, reason = env_mod.service_manager_block(platform_name="win32")
+    assert reason == "not automated on Windows"
+    assert env_mod.service_manager_block(platform_name="darwin") == (
+        "launchd agent",
+        "",
+    )
+
+    monkeypatch.delenv("container", raising=False)
+    marker = tmp_path / "dockerenv"
+    marker.write_text("")
+    monkeypatch.setattr(si, "_CONTAINER_MARKERS", (marker,))
+    _label, reason = env_mod.service_manager_block(platform_name="linux")
+    assert reason == "running inside a container"
+
+    monkeypatch.setattr(si, "_CONTAINER_MARKERS", (tmp_path / "absent",))
+    monkeypatch.setattr(si, "_SYSTEMD_MARKER", tmp_path / "no-systemd")
+    _label, reason = env_mod.service_manager_block(platform_name="linux")
+    assert reason == "systemd is not running"
+
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    monkeypatch.setattr(si, "_SYSTEMD_MARKER", systemd)
+    assert env_mod.service_manager_block(platform_name="linux") == (
+        "systemd user service",
+        "",
+    )
+
+
+def test_recommend_hosting_in_container_prefers_local():
+    from nymeria.setup.environment import recommend_hosting
+
+    assert (
+        recommend_hosting(is_windows=True, has_docker=True, in_container=True)
+        is HostingOption.LOCAL
+    )
+
+
+def test_hosting_gates_matrix():
+    from nymeria.setup.environment import hosting_gates
+
+    gates = hosting_gates(_env_report(docker_available=False))
+    assert gates[HostingOption.DOCKER].disabled
+    assert "not installed" in gates[HostingOption.DOCKER].reason
+    assert HostingOption.LOCAL not in gates
+
+    gates = hosting_gates(_env_report(docker_daemon_running=False))
+    assert not gates[HostingOption.DOCKER].disabled
+    assert "daemon" in gates[HostingOption.DOCKER].warning
+
+    gates = hosting_gates(_env_report(docker_compose_available=False))
+    assert "compose" in gates[HostingOption.DOCKER].warning
+
+    gates = hosting_gates(
+        _env_report(service_blocked_reason="systemd is not running")
+    )
+    assert gates[HostingOption.SERVICE].disabled
+
+    assert hosting_gates(_env_report()) == {}
+
+
+def test_stack_resource_warnings_thresholds():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.environment import stack_resource_warnings
+
+    tight = _env_report(total_ram_gb=2.0, free_disk_gb=5.0, mcp_port_free=False)
+    full = stack_resource_warnings(tight, DockerStack.FULL)
+    assert len(full) == 3
+    slim = stack_resource_warnings(tight, DockerStack.SLIM)
+    assert len(slim) == 1 and "GB of disk" in slim[0]
+    healthy = _env_report(total_ram_gb=16.0, free_disk_gb=100.0, mcp_port_free=True)
+    assert stack_resource_warnings(healthy, DockerStack.FULL) == []
+
+
+# --- detection-driven wizard wiring -------------------------------------------
+
+
+def test_hosting_choices_disable_impossible_and_tag_recommended():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.hosting import hosting_choices_for
+
+    state = WizardState()
+    state.env_report = _env_report(
+        docker_available=False,
+        service_blocked_reason="running inside a container",
+    )
+    choices = {c.value: c for c in hosting_choices_for(state)}
+    assert choices[HostingOption.DOCKER].disabled
+    assert "unavailable: docker is not installed" in choices[HostingOption.DOCKER].label
+    assert choices[HostingOption.SERVICE].disabled
+    assert "running inside a container" in choices[HostingOption.SERVICE].label
+    assert not choices[HostingOption.LOCAL].disabled
+    assert "(recommended)" in choices[HostingOption.LOCAL].label
+
+
+def test_hosting_choices_warn_on_degraded_docker():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.hosting import hosting_choices_for
+
+    state = WizardState()
+    state.env_report = _env_report(docker_daemon_running=False)
+    choices = {c.value: c for c in hosting_choices_for(state)}
+    assert not choices[HostingOption.DOCKER].disabled
+    assert "Warning:" in choices[HostingOption.DOCKER].description
+    assert "(unavailable" not in choices[HostingOption.DOCKER].label
+
+
+def test_hosting_choices_without_report_match_legacy_behavior():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.hosting import hosting_choices_for
+
+    choices = {c.value: c for c in hosting_choices_for(WizardState())}
+    assert all(not c.disabled for c in choices.values())
+    assert "(recommended)" in choices[HostingOption.LOCAL].label
+
+
+def test_hosting_recommendation_follows_detection():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.hosting import hosting_choices_for
+
+    state = WizardState()
+    state.env_report = _env_report(
+        is_windows=True, recommended_hosting=HostingOption.DOCKER
+    )
+    choices = {c.value: c for c in hosting_choices_for(state)}
+    assert "(recommended)" in choices[HostingOption.DOCKER].label
+    assert "(recommended)" not in choices[HostingOption.LOCAL].label
+
+
+def test_welcome_report_markup_shows_deep_rows():
+    from nymeria.setup.steps.welcome import _report_markup
+
+    markup = _report_markup(
+        _env_report(
+            docker_daemon_running=True,
+            docker_compose_available=False,
+            service_manager_label="systemd user service",
+            total_ram_gb=7.8,
+            free_disk_gb=120.0,
+            api_port_free=False,
+            port_owner="uvicorn",
+            notes=["Port 8000 is already in use (held by uvicorn)."],
+        )
+    )
+    assert "Docker daemon running" in markup
+    assert "Compose plugin" in markup
+    assert "systemd user service" in markup
+    assert "7.8 GB" in markup
+    assert "held by uvicorn" in markup
+    assert "Note:" in markup
+
+
+def test_welcome_report_markup_light_hides_unprobed_rows():
+    from nymeria.setup.steps.welcome import _report_markup
+
+    markup = _report_markup(_env_report())
+    assert "Docker daemon running" not in markup
+    assert "Compose plugin" not in markup
+    assert "Port 8000 free" in markup
+
+
+def test_review_heads_up_lines_for_degraded_conditions():
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _summary_markup
+
+    state = WizardState()
+    state.hosting = HostingOption.DOCKER
+    state.docker_stack = DockerStack.FULL
+    state.env_report = _env_report(
+        api_port_free=False,
+        port_owner="uvicorn",
+        docker_daemon_running=False,
+        total_ram_gb=2.0,
+    )
+    markup = _summary_markup(state)
+    assert "Heads up: port 8000 is already in use (held by uvicorn)." in markup
+    assert "daemon is not running" in markup
+    assert "2.0 GB RAM" in markup
+
+
+def test_review_has_no_heads_up_on_healthy_host():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _summary_markup
+
+    state = WizardState()
+    state.hosting = HostingOption.LOCAL
+    state.env_report = _env_report()
+    assert "Heads up: port" not in _summary_markup(state)
+
+
+# --- headless hosting gates ---------------------------------------------------
+
+
+def test_headless_blocks_docker_hosting_without_docker(tmp_path, monkeypatch):
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(docker_available=False),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        setup_main(
+            [
+                "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+                "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+                "--hosting", "docker",
+            ]
+        )
+    assert "docker is not installed" in str(excinfo.value)
+    assert not (tmp_path / ".env.docker").exists()
+
+
+def test_headless_blocks_service_hosting_in_container(tmp_path, monkeypatch):
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(
+            service_blocked_reason="running inside a container"
+        ),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        setup_main(
+            [
+                "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+                "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+                "--hosting", "service",
+            ]
+        )
+    assert "running inside a container" in str(excinfo.value)
+
+
+def test_headless_warns_only_on_hydrated_impossible_hosting(
+    tmp_path, monkeypatch, capsys
+):
+    root = tmp_path / "runtime"
+    _first_run(monkeypatch, root, "--hosting", "docker", "--docker-stack", "slim")
+    capsys.readouterr()
+
+    # Reconfigure an unrelated setting with docker now missing: the hydrated
+    # hosting shape only warns (a scripted edit must not die over it).
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(docker_available=False),
+    )
+    rc = setup_main(
+        [
+            "--model", "claude-other-model", "--root", str(root),
+            "--non-interactive", "--skip-llm-test", "--provider", "anthropic",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "unavailable on this machine" in out
+    assert "Continuing anyway" in out
+
+
+def test_headless_warns_on_low_resources_for_full_stack(
+    tmp_path, monkeypatch, capsys
+):
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        runner_mod,
+        "detect_environment",
+        lambda **_kw: _env_report(total_ram_gb=2.0, free_disk_gb=5.0),
+    )
+    rc = setup_main(
+        [
+            "--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+            "--root", str(tmp_path), "--non-interactive", "--skip-llm-test",
+            "--hosting", "docker", "--docker-stack", "full",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "GB RAM" in out and "GB of disk" in out
 
 
 # --- pure navigation model --------------------------------------------------

@@ -48,6 +48,25 @@ def _heading(text: str) -> str:
     return f"[bold {ACCENT}]{text}[/]"
 
 
+def _environment_heads_up(state: WizardState) -> list[str]:
+    """Detection-driven warnings for the chosen shape (warn-only, never vetoes)."""
+    report = state.env_report
+    if report is None:
+        return []
+    from ..environment import hosting_gates, stack_resource_warnings
+
+    warnings: list[str] = []
+    if not report.api_port_free:
+        owner = f" (held by {report.port_owner})" if report.port_owner else ""
+        warnings.append(f"port {report.api_port} is already in use{owner}.")
+    gate = hosting_gates(report).get(state.hosting) if state.hosting else None
+    if gate is not None and gate.warning:
+        warnings.append(gate.warning)
+    if state.hosting is HostingOption.DOCKER:
+        warnings.extend(stack_resource_warnings(report, state.docker_stack))
+    return warnings
+
+
 def _summary_markup(state: WizardState) -> str:
     lines: list[str] = []
 
@@ -55,6 +74,8 @@ def _summary_markup(state: WizardState) -> str:
         lines.append(_row("Hosting", HOSTING_CHOICES[state.hosting].label))
     if state.docker_stack is not None and state.hosting is HostingOption.DOCKER:
         lines.append(_row("Stack", DOCKER_STACK_CHOICES[state.docker_stack].label))
+    for warning in _environment_heads_up(state):
+        lines.append(f"[yellow]Heads up: {warning}[/yellow]")
     if state.security_profile is not None:
         lines.append(
             _row("Security", SECURITY_PROFILE_CHOICES[state.security_profile].label)
