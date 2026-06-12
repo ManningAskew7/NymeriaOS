@@ -319,6 +319,16 @@ def finalize(
         console.print(
             "[yellow]Hosting shape changed; writing a new config file.[/yellow]"
         )
+        if not api_key and key_present:
+            # The key requirement (and the LLM test) was waived because the key
+            # is on disk, but it lives in the OLD shape's file and a fresh write
+            # of the new file cannot carry it over.
+            console.print(
+                "[yellow]The existing LLM key lives in the old config file and "
+                "cannot be carried into the new hosting shape. Re-run with "
+                "--api-key (or copy the key line into the new file) or this "
+                "install will have no LLM credentials.[/yellow]"
+            )
     if config_path.exists() and not merge and not state.force and not overwrite_confirmed:
         if non_interactive:
             console.print(
