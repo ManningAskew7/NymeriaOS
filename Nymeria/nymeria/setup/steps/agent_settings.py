@@ -32,7 +32,7 @@ from ..tuning_catalog import (
     effort_ladder_note,
     parse_field,
 )
-from .base import CircleRadioButton, FormStep
+from .base import CircleRadioButton, FormStep, code_markup
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -70,9 +70,10 @@ class _TuningFormStep(FormStep):
             i = buttons.index(focused)  # type: ignore[arg-type]
             if 0 <= i < len(self._choices):
                 # Annotated effort descriptions carry the raw model id, which
-                # is user-typed and must not be parsed as markup.
+                # is user-typed and must not be parsed as markup (code_markup
+                # escapes before styling).
                 self.query_one("#choice-desc", Static).update(
-                    escape(self._choices[i].description)
+                    code_markup(self._choices[i].description)
                 )
 
     def _selected_choice(self) -> str | None:

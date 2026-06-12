@@ -40,7 +40,7 @@ from ..rag_catalog import (
     get_reranker,
     recommended_reranker_for,
 )
-from .base import CircleRadioButton, FormStep
+from .base import CircleRadioButton, FormStep, code_markup
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -49,20 +49,40 @@ if TYPE_CHECKING:
 _TIER_COLOR = "#8a93a3"
 
 
-def _tagged_label(option) -> str:
+def _name_column(option) -> str:
+    name = option.label
+    if getattr(option, "recommended", False):
+        name += " (recommended)"
+    return name
+
+
+def _name_width(options) -> int:
+    """Width of the name column: the longest label (+ recommended marker)."""
+    return max(len(_name_column(o)) for o in options)
+
+
+def _tagged_label(option, name_width: int = 0) -> str:
     # The tier is a dim fixed-width markup column, so model names align.
     # (Literal "[Premium]" brackets would be swallowed by markup parsing.)
     tag = TIER_LABELS.get(option.tier, option.tier.title())
-    label = f"[{_TIER_COLOR}]{tag:<8}[/]{option.label}"
-    if getattr(option, "recommended", False):
-        label += " (recommended)"
+    name = _name_column(option)
+    # The short eval verdict rides dim at the end of the row: horizontal space
+    # is free here, vertical space is what makes these steps scroll. Padding
+    # the name column lines the verdicts up as a table column.
+    eval_tag = getattr(option, "eval_tag", "")
+    if eval_tag and name_width:
+        name = f"{name:<{name_width}}"
+    label = f"[{_TIER_COLOR}]{tag:<8}[/]{name}"
+    if eval_tag:
+        label += f"  [{_TIER_COLOR}]{eval_tag}[/]"
     return label
 
 
 def _describe(option) -> str:
-    """The focused option's description (the eval metrics line stays in the
-    catalog and docs; on screen it read as noise)."""
-    return option.description
+    """The focused option's description (the short eval verdict rides inline in
+    the row; the fuller metrics line stays in the catalog and docs). Routed
+    through code_markup like every other choice-description path."""
+    return code_markup(option.description)
 
 
 class EmbedderStep(FormStep):
@@ -75,19 +95,22 @@ class EmbedderStep(FormStep):
             total,
             step_id="embedder",
             title="Semantic memory: embedding model",
+            # One line at 110 cols: per-tier verdicts ride inline on the rows.
             note=(
-                "rag_search recalls past conversations, tool results, and notes. "
-                "Premium = best quality, Value = best per dollar, Local = free "
-                "and private. Ctrl+S picks the local stack (no key, no cost)."
+                "rag_search recalls past conversations, tool results, and "
+                "notes. Ctrl+S picks the free local stack."
             ),
         )
         self._options: list[EmbedderOption] = list(EMBEDDERS)
 
     def compose_body(self) -> ComposeResult:
         initial = self.state.embedder or self._options[0].id
+        width = _name_width(self._options)
         with Vertical(classes="radio-group", id="model-group"):
             for o in self._options:
-                yield CircleRadioButton(_tagged_label(o), value=(o.id == initial))
+                yield CircleRadioButton(
+                    _tagged_label(o, width), value=(o.id == initial)
+                )
         yield Static("", id="choice-desc")
         yield Static("API key", classes="field-label", id="key-label")
         yield Input(
@@ -229,9 +252,12 @@ class RerankerStep(FormStep):
                     f"Recommended with {emb.label}: {rer.label}. {rec[1]}",
                     id="combo-rec",
                 )
+        width = _name_width(self._options)
         with Vertical(classes="radio-group", id="reranker-group"):
             for o in self._options:
-                yield CircleRadioButton(_tagged_label(o), value=(o.id == initial))
+                yield CircleRadioButton(
+                    _tagged_label(o, width), value=(o.id == initial)
+                )
         yield Static("", id="choice-desc")
         yield Static("API key", classes="field-label", id="key-label")
         yield Input(value="", password=True, id="rag-key")

@@ -168,7 +168,7 @@ def make_tts_step() -> Step:
             "Pick the voice Nymeria speaks with (watch replies, Telegram voice "
             "notes). Local Kokoro is free and CPU-friendly; hosted picks "
             "collect their key on the next screen. Bare-metal local voice "
-            "needs the voice extra: pip install 'nymeriaos\\[voice-local]'."
+            "needs the voice extra: `pip install 'nymeriaos[voice-local]'`."
         ),
         choices=voice_catalog.TTS_CHOICES,
     )

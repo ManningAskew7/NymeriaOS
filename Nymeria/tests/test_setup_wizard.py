@@ -1865,6 +1865,28 @@ def test_hint_markup_accents_keys_and_preserves_text():
     assert Content.from_markup(markup).plain == hint
 
 
+def test_code_markup_styles_backtick_spans_and_escapes_markup():
+    """Wizard prose (notes, choice descriptions, errors) is plain text with
+    optional `code` spans: backticks render as accent-colored text instead of
+    showing through literally, and stray brackets are escaped, never parsed."""
+    from textual.content import Content
+
+    from nymeria.setup.steps.base import ACCENT, code_markup
+
+    markup = code_markup("Finish setup and show `nymeria slim` to run yourself.")
+    assert f"[{ACCENT}]nymeria slim[/]" in markup
+    plain = Content.from_markup(markup).plain
+    assert plain == "Finish setup and show nymeria slim to run yourself."
+    assert "`" not in plain
+
+    # Brackets in prose are data, not markup (e.g. a user-typed model id).
+    hostile = code_markup("model [bold red]x[/] stays literal")
+    assert Content.from_markup(hostile).plain == "model [bold red]x[/] stays literal"
+
+    # No backticks, no brackets: identity, so plain prose is untouched.
+    assert code_markup("Plain text.") == "Plain text."
+
+
 def test_wizard_pilot_provider_note_follows_highlight_and_clears(monkeypatch):
     """The note under the provider list shows the highlighted provider's
     registry note and clears when the filter has no matches (no stale prose
@@ -1958,7 +1980,15 @@ def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
     from nymeria.setup.steps.base import CircleRadioButton
 
     def desc_for(index: int) -> str:
-        return HOSTING_CHOICES[HOSTING_ORDER[index]].description
+        # The panel renders descriptions through code_markup (escape + accent
+        # `code` spans), so the expected text goes through the same pipe; the
+        # rendered Static stringifies to the parsed plain text.
+        from textual.content import Content
+
+        from nymeria.setup.steps.base import code_markup
+
+        raw = HOSTING_CHOICES[HOSTING_ORDER[index]].description
+        return Content.from_markup(code_markup(raw)).plain
 
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
@@ -3746,6 +3776,12 @@ def test_rag_catalog_expanded_options_are_backend_supported_and_metricked():
         assert o.description
         if o.provider != "none":
             assert o.metrics
+    # Every non-baseline option also carries the short inline eval verdict.
+    for o in EMBEDDERS:
+        assert o.eval_tag
+    for o in RERANKERS:
+        if o.provider != "none":
+            assert o.eval_tag
     # Recommended combos reference real ids.
     for _tier, emb_id, rer_id, _blurb in RECOMMENDED_COMBOS:
         assert get_embedder(emb_id) is not None
@@ -3755,6 +3791,32 @@ def test_rag_catalog_expanded_options_are_backend_supported_and_metricked():
         rec = recommended_reranker_for(o.id)
         assert rec is not None, o.id
         assert get_reranker(rec[0]) is not None
+
+
+def test_rag_picker_rows_carry_inline_eval_and_fit_standard_width():
+    """The eval verdict rides dim at the end of each picker row (horizontal
+    space is free; vertical space is what made these steps scroll). Rows must
+    stay inside a 110-column terminal: body padding (2+2), the group box
+    border+padding (2+2), the per-button padding (1+1), and ToggleButton's
+    glyph plus label pad (3) leave 97 usable label cells."""
+    from textual.content import Content
+
+    from nymeria.setup.rag_catalog import EMBEDDERS, RERANKERS
+    from nymeria.setup.steps.rag import _name_width, _tagged_label
+
+    for options in (EMBEDDERS, RERANKERS):
+        width = _name_width(options)
+        tag_columns = set()
+        for option in options:
+            plain = Content.from_markup(_tagged_label(option, width)).plain
+            if option.eval_tag:
+                assert option.eval_tag in plain
+                tag_columns.add(plain.index(option.eval_tag))
+            if option.recommended:
+                assert "(recommended)" in plain
+            assert len(plain) <= 97, f"{option.id} row is {len(plain)}: {plain!r}"
+        # The verdicts line up as one table column across the list.
+        assert len(tag_columns) == 1
 
 
 def test_rag_env_for_state_handles_new_embedder_and_reranker():
