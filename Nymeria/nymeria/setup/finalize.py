@@ -102,6 +102,12 @@ class _DockerStackSpec:
     label: str
     command_env: tuple[tuple[str, str], ...] = ()
     health_timeout: float = 40.0
+    # Host-side API port the compose files interpolate; _compose_env pins it
+    # into the subprocess environment because run.py's import-time dotenv load
+    # puts the OLD config's API_PORT into os.environ, and compose gives the
+    # process env precedence over --env-file (a port-change reconfigure would
+    # otherwise bring the stack up on the old port).
+    api_port: int = 8000
 
 
 def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
@@ -114,6 +120,13 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     port so the default compose command stays the documented short form.
     """
     port = state.resolved_api_port()
+    # A non-default port rides the printed manual commands as an env prefix
+    # (API_PORT=N docker compose ...): the copy-paste path must survive a
+    # shell whose environment carries a stale API_PORT, for the same
+    # process-env-beats-env-file reason _DockerStackSpec.api_port exists.
+    command_env: tuple[tuple[str, str], ...] = (
+        (("API_PORT", str(port)),) if port != 8000 else ()
+    )
     if (state.docker_stack or DockerStack.SLIM) is DockerStack.SLIM:
         compose_args: tuple[str, ...] = ("-f", DOCKER_SINGLE_COMPOSE)
         if port != 8000:
@@ -123,9 +136,13 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
             service=DOCKER_SINGLE_SERVICE,
             health_url=f"http://localhost:{port}/health",
             label="single-container Docker",
+            command_env=command_env,
+            api_port=port,
         )
     return _DockerStackSpec(
         compose_args=("--env-file", ".env.docker"),
+        command_env=command_env,
+        api_port=port,
         service=DOCKER_FULL_SERVICE,
         # The full stack's /ready is a deep check (503 until Postgres + Redis
         # connect), exactly the "the stack is up" signal we want to wait on.
@@ -152,9 +169,16 @@ def _compose_argv(spec: _DockerStackSpec, *subcommand: str) -> list[str]:
 
 
 def _compose_env(spec: _DockerStackSpec) -> dict[str, str]:
-    """Process env for a compose invocation (os.environ plus the stack's env)."""
+    """Process env for a compose invocation (os.environ plus the stack's env).
+
+    API_PORT is always pinned to the spec's port: os.environ holds whatever
+    run.py's import-time dotenv load saw (the OLD config on a reconfigure, or
+    a foreign checkout's .env.docker), and compose resolves `${API_PORT}` from
+    the process env BEFORE --env-file.
+    """
     env = dict(os.environ)
     env.update(dict(spec.command_env))
+    env["API_PORT"] = str(spec.api_port)
     return env
 
 
@@ -325,6 +349,23 @@ def finalize(
     api_port = state.resolved_api_port()
     if port_in_use(api_port):
         console.print(f"[yellow]Warning:[/yellow] port {api_port} is already in use.")
+    port_on_disk = state.extras.get("api_port_on_disk")
+    if (
+        isinstance(port_on_disk, int)
+        and port_on_disk != api_port
+        and active_public_url(state)
+        and not state.public_url_verified
+    ):
+        # A tunnel ingress (tailscale serve / Cloudflare) keeps forwarding to
+        # the old port until the external-access setup runs again; a verified
+        # URL means it was just re-exercised this run, so stay quiet then.
+        console.print(
+            f"[yellow]The API port is changing from {port_on_disk} to "
+            f"{api_port}, but the existing remote-access ingress still "
+            "forwards to the old port. Re-run the external-access setup "
+            "(nymeria init external_access) or update the tunnel by "
+            "hand.[/yellow]"
+        )
 
     config_path = root / (".env.docker" if for_docker else "config.env")
     if merge and not config_path.exists():

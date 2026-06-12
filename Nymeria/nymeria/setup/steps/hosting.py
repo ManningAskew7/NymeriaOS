@@ -65,14 +65,30 @@ def make_hosting_step() -> Step:
     def build(wizard: "SetupWizardApp", number: int, total: int) -> SingleSelectStep:
         # Built per-show (not at factory time) so the choices see the hydrated
         # state and the cached environment report.
+        state = wizard.state
+        note = "You can change this later by re-running setup."
+        report = state.env_report
+        gate = (
+            hosting_gates(report).get(state.hosting)
+            if report is not None and state.hosting is not None
+            else None
+        )
+        if gate is not None and gate.disabled:
+            # A hydrated shape this host can no longer run: the row is greyed
+            # out and the selection falls to another shape, so say so rather
+            # than silently flipping it on Enter.
+            note = (
+                "Heads up: your current hosting shape is unavailable here "
+                f"({gate.reason}), so advancing selects a different one."
+            )
         return SingleSelectStep(
             wizard,
             number,
             total,
             step_id="hosting",
             title="How should Nymeria run on this machine?",
-            note="You can change this later by re-running setup.",
-            choices=hosting_choices_for(wizard.state),
+            note=note,
+            choices=hosting_choices_for(state),
             get_initial=get_initial,
             store=store,
         )

@@ -126,6 +126,39 @@ def test_resolve_slim_port_precedence(monkeypatch):
     assert args.port is None  # default defers to API_PORT from the config
 
 
+def test_slim_main_early_env_pin_resolves_config_port(monkeypatch):
+    """main()'s early `_apply_slim_runtime_env` must resolve the port through
+    `_resolve_slim_port`, not a hardcoded default: it MUTATES the process env
+    before run_slim, so a regression there silently pins API_PORT=8000 for
+    every configured port while all the unit tests still pass.
+    """
+    import os
+    import sys
+
+    import run as run_module
+
+    captured = {}
+
+    def fake_run_slim(_args):
+        captured["env_port"] = os.environ.get("API_PORT")
+
+    monkeypatch.setenv("API_PORT", "8010")
+    monkeypatch.setattr(run_module, "run_slim", fake_run_slim)
+    monkeypatch.setattr(sys, "argv", ["run.py", "slim"])
+    # The early pin rewrites several env vars (DATABASE_BACKEND, REDIS_*,
+    # NYMERIA_API_URL); snapshot and restore so nothing leaks into the suite.
+    saved_env = os.environ.copy()
+    try:
+        run_module.main()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        from nymeria.config import get_settings
+
+        get_settings.cache_clear()
+    assert captured["env_port"] == "8010"
+
+
 def test_run_cli_parser_accepts_positional_list_command():
     import run as run_module
 
