@@ -42,11 +42,13 @@ pub struct CLIProxySession {
 /// Get the auto-generated API configuration for the frontend.
 #[tauri::command]
 pub fn get_auto_config(state: tauri::State<'_, AppState>) -> Result<AutoConfig, String> {
-    if state.process_manager.is_none() {
-        return Err("Client-only mode — configure backend URL in settings".to_string());
-    }
+    let Some(pm) = state.process_manager.as_ref() else {
+        return Err("Client-only mode: configure backend URL in settings".to_string());
+    };
     Ok(AutoConfig {
-        api_url: "http://localhost:8000".to_string(),
+        // Follows the backend root's API_PORT; the spawned backend resolves
+        // its port from the same config files.
+        api_url: pm.local_api_base_url(),
         api_key: state.api_key.clone(),
     })
 }

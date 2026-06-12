@@ -114,6 +114,10 @@ pub struct ProcessManager {
     api_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
     worker_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
     cliproxy_process: Arc<Mutex<Option<Arc<SharedChild>>>>,
+    // Captured at spawn: the backend reads its config exactly once, at
+    // startup, so a config rewrite after spawn must not change the port the
+    // probe and the frontend URL target.
+    api_port: Mutex<Option<u16>>,
     #[cfg(windows)]
     job_object: Option<JobObject>,
 }
@@ -126,6 +130,7 @@ impl ProcessManager {
             api_process: Arc::new(Mutex::new(None)),
             worker_process: Arc::new(Mutex::new(None)),
             cliproxy_process: Arc::new(Mutex::new(None)),
+            api_port: Mutex::new(None),
             #[cfg(windows)]
             job_object: JobObject::new(),
         }
@@ -183,6 +188,9 @@ impl ProcessManager {
 
         let shared = self.wrap_child(child)?;
         *self.api_process.lock().unwrap() = Some(shared);
+        // Capture the port the spawned process will bind (it reads the same
+        // config files once, at startup).
+        *self.api_port.lock().unwrap() = Some(configured_api_port(&self.backend_root));
         Ok(())
     }
 
@@ -267,6 +275,22 @@ impl ProcessManager {
         Self::is_process_alive(&self.worker_process)
     }
 
+    /// Port of the spawned backend: captured at spawn time (the process read
+    /// its config exactly once, at startup), a fresh config read before any
+    /// spawn.
+    fn effective_api_port(&self) -> u16 {
+        let captured = *self.api_port.lock().unwrap();
+        captured.unwrap_or_else(|| configured_api_port(&self.backend_root))
+    }
+
+    /// Host-side base URL of the spawned backend. `run.py api` loads the
+    /// root's config files at startup and binds `settings.api_port`
+    /// (API_PORT, default 8000), so the probe and the URL handed to the
+    /// frontend must follow the same files.
+    pub fn local_api_base_url(&self) -> String {
+        format!("http://localhost:{}", self.effective_api_port())
+    }
+
     /// Poll the health endpoint until the API is ready or timeout.
     pub fn wait_for_api_ready(&self, timeout_secs: u64) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
@@ -274,6 +298,7 @@ impl ProcessManager {
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(|e| format!("HTTP client error: {}", e))?;
+        let health_url = format!("http://127.0.0.1:{}/health", self.effective_api_port());
 
         loop {
             if Instant::now() > deadline {
@@ -285,7 +310,7 @@ impl ProcessManager {
                 return Err("Backend API process exited unexpectedly".to_string());
             }
 
-            match client.get("http://127.0.0.1:8000/health").send() {
+            match client.get(&health_url).send() {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
                 _ => std::thread::sleep(Duration::from_millis(500)),
             }
@@ -407,6 +432,37 @@ fn is_source_checkout_root(path: &Path) -> bool {
     path.join("Nymeria").join("run.py").exists() && path.join("nymeria-desktop").is_dir()
 }
 
+/// API_PORT from the backend root's config files, falling back to 8000.
+///
+/// Mirrors the backend's own resolution (`service_install._read_env_port` and
+/// run.py's dotenv load order): `.env`, then `config.env`, then `.env.docker`,
+/// the last valid value winning. Comment lines never start with `API_PORT=`
+/// so they are skipped naturally; quotes are stripped; only all-digit values
+/// in 1-65535 count (`parse::<u16>` rejects anything above).
+fn configured_api_port(backend_root: &Path) -> u16 {
+    let mut port: u16 = 8000;
+    for name in [".env", "config.env", ".env.docker"] {
+        let Ok(contents) = std::fs::read_to_string(backend_root.join(name)) else {
+            continue;
+        };
+        for line in contents.lines() {
+            let Some(value) = line.trim().strip_prefix("API_PORT=") else {
+                continue;
+            };
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(parsed) = value.parse::<u16>() {
+                if parsed >= 1 {
+                    port = parsed;
+                }
+            }
+        }
+    }
+    port
+}
+
 fn python_executable() -> String {
     std::env::var("NYMERIA_PYTHON").unwrap_or_else(|_| "python".to_string())
 }
@@ -515,6 +571,69 @@ mod tests {
                 .and_then(|(_, value)| value),
             Some(backend_root.as_os_str())
         );
+    }
+
+    #[test]
+    fn configured_api_port_defaults_to_8000_without_config() {
+        let temp = TempTree::new();
+
+        assert_eq!(configured_api_port(&temp.path), 8000);
+    }
+
+    #[test]
+    fn configured_api_port_reads_config_env() {
+        let temp = TempTree::new();
+        fs::write(
+            temp.path.join("config.env"),
+            "API_HOST=0.0.0.0\nAPI_PORT=8010\n",
+        )
+        .expect("write config.env");
+
+        assert_eq!(configured_api_port(&temp.path), 8010);
+    }
+
+    #[test]
+    fn configured_api_port_last_file_wins_and_strips_quotes() {
+        let temp = TempTree::new();
+        fs::write(temp.path.join("config.env"), "API_PORT=8010\n").expect("write config.env");
+        fs::write(temp.path.join(".env.docker"), "API_PORT=\"8011\"\n")
+            .expect("write .env.docker");
+
+        assert_eq!(configured_api_port(&temp.path), 8011);
+    }
+
+    #[test]
+    fn configured_api_port_keeps_earlier_valid_value_over_later_junk() {
+        let temp = TempTree::new();
+        fs::write(temp.path.join("config.env"), "API_PORT=8010\n").expect("write config.env");
+        fs::write(temp.path.join(".env.docker"), "API_PORT=junk\n").expect("write .env.docker");
+
+        assert_eq!(configured_api_port(&temp.path), 8010);
+    }
+
+    #[test]
+    fn configured_api_port_ignores_comments_junk_and_out_of_range() {
+        let temp = TempTree::new();
+        fs::write(
+            temp.path.join(".env"),
+            "# API_PORT=9999\nAPI_PORT=junk\nAPI_PORT=70000\nAPI_PORT=0\nAPI_PORT=\n",
+        )
+        .expect("write .env");
+
+        assert_eq!(configured_api_port(&temp.path), 8000);
+    }
+
+    #[test]
+    fn local_api_base_url_follows_backend_root_config() {
+        let temp = TempTree::new();
+        touch(&temp.path.join("Nymeria").join("run.py"));
+        fs::write(temp.path.join("Nymeria").join("config.env"), "API_PORT=8010\n")
+            .expect("write config.env");
+
+        let layout = RuntimeLayout::source_checkout(temp.path.clone());
+        let manager = ProcessManager::new(layout);
+
+        assert_eq!(manager.local_api_base_url(), "http://localhost:8010");
     }
 
     #[test]
