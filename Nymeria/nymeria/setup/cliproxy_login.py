@@ -301,7 +301,7 @@ async def _login_console(
                 while True:
                     pasted = pasted_lines.get_nowait() or pasted
             except queue.Empty:
-                pass
+                pass  # queue drained; the latest non-empty paste wins
             if pasted:
                 try:
                     await client.oauth_callback(spec, redirect_url=pasted)

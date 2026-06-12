@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ from ..config.env_file import format_env_value, write_env_file
 from ..config.llm_providers import LLMProviderSpec
 from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
+from ..core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
 from ..onboarding import (
     EXTERNAL_ACCESS_CHOICES,
     HOSTING_MARKER_ENV,
@@ -1352,6 +1354,14 @@ def print_next_action(state: WizardState, console: Console) -> None:
         # The container mints its own token on first boot; the docker printer points
         # at the in-container token and follow-up commands (stack-aware).
         _print_docker_next_steps(console, state)
+        spec = _docker_stack_spec(state)
+        _print_chat_smoke_recipe(
+            console,
+            token_command=_compose_command_str(
+                spec, "exec", "-T", spec.service, "cat",
+                f"/data/{SLIM_SERVICE_TOKEN_FILENAME}",
+            ),
+        )
         return
 
     if state.hosting is HostingOption.SERVICE:
@@ -1371,6 +1381,13 @@ def print_next_action(state: WizardState, console: Console) -> None:
             f"Remote devices use {public_origin(active_public_url(state))} "
             "once the backend is up."
         )
+    token_path = (
+        resolve_data_dir(state, root=resolve_runtime_root(state, for_docker=False))
+        / SLIM_SERVICE_TOKEN_FILENAME
+    )
+    _print_chat_smoke_recipe(
+        console, token_command=f"cat {shlex.quote(str(token_path))}"
+    )
     console.print(
         "\nRe-run setup anytime with `nymeria init`. Check health with "
         "`nymeria doctor`."
@@ -1482,6 +1499,14 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         return 0
     console.print("[green]Nymeria is up.[/green]")
     verify_public_url_now(state, console)
+    smoke_token = None
+    if not state.skip_llm_test:
+        # The in-container service token, not the bootstrap token: the first
+        # bootstrap-token auth deletes its file, breaking the handoff below.
+        smoke_token = _read_docker_token_file(
+            spec=spec, root=root, filename=SLIM_SERVICE_TOKEN_FILENAME
+        )
+    _run_inline_chat_smoke(state, console, token=smoke_token)
     _print_docker_bootstrap_token(console, spec=spec, root=root)
     return 0
 
@@ -1504,6 +1529,10 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
     command = [sys.executable, script, "slim"]
     env = dict(os.environ)
     env["NYMERIA_PROJECT_ROOT"] = str(root)
+    # The server owns this terminal from here, so the smoke turn runs from a
+    # daemon thread that prints one [smoke] line into the server's output.
+    stop = threading.Event()
+    smoke_thread = _spawn_local_smoke_thread(state, root=root, stop=stop)
     try:
         result = subprocess.run(command, cwd=str(root), env=env)
     except KeyboardInterrupt:
@@ -1515,6 +1544,10 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
         )
         _print_command(console, "nymeria slim")
         return 0
+    finally:
+        stop.set()
+        if smoke_thread is not None:
+            smoke_thread.join(timeout=2.0)
     return result.returncode
 
 
@@ -1582,6 +1615,10 @@ def _start_now_service(console: Console, *, state: WizardState, root: Path) -> i
         return 0
     console.print("[green]Nymeria is up.[/green]")
     verify_public_url_now(state, console)
+    smoke_token = None
+    if not state.skip_llm_test:
+        smoke_token = _wait_for_host_service_token(resolve_data_dir(state, root=root))
+    _run_inline_chat_smoke(state, console, token=smoke_token)
     console.print(
         "\nOpen http://localhost:8000 to finish in the browser (paste the "
         "one-time bootstrap token if one was printed above). The service "
@@ -1615,6 +1652,232 @@ def wait_for_health(
     return False
 
 
+# --- post-start chat smoke test ----------------------------------------------
+
+CHAT_SMOKE_TIMEOUT_SECONDS = 120.0  # one full agent turn, with LLM headroom
+CHAT_SMOKE_HEALTH_TIMEOUT_SECONDS = 120.0  # foreground cold start
+CHAT_SMOKE_TOKEN_TIMEOUT_SECONDS = 30.0
+CHAT_SMOKE_MESSAGE = "Reply with exactly: INIT SMOKE OK"
+
+
+def run_chat_smoke_test(
+    *,
+    token: str,
+    base_url: str = "http://localhost:8000",
+    timeout: float = CHAT_SMOKE_TIMEOUT_SECONDS,
+) -> tuple[bool, str]:
+    """One real chat turn through POST /chat/sync. Returns (ok, detail); never raises.
+
+    The deepest install check there is: the turn exercises auth, the agent
+    runtime, and the configured LLM end to end (the pre-write provider test
+    only proves the key works against the provider). Uses a throwaway thread
+    id and best-effort deletes the thread afterward, so the smoke turn leaves
+    nothing in the user's thread list. Authenticates with the slim service
+    token: the bootstrap token is consumed by its first auth, which would
+    break the printed handoff command.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    thread_id = f"init-smoke-{secrets.token_hex(4)}"
+    request = urllib.request.Request(
+        f"{base_url}/chat/sync",
+        data=json.dumps(
+            {"message": CHAT_SMOKE_MESSAGE, "thread_id": thread_id}
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").strip()[:200]
+            return False, f"HTTP {exc.code} from /chat/sync: {detail}"
+        except (urllib.error.URLError, OSError) as exc:
+            return False, f"could not reach /chat/sync: {exc}"
+        except ValueError:
+            return False, "/chat/sync returned a non-JSON body"
+        response_text = ""
+        if isinstance(payload, dict):
+            response_text = str(payload.get("response") or "").strip()
+        if not response_text:
+            return False, "/chat/sync answered without a model response"
+        return True, f"the model answered ({response_text[:80]})"
+    finally:
+        cleanup = urllib.request.Request(
+            f"{base_url}/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(cleanup, timeout=10.0):  # noqa: S310
+                pass
+        except Exception:  # noqa: BLE001 (best-effort; a 409 mid-turn is fine)
+            pass
+
+
+def _smoke_health_ok(url: str) -> bool:
+    """One quiet /health probe (the smoke thread's own loop, not wait_for_health)."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:  # noqa: S310
+            return 200 <= getattr(resp, "status", 200) < 300
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _wait_for_host_service_token(
+    data_dir: Path,
+    *,
+    timeout: float = CHAT_SMOKE_TOKEN_TIMEOUT_SECONDS,
+    stop: threading.Event | None = None,
+) -> str | None:
+    """Poll for the API-minted service token file on the host filesystem.
+
+    The slim server writes it during startup, so it should exist by the time
+    /health answers; the short poll covers the write racing the health flip.
+    """
+    path = Path(data_dir) / SLIM_SERVICE_TOKEN_FILENAME
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if stop is not None and stop.is_set():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            raw = ""
+        if raw:
+            return raw
+        if stop is not None:
+            if stop.wait(0.5):
+                return None
+        else:
+            time.sleep(0.5)
+    return None
+
+
+def _run_inline_chat_smoke(
+    state: WizardState, console: Console, *, token: str | None
+) -> None:
+    """Run the post-start smoke turn and report. Never affects the exit code.
+
+    Gated only on --skip-llm-test, NOT on the keep-existing-key reconfigure
+    path: the server holds the key, so the smoke turn works where the
+    pre-write provider check cannot.
+    """
+    from rich.markup import escape
+
+    if state.skip_llm_test:
+        console.print(
+            "[yellow]Skipping the chat smoke test (--skip-llm-test).[/yellow]"
+        )
+        return
+    if not token:
+        console.print(
+            "[yellow]Could not read the service token yet; skipping the chat "
+            "smoke test.[/yellow]"
+        )
+        return
+    console.print(
+        "Running a chat smoke test (one real chat turn; may take a minute)..."
+    )
+    ok, detail = run_chat_smoke_test(token=token)
+    if ok:
+        console.print(f"[green]Chat smoke test passed:[/green] {escape(detail)}")
+    else:
+        console.print(
+            f"[yellow]Chat smoke test FAILED: {escape(detail)}.[/yellow] The "
+            "backend is up; check the LLM credentials with `nymeria doctor`."
+        )
+
+
+def _spawn_local_smoke_thread(
+    state: WizardState, *, root: Path, stop: threading.Event
+) -> threading.Thread | None:
+    """Start the foreground shape's background smoke worker (None when skipped)."""
+    if state.skip_llm_test:
+        return None
+    thread = threading.Thread(
+        target=_local_smoke_worker,
+        args=(resolve_data_dir(state, root=root), stop),
+        daemon=True,
+        name="init-chat-smoke",
+    )
+    thread.start()
+    return thread
+
+
+def _local_smoke_worker(data_dir: Path, stop: threading.Event) -> None:
+    """Body of the foreground shape's smoke thread.
+
+    The wizard blocks while the slim server owns the terminal, so this daemon
+    thread waits for health and the minted service token, fires the smoke
+    turn, and prints a single plain [smoke] line into the server's output.
+    Exits silently whenever `stop` is set (the server already shut down).
+    Never raises, never calls subprocess, and polls health with its own quiet
+    probe rather than wait_for_health (the local start-now path is pinned to
+    zero wait_for_health calls and exactly one subprocess call).
+    """
+    try:
+        deadline = time.monotonic() + CHAT_SMOKE_HEALTH_TIMEOUT_SECONDS
+        while True:
+            if stop.is_set():
+                return
+            if _smoke_health_ok("http://localhost:8000/health"):
+                break
+            if time.monotonic() >= deadline:
+                # Never healthy: the user is watching the server output
+                # directly, so a smoke line would only add noise.
+                return
+            if stop.wait(1.0):
+                return
+        token = _wait_for_host_service_token(data_dir, stop=stop)
+        if stop.is_set():
+            return
+        if not token:
+            print(
+                "[smoke] chat smoke test skipped: no service token file yet",
+                flush=True,
+            )
+            return
+        ok, detail = run_chat_smoke_test(token=token)
+        if stop.is_set():
+            return
+        if ok:
+            print(f"[smoke] chat smoke test passed: {detail}", flush=True)
+        else:
+            print(
+                f"[smoke] chat smoke test FAILED: {detail} (config was "
+                "written fine; check `nymeria doctor`)",
+                flush=True,
+            )
+    except Exception:  # noqa: BLE001 (a smoke worker must never take down the server)
+        return
+
+
+def _print_chat_smoke_recipe(console: Console, *, token_command: str) -> None:
+    """The copy-paste smoke turn for the manual (print-commands) handoff."""
+    console.print(
+        "\nVerify a real chat turn once the backend is up (the deepest health "
+        "check) with:"
+    )
+    _print_command(
+        console,
+        "curl -s -X POST http://localhost:8000/chat/sync "
+        f'-H "Authorization: Bearer $({token_command})" '
+        '-H "Content-Type: application/json" '
+        "--data '{\"message\":\"Reply with exactly: INIT SMOKE OK\"}'",
+    )
+
+
 def _docker_token_command(spec: _DockerStackSpec) -> str:
     return _compose_command_str(
         spec, "exec", spec.service, "cat", f"/data/{BOOTSTRAP_TOKEN_FILENAME}"
@@ -1640,9 +1903,20 @@ def _read_docker_bootstrap_token(*, spec: _DockerStackSpec, root: Path) -> str |
     on first boot; this execs in to fetch it. Returns None if it cannot be read
     yet (e.g. the container is not ready or `docker` is absent).
     """
-    command = _compose_argv(
-        spec, "exec", "-T", spec.service, "cat", f"/data/{BOOTSTRAP_TOKEN_FILENAME}"
+    return _read_docker_token_file(
+        spec=spec, root=root, filename=BOOTSTRAP_TOKEN_FILENAME
     )
+
+
+def _read_docker_token_file(
+    *, spec: _DockerStackSpec, root: Path, filename: str
+) -> str | None:
+    """Exec a `nym_...` token file out of the stack's /data volume (None on failure).
+
+    Shared by the bootstrap-token handoff and the chat smoke test (which reads
+    the in-container service token instead; both are `nym_` account tokens).
+    """
+    command = _compose_argv(spec, "exec", "-T", spec.service, "cat", f"/data/{filename}")
     try:
         result = subprocess.run(
             command,
