@@ -1,9 +1,11 @@
 """Step 0: welcome + environment detection.
 
-The plan's first step is "detect environment": read the host (OS, Docker, port
-8000) and recommend a hosting shape before the operator chooses one. This screen
-is informational, so Enter advances and nothing is stored; the detected
-recommendation is shown here and the hosting step still owns the actual choice.
+The plan's first step is "detect environment": read the host (OS, Docker
+daemon, service manager, ports, RAM/disk) and recommend a hosting shape before
+the operator chooses one. The runner detects once (deep, with subprocess
+probes) and caches the report on state; this screen only renders it. It is
+informational, so Enter advances and nothing is stored; the hosting step owns
+the actual choice (and greys out shapes the report says cannot work here).
 """
 
 from __future__ import annotations
@@ -27,16 +29,40 @@ def _ok(flag: bool) -> str:
 
 
 def _report_markup(report: EnvironmentReport) -> str:
-    rows = [
+    rows: list[tuple[str, str]] = [
         ("Operating system", report.os_label),
         ("Docker available", _ok(report.docker_available)),
-        ("Port 8000 free", _ok(report.port_8000_free)),
+    ]
+    # Deep-probe rows render only when the probe actually ran (None = light
+    # mode or docker absent), so the screen never claims more than it checked.
+    if report.docker_daemon_running is not None:
+        rows.append(("Docker daemon running", _ok(report.docker_daemon_running)))
+    if report.docker_compose_available is not None:
+        rows.append(("Compose plugin", _ok(report.docker_compose_available)))
+    if report.service_blocked_reason:
+        rows.append(
+            (
+                "Background service",
+                f"[#fca5a5]unavailable: {report.service_blocked_reason}[/#fca5a5]",
+            )
+        )
+    elif report.service_manager_label:
+        rows.append(("Background service", report.service_manager_label))
+    port_value = _ok(report.api_port_free)
+    if not report.api_port_free and report.port_owner:
+        port_value += f" [{SECONDARY}](held by {report.port_owner})[/]"
+    rows.append((f"Port {report.api_port} free", port_value))
+    if report.total_ram_gb is not None:
+        rows.append(("Memory", f"{report.total_ram_gb:.1f} GB"))
+    if report.free_disk_gb is not None:
+        rows.append(("Free disk", f"{report.free_disk_gb:.0f} GB"))
+    rows.append(
         (
             "Recommended hosting",
             f"[bold {ACCENT}]{HOSTING_CHOICES[report.recommended_hosting].label}[/]",
-        ),
-    ]
-    lines = [f"[{SECONDARY}]{label:<19}[/]  {value}" for label, value in rows]
+        )
+    )
+    lines = [f"[{SECONDARY}]{label:<22}[/]  {value}" for label, value in rows]
     for note in report.notes:
         lines.append("")
         lines.append(f"[#fcd34d]Note:[/#fcd34d] {note}")
@@ -47,7 +73,10 @@ class WelcomeStep(WizardStep):
     """Informational front door: show what we detected and the recommendation."""
 
     def compose_body(self) -> ComposeResult:
-        report = Static(_report_markup(detect_environment()), id="env-report")
+        # The runner caches a deep report before the app starts; the light
+        # fallback keeps directly-constructed screens (tests) working.
+        detected = self.state.env_report or detect_environment()
+        report = Static(_report_markup(detected), id="env-report")
         report.border_title = "Detected environment"
         yield report
 
@@ -74,4 +103,4 @@ def make_welcome_step() -> Step:
     return Step(id="welcome", applies=lambda _state: True, build=build)
 
 
-__all__ = ["make_welcome_step", "WelcomeStep"]
+__all__ = ["make_welcome_step", "WelcomeStep", "_report_markup"]
