@@ -1,13 +1,16 @@
 #!/bin/sh
-# NymeriaOS installer (clone-free front door).
+# NymeriaOS installer (front door).
 #
 #   curl -fsSL https://get.nymeriaos.com/install.sh | sh
 #
-# Lets you choose between two install tracks:
-#   Slim  - simpler, best for a few users. Single process on SQLite, installed
-#           with uv (which can fetch a matching Python for you). No Docker.
-#   Full  - more robust, better multi-user support. Runs in Docker (the script
-#           can install Docker for you on Linux).
+# Lets you choose between three install tracks:
+#   Slim   - simpler, best for a few users. Single process on SQLite, installed
+#            with uv (which can fetch a matching Python for you). No Docker.
+#   Full   - more robust, better multi-user support. Runs in Docker (the script
+#            can install Docker for you on Linux).
+#   Source - hackable: git clone plus an editable uv install, so code edits
+#            (yours or the agent's own) apply on the next restart, with git
+#            for diff/branch/revert safety.
 #
 # Cautious users: download and read this script before running it, e.g.
 #   curl -fsSL https://get.nymeriaos.com/install.sh -o install.sh
@@ -19,7 +22,11 @@
 #   NYMERIA_IMAGE_NAMESPACE       GHCR namespace for the Full images
 #                                 (default baked into the compose file)
 #   NYMERIA_PYPI_SIMPLE_INDEX_URL Private index URL for the Slim/beta install
-#   NYMERIA_INSTALL_MODE          "slim" or "full" (same as --slim/--full)
+#   NYMERIA_INSTALL_MODE          "slim", "full", or "source" (same as the flags)
+#   NYMERIA_REPO_URL              Git repo for the Source track (default:
+#                                 https://github.com/ManningAskew7/NymeriaOS.git)
+#   NYMERIA_SOURCE_DIR            Checkout dir for the Source track
+#                                 (default: ~/NymeriaOS)
 #   NYMERIA_UV_INSTALLER_SHA256   Pin+verify the uv installer (astral.sh) by hash
 #   NYMERIA_DOCKER_INSTALLER_SHA256  Pin+verify the get.docker.com installer by hash
 #
@@ -36,6 +43,7 @@ set -eu
 umask 077
 
 NYMERIA_BASE_URL="${NYMERIA_BASE_URL:-https://get.nymeriaos.com}"
+NYMERIA_REPO_URL="${NYMERIA_REPO_URL:-https://github.com/ManningAskew7/NymeriaOS.git}"
 COMPOSE_FILE="docker-compose.single.published.yml"
 ENV_FILE=".env.docker"
 ENV_EXAMPLE=".env.docker.example"
@@ -141,19 +149,22 @@ choose_mode() {
     [ -n "${MODE:-}" ] && return 0
     if [ "$INTERACTIVE" -eq 0 ]; then
         MODE="slim"
-        info "Non-interactive: defaulting to the Slim install. Pass --full for Docker."
+        info "Non-interactive: defaulting to the Slim install. Pass --full for Docker, or --source for a hackable checkout."
         return 0
     fi
     printf '%s\n' "" > /dev/tty
     printf '%s\n' "${C_BOLD}Choose how to install NymeriaOS:${C_RESET}" > /dev/tty
-    printf '%s\n' "  ${C_BOLD}1) Slim${C_RESET} - simpler, best for a few users. Single process on SQLite," > /dev/tty
-    printf '%s\n' "           installed with uv. No Docker required." > /dev/tty
-    printf '%s\n' "  ${C_BOLD}2) Full${C_RESET} - more robust, better multi-user support. Runs in Docker" > /dev/tty
-    printf '%s\n' "           (Docker required; this script can install it for you on Linux)." > /dev/tty
-    _choice="$(ask "Enter 1 or 2 [1]: " "1")"
+    printf '%s\n' "  ${C_BOLD}1) Slim${C_RESET}   - simpler, best for a few users. Single process on SQLite," > /dev/tty
+    printf '%s\n' "              installed with uv. No Docker required." > /dev/tty
+    printf '%s\n' "  ${C_BOLD}2) Full${C_RESET}   - more robust, better multi-user support. Runs in Docker" > /dev/tty
+    printf '%s\n' "              (Docker required; this script can install it for you on Linux)." > /dev/tty
+    printf '%s\n' "  ${C_BOLD}3) Source${C_RESET} - hackable: a git checkout with an editable install, so" > /dev/tty
+    printf '%s\n' "              code edits (yours or the agent's own) apply on restart." > /dev/tty
+    _choice="$(ask "Enter 1, 2 or 3 [1]: " "1")"
     case "$_choice" in
-        2|full|Full|FULL) MODE="full" ;;
-        *)                MODE="slim" ;;
+        2|full|Full|FULL)         MODE="full" ;;
+        3|source|Source|SOURCE)   MODE="source" ;;
+        *)                        MODE="slim" ;;
     esac
 }
 
@@ -181,7 +192,9 @@ install_slim() {
     info "Installed. ${C_BOLD}nymeria${C_RESET} is on your PATH."
     if [ "$INTERACTIVE" -eq 1 ]; then
         _go="$(ask "Run the setup wizard now (nymeria init)? [Y/n]: " "y")"
-        case "$_go" in n|N|no|No) ;; *) exec nymeria init ;; esac
+        # Reattach stdin to the terminal: under `curl ... | sh` the shell's
+        # stdin is the pipe, and the wizard refuses non-tty stdin.
+        case "$_go" in n|N|no|No) ;; *) exec nymeria init < /dev/tty ;; esac
     fi
     cat <<EOF
 
@@ -189,6 +202,54 @@ Next steps:
   nymeria init      # guided setup (provider, model, API key)
   nymeria doctor    # verify the install
   nymeria slim      # start the single-process backend
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Source track (git clone + editable uv install)
+# ---------------------------------------------------------------------------
+install_source() {
+    have git || die "git is required for the Source install. Install git and re-run."
+    ensure_uv
+    SRCDIR="${NYMERIA_SOURCE_DIR:-$HOME/NymeriaOS}"
+    # The global umask 077 exists to protect secret-bearing env files; a code
+    # checkout must stay world-readable (normal 755/644) or the bind-mount
+    # Docker shapes cannot read the source from inside the container (it runs
+    # as its own non-root user). Scope the relaxed umask to the git commands.
+    if [ -e "$SRCDIR/.git" ]; then
+        info "Existing checkout at $SRCDIR; fast-forwarding ..."
+        (umask 022; git -C "$SRCDIR" pull --ff-only) \
+            || warn "Could not fast-forward $SRCDIR (local changes or a diverged branch); continuing with the current tree."
+    else
+        info "Cloning $NYMERIA_REPO_URL into $SRCDIR ..."
+        (umask 022; git clone "$NYMERIA_REPO_URL" "$SRCDIR")
+    fi
+    info "Installing the backend as an editable uv tool ..."
+    # --force replaces a previous PyPI (Slim) install of the same tool; the
+    # editable install means edits under the checkout apply on the next
+    # restart, no reinstall needed (reinstall only when dependencies change).
+    uv tool install --force --editable "$SRCDIR/Nymeria"
+    info "Installed. ${C_BOLD}nymeria${C_RESET} on your PATH runs the live code in $SRCDIR."
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        _go="$(ask "Run the setup wizard now (nymeria init)? [Y/n]: " "y")"
+        # Reattach stdin to the terminal: under `curl ... | sh` the shell's
+        # stdin is the pipe, and the wizard refuses non-tty stdin.
+        case "$_go" in n|N|no|No) ;; *) exec nymeria init < /dev/tty ;; esac
+    fi
+    cat <<EOF
+
+Next steps:
+  nymeria init      # guided setup (provider, model, API key)
+  nymeria doctor    # verify the install
+  nymeria slim      # start the single-process backend (live code from $SRCDIR)
+
+This track is for hacking on Nymeria, including letting the agent modify its
+own source: the install is editable, so edits under $SRCDIR apply on the next
+restart, and the git checkout gives you diff/branch/revert safety.
+
+Update later with:
+  git -C "$SRCDIR" pull --ff-only
+  uv tool install --force --editable "$SRCDIR/Nymeria"   # only if dependencies changed
 EOF
 }
 
@@ -328,14 +389,18 @@ usage() {
     cat <<EOF
 NymeriaOS installer
 
-Usage: install.sh [--slim | --full] [--non-interactive] [-h|--help]
+Usage: install.sh [--slim | --full | --source] [--non-interactive] [-h|--help]
 
   --slim             Install the single-process (uv/SQLite) track.
   --full             Install the Docker (single-container) track.
-  --non-interactive  Do not prompt; defaults to --slim unless --full is given.
+  --source           Install from a git checkout (editable; for hacking on
+                     Nymeria or letting the agent modify its own source).
+  --non-interactive  Do not prompt; defaults to --slim unless another track
+                     flag is given.
 
 Environment overrides: NYMERIA_BASE_URL, NYMERIA_IMAGE_NAMESPACE,
-NYMERIA_PYPI_SIMPLE_INDEX_URL, NYMERIA_INSTALL_MODE.
+NYMERIA_PYPI_SIMPLE_INDEX_URL, NYMERIA_INSTALL_MODE, NYMERIA_REPO_URL,
+NYMERIA_SOURCE_DIR.
 EOF
 }
 
@@ -345,6 +410,7 @@ main() {
         case "$1" in
             --slim) MODE="slim" ;;
             --full) MODE="full" ;;
+            --source) MODE="source" ;;
             --non-interactive|-y) INTERACTIVE=0 ;;
             -h|--help) usage; exit 0 ;;
             *) die "unknown option: $1 (see --help)" ;;
@@ -357,9 +423,10 @@ main() {
     choose_mode
 
     case "$MODE" in
-        slim) install_slim ;;
-        full) install_full ;;
-        *)    die "unknown install mode: $MODE" ;;
+        slim)   install_slim ;;
+        full)   install_full ;;
+        source) install_source ;;
+        *)      die "unknown install mode: $MODE" ;;
     esac
 }
 
