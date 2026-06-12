@@ -221,6 +221,10 @@ nymeria = [
   "config/*.md",
   "config/data/*.json",
   "frontend/**/*",
+  # Clone-free Docker: the published-image compose finalize materializes into
+  # the runtime root (kept byte-identical to Nymeria/docker-compose.single.
+  # published.yml by a drift test).
+  "setup/assets/*.yml",
   "skills_bundled/*/SKILL.md",
   "triggers/**/*.md",
   "vendor/react_agent/*.md",

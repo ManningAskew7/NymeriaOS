@@ -20,11 +20,13 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Mapping
 
 from rich.console import Console
 
+from .. import __version__ as _PACKAGE_VERSION
 from .._runtime_paths import default_user_project_root, find_project_root
 from ..config.env_file import format_env_value, write_env_file
 from ..config.llm_providers import LLMProviderSpec
@@ -82,6 +84,15 @@ DOCKER_SINGLE_SERVICE = "nymeria-single"
 DOCKER_FULL_COMPOSE = "docker-compose.yml"
 DOCKER_FULL_SERVICE = "api"
 
+# Clone-free single-container artifacts: the same slim shape, but pulling the
+# published image instead of building from a checkout. The compose file ships
+# inside the wheel (`setup/assets/`, kept byte-identical to the canonical
+# `Nymeria/docker-compose.single.published.yml` by a drift test) and finalize
+# materializes it into the runtime root next to `.env.docker`. The image tag is
+# pinned via a `NYMERIA_VERSION` line in `.env.docker` (release images are
+# tagged with the bare package version, `v` stripped).
+DOCKER_SINGLE_PUBLISHED_COMPOSE = "docker-compose.single.published.yml"
+
 
 @dataclass(frozen=True)
 class _DockerStackSpec:
@@ -108,6 +119,12 @@ class _DockerStackSpec:
     # process env precedence over --env-file (a port-change reconfigure would
     # otherwise bring the stack up on the old port).
     api_port: int = 8000
+    # Clone-free only: the published image tag (`NYMERIA_VERSION`) this install
+    # should pull. _compose_env pins it for the same process-env-beats-env-file
+    # reason as api_port (a reconfigure after a wheel upgrade has the OLD
+    # version in os.environ). None for source-checkout stacks, which build
+    # their images locally.
+    image_version: str | None = None
 
 
 def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
@@ -118,6 +135,12 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     8000), interpolated from `.env.docker` via `--env-file`. The full stack
     always passes `--env-file`; the slim spec adds it only for a non-default
     port so the default compose command stays the documented short form.
+
+    Clone-free installs (no source checkout) drive the published-image compose
+    that finalize materialized into the runtime root, and always pass
+    `--env-file`: the `NYMERIA_VERSION` image-tag pin lives in `.env.docker`,
+    and only `--env-file` feeds compose interpolation (the service-level
+    `env_file:` reaches the container, not the `image:` line).
     """
     port = state.resolved_api_port()
     # A non-default port rides the printed manual commands as an env prefix
@@ -128,16 +151,25 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
         (("API_PORT", str(port)),) if port != 8000 else ()
     )
     if (state.docker_stack or DockerStack.SLIM) is DockerStack.SLIM:
-        compose_args: tuple[str, ...] = ("-f", DOCKER_SINGLE_COMPOSE)
-        if port != 8000:
+        clone_free = source_checkout_root() is None
+        compose_file = (
+            DOCKER_SINGLE_PUBLISHED_COMPOSE if clone_free else DOCKER_SINGLE_COMPOSE
+        )
+        compose_args: tuple[str, ...] = ("-f", compose_file)
+        if port != 8000 or clone_free:
             compose_args += ("--env-file", ".env.docker")
         return _DockerStackSpec(
             compose_args=compose_args,
             service=DOCKER_SINGLE_SERVICE,
             health_url=f"http://localhost:{port}/health",
-            label="single-container Docker",
+            label=(
+                "published-image single-container Docker"
+                if clone_free
+                else "single-container Docker"
+            ),
             command_env=command_env,
             api_port=port,
+            image_version=_PACKAGE_VERSION if clone_free else None,
         )
     return _DockerStackSpec(
         compose_args=("--env-file", ".env.docker"),
@@ -179,6 +211,12 @@ def _compose_env(spec: _DockerStackSpec) -> dict[str, str]:
     env = dict(os.environ)
     env.update(dict(spec.command_env))
     env["API_PORT"] = str(spec.api_port)
+    if spec.image_version:
+        # Same hazard as API_PORT: after a wheel upgrade, the OLD version is in
+        # os.environ (run.py's import-time dotenv load of the previous
+        # `.env.docker`) and would beat the freshly written --env-file value,
+        # pulling a stale image.
+        env["NYMERIA_VERSION"] = spec.image_version
     return env
 
 
@@ -215,6 +253,20 @@ def finalize(
     jump) further limits the run to a concise "Updated <section>" outcome: no
     bootstrap-token handoff, no post-setup launch, no doctor.
     """
+
+    # Clone-free (pip/uv) installs have no checkout holding the compose files.
+    # The slim shape works anyway (finalize materializes the wheel-bundled
+    # published-image compose into the runtime root), but the full stack's
+    # compose builds its images from the repo, so reject it up front, before
+    # any LLM test, OAuth flow, or file write happens.
+    if _is_full_stack(state) and source_checkout_root() is None:
+        console.print(
+            "[red]The full Postgres + Redis stack needs a source checkout: its "
+            "compose file builds the images from the repo. Clone the repo and "
+            "re-run `nymeria init` from it, or choose the single-container "
+            "stack.[/red]"
+        )
+        return 2
 
     # Out-of-the-box RAG: if nothing RAG-related was configured (no embedder chosen
     # and no embedding key supplied), equip the free, private local stack
@@ -331,13 +383,10 @@ def finalize(
     for_docker = state.hosting is HostingOption.DOCKER
     root = resolve_runtime_root(state, for_docker=for_docker)
     data_dir = resolve_data_dir(state, root=root)
-    if for_docker and state.root is None and source_checkout_root() is None:
-        console.print(
-            "[yellow]Could not find docker-compose.single.yml in a source "
-            "checkout.[/yellow] Writing .env.docker to "
-            f"{root}; move it next to the compose file before bringing the "
-            "container up."
-        )
+    # Slim Docker without a checkout: finalize owns the compose file (the
+    # wheel-bundled published-image one, materialized below). The full stack
+    # was already rejected up front.
+    clone_free_docker = for_docker and source_checkout_root() is None
     try:
         check_writable(root)
         if not for_docker:
@@ -441,6 +490,7 @@ def finalize(
         init_seed_env=init_seed_env,
         full_stack_env=full_stack_env,
         provider_key_env=key_env_override,
+        image_version=_PACKAGE_VERSION if clone_free_docker else None,
         drop_cliproxy_management=not state.auth_method_is_cliproxy(),
         drop_public_url=should_drop_public_url(state),
         drop_stale_voice=voice_drop_env(state),
@@ -448,6 +498,23 @@ def finalize(
     )
 
     console.print(f"[green]Config:[/green] {config_path}")
+    if clone_free_docker:
+        try:
+            compose_path = _materialize_published_compose(root)
+        except OSError as exc:
+            console.print(f"[red]Cannot write the compose file: {exc}[/red]")
+            return 2
+        console.print(
+            f"[green]Compose:[/green] {compose_path} (pulls the published "
+            "image; rewritten by every `nymeria init` run, so keep changes "
+            "in .env.docker)"
+        )
+        # The wizard's own `up -d` pins NYMERIA_VERSION into the subprocess env
+        # (_compose_env), but the printed copy-paste commands rely on
+        # `--env-file`, which a shell-exported NYMERIA_VERSION silently beats.
+        _warn_shadowing_process_env(
+            console, {"NYMERIA_VERSION": _PACKAGE_VERSION}
+        )
     if for_docker:
         # The container owns its data: it mints the bootstrap admin + token into
         # its `/data` volume on first boot. A host-side bootstrap would be
@@ -534,6 +601,7 @@ def write_config(
     init_seed_env: Mapping[str, str] | None = None,
     full_stack_env: Mapping[str, str] | None = None,
     provider_key_env: str | None = None,
+    image_version: str | None = None,
     drop_cliproxy_management: bool = False,
     drop_public_url: bool = False,
     drop_stale_voice: tuple[str, ...] = (),
@@ -576,6 +644,10 @@ def write_config(
     `full_stack_env` (full Docker stack only) carries the Postgres/Redis settings
     the multi-container compose interpolates (`POSTGRES_PASSWORD`/`REDIS_PASSWORD`
     are required-or-error there), minted once and preserved across re-runs.
+
+    `image_version` (clone-free Docker only) writes the `NYMERIA_VERSION` image
+    tag the published compose interpolates, pinning the pulled image to the
+    installed wheel's version.
     """
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -607,6 +679,12 @@ def write_config(
     # Written for every shape: slim/local read it at startup, and both Docker
     # compose files interpolate it into the host-side port binding.
     produced.append(("API_PORT", str(api_port)))
+    if image_version:
+        # Clone-free Docker: pin the published image tag to this wheel's
+        # version so `up -d` pulls the matching image (the compose default is
+        # `latest`). Re-produced on every run, so a wheel upgrade plus
+        # reconfigure moves the pin forward.
+        produced.append(("NYMERIA_VERSION", image_version))
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
@@ -636,6 +714,11 @@ def write_config(
         )
 
         drop_env = (INIT_DEFAULT_THREAD_TOOLS_ENV, INIT_ENABLED_GLOBAL_SKILLS_ENV)
+        if not image_version:
+            # A clone-free root later reconfigured from a source checkout
+            # retires the stale image-tag pin (the checkout composes never
+            # interpolate it); when a pin IS produced this run it wins anyway.
+            drop_env = drop_env + ("NYMERIA_VERSION",)
     if drop_cliproxy_management:
         # Leaving the subscription branch retires the management endpoint
         # lines; keeping them would leave the backend's /cliproxy routes wired
@@ -1040,9 +1123,10 @@ def source_checkout_root() -> Path | None:
 
     The compose files (`docker-compose.single.yml` for slim, `docker-compose.yml`
     for the full stack) only exist in a source checkout; a clone-free (pip/uv)
-    install ships neither, so None signals the deferred clone-free Docker case
-    (finalize then writes `.env.docker` to the init root and prints guidance to
-    move it next to the compose file). Both stacks resolve to the same root.
+    install ships neither, so None signals the clone-free Docker case: finalize
+    materializes the wheel-bundled published-image compose into the runtime
+    root for the slim stack and rejects the full stack (whose compose builds
+    images from the repo). Both stacks resolve to the same root.
     """
     root = find_project_root(Path(__file__).resolve())
     if root is not None and (
@@ -1050,6 +1134,25 @@ def source_checkout_root() -> Path | None:
     ):
         return root
     return None
+
+
+def _materialize_published_compose(root: Path) -> Path:
+    """Write the wheel-bundled published compose into the runtime root.
+
+    Clone-free installs have no checkout to run compose from, so init owns the
+    compose file next to `.env.docker`: it is rewritten on every run, keeping
+    it in lockstep with the installed wheel, while `.env.docker` carries all
+    user-editable state (including the `NYMERIA_VERSION` image-tag pin).
+    """
+    asset = resources.files("nymeria.setup").joinpath(
+        "assets", DOCKER_SINGLE_PUBLISHED_COMPOSE
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / DOCKER_SINGLE_PUBLISHED_COMPOSE
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(asset.read_bytes())
+    os.replace(tmp, target)
+    return target
 
 
 def resolve_data_dir(state: WizardState, *, root: Path) -> Path:
@@ -1493,6 +1596,12 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
     """
     spec = _docker_stack_spec(state)
     console.print(f"\nStart Nymeria ({spec.label}):")
+    if DOCKER_SINGLE_PUBLISHED_COMPOSE in spec.compose_args:
+        # Clone-free: the compose file and .env.docker live in the runtime
+        # root rather than a checkout the user is standing in, so the relative
+        # compose commands below only work from there.
+        root = resolve_runtime_root(state, for_docker=True)
+        console.print(f"Run these from {root}:")
     _print_command(console, _compose_command_str(spec, "up", "-d"))
     _print_docker_token_command(console, spec)
     if state.auth_method_is_cliproxy() and _is_full_stack(state) and not state.cliproxy_deploy:
@@ -1565,6 +1674,13 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             "[yellow]The stack did not start cleanly. Check the output above, "
             "or run it yourself:[/yellow]"
         )
+        if spec.image_version:
+            console.print(
+                "[yellow]If the pull failed (e.g. 'manifest unknown'), the "
+                f"published image tag {spec.image_version} may not exist yet; "
+                "set NYMERIA_VERSION in .env.docker to an available tag (e.g. "
+                "latest) and re-run the start command.[/yellow]"
+            )
         _print_docker_next_steps(console, state)
         return 0
     if not wait_for_health(
@@ -1575,6 +1691,10 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
             "still be coming up; check "
             f"`{_compose_command_str(spec, 'logs', '-f')}`.[/yellow]"
         )
+        if DOCKER_SINGLE_PUBLISHED_COMPOSE in spec.compose_args:
+            # Clone-free users never cd'ed anywhere: the wizard ran compose for
+            # them, so say where the relative commands work from.
+            console.print(f"Run compose commands from {root}.")
         _print_docker_token_command(console, spec)
         return 0
     console.print("[green]Nymeria is up.[/green]")

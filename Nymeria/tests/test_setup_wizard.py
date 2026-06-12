@@ -5489,6 +5489,212 @@ def test_finalize_full_stack_service_token_preserved_on_reconfigure(monkeypatch,
     assert _env_line(content, "POSTGRES_PASSWORD") == "keepme"
 
 
+# --- clone-free Docker (published image) -------------------------------------
+
+
+def _no_checkout(monkeypatch):
+    """Simulate a clone-free (pip/uv) install: no source checkout anywhere."""
+    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: None)
+
+
+def test_published_compose_asset_matches_canonical():
+    # The wheel-bundled compose that finalize materializes for clone-free
+    # installs must stay byte-identical to the canonical file install.sh
+    # serves (Nymeria/docker-compose.single.published.yml). Edit both together.
+    from importlib import resources
+
+    asset = resources.files("nymeria.setup").joinpath(
+        "assets", finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE
+    )
+    canonical = (
+        Path(__file__).parent.parent / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE
+    )
+    assert asset.read_bytes() == canonical.read_bytes()
+
+
+def test_docker_stack_spec_clone_free_uses_published_compose(monkeypatch):
+    from nymeria import __version__
+    from nymeria.setup.state import WizardState
+
+    _no_checkout(monkeypatch)
+    spec = finalize_mod._docker_stack_spec(WizardState())
+    # --env-file is mandatory here even on the default port: the NYMERIA_VERSION
+    # image-tag pin in .env.docker only reaches compose interpolation that way
+    # (the service-level `env_file:` feeds the container, not the image line).
+    assert spec.compose_args == (
+        "-f", finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE,
+        "--env-file", ".env.docker",
+    )
+    assert spec.service == "nymeria-single"
+    assert spec.image_version == __version__
+
+    # The wizard's own compose invocation pins the fresh version over a stale
+    # process env (run.py's import-time dotenv load after a wheel upgrade).
+    monkeypatch.setenv("NYMERIA_VERSION", "0.0.0-stale")
+    assert finalize_mod._compose_env(spec)["NYMERIA_VERSION"] == __version__
+
+    # A checkout install is untouched: local-build compose, no version pin.
+    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: Path("/x"))
+    spec = finalize_mod._docker_stack_spec(WizardState())
+    assert spec.compose_args == ("-f", finalize_mod.DOCKER_SINGLE_COMPOSE)
+    assert spec.image_version is None
+
+
+def test_docker_stack_step_gates_full_without_checkout(monkeypatch):
+    from nymeria.onboarding import DockerStack
+    from nymeria.setup.steps.deployment import _docker_stack_choices
+
+    _no_checkout(monkeypatch)
+    by_value = {choice.value: choice for choice in _docker_stack_choices()}
+    assert by_value[DockerStack.FULL].disabled
+    assert "needs a source checkout" in by_value[DockerStack.FULL].label
+    assert not by_value[DockerStack.SLIM].disabled
+
+    monkeypatch.setattr(finalize_mod, "source_checkout_root", lambda: Path("/x"))
+    by_value = {choice.value: choice for choice in _docker_stack_choices()}
+    assert not by_value[DockerStack.FULL].disabled
+
+
+def test_finalize_clone_free_slim_materializes_compose_and_pins_version(
+    monkeypatch, tmp_path, capsys
+):
+    from nymeria import __version__
+
+    _stub_llm(monkeypatch)
+    _no_checkout(monkeypatch)
+    root = tmp_path / "clone-free"
+    root.mkdir()
+
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--non-interactive"]
+    ) == 0
+    out = capsys.readouterr().out
+
+    # The wheel-bundled compose lands next to .env.docker, byte-identical to
+    # the canonical file, and the env file pins the image tag to this wheel.
+    compose_path = root / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE
+    canonical = (
+        Path(__file__).parent.parent / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE
+    )
+    assert compose_path.read_bytes() == canonical.read_bytes()
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_VERSION") == __version__
+    # The old deferred-case guidance is gone; the printed start command drives
+    # the materialized published compose instead.
+    assert "move it next to the compose file" not in out
+    assert (
+        "docker compose -f docker-compose.single.published.yml "
+        "--env-file .env.docker up -d"
+    ) in out
+
+    # A --force re-run regenerates the compose (it is generated output, not
+    # user state) and re-produces the version pin.
+    compose_path.unlink()
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--non-interactive",
+         "--force"]
+    ) == 0
+    assert compose_path.read_bytes() == canonical.read_bytes()
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_VERSION") == __version__
+
+
+def test_write_config_merge_retires_stale_version_pin(tmp_path):
+    # A clone-free root later reconfigured from a source checkout (no pin
+    # produced) must retire the stale NYMERIA_VERSION line on merge; a run
+    # that produces a pin wins over its own drop entry.
+    config = tmp_path / ".env.docker"
+    config.write_text("NYMERIA_VERSION=9.9.9\nLLM_TIMEOUT=120\n", encoding="utf-8")
+    finalize_mod.write_config(
+        config, data_dir=tmp_path / "data", for_docker=True, merge=True,
+    )
+    content = config.read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_VERSION") is None
+    assert _env_line(content, "LLM_TIMEOUT") == "120"
+
+    finalize_mod.write_config(
+        config, data_dir=tmp_path / "data", for_docker=True, merge=True,
+        image_version="1.2.3",
+    )
+    content = config.read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_VERSION") == "1.2.3"
+
+
+def test_finalize_clone_free_start_drives_published_compose(monkeypatch, tmp_path):
+    from nymeria import __version__
+
+    _stub_llm(monkeypatch)
+    _no_checkout(monkeypatch)
+    root = tmp_path / "clone-free"
+    root.mkdir()
+    calls: list[tuple[list[str], object, dict]] = []
+
+    class _Result:
+        returncode = 0
+        stdout = "Token: nym_bootstrap_zzz\n"
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs.get("cwd"), kwargs.get("env") or {}))
+        return _Result()
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--start",
+         "--skip-llm-test", "--non-interactive"]
+    )
+    assert rc == 0
+    up_cmd, up_cwd, up_env = calls[0]
+    assert up_cmd == [
+        "docker", "compose", "-f", finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE,
+        "--env-file", ".env.docker", "up", "-d",
+    ]
+    # Runs from the root where finalize materialized the compose + .env.docker,
+    # with the image tag pinned against any stale process env.
+    assert up_cwd == str(root)
+    assert up_env.get("NYMERIA_VERSION") == __version__
+    assert (root / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE).exists()
+
+
+def test_finalize_clone_free_full_stack_rejected(monkeypatch, tmp_path, capsys):
+    _stub_llm(monkeypatch)
+    _no_checkout(monkeypatch)
+    root = tmp_path / "clone-free"
+    root.mkdir()
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(root),
+         "--non-interactive"]
+    )
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "needs a source checkout" in out
+    # Rejected before any file writes.
+    assert not (root / ".env.docker").exists()
+
+
+def test_finalize_checkout_docker_writes_no_version_pin(monkeypatch, tmp_path):
+    # Tests run from a source checkout, so source_checkout_root() is real here:
+    # the checkout shape must keep the local-build compose untouched (no
+    # published compose materialized, no image-tag pin in .env.docker).
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--root", str(root), "--non-interactive"]
+    ) == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "NYMERIA_VERSION") is None
+    assert not (root / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE).exists()
+
+
 def test_finalize_full_stack_health_timeout_prints_token_read(monkeypatch, tmp_path, capsys):
     _stub_llm(monkeypatch)
     root = tmp_path / "checkout"
