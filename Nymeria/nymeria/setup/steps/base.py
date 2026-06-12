@@ -31,6 +31,7 @@ from textual.widgets import RadioButton, RadioSet, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from ..nav import Step
+from ..widgets import BracketSelectionList
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
@@ -486,7 +487,9 @@ class MultiSelectStep(WizardStep):
             Selection(choice.label, choice.value, choice.value in selected)
             for choice in self._choices
         ]
-        yield SelectionList(*selections)
+        # BracketSelectionList renders the checkboxes as [x] / [ ]; queries
+        # keep using the SelectionList base type.
+        yield BracketSelectionList(*selections)
 
     def on_mount(self) -> None:
         self.query_one(SelectionList).focus()
