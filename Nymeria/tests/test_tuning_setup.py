@@ -58,7 +58,9 @@ def test_percent_field_converts_to_fraction():
 
 
 def test_timezone_field_validates_iana_names():
-    field = next(f for f in LIMIT_FIELDS if f.key == "user_timezone")
+    # Promoted out of LIMIT_FIELDS into its own confirm step.
+    field = tuning_catalog.TIMEZONE_FIELD
+    assert all(f.key != "user_timezone" for f in LIMIT_FIELDS)
     assert parse_field(field, "Australia/Sydney") == ("Australia/Sydney", None)
     assert parse_field(field, "UTC") == ("UTC", None)
     assert parse_field(field, "Mars/Olympus")[1] is not None
@@ -601,3 +603,72 @@ def test_effort_labels_derive_from_plain_labels():
         else:
             assert choice.label == plain
     assert plain_effort_label("bananas") == "bananas"
+
+
+# ── timezone detection and the promoted timezone step ────────────────────────
+
+
+def test_detect_system_timezone_prefers_tz_env(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    # Leading colon is the POSIX "pathname" form; strip it.
+    monkeypatch.setenv("TZ", ":Australia/Sydney")
+    assert env_mod.detect_system_timezone() == "Australia/Sydney"
+
+
+def test_detect_system_timezone_invalid_tz_falls_through(monkeypatch, tmp_path):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setenv("TZ", "Mars/Olympus")
+    etc_timezone = tmp_path / "timezone"
+    etc_timezone.write_text("Europe/Paris\n", encoding="utf-8")
+    monkeypatch.setattr(env_mod, "_ETC_TIMEZONE", etc_timezone)
+    monkeypatch.setattr(env_mod, "_ETC_LOCALTIME", tmp_path / "missing")
+    assert env_mod.detect_system_timezone() == "Europe/Paris"
+
+
+def test_detect_system_timezone_reads_localtime_symlink(monkeypatch, tmp_path):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(env_mod, "_ETC_TIMEZONE", tmp_path / "missing")
+    # Distros that route through posix/ still resolve to the plain IANA name.
+    zone = tmp_path / "usr" / "share" / "zoneinfo" / "posix" / "Pacific"
+    zone.mkdir(parents=True)
+    (zone / "Auckland").write_bytes(b"TZif")
+    link = tmp_path / "localtime"
+    link.symlink_to(zone / "Auckland")
+    monkeypatch.setattr(env_mod, "_ETC_LOCALTIME", link)
+    assert env_mod.detect_system_timezone() == "Pacific/Auckland"
+
+
+def test_detect_system_timezone_none_when_no_valid_source(monkeypatch, tmp_path):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(env_mod, "_ETC_TIMEZONE", tmp_path / "missing")
+    monkeypatch.setattr(env_mod, "_ETC_LOCALTIME", tmp_path / "also-missing")
+    assert env_mod.detect_system_timezone() is None
+
+
+def test_timezone_step_is_in_both_tiers():
+    """The timezone confirm must survive quick mode (detection can be wrong,
+    and a wrong timezone silently skews schedules and TODO deadlines)."""
+    from nymeria.setup.quick import DEFAULT_STEP_IDS, QUICK_KEEP_STEP_IDS
+
+    assert "timezone" in DEFAULT_STEP_IDS
+    assert "timezone" in QUICK_KEEP_STEP_IDS
+
+
+def test_summary_shows_timezone_on_its_own_line():
+    state = WizardState(extras={"user_timezone": "Australia/Sydney"})
+    lines = tuning_summary_lines(state)
+    assert "Timezone: Australia/Sydney" in lines
+    # No longer folded into the agent-limits bits.
+    assert not any("USER_TIMEZONE" in line for line in lines)
+
+
+def test_timezone_env_written_from_extras():
+    state = WizardState(extras={"user_timezone": "Australia/Sydney"})
+    env = tuning_env_for_state(state)
+    assert env["USER_TIMEZONE"] == "Australia/Sydney"

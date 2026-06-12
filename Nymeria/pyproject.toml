@@ -81,6 +81,9 @@ dependencies = [
   "google-auth-oauthlib>=1.1.0",
   "google-genai>=1.0.0",
   "pydub>=0.25.1",
+  # Edge TTS (free, keyless hosted voice; tiny pure-python client). Promoted to
+  # core alongside requirements.txt so default installs can speak with no extra.
+  "edge-tts>=7.0.0",
   "openpyxl>=3.1.0",
   # Document extraction for email/file attachments (lazy-imported in
   # core/attachment_sandbox.py). Small pure-Python deps, kept in core so the
@@ -94,6 +97,9 @@ dependencies = [
   "readability-lxml>=0.8.1",
   "lxml>=5.0.0",
   "markdownify>=0.13.0",
+  # Keyless in-process web metasearch (web_search_ddgs). Kept in core so the
+  # quickstart default search path works on a lean install with no key.
+  "ddgs>=9.14.0,<10.0.0",
 ]
 
 [project.optional-dependencies]

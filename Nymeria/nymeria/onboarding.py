@@ -55,6 +55,23 @@ class SetupStyle(StrEnum):
     ADVANCED = "advanced"
 
 
+class SetupTier(StrEnum):
+    """Wizard depth, chosen on the screen after welcome (or preset via flags).
+
+    QUICKSTART walks only the irreducible questions (hosting, the LLM, a
+    timezone confirm, external access, start now) and defaults the rest with
+    free, keyless picks (see setup/quick.py). FULL walks every step. DESKTOP
+    is the planned hand-off to the desktop app's in-app onboarding wizard;
+    until that ships it renders greyed out "(to come)". The `--quick` and
+    `--custom` flags preset QUICKSTART/FULL and skip the chooser screen, so
+    scripted runs behave exactly as before.
+    """
+
+    QUICKSTART = "quickstart"
+    FULL = "full"
+    DESKTOP = "desktop"
+
+
 class NextAction(StrEnum):
     """Post-setup action offered after config is written."""
 
@@ -243,6 +260,43 @@ SETUP_STYLE_CHOICES = {
         value=SetupStyle.ADVANCED,
         label="Advanced/manual configuration",
         description="Prompt for optional keys, paths, and provider details.",
+    ),
+}
+
+SETUP_TIER_ORDER = (
+    SetupTier.QUICKSTART,
+    SetupTier.FULL,
+    SetupTier.DESKTOP,
+)
+
+SETUP_TIER_CHOICES = {
+    SetupTier.QUICKSTART: OnboardingChoice(
+        value=SetupTier.QUICKSTART,
+        label="Quickstart",
+        description=(
+            "The fastest path: how to host it, your LLM, your timezone, and "
+            "remote access. Everything else gets free, keyless defaults "
+            "(local semantic memory, keyless web search and fetch, all skill "
+            "kits) that you can change later in the app."
+        ),
+        recommended=True,
+    ),
+    SetupTier.FULL: OnboardingChoice(
+        value=SetupTier.FULL,
+        label="Full setup",
+        description=(
+            "Walk every step: tool families, semantic memory, image "
+            "generation, voice, skill kits, context tuning, and agent limits."
+        ),
+    ),
+    SetupTier.DESKTOP: OnboardingChoice(
+        value=SetupTier.DESKTOP,
+        label="Set up in the desktop app",
+        description=(
+            "Minimal terminal setup, then finish onboarding in the Nymeria "
+            "desktop app's guided wizard."
+        ),
+        coming_soon=True,
     ),
 }
 

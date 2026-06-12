@@ -198,13 +198,13 @@ def test_selected_global_skills_leads_with_self_improve_and_appends_picks():
         "mcp-management",
         "tool-management",
     ]
-    # No picks recorded (step skipped): default to self-improve plus all kits.
+    # No picks recorded (step skipped): default to self-improve plus every
+    # offered bundled kit (widened 2026-06-12 from the curated four).
+    from nymeria.setup import family_catalog
+
     assert selected_global_skills_for_state(WizardState()) == [
         "self-improve",
-        "tool-management",
-        "skill-management",
-        "mcp-management",
-        "credential-management",
+        *family_catalog.default_checked_skill_kits(),
     ]
 
 
@@ -301,10 +301,24 @@ def test_family_catalog_skill_kits_discovered_live_and_default_checked():
 
     offered = {c.value for c in family_catalog.skill_kit_choices()}
     default_checked = family_catalog.default_checked_skill_kits()
-    # The curated default-on set is DEFAULT_GLOBAL_SKILLS minus the guidance skill.
-    assert default_checked == [s for s in DEFAULT_GLOBAL_SKILLS if s != "self-improve"]
-    # Every default-checked kit is actually offered (discovered live from bundled).
+    # The curated default-on set: the six kits existing as of 2026-06-12,
+    # deliberately a literal decoupled from discovery, so a newly bundled kit
+    # is offered but NOT auto-checked (user decision; default-on stays a
+    # per-kit call).
+    assert default_checked == [
+        "tool-management",
+        "skill-management",
+        "mcp-management",
+        "credential-management",
+        "callable-thread-builder",
+        "trigger-management",
+    ]
+    # Every default-checked kit is actually offered (discovered live).
     assert set(default_checked) <= offered
+    # The narrower backend fallback stays inside the curated set.
+    assert {s for s in DEFAULT_GLOBAL_SKILLS if s != "self-improve"} <= set(
+        default_checked
+    )
     # self-improve is a guidance skill, not a selectable kit.
     assert "self-improve" not in offered
     # Discovery is drift-proof: it surfaces bundled kits beyond the legacy four.
@@ -316,8 +330,10 @@ def test_every_keyed_catalog_backend_has_a_key_spec():
     from nymeria.setup import family_catalog
     from nymeria.setup.tool_keys import BACKEND_KEY_SPECS
 
-    # fetch_url_nymeria is intentionally keyless (uses the configured primary LLM).
-    keyless = {"fetch_url_nymeria"}
+    # fetch_url_nymeria is intentionally keyless (uses the configured primary
+    # LLM); web_search_ddgs is keyless by design (in-process metasearch, no
+    # credential of any kind, not even a base URL).
+    keyless = {"fetch_url_nymeria", "web_search_ddgs"}
     keyed_backends = [
         c.value
         for c in (
@@ -1321,7 +1337,10 @@ def test_wizard_pilot_api_port_step_validates_and_stores():
         state = WizardState()
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             await pilot.press("enter")  # accept default hosting -> api port
             await pilot.pause()
@@ -1358,7 +1377,10 @@ def test_wizard_pilot_api_port_step_warns_busy_and_refreshes_report(monkeypatch)
         )
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             await pilot.press("enter")  # accept default hosting -> api port
             await pilot.pause()
@@ -1501,10 +1523,10 @@ def test_quick_path_gates_steps_to_essentials():
         return [steps[i].id for i in nav.applicable_indices()]
 
     skippable = (
-        "docker_stack", "security_profile", "auth_method", "core_tools",
+        "docker_stack", "security_profile", "core_tools",
         "web_search", "fetch_url", "embedder", "reranker", "image_gen",
         "backend_keys", "skill_kits", "tts", "stt", "llm_tuning",
-        "context", "agent_limits", "external_access",
+        "context", "agent_limits",
     )
 
     # Full (default) path keeps the optional/placeholder steps. (reranker and
@@ -1516,12 +1538,15 @@ def test_quick_path_gates_steps_to_essentials():
 
     # Quick path keeps only the essentials; every skippable step is gated off.
     # A provider is set so the provider-gated model step is applicable (the
-    # Navigator re-evaluates this as the real run advances).
+    # Navigator re-evaluates this as the real run advances). auth_method,
+    # timezone, and external_access stay visible in quick mode (the LLM auth
+    # choice, the detection confirm, and remote access are all irreducible).
     quick = applicable_ids(
         WizardState(hosting=HostingOption.LOCAL, provider="anthropic", quick=True)
     )
     assert set(quick) <= QUICK_KEEP_STEP_IDS
-    for essential in ("welcome", "hosting", "provider", "model", "start_now", "review"):
+    for essential in ("welcome", "hosting", "auth_method", "provider", "model",
+                      "timezone", "external_access", "start_now", "review"):
         assert essential in quick
     for sid in skippable:
         assert sid not in quick
@@ -1544,7 +1569,8 @@ def test_apply_quick_defaults_seeds_keyless_fetch_and_local_rag():
     assert state.reranker == QUICKSTART_RERANKER
     assert state.rag_quickstarted is True
     assert "EMBEDDING_API_KEY" not in state.optional_env
-    # Keyless web fetch seeded; nothing that needs a search/image key.
+    # Keyless web fetch seeded; nothing that needs a search/image key. The
+    # hosting-dependent web-search seed waits for a hosting pick.
     assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
     assert "web_search" not in state.extras
     assert "image_gen" not in state.extras
@@ -1552,13 +1578,12 @@ def test_apply_quick_defaults_seeds_keyless_fetch_and_local_rag():
     tools = default_thread_tools_for_state(state)
     assert "fetch_url_nymeria" in tools
     assert "bash_execute" in tools
-    # Skill kits fall back to all-on (self-improve plus the four bundled kits).
+    # Skill kits fall back to all-on (self-improve plus every bundled kit).
+    from nymeria.setup import family_catalog
+
     assert selected_global_skills_for_state(state) == [
         "self-improve",
-        "tool-management",
-        "skill-management",
-        "mcp-management",
-        "credential-management",
+        *family_catalog.default_checked_skill_kits(),
     ]
 
 
@@ -1606,6 +1631,189 @@ def test_quick_and_custom_flags_resolve_on_state():
     assert _build_state(build_parser().parse_args(base + ["--quick", "--custom"])).quick is False
     # Default is the full walk.
     assert _build_state(build_parser().parse_args(base)).quick is False
+    # Either flag locks the tier (the chooser screen is skipped); no flag
+    # leaves it unlocked so the chooser shows.
+    assert _build_state(build_parser().parse_args(base + ["--quick"])).tier_locked is True
+    assert _build_state(build_parser().parse_args(base + ["--custom"])).tier_locked is True
+    assert _build_state(build_parser().parse_args(base)).tier_locked is False
+
+
+# --- tier chooser and hosting-dependent quick defaults -----------------------
+
+
+def test_store_tier_choice_quickstart_applies_and_full_unwinds():
+    from nymeria.onboarding import SetupTier
+    from nymeria.setup.rag_catalog import QUICKSTART_EMBEDDER
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.tier import store_tier_choice
+
+    # Hosting already known (a hydrated reconfigure), so the hosting-dependent
+    # seeds apply at pick time too.
+    state = WizardState(hosting=HostingOption.LOCAL)
+    store_tier_choice(state, SetupTier.QUICKSTART)
+    assert state.quick is True
+    assert state.embedder == QUICKSTART_EMBEDDER
+    assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
+    assert state.extras["web_search"] == ["web_search_ddgs"]
+    assert state.extras["tts"] == "kokoro"
+    assert state.extras["stt"] == "faster-whisper"
+
+    # Switching to Full unwinds exactly the seeded values, so the full walk
+    # starts from the normal step defaults (and the reranker step is not
+    # gated off by a stale rag_quickstarted).
+    store_tier_choice(state, SetupTier.FULL)
+    assert state.quick is False
+    assert state.embedder is None
+    assert state.rag_quickstarted is False
+    for key in ("fetch_url", "web_search", "tts", "stt"):
+        assert key not in state.extras
+
+    # And back again: the chooser round-trip re-seeds cleanly.
+    store_tier_choice(state, SetupTier.QUICKSTART)
+    assert state.quick is True
+    assert state.extras["web_search"] == ["web_search_ddgs"]
+
+
+def test_store_tier_choice_full_keeps_user_values():
+    from nymeria.onboarding import SetupTier
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.tier import store_tier_choice
+
+    # Values that predate the quickstart pick (flags, hydrated reconfigure)
+    # are not ours to unwind.
+    state = WizardState(
+        hosting=HostingOption.LOCAL,
+        extras={"web_search": ["web_search_tavily"], "fetch_url": []},
+    )
+    store_tier_choice(state, SetupTier.QUICKSTART)
+    assert state.extras["web_search"] == ["web_search_tavily"]
+    assert state.extras["fetch_url"] == []
+    store_tier_choice(state, SetupTier.FULL)
+    assert state.extras["web_search"] == ["web_search_tavily"]
+    assert state.extras["fetch_url"] == []
+
+
+def test_tier_step_skipped_when_flag_locked():
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.tier import make_setup_tier_step
+
+    step = make_setup_tier_step()
+    assert step.applies(WizardState()) is True
+    assert step.applies(WizardState(tier_locked=True)) is False
+
+
+def test_tier_initial_quickstart_fresh_full_on_reconfigure():
+    from nymeria.onboarding import SetupTier
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.tier import initial_tier
+
+    # Fresh install: Quickstart is the recommendation.
+    assert initial_tier(WizardState()) is SetupTier.QUICKSTART
+    # Reconfigure: Full, so Enter-through never quick-seeds capabilities the
+    # user deliberately left unconfigured (absences hydrate as nothing).
+    assert initial_tier(WizardState(reconfigure=True)) is SetupTier.FULL
+    # A tier already picked this run wins either way.
+    state = WizardState(reconfigure=True, extras={"tier": "quickstart"})
+    assert initial_tier(state) is SetupTier.QUICKSTART
+
+
+def test_searxng_seed_fires_on_fresh_write_despite_stale_presence(tmp_path):
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.state import WizardState
+
+    # A fresh write (merge=False, e.g. a hosting-shape switch where the merge
+    # fell back) carries nothing over from the old file, so presence recorded
+    # from it must not suppress the turnkey SearXNG seeding.
+    root = tmp_path / "checkout"
+    root.mkdir()
+    state = WizardState(
+        hosting=HostingOption.DOCKER,
+        provider="anthropic",
+        api_key="sk-ant-x",
+        model="m",
+        skip_llm_test=True,
+        root=root,
+        extras={"web_search": ["web_search_searxng"]},
+        present_env_keys={"SEARXNG_BASE_URL", "SEARXNG_SECRET"},
+    )
+    console, _ = _capture_console()
+    assert finalize(state, console=console, non_interactive=True,
+                    overwrite_confirmed=True, merge=False) == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(content, "SEARXNG_BASE_URL") == "http://searxng:8080"
+    secret = _env_line(content, "SEARXNG_SECRET")
+    assert secret and secret != "nymeria-searxng-internal-change-me"
+
+
+def test_capability_summary_recognizes_keyless_ddgs():
+    from nymeria.setup.finalize import print_capability_summary
+
+    console, output = _capture_console()
+    print_capability_summary(None, {}, console, keyless_search_selected=True)
+    assert "add a search backend key" not in output.getvalue()
+
+    console, output = _capture_console()
+    print_capability_summary(None, {}, console, keyless_search_selected=False)
+    assert "add a search backend key" in output.getvalue()
+
+
+def test_quick_hosting_defaults_reseed_on_hosting_change():
+    from nymeria.setup.quick import apply_quick_hosting_defaults
+    from nymeria.setup.state import WizardState
+
+    state = WizardState(quick=True, hosting=HostingOption.LOCAL)
+    apply_quick_hosting_defaults(state)
+    assert state.extras["web_search"] == ["web_search_ddgs"]
+    assert state.extras["tts"] == "kokoro"
+    assert state.extras["stt"] == "faster-whisper"
+
+    # Going back and picking Docker re-resolves: the sidecar-backed SearXNG
+    # replaces ddgs, and the in-process voice seeds are retired (the slim
+    # image has no voice engines).
+    state.hosting = HostingOption.DOCKER
+    apply_quick_hosting_defaults(state)
+    assert state.extras["web_search"] == ["web_search_searxng"]
+    assert "tts" not in state.extras
+    assert "stt" not in state.extras
+
+    # And back to local restores the in-process pair.
+    state.hosting = HostingOption.LOCAL
+    apply_quick_hosting_defaults(state)
+    assert state.extras["web_search"] == ["web_search_ddgs"]
+    assert state.extras["tts"] == "kokoro"
+
+
+def test_quick_hosting_defaults_respect_user_picks_and_disk():
+    from nymeria.setup.quick import apply_quick_hosting_defaults
+    from nymeria.setup.state import WizardState
+
+    # A flag pick is never replaced, even across hosting changes.
+    state = WizardState(
+        quick=True,
+        hosting=HostingOption.LOCAL,
+        extras={"web_search": ["web_search_tavily"]},
+    )
+    apply_quick_hosting_defaults(state)
+    assert state.extras["web_search"] == ["web_search_tavily"]
+    state.hosting = HostingOption.DOCKER
+    apply_quick_hosting_defaults(state)
+    assert state.extras["web_search"] == ["web_search_tavily"]
+
+    # An on-disk voice provider (reconfigure) is never overridden; the other
+    # slot still seeds.
+    state = WizardState(
+        quick=True,
+        hosting=HostingOption.LOCAL,
+        extras={"tts_on_disk": "openai"},
+    )
+    apply_quick_hosting_defaults(state)
+    assert "tts" not in state.extras
+    assert state.extras["stt"] == "faster-whisper"
+
+    # Outside quick mode the function is a no-op.
+    state = WizardState(hosting=HostingOption.LOCAL)
+    apply_quick_hosting_defaults(state)
+    assert "web_search" not in state.extras
 
 
 def test_quick_defaults_respect_explicit_empty_family():
@@ -2020,12 +2228,17 @@ def test_docker_shape_carries_init_picks_in_env_docker(monkeypatch, tmp_path):
 
 
 def test_docker_shape_no_picks_writes_no_init_seed_vars(monkeypatch, tmp_path):
-    """No optional picks -> the carrier vars are absent, so the container's own
-    core-seed and default-skill migrations run unchanged (no new noise)."""
+    """No optional picks -> no tools carrier (the container's own core-seed
+    migration runs unchanged). The skills carrier IS written: the wizard's
+    all-kits-on default (default_checked_skill_kits, widened 2026-06-12)
+    deliberately differs from the backend's curated DEFAULT_GLOBAL_SKILLS
+    fallback, and the carrier is the only way it reaches the container's
+    volume."""
     from nymeria.config.init_seed_env import (
         INIT_DEFAULT_THREAD_TOOLS_ENV,
         INIT_ENABLED_GLOBAL_SKILLS_ENV,
     )
+    from nymeria.setup import family_catalog
 
     _stub_llm(monkeypatch)
     root = tmp_path / "checkout"
@@ -2040,7 +2253,10 @@ def test_docker_shape_no_picks_writes_no_init_seed_vars(monkeypatch, tmp_path):
     assert rc == 0
     env_docker = (root / ".env.docker").read_text(encoding="utf-8")
     assert INIT_DEFAULT_THREAD_TOOLS_ENV not in env_docker
-    assert INIT_ENABLED_GLOBAL_SKILLS_ENV not in env_docker
+    expected_skills = ":".join(
+        ["self-improve", *family_catalog.default_checked_skill_kits()]
+    )
+    assert f"{INIT_ENABLED_GLOBAL_SKILLS_ENV}={expected_skills}" in env_docker
 
 
 def test_local_shape_writes_no_init_seed_vars(monkeypatch, tmp_path):
@@ -2630,8 +2846,10 @@ def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_
     )
 
     # The user deselects the extra pick (back to backend defaults). The stale
-    # carrier must be REMOVED, or a later fresh volume (down -v && up -d with the
-    # same .env.docker) would re-seed the reverted pick.
+    # tools carrier must be REMOVED, or a later fresh volume (down -v && up -d
+    # with the same .env.docker) would re-seed the reverted pick. The skills
+    # carrier stays: the wizard's all-kits-on default always differs from the
+    # backend's curated fallback (see docker_init_seed_env).
     state = WizardState(root=root)
     assert hydrate_state_from_disk(state) is True
     assert state.extras.get("web_search") == ["web_search_tavily"]
@@ -2640,7 +2858,8 @@ def test_docker_reconfigure_revert_to_defaults_retires_carrier(monkeypatch, tmp_
     assert finalize(state, console=console, non_interactive=False,
                     overwrite_confirmed=True, merge=True) == 0
     after = (root / ".env.docker").read_text(encoding="utf-8")
-    assert "NYMERIA_INIT_" not in after
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" not in after
+    assert "NYMERIA_INIT_ENABLED_GLOBAL_SKILLS" in after
 
 
 # --- scripted reconfigure (--non-interactive against an existing install) ----
@@ -2818,14 +3037,15 @@ def test_noninteractive_web_search_none_retires_docker_carrier(monkeypatch, tmp_
     )
 
     # The CLI-level twin of the revert-to-defaults carrier test: `none` is the
-    # scripted way to deselect the family, and the stale carrier must go.
+    # scripted way to deselect the family, and the stale tools carrier must go
+    # (the skills carrier stays; see docker_init_seed_env).
     rc = setup_main(
         ["--web-search", "none", "--root", str(root),
          "--non-interactive", "--skip-llm-test"]
     )
     assert rc == 0
     after = (root / ".env.docker").read_text(encoding="utf-8")
-    assert "NYMERIA_INIT_" not in after
+    assert "NYMERIA_INIT_DEFAULT_THREAD_TOOLS" not in after
 
 
 def test_noninteractive_quick_seeds_fetch_default_and_local_rag(monkeypatch, tmp_path):
@@ -2861,6 +3081,109 @@ def test_noninteractive_quick_docker_seeds_slim_and_carrier(monkeypatch, tmp_pat
     assert "POSTGRES_PASSWORD" not in content
     carrier = _env_line(content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
     assert carrier is not None and "fetch_url_nymeria" in carrier
+
+
+def test_noninteractive_quick_local_seeds_keyless_search_and_voice(
+    monkeypatch, tmp_path
+):
+    import json
+
+    from nymeria.setup import family_catalog
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "init"
+    # No --hosting: headless quick resolves to local, so the hosting-dependent
+    # seeds still apply.
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--quick", "--root", str(root), "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    content = (root / "config.env").read_text(encoding="utf-8")
+    # Free local voice pair written; the install hint covers the extra.
+    assert _env_line(content, "TTS_PROVIDER") == "kokoro"
+    assert _env_line(content, "STT_PROVIDER") == "faster-whisper"
+    # No SearXNG plumbing on a bare-metal install.
+    assert _env_line(content, "SEARXNG_BASE_URL") is None
+    profile = json.loads(
+        (root / "data" / "users" / "default" / "profile.json").read_text("utf-8")
+    )
+    tools = profile["tool_preferences"]["default_thread_tools"]
+    # ddgs (in-process keyless) is the bare-metal search default, not SearXNG.
+    assert "web_search_ddgs" in tools
+    assert "web_search_searxng" not in tools
+    # Every bundled kit on, behind the always-on guidance skill.
+    assert profile["enabled_global_skills"] == [
+        "self-improve",
+        *family_catalog.default_checked_skill_kits(),
+    ]
+
+
+def test_noninteractive_quick_docker_provisions_searxng_sidecar(
+    monkeypatch, tmp_path
+):
+    _stub_llm(monkeypatch)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--quick", "--hosting", "docker", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    content = (root / ".env.docker").read_text(encoding="utf-8")
+    # SearXNG (sidecar-backed) is the Docker search default, wired turnkey.
+    carrier = _env_line(content, "NYMERIA_INIT_DEFAULT_THREAD_TOOLS")
+    assert carrier is not None and "web_search_searxng" in carrier
+    assert "web_search_ddgs" not in carrier
+    assert _env_line(content, "SEARXNG_BASE_URL") == "http://searxng:8080"
+    secret = _env_line(content, "SEARXNG_SECRET")
+    assert secret and len(secret) >= 32
+    assert secret != "nymeria-searxng-internal-change-me"
+    # Voice is NOT seeded on slim Docker (the image has no voice engines).
+    assert _env_line(content, "TTS_PROVIDER") is None
+    assert _env_line(content, "STT_PROVIDER") is None
+
+    # A reconfigure keeps the generated secret (present_env_keys guards it
+    # from rotating) and the custom-value path from clobbering.
+    rc = setup_main(
+        ["--model", "claude-new", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
+    after = (root / ".env.docker").read_text(encoding="utf-8")
+    assert _env_line(after, "SEARXNG_SECRET") == secret
+    assert _env_line(after, "SEARXNG_BASE_URL") == "http://searxng:8080"
+
+
+def test_docker_stack_spec_searxng_pick_adds_search_profile():
+    from nymeria.onboarding import DockerStack, HostingOption
+    from nymeria.setup.state import WizardState
+
+    # Slim source checkout, default port: a SearXNG pick adds the profile AND
+    # forces --env-file (the generated SEARXNG_SECRET only reaches the sidecar
+    # via interpolation).
+    state = WizardState(
+        hosting=HostingOption.DOCKER,
+        extras={"web_search": ["web_search_searxng"]},
+    )
+    spec = finalize_mod._docker_stack_spec(state)
+    assert ("--profile", "search") == spec.compose_args[-2:]
+    assert "--env-file" in spec.compose_args
+
+    # No SearXNG pick: no profile, and the default-port slim command stays the
+    # documented short form.
+    plain = finalize_mod._docker_stack_spec(WizardState(hosting=HostingOption.DOCKER))
+    assert "--profile" not in plain.compose_args
+
+    # Full stack carries the profile too (its sidecar predates this wiring).
+    full = WizardState(
+        hosting=HostingOption.DOCKER,
+        docker_stack=DockerStack.FULL,
+        extras={"web_search": ["web_search_searxng"]},
+    )
+    full_spec = finalize_mod._docker_stack_spec(full)
+    assert ("--profile", "search") == full_spec.compose_args[-2:]
 
 
 def test_noninteractive_quick_still_requires_llm_flags(tmp_path):
@@ -3198,17 +3521,20 @@ async def _no_models(*_args, **_kwargs):
     return []
 
 
-# Step indices in the default flow (welcome, hosting, api_port, docker_stack,
-# security, auth, the five cliproxy_* branch steps, provider, connection,
-# model, ...). docker_stack (3) only applies to a Docker host and the
-# cliproxy_* steps (6-10) only to the subscription branch, so on the default
-# local API-key path the provider step is index 11.
-_HOSTING_STEP = 1
-_API_PORT_STEP = 2
-_SECURITY_STEP = 4
-_AUTH_STEP = 5
-_PROVIDER_STEP = 11
-_CONNECTION_STEP = 12
+# Step indices in the default flow (welcome, tier, hosting, api_port,
+# docker_stack, security, auth, the five cliproxy_* branch steps, provider,
+# connection, model, ...). docker_stack (4) only applies to a Docker host and
+# the cliproxy_* steps (7-11) only to the subscription branch, so on the
+# default local API-key path the provider step is index 12. The pilots pick
+# "Full setup" on the tier chooser (down + enter) so every step stays
+# applicable.
+_TIER_STEP = 1
+_HOSTING_STEP = 2
+_API_PORT_STEP = 3
+_SECURITY_STEP = 5
+_AUTH_STEP = 6
+_PROVIDER_STEP = 12
+_CONNECTION_STEP = 13
 
 
 async def _advance_to_provider(pilot) -> None:
@@ -3219,7 +3545,10 @@ async def _advance_to_provider(pilot) -> None:
     profile, Direct API key) and leaves the provider picker focused.
     docker_stack is skipped because the default hosting is not Docker.
     """
-    await pilot.press("enter")  # welcome -> hosting
+    await pilot.press("enter")  # welcome -> tier chooser
+    await pilot.pause()
+    await pilot.press("down")  # focus Full setup
+    await pilot.press("enter")  # pick Full setup -> hosting
     await pilot.pause()
     await pilot.press("enter")  # accept default hosting (local) -> api port
     await pilot.pause()
@@ -3244,7 +3573,10 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
             assert app.nav.current() == 0  # welcome (environment detection)
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             assert app.nav.current() == _HOSTING_STEP
             await pilot.press("enter")  # accept default hosting (local), advance
@@ -3282,6 +3614,44 @@ def test_wizard_pilot_forward_back_and_provider(monkeypatch):
 
     state = asyncio.run(drive())
     assert state.model == "claude-sonnet-4-6"  # provider default model filled in
+
+
+def test_wizard_pilot_tier_quickstart_gates_and_seeds(monkeypatch):
+    """Enter on the chooser (Quickstart preselected) flips quick mode; the
+    hosting pick then seeds the hosting-dependent keyless defaults, and the
+    next applicable screen is the auth method (port/stack/security gated off).
+    """
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    monkeypatch.setattr("nymeria.setup.steps.model.fetch_models_for_spec", _no_models)
+
+    async def drive() -> tuple[WizardState, int]:
+        state = WizardState()
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("enter")  # accept Quickstart (preselected)
+            await pilot.pause()
+            assert app.nav.current() == _HOSTING_STEP
+            await pilot.press("enter")  # accept default hosting (local)
+            await pilot.pause()
+            return state, app.nav.current()
+
+    state, landed = asyncio.run(drive())
+    assert state.quick is True
+    assert state.extras["tier"] == "quickstart"
+    # api_port, docker_stack, and security are quick-gated, so the LLM auth
+    # choice is the next screen.
+    assert landed == _AUTH_STEP
+    # Hosting-dependent seeds applied for the local shape.
+    assert state.extras["web_search"] == ["web_search_ddgs"]
+    assert state.extras["tts"] == "kokoro"
+    assert state.extras["stt"] == "faster-whisper"
+    assert state.extras["fetch_url"] == ["fetch_url_nymeria"]
+    assert state.rag_quickstarted is True
 
 
 def test_hint_markup_accents_keys_and_preserves_text():
@@ -3360,7 +3730,10 @@ def test_show_error_toggles_error_row_visibility():
     async def drive() -> None:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             scr = app.screen
             error = scr.query_one("#wizard-error", Static)
@@ -3426,7 +3799,10 @@ def test_wizard_pilot_arrow_keys_move_focus_and_description_space_selects():
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")  # welcome -> hosting (the radio screen)
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             scr = app.screen
             panel = scr.query_one("#choice-desc", Static)
@@ -3509,7 +3885,10 @@ def test_wizard_radio_renders_bare_circles_without_box():
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")  # welcome -> hosting (the radio screen)
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
             assert buttons  # the hosting step is a single-select radio screen
@@ -3542,7 +3921,10 @@ def test_wizard_pilot_security_step_unleashed_only():
         app = SetupWizardApp(state)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             await pilot.press("enter")  # accept default hosting (local) -> api port
             await pilot.pause()
@@ -3583,7 +3965,10 @@ def test_wizard_radio_focused_label_is_bold_and_bright_no_bar():
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")  # welcome -> hosting (the radio screen)
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             buttons = list(app.screen.query(CircleRadioButton))
             focused = app.screen.focused
@@ -3758,7 +4143,10 @@ def test_wizard_pilot_ctrl_s_skips_without_recording():
     async def drive() -> SetupWizardApp:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             await pilot.press("ctrl+s")  # skip hosting without choosing
             await pilot.pause()
@@ -4104,7 +4492,10 @@ def test_wizard_pilot_auth_step_enters_cliproxy_branch():
     async def drive() -> SetupWizardApp:
         app = SetupWizardApp(WizardState())
         async with app.run_test() as pilot:
-            await pilot.press("enter")  # welcome -> hosting
+            await pilot.press("enter")  # welcome -> tier chooser
+            await pilot.pause()
+            await pilot.press("down")  # focus Full setup
+            await pilot.press("enter")  # pick Full setup -> hosting
             await pilot.pause()
             await pilot.press("enter")  # accept hosting -> api port
             await pilot.pause()
@@ -4121,8 +4512,8 @@ def test_wizard_pilot_auth_step_enters_cliproxy_branch():
 
     app = asyncio.run(drive())
     assert app.state.auth_method is ProviderAuthMethod.CLIPROXY_OAUTH
-    # Index 6 is cliproxy_disclaimer, the first step of the branch.
-    assert app.nav.current() == 6
+    # Index 7 is cliproxy_disclaimer, the first step of the branch.
+    assert app.nav.current() == 7
 
 
 def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
@@ -5512,6 +5903,37 @@ def test_published_compose_asset_matches_canonical():
     assert asset.read_bytes() == canonical.read_bytes()
 
 
+def test_searxng_settings_asset_matches_canonical():
+    # Same drift gate for the SearXNG sidecar config the published compose
+    # bind-mounts: the wheel asset must stay byte-identical to the canonical
+    # Nymeria/searxng/settings.yml the source stacks mount. Edit both together.
+    from importlib import resources
+
+    asset = resources.files("nymeria.setup").joinpath(
+        "assets", finalize_mod.SEARXNG_SETTINGS_ASSET
+    )
+    canonical = Path(__file__).parent.parent / "searxng" / "settings.yml"
+    assert asset.read_bytes() == canonical.read_bytes()
+
+
+def test_single_composes_pin_the_same_searxng_image():
+    # The three compose files ship the same digest-pinned SearXNG sidecar;
+    # bumping the digest in one without the others would fork sidecar behavior
+    # between deployment shapes.
+    base = Path(__file__).parent.parent
+    digests = {}
+    for name in (
+        "docker-compose.yml",
+        "docker-compose.single.yml",
+        finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE,
+    ):
+        text = (base / name).read_text()
+        images = re.findall(r"image:\s*(searxng/searxng@sha256:[0-9a-f]+)", text)
+        assert images, f"{name} has no digest-pinned searxng image"
+        digests[name] = set(images)
+    assert len(set().union(*digests.values())) == 1, digests
+
+
 def test_docker_stack_spec_clone_free_uses_published_compose(monkeypatch):
     from nymeria import __version__
     from nymeria.setup.state import WizardState
@@ -5578,6 +6000,11 @@ def test_finalize_clone_free_slim_materializes_compose_and_pins_version(
         Path(__file__).parent.parent / finalize_mod.DOCKER_SINGLE_PUBLISHED_COMPOSE
     )
     assert compose_path.read_bytes() == canonical.read_bytes()
+    # The SearXNG sidecar config materializes alongside it (the compose
+    # bind-mounts ./searxng when the search profile is up).
+    searxng_settings = root / "searxng" / "settings.yml"
+    canonical_searxng = Path(__file__).parent.parent / "searxng" / "settings.yml"
+    assert searxng_settings.read_bytes() == canonical_searxng.read_bytes()
     content = (root / ".env.docker").read_text(encoding="utf-8")
     assert _env_line(content, "NYMERIA_VERSION") == __version__
     # The old deferred-case guidance is gone; the printed start command drives

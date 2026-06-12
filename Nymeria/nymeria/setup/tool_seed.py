@@ -66,9 +66,13 @@ def docker_init_seed_env(state: "WizardState") -> dict[str, str]:
 
     Returns ONLY the vars that DIFFER from the backend's own first-boot defaults
     (``core_seed_tool_names()`` for tools, ``DEFAULT_GLOBAL_SKILLS`` for skills),
-    so a no-pick install writes nothing extra and the container's normal core-seed
-    and default-skill migrations run unchanged. When a var is written it holds the
-    exact list `seed_bootstrap_profile` would have written on the host, keeping the
+    so the container's normal core-seed and default-skill migrations run
+    unchanged where they agree. In practice the skills carrier is now always
+    written: the wizard's curated six-kit default
+    (``default_checked_skill_kits``, widened 2026-06-12) deliberately differs
+    from the narrower backend fallback, and the carrier is the only way it
+    reaches the container's volume. When a var is written it holds the exact
+    list `seed_bootstrap_profile` would have written on the host, keeping the
     two seeding paths in agreement.
     """
     from ..config.init_seed_env import (

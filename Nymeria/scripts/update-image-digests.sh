@@ -10,7 +10,10 @@
 #   ./scripts/update-image-digests.sh
 #
 # Then update the `image:` lines in Nymeria/docker-compose.yml and commit
-# with a note about why you bumped (CVE patch, feature, etc.).
+# with a note about why you bumped (CVE patch, feature, etc.). The searxng
+# digest also appears in docker-compose.single.yml,
+# docker-compose.single.published.yml, and the wheel asset copy of the latter
+# (nymeria/setup/assets/); a test asserts all stay in lockstep.
 
 set -euo pipefail
 
@@ -18,6 +21,7 @@ IMAGES=(
     "postgres:15-alpine"
     "redis:7-alpine"
     "caddy:2-alpine"
+    "searxng/searxng:latest"
 )
 
 printf 'Pulling images to resolve registry digests…\n\n'

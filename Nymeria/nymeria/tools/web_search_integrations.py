@@ -3,12 +3,12 @@
 The first web search tool, ``web_search_perplexity``, lives in ``web.py``. This
 module holds the extra opt-in providers added per
 ``docs/private/plans/web-search-integrations.md``, starting with Tavily, Exa,
-Firecrawl, Brave, then SearXNG. Each provider resolves its credential (an API
-key, or a base URL for the self-hosted SearXNG) through the credential vault
-(vault, then settings,
-then env) and is appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which
-``tools/__init__.py`` folds into ``CATALOG_TOOLS`` alongside
-``WEB_SEARCH_SERVICE_TOOLS``.
+Firecrawl, Brave, then SearXNG, then the keyless in-process ddgs metasearch.
+Each keyed provider resolves its credential (an API key, or a base URL for the
+self-hosted SearXNG) through the credential vault (vault, then settings, then
+env); ``web_search_ddgs`` needs no credential at all. Every provider is
+appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which ``tools/__init__.py`` folds
+into ``CATALOG_TOOLS`` alongside ``WEB_SEARCH_SERVICE_TOOLS``.
 """
 
 import logging
@@ -77,6 +77,11 @@ _BRAVE_DATE_RANGE = re.compile(r"^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$")
 # restricted to the text-useful ones for an agent.
 _SEARXNG_TIME_RANGES = {"day", "week", "month", "year"}
 _SEARXNG_CATEGORIES = {"general", "news", "science"}
+
+# ddgs maps the family's day/week/month/year onto its single-letter timelimit.
+_DDGS_TIME_RANGES = {"day": "d", "week": "w", "month": "m", "year": "y"}
+_DDGS_CATEGORIES = {"general", "news"}
+_DDGS_TIMEOUT = 15
 
 
 def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -1138,14 +1143,181 @@ def web_search_searxng(
     return "\n\n".join(sections)
 
 
+def _format_ddgs_results(items: list, count: int) -> str:
+    """Format ddgs result dicts into ranked-source text.
+
+    Text results carry "title"/"href"/"body"; news results use "url" instead of
+    "href" and add "date" and "source". Items arrive ranked by the library's
+    cross-engine aggregator; we keep the top "count" (the search is already
+    done, so this only caps how much enters the model context).
+    """
+    lines: list[str] = []
+    for i, item in enumerate(items[:count], 1):
+        title = (item.get("title") or "").strip() or "(untitled)"
+        url = item.get("href") or item.get("url") or ""
+        source = (item.get("source") or "").strip()
+        date = (item.get("date") or "").strip()
+        snippet = (item.get("body") or "").strip()
+        meta = "".join(f" · {part}" for part in (source, date) if part)
+        block = f"{i}. {title}\n   {url}{meta}"
+        if snippet:
+            block += f"\n   {snippet}"
+        lines.append(block)
+
+    return "\n".join(lines) if lines else "[No results]"
+
+
+def _ddgs_search_single(q: str, category: str, timelimit: Optional[str], count: int) -> str:
+    """Execute one ddgs metasearch (text or news) and return formatted results.
+
+    ddgs scrapes its upstream engines in-process and rotates to the next engine
+    when one blocks, with per-engine failures swallowed internally, so an
+    exception means every attempted engine failed (as of ddgs 9.14.x the
+    library never raises its RatelimitException; blanket failures surface as
+    DDGSException, so there is deliberately no retry here). Every failure comes
+    back as a soft "[Error]" string so the agent can adapt, matching the other
+    providers in this module.
+    """
+    from ddgs import DDGS
+    from ddgs.exceptions import DDGSException, TimeoutException
+
+    try:
+        with DDGS(timeout=_DDGS_TIMEOUT) as client:
+            search = client.news if category == "news" else client.text
+            results = search(
+                q, safesearch="moderate", timelimit=timelimit, max_results=count
+            )
+        out = _format_ddgs_results(results, count)
+        logger.debug("ddgs metasearch returned %d characters", len(out))
+        return out
+
+    except TimeoutException as e:
+        logger.warning("ddgs metasearch timed out: %s", e)
+        return f"[Error]: ddgs metasearch timed out: {e}"
+
+    except DDGSException as e:
+        # The library raises instead of returning an empty list when every
+        # engine came back empty; treat that case as a normal empty result.
+        if "No results found" in str(e):
+            return "[No results]"
+        logger.error("ddgs metasearch failed: %s", e)
+        return (
+            f"[Error]: ddgs metasearch failed: {e}. Try again in a minute, "
+            "or use another web_search backend."
+        )
+
+    except Exception as e:
+        error_msg = f"ddgs metasearch failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return f"[Error]: {error_msg}"
+
+
+@tool
+def web_search_ddgs(
+    query: str = "",
+    queries: str = "",
+    count: Optional[int] = None,
+    time_range: Optional[str] = None,
+    sources: str = "",
+    include_domains: str = "",
+    exclude_domains: str = "",
+) -> str:
+    """
+    Search the web for current information using keyless in-process metasearch.
+
+    Backed by the ddgs metasearch library: it queries several upstream engines
+    directly from this process (Bing, Brave, DuckDuckGo, Google, Mojeek, and
+    more), rotating engines when one blocks, and returns one merged ranked list
+    of sources (title, URL, snippet). Needs no API key and no self-hosted
+    instance. Use web_search_perplexity for a single synthesized answer; use a
+    dedicated page-fetch tool to pull the full body of a specific page.
+
+    Args:
+        query: Single search query.
+        queries: Multiple queries separated by " | " (pipe with spaces). Takes
+                 precedence over query; each is searched independently. Max 10.
+                 e.g. "rust async runtimes | tokio vs async-std 2025"
+        count: Sources to return per query (1-20, default 5).
+        time_range: Restrict results by recency: "day", "week", "month", or "year".
+        sources: Result category: "general" (default) or "news".
+        include_domains: Comma-separated domains to restrict results to,
+                         e.g. "github.com, arxiv.org". Applied as site: operators
+                         in the query (the upstream engines understand them).
+        exclude_domains: Comma-separated domains to exclude from results.
+
+    Returns:
+        Ranked sources as "N. <title>\\n   <url>[ · <source> · <date>]\\n   <snippet>".
+        Source and date appear on news results. Batch mode: sections separated
+        by "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
+    """
+    # Parse queries (batch takes precedence over single query).
+    if queries.strip():
+        query_list = [q.strip() for q in queries.split(" | ")]
+        query_list = [q for q in query_list if q]
+        if len(query_list) > _MAX_BATCH_QUERIES:
+            query_list = query_list[:_MAX_BATCH_QUERIES]
+    elif query.strip():
+        query_list = [query.strip()]
+    else:
+        return "[Error]: Provide a query or pipe-separated queries."
+
+    # Clamp count (top-N cap on an already-ranked merge, not a fetch directive).
+    if count is not None:
+        count = max(1, min(20, count))
+    else:
+        count = 5
+
+    timelimit: Optional[str] = None
+    if time_range and time_range.strip().lower() in _DDGS_TIME_RANGES:
+        timelimit = _DDGS_TIME_RANGES[time_range.strip().lower()]
+
+    # text vs news are separate ddgs calls, so sources picks one category
+    # (first recognized wins); anything unrecognized falls back to general.
+    category = "general"
+    for cat in (c.strip().lower() for c in sources.split(",")):
+        if cat in _DDGS_CATEGORIES:
+            category = cat
+            break
+
+    # The upstream engines understand Google-style site: operators, so the
+    # SearXNG operator synthesis applies unchanged.
+    site_filter = _searxng_site_filter(include_domains, exclude_domains)
+
+    logger.info(
+        "ddgs metasearch: %d query(ies) (count=%d, category=%s)",
+        len(query_list),
+        count,
+        category,
+    )
+
+    # Single query: return directly.
+    if len(query_list) == 1:
+        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
+        return _ddgs_search_single(q, category, timelimit, count)
+
+    # Batch mode.
+    total = len(query_list)
+    sections = []
+    for i, raw_q in enumerate(query_list, 1):
+        header = f"=== Query {i}/{total}: {raw_q} ==="
+        q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
+        result = _ddgs_search_single(q, category, timelimit, count)
+        sections.append(f"{header}\n{result}")
+
+    return "\n\n".join(sections)
+
+
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
 # into CATALOG_TOOLS alongside WEB_SEARCH_SERVICE_TOOLS so they share the Web
 # Search group. SearXNG (keyless, self-hosted) replaced the old utility-group
-# searxng_search per docs/private/plans/web-search-integrations.md.
+# searxng_search per docs/private/plans/web-search-integrations.md; ddgs
+# (keyless, in-process) joined 2026-06-12 as the zero-infra quickstart default
+# (partial reversal of the DDG skip recorded in the same plan doc).
 WEB_SEARCH_INTEGRATION_TOOLS = [
     web_search_tavily,
     web_search_exa_ai,
     web_search_firecrawl,
     web_search_brave,
     web_search_searxng,
+    web_search_ddgs,
 ]

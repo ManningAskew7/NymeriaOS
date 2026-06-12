@@ -93,6 +93,12 @@ DOCKER_FULL_SERVICE = "api"
 # tagged with the bare package version, `v` stripped).
 DOCKER_SINGLE_PUBLISHED_COMPOSE = "docker-compose.single.published.yml"
 
+# SearXNG sidecar config for the published compose's `search` profile. Ships in
+# the wheel (kept byte-identical to the canonical `Nymeria/searxng/settings.yml`
+# by a drift test) and materializes to `<root>/searxng/settings.yml`, where the
+# compose bind-mounts it.
+SEARXNG_SETTINGS_ASSET = "searxng-settings.yml"
+
 
 @dataclass(frozen=True)
 class _DockerStackSpec:
@@ -127,6 +133,17 @@ class _DockerStackSpec:
     image_version: str | None = None
 
 
+def _searxng_sidecar_selected(state: WizardState) -> bool:
+    """True when the SearXNG backend is among this run's web-search picks.
+
+    Drives the `search` compose profile (all three compose files carry the
+    sidecar behind it) and the turnkey SEARXNG_BASE_URL / SEARXNG_SECRET env
+    seeding for Docker hosting.
+    """
+    selected = state.extras.get("web_search")
+    return isinstance(selected, list) and "web_search_searxng" in selected
+
+
 def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     """The stack descriptor for this install (defaults to slim).
 
@@ -141,6 +158,11 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     `--env-file`: the `NYMERIA_VERSION` image-tag pin lives in `.env.docker`,
     and only `--env-file` feeds compose interpolation (the service-level
     `env_file:` reaches the container, not the `image:` line).
+
+    A SearXNG pick adds `--profile search` to every compose invocation (up,
+    logs, down) so the sidecar starts, stops, and reports with the stack; the
+    profile also forces `--env-file` on the slim default-port path because the
+    generated SEARXNG_SECRET reaches the sidecar only via interpolation.
     """
     port = state.resolved_api_port()
     # A non-default port rides the printed manual commands as an env prefix
@@ -150,14 +172,17 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
     command_env: tuple[tuple[str, str], ...] = (
         (("API_PORT", str(port)),) if port != 8000 else ()
     )
+    search_profile = _searxng_sidecar_selected(state)
+    profile_args: tuple[str, ...] = ("--profile", "search") if search_profile else ()
     if (state.docker_stack or DockerStack.SLIM) is DockerStack.SLIM:
         clone_free = source_checkout_root() is None
         compose_file = (
             DOCKER_SINGLE_PUBLISHED_COMPOSE if clone_free else DOCKER_SINGLE_COMPOSE
         )
         compose_args: tuple[str, ...] = ("-f", compose_file)
-        if port != 8000 or clone_free:
+        if port != 8000 or clone_free or search_profile:
             compose_args += ("--env-file", ".env.docker")
+        compose_args += profile_args
         return _DockerStackSpec(
             compose_args=compose_args,
             service=DOCKER_SINGLE_SERVICE,
@@ -172,7 +197,7 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
             image_version=_PACKAGE_VERSION if clone_free else None,
         )
     return _DockerStackSpec(
-        compose_args=("--env-file", ".env.docker"),
+        compose_args=("--env-file", ".env.docker", *profile_args),
         command_env=command_env,
         api_port=port,
         service=DOCKER_FULL_SERVICE,
@@ -449,6 +474,26 @@ def finalize(
         )
         return 2
 
+    if for_docker and _searxng_sidecar_selected(state):
+        # The bundled sidecar is turnkey: default the base URL to the compose
+        # service and generate a per-install secret so the compose default
+        # "change-me" never reaches a real install. Both interpolate via
+        # --env-file (_docker_stack_spec always passes it when the search
+        # profile is active). present_env_keys guards MERGE writes only:
+        # hydrate records on-disk values by presence, not value, and a
+        # produced value would overwrite a hand-set URL (or rotate the
+        # secret) on merge. On a fresh write (--force, or a hosting-shape
+        # switch where merge fell back above) nothing carries over, so the
+        # presence of a value in the OLD file must not suppress the seed.
+        for var, value in (
+            ("SEARXNG_BASE_URL", "http://searxng:8080"),
+            ("SEARXNG_SECRET", secrets.token_urlsafe(32)),
+        ):
+            if not state.optional_env.get(var) and (
+                not merge or var not in state.present_env_keys
+            ):
+                state.optional_env[var] = value
+
     optional_env = _resolve_optional_env(state, spec=spec, api_key=api_key)
     extra_env = _resolve_extra_env(state)
     secrets_key = _resolve_secrets_key(config_path)
@@ -566,7 +611,15 @@ def finalize(
                 _warn_stale_service_artifact(state, console)
         return 0
 
-    print_capability_summary(spec, optional_env, console, extra_env=extra_env)
+    print_capability_summary(
+        spec,
+        optional_env,
+        console,
+        extra_env=extra_env,
+        keyless_search_selected=(
+            "web_search_ddgs" in (state.extras.get("web_search") or [])
+        ),
+    )
     print_deployment_summary(state, console)
 
     doctor_status = _maybe_run_doctor(
@@ -1137,21 +1190,31 @@ def source_checkout_root() -> Path | None:
 
 
 def _materialize_published_compose(root: Path) -> Path:
-    """Write the wheel-bundled published compose into the runtime root.
+    """Write the wheel-bundled published compose bundle into the runtime root.
 
     Clone-free installs have no checkout to run compose from, so init owns the
     compose file next to `.env.docker`: it is rewritten on every run, keeping
     it in lockstep with the installed wheel, while `.env.docker` carries all
-    user-editable state (including the `NYMERIA_VERSION` image-tag pin).
+    user-editable state (including the `NYMERIA_VERSION` image-tag pin). The
+    SearXNG sidecar config (`searxng/settings.yml`, which the compose
+    bind-mounts when the `search` profile is up) ships and rewrites the same
+    way; operators who need a customized instance should run their own and
+    point `SEARXNG_BASE_URL` at it instead of editing the materialized copy.
     """
-    asset = resources.files("nymeria.setup").joinpath(
-        "assets", DOCKER_SINGLE_PUBLISHED_COMPOSE
-    )
+    setup_assets = resources.files("nymeria.setup").joinpath("assets")
     root.mkdir(parents=True, exist_ok=True)
+
     target = root / DOCKER_SINGLE_PUBLISHED_COMPOSE
     tmp = target.with_name(target.name + ".tmp")
-    tmp.write_bytes(asset.read_bytes())
+    tmp.write_bytes(setup_assets.joinpath(DOCKER_SINGLE_PUBLISHED_COMPOSE).read_bytes())
     os.replace(tmp, target)
+
+    searxng_target = root / "searxng" / "settings.yml"
+    searxng_target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = searxng_target.with_name(searxng_target.name + ".tmp")
+    tmp.write_bytes(setup_assets.joinpath(SEARXNG_SETTINGS_ASSET).read_bytes())
+    os.replace(tmp, searxng_target)
+
     return target
 
 
@@ -1259,21 +1322,27 @@ def print_capability_summary(
     optional_env: Mapping[str, str],
     console: Console,
     extra_env: Mapping[str, str] | None = None,
+    keyless_search_selected: bool = False,
 ) -> None:
     """Show which capabilities are ready and which env var unblocks each.
 
     Derived from what was written to config.env this run. As the placeholder
     capability steps get real, this can move to the runtime capability
-    resolvers without changing the output shape.
+    resolvers without changing the output shape. ``keyless_search_selected``
+    covers web_search_ddgs, which is ready with no env var at all.
     """
 
     openai_ready = (
         spec is not None and "OPENAI_API_KEY" in spec.api_key_env_vars
     ) or bool(optional_env.get("OPENAI_API_KEY"))
-    search_ready = bool(optional_env.get("PERPLEXITY_API_KEY")) or any(
-        optional_env.get(env)
-        for env in ("TAVILY_API_KEY", "EXA_API_KEY", "FIRECRAWL_API_KEY",
-                    "BRAVE_API_KEY", "SEARXNG_BASE_URL")
+    search_ready = (
+        keyless_search_selected
+        or bool(optional_env.get("PERPLEXITY_API_KEY"))
+        or any(
+            optional_env.get(env)
+            for env in ("TAVILY_API_KEY", "EXA_API_KEY", "FIRECRAWL_API_KEY",
+                        "BRAVE_API_KEY", "SEARXNG_BASE_URL")
+        )
     )
     image_ready = openai_ready or any(
         optional_env.get(env)
@@ -1362,12 +1431,18 @@ def _print_voice_hints(state: WizardState, console: Console) -> None:
         if selected_stt(state) in LOCAL_STT_PROVIDERS and not local_stt_importable():
             missing.append("faster-whisper")
         if missing:
+            # uv tool environments cannot be pip-installed into; the supported
+            # path is reinstalling the tool with the extra.
+            install_cmd = (
+                "uv tool install --force 'nymeriaos\\[voice-local]'"
+                if "uv/tools" in Path(sys.prefix).as_posix()
+                else "pip install 'nymeriaos\\[voice-local]'"
+            )
             # \[ stops rich from eating [voice-local] as a markup tag.
             console.print(
                 "\n[yellow]Local voice needs the voice extra "
                 f"({' and '.join(missing)} not installed): "
-                "pip install 'nymeriaos\\[voice-local]'. Models download on "
-                "first use.[/yellow]"
+                f"{install_cmd}. Models download on first use.[/yellow]"
             )
     if uses_voice_sidecar(state):
         console.print(

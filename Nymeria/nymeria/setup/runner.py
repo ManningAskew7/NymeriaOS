@@ -309,9 +309,10 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         "--quick",
         action="store_true",
         help=(
-            "Ask only the essentials (hosting + LLM) and default the rest with "
-            "no-extra-auth picks (free local RAG, keyless web fetch, all skill "
-            "kits); with --non-interactive, applies the same defaults to the "
+            "Ask only the essentials (hosting, LLM, timezone, external access) "
+            "and default the rest with free keyless picks (local RAG, keyless "
+            "web search and fetch, local voice on bare metal, all skill kits); "
+            "with --non-interactive, applies the same defaults to the "
             "flag-driven setup"
         ),
     )
@@ -410,12 +411,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
             extras[key] = str(value)
     timezone = extras.get("user_timezone")
     if isinstance(timezone, str):
-        tz_field = next(
-            field
-            for field in tuning_catalog.LIMIT_FIELDS
-            if field.key == "user_timezone"
-        )
-        _, error = tuning_catalog.parse_field(tz_field, timezone)
+        _, error = tuning_catalog.parse_field(tuning_catalog.TIMEZONE_FIELD, timezone)
         if error:
             raise SystemExit(f"--timezone: {error}")
 
@@ -539,8 +535,10 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         data_dir=data_dir,
         next_action=next_action,
         # --quick gates the wizard to the essentials; --custom forces the full
-        # walk and wins if both are passed.
+        # walk and wins if both are passed. Either flag locks the tier, which
+        # skips the interactive chooser screen (steps/tier.py).
         quick=bool(getattr(args, "quick", False)) and not bool(getattr(args, "custom", False)),
+        tier_locked=bool(getattr(args, "quick", False)) or bool(getattr(args, "custom", False)),
         skip_llm_test=bool(getattr(args, "skip_llm_test", False)),
         force=bool(getattr(args, "force", False)),
         run_doctor=bool(getattr(args, "run_doctor", False) or getattr(args, "full_doctor", False)),
@@ -632,6 +630,12 @@ def run_init(args: argparse.Namespace) -> int:
         if state.quick:
             # Same defaults the interactive quick path seeds. The LLM flags
             # below stay required: quick never defaults provider/model/key.
+            # Headless runs never reach the hosting step, so an absent
+            # --hosting resolves to local now (matching finalize's own
+            # coalescing) and the hosting-dependent seeds (keyless web
+            # search, local voice) can apply.
+            if state.hosting is None:
+                state.hosting = HostingOption.LOCAL
             apply_quick_defaults(state)
         # Light detection only (no subprocess probes): scripted runs stay fast,
         # and the gates still catch a hosting choice this host cannot run.

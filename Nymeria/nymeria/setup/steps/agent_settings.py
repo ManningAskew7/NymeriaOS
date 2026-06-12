@@ -1,9 +1,12 @@
-"""Agent-tuning steps: context strategy, agent limits, and LLM tuning.
+"""Agent-tuning steps: context strategy, timezone, agent limits, LLM tuning.
 
-Three `FormStep`s over the TUI-free ``setup/tuning_catalog.py``. Each numeric
+Four `FormStep`s over the TUI-free ``setup/tuning_catalog.py``. Each numeric
 input is optional: blank keeps the settings default (or an existing env line),
 typed values are validated at collect time and land in ``state.extras`` as raw
 strings (finalize parses them again via the catalog when producing env lines).
+The timezone step is the one prefilled field: it shows the detected host
+timezone for the user to confirm or correct (Enter writes it; clearing the
+field keeps the UTC default; skipping records nothing, like every step).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from ..tuning_catalog import (
     LIMIT_FIELDS,
     RECOMMENDED_EFFORT,
     SAMPLING_FIELDS,
+    TIMEZONE_FIELD,
     TuningChoice,
     TuningField,
     annotated_effort_choices,
@@ -189,6 +193,36 @@ class _ContextStep(_TuningFormStep):
         return True
 
 
+class _TimezoneStep(_TuningFormStep):
+    """Confirm the detected host timezone (the one prefilled wizard field).
+
+    The Input starts with the detected IANA name (or a previously hydrated
+    value), so Enter confirms it and writes USER_TIMEZONE explicitly. Clearing
+    the field keeps the UTC default; Ctrl+S skip records nothing, which is why
+    the detection prefills the widget rather than mutating state up front.
+    """
+
+    def compose_body(self) -> ComposeResult:
+        value = self.state.extras.get(TIMEZONE_FIELD.key)
+        if not isinstance(value, str) or not value.strip():
+            from ..environment import detect_system_timezone
+
+            value = detect_system_timezone() or ""
+        yield Static(
+            TIMEZONE_FIELD.label,
+            classes="field-label",
+            id=f"{_field_id(TIMEZONE_FIELD)}-label",
+        )
+        yield Input(
+            value=value,
+            placeholder=TIMEZONE_FIELD.placeholder,
+            id=_field_id(TIMEZONE_FIELD),
+        )
+
+    def collect(self) -> bool:
+        return self._collect_fields((TIMEZONE_FIELD,))
+
+
 class _AgentLimitsStep(_TuningFormStep):
     """Optional agent caps and defaults; every field blank-keeps-default."""
 
@@ -266,13 +300,26 @@ def make_context_step() -> Step:
     )
 
 
+def make_timezone_step() -> Step:
+    return _make_form_step(
+        step_id="timezone",
+        title="Your timezone",
+        note=(
+            "Used for schedules, TODO deadlines, and time-aware replies. "
+            "Detected from this machine when possible: press Enter to confirm "
+            "it, correct it if wrong, or leave blank for UTC."
+        ),
+        screen_cls=_TimezoneStep,
+    )
+
+
 def make_agent_limits_step() -> Step:
     return _make_form_step(
         step_id="agent_limits",
         title="Agent limits",
         note=(
-            "Memory caps, timezone, and tool limits. Everything here can be "
-            "changed later in settings."
+            "Memory caps and tool limits. Everything here can be changed "
+            "later in settings."
         ),
         screen_cls=_AgentLimitsStep,
     )
@@ -297,4 +344,5 @@ __all__ = [
     "make_agent_limits_step",
     "make_context_step",
     "make_llm_tuning_step",
+    "make_timezone_step",
 ]

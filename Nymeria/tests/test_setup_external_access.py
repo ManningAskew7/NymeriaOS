@@ -703,6 +703,10 @@ def test_tunnel_steps_apply_only_to_their_choice():
     assert ts.applies(state) and not cf.applies(state)
     state.external_access = ExternalAccess.CLOUDFLARE
     assert cf.applies(state) and not ts.applies(state)
-    # Quick mode keeps the whole external-access unit out of the way.
+    # The external-access unit STAYS in quick mode (remote access is one of
+    # the quickstart tier's irreducible questions); the tunnel steps still
+    # gate on the choice.
     state.quick = True
-    assert not cf.applies(state)
+    assert cf.applies(state) and not ts.applies(state)
+    state.external_access = ExternalAccess.LOCAL_ONLY
+    assert not cf.applies(state) and not ts.applies(state)

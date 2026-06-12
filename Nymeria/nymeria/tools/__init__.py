@@ -41,6 +41,7 @@ from .web_search_integrations import (
     web_search_firecrawl,
     web_search_brave,
     web_search_searxng,
+    web_search_ddgs,
     WEB_SEARCH_INTEGRATION_TOOLS,
 )
 from .web_fetch import fetch_url_nymeria, WEB_FETCH_TOOLS
@@ -2734,6 +2735,7 @@ __all__ = [
     "web_search_firecrawl",
     "web_search_brave",
     "web_search_searxng",
+    "web_search_ddgs",
     "WEB_SEARCH_INTEGRATION_TOOLS",
     "fetch_url_nymeria",
     "WEB_FETCH_TOOLS",

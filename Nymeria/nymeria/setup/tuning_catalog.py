@@ -7,7 +7,9 @@ truth. Three sections ride here:
 - ``context`` step: the context-management strategy (token-triggered
   auto-compaction, percentage-triggered, sliding window, or none) plus the
   matching trigger value.
-- ``agent_limits`` step: memory caps, timezone, tool output cap, tool timeout.
+- ``timezone`` step: the user's IANA timezone (its own confirm step, prefilled
+  from host detection; see ``environment.detect_system_timezone``).
+- ``agent_limits`` step: memory caps, tool output cap, tool timeout.
 - ``llm_tuning`` step: reasoning effort plus sampling knobs (temperature, max
   output tokens, top_p, top_k).
 
@@ -126,16 +128,24 @@ _CONTEXT_ENV: dict[str, dict[str, str]] = {
 }
 
 
+# --- timezone step ---------------------------------------------------------
+
+# Promoted out of LIMIT_FIELDS into its own confirm step (the wizard prefills
+# it with the detected host timezone; confirming writes USER_TIMEZONE, blank
+# keeps the UTC default). Stays a TuningField so parsing, hydrate, env
+# production, and drop logic reuse the shared machinery.
+TIMEZONE_FIELD = TuningField(
+    key="user_timezone",
+    env_var="USER_TIMEZONE",
+    label="Your timezone (IANA name)",
+    placeholder="UTC (default), e.g. Australia/Sydney",
+    kind="timezone",
+)
+
+
 # --- agent_limits step ---------------------------------------------------------
 
 LIMIT_FIELDS: tuple[TuningField, ...] = (
-    TuningField(
-        key="user_timezone",
-        env_var="USER_TIMEZONE",
-        label="Your timezone (IANA name)",
-        placeholder="UTC (default), e.g. Australia/Sydney",
-        kind="timezone",
-    ),
     TuningField(
         key="memory_max_entries",
         env_var="MEMORY_MAX_ENTRIES",
@@ -294,7 +304,10 @@ SAMPLING_FIELDS: tuple[TuningField, ...] = (
 )
 
 ALL_FIELDS: tuple[TuningField, ...] = (
-    tuple(CONTEXT_FIELDS.values()) + LIMIT_FIELDS + SAMPLING_FIELDS
+    tuple(CONTEXT_FIELDS.values())
+    + (TIMEZONE_FIELD,)
+    + LIMIT_FIELDS
+    + SAMPLING_FIELDS
 )
 
 
@@ -528,6 +541,7 @@ def tuning_env_for_state(state: "WizardState") -> dict[str, str]:
         trigger = CONTEXT_FIELDS.get(context)
         if trigger is not None:
             out.update(_field_env(state, trigger))
+    out.update(_field_env(state, TIMEZONE_FIELD))
     for field in LIMIT_FIELDS:
         out.update(_field_env(state, field))
     effort = selected_effort(state)
@@ -602,6 +616,7 @@ def tuning_extras_from_env(get) -> dict[str, str]:
     direct_fields = (
         (CONTEXT_FIELDS["compact_tokens"],)
         + (CONTEXT_FIELDS["sliding_window"],)
+        + (TIMEZONE_FIELD,)
         + LIMIT_FIELDS
         + SAMPLING_FIELDS
     )
@@ -628,6 +643,9 @@ def tuning_summary_lines(state: "WizardState") -> list[str]:
             if env:
                 detail = f" ({trigger.env_var}={env[trigger.env_var]})"
         lines.append(f"Context: {context_label(context)}{detail}")
+    tz_env = _field_env(state, TIMEZONE_FIELD)
+    if tz_env:
+        lines.append(f"Timezone: {tz_env[TIMEZONE_FIELD.env_var]}")
     limit_bits = []
     for field in LIMIT_FIELDS:
         env = _field_env(state, field)
@@ -661,6 +679,7 @@ __all__ = [
     "LIMIT_FIELDS",
     "RECOMMENDED_EFFORT",
     "SAMPLING_FIELDS",
+    "TIMEZONE_FIELD",
     "TuningChoice",
     "TuningField",
     "annotated_effort_choices",

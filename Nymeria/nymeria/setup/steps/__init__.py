@@ -8,6 +8,7 @@ from .agent_settings import (
     make_agent_limits_step,
     make_context_step,
     make_llm_tuning_step,
+    make_timezone_step,
 )
 from .auth import make_auth_method_step
 from .backend_keys import make_backend_keys_step
@@ -43,6 +44,7 @@ from .rag import make_embedder_step, make_reranker_step
 from .provider import make_connection_step, make_provider_step
 from .review import make_review_step
 from .start_now import make_start_now_step
+from .tier import make_setup_tier_step
 from .welcome import make_welcome_step
 
 
@@ -83,6 +85,9 @@ def _default_step_list() -> list[Step]:
     return [
         # Detect environment.
         make_welcome_step(),
+        # Pick the wizard depth (quickstart / full / desktop hand-off); skipped
+        # when --quick or --custom already chose.
+        make_setup_tier_step(),
         # Choose a deployment target, then the API port, the Docker stack, and
         # the security posture.
         make_hosting_step(),
@@ -115,6 +120,9 @@ def _default_step_list() -> list[Step]:
         make_stt_step(),
         make_backend_keys_step(),
         make_skill_kits_step(),
+        # The user's timezone (its own confirm step, prefilled from host
+        # detection), then the tuning forms.
+        make_timezone_step(),
         make_context_step(),
         make_agent_limits_step(),
         # External access (the choice, then the guided tailscale/cloudflare

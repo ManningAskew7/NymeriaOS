@@ -148,6 +148,13 @@ threads and their tools load lazily on activation. The Settings → Skills "Enab
 globally" checkbox is the source of truth: unticking one removes it from the
 user's default thread skill set and Nymeria will not silently re-add it.
 
+Note for kit authors: the setup wizard default-checks a curated kit set (as of
+2026-06-12, all six bundled kits). A newly bundled kit is offered in the wizard
+but NOT auto-checked; users can enable it globally in Settings → Skills or per
+thread. Widen the curated list (`default_checked_skill_kits` in
+`setup/family_catalog.py`) only as a deliberate per-kit decision, and mark a
+kit `internal: true` to hide it from the wizard entirely.
+
 Activate `Skill(name="self-improve")` for the operating philosophy, then the
 matching kit for the work: inspect existing capabilities, enable
 tools/skills/MCP servers when they already fit, discover/test APIs when needed,
