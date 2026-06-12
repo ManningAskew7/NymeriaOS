@@ -85,17 +85,26 @@ or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 `discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
 `signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
 
-`nymeria init` opens an interactive setup wizard. Step 1 chooses how to host the
-slim backend on this machine (run it directly, install a background service, or
-run a single Docker container). The Docker option works without a source
-checkout: the wizard writes the published-image compose file and `.env.docker`
-into its config dir, pins the image tag to your installed version, and can
-start the container for you (it needs the published images to be live; the
-full Postgres + Redis stack still requires a source checkout). Step 2
-chooses your LLM provider, API key, and model. Further capability steps (web search, embeddings, image generation,
-speech, tool selection, and agent settings) are being built out and can be
-skipped for now. Move with the arrow keys, Enter to advance, Esc to go back a
-step, and Ctrl+Q to quit. A review screen confirms before anything is written.
+`nymeria init` opens an interactive setup wizard. The first screen picks the
+setup depth. Quickstart (the recommended default) asks only the essentials:
+how to host the backend, your LLM provider and key (or subscription OAuth),
+your timezone (detected, you just confirm it), and remote access. Everything
+else gets free, keyless defaults you can change later in the app: local
+semantic memory, keyless web search (the bundled SearXNG container on Docker,
+in-process metasearch elsewhere), the built-in page fetcher, local voice on
+bare-metal installs, and all six bundled skill kits. Full setup walks every step
+instead (tool families, embeddings, image generation, voice, context tuning,
+agent limits). A third option, finishing setup in the desktop app, is on the
+way.
+
+Hosting works the same in both tiers: run the backend directly, install a
+background service, or run a single Docker container. The Docker option works
+without a source checkout: the wizard writes the published-image compose file
+and `.env.docker` into its config dir, pins the image tag to your installed
+version, and can start the container for you (it needs the published images
+to be live; the full Postgres + Redis stack still requires a source
+checkout). Move with the arrow keys, Enter to advance, Esc to go back a step,
+and Ctrl+Q to quit. A review screen confirms before anything is written.
 
 After you confirm, NymeriaOS validates the provider key with a small LLM API
 call (unless you pass `--skip-llm-test`), writes `~/.nymeria/config.env`, creates
@@ -246,9 +255,9 @@ config and data are written. Optional connection flags are `--base-url` and
 is already in use). `--next-action print_commands|cli|start_api_open_frontend`
 selects the closing handoff. Optional capability keys can be supplied with
 `--embedding-api-key`, `--openai-api-key`, `--gemini-api-key`, and
-`--perplexity-api-key`. Add `--quick` to apply the interactive quick path's
-no-extra-auth defaults (free local RAG, keyless web fetch) to the scripted
-setup, for example:
+`--perplexity-api-key`. Add `--quick` to apply the Quickstart tier's keyless
+defaults (free local RAG, keyless web search and fetch, local voice on bare
+metal, all skill kits) to the scripted setup, for example:
 
 ```bash
 nymeria init --non-interactive --quick --provider anthropic \

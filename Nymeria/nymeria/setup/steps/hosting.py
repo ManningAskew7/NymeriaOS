@@ -61,6 +61,12 @@ def make_hosting_step() -> Step:
 
     def store(state: WizardState, value: HostingOption) -> None:
         state.hosting = value
+        # Quickstart's keyless web-search and voice defaults depend on the
+        # hosting shape, so they (re)resolve whenever it is chosen (no-op
+        # outside quick mode; seed-aware, so user picks survive).
+        from ..quick import apply_quick_hosting_defaults
+
+        apply_quick_hosting_defaults(state)
 
     def build(wizard: "SetupWizardApp", number: int, total: int) -> SingleSelectStep:
         # Built per-show (not at factory time) so the choices see the hydrated

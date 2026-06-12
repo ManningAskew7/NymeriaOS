@@ -53,6 +53,54 @@ services:
       start_period: 30s
       retries: 3
 
+  # Keyless web search sidecar for web_search_searxng, behind the `search`
+  # profile (mirrors the source stacks' sidecar):
+  #   docker compose -f docker-compose.single.published.yml --env-file .env.docker --profile search up -d
+  # Internal-only: no host port; the slim container reaches it at
+  # http://searxng:8080 on the default compose network. For the tool to use it,
+  # set SEARXNG_BASE_URL=http://searxng:8080 in .env.docker (the setup wizard
+  # writes this when SearXNG is selected). JSON output (which the tool
+  # requires) is enabled in ./searxng/settings.yml, which `nymeria init`
+  # materializes next to this file on clone-free installs. Image is
+  # digest-pinned for reproducibility; bump by re-pulling searxng/searxng:latest
+  # and updating the @sha256 below (pinned 2026-06 from searxng/searxng:latest,
+  # kept in lockstep with docker-compose.yml).
+  searxng:
+    image: searxng/searxng@sha256:35b089054ac9b4257976107e71673d9e30ac17c9b50bbf8b4783f2f6d1d1981f
+    container_name: nymeria-single-searxng
+    restart: unless-stopped
+    profiles:
+      - search
+    # SearXNG's entrypoint chowns its config and drops to an unprivileged uid,
+    # so it needs these three caps back on top of the cap_drop ALL baseline.
+    # no-new-privileges is intentionally NOT set here (it can break the
+    # entrypoint's privilege drop).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.75
+    pids_limit: 128
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      # Signs the web UI's cookies/CSRF tokens; substituted into settings.yml at
+      # startup. Change it for any non-local deployment.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-nymeria-searxng-internal-change-me}
+      SEARXNG_UWSGI_WORKERS: ${SEARXNG_WORKERS:-2}
+      SEARXNG_UWSGI_THREADS: ${SEARXNG_THREADS:-2}
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
 volumes:
   nymeria_single_data:
     driver: local

@@ -1317,4 +1317,240 @@ def test_searxng_registered_in_optional_group():
         "web_search_firecrawl",
         "web_search_brave",
         "web_search_searxng",
+        "web_search_ddgs",
     ]
+
+
+# ---------------------------------------------------------------------------
+# web_search_ddgs (keyless in-process metasearch)
+# ---------------------------------------------------------------------------
+
+
+def _fake_ddgs(results=None, raises=None, captured=None):
+    """Build a stand-in for ddgs.DDGS.
+
+    Records constructor and search kwargs into ``captured``, raises the queued
+    exceptions one per call (None = succeed), then returns ``results``.
+    """
+    captured = captured if captured is not None else {}
+    raise_queue = list(raises or [])
+
+    class FakeDDGS:
+        def __init__(self, *args, **kwargs):
+            captured["init"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def text(self, query, **kwargs):
+            return self._run("text", query, kwargs)
+
+        def news(self, query, **kwargs):
+            return self._run("news", query, kwargs)
+
+        def _run(self, category, query, kwargs):
+            captured["category"] = category
+            captured["query"] = query
+            captured["kwargs"] = kwargs
+            captured["calls"] = captured.get("calls", 0) + 1
+            if raise_queue:
+                exc = raise_queue.pop(0)
+                if exc is not None:
+                    raise exc
+            return list(results or [])
+
+    return FakeDDGS
+
+
+def test_ddgs_requires_a_query():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi.web_search_ddgs.func() == (
+        "[Error]: Provide a query or pipe-separated queries."
+    )
+
+
+def test_ddgs_formats_ranked_sources():
+    from nymeria.tools import web_search_integrations as wsi
+
+    items = [
+        {"title": "Doc one", "href": "https://a.example", "body": "first snippet"},
+        {"title": "", "href": "https://b.example", "body": ""},
+        {"title": "Doc three", "href": "https://c.example", "body": "third"},
+    ]
+
+    out = wsi._format_ddgs_results(items, count=2)
+
+    # count caps the output; the third item is dropped.
+    assert "1. Doc one" in out
+    assert "https://a.example" in out
+    assert "first snippet" in out
+    assert "2. (untitled)" in out
+    assert "Doc three" not in out
+
+
+def test_ddgs_formats_news_fields():
+    from nymeria.tools import web_search_integrations as wsi
+
+    items = [
+        {
+            "title": "Headline",
+            "url": "https://news.example/story",
+            "body": "summary",
+            "source": "Example Wire",
+            "date": "2026-06-12",
+        }
+    ]
+
+    out = wsi._format_ddgs_results(items, count=5)
+
+    # News items use "url" instead of "href" and add source/date metadata.
+    assert "1. Headline" in out
+    assert "https://news.example/story · Example Wire · 2026-06-12" in out
+    assert "summary" in out
+
+
+def test_ddgs_formats_no_results():
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi._format_ddgs_results([], count=5) == "[No results]"
+
+
+def test_ddgs_single_query_end_to_end(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    captured: dict = {}
+    fake = _fake_ddgs(
+        results=[{"title": "Doc", "href": "https://d.example", "body": "body"}],
+        captured=captured,
+    )
+    monkeypatch.setattr("ddgs.DDGS", fake)
+
+    out = wsi.web_search_ddgs.func(query="ddgs search", count=3)
+
+    assert "1. Doc" in out
+    assert "https://d.example" in out
+    assert captured["category"] == "text"
+    assert captured["query"] == "ddgs search"
+    # safesearch is a hard default; count flows through as max_results.
+    assert captured["kwargs"]["safesearch"] == "moderate"
+    assert captured["kwargs"]["max_results"] == 3
+    assert captured["kwargs"]["timelimit"] is None
+
+
+def test_ddgs_time_range_maps_to_timelimit(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    captured: dict = {}
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(captured=captured))
+
+    wsi.web_search_ddgs.func(query="q", time_range="week")
+
+    # The family's day/week/month/year maps to ddgs single-letter timelimit.
+    assert captured["kwargs"]["timelimit"] == "w"
+
+
+def test_ddgs_news_category_routes_to_news(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    captured: dict = {}
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(captured=captured))
+
+    # "videos" is not an exposed category and is skipped; news wins.
+    wsi.web_search_ddgs.func(query="q", sources="videos, news")
+
+    assert captured["category"] == "news"
+
+
+def test_ddgs_defaults_to_general_text(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    captured: dict = {}
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(captured=captured))
+
+    wsi.web_search_ddgs.func(query="q")
+
+    assert captured["category"] == "text"
+
+
+def test_ddgs_site_operators_include_and_exclude(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    captured: dict = {}
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(captured=captured))
+
+    wsi.web_search_ddgs.func(
+        query="rust",
+        include_domains="github.com, https://docs.rs/foo",
+        exclude_domains="pinterest.com",
+    )
+
+    # Same Google-style operator synthesis as SearXNG (the upstream engines
+    # understand site:); hosts reduce to bare hostnames.
+    assert captured["query"] == "rust (site:github.com OR site:docs.rs) -site:pinterest.com"
+
+
+def test_ddgs_rate_limit_returns_soft_error_without_retry(monkeypatch):
+    # ddgs 9.14.x defines RatelimitException but never raises it (per-engine
+    # failures are swallowed; blanket failures surface as DDGSException), so
+    # the tool deliberately has no retry: any rate-limit-shaped exception is
+    # a single soft error the agent can route around.
+    from nymeria.tools import web_search_integrations as wsi
+    from ddgs.exceptions import RatelimitException
+
+    captured: dict = {}
+    fake = _fake_ddgs(raises=[RatelimitException("slow down")], captured=captured)
+    monkeypatch.setattr("ddgs.DDGS", fake)
+
+    out = wsi.web_search_ddgs.func(query="q")
+
+    assert out.startswith("[Error]: ddgs metasearch failed: slow down")
+    assert captured["calls"] == 1
+
+
+def test_ddgs_no_results_exception_returns_no_results(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    from ddgs.exceptions import DDGSException
+
+    # The library raises instead of returning [] when every engine came back
+    # empty; the tool reports that as a normal empty result, not an error.
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(raises=[DDGSException("No results found.")]))
+
+    assert wsi.web_search_ddgs.func(query="q") == "[No results]"
+
+
+def test_ddgs_engine_failure_returns_soft_error(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+    from ddgs.exceptions import DDGSException
+
+    monkeypatch.setattr("ddgs.DDGS", _fake_ddgs(raises=[DDGSException("boom")]))
+
+    out = wsi.web_search_ddgs.func(query="q")
+
+    assert out.startswith("[Error]: ddgs metasearch failed: boom")
+
+
+def test_ddgs_batch_mode_sections(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(
+        "ddgs.DDGS",
+        _fake_ddgs(results=[{"title": "Doc", "href": "https://d.example", "body": "b"}]),
+    )
+
+    out = wsi.web_search_ddgs.func(queries="alpha | beta")
+
+    assert "=== Query 1/2: alpha ===" in out
+    assert "=== Query 2/2: beta ===" in out
+
+
+def test_ddgs_registered_in_optional_group():
+    from nymeria.tools import CATALOG_TOOLS, SEED_TOOLS
+
+    assert "web_search_ddgs" in CATALOG_TOOLS
+    # Keyless does not mean default-on: quickstart opts it in per user, the
+    # catalog itself stays opt-in.
+    assert all(t.name != "web_search_ddgs" for t in SEED_TOOLS)

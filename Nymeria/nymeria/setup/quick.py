@@ -1,12 +1,17 @@
-"""Quick-path (`--quick`) step subset and defaults.
+"""Quick-path (quickstart tier / `--quick`) step subset and defaults.
 
-`nymeria init --quick` asks only the irreducible questions (hosting and the LLM
-provider/connection/model/key) and applies sensible, no-extra-auth defaults for
-everything else, so a user reaches a working install with the fewest prompts and
-zero paid services. The interactive flow honors this two ways: the step list is
-gated to `QUICK_KEEP_STEP_IDS` (see `steps.build_default_steps`), and
-`apply_quick_defaults` seeds the skipped steps' defaults onto `WizardState`
-before the wizard runs so the review screen is accurate.
+The quickstart tier (picked on the chooser screen after welcome, or preset via
+`--quick`) asks only the irreducible questions (hosting, the LLM auth +
+provider/connection/model/key, a timezone confirm, external access) and applies
+sensible, no-extra-auth defaults for everything else, so a user reaches a
+working install with the fewest prompts and zero paid services. The interactive
+flow honors this two ways: the step list is gated to `QUICK_KEEP_STEP_IDS` (see
+`steps.build_default_steps`), and `apply_quick_defaults` seeds the skipped
+steps' defaults onto `WizardState` (at chooser pick time, or before the wizard
+runs when the tier came from a flag) so the review screen is accurate. The
+hosting-dependent defaults re-resolve whenever hosting is chosen
+(`apply_quick_hosting_defaults`), and switching the chooser back to Full
+unwinds exactly what was seeded (`unapply_quick_defaults`).
 
 Defaults chosen for zero extra auth or cost:
 - RAG: the free, private local stack (granite + Ettin), the same default a RAG
@@ -14,12 +19,19 @@ Defaults chosen for zero extra auth or cost:
 - Web fetch: `fetch_url_nymeria`, which distills pages with your already
   configured primary LLM, so it needs no separate key. (It is also the
   default-checked option in the full path's fetch step.)
-- Web search and image generation: none seeded. Every web_search backend needs
-  either an API key (Perplexity, Tavily, Exa, Firecrawl, Brave) or a self-hosted
-  instance URL (SearXNG), and every image_gen provider needs a key, so none is
-  truly zero-config. The user adds one later in settings.
-- Skill kits: left unset, which the seeding fallback resolves to all bundled
-  kits on (they load on demand, so this is cheap).
+- Web search: keyless, by hosting shape. Docker gets `web_search_searxng`
+  backed by the bundled SearXNG sidecar (finalize enables the `search` compose
+  profile and writes SEARXNG_BASE_URL); bare-metal gets `web_search_ddgs`, the
+  in-process keyless metasearch (no infra at all).
+- Voice: the free local pair (kokoro TTS + faster-whisper STT) on bare-metal
+  hosting only; it runs in-process and needs the voice-local extra, which
+  finalize points out. Docker quickstart leaves voice off: the slim image
+  ships no voice engines (see `voice_catalog.slim_docker_local_voice`).
+- Image generation: none seeded; every provider needs a key.
+- Skill kits: left unset, which the seeding fallback resolves to the curated
+  default-checked set (`family_catalog.default_checked_skill_kits`, all six
+  kits existing as of 2026-06-12; newly bundled kits are offered, not
+  auto-checked; kits load their tools on demand, so on-by-default is cheap).
 - Docker stack: slim (the single-container shape), the simplest single-user
   default; only consulted when hosting is Docker.
 """
@@ -28,25 +40,30 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..onboarding import DockerStack
+from ..onboarding import DockerStack, HostingOption
 from . import family_catalog
-from .rag_catalog import apply_quickstart_rag
+from .rag_catalog import (
+    QUICKSTART_EMBEDDER,
+    QUICKSTART_RERANKER,
+    apply_quickstart_rag,
+)
 
 if TYPE_CHECKING:
     from .state import WizardState
 
 
 # The only steps the quick path still prompts for; every other step is gated off
-# and defaulted. Hosting and the LLM (provider/connection/model/key) cannot be
-# defaulted; start_now stays a single end question; welcome and review are the
-# entry and confirmation screens. The cliproxy_* steps are the LLM essentials
-# of the subscription branch (entered in quick mode via --auth-method, since
-# the auth step itself is quick-gated); their own applies predicates keep them
-# off the API-key path.
+# and defaulted. Hosting and the LLM (auth method, then provider/connection/
+# model/key or the cliproxy_* subscription branch) cannot be defaulted;
+# external access matters too much to silently default (a remote-access intent
+# needs the guided tunnel steps); start_now stays a single end question;
+# welcome, tier, and review are the entry, mode, and confirmation screens.
 QUICK_KEEP_STEP_IDS = frozenset(
     {
         "welcome",
+        "tier",
         "hosting",
+        "auth_method",
         "provider",
         "connection",
         "model",
@@ -55,6 +72,12 @@ QUICK_KEEP_STEP_IDS = frozenset(
         "cliproxy_provider",
         "cliproxy_login",
         "cliproxy_model",
+        # Timezone stays a visible confirm step: detection can be wrong, and a
+        # wrong timezone silently skews schedules and TODO deadlines.
+        "timezone",
+        "external_access",
+        "external_access_tailscale",
+        "external_access_cloudflare",
         "start_now",
         "review",
     }
@@ -66,6 +89,17 @@ QUICK_KEEP_STEP_IDS = frozenset(
 # in family_catalog so the full-path fetch step and the quick path agree.
 QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 
+# Keyless web search defaults, by hosting shape. Docker stacks bundle the
+# SearXNG sidecar (the more robust self-hosted aggregator); bare-metal installs
+# get the in-process ddgs metasearch, which needs no infra at all.
+QUICK_WEB_SEARCH_DOCKER = ("web_search_searxng",)
+QUICK_WEB_SEARCH_LOCAL = ("web_search_ddgs",)
+
+# Free local voice pair (bare-metal hosting only; in Docker the slim image has
+# no voice engines, so quickstart leaves voice off there).
+QUICK_TTS_DEFAULT = "kokoro"
+QUICK_STT_DEFAULT = "faster-whisper"
+
 
 # Ordered ids of every wizard step, kept TUI-free so the non-interactive path can
 # validate `init <section>` jumps without importing the Textual step modules.
@@ -73,6 +107,7 @@ QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()
 # the two lists together.
 DEFAULT_STEP_IDS: tuple[str, ...] = (
     "welcome",
+    "tier",
     "hosting",
     "api_port",
     "docker_stack",
@@ -97,6 +132,7 @@ DEFAULT_STEP_IDS: tuple[str, ...] = (
     "stt",
     "backend_keys",
     "skill_kits",
+    "timezone",
     "context",
     "agent_limits",
     "external_access",
@@ -195,31 +231,115 @@ def section_keep_ids(section: str) -> frozenset[str]:
 def apply_quick_defaults(state: "WizardState") -> None:
     """Seed defaults for the steps the quick path skips, onto ``state``.
 
-    Idempotent and meant to run once before the wizard starts so the review
-    screen reflects the defaults. Only fills what was not already set, so
-    explicit flags (e.g. ``--fetch-url``, ``--embedding-api-key``) still win.
+    Idempotent; runs when the chooser picks Quickstart (or before the wizard
+    starts when the tier came from ``--quick``) so the review screen reflects
+    the defaults. Only fills what was not already set, so explicit flags
+    (e.g. ``--fetch-url``, ``--embedding-api-key``) still win. Everything
+    seeded here is recorded so :func:`unapply_quick_defaults` can unwind a
+    chooser switch back to Full.
     """
+    seeded = state.extras.setdefault("quick_seeded", {})
     # Free local RAG (same default a RAG skip applies); marks rag_quickstarted so
     # review shows it and the reranker step stays consistent. The condition keeps
     # an explicit embedder pick or embedding key untouched.
     if state.embedder is None and not state.optional_env.get("EMBEDDING_API_KEY"):
         apply_quickstart_rag(state)
+        seeded["rag"] = True
     # Keyless web fetch, unless the fetch family was already decided (a flag
     # pick, a hydrated reconfigure value, or an explicit `--fetch-url none`
     # empty list; key presence, not truthiness, so an empty pick survives).
     if "fetch_url" not in state.extras:
         state.extras["fetch_url"] = list(QUICK_FETCH_DEFAULT)
+        seeded["fetch_url"] = list(QUICK_FETCH_DEFAULT)
     # Default the Docker shape to slim (simplest single-user container); the
     # docker_stack step is gated off in quick mode, so seed it for review.
     if state.docker_stack is None:
         state.docker_stack = DockerStack.SLIM
+    # Hosting-dependent seeds (web search, voice) when hosting is already
+    # known (a --hosting flag or a hydrated reconfigure); the hosting step's
+    # store re-runs this for the interactive pick.
+    apply_quick_hosting_defaults(state)
+
+
+def apply_quick_hosting_defaults(state: "WizardState") -> None:
+    """Seed (and on a hosting change, re-seed) the hosting-dependent defaults.
+
+    Called from :func:`apply_quick_defaults` and from the hosting step's store,
+    so the keyless web-search backend and the voice pair always match the
+    chosen shape. A value is only (re)written when this function seeded it
+    itself (tracked in ``extras["quick_seeded"]``), so flag picks, hydrated
+    reconfigure values, and on-disk voice providers always win.
+    """
+    if not getattr(state, "quick", False) or state.hosting is None:
+        return
+    seeded = state.extras.setdefault("quick_seeded", {})
+    docker = state.hosting is HostingOption.DOCKER
+
+    desired_search = list(
+        QUICK_WEB_SEARCH_DOCKER if docker else QUICK_WEB_SEARCH_LOCAL
+    )
+    if "web_search" not in state.extras or (
+        state.extras.get("web_search") == seeded.get("web_search")
+    ):
+        state.extras["web_search"] = desired_search
+        seeded["web_search"] = list(desired_search)
+
+    # Free local voice runs in-process, so it is seeded for bare-metal hosting
+    # only; the slim Docker image ships no voice engines (see
+    # voice_catalog.slim_docker_local_voice), so a hosting switch to Docker
+    # retires our own seed rather than writing dead config. An on-disk
+    # provider (a reconfigure) is never overridden.
+    for key, desired in (("tts", QUICK_TTS_DEFAULT), ("stt", QUICK_STT_DEFAULT)):
+        ours = key in seeded and state.extras.get(key) == seeded.get(key)
+        if docker:
+            if ours:
+                state.extras.pop(key, None)
+                seeded.pop(key, None)
+        elif (key not in state.extras or ours) and state.extras.get(
+            f"{key}_on_disk"
+        ) is None:
+            state.extras[key] = desired
+            seeded[key] = desired
+
+
+def unapply_quick_defaults(state: "WizardState") -> None:
+    """Unwind :func:`apply_quick_defaults` when the chooser switches to Full.
+
+    Pops exactly the values the quick path seeded and that still hold the
+    seeded value, so the full walk starts from the normal step defaults
+    (without this, ``rag_quickstarted`` would gate the reranker step off and
+    the seeded picks would masquerade as user choices). Values the user set
+    via flags, or that hydrate restored, are never touched.
+    """
+    seeded = state.extras.get("quick_seeded")
+    if not isinstance(seeded, dict):
+        return
+    if (
+        seeded.get("rag")
+        and state.rag_quickstarted
+        and state.embedder == QUICKSTART_EMBEDDER
+        and state.reranker == QUICKSTART_RERANKER
+    ):
+        state.embedder = None
+        state.reranker = None
+        state.rag_quickstarted = False
+    for key in ("fetch_url", "web_search", "tts", "stt"):
+        if key in seeded and state.extras.get(key) == seeded.get(key):
+            state.extras.pop(key, None)
+    state.extras.pop("quick_seeded", None)
 
 
 __all__ = [
     "DEFAULT_STEP_IDS",
     "QUICK_KEEP_STEP_IDS",
     "QUICK_FETCH_DEFAULT",
+    "QUICK_STT_DEFAULT",
+    "QUICK_TTS_DEFAULT",
+    "QUICK_WEB_SEARCH_DOCKER",
+    "QUICK_WEB_SEARCH_LOCAL",
     "apply_quick_defaults",
+    "apply_quick_hosting_defaults",
+    "unapply_quick_defaults",
     "SECTION_DEPENDENCIES",
     "section_keep_ids",
     "validate_section_id",

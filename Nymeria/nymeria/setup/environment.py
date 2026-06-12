@@ -38,6 +38,54 @@ from ..onboarding import DockerStack, HostingOption
 PROBE_TIMEOUT_SECONDS = 5.0
 PORT_OWNER_TIMEOUT_SECONDS = 2.0
 
+# Timezone detection sources (module constants so tests can point them at
+# fixture files; both are absent on Windows, which degrades to no detection).
+_ETC_TIMEZONE = Path("/etc/timezone")
+_ETC_LOCALTIME = Path("/etc/localtime")
+
+
+def detect_system_timezone() -> str | None:
+    """Best-effort IANA timezone detection for this host.
+
+    Sources, in order: the ``TZ`` env var (leading ``:`` stripped),
+    ``/etc/timezone`` (Debian family), then the ``/etc/localtime`` symlink
+    target (most other Linux and macOS). Every candidate is validated against
+    the zoneinfo database; returns None when nothing valid is found (e.g.
+    Windows, or a container without tz data), in which case the caller falls
+    back to the UTC default. No subprocesses, never raises.
+    """
+    candidates: list[str] = []
+    tz_env = os.environ.get("TZ", "").lstrip(":").strip()
+    if tz_env:
+        candidates.append(tz_env)
+    try:
+        candidates.append(_ETC_TIMEZONE.read_text(encoding="utf-8").strip())
+    except (OSError, UnicodeDecodeError):
+        pass  # absent on non-Debian/Windows, or unreadable: try the next source
+    try:
+        target = os.path.realpath(_ETC_LOCALTIME)
+        if "zoneinfo/" in target:
+            name = target.split("zoneinfo/", 1)[1]
+            # Some distros symlink through the posix/ or right/ trees; the
+            # plain name is the canonical IANA spelling.
+            for prefix in ("posix/", "right/"):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+            candidates.append(name)
+    except OSError:
+        pass  # no /etc/localtime (e.g. Windows): fall through to UTC
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(name)
+        except Exception:  # noqa: BLE001 (ZoneInfoNotFoundError, ValueError, ...)
+            continue
+        return name
+    return None
+
 # Warn-only resource thresholds for the Docker shapes (HYBRID gating: low
 # resources never block, they warn). The full stack builds a large Kali-based
 # image plus Postgres and Redis; the slim container is a plain Python image.

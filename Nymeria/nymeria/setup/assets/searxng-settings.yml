@@ -1,0 +1,26 @@
+# SearXNG configuration for the Nymeria web_search_searxng tool.
+#
+# This inherits SearXNG's full default settings and overrides only what Nymeria
+# needs. The critical override is search.formats including "json": the tool
+# calls /search?format=json, which SearXNG refuses unless json is listed here.
+#
+# This instance is internal-only (docker-compose.yml publishes no host port; it
+# is reached by the API at http://searxng:8080). The bot limiter is therefore
+# disabled so Nymeria's own requests are not throttled. For a publicly exposed
+# instance, re-enable the limiter and set a strong SEARXNG_SECRET.
+use_default_settings: true
+
+server:
+  # Replaced at startup by the SEARXNG_SECRET environment variable (see
+  # docker-compose.yml). Used to sign the web UI's cookies and CSRF tokens.
+  secret_key: "ultrasecretkey"
+  # Off: this instance is private and called only by Nymeria, so the bot
+  # limiter would only get in our own way.
+  limiter: false
+  image_proxy: false
+
+search:
+  # web_search_searxng requires the JSON format, which is not enabled by default.
+  formats:
+    - html
+    - json

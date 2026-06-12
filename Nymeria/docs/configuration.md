@@ -980,7 +980,8 @@ reachable from the backend process.
 | `FIRECRAWL_API_KEY` | - | Firecrawl API key for web_search_firecrawl tool |
 | `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
-| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar) |
+| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar; `nymeria init` writes it when SearXNG is selected on a Docker host) |
+| `SEARXNG_SECRET` | (compose default) | Cookie/CSRF signing secret the compose files interpolate into the SearXNG sidecar; `nymeria init` generates one per install when the sidecar is selected |
 | `FETCH_SUMMARY_PROVIDER` | (main provider) | Provider for fetch_url_nymeria's summarize step |
 | `FETCH_SUMMARY_MODEL` | (main model) | Model for fetch_url_nymeria's summarize step; a small local model works well |
 | `FETCH_SUMMARY_BASE_URL` | (provider default) | Base URL for the fetch summarizer (e.g. a local model server) |

@@ -17,7 +17,8 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 4d | `web_search_firecrawl` | Web Search | SAFE | Opt-in | Ranked-source web search via Firecrawl (snippet-only); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
-| 4g | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional distill; opt-in `WEB_FETCH_TOOLS` group |
+| 4g | `web_search_ddgs` | Web Search | SAFE | Opt-in | Keyless in-process metasearch via the ddgs library (no key, no instance); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
+| 4h | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional distill; opt-in `WEB_FETCH_TOOLS` group |
 | 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -454,6 +455,39 @@ Hard defaults (not exposed): `format=json`; `pageno=1` (no pagination); `safesea
 **Requires:** a running SearXNG instance with JSON output enabled (`search.formats` must include `json`). The base URL is resolved credential vault (provider `searxng`, field `base_url`) -> `searxng_base_url` setting -> `SEARXNG_BASE_URL` env. The bundled Docker sidecar (the `search` compose profile) ships JSON pre-enabled and defaults `SEARXNG_BASE_URL` to `http://searxng:8080`. No API key (SearXNG is keyless). Note: SearXNG is blocked from datacenter IPs for some engines, but the instance's own egress IP governs that, not Nymeria.
 
 **Timeout:** 20s.
+
+---
+
+### web_search_ddgs
+
+Search the web with keyless in-process metasearch, backed by the `ddgs` library.
+It queries several upstream engines directly from the Nymeria process (Bing,
+Brave, DuckDuckGo, Google, Mojeek, and more), rotating engines when one blocks,
+and returns one merged, ranked list of sources (title, URL, snippet). Needs no
+API key and no self-hosted instance, which makes it the zero-setup member of the
+family (and the quickstart default where the SearXNG sidecar is unavailable).
+Prefer `web_search_searxng` when the Docker sidecar is running: a self-hosted
+aggregator is the more robust keyless option. Opt-in tool in the
+`WEB_SEARCH_INTEGRATION_TOOLS` group (enable per thread), not a core tool.
+
+```python
+web_search_ddgs(query: str = "", queries: str = "", count: Optional[int] = None, time_range: Optional[str] = None, sources: str = "", include_domains: str = "", exclude_domains: str = "")
+```
+
+**Parameters (all agent-controlled per query):**
+- `query` (`str`): Single search query
+- `queries` (`str`): Multiple queries separated by `" | "` (pipe with spaces); takes precedence over `query`, max 10 per call
+- `count` (`Optional[int]`): Sources to return per query (1-20, default 5); flows through as the library's `max_results`
+- `time_range` (`Optional[str]`): Restrict by recency: `"day"`, `"week"`, `"month"`, or `"year"` (maps to ddgs single-letter `timelimit`)
+- `sources` (`str`): Result category: `"general"` (default) or `"news"` (separate ddgs calls; the first recognized category wins)
+- `include_domains` (`str`): Comma-separated domains to restrict results to, applied as `site:` operators in the query (the upstream engines understand them)
+- `exclude_domains` (`str`): Comma-separated domains to exclude (applied as `-site:` operators)
+
+Hard defaults (not exposed): `safesearch=moderate`; engine selection (`backend`) and region left to the library's defaults; per-request timeout 15s.
+
+**Returns:** Ranked sources as `N. <title>\n   <url>[ · <source> · <date>]\n   <snippet>` (source and date appear on news results). Batch mode adds `=== Query N/M: ... ===` headers. Errors as `[Error]: ...`; an all-engines-empty result returns `[No results]`.
+
+**Requires:** nothing: no key, no instance, no settings. Scraping caveats: individual engines can rate-limit or CAPTCHA (especially from datacenter IPs); the library swallows per-engine failures and rotates onward, and when every engine fails the tool returns a soft error so the agent can fall back to another backend.
 
 ---
 

@@ -47,6 +47,10 @@ _WEB_SEARCH_LABELS: dict[str, tuple[str, str]] = {
     "web_search_firecrawl": ("Firecrawl", "Links and previews; pair with a web fetch backend."),
     "web_search_brave": ("Brave Search", "Links and previews; pair with a web fetch backend."),
     "web_search_searxng": ("SearXNG", "Self-hosted; pair with a web fetch backend."),
+    "web_search_ddgs": (
+        "DDGS metasearch",
+        "Keyless, no setup; rotates scraped engines; pair with a web fetch backend.",
+    ),
 }
 
 _FETCH_URL_LABELS: dict[str, tuple[str, str]] = {
@@ -97,7 +101,29 @@ _SKILL_KIT_LABELS: dict[str, tuple[str, str]] = {
         "Credential management",
         "Request, inspect, and clean up service credentials and connections.",
     ),
+    "callable-thread-builder": (
+        "Callable thread builder",
+        "Build callable threads: specialist threads other threads use as tools.",
+    ),
+    "trigger-management": (
+        "Trigger management",
+        "Create and manage trigger sources (webhooks, RSS, polls, email).",
+    ),
 }
+
+# The curated default-checked kit set: the six kits that existed when the
+# default was widened on 2026-06-12. Deliberately a literal, NOT derived from
+# skill_kit_choices: newly bundled kits are offered but not auto-checked, so
+# bundling a kit is never silently a default-on decision (users can still
+# enable them globally in Settings or per thread).
+_DEFAULT_CHECKED_KITS: tuple[str, ...] = (
+    "tool-management",
+    "skill-management",
+    "mcp-management",
+    "credential-management",
+    "callable-thread-builder",
+    "trigger-management",
+)
 
 # Keyless web fetch default: distills pages with the configured primary LLM, so
 # it needs no separate key. Single source of truth for the full path's default
@@ -179,15 +205,18 @@ def skill_kit_choices() -> list[FamilyChoice]:
 
 
 def default_checked_skill_kits() -> list[str]:
-    """The curated default-on kit set: ``DEFAULT_GLOBAL_SKILLS`` minus self-improve.
+    """The curated default-on kit set (all six existing kits as of 2026-06-12).
 
-    Decoupled from the offered set (``skill_kit_choices``): newly bundled kits are
-    offered but not auto-checked. ``self-improve`` is a guidance skill, not a kit,
-    and is added on separately by finalize seeding.
+    Widened from the four-kit ``DEFAULT_GLOBAL_SKILLS`` subset so fresh
+    installs start with the full current toolkit (kits load their tools only
+    on activation, so on-by-default is cheap), but still decoupled from the
+    offered set (``skill_kit_choices``): newly bundled kits are offered, not
+    auto-checked. The backend fallback for profiles that never chose
+    (``user_profile.DEFAULT_GLOBAL_SKILLS``) intentionally stays its own
+    narrower set so existing users are unaffected. ``self-improve`` is a
+    guidance skill, not a kit, and is added on separately by finalize seeding.
     """
-    from ..core.user_profile import DEFAULT_GLOBAL_SKILLS
-
-    return [name for name in DEFAULT_GLOBAL_SKILLS if name != "self-improve"]
+    return list(_DEFAULT_CHECKED_KITS)
 
 
 def default_checked_fetch_url() -> list[str]:

@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1251 tools found.**
+**1252 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1165,6 +1165,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `watchdog_read_notepad` | `nymeria/tools/watchdog_dispatch.py` | Read another thread's notepad to understand what it's currently focused on. |
 | `watchdog_todo_overview` | `nymeria/tools/watchdog_dispatch.py` | List all active TODOs across ALL threads, showing which thread each belongs to. |
 | `web_search_brave` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Brave (independent search index). |
+| `web_search_ddgs` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using keyless in-process metasearch. |
 | `web_search_exa_ai` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Exa (neural/semantic retrieval). |
 | `web_search_firecrawl` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Firecrawl. |
 | `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
