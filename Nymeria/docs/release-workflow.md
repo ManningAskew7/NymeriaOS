@@ -59,6 +59,45 @@ inside the wheel (`nymeria/setup/assets/`, kept byte-identical to
 `.env.docker` to the installed package version, which matches the image tag
 (the release tag with `v` stripped).
 
+## Publishing The Python Package
+
+Two independent, opt-in jobs can publish the wheel and source distribution
+built by `python-package`. Both reuse that job's uploaded artifact (the exact
+files that passed `twine check`, with the desktop frontend already bundled in),
+so you can enable either, both, or neither.
+
+`private-python-index` uploads to a private index with Twine. It runs on every
+`v*` tag but skips itself unless the three repository secrets
+`NYMERIA_PYPI_REPOSITORY_URL`, `NYMERIA_PYPI_USERNAME`, and
+`NYMERIA_PYPI_PASSWORD` are set (see `docs/private/BETA_PRIVATE_INDEX.md`). This
+is the recommended path during a closed beta: testers install with
+`uv tool install nymeriaos --index <simple-index-url>`.
+
+`pypi-publish` uploads to public PyPI (pypi.org) using tokenless OIDC (Trusted
+Publishing), so there are no secrets to store. Like the image job it is opt-in
+and tag-only: it runs only when the repository variable `PUBLISH_PYPI` is `true`
+AND the workflow ran on a `v*` tag, and stays dormant otherwise. This is what
+lets the default `install.sh` Slim track (`uv tool install nymeriaos`) resolve
+from public PyPI.
+
+One-time setup before flipping `PUBLISH_PYPI` (no code change needed):
+
+1. Own the `nymeriaos` name on pypi.org (register the project name, e.g. by
+   publishing one release manually, so the name exists and is yours).
+2. On PyPI, under the project's Manage, Publishing page, add a GitHub Trusted
+   Publisher bound to this owner/repository, workflow filename `release.yml`,
+   and environment name `pypi`.
+3. On GitHub, under Settings, Environments, create an environment named `pypi`.
+   Optionally add a protection rule so only `v*` tags (or a named approver) can
+   deploy to it.
+4. Set the repository variable `PUBLISH_PYPI=true`.
+
+The job runs in the `pypi` environment with only `id-token: write` (no other
+elevated scope is required, because the same-run artifact download works with
+the default token), publishes with `pypa/gh-action-pypi-publish@release/v1`,
+passes `skip-existing` so re-running an already-published tag is idempotent, and
+emits PEP 740 attestations by default.
+
 ## Release Steps
 
 ```bash
@@ -71,4 +110,6 @@ git push origin main v0.2.0-beta.1
 
 After the workflow finishes, confirm the GitHub Release has the wheel, source
 distribution, and Windows installer attached. If `PUBLISH_IMAGES`
-is enabled, confirm the container images appear under the GHCR namespace.
+is enabled, confirm the container images appear under the GHCR namespace. If
+`PUBLISH_PYPI` is enabled, confirm the new version appears at
+`https://pypi.org/project/nymeriaos/`.
