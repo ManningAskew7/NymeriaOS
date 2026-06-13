@@ -213,6 +213,20 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
             "foreground). Default just prints the command."
         ),
     )
+    parser.add_argument(
+        "--print-creds",
+        "--print-credentials",
+        dest="print_creds",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Print the connection URL and account token on finish (the URL and "
+            "`nymeria cli` command always print; this governs the token value). "
+            "Default: on in the interactive wizard, off with --non-interactive "
+            "so the token never lands in captured/scripted stdout. Use "
+            "--no-print-creds to suppress, --print-creds to force."
+        ),
+    )
     parser.add_argument("--embedding-api-key", default=None)
     parser.add_argument("--openai-api-key", default=None)
     parser.add_argument("--gemini-api-key", default=None)
@@ -505,6 +519,16 @@ def _build_state(args: argparse.Namespace) -> WizardState:
     root = Path(args.root) if getattr(args, "root", None) else None
     data_dir = Path(args.data_dir) if getattr(args, "data_dir", None) else None
 
+    print_creds_flag = getattr(args, "print_creds", None)
+    if print_creds_flag is None:
+        # Default: on in the interactive wizard (the user is present and just
+        # finished setup), off in --non-interactive so a token never lands in
+        # captured or scripted stdout. The interactive start-now step can still
+        # flip this before finalize.
+        print_credentials = not bool(getattr(args, "non_interactive", False))
+    else:
+        print_credentials = bool(print_creds_flag)
+
     return WizardState(
         hosting=hosting,
         api_port=api_port,
@@ -543,6 +567,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         force=bool(getattr(args, "force", False)),
         run_doctor=bool(getattr(args, "run_doctor", False) or getattr(args, "full_doctor", False)),
         full_doctor=bool(getattr(args, "full_doctor", False)),
+        print_credentials=print_credentials,
     )
 
 

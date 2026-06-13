@@ -753,6 +753,13 @@ check) to validate after writing config. CLIProxy subscription-OAuth provider
 routing is deferred and is not part of `nymeria init` in this phase; use a direct
 provider API key.
 
+On finish, the wizard prints how to connect: the `nymeria cli` start command
+and the backend URL always print, and the freshly minted account token value
+prints too when enabled. A near-final toggle controls this (default on in the
+interactive wizard); headless runs default to hiding the token so it never
+lands in captured stdout, and `--print-creds` / `--no-print-creds` overrides it
+in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
+
 ### Database
 
 | Variable | Default | Description |

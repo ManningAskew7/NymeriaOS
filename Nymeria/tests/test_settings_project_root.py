@@ -78,3 +78,22 @@ def test_env_file_paths_include_package_config_file(tmp_path):
         root / "config.env",
         root / ".env.docker",
     )
+
+
+def test_env_write_path_dotenv_for_checkout_config_for_packaged(tmp_path):
+    """The shape convention `nymeria init` now defers to: a source checkout
+    writes `.env` (gitignored), a packaged runtime root writes `config.env`.
+
+    This is what keeps an editable/source install's written config gitignored and
+    loadable: run.py and settings both read `.env, config.env, .env.docker`.
+    """
+    checkout = _create_backend_root(tmp_path)
+    assert settings_module.get_env_write_path(checkout) == checkout / ".env"
+
+    packaged = tmp_path / "user-runtime"
+    packaged.mkdir()
+    assert settings_module.get_env_write_path(packaged) == packaged / "config.env"
+
+    # An existing higher-precedence file is updated in place rather than shadowed.
+    (checkout / "config.env").write_text("API_PORT=8000\n", encoding="utf-8")
+    assert settings_module.get_env_write_path(checkout) == checkout / "config.env"
