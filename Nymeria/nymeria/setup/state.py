@@ -136,6 +136,12 @@ class WizardState:
     root: Path | None = None
     data_dir: Path | None = None
     next_action: NextAction = NextAction.PRINT_COMMANDS
+    # Print the connection URL + account token on the finalization screen. The
+    # URL and `nymeria cli` command are non-secret and always print; this gates
+    # the token VALUE. Defaults on for the interactive wizard, off for
+    # --non-interactive (see runner._build_state) so a token never lands in
+    # captured stdout. The start-now step exposes it as a toggle.
+    print_credentials: bool = True
     skip_llm_test: bool = False
     force: bool = False
     run_doctor: bool = False

@@ -2010,6 +2010,241 @@ def test_noninteractive_writes_config_and_bootstrap_token(monkeypatch, tmp_path,
     assert calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
 
 
+def _init_state(*extra_args):
+    parser = runner_mod.build_parser()
+    args = parser.parse_args(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "k", *extra_args]
+    )
+    return runner_mod._build_state(args)
+
+
+def test_default_init_root_honors_runtime_project_root(monkeypatch, tmp_path):
+    # Regression: an editable/source install resolves NYMERIA_PROJECT_ROOT to the
+    # checkout, and the runtime (settings._get_project_root) honors it first. init
+    # must write THERE too, or it writes config the backend never loads. A prior
+    # version rejected checkout roots and fell back to ~/.nymeria, splitting the
+    # two apart (wrong provider/model, a second accounts.db).
+    checkout = tmp_path / "Nymeria"
+    (checkout / "nymeria" / "config").mkdir(parents=True)
+    (checkout / "run.py").write_text("", encoding="utf-8")
+    (checkout / "nymeria" / "config" / "soul.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(checkout))
+    assert finalize_mod.default_init_root() == checkout.resolve()
+
+    plain = tmp_path / "plain-root"
+    plain.mkdir()
+    monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(plain))
+    assert finalize_mod.default_init_root() == plain.resolve()
+
+
+def test_print_credentials_default_on_interactive_off_headless():
+    # Interactive wizard (no --non-interactive): show the URL + token by default.
+    assert _init_state().print_credentials is True
+    # Headless: hide by default so a token never lands in captured/scripted stdout.
+    assert _init_state("--non-interactive").print_credentials is False
+    # An explicit flag wins in either mode.
+    assert _init_state("--non-interactive", "--print-creds").print_credentials is True
+    assert _init_state("--print-creds").print_credentials is True
+    assert _init_state("--no-print-creds").print_credentials is False
+    assert _init_state("--non-interactive", "--no-print-creds").print_credentials is False
+
+
+def test_noninteractive_print_creds_echoes_token_url_and_cli(
+    monkeypatch, tmp_path, capsys
+):
+    # The opt-in headless path prints the connection details so an automated
+    # provision can capture them: the token value, the URL, and `nymeria cli`.
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--non-interactive",
+            "--print-creds",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    token_path = root / "data" / "BOOTSTRAP_TOKEN.txt"
+    raw_token = re.search(
+        r"nym_[A-Za-z0-9_-]+", token_path.read_text(encoding="utf-8")
+    ).group(0)
+
+    assert rc == 0
+    assert raw_token in out  # opted in -> the token value is printed
+    assert "nymeria cli" in out
+    assert "http://localhost:8000" in out
+
+
+def test_review_token_row_is_reconfigure_honest():
+    # The review 'Token' row must reflect what finalize will actually print, so it
+    # never promises a token on a reconfigure (where none is freshly minted).
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _token_summary, print_creds_applies
+    from nymeria.onboarding import HostingOption, NextAction
+
+    fresh_on = WizardState(hosting=HostingOption.LOCAL, print_credentials=True)
+    fresh_off = WizardState(hosting=HostingOption.LOCAL, print_credentials=False)
+    assert _token_summary(fresh_on) == "print URL + token on finish"
+    assert _token_summary(fresh_off) == "hidden (saved to file)"
+
+    # Reconfigure: the token was already issued, so the row says so regardless of
+    # the toggle (the finalizer will not reprint it).
+    reconfig = WizardState(
+        hosting=HostingOption.LOCAL, print_credentials=True, reconfigure=True
+    )
+    assert _token_summary(reconfig) == "already issued (see data/BOOTSTRAP_TOKEN.txt)"
+
+    # Shapes that never print a host-side token get no row at all.
+    docker = WizardState(hosting=HostingOption.DOCKER, print_credentials=True)
+    cli = WizardState(
+        hosting=HostingOption.LOCAL,
+        print_credentials=True,
+        next_action=NextAction.CLI,
+    )
+    assert _token_summary(docker) is None
+    assert _token_summary(cli) is None
+    assert print_creds_applies(docker) is False
+
+
+def test_review_hint_advertises_toggle_only_when_actionable():
+    # The footer hint should advertise `t` only where it does something.
+    from nymeria.setup.steps.review import make_review_step
+    from nymeria.setup.state import WizardState
+    from nymeria.onboarding import HostingOption
+
+    class _Wiz:
+        def __init__(self, state):
+            self.state = state
+
+    build = make_review_step().build
+    fresh = build(_Wiz(WizardState(hosting=HostingOption.LOCAL)), 1, 1)
+    docker = build(_Wiz(WizardState(hosting=HostingOption.DOCKER)), 1, 1)
+    reconfig = build(
+        _Wiz(WizardState(hosting=HostingOption.LOCAL, reconfigure=True)), 1, 1
+    )
+    assert "t toggle token" in fresh._hint
+    assert "t toggle token" not in docker._hint
+    assert "t toggle token" not in reconfig._hint
+
+
+def test_review_pilot_t_key_toggles_token_print():
+    # The toggle lives on the review screen itself (no separate step, so it shows
+    # identically in quickstart and full). Pressing `t` flips print_credentials.
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import ReviewStep
+    from nymeria.onboarding import HostingOption
+
+    async def drive() -> WizardState:
+        state = WizardState(hosting=HostingOption.LOCAL, print_credentials=True)
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await app.push_screen(
+                ReviewStep(
+                    app, 1, 1, step_id="review", title="Review", note="", hint=""
+                )
+            )
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert state.print_credentials is False
+            await pilot.press("t")
+            await pilot.pause()
+            assert state.print_credentials is True
+        return state
+
+    asyncio.run(drive())
+
+
+def test_review_pilot_t_key_is_inert_on_reconfigure():
+    # On a reconfigure there is no fresh token to print, so the toggle does
+    # nothing (and the row says "already issued").
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import ReviewStep
+    from nymeria.onboarding import HostingOption
+
+    async def drive() -> WizardState:
+        state = WizardState(
+            hosting=HostingOption.LOCAL, print_credentials=True, reconfigure=True
+        )
+        app = SetupWizardApp(state)
+        async with app.run_test() as pilot:
+            await app.push_screen(
+                ReviewStep(
+                    app, 1, 1, step_id="review", title="Review", note="", hint=""
+                )
+            )
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert state.print_credentials is True  # unchanged
+        return state
+
+    asyncio.run(drive())
+
+
+def test_noninteractive_no_print_creds_suppresses_token(monkeypatch, tmp_path, capsys):
+    # Even on a fresh bootstrap, --no-print-creds keeps the token value off stdout
+    # (the non-secret `nymeria cli` command still prints).
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--non-interactive",
+            "--no-print-creds",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    token_path = root / "data" / "BOOTSTRAP_TOKEN.txt"
+    raw_token = re.search(
+        r"nym_[A-Za-z0-9_-]+", token_path.read_text(encoding="utf-8")
+    ).group(0)
+
+    assert rc == 0
+    assert raw_token not in out  # opted out -> token value never echoed
+    assert "nymeria cli" in out
+
+
+def test_noninteractive_write_avoids_leftover_env_docker(monkeypatch, tmp_path):
+    # A fresh local init must not capture its config into a leftover `.env.docker`
+    # (e.g. from a prior Docker init in this root), which get_env_write_path would
+    # otherwise pick as the highest-precedence existing dotenv. --force skips the
+    # hydrate that would auto-detect the Docker shape, so the guard is exercised.
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+    root.mkdir()
+    (root / ".env.docker").write_text("NYMERIA_VERSION=0.0.0\n", encoding="utf-8")
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--hosting", "local",
+            "--force",
+            "--non-interactive",
+        ]
+    )
+
+    assert rc == 0
+    assert "LLM_PROVIDER=anthropic" in (root / "config.env").read_text(encoding="utf-8")
+    # The Docker-shape file is left untouched, not repurposed for local config.
+    assert "LLM_PROVIDER" not in (root / ".env.docker").read_text(encoding="utf-8")
+
+
 def test_noninteractive_defaults_to_free_local_rag_when_no_embedder_chosen(
     monkeypatch, tmp_path
 ):

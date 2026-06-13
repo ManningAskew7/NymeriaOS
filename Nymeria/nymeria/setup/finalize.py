@@ -27,7 +27,10 @@ from typing import Mapping
 from rich.console import Console
 
 from .. import __version__ as _PACKAGE_VERSION
-from .._runtime_paths import default_user_project_root, find_project_root
+from .._runtime_paths import (
+    configure_project_root,
+    find_project_root,
+)
 from ..config.env_file import format_env_value, write_env_file
 from ..config.llm_providers import LLMProviderSpec
 from ..core import secrets as nymeria_secrets
@@ -402,9 +405,12 @@ def finalize(
                     "(cannot verify without extra setup).[/yellow]"
                 )
 
-    # Config target is shape-aware: local/service write `config.env` (read by
-    # run.py from the runtime root); the Docker single-container shape writes
+    # Config target is shape-aware. The Docker single-container shape writes
     # `.env.docker` next to the compose file that reads it via `env_file`.
+    # local/service hosting defers to `get_env_write_path(root)`, the same helper
+    # the runtime uses to pick which dotenv to read/update: a source checkout gets
+    # `.env` (gitignored), a packaged `~/.nymeria` root gets `config.env`. run.py's
+    # loader reads `.env`, `config.env`, and `.env.docker`, so either lands.
     for_docker = state.hosting is HostingOption.DOCKER
     root = resolve_runtime_root(state, for_docker=for_docker)
     data_dir = resolve_data_dir(state, root=root)
@@ -441,7 +447,30 @@ def finalize(
             "hand.[/yellow]"
         )
 
-    config_path = root / (".env.docker" if for_docker else "config.env")
+    if for_docker:
+        config_path = root / ".env.docker"
+    else:
+        # Lazy import: settings pulls in a heavy graph and finalize is imported
+        # early, so match the existing in-function imports of config.settings.
+        from ..config.settings import get_env_write_path
+
+        config_path = get_env_write_path(root)
+        if config_path.name == ".env.docker":
+            # get_env_write_path picks the highest-precedence *existing* dotenv,
+            # and `.env.docker` outranks the others, so a leftover Docker file
+            # (e.g. from a prior Docker init in this root) would otherwise capture
+            # local/service config. Never write the Docker-shape file here: prefer
+            # an existing non-Docker dotenv (config.env outranks .env at load), and
+            # fall back to the shape convention (checkout -> .env, packaged ->
+            # config.env).
+            if (root / "config.env").exists():
+                config_path = root / "config.env"
+            elif (root / ".env").exists():
+                config_path = root / ".env"
+            else:
+                config_path = root / (
+                    ".env" if find_project_root(root) == root else "config.env"
+                )
     if merge and not config_path.exists():
         # Reconfigure whose hosting shape changed (the source file was a different
         # shape). Fall back to a fresh write of the new-shape file and note it.
@@ -560,6 +589,11 @@ def finalize(
         _warn_shadowing_process_env(
             console, {"NYMERIA_VERSION": _PACKAGE_VERSION}
         )
+    # The raw account token to surface at the end (URL + token + `nymeria cli`),
+    # set only for a fresh non-Docker bootstrap. Docker mints in-container and a
+    # reconfigure must not re-print an already-consumed token, so both leave this
+    # None and the end-of-run printer falls back to the file-path handoff.
+    connect_token: str | None = None
     if for_docker:
         # The container owns its data: it mints the bootstrap admin + token into
         # its `/data` volume on first boot. A host-side bootstrap would be
@@ -594,6 +628,7 @@ def finalize(
         # that was already consumed.
         if admin_token is not None:
             print_bootstrap_token_handoff(token_path, console)
+            connect_token = admin_token
 
     if scoped_section is not None:
         # A focused `init <section>` jump: report the one change and stop. No token
@@ -632,7 +667,7 @@ def finalize(
     if doctor_status != 0:
         return doctor_status
 
-    return run_next_action(state, console, root=root)
+    return run_next_action(state, console, root=root, connect_token=connect_token)
 
 
 # --- config writing ---------------------------------------------------------
@@ -1225,12 +1260,25 @@ def resolve_data_dir(state: WizardState, *, root: Path) -> Path:
 
 
 def default_init_root() -> Path:
+    """Where `nymeria init` writes config + data.
+
+    MUST equal the project root the runtime resolves (see
+    `config.settings._get_project_root` / `_runtime_paths.configure_project_root`)
+    so the config the wizard writes is the config the backend later loads. Both
+    resolvers honor `NYMERIA_PROJECT_ROOT` first, so honoring it here too keeps
+    init and runtime in lockstep: editable/source installs resolve it to the
+    checkout, wheel/frozen installs to `~/.nymeria`. Rejecting a checkout root
+    here (as a previous version did) split the two apart: init wrote to
+    `~/.nymeria` while the backend read the checkout, so the wizard's provider,
+    key, and data-dir choices were silently ignored at runtime.
+    """
     env_root = os.environ.get("NYMERIA_PROJECT_ROOT")
     if env_root:
-        root = Path(env_root).expanduser().resolve()
-        if find_project_root(root) != root:
-            return root
-    return default_user_project_root()
+        return Path(env_root).expanduser().resolve()
+    # No explicit override (e.g. init invoked through a path that did not run the
+    # cli_entry bootstrap): fall back to the same resolver the runtime uses rather
+    # than blindly `~/.nymeria`, so a source checkout is still detected.
+    return configure_project_root()
 
 
 def check_writable(root: Path) -> None:
@@ -1594,7 +1642,9 @@ def verify_public_url_now(state: WizardState, console: Console) -> None:
 # --- next action and doctor -------------------------------------------------
 
 
-def print_next_action(state: WizardState, console: Console) -> None:
+def print_next_action(
+    state: WizardState, console: Console, *, connect_token: str | None = None
+) -> None:
     if state.next_action is NextAction.CLI:
         console.print("\nEnter CLI chat with:")
         _print_command(console, "nymeria cli")
@@ -1637,6 +1687,22 @@ def print_next_action(state: WizardState, console: Console) -> None:
             f"Remote devices use {public_origin(active_public_url(state))} "
             "once the backend is up."
         )
+    console.print("\nStart the terminal chat client:")
+    _print_command(console, "nymeria cli")
+    # Connection details. The URL is non-secret and always prints; the token
+    # value prints only when the user opted in (default on in the interactive
+    # wizard, off in --non-interactive so it never lands in captured stdout) and
+    # only for a fresh bootstrap (connect_token is set). Otherwise the file-path
+    # handoff above is the way to retrieve it.
+    if state.print_credentials and connect_token:
+        bootstrap_path = (
+            resolve_data_dir(state, root=resolve_runtime_root(state, for_docker=False))
+            / BOOTSTRAP_TOKEN_FILENAME
+        )
+        console.print("\nConnect any client (desktop, mobile, or another machine) to:")
+        console.print(f"  URL:   {local_base_url(state)}")
+        console.print(f"  Token: {connect_token}")
+        console.print(f"         (also saved to {bootstrap_path})")
     token_path = (
         resolve_data_dir(state, root=resolve_runtime_root(state, for_docker=False))
         / SLIM_SERVICE_TOKEN_FILENAME
@@ -1698,7 +1764,13 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
 # --- opt-in start -----------------------------------------------------------
 
 
-def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
+def run_next_action(
+    state: WizardState,
+    console: Console,
+    *,
+    root: Path,
+    connect_token: str | None = None,
+) -> int:
     """Hand off after config is written.
 
     When the user opted in (``NextAction.START_API_OPEN_FRONTEND``), actually
@@ -1717,7 +1789,7 @@ def run_next_action(state: WizardState, console: Console, *, root: Path) -> int:
             return _start_now_local(console, state=state, root=root)
         if state.hosting is HostingOption.SERVICE:
             return _start_now_service(console, state=state, root=root)
-    print_next_action(state, console)
+    print_next_action(state, console, connect_token=connect_token)
     return 0
 
 

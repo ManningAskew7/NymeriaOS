@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widgets import Static
 
 from ...config.llm_providers import get_llm_provider_spec
@@ -30,9 +31,63 @@ if TYPE_CHECKING:
     from ..app import SetupWizardApp
 
 
+def print_creds_applies(state: WizardState) -> bool:
+    """Whether the connection URL + token are printed on finish for this shape.
+
+    Docker mints its token in-container (nothing host-side to print) and the CLI
+    handoff enters the chat directly with no API token, so both opt out.
+    """
+    if state.next_action is NextAction.CLI:
+        return False
+    return state.hosting is not HostingOption.DOCKER
+
+
+def _token_can_toggle(state: WizardState) -> bool:
+    """The print-token toggle only bites on a fresh install: a reconfigure mints
+    no new token, so the finalizer won't reprint one regardless of the flag.
+
+    `state.reconfigure` is a proxy (it tracks config-file presence, set by
+    hydrate), not a guarantee that `accounts.db` already holds an admin. In the
+    rare case where a config exists but the accounts DB has no admin (db reset /
+    restore-without-db), the finalizer will still mint and print a fresh token
+    even though this row reads "already issued". That only ever under-promises
+    (the token still appears), so we accept the proxy rather than open the DB at
+    render time.
+    """
+    return print_creds_applies(state) and not state.reconfigure
+
+
+def _token_summary(state: WizardState) -> str | None:
+    """The review 'Token' row value, or None when it does not apply.
+
+    Honest about a reconfigure, where no fresh token is minted to print, so the
+    row never promises a value the finalizer will not show.
+    """
+    if not print_creds_applies(state):
+        return None
+    if state.reconfigure:
+        return "already issued (see data/BOOTSTRAP_TOKEN.txt)"
+    return (
+        "print URL + token on finish"
+        if state.print_credentials
+        else "hidden (saved to file)"
+    )
+
+
 class ReviewStep(WizardStep):
+    # Toggle the print-token option right here on the final screen (no separate
+    # step), so quickstart and the full flow expose it identically. Only acts on
+    # a fresh install; a reconfigure has no fresh token to print.
+    BINDINGS = [Binding("t", "toggle_creds", "Toggle token", show=False)]
+
     def compose_body(self) -> ComposeResult:
-        yield Static(_summary_markup(self.state))
+        yield Static(_summary_markup(self.state), id="review-summary")
+
+    def action_toggle_creds(self) -> None:
+        if not _token_can_toggle(self.state):
+            return
+        self.state.print_credentials = not self.state.print_credentials
+        self.query_one("#review-summary", Static).update(_summary_markup(self.state))
 
     def collect(self) -> bool:
         # Advancing past review finishes the wizard; finalize runs after exit.
@@ -181,6 +236,14 @@ def _summary_markup(state: WizardState) -> str:
         lines.append("")
         lines.append(_row("Next", nxt))
 
+    # Surface what the final Enter will print so it is no surprise, and where it
+    # is a live toggle (fresh install), advertise the key.
+    token_value = _token_summary(state)
+    if token_value is not None:
+        if _token_can_toggle(state):
+            token_value += "   [dim](press t to toggle)[/]"
+        lines.append(_row("Token", token_value))
+
     if not lines:
         lines.append("Nothing selected yet.")
     return "\n".join(lines)
@@ -188,6 +251,13 @@ def _summary_markup(state: WizardState) -> str:
 
 def make_review_step() -> Step:
     def build(wizard: "SetupWizardApp", number: int, total: int) -> ReviewStep:
+        base_hint = "enter write config and finish   esc back   ctrl+q quit"
+        # Advertise the token toggle only where it does something (fresh install).
+        hint = (
+            f"t toggle token   {base_hint}"
+            if _token_can_toggle(wizard.state)
+            else base_hint
+        )
         return ReviewStep(
             wizard,
             number,
@@ -195,7 +265,7 @@ def make_review_step() -> Step:
             step_id="review",
             title="Review and finish",
             note="Press Enter to write your configuration.",
-            hint="enter write config and finish   esc back   ctrl+q quit",
+            hint=hint,
         )
 
     return Step(id="review", applies=lambda _state: True, build=build)
