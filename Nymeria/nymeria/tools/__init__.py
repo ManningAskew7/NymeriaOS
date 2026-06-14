@@ -1394,7 +1394,7 @@ _PRV_TOOLS_A = (
 # the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
 CATALOG_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
-    + FILE_EDIT_TOOLS
+    + CONSULT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
     + WEB_FETCH_TOOLS
@@ -1548,7 +1548,7 @@ SEED_TOOLS = [
     bash_execute,
     file_read,
     file_write,
-    consult,
+    file_edit,
     # Memory tools (unified profile + thread-notepad CRUD)
     memory_add,
     memory_edit,

@@ -49,6 +49,7 @@ DEFAULT_DREAM_DISABLED_CORE_TOOLS: tuple[str, ...] = (
     "bash_execute",
     "file_read",
     "file_write",
+    "file_edit",
     "web_search_perplexity",
     "notify",
     "request_credential",
