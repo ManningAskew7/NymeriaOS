@@ -280,7 +280,7 @@ replace-imports-with-any = [
     "readability.*",
     "markdownify",
     # Local rerank / embeddings extra (lazy-imported in core/rag_quality.py and
-    # core/memory_index.py); absent unless the local-rerank extra is installed.
+    # core/memory_index.py); absent unless the local-rag extra is installed.
     "sentence_transformers",
     "sentence_transformers.*",
 ]
