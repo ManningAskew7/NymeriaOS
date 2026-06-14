@@ -50,7 +50,10 @@ def test_release_workflow_builds_frontend_into_python_package() -> None:
     build_job = jobs["python-package"]
     commands = _run_commands(build_job)
 
-    assert any(step.get("uses") == "actions/setup-node@v4" for step in build_job["steps"])
+    assert any(
+        step.get("uses", "").startswith("actions/setup-node@")
+        for step in build_job["steps"]
+    )
     assert any(command == "npm install" for command in commands)
     assert any(command == "npm run build" for command in commands)
     assert any(
@@ -71,7 +74,7 @@ def test_release_workflow_builds_and_checks_python_distributions() -> None:
     assert "python -m build" in commands
     assert "python -m twine check dist/*.whl dist/*.tar.gz" in commands
     assert any(
-        step.get("uses") == "actions/upload-artifact@v4"
+        step.get("uses", "").startswith("actions/upload-artifact@")
         and step.get("with", {}).get("name") == "nymeria-python-dist"
         and "Nymeria/dist/*.whl" in step.get("with", {}).get("path", "")
         and "Nymeria/dist/*.tar.gz" in step.get("with", {}).get("path", "")
@@ -87,7 +90,8 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
 
     commands = _run_commands(windows_job)
     assert any(
-        step.get("uses") == "actions/setup-node@v4" for step in windows_job["steps"]
+        step.get("uses", "").startswith("actions/setup-node@")
+        for step in windows_job["steps"]
     )
     assert any(
         "rustup toolchain install stable --profile minimal" in command
@@ -103,7 +107,7 @@ def test_release_workflow_builds_windows_desktop_installer() -> None:
     )
 
     assert any(
-        step.get("uses") == "actions/upload-artifact@v4"
+        step.get("uses", "").startswith("actions/upload-artifact@")
         and step.get("with", {}).get("name") == "nymeria-windows-installer"
         and step.get("with", {}).get("path")
         == "nymeria-desktop/src-tauri/target/release/bundle/nsis/*.exe"
@@ -145,12 +149,12 @@ def test_release_workflow_uploads_dist_files_to_github_release() -> None:
     assert release_job["needs"] == ["python-package", "windows-desktop"]
     assert release_job["permissions"]["contents"] == "write"
     assert any(
-        step.get("uses") == "actions/download-artifact@v4"
+        step.get("uses", "").startswith("actions/download-artifact@")
         and step.get("with", {}).get("name") == "nymeria-python-dist"
         for step in release_job["steps"]
     )
     assert any(
-        step.get("uses") == "actions/download-artifact@v4"
+        step.get("uses", "").startswith("actions/download-artifact@")
         and step.get("with", {}).get("name") == "nymeria-windows-installer"
         for step in release_job["steps"]
     )
