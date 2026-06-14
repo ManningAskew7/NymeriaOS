@@ -58,6 +58,9 @@ _RICH_SCROLL_REGION_MIN_ROWS = 12
 _RICH_REPL_COMPOSER_MAX_HEIGHT = 6
 _RICH_RESIZE_REDRAW_MIN_INTERVAL_SECONDS = 0.05
 _RICH_RESIZE_SETTLE_SECONDS = 0.12
+# How often the Rich REPL re-probes a saved-but-unreachable backend so it can
+# auto-reconnect once the backend comes up (e.g. CLI started before the API).
+_RECONNECT_POLL_INTERVAL_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +156,7 @@ class _RichReplRuntime:
         self._pinned_input_cursor_position: tuple[int, int] | None = None
         self._autonomous_client_id = f"cli-{uuid.uuid4().hex}"
         self._autonomous_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
         self.current_turn_task: asyncio.Task[bool] | None = None
         self._slash_panel_filter_text = ""
@@ -864,6 +868,83 @@ class _RichReplRuntime:
         self.stop_autonomous_listener()
         self.start_autonomous_listener()
 
+    def start_reconnect_watcher(self) -> None:
+        """Poll a saved-but-unreachable backend so the CLI auto-reconnects.
+
+        Only runs while the active client is a placeholder that retained a saved
+        profile (CLI started before the backend). It self-exits the moment a
+        live client is in place, so it is a no-op once connected.
+        """
+
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        client = self.app._client
+        if not getattr(client, "can_reconnect", False):
+            return
+        try:
+            self._reconnect_task = asyncio.create_task(
+                self._run_reconnect_watcher(),
+                name="NymeriaCLIRichReconnectWatcher",
+            )
+        except RuntimeError:
+            return
+        # Only the Rich REPL reaches here, so the "automatically" promise is made
+        # exactly where the watcher backs it up (the shared startup_error stays
+        # neutral for the plain/full-screen paths, which rely on /reconnect).
+        self.set_status_notice(
+            _disconnected_notice_text(client, auto_reconnect=True),
+            level="warning",
+        )
+
+    async def stop_reconnect_watcher_async(self) -> None:
+        task = self._reconnect_task
+        self._reconnect_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    def stop_reconnect_watcher(self) -> None:
+        task = self._reconnect_task
+        self._reconnect_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _run_reconnect_watcher(self) -> None:
+        from .transport.api import APITransportStartupError, attempt_saved_reconnect
+
+        while True:
+            await asyncio.sleep(_RECONNECT_POLL_INTERVAL_SECONDS)
+            client = self.app._client
+            if not getattr(client, "can_reconnect", False):
+                return
+            try:
+                reconnected = await attempt_saved_reconnect(client)
+            except asyncio.CancelledError:
+                raise
+            except APITransportStartupError as exc:
+                # Saved token is no longer valid (e.g. revoked while we waited):
+                # stop polling and tell the user to re-authenticate.
+                self.set_status_notice(
+                    f"{exc.message} Run /login to reconnect.",
+                    level="error",
+                )
+                return
+            except Exception:  # noqa: BLE001 - a background retry must never crash the REPL.
+                continue
+            if reconnected is not None:
+                # The probe above awaited network I/O, during which the user may
+                # have run /login, /logout, or switched connection. If the active
+                # client is no longer the placeholder we set out to replace, drop
+                # this result rather than clobbering their action.
+                if self.app._client is not client:
+                    with suppress(Exception):
+                        await reconnected.close()
+                    return
+                await self.app._apply_reconnected_client(reconnected, runtime=self)
+                return
+
     async def render_above_prompt(self, callback: Callable[[], Any]) -> Any:
         """Run terminal output above the live Rich status/composer area."""
 
@@ -1208,6 +1289,7 @@ class _RichReplPromptToolkitShell:
     async def run_async(self) -> None:
         app = self.application or self.build_application()
         self.runtime.start_autonomous_listener()
+        self.runtime.start_reconnect_watcher()
         try:
             pre_run = None
             if self.runtime.scroll_region_enabled():
@@ -1218,6 +1300,7 @@ class _RichReplPromptToolkitShell:
             await app.run_async(pre_run=pre_run)
         finally:
             await self.runtime.stop_autonomous_listener_async()
+            await self.runtime.stop_reconnect_watcher_async()
             task = self.runtime.current_turn_task
             if task is not None and not task.done():
                 task.cancel()
@@ -1528,7 +1611,10 @@ class CLIApp:
                 theme=self.theme,
             )
             if is_disconnected_client(client):
-                shell.set_status_notice(DISCONNECTED_MESSAGE, level="warning")
+                shell.set_status_notice(
+                    _disconnected_notice_text(client),
+                    level="warning",
+                )
             await shell.run_async()
 
         asyncio.run(launch())
@@ -1610,7 +1696,10 @@ class CLIApp:
                     runtime.install_resize_handler()
                     if is_disconnected_client(self._client):
                         runtime.set_status_notice(
-                            DISCONNECTED_MESSAGE,
+                            _disconnected_notice_text(
+                                self._client,
+                                auto_reconnect=True,
+                            ),
                             level="warning",
                         )
                 self._active_repl_renderer = renderer
@@ -1640,6 +1729,7 @@ class CLIApp:
             if runtime is not None:
                 runtime.uninstall_resize_handler()
                 runtime.stop_autonomous_listener()
+                runtime.stop_reconnect_watcher()
             self._active_capabilities = None
             self._active_rich_runtime = None
             self._active_repl_renderer = None
@@ -2307,10 +2397,14 @@ class CLIApp:
             if runtime is not None:
                 if is_disconnected_client(self._client):
                     runtime.set_status_notice(
-                        DISCONNECTED_MESSAGE,
+                        _disconnected_notice_text(
+                            self._client,
+                            auto_reconnect=True,
+                        ),
                         level="warning",
                     )
                 runtime.restart_autonomous_listener()
+                runtime.start_reconnect_watcher()
             refresh_header = True
         elif action_type == "set_thread_label":
             self._repl_thread_label = str(
@@ -2964,6 +3058,38 @@ class CLIApp:
                 close: Any = close_attr
                 await close()
 
+    async def _apply_reconnected_client(
+        self,
+        client: AgentClient,
+        *,
+        runtime: "_RichReplRuntime | None" = None,
+    ) -> None:
+        """Swap in a live client after a background reconnect, and surface it.
+
+        Reuses the same ``replace_client`` path as /login so the old placeholder
+        is closed, the header refreshes, and the autonomous stream restarts; then
+        announces the recovered connection in the status bar.
+        """
+
+        user_id = str(
+            getattr(client, "default_user_id", None) or self.state.user_id or "default"
+        )
+        api_url = str(getattr(client, "base_url", "") or "")
+        await self._dispatch_repl_action(
+            {
+                "type": "replace_client",
+                "client": client,
+                "user_id": user_id,
+                "api_url": api_url,
+            }
+        )
+        if runtime is not None:
+            runtime.set_status_notice(
+                f"Reconnected to {api_url or 'backend'} as {user_id}.",
+                level="info",
+            )
+            await self._refresh_and_render_pending_header_async(runtime)
+
     def _apply_selected_client_user(
         self,
         client: Any,
@@ -3037,8 +3163,12 @@ class CLIApp:
     ) -> None:
         if not is_disconnected_client(client):
             return
-        startup_error = str(getattr(client, "startup_error", "") or "")
-        message = startup_error or DISCONNECTED_MESSAGE
+        # Only the Rich REPL runs the auto-reconnect watcher, so only it should
+        # promise automatic recovery; plain/full-screen point at /reconnect.
+        message = _disconnected_notice_text(
+            client,
+            auto_reconnect=capabilities.renderer == "rich",
+        )
         if capabilities.renderer == "plain":
             sys.stderr.write(f"{strip_ansi(message)}\n")
             sys.stderr.flush()
@@ -3104,6 +3234,35 @@ def _queued_notice(count: int) -> str:
     if count == 1:
         return "Queued message (1)"
     return f"Queued messages ({count})"
+
+
+def _disconnected_notice_text(client: Any, *, auto_reconnect: bool = False) -> str:
+    """Notice text for a disconnected client.
+
+    Precedence: a detected alternate backend (``suggested_url``) wins everywhere,
+    since "your backend moved to <url>" is the most actionable thing to say. Then,
+    when ``auto_reconnect`` is set (the Rich REPL, where the reconnect watcher
+    runs) and the client retained a saved profile, promise the automatic retry so
+    the user knows they can just wait. Otherwise fall back to the client's own
+    ``startup_error`` (which, for the plain/full-screen paths, points at
+    ``/reconnect``), or the generic disconnect prompt.
+    """
+
+    suggested = str(getattr(client, "suggested_url", "") or "")
+    if suggested:
+        failed = str(getattr(client, "reconnect_api_url", "") or "")
+        where = f" (your saved connection points at {failed})" if failed else ""
+        return (
+            f"A Nymeria backend is running at {suggested}{where}. "
+            f"Run /login {suggested} to switch to it."
+        )
+    if auto_reconnect and getattr(client, "can_reconnect", False):
+        url = str(getattr(client, "reconnect_api_url", "") or "")
+        return (
+            f"Backend at {url} is not reachable yet; reconnecting automatically "
+            "when it comes up (or run /reconnect)."
+        )
+    return str(getattr(client, "startup_error", "") or "") or DISCONNECTED_MESSAGE
 
 
 def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:

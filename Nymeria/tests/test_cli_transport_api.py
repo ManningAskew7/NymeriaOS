@@ -13,8 +13,10 @@ from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
 from nymeria.triggers.cli.transport.api import (
     APIAgentClient,
     APITransportStartupError,
+    attempt_saved_reconnect,
     resolve_api_connection_config,
     select_agent_client,
+    suggest_reachable_backend,
 )
 from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
 
@@ -450,7 +452,7 @@ def test_select_agent_client_auto_without_configured_api_key_returns_disconnecte
     assert FakeAPIClient.instances == []
 
 
-def test_select_agent_client_saved_profile_failure_returns_disconnected() -> None:
+def test_select_agent_client_saved_profile_unreachable_is_reconnectable() -> None:
     FakeAPIClient.reset()
     FakeAPIClient.health_result = False
 
@@ -467,6 +469,186 @@ def test_select_agent_client_saved_profile_failure_returns_disconnected() -> Non
         )
     )
 
+    # Backend down at startup: the placeholder keeps the saved profile so the
+    # CLI can auto-reconnect once the backend comes up, instead of forcing a
+    # full /login with url + token re-entry.
     assert isinstance(selected, DisconnectedAgentClient)
-    assert "Saved CLI connection" in selected.startup_error
     assert selected.default_user_id == "alice"
+    assert selected.can_reconnect is True
+    assert selected.reconnect_api_url == "http://saved"
+    assert selected.reconnect_api_key == "saved-token"
+    assert selected.reconnect_user_id == "alice"
+    assert "not reachable yet" in selected.startup_error
+
+
+def test_select_agent_client_saved_profile_auth_failure_is_not_reconnectable() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Token revoked")
+
+    selected = run(
+        select_agent_client(
+            runtime_config(transport="api"),
+            api_client_factory=FakeAPIClient,
+            environ={},
+            saved_profile=CLIConnectionProfile(
+                api_url="http://saved",
+                api_key="saved-token",
+                user_id="alice",
+            ),
+        )
+    )
+
+    # A bad/expired token cannot be fixed by retrying, so the placeholder does
+    # not retain it and tells the user to /login.
+    assert isinstance(selected, DisconnectedAgentClient)
+    assert selected.can_reconnect is False
+    assert "Run /login" in selected.startup_error
+
+
+def test_attempt_saved_reconnect_returns_live_client_when_backend_recovers() -> None:
+    FakeAPIClient.reset()
+    placeholder = DisconnectedAgentClient(
+        default_user_id="alice",
+        reconnect_api_url="http://saved",
+        reconnect_api_key="saved-token",
+        reconnect_user_id="alice",
+    )
+
+    reconnected = run(
+        attempt_saved_reconnect(placeholder, api_client_factory=FakeAPIClient)
+    )
+
+    assert isinstance(reconnected, APIAgentClient)
+    assert reconnected.connection_label == "api http://saved"
+    assert reconnected.default_user_id == "alice"
+    assert FakeAPIClient.instances[0].calls == [
+        ("health", {}),
+        ("get_me", {"act_as": "alice"}),
+    ]
+
+
+def test_attempt_saved_reconnect_returns_none_while_backend_still_down() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.health_result = False
+    placeholder = DisconnectedAgentClient(
+        default_user_id="alice",
+        reconnect_api_url="http://saved",
+        reconnect_api_key="saved-token",
+    )
+
+    reconnected = run(
+        attempt_saved_reconnect(placeholder, api_client_factory=FakeAPIClient)
+    )
+
+    assert reconnected is None
+    assert FakeAPIClient.instances[0].closed is True
+
+
+def test_attempt_saved_reconnect_raises_on_auth_error() -> None:
+    FakeAPIClient.reset()
+    FakeAPIClient.me_result = http_status_error(401, "Token revoked")
+    placeholder = DisconnectedAgentClient(
+        default_user_id="alice",
+        reconnect_api_url="http://saved",
+        reconnect_api_key="saved-token",
+    )
+
+    with pytest.raises(APITransportStartupError) as exc_info:
+        run(attempt_saved_reconnect(placeholder, api_client_factory=FakeAPIClient))
+
+    assert exc_info.value.code == "api_auth_error"
+
+
+def test_suggest_reachable_backend_finds_live_backend_on_another_port(tmp_path) -> None:
+    probed: list[str] = []
+    seen_keys: list[str] = []
+
+    class PerUrlAPI:
+        def __init__(self, *, base_url: str, api_key: str = "") -> None:
+            self.base_url = base_url.rstrip("/")
+            self.closed = False
+            probed.append(self.base_url)
+            seen_keys.append(api_key)
+
+        async def health(self) -> bool:
+            # The default candidate :8000 is always probed; only it answers.
+            return self.base_url.endswith(":8000")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    result = run(
+        suggest_reachable_backend(
+            "http://127.0.0.1:8098",
+            api_client_factory=PerUrlAPI,
+            environ={},
+            config_path=tmp_path / "cli.json",
+        )
+    )
+
+    assert result == "http://127.0.0.1:8000"
+    assert "http://127.0.0.1:8000" in probed
+    # Regression guard: the probe must use a non-empty bearer. An empty api_key
+    # builds an illegal "Bearer " header, so health() would silently always fail.
+    assert seen_keys and all(key for key in seen_keys)
+
+
+def test_suggest_reachable_backend_skips_remote_targets() -> None:
+    probed: list[str] = []
+
+    class API:
+        def __init__(self, *, base_url: str, api_key: str = "") -> None:
+            probed.append(base_url)
+
+        async def health(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            pass
+
+    result = run(
+        suggest_reachable_backend(
+            "https://api.example.com:8000",
+            api_client_factory=API,
+            environ={},
+        )
+    )
+
+    # A remote outage must never trigger a local port probe.
+    assert result is None
+    assert probed == []
+
+
+def test_suggest_reachable_backend_returns_none_when_nothing_answers(tmp_path) -> None:
+    class API:
+        def __init__(self, *, base_url: str, api_key: str = "") -> None:
+            self.closed = False
+
+        async def health(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    result = run(
+        suggest_reachable_backend(
+            "http://127.0.0.1:8098",
+            api_client_factory=API,
+            environ={},
+            config_path=tmp_path / "cli.json",
+        )
+    )
+
+    assert result is None
+
+
+def test_attempt_saved_reconnect_ignores_plain_disconnected_placeholder() -> None:
+    FakeAPIClient.reset()
+    placeholder = DisconnectedAgentClient(default_user_id="alice")
+
+    reconnected = run(
+        attempt_saved_reconnect(placeholder, api_client_factory=FakeAPIClient)
+    )
+
+    assert reconnected is None
+    assert FakeAPIClient.instances == []

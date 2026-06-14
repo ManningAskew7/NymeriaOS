@@ -7,7 +7,9 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 from ....triggers.api_client import NymeriaAPIClient
 from ..credentials import CLIConnectionProfile, load_cli_config
@@ -18,6 +20,11 @@ from .disconnected import DisconnectedAgentClient
 TransportMode = Literal["api", "local", "auto"]
 
 DEFAULT_API_URL = "http://localhost:8000"
+
+# Startup-failure codes that mean "the backend is not up yet" rather than "the
+# credentials are wrong". Only these are worth retrying automatically from a
+# saved profile; an auth failure needs a fresh /login, not a silent retry.
+RECONNECTABLE_STARTUP_CODES = frozenset({"api_unavailable", "api_connection_error"})
 
 
 class CLITransportRuntimeConfig(Protocol):
@@ -529,8 +536,31 @@ async def select_agent_client(
             config,
             api_client_factory=api_client_factory,
         )
-    except APITransportStartupError:
+    except APITransportStartupError as exc:
         if config.from_saved_profile and not config.explicitly_configured:
+            if exc.code in RECONNECTABLE_STARTUP_CODES:
+                # Backend is simply not up yet: keep the saved profile so the
+                # CLI can auto-reconnect (or /reconnect) once it comes up,
+                # instead of forcing a full /login with url + token re-entry.
+                # On a real launch (environ is None), also sniff for a backend
+                # that moved to a different local port and hint at it.
+                suggested = ""
+                if environ is None:
+                    suggested = await suggest_reachable_backend(
+                        config.api_url,
+                        api_client_factory=api_client_factory,
+                    ) or ""
+                return DisconnectedAgentClient(
+                    default_user_id=config.user_id,
+                    startup_error=(
+                        f"Backend at {config.api_url} is not reachable yet. "
+                        "Run /reconnect once it is up."
+                    ),
+                    reconnect_api_url=config.api_url,
+                    reconnect_api_key=config.api_key or "",
+                    reconnect_user_id=config.user_id,
+                    suggested_url=suggested,
+                )
             return DisconnectedAgentClient(
                 default_user_id=config.user_id,
                 startup_error=(
@@ -539,6 +569,144 @@ async def select_agent_client(
                 ),
             )
         raise
+
+
+def _reconnect_config(client: DisconnectedAgentClient) -> APIConnectionConfig:
+    """Rebuild a connection config from a placeholder's retained saved profile."""
+
+    return APIConnectionConfig(
+        api_url=client.reconnect_api_url,
+        api_key=client.reconnect_api_key,
+        user_id=client.reconnect_user_id,
+        explicit_api_url=True,
+        explicit_api_key=True,
+        api_url_source="saved",
+        api_key_source="saved",
+        user_id_source="saved",
+    )
+
+
+async def attempt_saved_reconnect(
+    client: AgentClient | None,
+    *,
+    api_client_factory: Callable[..., Any] = NymeriaAPIClient,
+) -> APIAgentClient | None:
+    """Re-validate the saved profile retained on a disconnected placeholder.
+
+    Returns a live :class:`APIAgentClient` once the backend is reachable again,
+    or ``None`` while it is still down (so a poller can try again later).
+    Re-raises :class:`APITransportStartupError` for non-recoverable failures
+    such as a revoked token, so the caller can stop polling and surface a
+    "run /login" prompt rather than retrying a request that can only keep
+    failing.
+    """
+
+    if not isinstance(client, DisconnectedAgentClient) or not client.can_reconnect:
+        return None
+    config = _reconnect_config(client)
+    try:
+        return await validate_api_agent_client(
+            config,
+            api_client_factory=api_client_factory,
+        )
+    except APITransportStartupError as exc:
+        if exc.code in RECONNECTABLE_STARTUP_CODES:
+            return None
+        raise
+
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+# A non-secret placeholder bearer for the unauthenticated /health probe. The
+# user's saved token is never sent to a candidate; we only need a non-empty
+# value because an empty api_key builds an illegal "Bearer " header (httpx
+# rejects it, so health() would silently fail and find nothing).
+_PROBE_API_KEY = "health-probe"
+
+
+def is_loopback_url(url: str) -> bool:
+    """Whether ``url`` points at this machine (so local-only logic is safe)."""
+
+    try:
+        host = (urlsplit(url).hostname or "").casefold()
+    except ValueError:
+        return False
+    return host in LOOPBACK_HOSTS
+
+
+def _candidate_backend_urls(
+    failed_url: str,
+    *,
+    environ: Mapping[str, str],
+    config_path: Path | str | None = None,
+) -> list[str]:
+    """Curated, deduped loopback backend URLs to probe, most-likely first."""
+
+    failed = failed_url.strip().rstrip("/")
+    ordered: list[str] = []
+
+    def add(url: str | None) -> None:
+        if not url:
+            return
+        norm = url.strip().rstrip("/")
+        if norm and norm != failed and norm not in ordered and is_loopback_url(norm):
+            ordered.append(norm)
+
+    # 1. The project's configured API port: the most authoritative local signal.
+    try:
+        from ....config import get_settings
+
+        port = getattr(get_settings(), "api_port", None)
+    except Exception:  # noqa: BLE001 - settings are a best-effort hint here.
+        port = None
+    if port:
+        add(f"http://127.0.0.1:{port}")
+    # 2. An explicit env override, if the user set one.
+    add(_clean_optional(environ.get("NYMERIA_API_URL")))
+    # 3. The conventional default.
+    add("http://127.0.0.1:8000")
+    # 4. Other saved CLI profiles the user has connected to before.
+    try:
+        for profile in load_cli_config(config_path).profiles.values():
+            add(profile.api_url)
+    except Exception:  # noqa: BLE001 - saved config is a best-effort hint here.
+        pass
+    return ordered
+
+
+async def suggest_reachable_backend(
+    failed_url: str,
+    *,
+    api_client_factory: Callable[..., Any] = NymeriaAPIClient,
+    environ: Mapping[str, str] | None = None,
+    config_path: Path | str | None = None,
+) -> str | None:
+    """Find a live Nymeria backend on a different local port after a failure.
+
+    Probes a small curated candidate set (the project's configured ``api_port``,
+    ``NYMERIA_API_URL``, the default 8000, and other saved profiles) with an
+    unauthenticated ``/health`` check and returns the first URL that answers as
+    Nymeria, or ``None``. Only runs for loopback targets, so a remote outage
+    never triggers a local probe. Intended for one-shot failure surfaces (boot,
+    ``/login``, ``/reconnect``), never the reconnect poll loop.
+    """
+
+    if not is_loopback_url(failed_url):
+        return None
+    env = os.environ if environ is None else environ
+    for url in _candidate_backend_urls(failed_url, environ=env, config_path=config_path):
+        try:
+            api = api_client_factory(base_url=url, api_key=_PROBE_API_KEY)
+        except Exception:  # noqa: BLE001 - a bad candidate is just "not it".
+            continue
+        try:
+            if await api.health():
+                return url
+        except Exception:  # noqa: BLE001 - an unreachable/erroring candidate is skipped.
+            continue
+        finally:
+            await _close_api_client(api)
+    return None
 
 
 def _attachment_dicts(
@@ -661,7 +829,11 @@ __all__ = [
     "APIConnectionConfig",
     "APITransportStartupError",
     "DEFAULT_API_URL",
+    "RECONNECTABLE_STARTUP_CODES",
+    "attempt_saved_reconnect",
     "create_api_agent_client",
+    "is_loopback_url",
     "resolve_api_connection_config",
     "select_agent_client",
+    "suggest_reachable_backend",
 ]

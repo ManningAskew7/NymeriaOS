@@ -21,9 +21,32 @@ class DisconnectedAgentClient:
         *,
         default_user_id: str = "default",
         startup_error: str = "",
+        reconnect_api_url: str = "",
+        reconnect_api_key: str = "",
+        reconnect_user_id: str = "",
+        suggested_url: str = "",
     ) -> None:
         self.default_user_id = default_user_id or "default"
         self.startup_error = startup_error
+        # A different local backend we detected while the saved one was down
+        # (e.g. saved profile points at :8098 but a backend is live on :8000).
+        # Surfaced as a "did you mean <url>?" hint; empty when none was found.
+        self.suggested_url = suggested_url
+        # Retained saved-profile fields. When this placeholder stands in for a
+        # backend that was simply not up yet at startup (rather than bad
+        # credentials), the CLI keeps the url/token here so it can silently
+        # re-validate and upgrade to a live API client once the backend comes
+        # up, without re-prompting for /login. Empty for a plain disconnect
+        # (no saved profile, or an auth failure where retrying is pointless).
+        self.reconnect_api_url = reconnect_api_url
+        self.reconnect_api_key = reconnect_api_key
+        self.reconnect_user_id = reconnect_user_id or self.default_user_id
+
+    @property
+    def can_reconnect(self) -> bool:
+        """Whether a retained saved profile is available for a silent retry."""
+
+        return bool(self.reconnect_api_url.strip() and self.reconnect_api_key.strip())
 
     async def close(self) -> None:
         """No-op close hook for lifecycle symmetry."""
