@@ -36,7 +36,7 @@ def test_ci_validates_docker_compose_and_dockerfile() -> None:
     assert docker_job["env"]["TELEGRAM_BOT_TOKEN"] == "disabled"
     assert docker_job["env"]["TWITCH_CHANNEL"] == "channelname"
     assert any(
-        step.get("uses") == "docker/setup-buildx-action@v3"
+        step.get("uses", "").startswith("docker/setup-buildx-action@")
         for step in docker_job["steps"]
     )
 

@@ -442,18 +442,55 @@ def test_hexstrike_dockerfile_drops_to_non_root_user() -> None:
 
 
 def test_security_sensitive_dependency_floors_or_pins_are_bumped() -> None:
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    expected = {
-        "fastapi>=0.136.1,<1.0.0",
-        "starlette>=1.0.0,<2.0.0",
-        "pydantic==2.13.4",
-        "httpx>=0.27.1,<1.0.0",
-        "requests>=2.32.0,<3.0.0",
-        "urllib3>=2.2.2,<3.0.0",
-        "PyYAML>=6.0.2,<7.0.0",
-        "Jinja2>=3.1.6,<4.0.0",
-        "Pillow>=10.4.0,<13.0.0",
-        "cryptography>=42.0.4,<47.0.0",
+
+    # Minimum security floor each dependency must meet. These were raised in
+    # response to known advisories; the assertion is that requirements.txt
+    # cannot install a version BELOW the floor. Raising the floor in
+    # requirements.txt above these values is the desired direction and must
+    # not fail this test, so we compare the parsed lower bound semantically
+    # rather than matching exact strings (which drifts every time a floor or
+    # pin is bumped).
+    minimum_floors = {
+        "fastapi": "0.136.1",
+        "starlette": "1.0.0",
+        "pydantic": "2.13.4",
+        "httpx": "0.27.1",
+        "requests": "2.32.0",
+        "urllib3": "2.2.2",
+        "PyYAML": "6.0.2",
+        "Jinja2": "3.1.6",
+        "Pillow": "10.4.0",
+        "cryptography": "42.0.4",
     }
-    for requirement in expected:
-        assert requirement in requirements
+
+    # Parse "name -> Requirement" from requirements.txt, skipping comments and
+    # -r includes.
+    parsed: dict[str, Requirement] = {}
+    for raw_line in requirements.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        try:
+            req = Requirement(line)
+        except Exception:
+            continue
+        parsed[req.name.lower()] = req
+
+    for name, floor in minimum_floors.items():
+        req = parsed.get(name.lower())
+        assert req is not None, f"{name} missing from requirements.txt"
+        lower_bounds = [
+            Version(spec.version)
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        assert lower_bounds, f"{name} has no lower-bound or pin in {req.specifier!r}"
+        effective_floor = max(lower_bounds)
+        assert effective_floor >= Version(floor), (
+            f"{name} floor {effective_floor} is below the required security "
+            f"floor {floor}"
+        )
