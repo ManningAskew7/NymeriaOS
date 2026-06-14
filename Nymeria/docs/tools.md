@@ -11,6 +11,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands in the backend environment |
 | 2 | `file_read` | Core | SAFE | On | Read file contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
+| 3b | `file_edit` | Core | MODERATE | On | Exact, all-or-nothing edits to existing text files |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
 | 4b | `web_search_tavily` | Web Search | SAFE | Opt-in | Ranked-source web retrieval via Tavily; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4c | `web_search_exa_ai` | Web Search | SAFE | Opt-in | Neural/semantic web retrieval via Exa (highlights); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
@@ -19,7 +20,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4g | `web_search_ddgs` | Web Search | SAFE | Opt-in | Keyless in-process metasearch via the ddgs library (no key, no instance); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4h | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional distill; opt-in `WEB_FETCH_TOOLS` group |
-| 5 | `consult` | Core | SAFE | On | Ask Gemini for a second opinion (OpenRouter) |
+| 5 | `consult` | Core | SAFE | Opt-in | Ask Gemini for a second opinion (OpenRouter); enable per-thread (was a seed default, now optional) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
 | 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
@@ -80,14 +81,6 @@ tools; it provides the operating philosophy and routes to these kits.
 ### Optional: Integration And Service Tools
 
 Not loaded by default. Nymeria registers more than a thousand optional integration and service tools across utility, public-info, media, community, HR, device, marketing, developer, build/CI, file storage, AWS, business, productivity, work-tracking, project-management, data, CRM, messaging, commerce, monitoring, enrichment, chat-platform, Google, and Microsoft Graph modules. The exhaustive generated inventory lives in `tools-index.md`; this page keeps only the architectural notes and hand-maintained special cases so the reference does not drift.
-
-### Optional: File Editing (1)
-
-Not loaded by default. Enable per-thread when the agent needs precise text edits instead of full-file rewrites.
-
-| # | Tool | Category | Security | Description |
-|---|------|----------|----------|-------------|
-| 1 | `file_edit` | Core | MODERATE | Exact, all-or-nothing edits to existing text files |
 
 ### Optional: Image Generation (5)
 
@@ -237,9 +230,9 @@ file_write(file_path: str, content: str, encoding: str = "utf-8", create_directo
 
 ---
 
-### file_edit (Optional)
+### file_edit
 
-Precisely edit an existing text file with exact, all-or-nothing operations. This is not loaded by default; enable it per-thread before use.
+Precisely edit an existing text file with exact, all-or-nothing operations. This is a seed tool, loaded by default for new threads (it can be demoted out of a user's defaults or disabled per-thread).
 
 ```python
 file_edit(file_path: str, edits: list[dict], encoding: str = "utf-8", dry_run: bool = False, expected_sha256: Optional[str] = None, max_diff_chars: int = 20000)
@@ -528,7 +521,7 @@ Hard defaults (not exposed): granular httpx timeouts (connect 10s, read 25s), an
 
 ### consult
 
-Ask another AI (Gemini) for a second opinion. Sends the question to a Gemini model via OpenRouter with reasoning tokens enabled and returns its analysis. Use when you want an outside perspective, need help with a hard problem, or want to cross-check your own reasoning.
+Ask another AI (Gemini) for a second opinion. Sends the question to a Gemini model via OpenRouter with reasoning tokens enabled and returns its analysis. Use when you want an outside perspective, need help with a hard problem, or want to cross-check your own reasoning. This is an optional catalog tool, not loaded by default; enable it per-thread (or promote it into your defaults) before use.
 
 > **Previously named `think`.** Renamed to `consult` to clarify that this is an external LLM call (costs credits, takes seconds), not internal reasoning.
 

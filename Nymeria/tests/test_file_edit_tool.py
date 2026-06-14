@@ -259,11 +259,11 @@ def test_file_write_is_confined_to_workspace_when_enabled(tmp_path, monkeypatch)
     assert denied.startswith("[Error]: Path outside workspace")
 
 
-def test_file_edit_is_optional_and_has_metadata():
-    assert "file_edit" not in {tool.name for tool in SEED_TOOLS}
-    assert "file_edit" in CATALOG_TOOLS
+def test_file_edit_is_seed_default_and_has_metadata():
+    assert "file_edit" in {tool.name for tool in SEED_TOOLS}
+    assert "file_edit" not in CATALOG_TOOLS
 
     meta = get_all_tool_metadata("file_edit")
     assert meta is not None
     assert meta.security_level == SecurityLevel.MODERATE
-    assert meta.default_enabled is False
+    assert meta.default_enabled is True
