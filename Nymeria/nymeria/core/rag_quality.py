@@ -196,7 +196,7 @@ def local_rerank(
         encoder = _get_cross_encoder(model_name, onnx_file, max_length)
     except Exception as e:
         logger.warning(
-            "local_rerank unavailable (%s); install the local-rerank extra: %s",
+            "local_rerank unavailable (%s); install the local-rag extra: %s",
             model_name, e,
         )
         return results

@@ -630,6 +630,16 @@ def finalize(
             print_bootstrap_token_handoff(token_path, console)
             connect_token = admin_token
 
+    # Local RAG (granite + Ettin, including the Ctrl+S quickstart default) needs
+    # the optional local-rag extra to load its in-process models; offer to install
+    # it now so the stack works out of the box instead of failing every ingest.
+    # Runs for the full flow and a scoped embedder/reranker reconfigure; other
+    # scoped jumps stay focused on their one setting.
+    if scoped_section in (None, "embedder", "reranker"):
+        _maybe_install_local_rag(
+            extra_env, console, for_docker=for_docker, non_interactive=non_interactive
+        )
+
     if scoped_section is not None:
         # A focused `init <section>` jump: report the one change and stop. No token
         # handoff, post-setup launch, or doctor for a single-setting edit.
@@ -1513,6 +1523,102 @@ def _print_voice_hints(state: WizardState, console: Console) -> None:
             "yourself and set TTS_BASE_URL / STT_BASE_URL to it, or pick a "
             "hosted provider.[/yellow]"
         )
+
+
+def _maybe_install_local_rag(
+    extra_env: Mapping[str, str],
+    console: Console,
+    *,
+    for_docker: bool,
+    non_interactive: bool,
+) -> None:
+    """Make a selected local RAG stack runnable out of the box.
+
+    ``EMBEDDING_PROVIDER=local`` / ``RAG_RERANK_PROVIDER=local`` (including the
+    Ctrl+S quickstart default, which equips granite + Ettin) need the optional
+    local-rag extra (sentence-transformers + torch); without it the embedder
+    fails on every ingest. On the bare-metal shapes we offer to install it now
+    (confirm, default yes) so the user never has to learn the command. Docker
+    carries its dependencies in the image, not a uv/pip env, so it gets a hint
+    instead. An already-installed extra or a non-local stack is a silent no-op.
+
+    Unlike the voice-local extra (``_print_voice_hints`` only prints a command),
+    this offers to install: the local stack is also the silent Ctrl+S quickstart
+    default the user never explicitly chose, so a bare hint would strand the most
+    common path. Voice is always an explicit, visible pick, so a hint suffices.
+    """
+    from rich.markup import escape
+
+    from .local_rag_install import (
+        build_install_command,
+        local_rag_importable,
+        manual_install_hint,
+        requires_local_rag,
+    )
+
+    if not requires_local_rag(extra_env) or local_rag_importable():
+        return
+
+    if for_docker:
+        console.print(
+            "\n[yellow]The local RAG stack (granite + Ettin) needs the "
+            "sentence-transformers extra baked into the image; the default "
+            "Docker images omit it to stay small. Build an image that includes "
+            "the local-rag extra, or pick a hosted embedder/reranker.[/yellow]"
+        )
+        return
+
+    command = build_install_command()
+    # escape() stops Rich from eating the [local-rag] in the command as markup.
+    hint = escape(manual_install_hint(command))
+    if command is None:
+        console.print(
+            "\n[yellow]The local RAG stack needs the local-rag extra "
+            f"(sentence-transformers). Install it with: {hint}[/yellow]"
+        )
+        return
+    # A prompt needs an interactive terminal; --non-interactive or a non-tty
+    # stdin (a pipe, a test harness) cannot answer, so surface the command
+    # instead of blocking on input that will never come.
+    if non_interactive or not sys.stdin.isatty():
+        console.print(
+            "\n[yellow]The local RAG stack needs the local-rag extra "
+            f"(sentence-transformers). Install it with: {hint}[/yellow]"
+        )
+        return
+
+    console.print(
+        "\n[bold]Local semantic memory (granite + Ettin)[/bold] needs the "
+        "local-rag extra: sentence-transformers plus PyTorch (a few hundred MB; "
+        "the models download on first use)."
+    )
+    # Default yes: a bare Enter (or anything not starting with "n") proceeds; any
+    # "n..." answer declines. EOF (Ctrl+D) or Ctrl+C at the prompt is treated as a
+    # decline, not a crash, so a finished init never ends on a traceback.
+    try:
+        answer = console.input(r"Install it now? \[Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+    if answer.startswith("n"):
+        console.print(f"[yellow]Skipped. Install later with: {hint}[/yellow]")
+        return
+
+    console.print("\nInstalling the local-rag extra (this can take a few minutes)...")
+    try:
+        result = subprocess.run(command)
+    except OSError as exc:
+        console.print(
+            f"[yellow]Could not run the installer ({exc}). Install it yourself, "
+            f"then restart: {hint}[/yellow]"
+        )
+        return
+    if result.returncode != 0:
+        console.print(
+            "\n[yellow]The local-rag install did not finish cleanly. Run it "
+            f"yourself, then restart: {hint}[/yellow]"
+        )
+        return
+    console.print("[green]Local RAG dependencies installed.[/green]")
 
 
 def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
