@@ -2655,14 +2655,6 @@ POST /tools/custom/{tool_id}/test  # Test a tool
 
 **Agent-created tools:** `tool_create(action="publish")` writes the same JSON definition format into `data/custom_tools/`, then reloads the custom-tool loader and registers metadata so `tool_search(query=...)` can find the new tool. Agent-created tools are global but remain opt-in per thread. The publishing thread is auto-enabled with the requested TTL through the same hot-load path as `tool_manage`.
 
-### HexStrike MCP Sidecar
-
-HexStrike AI is available as an optional Kali-based sidecar through
-`docker-compose.hexstrike.yml`. It exposes a curated subset of upstream
-HexStrike tools over Streamable HTTP at `http://hexstrike-mcp:8889/mcp` for
-Nymeria containers and `http://localhost:8889/mcp` for local MCP clients. See
-`docs/hexstrike-mcp.md` for build, registration, and allowlist details.
-
 ---
 
 ## Scheduled TODO Execution

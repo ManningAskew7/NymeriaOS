@@ -58,12 +58,6 @@ def test_main_compose_services_drop_linux_capabilities() -> None:
     _assert_service_hardening(services)
 
 
-def test_hexstrike_compose_services_drop_linux_capabilities() -> None:
-    services = _load_compose("docker-compose.hexstrike.yml")["services"]
-
-    _assert_service_hardening(services)
-
-
 def test_postgres_and_redis_use_read_only_rootfs_with_persistent_data_volumes() -> None:
     services = _load_compose("docker-compose.yml")["services"]
 
@@ -428,17 +422,6 @@ def test_app_dockerfiles_drop_to_non_root_user() -> None:
         assert user_directives[-1] == "USER nymeria", (
             f"{dockerfile_name} must end as USER nymeria, got {user_directives[-1]!r}"
         )
-
-
-def test_hexstrike_dockerfile_drops_to_non_root_user() -> None:
-    content = (ROOT / "docker" / "hexstrike" / "Dockerfile").read_text(encoding="utf-8")
-    user_directives = [
-        line.strip()
-        for line in content.splitlines()
-        if line.strip().startswith("USER ")
-    ]
-    assert user_directives, "HexStrike Dockerfile has no USER directive"
-    assert user_directives[-1] == "USER hexstrike"
 
 
 def test_security_sensitive_dependency_floors_or_pins_are_bumped() -> None:
