@@ -17,9 +17,11 @@ import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
 from .time_utils import ensure_aware_utc, utc_now
+from .tool_embedding_store import ToolEmbeddingStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,13 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 # OpenAI SDK otherwise defaults to a 600s timeout with 2 retries, so a hung
 # socket can block for minutes.
 EMBED_REQUEST_TIMEOUT_SECONDS = 10.0
+# Warming the catalog embeds many tools at once. The embeddings API accepts a
+# list input, so the ~1300-tool catalog is a handful of batched requests rather
+# than ~1300 serial calls; a full batch can legitimately take longer than the
+# single-query cap, so the warm path uses a more generous (still bounded)
+# per-request timeout.
+EMBED_BATCH_SIZE = 128
+EMBED_BATCH_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -137,10 +146,18 @@ class ToolSearchIndex:
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+        embedding_dimensions: Optional[int] = None,
+        embedding_provider: str = "openai",
+        db_path: Optional[Path] = None,
     ) -> None:
         self._openai_key = openai_api_key
         self._openai_base_url = openai_base_url
         self._embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
+        self._dimensions = int(embedding_dimensions or EMBEDDING_DIMENSIONS)
+        self._dimensions_explicit = embedding_dimensions is not None
+        # Recorded for future use; the tool index embeds via the OpenAI-compatible
+        # client only today (as it did before this change), regardless of provider.
+        self._provider = embedding_provider or "openai"
         self._openai_client = None
         self._semantic_available: Optional[bool] = None
         self._last_error: Optional[str] = None
@@ -149,6 +166,25 @@ class ToolSearchIndex:
         self._dirty = True
         self._embedding_cache: dict[str, tuple[str, list[float]]] = {}
         self._lock = threading.RLock()
+        # Persistent vector cache (optional). Built only when a db path is given
+        # AND a usable embeddings key exists; keyless/offline callers (tests)
+        # pass db_path=None and stay purely in-memory.
+        self._store: Optional[ToolEmbeddingStore] = None
+        if db_path is not None and self.is_semantic_available():
+            try:
+                store = ToolEmbeddingStore(
+                    Path(db_path),
+                    model=self._embedding_model,
+                    dimensions=self._dimensions,
+                )
+                self._store = store if store.usable else None
+            except Exception as exc:  # noqa: BLE001 - the cache is optional.
+                logger.warning("tool embedding store init failed: %s", exc)
+                self._store = None
+        # Background-warm coordination, wired by register_warm_loop().
+        self._warm_loop: Any = None
+        self._warm_event: Any = None
+        self._fully_embedded = False
 
     @property
     def catalog_fingerprint(self) -> str:
@@ -161,6 +197,10 @@ class ToolSearchIndex:
     def mark_dirty(self) -> None:
         with self._lock:
             self._dirty = True
+            # The catalog changed: stop serving semantic results until the warm
+            # has (re)embedded it, then nudge the background warm to do so.
+            self._fully_embedded = False
+        self._signal_warm()
 
     def is_semantic_available(self) -> bool:
         if self._semantic_available is not None:
@@ -197,6 +237,14 @@ class ToolSearchIndex:
         category_key = (category or "").strip().lower().replace("-", "_")
         limit = max(1, min(int(top_k or 15), 50))
 
+        # Embed the query OUTSIDE the index lock so a slow embed never blocks the
+        # background warm or other searches. Only attempt it when semantic
+        # search is both available AND ready (catalog fully embedded): search()
+        # must never trigger an inline catalog embed, which is the cold-start
+        # hang this design removes.
+        semantic_ready = self.is_semantic_available() and self._fully_embedded
+        q_vec = self._embed(query) if (query and semantic_ready) else None
+
         with self._lock:
             docs = self._ensure_catalog(
                 user_id=user_id,
@@ -215,14 +263,18 @@ class ToolSearchIndex:
                 ranked = [(0.0, doc) for doc in docs]
             else:
                 ranked = []
-                if self.is_semantic_available():
-                    q_vec = self._embed(query)
-                    if q_vec is not None:
-                        self._ensure_embeddings(docs)
-                        ranked = self._semantic_search(query, q_vec, docs)
-                        mode = "semantic"
-                    else:
-                        warning = self._fallback_warning()
+                if semantic_ready and q_vec is not None:
+                    ranked = self._semantic_search(query, q_vec, docs)
+                    mode = "semantic"
+                elif semantic_ready:
+                    # Query embed failed (endpoint hiccup): keyword fallback.
+                    warning = self._fallback_warning()
+                elif self.is_semantic_available():
+                    # Semantic is configured but the catalog isn't embedded yet.
+                    # Serve keyword results now and nudge the background warm;
+                    # never embed the catalog inline here.
+                    warning = self._warming_warning()
+                    self._signal_warm()
                 else:
                     warning = self._fallback_warning()
 
@@ -284,10 +336,11 @@ class ToolSearchIndex:
             self._catalog = {doc.name: doc for doc in docs}
             self._catalog_fingerprint = fingerprint
             self._dirty = False
-            live_names = set(self._catalog)
-            for name in list(self._embedding_cache):
-                if name not in live_names:
-                    self._embedding_cache.pop(name, None)
+        # The embedding cache is intentionally NOT pruned against this view: it
+        # is per-request (role/thread visibility), so pruning by it would evict
+        # warm-embedded vectors a narrower request cannot see while leaving
+        # _fully_embedded stale-true. The warm owns cache membership and prunes
+        # orphans against the static catalog instead.
         return list(self._catalog.values())
 
     def _build_catalog(
@@ -432,17 +485,130 @@ class ToolSearchIndex:
         except Exception:
             return {}
 
-    def _ensure_embeddings(self, docs: Iterable[ToolSearchDocument]) -> None:
+    def _static_catalog_docs(self) -> list[ToolSearchDocument]:
+        """The deterministic catalog the warm embeds and ``_fully_embedded`` is
+        measured against: every discoverable builtin/MCP/custom tool at admin
+        visibility. Per-thread callable-thread docs are excluded (they are
+        per-request and simply fall out of semantic ranking when unembedded,
+        matching prior behavior)."""
+        return self._build_catalog(
+            user_id="default",
+            user_role="admin",
+            agent=None,
+            thread_id=None,
+        )
+
+    def warm_embeddings(self) -> None:
+        """Embed the static tool catalog into the in-memory cache (and the
+        persistent store, when present). Idempotent: only missing content
+        hashes are embedded, so repeat calls are cheap.
+
+        Network calls happen OUTSIDE ``self._lock`` so a concurrent ``search``
+        never waits on the embedder, only on a brief per-batch cache swap. The
+        API background-warm task calls this at startup and whenever the catalog
+        changes; ``search`` never calls it.
+        """
         if not self.is_semantic_available():
             return
-        for doc in docs:
-            cached = self._embedding_cache.get(doc.name)
-            if cached and cached[0] == doc.content_hash:
-                continue
-            embedding = self._embed(doc.index_text)
-            if embedding is None:
-                return
-            self._embedding_cache[doc.name] = (doc.content_hash, embedding)
+        docs = self._static_catalog_docs()
+        if not docs:
+            return
+
+        # 1. Preload persisted vectors (the store has its own lock) and merge
+        #    them into the in-memory cache under a brief lock.
+        if self._store is not None:
+            by_hash = self._store.get_many({doc.content_hash for doc in docs})
+            if by_hash:
+                with self._lock:
+                    for doc in docs:
+                        vec = by_hash.get(doc.content_hash)
+                        if vec is not None:
+                            self._embedding_cache[doc.name] = (doc.content_hash, vec)
+
+        # 2. Drop embeddings for tools no longer in the catalog (renamed or
+        #    removed) and compute the remaining cache misses, under a brief lock.
+        valid_names = {doc.name for doc in docs}
+        with self._lock:
+            for stale in [n for n in self._embedding_cache if n not in valid_names]:
+                self._embedding_cache.pop(stale, None)
+            misses = [
+                doc
+                for doc in docs
+                if not (
+                    (cached := self._embedding_cache.get(doc.name))
+                    and cached[0] == doc.content_hash
+                )
+            ]
+
+        # 3. Embed misses in batches outside the lock; swap each batch into the
+        #    cache under a brief lock; persist outside the lock.
+        for start in range(0, len(misses), EMBED_BATCH_SIZE):
+            batch = misses[start:start + EMBED_BATCH_SIZE]
+            vectors = self._embed_texts([doc.index_text for doc in batch])
+            embedded: list[tuple[str, list[float]]] = []
+            with self._lock:
+                for doc, vec in zip(batch, vectors):
+                    if vec is not None:
+                        self._embedding_cache[doc.name] = (doc.content_hash, vec)
+                        embedded.append((doc.content_hash, vec))
+            if embedded and self._store is not None:
+                self._store.put_many(embedded)
+            if vectors and all(vec is None for vec in vectors):
+                # Whole batch failed (transient endpoint error). Stop this pass
+                # rather than hammer the endpoint; the heartbeat/wake retries.
+                logger.warning(
+                    "tool index warm: batch embed failed; will retry next pass"
+                )
+                break
+
+        self._recompute_fully_embedded()
+
+    def _recompute_fully_embedded(self) -> None:
+        docs = self._static_catalog_docs()
+        with self._lock:
+            self._fully_embedded = bool(docs) and all(
+                (cached := self._embedding_cache.get(doc.name)) is not None
+                and cached[0] == doc.content_hash
+                for doc in docs
+            )
+
+    def _embed_texts(self, texts: list[str]) -> list[Optional[list[float]]]:
+        """Embed a batch of texts in one request. Returns a list aligned to
+        ``texts`` (None for any slot that fails or returns the wrong width). A
+        request failure degrades semantic search for the process (like
+        ``_embed``); the warm retries on its next pass."""
+        if not texts:
+            return []
+        if not self.is_semantic_available():
+            return [None] * len(texts)
+        inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
+        out: list[Optional[list[float]]] = [None] * len(texts)
+        try:
+            client = self._get_openai().with_options(timeout=EMBED_BATCH_TIMEOUT_SECONDS)
+            resp = client.embeddings.create(input=inputs, **self._embed_create_kwargs())
+            # Map by item.index when present, else response order (some
+            # OpenAI-compatible shims leave index unset).
+            for i, item in enumerate(resp.data):
+                idx = getattr(item, "index", None)
+                if idx is None:
+                    idx = i
+                emb = list(item.embedding)
+                if len(emb) == self._dimensions:
+                    out[idx] = emb
+                else:
+                    logger.error(
+                        "tool embedding dimension mismatch: expected %s, got %s",
+                        self._dimensions,
+                        len(emb),
+                    )
+        except Exception as exc:  # noqa: BLE001 - degraded search is intentional.
+            # Do NOT latch semantic off here: a transient endpoint error must not
+            # permanently disable tool semantic search. Record it and let the
+            # background warm retry on its next pass/heartbeat.
+            self._last_error = f"embedding call failed: {type(exc).__name__}: {exc}"
+            logger.warning("tool semantic search degrading: %s", self._last_error)
+            return [None] * len(texts)
+        return out
 
     def _semantic_search(
         self,
@@ -563,23 +729,33 @@ class ToolSearchIndex:
             self._openai_client = OpenAI(**kwargs)
         return self._openai_client
 
+    def _embed_create_kwargs(self) -> dict[str, Any]:
+        """Model-side kwargs for ``embeddings.create``. Sends ``dimensions``
+        only when an explicit width was configured for a text-embedding-3-*
+        model (Matryoshka truncation); otherwise the wire is unchanged."""
+        kwargs: dict[str, Any] = {"model": self._embedding_model}
+        if self._dimensions_explicit and "text-embedding-3" in (self._embedding_model or ""):
+            kwargs["dimensions"] = self._dimensions
+        return kwargs
+
     def _embed(self, text: str) -> Optional[list[float]]:
         if not text.strip() or not self.is_semantic_available():
             return None
         try:
             resp = self._get_openai().embeddings.create(
-                model=self._embedding_model,
                 input=text[:8000],
+                **self._embed_create_kwargs(),
             )
             embedding = list(resp.data[0].embedding)
-            if len(embedding) != EMBEDDING_DIMENSIONS:
+            if len(embedding) != self._dimensions:
                 raise ValueError(
                     "embedding dimension mismatch: expected "
-                    f"{EMBEDDING_DIMENSIONS}, got {len(embedding)}"
+                    f"{self._dimensions}, got {len(embedding)}"
                 )
             return embedding
         except Exception as exc:  # noqa: BLE001 - degraded search is intentional.
-            self._semantic_available = False
+            # A transient query-embed failure must not latch semantic off (a
+            # later search/warm must be free to retry); just degrade this call.
             self._last_error = f"embedding call failed: {type(exc).__name__}: {exc}"
             logger.warning("tool semantic search degrading: %s", self._last_error)
             return None
@@ -590,6 +766,31 @@ class ToolSearchIndex:
             f"semantic search unavailable ({reason}); falling back to keyword search. "
             "Set EMBEDDING_API_KEY on the server for better tool discovery."
         )
+
+    def _warming_warning(self) -> str:
+        return (
+            "tool index is still warming (embeddings not ready); using keyword "
+            "search for now. Re-run shortly for semantic ranking."
+        )
+
+    def register_warm_loop(self, loop: Any, event: Any) -> None:
+        """Wire the background warm task's event loop and wake event so tool
+        changes can nudge a re-warm from any thread (see ``_signal_warm``)."""
+        self._warm_loop = loop
+        self._warm_event = event
+
+    def _signal_warm(self) -> None:
+        """Ask the background warm task to run a (delta) pass. Safe to call from
+        any thread: the asyncio.Event is only set on the loop thread via
+        ``call_soon_threadsafe``. No-op when no warm task is registered."""
+        loop = self._warm_loop
+        event = self._warm_event
+        if loop is None or event is None:
+            return
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass  # Loop already closed during shutdown.
 
     def _default_tool_set(self, agent: Any, user_id: str) -> set[str]:
         from ..tools import resolve_default_tool_names
@@ -770,6 +971,9 @@ def get_tool_search_index() -> ToolSearchIndex:
                 openai_api_key=settings.embedding_api_key,
                 openai_base_url=settings.embedding_base_url,
                 embedding_model=settings.embedding_model,
+                embedding_dimensions=settings.embedding_dimensions,
+                embedding_provider=settings.embedding_provider,
+                db_path=settings.data_dir / "tool_search_embeddings.db",
             )
         return _DEFAULT_INDEX
 
