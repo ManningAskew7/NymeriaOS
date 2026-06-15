@@ -129,3 +129,10 @@ initial-load.png
 # TUNNEL_TOKEN.txt is a live tunnel credential; for Docker hosting the wizard
 # writes it inside the source checkout, so keep the whole dir untracked.
 /Nymeria/cloudflared/
+
+# === HexStrike sidecar (removed from the repo 2026-06-15) ===
+# Pivoting from shipping MCP-server sidecars to native Nymeria @tool Python
+# tools. The compose overlay and image-build dir are kept on disk untracked as
+# a porting reference (allowed-tools.txt lists the curated tool subset).
+/Nymeria/docker-compose.hexstrike.yml
+/Nymeria/docker/hexstrike/
