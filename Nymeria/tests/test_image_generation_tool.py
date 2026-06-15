@@ -124,7 +124,7 @@ def test_finalize_image_writes_workspace_artifact_and_native_metadata(tmp_path, 
     assert "[attach:" in content
     assert metadata["native_context_enabled"] is True
     assert metadata["prompt"] == "A clean product icon"
-    path = tmp_path / "image-generation" / "owner-example.com"
+    path = tmp_path / "images" / "generated" / "owner-example.com"
     files = list(path.glob("*.png"))
     assert len(files) == 1
     assert files[0].read_bytes() == b"fake-image"

@@ -57,7 +57,8 @@ def test_file_tools_resolve_relative_paths_from_project_root(tmp_path, monkeypat
         lambda: _Settings(project),
     )
 
-    assert file_read.func("notes/todo.txt").strip() == "alpha beta"
+    # file_read now uses response_format="content_and_artifact" -> (content, artifact)
+    assert file_read.func("notes/todo.txt")[0].strip() == "alpha beta"
 
     write_result = file_write.func("notes/generated.txt", "created")
     assert write_result.startswith("[Success]")

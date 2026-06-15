@@ -79,3 +79,56 @@ def test_hydration_rejects_paths_outside_workspace(tmp_path, monkeypatch):
     )
 
     assert hydrated is messages
+
+
+def _file_read_tool_message(path: str) -> ToolMessage:
+    return ToolMessage(
+        content=f"Loaded image\n{path}",
+        tool_call_id="call-2",
+        artifact={
+            NATIVE_IMAGE_ARTIFACT_KEY: {
+                "path": path,
+                "mime_type": "image/png",
+                "native_context_enabled": True,
+                "source": "file_read",
+            }
+        },
+    )
+
+
+def test_file_read_image_outside_workspace_is_hydrated(tmp_path, monkeypatch):
+    # file_read reads arbitrary paths, so its images are exempt from workspace
+    # confinement (unlike generated images).
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    monkeypatch.setattr(generated_image_context, "supports_vision", lambda _model: True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"png-bytes")
+
+    messages = [_file_read_tool_message(str(outside))]
+    hydrated = hydrate_generated_images_for_llm(
+        messages,
+        LLMConfig(provider="anthropic", model="claude-sonnet-4"),
+    )
+
+    assert hydrated is not messages
+    assert hydrated[0].content[1]["type"] == "image_url"
+
+
+def test_hydration_respects_model_image_byte_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr(generated_image_context, "supports_vision", lambda _model: True)
+    monkeypatch.setattr(
+        generated_image_context,
+        "get_attachment_limits",
+        lambda _model: {"max_image_bytes": 4},
+    )
+    image_path = tmp_path / "generated.png"
+    image_path.write_bytes(b"too-many-bytes-for-the-cap")
+
+    messages = [_tool_message(str(image_path))]
+    hydrated = hydrate_generated_images_for_llm(
+        messages,
+        LLMConfig(provider="anthropic", model="claude-sonnet-4"),
+    )
+
+    assert hydrated is messages  # image exceeds the 4-byte model cap, dropped

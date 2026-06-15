@@ -11,11 +11,16 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, ToolMessage
 
-from ..config.model_capabilities import supports_vision
+from ..config.model_capabilities import get_attachment_limits, supports_vision
 from ..vendor.react_agent.config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# Artifact metadata key for an image to replay as native vision input. The
+# nested ``source`` field is SECURITY-RELEVANT: ``_resolve_image_file`` exempts
+# only ``source == "file_read"`` from workspace confinement. All producers are
+# first-party tool returns (build via ``build_native_image_artifact``); never
+# derive ``source`` from untrusted/user-controlled input.
 NATIVE_IMAGE_ARTIFACT_KEY = "nymeria_native_image"
 _MAX_NATIVE_IMAGE_COUNT = 3
 _MAX_NATIVE_IMAGE_BYTES = 8 * 1024 * 1024
@@ -50,49 +55,93 @@ def _get_native_image_metadata(message: ToolMessage) -> dict[str, Any] | None:
     return metadata
 
 
-def provider_supports_generated_image_context(llm_config: LLMConfig | None) -> bool:
-    """Return whether generated images can be replayed as native vision input."""
+def build_native_image_artifact(
+    path: Path | str,
+    mime_type: str,
+    *,
+    source: str,
+    **meta: Any,
+) -> dict[str, Any]:
+    """Build the ``content_and_artifact`` payload that replays an image to the LLM.
+
+    ``source`` tags where the image came from ("image_gen", "file_read", ...).
+    The hydration path keys workspace-confinement off this tag: only
+    ``source == "file_read"`` is allowed outside the workspace (file_read already
+    reads arbitrary paths), so any other / missing source stays confined.
+    """
+    payload: dict[str, Any] = {
+        "path": str(path),
+        "mime_type": mime_type,
+        "native_context_enabled": True,
+        "source": source,
+    }
+    payload.update(meta)
+    return {NATIVE_IMAGE_ARTIFACT_KEY: payload}
+
+
+def explain_image_context_support(llm_config: LLMConfig | None) -> tuple[bool, str]:
+    """Return ``(supported, reason)`` for replaying an image as native vision input.
+
+    Reasons: ``supported``, ``non_vision_model``, ``chat_completions_route``,
+    ``unsupported_provider``, ``unknown``. The single source of truth shared by
+    the hydration gate and ``file_read``'s agent-facing warning.
+    """
     if llm_config is None:
-        return False
+        return False, "unknown"
 
     model = (llm_config.model or "").strip()
     if not model or not supports_vision(model):
-        return False
+        return False, "non_vision_model"
 
     provider = (llm_config.provider or "").strip().lower()
     if provider == "anthropic":
-        return True
+        return True, "supported"
 
     if provider in {"openai", "openrouter"}:
-        return (llm_config.openai_api_mode or "responses") == "responses"
+        if (llm_config.openai_api_mode or "responses") == "responses":
+            return True, "supported"
+        return False, "chat_completions_route"
 
-    return False
+    return False, "unsupported_provider"
 
 
-def _resolve_image_file(metadata: dict[str, Any]) -> tuple[Path, str] | None:
+def provider_supports_generated_image_context(llm_config: LLMConfig | None) -> bool:
+    """Return whether generated images can be replayed as native vision input."""
+    return explain_image_context_support(llm_config)[0]
+
+
+def _resolve_image_file(
+    metadata: dict[str, Any],
+    max_image_bytes: int = _MAX_NATIVE_IMAGE_BYTES,
+) -> tuple[Path, str] | None:
     raw_path = metadata.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    workspace = _workspace_dir()
     try:
         path = Path(raw_path).resolve()
     except Exception:
         return None
 
-    if not path.is_relative_to(workspace):
-        logger.warning("[IMAGE CONTEXT] Skipping generated image outside workspace: %s", raw_path)
-        return None
+    # file_read surfaces images from arbitrary paths (its existing read scope),
+    # so it is exempt from workspace confinement. Generated images (and any
+    # untagged artifact) stay confined as a fail-safe.
+    if metadata.get("source") != "file_read":
+        workspace = _workspace_dir()
+        if not path.is_relative_to(workspace):
+            logger.warning("[IMAGE CONTEXT] Skipping generated image outside workspace: %s", raw_path)
+            return None
     if not path.is_file():
-        logger.info("[IMAGE CONTEXT] Generated image no longer exists: %s", path)
+        logger.info("[IMAGE CONTEXT] Image no longer exists: %s", path)
         return None
 
     size = path.stat().st_size
-    if size > _MAX_NATIVE_IMAGE_BYTES:
+    if size > max_image_bytes:
         logger.info(
-            "[IMAGE CONTEXT] Skipping generated image over native context limit: %s bytes=%d",
+            "[IMAGE CONTEXT] Skipping image over model size limit: %s bytes=%d limit=%d",
             path,
             size,
+            max_image_bytes,
         )
         return None
 
@@ -140,6 +189,14 @@ def hydrate_generated_images_for_llm(
     if not provider_supports_generated_image_context(llm_config):
         return messages
 
+    # Model-specific byte cap (live override -> family fallback -> global
+    # default), so a model that accepts larger images is not penalized.
+    max_image_bytes = _MAX_NATIVE_IMAGE_BYTES
+    if llm_config is not None:
+        cap = get_attachment_limits(llm_config.model or "").get("max_image_bytes")
+        if isinstance(cap, int) and cap > 0:
+            max_image_bytes = cap
+
     selected: list[tuple[int, dict[str, Any]]] = []
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
@@ -165,7 +222,7 @@ def hydrate_generated_images_for_llm(
             hydrated.append(message)
             continue
 
-        resolved = _resolve_image_file(metadata)
+        resolved = _resolve_image_file(metadata, max_image_bytes)
         if resolved is None:
             hydrated.append(message)
             continue

@@ -309,6 +309,54 @@ def test_refresh_anthropic_models_parses_capability_block(monkeypatch):
     assert "file" not in haiku.input_modalities
 
 
+def test_refresh_anthropic_models_falls_back_when_capabilities_absent(monkeypatch):
+    # CLIProxy (and some Anthropic-compatible gateways) return /v1/models with
+    # no capabilities block. Without a fallback this marks every Claude model
+    # text-only in the authoritative live cache, silently disabling all image
+    # input. Known vision models must still resolve as image/file capable.
+    _set_model_cache(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+
+    sample_response = {
+        "data": [
+            {
+                "id": "claude-opus-4-6",
+                "display_name": "Claude Opus 4.6",
+                "max_input_tokens": 200000,
+            },
+            {
+                "id": "some-unknown-model-xyz",
+                "display_name": "Unknown",
+                "max_input_tokens": 8000,
+            },
+        ]
+    }
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return sample_response
+
+    monkeypatch.setattr(capabilities.httpx, "get", lambda *a, **k: _FakeResponse())
+
+    count = capabilities.refresh_anthropic_models(
+        base_url="http://cli-proxy-api:8317",
+        api_key="sk-test",
+    )
+
+    assert count == 2
+    opus = capabilities._lookup_model("claude-opus-4-6")
+    assert opus is not None
+    assert "image" in opus.input_modalities  # static fallback applied
+    assert "file" in opus.input_modalities
+    assert capabilities.supports_vision("claude-opus-4-6") is True
+    unknown = capabilities._lookup_model("some-unknown-model-xyz")
+    assert unknown is not None
+    assert unknown.input_modalities == {"text"}  # no static match -> text only
+
+
 def test_refresh_anthropic_models_noop_without_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     called = {"count": 0}

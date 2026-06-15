@@ -331,7 +331,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `facebook_page_list_accounts` | `nymeria/tools/community_publishing_service_integrations.py` | List Facebook pages/accounts available to the authenticated user. |
 | `fetch_url_nymeria` | `nymeria/tools/web_fetch.py` | Fetch a web page or PDF by URL and return its readable content. |
 | `file_edit` | `nymeria/tools/file_edit.py` | Precisely edit an existing text file with exact, all-or-nothing operations. |
-| `file_read` | `nymeria/tools/filesystem.py` | Read the contents of a file. |
+| `file_read` | `nymeria/tools/filesystem.py` | Read the contents of a file, including images. |
 | `file_write` | `nymeria/tools/filesystem.py` | Write content to a file. |
 | `freshdesk_create_contact` | `nymeria/tools/support_service_integrations.py` | Create a Freshdesk contact. |
 | `freshdesk_create_ticket` | `nymeria/tools/support_service_integrations.py` | Create a Freshdesk ticket. |
