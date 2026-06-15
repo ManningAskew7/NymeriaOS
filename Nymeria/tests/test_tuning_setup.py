@@ -94,6 +94,28 @@ def test_untouched_state_writes_nothing():
     assert tuning_summary_lines(WizardState()) == []
 
 
+def test_model_tier_fields_emit_and_round_trip():
+    state = WizardState(extras={
+        "llm_fast_model": "openai:gpt-4o-mini",
+        "llm_smart_model": "anthropic:claude-opus-4-8",
+        "llm_fallback_models": "anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini",
+    })
+    env = tuning_env_for_state(state)
+    assert env["LLM_FAST_MODEL"] == "openai:gpt-4o-mini"
+    assert env["LLM_SMART_MODEL"] == "anthropic:claude-opus-4-8"
+    assert env["LLM_FALLBACK_MODELS"] == (
+        "anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini"
+    )
+    # Reconfigure reads the same lines back into wizard extras.
+    from nymeria.setup.tuning_catalog import tuning_extras_from_env
+
+    back = tuning_extras_from_env(lambda key: env.get(key))
+    assert back["llm_fast_model"] == "openai:gpt-4o-mini"
+    assert back["llm_smart_model"] == "anthropic:claude-opus-4-8"
+    # The tiers appear on the review screen.
+    assert any("Model tiers:" in line for line in tuning_summary_lines(state))
+
+
 def test_tokens_strategy_writes_mode_and_trigger():
     state = WizardState(extras={
         "context_strategy": "compact_tokens",

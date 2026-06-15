@@ -9,6 +9,7 @@
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     buildProviderGroups,
     fromThreadDisplayProvider,
+    toThreadDisplayProvider,
     supportsOpenAiApiMode,
     type ThreadDisplayProvider,
   } from '$lib/utils/providerMapping';
@@ -84,6 +85,34 @@
 
   const inheritsGlobalModel = $derived(!llmModel);
   const globalModel = $derived(serverSettingsStore.model || '');
+  const fastTierRef = $derived(serverSettingsStore.fastModelResolved || '');
+  const smartTierRef = $derived(serverSettingsStore.smartModelResolved || '');
+
+  // Quick-pick: fill this thread's model (and provider, when the tier targets a
+  // different one) from the resolved fast/smart tier so the user need not hunt
+  // for the model id. The backend only prefixes provider: for cross-provider
+  // tiers, so a bare ref maps straight onto the model field.
+  function knownProviderIds(): Set<string> {
+    return new Set([
+      'anthropic', 'openai', 'openrouter', 'google', 'gemini', 'mistral',
+      'groq', 'deepseek', 'xai', 'ollama', 'together', 'fireworks', 'custom',
+      ...providerCatalog.map((p) => p.id),
+    ]);
+  }
+
+  function applyTier(tier: 'fast' | 'smart') {
+    const ref = tier === 'fast' ? fastTierRef : smartTierRef;
+    if (!ref) return;
+    const idx = ref.indexOf(':');
+    if (idx > 0 && knownProviderIds().has(ref.slice(0, idx))) {
+      const provider = ref.slice(0, idx);
+      llmProvider = provider;
+      threadDisplayProvider = toThreadDisplayProvider(provider, null);
+      llmModel = ref.slice(idx + 1);
+    } else {
+      llmModel = ref;
+    }
+  }
 
   // Effort-clamp warning targets the model this thread will actually use
   // (the override, else the inherited global default). Unsupported levels
@@ -297,6 +326,17 @@
           </span>
         </div>
       {/if}
+      {#if fastTierRef || smartTierRef}
+        <div class="tier-quickpick">
+          <span class="field-hint">Quick tier:</span>
+          {#if fastTierRef}
+            <button type="button" class="tier-btn" onclick={() => applyTier('fast')} title={`Fast tier: ${fastTierRef}`}>Fast</button>
+          {/if}
+          {#if smartTierRef}
+            <button type="button" class="tier-btn" onclick={() => applyTier('smart')} title={`Smart tier: ${smartTierRef}`}>Smart</button>
+          {/if}
+        </div>
+      {/if}
     </div>
   {:else if section === 'generation'}
     <div class="grid-2">
@@ -419,6 +459,29 @@
     /* §5 — reading text capped to 60ch so multi-line hints stay readable
        on wide displays instead of stretching the full panel width. */
     max-width: 60ch;
+  }
+
+  .tier-quickpick {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+  }
+  .tier-quickpick .field-hint {
+    margin-top: 0;
+  }
+  .tier-btn {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: border-color var(--transition-fast);
+  }
+  .tier-btn:hover {
+    border-color: var(--accent-primary);
   }
 
   .route-nudge {

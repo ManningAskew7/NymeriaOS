@@ -45,7 +45,7 @@ class TuningField:
     env_var: str
     label: str
     placeholder: str
-    kind: str  # "int" | "percent" | "float" | "timezone"
+    kind: str  # "int" | "percent" | "float" | "timezone" | "str"
     minimum: float | None = None
     maximum: float | None = None
 
@@ -303,11 +303,36 @@ SAMPLING_FIELDS: tuple[TuningField, ...] = (
     ),
 )
 
+MODEL_TIER_FIELDS: tuple[TuningField, ...] = (
+    TuningField(
+        key="llm_fast_model",
+        env_var="LLM_FAST_MODEL",
+        label="Fast model (optional)",
+        placeholder="blank = provider default; provider:model for cross-provider",
+        kind="str",
+    ),
+    TuningField(
+        key="llm_smart_model",
+        env_var="LLM_SMART_MODEL",
+        label="Smart model (optional)",
+        placeholder="blank = primary model; provider:model for cross-provider",
+        kind="str",
+    ),
+    TuningField(
+        key="llm_fallback_models",
+        env_var="LLM_FALLBACK_MODELS",
+        label="Fallback chain (optional, comma-separated)",
+        placeholder="e.g. anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini",
+        kind="str",
+    ),
+)
+
 ALL_FIELDS: tuple[TuningField, ...] = (
     tuple(CONTEXT_FIELDS.values())
     + (TIMEZONE_FIELD,)
     + LIMIT_FIELDS
     + SAMPLING_FIELDS
+    + MODEL_TIER_FIELDS
 )
 
 
@@ -319,6 +344,10 @@ def parse_field(field: TuningField, raw: str) -> tuple[Optional[str], Optional[s
     text = (raw or "").strip()
     if not text:
         return None, None
+    if field.kind == "str":
+        # Free-text value (e.g. a model id or comma-separated chain): stored
+        # verbatim, no numeric/format validation.
+        return text, None
     if field.kind == "timezone":
         try:
             from zoneinfo import ZoneInfo
@@ -544,6 +573,8 @@ def tuning_env_for_state(state: "WizardState") -> dict[str, str]:
     out.update(_field_env(state, TIMEZONE_FIELD))
     for field in LIMIT_FIELDS:
         out.update(_field_env(state, field))
+    for field in MODEL_TIER_FIELDS:
+        out.update(_field_env(state, field))
     effort = selected_effort(state)
     if effort is not None:
         out["LLM_REASONING_EFFORT"] = effort
@@ -619,6 +650,7 @@ def tuning_extras_from_env(get) -> dict[str, str]:
         + (TIMEZONE_FIELD,)
         + LIMIT_FIELDS
         + SAMPLING_FIELDS
+        + MODEL_TIER_FIELDS
     )
     for field in direct_fields:
         raw = (get(field.env_var) or "").strip()
@@ -653,6 +685,13 @@ def tuning_summary_lines(state: "WizardState") -> list[str]:
             limit_bits.append(f"{field.env_var}={env[field.env_var]}")
     if limit_bits:
         lines.append(f"Agent limits: {', '.join(limit_bits)}")
+    tier_bits = []
+    for field in MODEL_TIER_FIELDS:
+        env = _field_env(state, field)
+        if env:
+            tier_bits.append(f"{field.env_var}={env[field.env_var]}")
+    if tier_bits:
+        lines.append(f"Model tiers: {', '.join(tier_bits)}")
     effort = selected_effort(state)
     if effort is not None:
         effective = effective_effort_for_state(state, effort)
@@ -677,6 +716,7 @@ __all__ = [
     "EFFORT_CHOICES",
     "EFFORT_VALUES",
     "LIMIT_FIELDS",
+    "MODEL_TIER_FIELDS",
     "RECOMMENDED_EFFORT",
     "SAMPLING_FIELDS",
     "TIMEZONE_FIELD",

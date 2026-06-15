@@ -1475,6 +1475,7 @@ class CLIApp:
             model,
             provider,
             skills,
+            smart,
             system,
             theme,
             threads,
@@ -1510,6 +1511,7 @@ class CLIApp:
         export.register(self.registry)
         fallback.register(self.registry)
         fast.register(self.registry)
+        smart.register(self.registry)
         provider.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)

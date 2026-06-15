@@ -27,6 +27,7 @@ from ..tuning_catalog import (
     EFFORT_CHOICES,
     EFFORT_VALUES,
     LIMIT_FIELDS,
+    MODEL_TIER_FIELDS,
     RECOMMENDED_EFFORT,
     SAMPLING_FIELDS,
     TIMEZONE_FIELD,
@@ -259,6 +260,13 @@ class _LLMTuningStep(_TuningFormStep):
             classes="section-note",
         )
         yield from self._compose_field_grid(SAMPLING_FIELDS)
+        yield Static(
+            "Optional model tiers used by /fast, /smart, and the fallback "
+            "chain. Blank uses sensible defaults. Prefix with provider: to "
+            "route a tier to a different provider (e.g. openai:gpt-4o-mini).",
+            classes="section-note",
+        )
+        yield from self._compose_field_grid(MODEL_TIER_FIELDS)
 
     def collect(self) -> bool:
         effort = self._selected_choice()
@@ -266,6 +274,8 @@ class _LLMTuningStep(_TuningFormStep):
             self.show_error("Select a reasoning effort, then press Enter.")
             return False
         if not self._collect_fields(SAMPLING_FIELDS):
+            return False
+        if not self._collect_fields(MODEL_TIER_FIELDS):
             return False
         self.state.extras["llm_effort"] = effort
         return True

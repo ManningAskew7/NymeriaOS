@@ -19,12 +19,12 @@ from datetime import timedelta
 from typing import Any, TYPE_CHECKING
 
 from ..config.llm_providers import (
-    ALL_LLM_PROVIDERS,
     normalize_llm_provider,
     resolve_provider_route,
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from ..config.model_tiers import split_provider_model
 from ..config.local_llm import (
     detect_local_server_type,
     is_local_llm_base_url,
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_PROVIDER_PREFIXES = {"custom", *ALL_LLM_PROVIDERS.keys()}
 _LOCAL_PROVIDER_IDS = {"ollama", "lmstudio", "llamacpp", "vllm", "localai", "litellm", "tgi"}
 
 
@@ -99,12 +98,12 @@ def _split_llm_fallback_ref(
     value: str,
     default_provider: str,
 ) -> tuple[str, str]:
-    """Split provider:model fallback refs while preserving model IDs with colons."""
-    prefix, separator, remainder = str(value or "").partition(":")
-    provider = normalize_llm_provider(prefix.strip().casefold())
-    if separator and provider in _FALLBACK_PROVIDER_PREFIXES and remainder.strip():
-        return provider, remainder.strip()
-    return str(default_provider or "").strip(), str(value or "").strip()
+    """Split provider:model fallback refs while preserving model IDs with colons.
+
+    Delegates to the shared splitter so fallback entries and the fast/smart
+    tier aliases parse the ``provider:model`` convention identically.
+    """
+    return split_provider_model(value, default_provider)
 
 
 def _active_fallback_is_expired(active: ActiveLLMFallback) -> bool:

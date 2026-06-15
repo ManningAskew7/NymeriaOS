@@ -13,7 +13,7 @@ from nymeria.triggers.cli.commands import (
     ListCommandOutputSink,
 )
 from nymeria.triggers.cli.commands import context as context_commands
-from nymeria.triggers.cli.commands import fast
+from nymeria.triggers.cli.commands import fast, smart
 from nymeria.triggers.cli.commands import model, provider, system, threads, usage
 from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
@@ -309,6 +309,7 @@ def make_registry() -> CommandRegistry:
     threads.register(registry)
     model.register(registry)
     fast.register(registry)
+    smart.register(registry)
     provider.register(registry)
     usage.register(registry)
     return registry
@@ -522,7 +523,7 @@ def test_fast_command_toggles_models_and_sets_fast_model() -> None:
         {
             "thread_id": "thread-1",
             "user_id": "alice",
-            "llm_config": {"model": "gpt-fast"},
+            "llm_config": {"provider": "openai", "model": "gpt-fast"},
         },
     ) in client.calls
     assert (
@@ -530,7 +531,7 @@ def test_fast_command_toggles_models_and_sets_fast_model() -> None:
         {
             "thread_id": "thread-1",
             "user_id": "alice",
-            "llm_config": {"model": "gpt-global"},
+            "llm_config": {"provider": "openai", "model": "gpt-global"},
         },
     ) in client.calls
     assert ("update_settings", {"user_id": "alice", "llm_fast_model": "gpt-tiny"}) in (
@@ -540,6 +541,48 @@ def test_fast_command_toggles_models_and_sets_fast_model() -> None:
         {"type": "set_model", "model": "gpt-fast", "fast_mode": True},
         {"type": "set_model", "model": "gpt-global", "fast_mode": False},
     ]
+
+
+def test_smart_command_toggles_to_primary_when_unset_and_sets_smart_model() -> None:
+    client = CoreFakeClient()
+    registry = make_registry()
+    actions: list[Any] = []
+    ctx = make_context(client, actions=actions)
+
+    # llm_smart_model is unset on the fake client, so "smart" resolves to the
+    # primary model (gpt-global). Setting a smart model writes llm_smart_model.
+    on_result = run(registry.dispatch_async(ctx, "/smart on"))
+    set_result = run(registry.dispatch_async(ctx, "/smart set gpt-pro"))
+
+    assert on_result.ok is True
+    assert set_result.ok is True
+    assert (
+        "update_thread_config",
+        {
+            "thread_id": "thread-1",
+            "user_id": "alice",
+            "llm_config": {"provider": "openai", "model": "gpt-global"},
+        },
+    ) in client.calls
+    assert (
+        "update_settings",
+        {"user_id": "alice", "llm_smart_model": "gpt-pro"},
+    ) in client.calls
+
+
+def test_smart_prompt_returns_one_turn_payload() -> None:
+    client = CoreFakeClient()
+    client.settings["llm_smart_model"] = "gpt-pro"
+    registry = make_registry()
+    actions: list[Any] = []
+    ctx = make_context(client, actions=actions)
+
+    result = run(registry.dispatch_async(ctx, "/smart think hard about this"))
+
+    assert result.ok is True
+    assert result.payload["fast_prompt"] == "think hard about this"
+    assert result.payload["fast_model"] == "gpt-pro"
+    assert not any(name == "update_thread_config" for name, _payload in client.calls)
 
 
 def test_fast_prompt_returns_one_turn_payload_without_persistent_toggle() -> None:

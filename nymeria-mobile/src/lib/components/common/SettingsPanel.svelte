@@ -115,6 +115,12 @@
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
+  // Model tiers (used by /fast, /smart, the fallback chain, spawn_thread
+  // aliases). Each may be a model id or provider:model for a different provider.
+  let llmFastModel = $state('');
+  let llmSmartModel = $state('');
+  let llmFallbackModels = $state(''); // comma/newline-separated provider:model entries
+  let llmFallbackHoldSeconds = $state(7200);
   let llmTemperature = $state(1);
   let llmMaxTokens = $state<number | null>(null);
   let llmTopP = $state<number | null>(null);
@@ -233,6 +239,10 @@
       llmProvider = serverSettings.llm_provider;
       llmProviderRoute = serverSettings.llm_provider_route;
       llmModel = serverSettings.llm_model;
+      llmFastModel = serverSettings.llm_fast_model ?? '';
+      llmSmartModel = serverSettings.llm_smart_model ?? '';
+      llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
+      llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
       llmTopP = serverSettings.llm_top_p;
@@ -379,6 +389,10 @@
       const result = await api.updateServerSettings({
         llm_provider: llmProvider,
         llm_model: llmModel,
+        llm_fast_model: llmFastModel.trim(),
+        llm_smart_model: llmSmartModel.trim(),
+        llm_fallback_models: llmFallbackModels.trim(),
+        llm_fallback_hold_seconds: llmFallbackHoldSeconds,
         llm_temperature: llmTemperature,
         llm_max_tokens: llmMaxTokens,
         llm_top_p: llmTopP,
@@ -664,6 +678,50 @@
                 </span>
               </div>
             {/if}
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Fast model</label>
+            <input
+              type="text"
+              class="setting-input"
+              bind:value={llmFastModel}
+              placeholder="blank = provider default"
+            />
+            <label class="setting-label">Smart model</label>
+            <input
+              type="text"
+              class="setting-input"
+              bind:value={llmSmartModel}
+              placeholder="blank = primary model"
+            />
+            <p class="hint">
+              Tiers for /fast, /smart, the quick-pick, and spawn_thread aliases.
+              A model id, or provider:model to use a different provider.
+            </p>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Fallback chain</label>
+            <textarea
+              class="setting-input"
+              rows="2"
+              bind:value={llmFallbackModels}
+              placeholder="anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini"
+            ></textarea>
+            <label class="setting-label">Fallback hold (seconds)</label>
+            <input
+              type="number"
+              class="setting-input setting-input-sm"
+              min="0"
+              max="604800"
+              bind:value={llmFallbackHoldSeconds}
+            />
+            <p class="hint">
+              Tried in order when the primary model exhausts retries; entries may
+              be provider:model. Hold pins an activated fallback to a thread
+              (0 disables).
+            </p>
           </div>
 
           <div class="setting-group">

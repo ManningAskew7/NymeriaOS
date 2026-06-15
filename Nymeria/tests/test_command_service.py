@@ -369,6 +369,107 @@ def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
     assert api.thread_config["memory_char_limit"] is None
 
 
+def test_fast_command_switches_thread_and_sets_global() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    toggled = run(service.execute(ctx, "/fast", api=api))
+    did_set = run(service.execute(ctx, "/fast set gpt-mini", api=api))
+
+    assert toggled.success is True
+    # LLM_FAST_MODEL is unset, so "fast" resolves to openai's provider default.
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {
+            "user_id": "alice",
+            "llm_config": {"provider": "openai", "model": "gpt-4o-mini"},
+        },
+    ) in api.calls
+    assert did_set.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fast_model": "gpt-mini"},
+    ) in api.calls
+
+
+class _SmartTierCommandApi(FakeCommandApi):
+    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+        data = await super().get_settings(user_id=user_id)
+        data["llm_smart_model"] = "anthropic:claude-opus-4-8"
+        return data
+
+
+def test_smart_command_switches_to_cross_provider_tier() -> None:
+    service = CommandService()
+    api = _SmartTierCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    result = run(service.execute(ctx, "/smart on", api=api))
+
+    assert result.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {
+            "user_id": "alice",
+            "llm_config": {"provider": "anthropic", "model": "claude-opus-4-8"},
+        },
+    ) in api.calls
+
+
+def test_fast_set_rejects_tier_alias() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    result = run(service.execute(ctx, "/fast set smart", api=api))
+
+    assert result.success is False
+    assert not any(name == "update_settings" for name, _args, _kw in api.calls)
+
+
+def test_fallback_add_updates_global_chain() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    added = run(service.execute(ctx, "/fallback add openai:gpt-4o-mini", api=api))
+
+    assert added.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_fallback_models": "openai:gpt-4o-mini"},
+    ) in api.calls
+
+
 class _OffEffortCommandApi(FakeCommandApi):
     async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
         data = await super().get_settings(user_id=user_id)

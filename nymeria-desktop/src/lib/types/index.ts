@@ -1132,6 +1132,12 @@ export interface RagUserSettingsUpdate {
 export interface ServerSettings {
   llm_provider: LLMProvider;
   llm_model: string;
+  llm_fast_model: string | null;
+  llm_smart_model: string | null;
+  // Read-only effective tier refs (provider:model or bare model) the
+  // fast/smart aliases resolve to, used by the per-thread tier quick-pick.
+  llm_fast_model_resolved: string | null;
+  llm_smart_model_resolved: string | null;
   llm_fallback_models: string[];
   llm_temperature: number;
   llm_max_tokens: number | null;
@@ -1263,6 +1269,8 @@ export interface CLIProxyApplyRouteResponse {
 export interface ServerSettingsUpdate {
   llm_provider?: LLMProvider;
   llm_model?: string;
+  llm_fast_model?: string;
+  llm_smart_model?: string;
   llm_fallback_models?: string;
   llm_temperature?: number;
   llm_max_tokens?: number | null;

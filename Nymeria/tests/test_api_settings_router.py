@@ -33,6 +33,7 @@ class FakeSettings:
     llm_provider: str = "anthropic"
     llm_model: str = "claude-test"
     llm_fast_model: str | None = None
+    llm_smart_model: str | None = None
     llm_fallback_models: str = DEFAULT_LLM_FALLBACK_MODELS
     llm_temperature: float = 1.0
     llm_max_tokens: int | None = None

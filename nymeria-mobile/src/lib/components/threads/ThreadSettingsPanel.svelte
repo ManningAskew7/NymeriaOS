@@ -167,6 +167,29 @@
     return llmProvider || serverSettingsStore.provider || '';
   }
 
+  const fastTierRef = $derived(serverSettingsStore.fastModelResolved || '');
+  const smartTierRef = $derived(serverSettingsStore.smartModelResolved || '');
+
+  // Quick-pick: fill this thread's model (and provider, when the tier targets a
+  // different one) from the resolved fast/smart tier. The backend only prefixes
+  // provider: for cross-provider tiers, so a bare ref maps onto the model field.
+  function applyTier(tier: 'fast' | 'smart') {
+    const ref = tier === 'fast' ? fastTierRef : smartTierRef;
+    if (!ref) return;
+    const known = new Set([
+      'anthropic', 'openai', 'openrouter', 'google', 'gemini', 'mistral',
+      'groq', 'deepseek', 'xai', 'ollama', 'together', 'fireworks', 'custom',
+      ...providerCatalog.map((p) => p.id),
+    ]);
+    const idx = ref.indexOf(':');
+    if (idx > 0 && known.has(ref.slice(0, idx))) {
+      llmProvider = ref.slice(0, idx);
+      llmModel = ref.slice(idx + 1);
+    } else {
+      llmModel = ref;
+    }
+  }
+
   function selectedRoute(): ProviderRoute {
     const provider = getEffectiveProvider();
     const inherited = serverSettingsStore.providerRoute as ProviderRoute | null;
@@ -1230,6 +1253,17 @@
               </span>
             </div>
           {/if}
+          {#if fastTierRef || smartTierRef}
+            <div class="tier-quickpick">
+              <span class="hint">Quick tier:</span>
+              {#if fastTierRef}
+                <button type="button" class="tier-btn" onclick={() => applyTier('fast')} title={`Fast tier: ${fastTierRef}`}>Fast</button>
+              {/if}
+              {#if smartTierRef}
+                <button type="button" class="tier-btn" onclick={() => applyTier('smart')} title={`Smart tier: ${smartTierRef}`}>Smart</button>
+              {/if}
+            </div>
+          {/if}
         </div>
 
         <div class="setting-group">
@@ -1940,6 +1974,25 @@
     line-height: 1.4;
   }
   .route-nudge-button {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .tier-quickpick {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+  }
+  .tier-quickpick .hint {
+    margin-top: 0;
+  }
+  .tier-btn {
     padding: var(--spacing-xs) var(--spacing-sm);
     font-size: var(--font-size-xs);
     color: var(--text-primary);

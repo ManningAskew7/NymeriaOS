@@ -86,7 +86,13 @@
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmProviderRoute = $state<ProviderRoute | null>(null);
   let llmModel = $state('claude-sonnet-4-20250514');
-  // LLM tab sub-view toggle: main provider / fallback (placeholder) / fetch summarizer.
+  // Model tiers (used by /fast, /smart, the fallback chain, and spawn_thread
+  // aliases). Each may be a model id or provider:model for a different provider.
+  let llmFastModel = $state('');
+  let llmSmartModel = $state('');
+  let llmFallbackModels = $state(''); // comma/newline-separated provider:model entries
+  let llmFallbackHoldSeconds = $state(7200);
+  // LLM tab sub-view toggle: main provider / fallback / fetch summarizer.
   let llmSubView = $state<'main' | 'fallback' | 'fetch'>('main');
   // Optional dedicated model for fetch_url_nymeria's summarize step. The display
   // provider mirrors the main picker (synthetic local_openai/openai_custom entries).
@@ -609,6 +615,10 @@
       displayProvider = toDisplayProvider(serverSettings.llm_provider, serverSettings.llm_base_url || '');
       llmProviderRoute = serverSettings.llm_provider_route;
       llmModel = serverSettings.llm_model;
+      llmFastModel = serverSettings.llm_fast_model ?? '';
+      llmSmartModel = serverSettings.llm_smart_model ?? '';
+      llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
+      llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
       llmTopP = serverSettings.llm_top_p;
@@ -842,6 +852,10 @@
       const result = await api.updateServerSettings({
         llm_provider: actualProvider,
         llm_model: llmModel,
+        llm_fast_model: llmFastModel.trim(),
+        llm_smart_model: llmSmartModel.trim(),
+        llm_fallback_models: llmFallbackModels.trim(),
+        llm_fallback_hold_seconds: llmFallbackHoldSeconds,
         llm_temperature: llmTemperature,
         llm_max_tokens: llmMaxTokens,
         llm_top_p: llmTopP,
@@ -1560,7 +1574,7 @@
       {:else}
         <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
           <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
-          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button" role="tab" aria-selected={llmSubView === 'fallback'}>Fallback</button>
+          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button" role="tab" aria-selected={llmSubView === 'fallback'}>Tiers</button>
           <button class="llm-subview-btn" class:active={llmSubView === 'fetch'} onclick={() => (llmSubView = 'fetch')} type="button" role="tab" aria-selected={llmSubView === 'fetch'}>Fetch tool</button>
         </div>
 
@@ -1948,12 +1962,62 @@
         {/if}
 
         {#if llmSubView === 'fallback'}
+        <p class="hint">
+          Model tiers route work to a cheaper or stronger model. The
+          <code>/fast</code> and <code>/smart</code> commands, the per-thread
+          quick-pick, and <code>spawn_thread</code> aliases all use these. Each
+          value may be a model id, or <code>provider:model</code> to use a
+          different provider with its own credentials, so one provider's outage
+          does not disable every tier.
+        </p>
+
         <div class="field">
-          <h3 class="section-heading">Fallback Models</h3>
+          <label for="llm-fast-model">Fast model</label>
+          <input
+            id="llm-fast-model"
+            type="text"
+            bind:value={llmFastModel}
+            placeholder="blank = provider default (e.g. claude-haiku-4-5-20251001)"
+          />
+        </div>
+
+        <div class="field">
+          <label for="llm-smart-model">Smart model</label>
+          <input
+            id="llm-smart-model"
+            type="text"
+            bind:value={llmSmartModel}
+            placeholder="blank = primary model (e.g. anthropic:claude-opus-4-8)"
+          />
+        </div>
+
+        <div class="field">
+          <h3 class="section-heading">Fallback chain</h3>
           <p class="hint">
-            Not implemented yet. Fallback models (tried in order when the main
-            provider fails) currently come from the <code>LLM_FALLBACK_MODELS</code>
-            server setting. A configuration UI is planned here.
+            Tried in order when the primary model exhausts its retries. One
+            entry per line or comma-separated; entries may be
+            <code>provider:model</code>.
+          </p>
+          <textarea
+            id="llm-fallback-models"
+            rows="3"
+            bind:value={llmFallbackModels}
+            placeholder="anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini"
+          ></textarea>
+        </div>
+
+        <div class="field">
+          <label for="llm-fallback-hold">Fallback hold (seconds)</label>
+          <input
+            id="llm-fallback-hold"
+            type="number"
+            min="0"
+            max="604800"
+            bind:value={llmFallbackHoldSeconds}
+          />
+          <p class="hint">
+            How long an activated fallback stays pinned to a thread after the
+            primary recovers. 0 disables the timed hold.
           </p>
         </div>
         {/if}
