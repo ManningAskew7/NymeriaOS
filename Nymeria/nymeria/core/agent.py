@@ -1411,6 +1411,7 @@ class NymeriaAgent:
             write_attachment,
         )
         from ..config.model_capabilities import infer_mime_type, normalize_attachment_file_type
+        from ..tools.image_read import read_image_dimensions
 
         saved_image_paths: List[str] = []
 
@@ -1445,6 +1446,14 @@ class NymeriaAgent:
                     saved = None
                 if saved is not None:
                     saved_image_paths.append(str(saved))
+                    # Reference-ready rails for the image window: record the
+                    # on-disk path (cited when the image is later evicted) and
+                    # the dimensions (so token accounting can size it without
+                    # decoding the base64). Header-only read; cheap.
+                    att["workspace_path"] = str(saved)
+                    dims = read_image_dimensions(saved)
+                    if dims:
+                        att["width"], att["height"] = dims
             elif file_type == "document":
                 try:
                     record = write_attachment(thread_id, {**att, "mime_type": mime})

@@ -51,3 +51,28 @@ def test_no_attachments_leaves_message_unchanged(_workspace: Path):
     assert message == "just text"
     assert image_attachments == []
     assert error is None
+
+
+def _real_png(width: int, height: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_image_attachment_stamped_with_path_and_dims(_workspace: Path):
+    images = [
+        {"data_url": _data_url(_real_png(64, 48)), "mime_type": "image/png", "file_name": "pic.png"}
+    ]
+    _message, image_attachments, _records, error = _sandbox("hi", images)
+
+    assert error is None
+    att = image_attachments[0]
+    # Reference-ready rails for the image window: disk path + dimensions.
+    assert att["workspace_path"].endswith(".png")
+    assert Path(att["workspace_path"]).is_file()
+    assert att["width"] == 64
+    assert att["height"] == 48

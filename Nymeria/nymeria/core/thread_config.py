@@ -237,6 +237,11 @@ class ThreadConfig(BaseModel):
     # Optional per-thread notepad character limit. None inherits the global
     # MEMORY_CHAR_LIMIT setting.
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
+    # Optional per-thread image window: the max number of images kept visible in
+    # context (newest-N sliding window across generated + user-attached images).
+    # None inherits the model's max_images_per_request; an explicit value is
+    # clamped to that ceiling at resolve time.
+    image_window_size: Optional[int] = Field(default=None, ge=1, le=3000)
     # Per-thread dreaming (self-reflection) settings. None means "feature off
     # for this thread"; a populated DreamingConfig with enabled=False is the
     # same in practice but lets the UI render previously-chosen gate values.
@@ -315,6 +320,8 @@ class ThreadConfig(BaseModel):
         if self.notification_profile:
             return True
         if self.memory_char_limit is not None:
+            return True
+        if self.image_window_size is not None:
             return True
         if self.dreaming is not None and (
             self.dreaming.enabled

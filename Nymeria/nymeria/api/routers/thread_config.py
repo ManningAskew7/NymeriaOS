@@ -43,6 +43,7 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
         "in_app_notification_level": "notify_only",
         "notification_profile": None,
         "memory_char_limit": None,
+        "image_window_size": None,
         "dreaming": None,
         "shadow_parent_id": None,
         "created_at": None,
@@ -313,6 +314,10 @@ def create_thread_config_router(
             tc.memory_char_limit = None
         elif request.memory_char_limit is not None:
             tc.memory_char_limit = request.memory_char_limit
+        if request.clear_image_window_size:
+            tc.image_window_size = None
+        elif request.image_window_size is not None:
+            tc.image_window_size = request.image_window_size
         if request.clear_dreaming:
             tc.dreaming = None
         elif request.dreaming is not None:

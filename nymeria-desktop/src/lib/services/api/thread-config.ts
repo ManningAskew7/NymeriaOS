@@ -46,6 +46,7 @@ export class ThreadConfigApi extends MCPApi {
         httpStatus: data.active_llm_fallback.http_status ?? null,
       } : null,
       memoryCharLimit: data.memory_char_limit ?? null,
+      imageWindowSize: data.image_window_size ?? null,
       systemPrompt: data.system_prompt ?? null,
       callable: data.callable ?? false,
       callableName: data.callable_name ?? null,

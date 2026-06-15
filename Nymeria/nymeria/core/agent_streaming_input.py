@@ -58,13 +58,22 @@ def prepare_astream_input(
     def _attachments_metadata() -> List[Dict[str, Any]]:
         meta: List[Dict[str, Any]] = []
         for img in image_atts:
-            meta.append({
+            entry: Dict[str, Any] = {
                 "type": "image",
                 "name": img.get("file_name") or "image",
                 "size": len(img.get("data_url") or ""),
                 "mime_type": img.get("mime_type") or "",
                 "data_url": img.get("data_url"),
-            })
+            }
+            # Reference-ready rails for the image window (set by
+            # _sandbox_pending_attachments): the on-disk path is cited in the
+            # eviction placeholder, and the dims feed image-token accounting.
+            if img.get("workspace_path"):
+                entry["workspace_path"] = img.get("workspace_path")
+            if img.get("width") and img.get("height"):
+                entry["width"] = img.get("width")
+                entry["height"] = img.get("height")
+            meta.append(entry)
         for record in records:
             meta.append(record.to_history_dict())
         return meta

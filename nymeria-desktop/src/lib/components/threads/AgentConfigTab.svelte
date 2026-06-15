@@ -9,12 +9,14 @@
     isCallable: boolean;
     callableName: string;
     callableDescription: string;
+    imageWindowSize: string | number;
   }
 
   let {
     isCallable = $bindable(),
     callableName = $bindable(),
     callableDescription = $bindable(),
+    imageWindowSize = $bindable(),
   }: Props = $props();
 </script>
 
@@ -56,6 +58,29 @@
         <span class="field-hint">What the model sees as the tool description. Describe when to use this thread.</span>
       </div>
     {/if}
+  </ThreadSettingsSection>
+
+  <ThreadSettingsSection
+    title="Image Window"
+    description="How many images stay visible to the model at once. The newest images are kept; older ones drop out of context (they remain on disk, so the agent can re-view them with file_read)."
+  >
+    <div class="field-group last">
+      <label class="field-label" for="image-window-input">Max images in context</label>
+      <input
+        id="image-window-input"
+        class="field-input narrow"
+        type="number"
+        min="1"
+        max="3000"
+        step="1"
+        bind:value={imageWindowSize}
+        placeholder="Model maximum"
+      />
+      <span class="field-hint">
+        Leave blank to keep up to the model's maximum (the default). Lower it to
+        cap image token cost; the model still sees the most recent images.
+      </span>
+    </div>
   </ThreadSettingsSection>
 </div>
 
@@ -101,6 +126,7 @@
     transition: border-color var(--transition-fast);
   }
   .text-input { font-family: inherit; resize: vertical; }
+  .field-input.narrow { width: auto; max-width: 12rem; }
   .field-input:focus,
   .text-input:focus {
     border-color: var(--accent-primary);

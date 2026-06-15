@@ -5,6 +5,7 @@ Falls back to static lists if API is unavailable.
 """
 
 import logging
+import math
 import re
 import threading
 from dataclasses import dataclass, field
@@ -1574,3 +1575,111 @@ def get_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
         if info.max_total_attachment_bytes is not None:
             limits["max_total_bytes"] = info.max_total_attachment_bytes
     return limits
+
+
+# ============================================================================
+# Per-provider image-token estimation
+# ============================================================================
+#
+# A LOCAL estimate of how many input tokens one image costs, used ONLY as a
+# fallback when the provider does not report image tokens in its usage metadata
+# (providers that do already fold image tokens into ``prompt_tokens``, so adding
+# this on top would double-count). Formulas mirror the public token math as of
+# 2026-06; treat the numbers as estimates, not exact billing.
+
+# Anthropic tiles an image into 28x28-pixel patches (one patch per visual
+# token) after clamping the long edge to a per-model ceiling. Most models cap at
+# 1568 tokens / 1568px; Opus 4.7/4.8, Fable 5, and Mythos 5 raise that to
+# 4784 tokens / 2576px.
+_ANTHROPIC_HIRES_MODELS = (
+    "opus-4-7", "opus-4.7",
+    "opus-4-8", "opus-4.8",
+    "fable-5", "fable5",
+    "mythos-5", "mythos5",
+)
+_ANTHROPIC_PATCH_PX = 28
+_ANTHROPIC_TOKENS_STD = 1568
+_ANTHROPIC_LONG_EDGE_STD = 1568
+_ANTHROPIC_TOKENS_HIRES = 4784
+_ANTHROPIC_LONG_EDGE_HIRES = 2576
+
+# Flat per-image estimate when dimensions are unknown or the family is
+# unrecognized: roughly a 1-megapixel image on the standard Anthropic model.
+_DEFAULT_IMAGE_TOKENS = 1300
+
+
+def _image_token_family(model_id: str) -> str:
+    """Return ``'anthropic' | 'openai' | 'gemini' | ''`` for image-token math."""
+    if not model_id:
+        return ""
+    lowered = model_id.lower()
+    if any(p in lowered for p in ("claude", "anthropic", "fable", "mythos")):
+        return "anthropic"
+    if any(p in lowered for p in ("gpt", "openai", "chatgpt", "codex")):
+        return "openai"
+    if "gemini" in lowered or "google" in lowered:
+        return "gemini"
+    return ""
+
+
+def estimate_image_tokens(
+    model_id: str,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> int:
+    """Estimate the input-token cost of one image for ``model_id``.
+
+    Per-provider formulas:
+
+    - Anthropic: 28x28-pixel patches (one patch per visual token) after the long
+      edge is clamped to the per-model ceiling (1568px, or 2576px on hi-res
+      models), capped at 1568 / 4784 tokens.
+    - OpenAI: 85 base tokens + 170 per 512x512 tile, after fitting within
+      2048x2048 and scaling the shortest side to 768px (the GPT-4o/4.1 model; a
+      reasonable approximation for newer patch-based models).
+    - Gemini: 258 tokens when both dimensions are <= 384px, else 258 per
+      768x768 tile.
+
+    Falls back to a flat conservative estimate when dimensions are unavailable
+    or the family is unrecognized. This is a fallback estimator only (see the
+    section comment): never add it on top of provider-reported image tokens.
+    """
+    family = _image_token_family(model_id)
+    if not width or not height or width <= 0 or height <= 0:
+        return _DEFAULT_IMAGE_TOKENS
+
+    if family == "anthropic":
+        hires = any(p in model_id.lower() for p in _ANTHROPIC_HIRES_MODELS)
+        long_edge = _ANTHROPIC_LONG_EDGE_HIRES if hires else _ANTHROPIC_LONG_EDGE_STD
+        token_cap = _ANTHROPIC_TOKENS_HIRES if hires else _ANTHROPIC_TOKENS_STD
+        w, h = float(width), float(height)
+        longest = max(w, h)
+        if longest > long_edge:
+            scale = long_edge / longest
+            w *= scale
+            h *= scale
+        tokens = math.ceil(w / _ANTHROPIC_PATCH_PX) * math.ceil(h / _ANTHROPIC_PATCH_PX)
+        return min(tokens, token_cap)
+
+    if family == "openai":
+        w, h = float(width), float(height)
+        longest = max(w, h)
+        if longest > 2048:
+            scale = 2048 / longest
+            w *= scale
+            h *= scale
+        shortest = min(w, h)
+        if shortest > 768:
+            scale = 768 / shortest
+            w *= scale
+            h *= scale
+        tiles = math.ceil(w / 512) * math.ceil(h / 512)
+        return 85 + 170 * tiles
+
+    if family == "gemini":
+        if width <= 384 and height <= 384:
+            return 258
+        tiles = math.ceil(width / 768) * math.ceil(height / 768)
+        return 258 * tiles
+
+    return _DEFAULT_IMAGE_TOKENS

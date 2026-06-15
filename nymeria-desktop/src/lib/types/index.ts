@@ -282,6 +282,7 @@ export interface ThreadConfig {
   llmConfig?: ThreadLLMConfig | null;
   activeLlmFallback?: ActiveLLMFallback | null;
   memoryCharLimit?: number | null;
+  imageWindowSize?: number | null;
   systemPrompt?: string | null;
   callable: boolean;
   callableName?: string | null;
@@ -338,6 +339,7 @@ export interface ThreadConfigUpdateRequest {
   callable_team_id?: string | null;
   callable_team_name?: string | null;
   memory_char_limit?: number | null;
+  image_window_size?: number | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
@@ -354,6 +356,7 @@ export interface ThreadConfigUpdateRequest {
   clear_system_prompt?: boolean;
   clear_notification_profile?: boolean;
   clear_memory_char_limit?: boolean;
+  clear_image_window_size?: boolean;
   clear_dreaming?: boolean;
 }
 

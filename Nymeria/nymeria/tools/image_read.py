@@ -89,6 +89,33 @@ def sniff_image_mime(head: bytes, filename: str = "") -> Optional[str]:
     return _EXTENSION_MIME.get(ext)
 
 
+def read_image_dimensions(source) -> Optional[tuple[int, int]]:
+    """Return ``(width, height)`` from an image's header, or ``None``.
+
+    Accepts a filesystem ``Path`` (or str) or raw ``bytes``. Uses a Pillow
+    header read (``Image.open`` does not decode pixels), so it is cheap and safe
+    on the hot path. Returns ``None`` if Pillow is unavailable or the data is
+    not a readable image. Dimensions are reported as stored (EXIF orientation is
+    not applied), which is sufficient for token estimation.
+    """
+    try:
+        from PIL import Image
+    except Exception:  # pragma: no cover - Pillow is a hard dependency
+        return None
+    try:
+        if isinstance(source, (bytes, bytearray)):
+            with Image.open(io.BytesIO(bytes(source))) as img:
+                return (img.width, img.height)
+        with Image.open(source) as img:
+            return (img.width, img.height)
+    except Exception:
+        # Best-effort header probe: unidentified images, truncated/corrupt data,
+        # and decompression-bomb dimensions (DecompressionBombError, which is NOT
+        # an OSError/ValueError) all degrade to "dimensions unknown" rather than
+        # breaking the turn that called us.
+        return None
+
+
 def _encode(img, fmt: str, **params) -> Optional[bytes]:
     buf = io.BytesIO()
     try:

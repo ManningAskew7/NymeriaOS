@@ -1068,13 +1068,27 @@ def _sanitize_messages_for_anthropic(
     return sanitized
 
 
-def _hydrate_generated_images_for_llm(
+def _window_images_for_llm(
     messages: List[BaseMessage],
     llm_config: Optional[LLMConfig],
+    thread_id: Optional[str] = None,
 ) -> List[BaseMessage]:
-    from ...core.generated_image_context import hydrate_generated_images_for_llm
+    from ...core.generated_image_context import window_images_for_llm
 
-    return hydrate_generated_images_for_llm(messages, llm_config)
+    return window_images_for_llm(messages, llm_config, thread_id=thread_id)
+
+
+def _thread_id_from_config(config: Any) -> Optional[str]:
+    """Best-effort extract the thread_id from a LangGraph RunnableConfig."""
+    try:
+        if isinstance(config, dict):
+            configurable = config.get("configurable") or {}
+        else:
+            configurable = getattr(config, "configurable", {}) or {}
+        thread_id = configurable.get("thread_id")
+        return str(thread_id) if thread_id else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def create_agent_node(
@@ -1093,8 +1107,9 @@ def create_agent_node(
     Returns:
         Agent node function compatible with LangGraph
     """
-    def _prepare_messages(state: AgentState) -> List[BaseMessage]:
-        messages = _hydrate_generated_images_for_llm(state["messages"], llm_config)
+    def _prepare_messages(state: AgentState, config: Any = None) -> List[BaseMessage]:
+        thread_id = _thread_id_from_config(config)
+        messages = _window_images_for_llm(state["messages"], llm_config, thread_id)
         messages = _sanitize_messages_for_anthropic(messages, llm_config)
 
         # Summary line at INFO (always visible)
@@ -1164,10 +1179,9 @@ def create_agent_node(
         - Has tool_calls (instructions to call tools)
         - Has both (explaining what it's about to do)
         """
-        messages_with_system = _prepare_messages(state)
-
         # Sync graph callers use the normal invoke path. User-facing live
         # streaming runs through the async node below.
+        messages_with_system = _prepare_messages(state, config)
         response = _invoke_llm_with_retries(
             lambda candidate: candidate.invoke(messages_with_system),
             llm_config,
@@ -1188,7 +1202,7 @@ def create_agent_node(
         so this async implementation preserves token-level provider chunks and
         then merges them back into the final AIMessage required by the graph.
         """
-        messages_with_system = _prepare_messages(state)
+        messages_with_system = _prepare_messages(state, config)
         merged_chunk = None
         stream_started_at = time.monotonic()
         first_chunk_ms: Optional[int] = None
