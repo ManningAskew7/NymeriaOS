@@ -377,6 +377,10 @@ services:
       TEAMS_CHANNEL_ID: ${TEAMS_CHANNEL_ID:-}
       TEAMS_ACCOUNT_ID: ${TEAMS_ACCOUNT_ID:-}
       OUTLOOK_DEFAULT_ACCOUNT_ID: ${OUTLOOK_DEFAULT_ACCOUNT_ID:-}
+      # In-app problem reports: destination for the desktop "Report problem"
+      # button (POST /report), delivered via the Outlook email tool. Unset = the
+      # endpoint returns 503 instead of emailing anyone.
+      NYMERIA_ERROR_REPORT_EMAIL: ${NYMERIA_ERROR_REPORT_EMAIL:-}
       # Voice (TTS/STT). Base URLs default EMPTY on purpose: an unconditional
       # sidecar default here would hijack hosted providers (an explicit base
       # URL beats the provider's own default in core/voice.py). The init
