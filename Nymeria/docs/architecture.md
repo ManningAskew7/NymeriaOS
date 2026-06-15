@@ -519,7 +519,7 @@ Tools use the `@tool` decorator from `langchain_core.tools`. The system has thre
 |----------|-------|
 | Core System | bash_execute, file_read, file_write, consult, notify, slash_command |
 | Web Search (opt-in) | web_search_perplexity |
-| Profile & RAG | memory_add, memory_edit, memory_read, personality_set, rag_search |
+| Profile & RAG | memory_add, memory_edit, memory_read, rag_search |
 | TODO | nym_todo, nym_todo_delete, nym_todo_list |
 | Credentials | auth_inspect, auth_cleanup, auth_bindings, request_credential |
 

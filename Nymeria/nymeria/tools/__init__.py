@@ -1393,7 +1393,7 @@ _PRV_TOOLS_A = (
 # (agent_graph.select_tools_for_graph / static_tool_catalog), NOT registered in
 # the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
 CATALOG_TOOLS = {t.name: t for t in (
-    [claude_code, hello_test, regression_echo, memory_clear_all, rag_settings]
+    [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
     + CONSULT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
@@ -1553,7 +1553,6 @@ SEED_TOOLS = [
     memory_add,
     memory_edit,
     memory_read,
-    personality_set,
     rag_search,
     # TODO tools
     nym_todo,

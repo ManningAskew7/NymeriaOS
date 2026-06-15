@@ -24,7 +24,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
 | 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
-| 9 | `personality_set` | Profile | SAFE | On | Set communication preferences |
+| 9 | `personality_set` | Profile | SAFE | Opt-in | Set communication preferences; enable per-thread (was a seed default, now optional) |
 | 10 | `rag_search` | Profile | SAFE | On | Hybrid memory search (RRF over vector + BM25, optional date-anchor bias) with time + thread provenance |
 | 11 | `nym_todo` | TODO | SAFE | On | Create or update a TODO  -  scheduled TODOs auto-wake the agent |
 | 12 | `nym_todo_delete` | TODO | SAFE | On | Delete a TODO permanently |

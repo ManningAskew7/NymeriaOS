@@ -499,7 +499,7 @@ def bind_tools_for_thread(
     # (a curated subset), and graph-build uses that subset — not SEED_TOOLS —
     # to decide which tools to bind by default. Classifying against SEED_TOOLS
     # silently misclassifies any tool that lives in SEED_TOOLS but is absent
-    # from default_thread_tools (e.g., `personality_set`): the classifier
+    # from default_thread_tools (e.g., `rag_search`): the classifier
     # thinks it's already bound, drops it into the no-op bucket, and never
     # actually adds it anywhere — the tool then vanishes. Using the same
     # source of truth as graph-build (`agent.py::_build_graph_with_prompt`)
