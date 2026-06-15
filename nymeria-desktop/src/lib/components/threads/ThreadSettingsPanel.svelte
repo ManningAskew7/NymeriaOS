@@ -387,6 +387,10 @@
     return threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
   }
 
+  function getInitialImageWindowSize(): string {
+    return threadConfig?.imageWindowSize != null ? String(threadConfig.imageWindowSize) : '';
+  }
+
   function getInitialDreamEnabled(): boolean {
     return threadConfig?.dreaming?.enabled ?? false;
   }
@@ -422,6 +426,7 @@
   let inAppNotificationLevel = $state<InAppNotificationLevel>(getInitialInAppNotificationLevel());
   let notificationProfile = $state<string | null>(getInitialNotificationProfile());
   let memoryCharLimit = $state<string | number>(getInitialMemoryCharLimit());
+  let imageWindowSize = $state<string | number>(getInitialImageWindowSize());
   let dreamEnabled = $state(getInitialDreamEnabled());
   let dreamMinIntervalHours = $state<string>(getInitialDreamMinIntervalHours());
   let dreamMinIdleMinutes = $state<string>(getInitialDreamMinIdleMinutes());
@@ -689,6 +694,9 @@
     const origMemoryCharLimit = threadConfig?.memoryCharLimit != null ? String(threadConfig.memoryCharLimit) : '';
     if (String(memoryCharLimit ?? '').trim() !== origMemoryCharLimit) return true;
 
+    const origImageWindowSize = threadConfig?.imageWindowSize != null ? String(threadConfig.imageWindowSize) : '';
+    if (String(imageWindowSize ?? '').trim() !== origImageWindowSize) return true;
+
     const origDream = threadConfig?.dreaming ?? null;
     const origDreamEnabled = origDream?.enabled ?? false;
     const origDreamMinIntervalHours = origDream?.minIntervalHours != null ? String(origDream.minIntervalHours) : '';
@@ -839,6 +847,12 @@
       } else {
         updates.clear_memory_char_limit = true;
       }
+      const imageWindowValue = String(imageWindowSize ?? '').trim();
+      if (imageWindowValue) {
+        updates.image_window_size = parseInt(imageWindowValue, 10);
+      } else {
+        updates.clear_image_window_size = true;
+      }
       if (dreamConfigNeedsSaving()) {
         updates.dreaming = {
           enabled: dreamEnabled,
@@ -928,6 +942,7 @@
     inAppNotificationLevel = 'notify_only';
     notificationProfile = null;
     memoryCharLimit = '';
+    imageWindowSize = '';
     dreamEnabled = false;
     dreamMinIntervalHours = '';
     dreamMinIdleMinutes = '';
@@ -968,6 +983,7 @@
         inAppNotificationLevel: 'notify_only',
         notificationProfile: null,
         memoryCharLimit: null,
+        imageWindowSize: null,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -1173,6 +1189,7 @@
                 bind:isCallable
                 bind:callableName
                 bind:callableDescription
+                bind:imageWindowSize
               />
             {:else if activeTab === 'connections'}
               <ConnectionsConfigTab

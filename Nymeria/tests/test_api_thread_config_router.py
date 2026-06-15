@@ -299,3 +299,38 @@ def test_thread_config_delete_removes_callable_config_and_syncs_tools(
     assert agent.thread_config_manager.get_config(thread_id) is None
     assert agent.invalidated == [thread_id]
     assert agent.synced_tools == 1
+
+
+def test_thread_config_image_window_size_round_trip(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "img-window-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Default (unset) is None and inherits the model max.
+    default = client.get(f"/threads/{thread_id}/config", headers=headers)
+    assert default.status_code == 200
+    assert default.json()["image_window_size"] is None
+
+    set_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"image_window_size": 5},
+    )
+    assert set_resp.status_code == 200
+    body = set_resp.json()
+    assert body["image_window_size"] == 5
+    assert body["has_customizations"] is True
+    assert agent.thread_config_manager.get_config(thread_id).image_window_size == 5
+
+    clear_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_image_window_size": True},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["image_window_size"] is None
+    assert agent.thread_config_manager.get_config(thread_id).image_window_size is None

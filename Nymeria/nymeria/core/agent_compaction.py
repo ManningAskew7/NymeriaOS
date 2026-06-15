@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
-from ..config.model_capabilities import get_context_limit
+from ..config.model_capabilities import estimate_image_tokens, get_context_limit
 from .checkpoint_cleanup import prune_checkpoints_before
 from .time_utils import utc_now
 
@@ -102,6 +102,65 @@ Format as a bulleted list of quoted strings.
 def estimate_tokens(text: str) -> int:
     """Rough estimate of token count (~4 chars per token)."""
     return len(text) // 4
+
+
+def _estimate_content_tokens(
+    content: Any, model: str = "", image_dims: Optional[List[Any]] = None
+) -> int:
+    """Token estimate for one message's content, image-aware.
+
+    Image blocks are counted by their per-provider image-token cost, NOT by the
+    length of their inline base64 data URL (a 5 MB image is ~1.7M base64 chars,
+    which ``str(content)`` would mis-estimate as ~420k tokens). ``image_dims`` is
+    the per-block ``(width, height)`` list (k-th tuple pairs with the k-th
+    ``image_url`` block, mirroring the ingress ordering); when present the
+    per-provider patch/tile formula is used, otherwise a flat per-model estimate.
+    """
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    if not isinstance(content, list):
+        return estimate_tokens(str(content))
+    dims = image_dims or []
+    total = 0
+    img_seen = 0
+    for block in content:
+        if isinstance(block, dict):
+            btype = block.get("type")
+            if btype == "image_url":
+                wh = dims[img_seen] if img_seen < len(dims) else None
+                img_seen += 1
+                if wh:
+                    total += estimate_image_tokens(model, wh[0], wh[1])
+                else:
+                    total += estimate_image_tokens(model)
+                continue
+            if btype == "text":
+                total += estimate_tokens(str(block.get("text", "")))
+                continue
+        total += estimate_tokens(str(block))
+    return total
+
+
+def _message_image_dims(msg: Any) -> List[Any]:
+    """Per-image ``(width, height)`` for a message, in content order.
+
+    Reads the ``width``/``height`` stamped onto image attachment metadata at
+    ingress (``additional_kwargs["attachments"]``); entries without dims yield
+    ``None`` so the estimator falls back to its flat per-model estimate.
+    """
+    ak = getattr(msg, "additional_kwargs", None)
+    if not isinstance(ak, dict):
+        return []
+    atts = ak.get("attachments")
+    if not isinstance(atts, list):
+        return []
+    out: List[Any] = []
+    for a in atts:
+        if not isinstance(a, dict) or a.get("type") != "image":
+            continue
+        w, h = a.get("width"), a.get("height")
+        out.append((w, h) if w and h else None)
+    return out
 
 
 async def _notify_compaction_started(
@@ -670,7 +729,8 @@ class CompactionManager:
             return {"success": False, "reason": str(e)}
 
         agent._token_tracker.reset_after_compact(
-            thread_id, self._estimate_messages_tokens(tail)
+            thread_id,
+            self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
             f"Thread {thread_id}: Compaction complete — removed {msg_count_before}, "
@@ -744,7 +804,8 @@ class CompactionManager:
             return {"success": False, "reason": str(e)}
 
         agent._token_tracker.reset_after_compact(
-            thread_id, self._estimate_messages_tokens(tail)
+            thread_id,
+            self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
             f"Thread {thread_id}: Sync compaction complete — removed {msg_count_before}, "
@@ -1220,12 +1281,13 @@ class CompactionManager:
             boundaries = list(range(1, max_prefix + 1))
 
         target_tokens = self._recovery_target_tokens(thread_id)
-        current_tokens = self._estimate_messages_tokens(messages)
+        model = self._model_for(thread_id)
+        current_tokens = self._estimate_messages_tokens(messages, model)
         if current_tokens <= target_tokens:
             return boundaries[0]
 
         for idx in boundaries:
-            if self._estimate_messages_tokens(messages[idx:]) <= target_tokens:
+            if self._estimate_messages_tokens(messages[idx:], model) <= target_tokens:
                 return idx
 
         return boundaries[-1]
@@ -1236,12 +1298,20 @@ class CompactionManager:
         ratio = min(float(self._agent.settings.compact_threshold), 0.5)
         return max(1, int(model_limit * ratio))
 
+    def _model_for(self, thread_id: str) -> str:
+        """Best-effort model id for image-token sizing; '' if unavailable."""
+        try:
+            return self._agent._get_llm_config_for_thread(thread_id).model or ""
+        except Exception:  # noqa: BLE001 - sizing falls back to a flat estimate
+            return ""
+
     @staticmethod
-    def _estimate_messages_tokens(messages: List[Any]) -> int:
+    def _estimate_messages_tokens(messages: List[Any], model: str = "") -> int:
         total = 0
         for msg in messages:
-            content = getattr(msg, "content", "")
-            total += estimate_tokens(content if isinstance(content, str) else str(content))
+            total += _estimate_content_tokens(
+                getattr(msg, "content", ""), model, _message_image_dims(msg)
+            )
         return total
 
     @staticmethod

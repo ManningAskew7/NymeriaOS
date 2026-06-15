@@ -83,6 +83,7 @@
   let isCallable = $state(false);
   let callableName = $state('');
   let callableDescription = $state('');
+  let imageWindowSize = $state<string | number>('');
 
   // Form state — Model
   let llmProvider = $state('');
@@ -496,6 +497,7 @@
     isCallable = cfg?.callable ?? false;
     callableName = cfg?.callableName ?? '';
     callableDescription = cfg?.callableDescription ?? '';
+    imageWindowSize = cfg?.imageWindowSize != null ? String(cfg.imageWindowSize) : '';
     llmProvider = cfg?.llmConfig?.provider ?? '';
     llmProviderRoute = cfg?.llmConfig?.provider_route ?? 'default';
     llmModel = cfg?.llmConfig?.model ?? '';
@@ -591,6 +593,7 @@
     const origCallable = orig?.callable ?? false;
     const origCallableName = orig?.callableName ?? '';
     const origCallableDesc = orig?.callableDescription ?? '';
+    const origImageWindow = orig?.imageWindowSize != null ? String(orig.imageWindowSize) : '';
     const origInjectTodos = orig?.injectTodosInPrompt ?? false;
     const origShowAuto = orig?.showAutonomousPrompts ?? false;
     const origShowMeta = orig?.showPromptMetadata ?? false;
@@ -618,6 +621,7 @@
     if (isCallable !== origCallable) return true;
     if (callableName !== origCallableName) return true;
     if (callableDescription !== origCallableDesc) return true;
+    if (String(imageWindowSize ?? '').trim() !== origImageWindow) return true;
     if (llmProvider !== origProvider) return true;
     if (llmModel !== origModel) return true;
     if (llmBaseUrl !== origBaseUrl) return true;
@@ -755,6 +759,14 @@
       if (isCallable) {
         updates.callable_name = callableName.trim() || null;
         updates.callable_description = callableDescription.trim() || null;
+      }
+
+      // Image window (blank inherits the model max)
+      const imageWindowValue = String(imageWindowSize ?? '').trim();
+      if (imageWindowValue) {
+        updates.image_window_size = parseInt(imageWindowValue, 10);
+      } else {
+        updates.clear_image_window_size = true;
       }
 
       // Visibility / advanced
@@ -995,6 +1007,27 @@
             <span class="char-count">{callableDescription.length} / 500</span>
           </div>
         {/if}
+
+        <div class="section-divider">
+          <span class="section-heading">Image Window</span>
+          <p class="hint">
+            How many images stay visible to the model at once. Newest kept; older drop out of context (still on disk for file_read).
+          </p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label" for="mobile-image-window">Max images in context</label>
+          <input
+            id="mobile-image-window"
+            type="number"
+            class="setting-input"
+            min="1"
+            max="3000"
+            step="1"
+            bind:value={imageWindowSize}
+            placeholder="Model maximum"
+          />
+          <p class="hint">Leave blank to keep up to the model's maximum. Lower it to cap image token cost.</p>
+        </div>
 
       {:else if activeTab === 'dream'}
         <div class="section-divider">
